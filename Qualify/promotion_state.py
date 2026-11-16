@@ -47,6 +47,8 @@ from .promotion_audience_vm import (
     COUNTRY_UNKNOWN,
     DEFAULT_POINT_DISTANCE,
     GENDER_LABELS,
+    LOCATE_BUTTON_ID,
+    NEAR_LOCATION_MISSING,
     NEAR_PLACE_LABEL,
     PLACEMENT_LABELS,
     AudienceInterestVM,
@@ -658,6 +660,8 @@ class PromotionState(rx.State):
             self.location_error = COUNTRY_UNKNOWN
             return None
         self.location_error = ""
+        if self.error == NEAR_LOCATION_MISSING:
+            self.error = ""  # a failed reading must not send it back to the top banner
         self.locating = True
         return rx.call_script(LOCATE_SCRIPT, callback=PromotionState.point_captured)
 
@@ -691,9 +695,25 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.var
+    def error_by_locate(self) -> bool:
+        """«Siguiente» before the location: the error shows under «usar mi ubicación», so the
+        top banner stays quiet and it is not said twice."""
+        return (
+            self.error == NEAR_LOCATION_MISSING
+            and step_key_at(self.form, self.step) == "audience"
+            and self.form.near
+            and self.form.point_latitude == ""
+            and self.location_error == ""
+        )
+
+    @rx.var
     def radius_out_of_range(self) -> bool:
-        """A typed or saved city distance outside 17-80 km (empty = the whole city)."""
-        return radius_problem(self.form.radius_km) != ""
+        """A typed or saved city distance outside 17-80 km (empty = the whole city). One digit
+        from 1 to 9 is not wrong yet: the owner may be typing «20». «Siguiente» still checks."""
+        value = self.form.radius_km
+        if len(value) == 1 and value in "123456789":
+            return False
+        return radius_problem(value) != ""
 
     @rx.var
     def audience_interests_label(self) -> str:
@@ -761,8 +781,11 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.event
-    def choose_place(self, key: str) -> rx.event.EventSpec | None:
-        place = next((row for row in self.place_results if row.key == key), None)
+    def choose_place(self, key: str, kind: str) -> rx.event.EventSpec | None:
+        # A city and a region may share a key: match both.
+        place = next(
+            (row for row in self.place_results if row.key == key and row.kind == kind), None
+        )
         if self.busy or place is None:
             return None
         self.form = replace(
@@ -1596,6 +1619,12 @@ class PromotionState(rx.State):
         problem = step_problem(self.form, self.step, self.timezone_name)
         if problem:
             self.error = problem
+            if problem == NEAR_LOCATION_MISSING:  # its message sits by the button, off-screen
+                return rx.call_script(
+                    "(b => { b?.scrollIntoView({block: 'center'}); "
+                    "b?.focus({preventScroll: true}); })"
+                    f"(document.getElementById('{LOCATE_BUTTON_ID}'))"
+                )
             return None
         self.error = ""
         last = step_count(self.form)

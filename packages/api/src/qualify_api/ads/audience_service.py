@@ -157,7 +157,9 @@ async def _read(
         ) from None
 
 
-def _locations(rows: tuple[dict[str, Any], ...], kind: str) -> tuple[LocationOption, ...]:
+def _locations(
+    rows: tuple[dict[str, Any], ...], kinds: tuple[str, ...]
+) -> tuple[LocationOption, ...]:
     result = []
     for row in rows:
         try:
@@ -165,13 +167,14 @@ def _locations(rows: tuple[dict[str, Any], ...], kind: str) -> tuple[LocationOpt
                 row["key"],
                 row["name"],
                 row["type"],
-                row.get("country_code", row["key"] if kind == "country" else ""),
+                row.get("country_code", row["key"] if set(kinds) == {"country"} else ""),
                 row.get("region", ""),
             )
             option.validate()
         except (KeyError, TypeError, ValueError):
             continue
-        if option.type == kind and option.key not in {item.key for item in result}:
+        seen = {(item.type, item.key) for item in result}
+        if option.type in kinds and (option.type, option.key) not in seen:
             result.append(option)
     return tuple(result)
 
@@ -222,9 +225,10 @@ async def search_audience_locations(
     publish_attempt_id: UUID,
     ad_account_id: UUID,
     query: str,
-    location_type: str,
+    location_types: tuple[str, ...],
 ) -> tuple[LocationOption, ...]:
-    if location_type not in {"country", "region", "city"}:
+    """One Meta search for every kind asked (``location_types`` takes a list)."""
+    if not location_types or not set(location_types) <= {"country", "region", "city"}:
         raise AudienceUnavailable("Elige buscar un país, una región o una ciudad.")
     scope = _scope(
         tenant_id=tenant_id,
@@ -239,11 +243,11 @@ async def search_audience_locations(
             {
                 "type": "adgeolocation",
                 "q": _query(query),
-                "location_types": [location_type],
-                "limit": 25,
+                "location_types": list(location_types),
+                "limit": 25 * len(location_types),  # one call shares the page between kinds
             },
         ),
-        location_type,
+        location_types,
     )
 
 

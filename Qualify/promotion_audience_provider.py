@@ -112,16 +112,9 @@ def audience_scope(tenant: str, piece: str, source: str, account: str) -> dict[s
 
 
 def find_places(scope: dict[str, UUID], query: str, kind: str) -> list[AudiencePlaceVM]:
-    """«En una ciudad o región» searches both kinds (Meta's search takes one type per call);
-    cities come first."""
+    """«En una ciudad o región» searches both kinds in one Meta call; cities come first."""
     kinds = ("country",) if kind == "country" else ("city", "region")
-
-    async def search() -> list:
-        found = await asyncio.gather(
-            *(search_audience_locations(**scope, query=query, location_type=k) for k in kinds)
-        )
-        return [row for rows in found for row in rows]
-
+    found = asyncio.run(search_audience_locations(**scope, query=query, location_types=kinds))
     return [
         AudiencePlaceVM(
             row.key,
@@ -131,7 +124,7 @@ def find_places(scope: dict[str, UUID], query: str, kind: str) -> list[AudienceP
             row.region,
             place_kind_label(row.type) if kind != "country" else "",
         )
-        for row in asyncio.run(search())
+        for row in sorted(found, key=lambda row: kinds.index(row.type))
     ]
 
 

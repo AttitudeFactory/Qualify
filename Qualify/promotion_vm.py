@@ -16,6 +16,7 @@ from .ad_health_vm import AccountHealthVM
 from .promotion_audience_vm import (
     COUNTRY_UNKNOWN,
     NEAR_HOUSING_PROBLEM,
+    NEAR_LOCATION_MISSING,
     AudienceInterestVM,
     point_distance_problem,
 )
@@ -581,7 +582,7 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
             if draft.housing:
                 return NEAR_HOUSING_PROBLEM
             if not draft.point_latitude or not draft.point_longitude:
-                return "Toca «Estoy en el negocio: usar mi ubicación» para marcar tu negocio."
+                return NEAR_LOCATION_MISSING
             if not draft.location_key:
                 return COUNTRY_UNKNOWN
         elif not draft.location_key or not draft.city_name.strip():

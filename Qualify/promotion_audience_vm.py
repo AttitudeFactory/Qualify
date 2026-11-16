@@ -86,6 +86,16 @@ LOCATION_IMPRECISE = (
     "del teléfono y vuelve a intentarlo, o elige «En una ciudad o región»."
 )
 COUNTRY_UNKNOWN = "No sabemos en qué país está tu negocio. Elige «En una ciudad o región»."
+NEAR_LOCATION_MISSING = "Toca «Estoy en el negocio: usar mi ubicación» para marcar tu negocio."
+LOCATE_BUTTON_ID = "audience-locate"
+CITY_RADIUS_EMPTY_HINT = (
+    "Si la dejas vacía, el anuncio se muestra en toda la ciudad. "
+    "Si escribes una distancia, que sea de 17 km o más."
+)
+CITY_RADIUS_WRONG_HINT = (
+    "Escribe una distancia entre 17 y 80 km, o déjala vacía para usar toda la ciudad. "
+    "Para llegar más cerca, elige «Cerca de mi negocio»."
+)
 NEAR_HOUSING_PROBLEM = (
     "«Cerca de mi negocio» no está disponible para anuncios de vivienda. "
     "Elige «En una ciudad o región»."

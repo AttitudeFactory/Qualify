@@ -6,7 +6,10 @@ import reflex as rx
 
 from .ad_custom_audiences_ui import custom_audiences
 from .promotion_audience_vm import (
+    CITY_RADIUS_EMPTY_HINT,
+    CITY_RADIUS_WRONG_HINT,
     GENDER_LABELS,
+    LOCATE_BUTTON_ID,
     NEAR_HOUSING,
     PLACEMENT_LABELS,
     POINT_CAPTURED,
@@ -72,7 +75,7 @@ def _place(place: rx.Var) -> rx.Component:
             align_items="start",
             width="100%",
         ),
-        on_click=S.choose_place(place.key),
+        on_click=S.choose_place(place.key, place.kind),
         disabled=S.busy,
         variant="outline",
         min_height="44px",
@@ -357,6 +360,7 @@ def _near_business() -> rx.Component:
             rx.button(
                 rx.icon("locate-fixed", size=18),
                 "Estoy en el negocio: usar mi ubicación",
+                id=LOCATE_BUTTON_ID,
                 on_click=S.locate,
                 loading=S.locating,
                 disabled=S.busy,
@@ -367,11 +371,14 @@ def _near_business() -> rx.Component:
                 width="100%",
             ),
         ),
-        rx.text(
-            "Tócalo cuando estés en tu local. ¿No estás allí ahora? Elige «En una ciudad o "
-            "región» o vuelve cuando estés.",
-            size="2",
-            color=T.TEXT_MUTED,
+        rx.cond(
+            ~has_point,
+            rx.text(
+                "Tócalo cuando estés en tu local. ¿No estás allí ahora? Elige «En una ciudad o "
+                "región» o vuelve cuando estés.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
         ),
         rx.cond(
             ~has_point & (S.location_error == ""),
@@ -383,11 +390,8 @@ def _near_business() -> rx.Component:
             ),
         ),
         rx.cond(S.location_error != "", callout(S.location_error, "error")),
-        # «Siguiente» before the location: say it here too, not only in the top banner.
-        rx.cond(
-            ~has_point & (S.location_error == "") & (S.error != ""),
-            callout(S.error, "error"),
-        ),
+        # «Siguiente» before the location: said here, by the button (the top banner is off).
+        rx.cond(S.error_by_locate, callout(S.error, "error")),
         rx.cond(
             has_point,
             rx.vstack(
@@ -471,15 +475,18 @@ def _place_search() -> rx.Component:
                     "radius_km",
                     S.form.radius_km,
                 ),
-                rx.text(
-                    "Para una ciudad, la distancia mínima es 17 km. Si quieres llegar más "
-                    "cerca, elige «Cerca de mi negocio». Si la dejas vacía, el anuncio se "
-                    "muestra en toda la ciudad.",
-                    size="2",
-                    color=rx.cond(
-                        S.radius_out_of_range,
-                        T.tone_color("error", 11),
-                        T.TEXT_MUTED,
+                # Empty: what empty means. Out of 17-80 km: the fix. Valid: nothing.
+                rx.cond(
+                    S.form.radius_km == "",
+                    rx.text(CITY_RADIUS_EMPTY_HINT, size="2", color=T.TEXT_MUTED),
+                ),
+                rx.cond(
+                    S.radius_out_of_range,
+                    rx.text(
+                        CITY_RADIUS_WRONG_HINT,
+                        size="2",
+                        color=T.tone_color("error", 11),
+                        aria_live="polite",
                     ),
                 ),
                 # Open whenever a distance exists, so a saved one outside 17-80 km shows;
