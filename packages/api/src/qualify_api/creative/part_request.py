@@ -90,6 +90,18 @@ logger = logging.getLogger(__name__)
 FIRST_PART: tuple[int, ...] = (1,)
 
 
+def refusal_duration(exc: BaseException | None) -> float | None:
+    """EF-06 (option A): how long a `local` part refused for its length lasts
+    (`RecipeProblem.duration_s` of `local_length_out_of_range`) — only when that IS the
+    code kept (`refusal_of`); None otherwise. Pure."""
+    if not isinstance(exc, RecipeRefused):
+        return None
+    kept = refusal_of(exc)
+    if kept is None or kept[0] != "local_length_out_of_range":
+        return None
+    return next((p.duration_s for p in exc.problems if p.code == "local_length_out_of_range"), None)
+
+
 def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | None:
     """The stored code of a refusal of `create_parts`, the part it is about and the
     vistas previas short — or None when `exc` is not a refusal (a bug, a database
@@ -109,9 +121,13 @@ def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | Non
             if "local_unavailable" in codes
             else "recipe_unavailable"
             if "recipe_unavailable" in codes
+            # EF-06 (option A): the length keeps its own code, said with `duration_s`
+            else "local_length_out_of_range"
+            if "local_length_out_of_range" in codes
             else "effects_invalid"
         )
-        return code, next((p.part for p in exc.problems if p.part), None), 0
+        about = [p for p in exc.problems if p.code == code] or list(exc.problems)
+        return code, next((p.part for p in about if p.part), None), 0
     if isinstance(exc, PartsExtendUnavailable):
         return "extend_unavailable", None, 0
     if isinstance(exc, PartsSourceInvalid):
@@ -425,6 +441,7 @@ class PartsRequests:
                 "refused": None if refused is None else refused[0],
                 "part": None if refused is None else refused[1],
                 "missing": 0 if refused is None else refused[2],
+                "duration_s": refusal_duration(error),
                 "attempted_parts": attempted,
                 "attempted_at": None,
                 "attempt": attempt,

@@ -461,6 +461,10 @@ class MediaUsage:
     input_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    #: The pricing table this cost was read from, when it is not the service's own
+    #: (EF-06: a local video is priced by `video_pipeline.local.LOCAL_PRICING_VERSION`).
+    #: None = the service's table.
+    pricing_table_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -674,7 +678,7 @@ def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
 _TENANT_ROOTS = ("t", "gallery", "reel-windows", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
-#: EF-02: a Clip made only from the owner's video with effects (`local`) — not built yet.
+#: EF-02: a `local` Clip the server did not stamp for EF-06 (stored before it): not made.
 LOCAL_CLIP_UNAVAILABLE = (
     "Todavía no podemos armar un video solo con tu grabación y sus efectos. "
     "Elige otra forma de hacerlo."
@@ -2643,9 +2647,14 @@ class MediaProducer:
             # (child clips) do, and the join is local. Nothing read, selected nor paid.
             return MediaOutcome()
         if brief.kind is ContentKind.CLIP and brief.media.clip_reference_mode == "local":
-            # EF-02: «Tu video, con efectos» is not produced until EF-05/EF-06 — refused
-            # before any read, spend or vendor call, never made as a Seedance clip. The
-            # service's gate (`video_pipeline.refuse_unbuilt_recipe`) refuses it first.
+            if brief.media.effects_pipeline_version >= 1:
+                # EF-06: «Tu video, con efectos» — the owner's own stretches made here, at
+                # cost 0, before any Brand Kit read, resource selection or vendor call;
+                # only in the creative worker (nothing is decoded inside Reflex)
+                return self._local_clip(tenant_id, draft_id, brief, revision, heartbeat)
+            # EF-02: a `local` brief the server never stamped (stored before EF-06, or
+            # without stretches) is refused before any read, spend or vendor call, never
+            # made as a Seedance clip
             logger.warning("creative media for draft %s refused: local clip not built", draft_id)
             return MediaOutcome(
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=LOCAL_CLIP_UNAVAILABLE
@@ -4842,6 +4851,38 @@ class MediaProducer:
         ]
 
     # -- clip (§ request 2026-10-14) -------------------------------------------------------
+
+    def _local_clip(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        revision: int,
+        heartbeat: Callable[[], None] | None,
+    ) -> MediaOutcome:
+        """EF-06: a `local` Clip (or part) made by `video_pipeline.local` — no vendor, no
+        slot, cost 0. Allowed only inside the creative worker's preparation, or where
+        the queue dispatcher is on (never an `inline` request thread of Reflex)."""
+        from qualify_api.creative.queue_dispatch import queue_enabled  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.local import produce_local  # noqa: PLC0415
+
+        run = current_preparation()
+        try:
+            allowed = run is not None or queue_enabled()
+        except ValueError:  # a malformed switch: fail closed
+            allowed = False
+        save = _Saver(self._store, tenant_id, draft_id, revision, heartbeat)
+        return produce_local(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brief=brief,
+            store=self._store,
+            save=save,
+            beat=heartbeat,
+            allowed=allowed,
+            # the worker's preparation: its lease is kept alive while the video is made
+            run=run,
+        )
 
     def _clip(
         self,

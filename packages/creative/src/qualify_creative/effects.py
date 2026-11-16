@@ -285,7 +285,12 @@ def _load_effects(version: str) -> EffectsLibrary:
 class RecipeProblem(BaseModel):
     """One problem of a recipe: its stable `code`, the 1-based `part` it is in (None =
     the Clip, or the whole video by parts), the `field` (`effects[1].params.speed`,
-    `transition_in`, `segments[0].key`, `mode`) and the effect it is about, if any."""
+    `transition_in`, `segments[0].key`, `mode`) and the effect it is about, if any.
+
+    EF-06 (Deivid, 2026-11-16, option A): a length problem of a `local` piece
+    (`local_length_out_of_range`, `segments_length_mismatch`) also says how long the
+    stretches last at their speed, `duration_s`, rounded to 0.1 s — so the screen can say
+    «tu video dura 2,0 s». None on every other problem."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -293,6 +298,7 @@ class RecipeProblem(BaseModel):
     part: int | None = None
     field: str = ""
     effect_id: str | None = None
+    duration_s: float | None = None
 
 
 def effect_use_problems(

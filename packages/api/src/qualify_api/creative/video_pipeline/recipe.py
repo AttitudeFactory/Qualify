@@ -16,9 +16,10 @@ effects library, loaded once per process (`qualify_creative.effects.load_effects
 screen can call it on each change of the owner. With a `tenant_id` it also checks that
 each stretch's file is the business's (`owned_by` — pure, a string check on the key; it
 reads nothing from R2). The service calls it on every new request through
-`refuse_unbuilt_recipe`, which adds the one refusal that is not about validity:
-`local_unavailable`, until EF-05/EF-06 produce a `local` part (fail closed: nothing is
-written, charged or sent to Seedance).
+`refuse_unbuilt_recipe`, which adds the refusals that are not about validity: what the
+effects engine does not draw yet (`unbuilt_recipe_problems`: fail closed, nothing is
+written, charged or sent to Seedance). EF-06 makes `local` pieces from their stretches
+(`video_pipeline.local`).
 
 Where each rule lives (decided in EF-02): the brief's own validator keeps the rules that
 need no library and never change — `local` needs own video, effects only on a video,
@@ -152,20 +153,42 @@ def clip_seconds(part: PartRecipe) -> float:
 
 
 def _length_problems(part: PartRecipe, number: int | None, *, in_clip: bool) -> list:
-    """A `local` piece's real length (its stretches at their speed): a part's must be its
-    `seconds` within `PART_TRIM_TOLERANCE_S` (`segments_length_mismatch`); a Clip's must
-    be `LOCAL_TOTAL_MIN_S`-`LOCAL_TOTAL_MAX_S`, the speed step's own bounds
-    (`local_length_out_of_range`)."""
+    """A `local` piece's real length (its stretches at their speed): a Clip's AND a
+    part's must be `LOCAL_TOTAL_MIN_S`-`LOCAL_TOTAL_MAX_S`, the speed step's own bounds
+    (`local_length_out_of_range`, EF-06 option A); a part's must also be its `seconds`
+    within `PART_TRIM_TOLERANCE_S` (`segments_length_mismatch`). Both say `duration_s`."""
     if part.mode != "local" or not part.segments:
         return []
     total = segments_seconds(part)
+    # EF-06 (option A, Deivid 2026-11-16): the refusal says how long it came out
+    duration = round(total, 1)
     if in_clip:
         if not LOCAL_TOTAL_MIN_S <= total <= LOCAL_TOTAL_MAX_S:
-            return [RecipeProblem(code="local_length_out_of_range", part=None, field="segments")]
+            return [
+                RecipeProblem(
+                    code="local_length_out_of_range",
+                    part=None,
+                    field="segments",
+                    duration_s=duration,
+                )
+            ]
         return []
+    found: list[RecipeProblem] = []
+    if not LOCAL_TOTAL_MIN_S <= total <= LOCAL_TOTAL_MAX_S:
+        # option A (Deivid): a `local` part is made by the same speed step (3-60 s), so a
+        # shorter or longer one is refused here, never failed after it was created
+        found.append(
+            RecipeProblem(
+                code="local_length_out_of_range", part=number, field="segments", duration_s=duration
+            )
+        )
     if abs(total - part.seconds) > PART_TRIM_TOLERANCE_S:
-        return [RecipeProblem(code="segments_length_mismatch", part=number, field="segments")]
-    return []
+        found.append(
+            RecipeProblem(
+                code="segments_length_mismatch", part=number, field="segments", duration_s=duration
+            )
+        )
+    return found
 
 
 def part_length(part: PartRecipe, *, video_by_parts: bool) -> float:
@@ -342,23 +365,26 @@ class RecipeRefused(ValueError):
 
 def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     """What a valid recipe still cannot be made with today (pure), so the owner never
-    pays for a video without what he chose: a `local` part (`local_unavailable`, EF-05/
-    EF-06 produce it) and ANY recipe at all — effects, a video text, stretches of own
-    video or photos, a transition, the parent's whole-video texts or its `video_recipe`
-    (ED-15) — (`recipe_unavailable`) until the effects engine composes them (EF-05/EF-06
-    stamp `effects_pipeline_version`).
+    pays for a video without what he chose.
+
+    EF-06 makes a `local` part or Clip from its stretches of own video and photos (cut,
+    turned, sped up, held still: `video_pipeline.local`), so neither `local` nor the
+    stretches of a `local` piece are refused any more. Still refused
+    (`recipe_unavailable`) until the effects engine draws them: effects (layers, EF-08),
+    a video text (EF-05's compose), a transition (`fundido`/`barrido`), stretches of a
+    piece that is not `local` (Seedance would only follow them), the parent's
+    whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
     producing is refused."""
     found: list[RecipeProblem] = []
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
     for part in recipe_of(brief):
         number = None if in_clip else part.index
-        if part.mode == "local":
-            found.append(RecipeProblem(code="local_unavailable", part=number, field="mode"))
         for field, value in (
             ("effects", part.effects),
+            # EF-05: the compose step draws the texts over the built video
             ("text_layers", part.text_layers),
-            ("segments", part.segments),
+            ("segments", part.segments if part.mode != "local" else ()),
             ("transition_in", part.transition_in),
         ):
             if value:

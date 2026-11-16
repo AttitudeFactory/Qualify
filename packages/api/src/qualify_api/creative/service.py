@@ -43,6 +43,7 @@ from qualify_creative.brand import (
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.brand.render import VARIANT_ANGLES
 from qualify_creative.creations import CreationNotOffered, CreationPrice, weight_for
+from qualify_creative.effects import RecipeProblem
 from qualify_creative.enums import (
     ContentKind,
     FailureReason,
@@ -134,6 +135,7 @@ from qualify_api.creative.pipeline import current_preparation, frozen_inputs, pi
 from qualify_api.creative.queue_dispatch import (
     CheckpointError,
     QueueDispatcher,
+    queue_enabled,
     transactional_dispatch,
 )
 from qualify_api.creative.vendor_tasks import (
@@ -149,7 +151,8 @@ from qualify_api.creative.vendor_tasks import (
     snapshot,
 )
 from qualify_api.creative.versions import visible_version
-from qualify_api.creative.video_pipeline.recipe import refuse_unbuilt_recipe
+from qualify_api.creative.video_pipeline.local import effects_version_for, is_local_recipe
+from qualify_api.creative.video_pipeline.recipe import RecipeRefused, refuse_unbuilt_recipe
 from qualify_api.plans.packs import legacy_seconds_per_video
 
 logger = logging.getLogger(__name__)
@@ -832,13 +835,29 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
     )
 
 
-def _without_server_effects_version(brief: ContentBrief) -> ContentBrief:
+def _with_server_effects_version(brief: ContentBrief) -> ContentBrief:
     """EF-02: `effects_pipeline_version` is the server's (like `prompt_compiler_version`):
-    whatever a caller sent, a new execution starts at 0 until EF-06 stamps it."""
-    if brief.media.effects_pipeline_version == 0:
+    whatever a caller sent, a new execution gets the server's — EF-06's (1) for a `local`
+    recipe with stretches, which `video_pipeline.local` makes; 0 for anything else."""
+    version = effects_version_for(brief)
+    if brief.media.effects_pipeline_version == version:
         return brief
-    media = brief.media.model_copy(update={"effects_pipeline_version": 0})
+    media = brief.media.model_copy(update={"effects_pipeline_version": version})
     return brief.model_copy(update={"media": media})
+
+
+def refuse_local_without_queue(brief: ContentBrief) -> None:
+    """EF-06: a `local` video is made only in the creative worker — with the dispatcher
+    `inline` (Reflex request threads) it is refused before any row, charge or decode,
+    like a video by parts (VE-08, `parts.PartsUnavailable`): `local_unavailable`."""
+    if not is_local_recipe(brief):
+        return
+    try:
+        on = queue_enabled()
+    except ValueError:  # a malformed switch: fail closed
+        on = False
+    if not on:
+        raise RecipeRefused((RecipeProblem(code="local_unavailable", part=None, field="mode"),))
 
 
 def check_part_link(
@@ -2272,8 +2291,10 @@ class ContentService:
             raise RouteBlockedByPolicy(blocked.detail)
         # EF-02: a part's recipe (effects, stretches, `local`) checked before its row,
         # charge or vendor call; the effects pipeline version is the server's to stamp
+        # (EF-06: 1 for a `local` part, made in the creative worker at cost 0 — the parts
+        # themselves are refused without the queue, `PartsService`, VE-08)
         refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
-        brief = _without_server_effects_version(brief)
+        brief = _with_server_effects_version(brief)
         prepare_new = getattr(self._media, "prepare_new_brief", None)
         if callable(prepare_new):
             brief = prepare_new(brief, kit)
@@ -2339,8 +2360,14 @@ class ContentService:
             check_parent_text_cap(self._repo, tenant_id=tenant_id)
         # EF-02: the recipe (effects, video text, stretches of own video, `local`) is
         # checked against the effects library before any row, charge or vendor call —
-        # `local` fails closed until EF-05/EF-06 (`RecipeRefused`, codes in `problems`)
+        # what the engine does not draw yet fails closed (`RecipeRefused`, codes in
+        # `problems`; a `local` Clip lasting under 3 s or over 60 s says its
+        # `duration_s`). EF-06: a `local` Clip is made only in the creative worker.
         refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
+        refuse_local_without_queue(brief)
+        # EF-15: the daily cap of `local` pieces per business goes here — before any
+        # row, like `check_parent_text_cap` — once EF-15 sets it (D3: a local piece
+        # uses no video seconds and no vista previa, so nothing else limits it)
         received_middle = len(brief.media.clip_image_keys)
         # Caller cannot select an internal compiler version through MediaInputs.
         brief = brief.model_copy(
@@ -2351,8 +2378,9 @@ class ContentService:
                         "prompt_compiler_version": 0,
                         "script_word_budget": None,
                         "script_rewrites": 0,
-                        # EF-02: server-owned, like the prompt compiler's
-                        "effects_pipeline_version": 0,
+                        # EF-02: server-owned, like the prompt compiler's (EF-06: 1
+                        # for a `local` recipe with stretches)
+                        "effects_pipeline_version": effects_version_for(brief),
                         # m-24820842: the Brand Kit wording option belongs to reel replicas only
                         "replication_brand_text": brief.media.replication_brand_text
                         and brief.kind is ContentKind.CLIP
@@ -3482,7 +3510,8 @@ class ContentService:
                 cache_creation_tokens=item.cache_creation_tokens,
                 cost_usd=item.cost_usd,
                 paid_by=PaidBy.PLATFORM.value,
-                pricing_table_version=self._pricing.version,
+                # EF-06: a local video names its own table (v10, `local_video` 0.00)
+                pricing_table_version=item.pricing_table_version or self._pricing.version,
                 pieces=0 if item.unit == "token" else item.quantity,
             )
             for item in items
