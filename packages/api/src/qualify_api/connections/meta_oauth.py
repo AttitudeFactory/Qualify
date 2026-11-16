@@ -101,6 +101,8 @@ class MetaOAuthClient(Protocol):
 
     async def list_granted_scopes(self, access_token: str) -> tuple[str, ...]: ...
 
+    async def get_client_business_id(self, access_token: str) -> str | None: ...
+
 
 # --- [V] response parsing. One function per endpoint; the only place reality lands. ---
 
@@ -170,6 +172,14 @@ def _parse_permissions_response(payload: dict[str, Any]) -> tuple[str, ...]:
         if isinstance(name, str) and name and entry.get("status") == "granted":
             granted.append(name)
     return tuple(granted)
+
+
+def _parse_client_business_response(payload: dict[str, Any]) -> str | None:
+    """[V] `GET /me?fields=client_business_id` (facebook-login-for-business.md:166):
+    {"client_business_id": "<id>", "id": "<user id>"}. Only a Business Integration System
+    User token carries it (ADR 29); a plain user token answers without the field → None."""
+    value = payload.get("client_business_id")
+    return str(value) if isinstance(value, str | int) and value else None
 
 
 class HttpMetaOAuthClient:
@@ -263,4 +273,9 @@ class HttpMetaOAuthClient:
     async def list_granted_scopes(self, access_token: str) -> tuple[str, ...]:
         return _parse_permissions_response(
             await self._get("/me/permissions", {"access_token": access_token})
+        )
+
+    async def get_client_business_id(self, access_token: str) -> str | None:
+        return _parse_client_business_response(
+            await self._get("/me", {"access_token": access_token, "fields": "client_business_id"})
         )

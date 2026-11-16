@@ -17,7 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
-from qualify_api.connections.repository import PostgresConnectionRepository
+from qualify_api.connections.repository import GrantInput, PostgresConnectionRepository
 from qualify_api.tenancy.models import Tenant, User
 
 pytestmark = pytest.mark.db
@@ -244,3 +244,65 @@ def test_record_health_check_on_unknown_connection_is_a_silent_no_op() -> None:
         data_access_expires_at=None,
         checked_at=datetime(2026, 8, 21, tzinfo=UTC),
     )  # must not raise
+
+
+def _grant(app_id: UUID, user_id: UUID, external_id: str, business: str | None) -> GrantInput:
+    now = datetime.now(UTC)
+    return GrantInput(
+        tenant_id=TENANT_A,
+        brand_id=None,
+        user_id=user_id,
+        platform_app_id=app_id,
+        platform="instagram",
+        account_type="business",
+        external_account_id=external_id,
+        external_username="u",
+        linked_page_id="page-1",
+        granted_scopes=("basic",),
+        access_posture="development",
+        ciphertext=b"cipher",
+        key_id="dev-1",
+        token_type="page",
+        issued_at=now,
+        expires_at=None,
+        client_business_id=business,
+    )
+
+
+def test_client_business_id_is_stored_kept_on_null_and_isolated(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """m-24849197 (ADR 29): stored on connect; a NULL reconnect keeps it, a new value
+    replaces it; tenant B never sees tenant A's value."""
+    tenant_a, seeded_id = seeded_connection
+    with tenant_session(tenant_a) as session:
+        seeded = session.get(SocialConnection, seeded_id)
+        assert seeded is not None
+        assert seeded.client_business_id is None  # existing rows stay NULL
+        app_id, user_id = seeded.platform_app_id, seeded.connected_by_user_id
+
+    repo = PostgresConnectionRepository()
+    external_id = f"ig-{uuid4()}"
+    record = repo.persist_grant(_grant(app_id, user_id, external_id, "cb-111"))
+
+    def stored() -> str | None:
+        with tenant_session(tenant_a) as session:
+            return session.scalar(
+                select(SocialConnection.client_business_id).where(
+                    SocialConnection.id == record.connection_id
+                )
+            )
+
+    assert stored() == "cb-111"
+    repo.persist_grant(_grant(app_id, user_id, external_id, None))
+    assert stored() == "cb-111"
+    repo.persist_grant(_grant(app_id, user_id, external_id, "cb-222"))
+    assert stored() == "cb-222"
+
+    with tenant_session(TENANT_B) as session:
+        leaked = session.scalars(
+            select(SocialConnection.client_business_id).where(
+                SocialConnection.id == record.connection_id
+            )
+        ).all()
+    assert leaked == []

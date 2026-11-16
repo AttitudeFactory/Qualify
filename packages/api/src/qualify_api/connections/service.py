@@ -371,6 +371,7 @@ class ConnectService:
             )
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)
+        client_business_id = await self._client_business_id(grant.access_token)
         # A normal Instagram reconnect may already grant advertising permissions through
         # the principal Meta configuration. Keep that same USER grant for Marketing API
         # calls before the organic path replaces it with a Page token.
@@ -406,6 +407,7 @@ class ConnectService:
                 external_account_id=page.instagram_account_id,
                 external_username=page.instagram_username,
                 linked_page_id=page.page_id,
+                client_business_id=client_business_id,
                 granted_scopes=granted_scopes,
                 access_posture=self._settings.access_posture,
                 # Encrypted HERE. Past this line the plaintext is unreferenced.
@@ -495,6 +497,19 @@ class ConnectService:
             external_username=page.instagram_username,
             return_to=payload.return_to,
         )
+
+    async def _client_business_id(self, access_token: str) -> str | None:
+        """ADR 29 (m-24849197): the client business Meta binds a BISU token to. Never fails
+        the connection: a user token has none, and a failed read is logged by exception
+        type only (the message of a Graph error may echo request material)."""
+        try:
+            value = await self._oauth.get_client_business_id(access_token)
+        except Exception as exc:
+            _LOGGER.warning("client_business_id read failed: %s", type(exc).__name__)
+            return None
+        if value is None:
+            _LOGGER.info("token carries no client_business_id (not a BISU token)")
+        return value
 
     def _apply_post_grant_status(
         self,
