@@ -122,6 +122,15 @@ Google Fonts catalogue knows is measured AND drawn with that face or the job fai
 `dependency_failed`) — it never silently falls back to Noto Sans under the same key; only an
 unknown family uses the fallback, deterministically, with a `warnings` entry.
 
+**In live generation** (m-25040499, behind `QUALIFY_IMAGE_LAYER`): Python composes each slide
+that has a layer as one `layer_still` job (`qualify_api/creative/image_pipeline/compose_run.py`).
+A job that ran and failed for a transient reason (`render_error`, `timeout`, `internal_error`,
+a completed job without a report) is resubmitted under a NEW id — `attempt` N>0 is part of the
+`uuid5` name, attempt 0 keeps the id it always had — at most 3 attempts per slide. A refusal
+(`invalid_parameters`) is never resubmitted: the layer is rewritten once instead. When the service
+does not answer, the piece waits in the queue up to 10 minutes from its first failure (never
+reset), then fails; it is never drawn by another compositor instead.
+
 `video_text` **v1** (EF-05, m-25026573; D1 of ADR 50) draws the owner's text over a video as
 ONE transparent PNG (port `overlay`, 1080×1920, format 9:16) that Python lays over every frame
 with PyAV (`qualify_creative.video.text_overlay`, called by

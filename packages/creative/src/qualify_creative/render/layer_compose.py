@@ -19,9 +19,15 @@ Keys (ADR 49 §2.2 and §2.4, and the R2 rule that the bucket refuses to overwri
   {job_id}/slide-{position+1}.jpg``: a re-compose after an edit is a new layer row and a new
   sha, so it lands on a new key and never overwrites.
 
-Not wired into the pipeline: ``qualify_api/creative/image_pipeline/compose.py`` keeps the
-current compositor until m-25017293. Nothing here imports Pillow; the caller's ``store``
-converts the PNG to the publication JPEG (``to_meta_jpeg``) before writing it.
+Wired into live generation behind ``QUALIFY_IMAGE_LAYER`` (m-25040499,
+``qualify_api/creative/image_pipeline/compose_run.py``); with the switch off the Pillow
+compositor stays until m-25017293. Nothing here imports Pillow; the caller converts the PNG to
+the publication JPEG (``to_meta_jpeg``) before writing it.
+
+**Attempts** (m-25040499): a render that ran and failed for a transient reason
+(`ComposeJobFailed`, a timeout) is tried again as a NEW job — ``attempt`` is part of the job id
+(attempt 0 keeps the id it always had), so the service never hands back the failed job. A
+refusal (``invalid_parameters``) is never retried: the same layer refuses the same way.
 """
 
 from __future__ import annotations
@@ -110,6 +116,8 @@ class LayerComposeRequest:
     spec_digest: str | None = None
     #: the compositor revision; defaults to the manifest's (`engine_revision()`)
     engine_rev: int | None = None
+    #: which try of this still (0, 1, 2): a transient failure is retried as a new job
+    attempt: int = 0
 
     def __post_init__(self) -> None:
         # the base's fingerprint is part of the render key (ADR 49 §2.2): without it two
@@ -168,6 +176,8 @@ class LayerComposeRequest:
                 self.base_sha256 or "no-base",
                 self.port,
                 self._pixel_inputs(),
+                # attempt 0 keeps the id it always had; a retry is a new job (m-25040499)
+                *([f"attempt{self.attempt}"] if self.attempt else []),
             ]
         )
         return str(uuid.uuid5(_JOB_NAMESPACE, name))
@@ -192,6 +202,11 @@ class LayerRefused(RenderServiceError):
         self.slot = str(refusal.get("slot", ""))
         self.reason = str(refusal.get("reason", ""))
         self.detail = str(refusal.get("detail", ""))
+
+
+class ComposeJobFailed(RenderServiceError):
+    """The render job ran and failed (not a refusal): ``render_error``, ``timeout``,
+    ``internal_error``… — worth one more attempt under a new job id."""
 
 
 @dataclass(frozen=True)
@@ -273,14 +288,16 @@ def compose_layer(
         message = (state.error_message if state else None) or f"compose job {job_id} failed"
         if state is not None and state.refusal:
             raise LayerRefused(state.refusal, message)
-        raise RenderServiceError(
+        if code == "invalid_parameters":  # refused without a refusal body: never retried
+            raise RenderServiceError(code, 422, message)
+        raise ComposeJobFailed(
             code,
             500,
             (state.error_message if state else None) or f"compose job {job_id} did not complete",
         )
     report = dict(state.report or {})
     if not report.get("layout_rendered"):
-        raise RenderServiceError(
+        raise ComposeJobFailed(
             "internal_error", 500, f"compose job {job_id} completed without a layout report"
         )
     if report.get("overflow"):
@@ -322,6 +339,7 @@ def compose_layer(
             "spec_sha256": request.digest,
             "base_sha256": request.base_sha256,
             "job_id": job_id,
+            "attempt": request.attempt,
             "cost_usd": "0",
         },
     )

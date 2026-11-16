@@ -95,7 +95,8 @@ def load_catalog_products(
             CatalogProduct(
                 product_id=p.id,
                 name=p.name,
-                has_price=bool(price_label(p.price_amount, p.price_currency or "")),
+                has_price=bool(label := price_label(p.price_amount, p.price_currency or "")),
+                price_text=label,
             )
             for p in matches[:_PRODUCTS_MAX]
         )

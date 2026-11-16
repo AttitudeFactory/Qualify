@@ -14,6 +14,13 @@ from uuid import uuid4
 import pytest
 from qualify_creative.enums import ContentKind, SlideSource
 from qualify_creative.layer_spec import LayerSpec
+from qualify_creative.render.client import RenderServiceError
+from qualify_creative.render.layer_compose import (
+    ComposedStill,
+    ComposeJobFailed,
+    LayerComposeRequest,
+    LayerRefused,
+)
 from qualify_creative.schemas import CarouselSlide
 
 from qualify_api.claude_tools import DollarMeter
@@ -94,12 +101,66 @@ class Writer:
         return LayerResult(specs=specs, invented_text=invented, failed={}, stats=None)
 
 
+class Composer:
+    """Stands for the render service (m-25040499): each call draws the base it was handed
+    as the still, unless `script[position]` says otherwise for that call — `refuse_price`,
+    `refuse`, `transient`, `outage` or `invalid`."""
+
+    def __init__(self, script: dict[int, list[str]] | None = None) -> None:
+        self.requests: list[LayerComposeRequest] = []
+        self.script = {p: list(steps) for p, steps in (script or {}).items()}
+
+    def calls(self, position: int) -> list[LayerComposeRequest]:
+        return [r for r in self.requests if r.position == position]
+
+    def __call__(self, request: LayerComposeRequest, read_media: Any) -> ComposedStill:
+        self.requests.append(request)
+        base = read_media(request.base_key)
+        steps = self.script.get(request.position) or []
+        step = steps.pop(0) if steps else "ok"
+        if step == "refuse_price":
+            raise LayerRefused(
+                {"slot": "price", "reason": "price_does_not_fit", "detail": "too wide"}, "no"
+            )
+        if step == "refuse":
+            raise LayerRefused({"slot": "title", "reason": "word_too_wide"}, "no")
+        if step == "transient":
+            raise ComposeJobFailed("render_error", 500, "chromium crashed")
+        if step == "outage":
+            raise ConnectionError("render service down")
+        if step == "invalid":
+            raise RenderServiceError("invalid_parameters", 422, "bad props")
+        layout = str(request.spec.get("layout_id"))
+        dropped = ["price"] if step == "drop_price" else []
+        return ComposedStill(
+            job_id=request.job_id(),
+            object_key=request.object_key(),
+            png=b"composed:" + base[:16],
+            width=1080,
+            height=1350,
+            layout_requested=layout,
+            layout_rendered=layout,
+            anchor=None,
+            fallbacks=(),
+            report={"layout_rendered": layout, "dropped_slots": dropped},
+            stored=False,
+            provenance={"engine_revision": 4},
+        )
+
+
 def _wire(
-    producer: Any, writer: Writer, claims: list[dict[str, Any]], *, claim: bool = True
-) -> None:
+    producer: Any,
+    writer: Writer,
+    claims: list[dict[str, Any]],
+    *,
+    claim: bool = True,
+    composer: Composer | None = None,
+) -> Composer:
     producer._layer_writer = writer
     producer._layer_claim = lambda **kw: claims.append(kw) or claim
     producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), ())
+    producer._layer_composer = composer = composer or Composer()
+    return composer
 
 
 def _produce(producer: Any, brief: Any) -> Any:

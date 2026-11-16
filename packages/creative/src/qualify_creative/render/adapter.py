@@ -112,6 +112,12 @@ class RemotionTemplateAdapter:
         self._content_type_for = content_type_for or _guess_content_type
         self._on_progress = on_progress
 
+    @property
+    def client(self) -> RemotionRenderClient:
+        """The render service client (the pipeline's compose step calls `compose_layer`
+        with it, reading the base photo from memory, m-25040499)."""
+        return self._client
+
     # -- GenerationProvider ------------------------------------------------------------
 
     def estimate_cost_usd(self, request: GenerationRequest, pricing: PricingTable) -> Decimal:

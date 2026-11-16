@@ -168,6 +168,9 @@ class CatalogProduct:
     product_id: UUID
     name: str
     has_price: bool
+    #: the price as the piece prints it (`catalog.read.price_label`: whole, in the business's
+    #: currency) — for the compositor only, never sent to the model (m-25040499)
+    price_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -220,6 +223,9 @@ class LayerRequest:
     #: A gallery's number of slides when only some are sent (its generated ones): the
     #: roles (cover, body, closing) follow the whole gallery. None: `len(slides)`.
     slide_count: int | None = None
+    #: m-25040499: why the compositor could not draw the previous layer of these images (a
+    #: price wider than its box, ADR 49 D5) — sent once, as a rewrite; "" on a first call
+    rewrite_note: str = ""
 
     @property
     def is_carousel(self) -> bool:
@@ -537,7 +543,9 @@ def _instructions(request: LayerRequest) -> str:
         f"Formato: {request.format}. Imágenes, en el orden de arriba: {positions}.\n\n"
         f"{_coverage_text(request)}\n\nDiseños de esta pieza en {request.format}:\n"
         f"{_limits_text(request)}\n\n{_facts_text(request)}\n\n"
-        f"La publicación:\n{_brief_text(request)}\n\nEntrega la capa con {LAYER_TOOL}."
+        f"La publicación:\n{_brief_text(request)}\n\n"
+        + (f"Corrección:\n{request.rewrite_note}\n\n" if request.rewrite_note else "")
+        + f"Entrega la capa con {LAYER_TOOL}."
     )
 
 

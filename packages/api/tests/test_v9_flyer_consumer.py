@@ -19,6 +19,7 @@ from qualify_api.creative.brand_references import (
     BrandReferencesSet,
 )
 from qualify_api.creative.image_pipeline import compose as compose_stage
+from qualify_api.creative.image_pipeline import compose_run
 from qualify_api.creative.media import TextStyle
 
 from .test_creative_media_byteplus import (
@@ -50,6 +51,7 @@ def no_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "to_reference_jpeg", lambda data: data)
     monkeypatch.setattr(module, "to_meta_jpeg", lambda data: data)
     monkeypatch.setattr(compose_stage, "to_meta_jpeg", lambda data: data)
+    monkeypatch.setattr(compose_run, "to_meta_jpeg", lambda data: data)
     monkeypatch.setattr(compose_stage, "render_ad_slides", lambda **kwargs: kwargs["scenes"])
     monkeypatch.setattr(compose_stage, "render_carousel_slide", lambda **kwargs: kwargs["scene"])
 

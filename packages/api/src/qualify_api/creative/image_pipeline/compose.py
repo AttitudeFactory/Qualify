@@ -15,8 +15,10 @@ positions 0..N-1 — that `MediaProducer` returns for `image_assets`.
   («Crear las que faltan»: `kept_slides`, `_resumed_gallery_slides`, `_keep_made`) is the
   same as before m-25017278.
 
-Composition is still Pillow's here, exactly as before: replacing it with Remotion is
-m-25017285 / m-25017293, not this move.
+With `QUALIFY_IMAGE_LAYER` off the composition is Pillow's, exactly as before. On
+(m-25040499), every generated still slide with a text layer is drawn by the compositor
+(`compose_run.compose_slides`, Remotion `layer_still`) and stored as the slide's file; a slide
+without a layer keeps the Pillow still until m-25017293 removes it.
 """
 
 from __future__ import annotations
@@ -52,7 +54,8 @@ from qualify_api.creative.image_pipeline.base import (
     carousel_slide_scene,
     flyer_scenes,
 )
-from qualify_api.creative.image_pipeline.layer_run import run_layer_stage
+from qualify_api.creative.image_pipeline.compose_run import ComposedSlide, compose_slides
+from qualify_api.creative.image_pipeline.layer_run import LayerOutcome, run_layer_stage
 from qualify_api.creative.media import (
     _TASK_RUN,
     COMPOSE_MODEL,
@@ -179,6 +182,20 @@ def ad_image(
         size=brief.format.dimensions,
         style=style,
     )
+    # m-25040499: on, the slides with a layer are drawn by the compositor and stored (off:
+    # {} — nothing called). No router call here: a rewrite is a Claude call, a render is not
+    composed = compose_slides(
+        producer,
+        outcome=outcome,
+        tenant_id=tenant_id,
+        draft_id=draft_id,
+        revision=save.revision,
+        kit=kit,
+        brand_name=brand,
+        logo_key=media.brand_logo_key,
+        save=save,
+    )
+    layers = {**layers, **{p: c.layer for p, c in composed.items()}}
     width, height = brief.format.dimensions
     model_id = usage[-1].model_id if usage else SEEDREAM
     if brief.format is ContentFormat.REELS_9_16:
@@ -188,7 +205,7 @@ def ad_image(
         return [
             replace(
                 producer._ad_reel(
-                    slides[0],
+                    composed[0].image if 0 in composed else slides[0],
                     brief=brief,
                     model_id=model_id,
                     params={
@@ -201,6 +218,7 @@ def ad_image(
                         "products": len(products),
                         "background": background is not None,
                         "printed": _printed_words(hook=copy.hook),
+                        **(composed[0].params if 0 in composed else {}),
                     },
                     save=save,
                 ),
@@ -211,7 +229,8 @@ def ad_image(
         ]
     out: list[MediaWrite] = []
     for position, png in enumerate(slides):
-        key = save(f"slide-{position + 1}.jpg", to_meta_jpeg(png), JPEG)
+        drawn = composed.get(position)
+        key = drawn.key if drawn else save(f"slide-{position + 1}.jpg", to_meta_jpeg(png), JPEG)
         out.append(
             MediaWrite(
                 position=position,
@@ -248,6 +267,7 @@ def ad_image(
                         else "",
                     ),
                     **_base_params(bases[position] if position < len(bases) else None),
+                    **(drawn.params if drawn else {}),
                 },
             )
         )
@@ -607,8 +627,23 @@ def _gallery_layers(
         slide_count=total,
         title_font=kit.typeface,  # the face the render draws titles with (heading, else body)
     )
+    composed = compose_slides(
+        producer,
+        outcome=outcome,
+        tenant_id=tenant_id,
+        draft_id=draft_id,
+        revision=save.revision,
+        kit=kit,
+        brand_name=brand,
+        logo_key=brief.media.brand_logo_key,
+        save=save,
+    )
     for position, (_based, args, index) in generated.items():
         write = out[index]
+        drawn = composed.get(position)
+        if drawn is not None:
+            out[index] = _composed_write(write, drawn, outcome, position)
+            continue
         if position in outcome.regenerated:
             fresh = outcome.scenes[position]
             still = render_carousel_slide(
@@ -631,3 +666,25 @@ def _gallery_layers(
                 params={**params, **_base_params(fresh.stored), "base_regenerated": True},
             )
         out[index] = replace(write, layer=outcome.layers.get(position))
+
+
+def _composed_write(
+    write: MediaWrite, drawn: ComposedSlide, outcome: LayerOutcome, position: int
+) -> MediaWrite:
+    """m-25040499: a gallery slide drawn by the compositor — over the regenerated base when
+    there was one — replaces the Pillow still it was first stored as."""
+    params = dict(write.params)
+    fresh = None
+    if position in outcome.regenerated:
+        fresh = outcome.scenes[position]
+        params = {k: v for k, v in params.items() if not k.startswith("base_")}
+        params.update({**_base_params(fresh.stored), "base_regenerated": True})
+    return replace(
+        write,
+        media_url=drawn.key,
+        object_key=drawn.key,
+        rendered_prompt=fresh.prompt if fresh is not None else write.rendered_prompt,
+        base=fresh.stored if fresh is not None else write.base,
+        params={**params, **drawn.params},
+        layer=drawn.layer,
+    )
