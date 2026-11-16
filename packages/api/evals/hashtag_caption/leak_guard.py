@@ -34,10 +34,19 @@ _DIGESTS = {digest for _, digest in GUARDED}
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
+#: The folder's text files the guard reads; the guard itself (its digests) is not one.
+_TEXT_SUFFIXES = frozenset({".json", ".md", ".py", ".txt", ".csv"})
+
+
 def committed_files() -> list[Path]:
-    """What this folder commits as data: the cases, the snapshot, the lexicon, results."""
-    names = ("cases.json", "weekly_snapshot.json", "lexicon.json")
-    return [HERE / name for name in names] + sorted((HERE / "results").glob("*.json"))
+    """Every text file of this folder (cases, snapshot, lexicon, README, the scripts, the
+    labeler test) and of `results/`, except this guard."""
+    files = [
+        path
+        for path in [*HERE.iterdir(), *(HERE / "results").glob("*")]
+        if path.is_file() and path.suffix in _TEXT_SUFFIXES and path.name != Path(__file__).name
+    ]
+    return sorted(files)
 
 
 def _fold(text: str) -> str:

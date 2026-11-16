@@ -5,6 +5,7 @@ venue or the people around it. The guarded words are digests only (`leak_guard`)
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 from types import ModuleType
@@ -40,8 +41,22 @@ def test_no_committed_eval_file_names_the_pilot(path: Path) -> None:
     assert GUARD.leaks(path.read_text(encoding="utf-8")) == set()
 
 
-def test_the_guard_catches_a_word_inside_a_tag_and_across_two_tokens() -> None:
-    # built from the digests' own lengths, without writing a guarded word: a clean text
-    # never matches, and the matcher is the one the files are checked with
+def test_the_guard_catches_a_word_inside_a_tag_and_across_two_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a made-up word stands in for the guarded ones, so no real name is written here
+    word = "zorbelix"
+    digest = hashlib.sha256(word.encode()).hexdigest()
+    monkeypatch.setattr(GUARD, "_DIGESTS", {digest})
+    monkeypatch.setattr(GUARD, "_LENGTHS", [len(word)])
+    assert GUARD.leaks("Hoy en Zorbélix, como siempre") == {digest}  # a token, accents fold
+    assert GUARD.leaks('{"tag": "#shawarmazorbelixcentro"}') == {digest}  # inside a tag
+    assert GUARD.leaks("visítanos en Zorbe Lix") == {digest}  # an adjacent pair
+    assert GUARD.leaks("zor be lix") == set()  # three pieces: out of scope
     assert GUARD.leaks("#shawarmasancristobal ensaladas frescas") == set()
-    assert sorted({length for length, _ in GUARD.GUARDED}) == [6, 7, 9]
+
+
+def test_the_guard_reads_the_scripts_and_readme_but_not_itself() -> None:
+    names = {path.name for path in FILES}
+    assert {"README.md", "run_eval.py", "build_watched.py", "test_labels.py"} <= names
+    assert "leak_guard.py" not in names

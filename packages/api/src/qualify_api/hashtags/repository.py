@@ -1386,7 +1386,10 @@ class PostgresHashtagRepository:
             return ()
         cutoff = _cutoff(window_days, now)
         params = {"slugs": own, "sources": list(sources), "cutoff": cutoff}
-        with tenant_session(tenant_id) as session:
+        # A savepoint: called inside a caller's wider `tenant_session`, a cancelled read
+        # rolls back to it (the local timeout with it) and the caller's transaction stays
+        # usable; the error still reaches the caller's best-effort `except`.
+        with tenant_session(tenant_id) as session, session.begin_nested():
             previous = session.execute(_SET_TIMEOUT, {"timeout": COMPANIONS_TIMEOUT}).one()
             rows = session.execute(_COMPANIONS, params).all()
             session.execute(_RESTORE_TIMEOUT, {"timeout": previous.previous})

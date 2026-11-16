@@ -223,6 +223,13 @@ def test_the_postgres_read_runs_under_a_short_local_timeout(
 
     calls: list[tuple[str, dict]] = []
 
+    class _Savepoint:
+        def __enter__(self) -> None:
+            calls.append(("SAVEPOINT", {}))
+
+        def __exit__(self, *exc: object) -> None:
+            calls.append(("RELEASE", {}))
+
     class _Session:
         def __enter__(self) -> _Session:
             return self
@@ -230,14 +237,43 @@ def test_the_postgres_read_runs_under_a_short_local_timeout(
         def __exit__(self, *exc: object) -> None:
             return None
 
+        def begin_nested(self) -> _Savepoint:
+            return _Savepoint()
+
         def execute(self, statement: object, params: dict) -> object:
             calls.append((str(statement), params))
             return SimpleNamespace(one=lambda: SimpleNamespace(previous="0"), all=lambda: [])
 
     monkeypatch.setattr(module, "tenant_session", lambda _tenant: _Session())
     assert PostgresHashtagRepository().companions(TENANT, ["ensaladas"], now=NOW) == ()
-    (set_sql, set_params), (read_sql, _), (reset_sql, reset_params) = calls
+    # all three statements inside one savepoint (a caller's transaction survives a cancel)
+    assert calls[0][0] == "SAVEPOINT" and calls[-1][0] == "RELEASE"
+    (set_sql, set_params), (read_sql, _), (reset_sql, reset_params) = calls[1:-1]
     assert "set_config('statement_timeout'" in set_sql and "true)" in set_sql
     assert module.COMPANIONS_TIMEOUT == "1500ms" and set_params == {"timeout": "1500ms"}
     assert "WITH carriers" in read_sql
     assert "set_config('statement_timeout'" in reset_sql and reset_params == {"timeout": "0"}
+
+
+@pytest.mark.db
+def test_a_cancelled_read_leaves_the_caller_s_transaction_usable() -> None:
+    """Inside an outer unit of work, a read cancelled by its timeout rolls back to its own
+    savepoint: the caller's transaction keeps working and its own timeout is intact."""
+    from qualify_shared.db.session import tenant_unit_of_work
+    from sqlalchemy import text
+
+    from qualify_api.hashtags import repository as module
+
+    repo = PostgresHashtagRepository()
+    with tenant_unit_of_work(TENANT) as outer:
+        outer.execute(text("SELECT set_config('statement_timeout', '0', true)"))
+        original, module.COMPANIONS_TIMEOUT = module.COMPANIONS_TIMEOUT, "1ms"
+        slow = module._COMPANIONS
+        module._COMPANIONS = text("SELECT pg_sleep(0.2), :slugs, :sources, :cutoff")
+        try:
+            with pytest.raises(Exception, match="statement timeout|canceling"):
+                repo.companions(TENANT, ["ensaladas"], now=NOW)
+        finally:
+            module.COMPANIONS_TIMEOUT, module._COMPANIONS = original, slow
+        assert outer.execute(text("SELECT 1")).scalar_one() == 1
+        assert outer.execute(text("SHOW statement_timeout")).scalar_one() == "0"
