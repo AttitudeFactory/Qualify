@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -37,6 +38,7 @@ from qualify_api.creative.image_pipeline.compose_run import (
     raise_if_waiting,
 )
 from qualify_api.creative.image_pipeline.layer import (
+    CAROUSEL,
     FREE_IDEA,
     LAYER_BUDGET_USD,
     BusinessFacts,
@@ -48,7 +50,7 @@ from qualify_api.creative.image_pipeline.layer_run import (
     LAYER_STEPS,
     REWRITE_SUFFIX,
     LayerOutcome,
-    piece_products,
+    resolve_piece_price,
 )
 from qualify_api.creative.media import BasePhoto, LayerWrite, _MediaFailed, _Saver
 from qualify_api.creative.queue_dispatch import CheckpointError
@@ -232,6 +234,15 @@ def _outcome(
         piece_type=FREE_IDEA,
         slides=tuple(SlideInput(position=p, photo=scenes[p].image) for p in sorted(scenes)),
         price_line=price_line,
+        # the piece's product, priced today when the piece shows a price
+        products=(
+            CatalogProduct(
+                UUID(PRODUCT),
+                "Shawarma mixto",
+                has_price=bool(price_line),
+                price_text=price_line,
+            ),
+        ),
     )
     return LayerOutcome(
         scenes=scenes,
@@ -611,7 +622,7 @@ def test_review1_a_cover_without_the_piece_s_price_is_rewritten_never_drawn() ->
     composer = Composer()
     writer = PricedWriter()
     composed = _compose(_outcome({0: _layer(0)}, price_line=PRICE), composer, writer=writer)
-    assert "precio" in writer.requests[0].rewrite_note
+    assert "price goes on this image" in writer.requests[0].rewrite_note
     assert len(composer.requests) == 1 and composer.requests[0].price_text == PRICE
     assert composed[0].layer.spec["price_ref"] == {"product_id": PRODUCT}
 
@@ -621,38 +632,117 @@ def test_review1_a_cover_without_the_piece_s_price_is_rewritten_never_drawn() ->
     assert failed.value.failure == PRICE_FAILURE and composer.requests == []
 
 
-def test_review1_only_the_first_image_must_carry_the_price() -> None:
+def test_review1_a_single_image_carries_its_price_once() -> None:
     composer = Composer()
-    outcome = _outcome({0: _layer(0, price=True), 1: _layer(1)}, price_line=PRICE)
+    outcome = _outcome({0: _layer(0, price=True)}, price_line=PRICE)
+    assert set(_compose(outcome, composer)) == {0} and len(composer.requests) == 1
+
+
+def _carousel(layers: dict[int, LayerWrite], count: int, price_line: str = PRICE) -> LayerOutcome:
+    """A carousel's outcome: `count` slides in all (the closing one has no layer)."""
+    outcome = _outcome(layers, price_line=price_line)
+    request = replace(outcome.request, piece_type=CAROUSEL, slide_count=count)
+    return replace(outcome, request=request)
+
+
+def test_review2_a_carousel_carries_its_price_on_one_development_slide() -> None:
+    """Catalog §4/§6: never on the cover; once per product. A priced development slide is
+    drawn as it is; the cover is drawn without a price."""
+    composer = Composer()
+    outcome = _carousel({0: _layer(0), 1: _layer(1, price=True), 2: _layer(2)}, count=4)
     composed = _compose(outcome, composer)
-    assert set(composed) == {0, 1} and len(composer.requests) == 2
+    assert set(composed) == {0, 1, 2}
+    assert [r.price_text for r in composer.requests] == ["", PRICE, ""]
 
 
-def test_review2_no_price_line_no_price_and_only_the_brief_s_own_product() -> None:
-    a = CatalogProduct(uuid4(), "Shawarma mixto", has_price=True, price_text="$12.000")
-    b = CatalogProduct(uuid4(), "Shawarma mixto grande", has_price=True, price_text="$18.000")
-    c = CatalogProduct(uuid4(), "Shawarma", has_price=True, price_text="$12.000")
-    hidden = piece_products((a, b, c), price_line="", product_ref="Shawarma mixto")
-    assert [p.has_price for p in hidden] == [False, False, False]  # the angle hides it
-    shown = piece_products((a, b, c), price_line="$12.000", product_ref="shawarma mixto")
-    assert [p.has_price for p in shown] == [True, False, False]  # ONE: its label, its name
-    other = piece_products((b, c), price_line="$12.000", product_ref="Shawarma mixto")
-    assert [p.has_price for p in other] == [False, True]  # the label decides the price
+def test_review2_a_price_on_the_carousel_cover_is_refused_and_moved() -> None:
+    writer = PricedWriter()  # its rewrite puts the price on the slide it is asked for
+    composer = Composer()
+    outcome = _carousel({0: _layer(0, price=True), 1: _layer(1)}, count=3)
+    with pytest.raises(_MediaFailed) as failed:
+        # the cover is refused (misplaced) and slide 1 (missing): one rewrite for both; the
+        # rewrite prices both again — the cover still misplaced: the piece fails
+        _compose(outcome, composer, writer=writer)
+    assert failed.value.failure == PRICE_FAILURE
+    assert sorted(s.position for s in writer.requests[0].slides) == [0, 1]
+    assert composer.requests == []  # nothing drawn while the price is in the wrong place
 
 
-def test_review2_the_stage_offers_only_the_piece_s_price() -> None:
+def test_review2_a_second_price_in_the_piece_is_refused() -> None:
+    composer, writer = Composer(), PricedWriter()
+    outcome = _carousel({0: _layer(0), 1: _layer(1, price=True), 2: _layer(2, price=True)}, 4)
+    with pytest.raises(_MediaFailed) as failed:
+        _compose(outcome, composer, writer=writer)  # its rewrite prices slide 2 again
+    assert failed.value.failure == PRICE_FAILURE
+    assert "already on image 1" in writer.requests[0].rewrite_note
+
+
+def test_review2_a_carousel_without_development_slides_prices_its_cover() -> None:
+    """Cover + closing only: §4 excludes only «portada de carrusel con varios productos»."""
+    composer = Composer()
+    outcome = _carousel({0: _layer(0, price=True)}, count=2)
+    assert set(_compose(outcome, composer)) == {0}
+    assert composer.requests[0].price_text == PRICE
+
+
+def test_review2_the_layer_validation_and_the_compositor_share_one_rule() -> None:
+    from qualify_api.creative.image_pipeline.layer import piece_price_problems, price_slots
+
+    request = _carousel({0: _layer(0)}, count=5).request
+    assert price_slots(request) == (1, 2, 3)
+    assert set(piece_price_problems(request, {0}, {0, 1, 2})) == {0, 1}  # misplaced, missing
+    assert piece_price_problems(request, {2}, {0, 1, 2}) == {}
+    assert set(piece_price_problems(request, {1, 3}, {0, 1, 3})) == {3}
+    unpriced = _carousel({0: _layer(0)}, count=5, price_line="").request
+    assert price_slots(unpriced) == () and piece_price_problems(unpriced, {1}, {1}) == {}
+
+
+@pytest.mark.parametrize(
+    ("found", "line", "ref", "status", "label"),
+    [
+        ((("Shawarma mixto", "$12.000"),), "", "Shawarma mixto", "hidden", ""),
+        ((("Shawarma mixto", "$12.000"),), "$12.000", "Shawarma mixto", "matches", "$12.000"),
+        # the price changed since the brief: today's label, recorded as changed
+        ((("Shawarma mixto", "$13.500"),), "$12.000", "Shawarma mixto", "changed", "$13.500"),
+        # renamed: the only match is still the brief's product
+        ((("Shawarma mixto XL", "$13.500"),), "$12.000", "Shawarma mixto", "changed", "$13.500"),
+        ((), "$12.000", "Shawarma mixto", "product_not_found", ""),
+        ((("Shawarma mixto", ""),), "$12.000", "Shawarma mixto", "no_price_today", ""),
+        (
+            (("Shawarma de pollo", "$11.000"), ("Shawarma de res", "$13.000")),
+            "$12.000",
+            "Shawarma",
+            "ambiguous",
+            "",
+        ),
+    ],
+)
+def test_review1_the_catalog_decides_the_price_never_the_stale_line(
+    found: tuple[tuple[str, str], ...], line: str, ref: str, status: str, label: str
+) -> None:
+    products = tuple(
+        CatalogProduct(uuid4(), name, has_price=bool(text), price_text=text) for name, text in found
+    )
+    offered, price = resolve_piece_price(products, price_line=line, product_ref=ref)
+    assert (price.status, price.label, price.brief_line) == (status, label, line.strip())
+    assert sum(p.has_price for p in offered) == (1 if label else 0)
+    assert price.provenance()["catalog_price_label"] == label
+
+
+def test_review1_a_stale_price_line_is_never_a_dead_end() -> None:
+    """The product lost its price since the brief: the piece shows none — nothing required,
+    the layer drawn without a price, no rewrite."""
     from qualify_creative.enums import ContentKind
 
     from qualify_api.creative.image_pipeline import layer_run
 
     from .test_creative_media_byteplus import _brief
 
-    mine = CatalogProduct(uuid4(), "Shawarma mixto", has_price=True, price_text="$12.000")
-    other = CatalogProduct(uuid4(), "Shawarma grande", has_price=True, price_text="$18.000")
+    gone = CatalogProduct(uuid4(), "Shawarma mixto", has_price=False, price_text="")
     producer = SimpleNamespace()
     writer = Writer()
     _wire(producer, writer, [])
-    producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), (mine, other))
+    producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), (gone,))
     outcome = layer_run.run_layer_stage(
         producer,
         tenant_id=TENANT_ID,
@@ -667,10 +757,69 @@ def test_review2_the_stage_offers_only_the_piece_s_price() -> None:
         price_line="$12.000",
         env=ON,
     )
+    assert writer.requests[0].price_line == "" and outcome.prices == {}
+    assert outcome.price is not None and outcome.price.status in {
+        "no_price_today",
+        "product_not_found",
+    }
+    composer = Composer()
+    composed = _compose(outcome, composer, writer=writer)
+    assert set(composed) == {0} and len(writer.requests) == 1  # no rewrite
+    assert composed[0].params["price_status"] == outcome.price.status
+    assert composed[0].params["brief_price_line"] == "$12.000"
+    assert composed[0].params["catalog_price_label"] == ""
+
+
+def test_review1_a_changed_price_prints_today_s_label_and_records_both() -> None:
+    from qualify_creative.enums import ContentKind
+
+    from qualify_api.creative.image_pipeline import layer_run
+
+    from .test_creative_media_byteplus import _brief
+
+    mine = CatalogProduct(uuid4(), "Shawarma mixto", has_price=True, price_text="$13.500")
+    other = CatalogProduct(uuid4(), "Shawarma grande", has_price=True, price_text="$12.000")
+    producer = SimpleNamespace()
+    writer = Writer()
+    _wire(producer, writer, [])
+    producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), (mine, other))
+    brief = _brief(ContentKind.STATIC_FLYER).model_copy(update={"product_ref": "Shawarma mixto"})
+    outcome = layer_run.run_layer_stage(
+        producer,
+        tenant_id=TENANT_ID,
+        draft_id=DRAFT,
+        revision=1,
+        brief=brief,
+        copy=COPY,
+        brand="Korner",
+        scenes={0: BaseScene(b"a", "p0")},
+        regenerate=lambda p: None,
+        gallery=False,
+        price_line="$12.000",  # the brief's line: now another product's price
+        env=ON,
+    )
     request = writer.requests[0]
-    assert request.price_line == "$12.000"
+    assert request.price_line == "$13.500"
     assert [p.has_price for p in request.products] == [True, False]
-    assert outcome.prices == {str(mine.product_id): "$12.000"}
+    assert outcome.prices == {str(mine.product_id): "$13.500"}
+    assert outcome.price.provenance() == {
+        "price_status": "changed",
+        "brief_price_line": "$12.000",
+        "catalog_price_label": "$13.500",
+    }
+
+
+def test_review2_the_pillow_cover_never_prints_the_price_twice_nor_stale() -> None:
+    from qualify_api.creative.image_pipeline.compose import _pillow_price
+
+    priced = _carousel({1: _layer(1, price=True)}, count=4)
+    drawn = _compose(priced, Composer())
+    assert _pillow_price("$9.999", priced, drawn) == ""  # a development slide carries it
+    assert _pillow_price("$9.999", priced, {}) == PRICE  # nothing composed: today's label
+    hidden = _carousel({1: _layer(1)}, count=4, price_line="")
+    assert _pillow_price("$9.999", hidden, {}) == ""  # no price today: never the stale line
+    off = LayerOutcome(scenes={}, layers={})
+    assert _pillow_price("$9.999", off, {}) == "$9.999"  # off: as before
 
 
 @pytest.mark.parametrize(
@@ -800,3 +949,19 @@ def test_review6_only_the_still_a_reel_needs_is_kept_in_memory(
     store.reads.clear()
     again = _in_pass(checkpoints, monkeypatch, outcome, Composer(), store=store, keep_images={0})
     assert store.reads == [again[0].key]  # a replay reads back the Reel's still only
+
+
+def test_review4_the_wait_log_is_bounded_and_forgets_finished_pieces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compose_run._last_wait_log.clear()
+    for _ in range(compose_run._WAIT_LOG_MAX + 40):
+        run = pipeline.Preparation(TENANT_ID, uuid4(), 1, "generation", uuid4(), 1)
+        compose_run._log_wait(run, T0, "down")
+    assert len(compose_run._last_wait_log) == compose_run._WAIT_LOG_MAX
+    # a piece that composes after waiting is dropped from it
+    mine = pipeline.Preparation(TENANT_ID, DRAFT, 1, "generation", uuid4(), 1)
+    compose_run._log_wait(mine, T0, "down")
+    assert (TENANT_ID, DRAFT, 1) in compose_run._last_wait_log
+    _compose(_outcome({0: _layer(0)}), Composer())
+    assert (TENANT_ID, DRAFT, 1) not in compose_run._last_wait_log

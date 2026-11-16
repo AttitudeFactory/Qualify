@@ -104,6 +104,8 @@ class LayerOutcome:
     request: LayerRequest | None = None
     budget: DollarMeter | None = None
     prices: Mapping[str, str] = field(default_factory=dict)
+    #: how the piece's price was decided (for the compose provenance and the Pillow cover)
+    price: PiecePrice | None = None
 
 
 def _default_writer(request: LayerRequest, *, budget: DollarMeter) -> LayerResult:
@@ -141,20 +143,63 @@ def _seams(producer: MediaProducer) -> tuple[Callable[..., Any], ...]:
     )
 
 
-def piece_products(
+@dataclass(frozen=True)
+class PiecePrice:
+    """m-25040499: the price this piece prints, decided ONCE from the catalog (ADR 49:
+    «precio del catálogo»): `label` is the product's CURRENT catalog label ("" = the piece
+    shows no price), `status` why, `brief_line` what the brief said when it was made."""
+
+    status: str  # hidden | matches | changed | product_not_found | ambiguous | no_price_today
+    brief_line: str = ""
+    label: str = ""
+    product_id: str = ""
+
+    def provenance(self) -> dict[str, str]:
+        return {
+            "price_status": self.status,
+            "brief_price_line": self.brief_line,
+            "catalog_price_label": self.label,
+        }
+
+
+def resolve_piece_price(
     found: Sequence[CatalogProduct], *, price_line: str, product_ref: str | None
-) -> tuple[CatalogProduct, ...]:
-    """m-25040499: the catalog products the layer may point at, priced only as the piece
-    is. `price_line` empty (the angle hides the price, or none is stored): no product is
-    offered priced. Set: only ONE product — the one whose catalog label IS that line,
-    the brief's own name first when the name matched several — so a layer can never
-    print another product's price, nor a price the piece does not show."""
+) -> tuple[tuple[CatalogProduct, ...], PiecePrice]:
+    """The brief's product among `found` (the catalog's matches for `product_ref`) and the
+    price the piece prints. The brief's `price_line` only says whether the piece shows a
+    price; the figure is the catalog's TODAY — never the stale line:
+
+    - no `price_line` (the angle hides it): no product priced, no price;
+    - the brief's product is found and priced today: it is the ONE priced product and its
+      current label is printed, also when it changed since the brief (logged, recorded);
+    - not found, several candidates with nothing to tell them apart, or no price today: the
+      piece shows no price (recorded, logged) — nothing required, nothing accepted.
+
+    The product: the one named exactly like `product_ref`, else the one whose label is the
+    brief's line, else the only match."""
     line = price_line.strip()
-    matching = [p for p in found if line and p.price_text.strip() == line]
+    unpriced = tuple(replace(p, has_price=False) for p in found)
+    if not line:
+        return unpriced, PiecePrice("hidden")
     ref = (product_ref or "").strip().casefold()
-    own = next((p for p in matching if p.name.strip().casefold() == ref), None)
-    chosen = own or (matching[0] if matching else None)
-    return tuple(replace(p, has_price=p is chosen) for p in found)
+    product = (
+        next((p for p in found if p.name.strip().casefold() == ref), None)
+        or next((p for p in found if p.price_text.strip() == line), None)
+        or (found[0] if len(found) == 1 else None)
+    )
+    if product is None:
+        status = "ambiguous" if found else "product_not_found"
+        logger.warning("piece price: %s for %r, printed without a price", status, product_ref)
+        return unpriced, PiecePrice(status, line)
+    label = product.price_text.strip()
+    if not label:
+        logger.warning("piece price: %r has no price today, printed without one", product.name)
+        return unpriced, PiecePrice("no_price_today", line, product_id=str(product.product_id))
+    status = "matches" if label == line else "changed"
+    if status == "changed":
+        logger.warning("piece price: the catalog says %r, the brief said %r", label, line)
+    products = tuple(replace(p, has_price=p is product) for p in found)
+    return products, PiecePrice(status, line, label, str(product.product_id))
 
 
 def piece_type(brief: ContentBrief, *, gallery: bool) -> str:
@@ -294,7 +339,9 @@ def run_layer_stage(
     budget = DollarMeter(LAYER_BUDGET_USD)  # ONE meter for every call of this piece
     try:
         facts, found = context(tenant_id, brief.brand_id, brief.product_ref)
-        products = piece_products(found, price_line=price_line, product_ref=brief.product_ref)
+        products, price = resolve_piece_price(
+            found, price_line=price_line, product_ref=brief.product_ref
+        )
         request = LayerRequest(
             tenant_id=tenant_id,
             brand_id=brief.brand_id,
@@ -310,7 +357,7 @@ def run_layer_stage(
             facts=facts,
             products=products,
             title_font=title_font,
-            price_line=price_line.strip(),
+            price_line=price.label,  # the catalog's label today, "" = no price
         )
 
         def first() -> dict[str, Any]:
@@ -381,9 +428,9 @@ def run_layer_stage(
         layers = {p: w for p in scenes if (w := _layer_write(result, p)) is not None}
         if result.failed:
             logger.warning("draft %s: no layer for %s", draft_id, sorted(result.failed))
-        # only the piece's own price can be drawn (`piece_products`)
-        prices = {str(p.product_id): p.price_text for p in products if p.has_price}
-        return LayerOutcome(scenes, layers, tuple(regenerated), request, budget, prices)
+        # only the piece's own price can be drawn (`resolve_piece_price`)
+        prices = {price.product_id: price.label} if price.label else {}
+        return LayerOutcome(scenes, layers, tuple(regenerated), request, budget, prices, price)
     except QUEUE_SIGNALS:
         raise
     except Exception:  # noqa: BLE001 - the layer never costs the paid piece

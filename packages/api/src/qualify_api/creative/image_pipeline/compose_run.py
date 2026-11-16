@@ -45,6 +45,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -68,7 +69,12 @@ from qualify_creative.schemas import BrandKit
 
 from qualify_api.creative import pipeline
 from qualify_api.creative.image_pipeline.base import BaseScene
-from qualify_api.creative.image_pipeline.layer import layer_enabled
+from qualify_api.creative.image_pipeline.layer import (
+    LayerRequest,
+    layer_enabled,
+    piece_price_problems,
+    price_required,
+)
 from qualify_api.creative.image_pipeline.layer_run import (
     QUEUE_SIGNALS,
     LayerOutcome,
@@ -94,7 +100,10 @@ FIRST_FAILURE_STEP = -200
 COMPOSE_PIPELINE = "layer_still"
 #: A waiting piece logs at most once a minute.
 _WAIT_LOG_EVERY = timedelta(minutes=1)
-_last_wait_log: dict[tuple[UUID, UUID, int], datetime] = {}
+#: pieces waiting now → when they last logged; bounded (a finished piece is dropped, and
+#: the oldest go first past `_WAIT_LOG_MAX`)
+_last_wait_log: OrderedDict[tuple[UUID, UUID, int], datetime] = OrderedDict()
+_WAIT_LOG_MAX = 256
 
 #: The draft's failure codes: the owner's text is the screen's (`Qualify/creative_vm.py`
 #: FAILURE_INFO), so the draft carries no second sentence (`failure_detail` empty).
@@ -152,12 +161,9 @@ class _Piece:
     save: _Saver
     composer: Callable[[LayerComposeRequest, Callable[[str], bytes]], ComposedStill]
     clock: Callable[[], datetime]
-    #: the piece's printed price (`LayerRequest.price_line`): required on the first image
-    price_line: str = ""
+    #: how the piece's price was decided (`layer_run.PiecePrice.provenance`)
+    price: Mapping[str, str] = field(default_factory=dict)
     first_failure: datetime | None = None
-
-    def price_required(self, position: int) -> bool:
-        return position == 0 and bool(self.price_line)
 
 
 def compose_brand(kit: BrandKit, brand_name: str) -> dict[str, Any]:
@@ -269,19 +275,23 @@ def _compose_slides(
         save=save,
         composer=getattr(producer, "_layer_composer", None) or _default_composer(producer),
         clock=getattr(producer, "_compose_clock", None) or _now,
-        price_line=(outcome.request.price_line.strip() if outcome.request else ""),
+        price=outcome.price.provenance() if outcome.price else {},
     )
+    request = outcome.request
+    required = request is not None and price_required(request)
     layers = dict(outcome.layers)
     drawn: dict[int, dict[str, Any]] = {}
     refused: dict[int, dict[str, Any]] = {}
+    # the piece as a whole (catalog §4): once, in its slot — the same rule the layer checked
+    misplaced = _price_problems(request, layers)
     for position in sorted(layers):
-        if piece.price_required(position) and not layers[position].spec.get("price_ref"):
-            refused[position] = _PRICE_MISSING  # the piece's price, left out: never drawn
+        if position in misplaced:
+            refused[position] = misplaced[position]  # never drawn without (or twice with) it
             continue
         result = _compose(piece, position, 0, layers[position], outcome.scenes[position])
         (drawn if result["status"] == "composed" else refused)[position] = result
     if refused:
-        notes = {p: _note(r, layers[p], piece.price_required(p)) for p, r in refused.items()}
+        notes = {p: r.get("note") or _note(r, layers[p], required) for p, r in refused.items()}
         try:
             rewritten = rewrite_layers(producer, outcome, notes)
         except QUEUE_SIGNALS:
@@ -290,16 +300,22 @@ def _compose_slides(
             logger.warning("draft %s: layer rewrite failed: %s", draft_id, type(exc).__name__)
             raise _refusal_failure(refused, layers) from exc
         still_refused: dict[int, dict[str, Any]] = {}
+        layers.update(rewritten)
+        # the piece again, with the rewrites: a rewrite that gave the price up (or put it
+        # twice) is not a fix — never priceless (D5), never twice (§4)
+        again = _price_problems(request, layers)
+        for position in sorted(again):
+            if position not in refused:
+                still_refused[position] = again[position]
         for position in sorted(refused):
-            layer = rewritten.get(position)
-            if layer is None:
+            if rewritten.get(position) is None:
                 still_refused[position] = refused[position]
-                continue
-            if piece.price_required(position) and not layer.spec.get("price_ref"):
-                # a rewrite that gave the price up is not a fix: never priceless (D5)
-                still_refused[position] = {**refused[position], "slot": "price"}
-                continue
-            layers[position] = layer
+            elif position in again:
+                still_refused[position] = again[position]
+        if still_refused:  # nothing more is drawn for a piece that already failed
+            raise _refusal_failure(still_refused, layers)
+        for position in sorted(refused):
+            layer = rewritten[position]
             result = _compose(piece, position, 1, layer, outcome.scenes[position])
             if result["status"] == "composed":
                 drawn[position] = result
@@ -319,21 +335,34 @@ def _compose_slides(
             key=str(result["key"]),
             image=image,
             layer=layers[position],
-            params=compose_params(result, layers[position]),
+            params=compose_params(result, layers[position], piece.price),
         )
+    _last_wait_log.pop((tenant_id, draft_id, revision), None)  # it stopped waiting
     return out
 
 
-#: A first image without the piece's price reference (`LayerRequest.price_line` set).
-_PRICE_MISSING: dict[str, Any] = {
-    "status": "refused",
-    "slot": "price",
-    "reason": "price_missing",
-    "detail": "the piece's price is not on its first image",
-}
+def _price_problems(
+    request: LayerRequest | None, layers: Mapping[int, LayerWrite]
+) -> dict[int, dict[str, Any]]:
+    """`layer.piece_price_problems` over the piece's layers, as refusals with slot price."""
+    if request is None:
+        return {}
+    priced = {p for p, layer in layers.items() if layer.spec.get("price_ref")}
+    return {
+        p: {
+            "status": "refused",
+            "slot": "price",
+            "reason": "price_misplaced" if p in priced else "price_missing",
+            "detail": why,
+            "note": why,
+        }
+        for p, why in piece_price_problems(request, priced, set(layers)).items()
+    }
 
 
-def compose_params(result: Mapping[str, Any], layer: LayerWrite) -> dict[str, Any]:
+def compose_params(
+    result: Mapping[str, Any], layer: LayerWrite, price: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     """The compose provenance a composed slide carries in `image_assets.params` — and what it
     printed (it replaces the Pillow composer's `printed`)."""
     spec = layer.spec
@@ -367,6 +396,8 @@ def compose_params(result: Mapping[str, Any], layer: LayerWrite) -> dict[str, An
         "layer_prompt_version": layer.prompt_version,
         "base_sha256": result["base_sha256"],
         "compose_cost_usd": "0",
+        # where the printed price came from: the catalog today, against the brief (ADR 49)
+        **(price or {}),
     }
 
 
@@ -617,6 +648,9 @@ def _log_wait(run: pipeline.Preparation, now: datetime, why: str) -> None:
     last = _last_wait_log.get(key)
     if last is None or now - last >= _WAIT_LOG_EVERY:
         _last_wait_log[key] = now
+        _last_wait_log.move_to_end(key)
+        while len(_last_wait_log) > _WAIT_LOG_MAX:
+            _last_wait_log.popitem(last=False)
         logger.warning("draft %s r%s waits: %s", run.draft_id, run.revision, why)
 
 

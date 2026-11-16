@@ -48,7 +48,7 @@ import base64
 import logging
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
@@ -226,10 +226,9 @@ class LayerRequest:
     #: m-25040499: why the compositor could not draw the previous layer of these images (a
     #: price wider than its box, ADR 49 D5) — sent once, as a rewrite; "" on a first call
     rewrite_note: str = ""
-    #: m-25040499: the price the piece prints (`MediaInputs.price_line`, the catalog's label of
-    #: the brief's product). Set: the first image MUST point at that product's price (the
-    #: Pillow composer printed it on the cover; a priced piece never loses it). Empty: no
-    #: price on any image (the angle hides it). Only the matching product is offered priced.
+    #: m-25040499: the price the piece prints — the CURRENT catalog label of the brief's
+    #: product (`layer_run.resolve_piece_price`), "" when the piece shows no price. Set, the
+    #: piece carries it exactly once, where `price_slots` says (catalog §4).
     price_line: str = ""
 
     @property
@@ -239,6 +238,65 @@ class LayerRequest:
     @property
     def count(self) -> int:
         return self.slide_count or len(self.slides)
+
+
+def price_required(request: LayerRequest) -> bool:
+    """m-25040499: whether the piece MUST carry its price — the one condition the layer's
+    validation and the compositor both use (a price line and a product priced today)."""
+    return bool(request.price_line.strip()) and any(p.has_price for p in request.products)
+
+
+def price_slots(request: LayerRequest) -> tuple[int, ...]:
+    """The images that may carry the piece's price (catalog §4 and §6), () when it shows
+    none: a single image carries it on itself; a carousel on ONE of its development slides
+    (2 … N-1), never on the cover nor the closing; a carousel with no development slide
+    (cover + closing) on its cover — §4 excludes only «portada de carrusel con varios
+    productos», and the piece has one priced product."""
+    if not price_required(request):
+        return ()
+    if not request.is_carousel:
+        return tuple(s.position for s in request.slides)
+    development = tuple(range(1, request.count - 1))
+    return development or (0,)
+
+
+def piece_price_problems(
+    request: LayerRequest, priced: Collection[int], present: Collection[int]
+) -> dict[int, str]:
+    """The piece-level price rule (once per product, in its slot): `priced` are the images
+    whose layer points at the price, `present` the images that have a layer. A second
+    price is a problem on the extra image; a missing one, on the first slot with a layer.
+    The layer's validation and the compositor call this same function."""
+    slots = price_slots(request)
+    if not slots:
+        return {}
+    problems = {
+        p: "the price goes on a development image, never on the cover nor the closing: "
+        "leave price_product_id empty here"
+        for p in priced
+        if p not in slots
+    }
+    found = sorted(p for p in priced if p in slots)
+    if len(found) > 1:
+        problems.update(
+            {
+                p: f"the price is already on image {found[0]}: leave price_product_id empty"
+                for p in found[1:]
+            }
+        )
+        return problems
+    if found:
+        return problems
+    candidates = [p for p in slots if p in present]
+    if not candidates:
+        return problems
+    product = next(str(p.product_id) for p in request.products if p.has_price)
+    where = "this image" if not request.is_carousel else "this development image"
+    problems[candidates[0]] = (
+        f"the piece's price goes on {where}: set price_product_id to {product} and "
+        "pick a layout that takes a price (plate or band)"
+    )
+    return problems
 
 
 @dataclass
@@ -668,12 +726,15 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
             )
         else:
             price_ref = {"product_id": product_id}
-    elif slide.position == 0 and request.price_line.strip() and priced:
-        # m-25040499: the piece's price is printed on its first image — never left out
-        problems.append(
-            f"the price is required on this image: set price_product_id to {priced[0]} "
-            "and pick a layout that takes a price (plate or band)"
-        )
+    if price_ref is not None and price_required(request):
+        slots = price_slots(request)
+        if slide.position not in slots:
+            # catalog §4/§6: in a carousel the price goes on a development slide, once
+            problems.append(
+                "the price goes on a development image, never on the cover nor the closing: "
+                "leave price_product_id empty here"
+            )
+            price_ref = None
     highlight = None
     kind = raw.get("highlight_kind")
     if kind and kind != "none":
@@ -877,6 +938,11 @@ def write_layers(
             result.specs[position] = spec_from_answer(raw, request, slide)
         except ValueError as exc:
             broken[position] = str(exc)
+    if not request.rewrite_note:  # a rewrite sees a few images: the compositor checks the piece
+        priced_now = {p for p, spec in result.specs.items() if spec.price_ref is not None}
+        for position, why in piece_price_problems(request, priced_now, set(raw_of)).items():
+            result.specs.pop(position, None)
+            broken[position] = why
     if broken:
         result.repairs = 1
         repair = (
