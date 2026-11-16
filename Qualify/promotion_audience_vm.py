@@ -58,6 +58,17 @@ def reach_label(lower: int, upper: int) -> str:
 # «Cerca de mi negocio» (m-24828977): a distance around the phone's location at the business.
 POINT_NAME = "Tu negocio"  # MapPoint.name: internal, Meta never receives it
 POINT_CAPTURED = "Listo: usamos la ubicación de tu negocio"
+# m-25038694: the business location saved on the tenant, so the owner need not be there.
+POINT_FROM_SAVED = "Usamos la ubicación guardada de tu negocio"
+POINT_LOADING = "Buscando la ubicación guardada de tu negocio…"
+# A good reading at the business is saved right away (UX review, m-25038694).
+BUSINESS_LOCATION_SAVED = (
+    "Guardamos la ubicación de tu negocio. La próxima vez la usamos aunque no estés allí."
+)
+BUSINESS_LOCATION_UPDATED = "Listo: actualizamos la ubicación de tu negocio."
+BUSINESS_LOCATION_SAVE_FAILED = (
+    "No pudimos guardarla para la próxima vez, pero este anuncio sí la usa."
+)
 NEAR_PLACE_LABEL = "Cerca de tu negocio"
 NEAR_HOUSING = "No disponible para anuncios de vivienda."
 POINT_DISTANCES = ("1", "3", "5", "10")

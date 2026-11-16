@@ -38,12 +38,17 @@ from .promotion_audience_provider import (
     audience_scope,
     find_interests,
     find_places,
+    read_business_location,
     read_reach,
     read_saved_audience,
     store_audience,
+    store_business_location,
     suggest_interests,
 )
 from .promotion_audience_vm import (
+    BUSINESS_LOCATION_SAVE_FAILED,
+    BUSINESS_LOCATION_SAVED,
+    BUSINESS_LOCATION_UPDATED,
     COUNTRY_UNKNOWN,
     DEFAULT_POINT_DISTANCE,
     GENDER_LABELS,
@@ -185,6 +190,15 @@ class PromotionState(rx.State):
     # «Cerca de mi negocio»: waiting for the browser's location, and why it failed.
     locating: bool = False
     location_error: str = ""
+    # m-25038694: where the form's point came from — "saved" (the business location),
+    # "captured" (a fresh reading, saved as the business location right away) or "".
+    point_origin: str = ""
+    point_loading: bool = False
+    point_saving: bool = False
+    point_save_notice: str = ""
+    point_save_error: str = ""
+    _point_operation: str = ""
+    _point_save_message: str = ""
     _audience_revision: str = ""
     _audience_search: str = ""
     _audience_version: int = 0
@@ -641,20 +655,158 @@ class PromotionState(rx.State):
         )
         self.place_query = ""
         self.place_results = []
-        self.location_error = ""
-        self.locating = False
+        PromotionState._reset_point(self)
         self.error = ""
         self._invalidate_audience()
-        return None if area == "near" else PromotionState.refresh_reach()
+        return (
+            PromotionState.use_saved_business_location()
+            if area == "near"
+            else PromotionState.refresh_reach()
+        )
 
     def _business_country(self) -> str:
         source = next((row for row in self.sources if row.id == self.form.source_id), None)
         country = source.default_country if source is not None else ""
         return country if country in COUNTRY_LABELS else ""
 
+    def _reset_point(self) -> None:
+        """Forget the location work in flight: late answers for the old choice are ignored."""
+        self.locating = False
+        self.location_error = ""
+        self.point_origin = ""
+        self.point_loading = False
+        self.point_saving = False
+        self.point_save_notice = ""
+        self.point_save_error = ""
+        self._point_operation = str(uuid4())
+
+    def _place_point(self, latitude: str, longitude: str) -> bool:
+        """Put the business point in the form; False without the business country."""
+        country = self._business_country()
+        if not country:
+            self.location_error = COUNTRY_UNKNOWN
+            return False
+        self.form = replace(
+            self.form,
+            point_latitude=latitude,
+            point_longitude=longitude,
+            location_kind="country",
+            location_key=country,
+            city_name=COUNTRY_LABELS[country],
+            location_country=country,
+            location_region="",
+        )
+        self.location_error = ""
+        self.error = ""  # «Toca … usar mi ubicación» from an earlier «Siguiente» is done
+        self._invalidate_audience()
+        return True
+
+    @rx.event(background=True)
+    async def use_saved_business_location(self) -> None:
+        """«Cerca de mi negocio» starts from the saved business location, when there is one.
+
+        With a restored point already on screen it only tells whether it is that location."""
+        async with self:
+            context = await self._session()
+            if (
+                context != self._loaded_context
+                or not all(tenant_uuid(value) for value in context)
+                or not self.form.near
+                or self.form.housing
+                or self.point_origin
+            ):
+                return
+            operation = self._point_operation
+            restored = (self.form.point_latitude, self.form.point_longitude)
+            self.point_loading = not restored[0]
+        saved, settled, placed = None, False, False
+        try:
+            try:
+                with acting_login(UUID(context[1])):
+                    saved = await asyncio.to_thread(read_business_location, UUID(context[0]))
+            except Exception as exc:
+                logger.warning("business location read failed: %s", type(exc).__name__)
+            async with self:
+                settled = True
+                if operation != self._point_operation:
+                    return  # a newer choice owns its own flag
+                # Cleared in the same update that places the point: no button flash.
+                self.point_loading = False
+                current = (self.form.point_latitude, self.form.point_longitude)
+                if (
+                    context != await self._session()
+                    or saved is None
+                    or not self.form.near
+                    or self.form.housing
+                    or self.busy
+                ):
+                    return
+                if current[0]:
+                    if current == restored == saved and not self.point_origin:
+                        self.point_origin = "saved"
+                    return
+                placed = PromotionState._place_point(self, *saved)
+                if placed:
+                    self.point_origin = "saved"
+        finally:
+            if not settled:  # cancelled before the update above: never leave it stuck
+                async with self:
+                    if operation == self._point_operation:
+                        self.point_loading = False
+        if placed:
+            await PromotionState.refresh_reach.fn(self)
+
+    @rx.event(background=True)
+    async def remember_business_location(self) -> None:
+        """A fresh reading at the business («Estoy en el negocio…») becomes its location.
+
+        Never blocks the ad: a failure only says it was not kept for next time."""
+        async with self:
+            context = await self._session()
+            if (
+                self.point_saving
+                or self.point_origin != "captured"
+                or not self.form.near
+                or context != self._loaded_context
+                or not all(tenant_uuid(value) for value in context)
+            ):
+                return
+            point = (self.form.point_latitude, self.form.point_longitude)
+            operation = self._point_operation
+            self.point_saving = True
+            self.point_save_notice = ""
+            self.point_save_error = ""
+        problem = ""
+        try:
+            with acting_login(UUID(context[1])):
+                await asyncio.to_thread(
+                    store_business_location, UUID(context[0]), UUID(context[2]), *point
+                )
+        except Exception as exc:
+            logger.warning("business location save failed: %s", type(exc).__name__)
+            problem = (
+                str(exc) if isinstance(exc, AudienceUnavailable) else BUSINESS_LOCATION_SAVE_FAILED
+            )
+        async with self:
+            if context != await self._session() or operation != self._point_operation:
+                return
+            self.point_saving = False
+            if (self.form.point_latitude, self.form.point_longitude) != point:
+                return
+            if problem:
+                self.point_save_error = problem
+            else:
+                self.point_save_notice = self._point_save_message
+
     @rx.event
     def locate(self) -> rx.event.EventSpec | None:
-        if self.busy or not self.form.near or self.form.housing:
+        if (
+            self.busy
+            or self.point_saving
+            or self.point_loading
+            or not self.form.near
+            or self.form.housing
+        ):
             return None
         if not self._business_country():
             self.location_error = COUNTRY_UNKNOWN
@@ -666,8 +818,10 @@ class PromotionState(rx.State):
         return rx.call_script(LOCATE_SCRIPT, callback=PromotionState.point_captured)
 
     @rx.event
-    def point_captured(self, result: dict) -> rx.event.EventSpec | None:
-        """The browser's answer; ignored when the owner already left «Cerca de mi negocio»."""
+    def point_captured(self, result: dict) -> list[rx.event.EventSpec] | None:
+        """The browser's answer; ignored when the owner already left «Cerca de mi negocio».
+
+        A good reading is saved as the business location right away (m-25038694)."""
         waiting, self.locating = self.locating, False
         if not waiting or self.busy or not self.form.near:
             return None
@@ -676,23 +830,16 @@ class PromotionState(rx.State):
         if problem or point is None:
             self.location_error = problem
             return None
-        country = self._business_country()
-        if not country:
-            self.location_error = COUNTRY_UNKNOWN
+        updating = self.point_origin == "saved"
+        if not PromotionState._place_point(self, *point):
             return None
-        self.form = replace(
-            self.form,
-            point_latitude=point[0],
-            point_longitude=point[1],
-            location_kind="country",
-            location_key=country,
-            city_name=COUNTRY_LABELS[country],
-            location_country=country,
-            location_region="",
+        self.point_origin = "captured"
+        self.point_save_notice = ""
+        self.point_save_error = ""
+        self._point_save_message = (
+            BUSINESS_LOCATION_UPDATED if updating else BUSINESS_LOCATION_SAVED
         )
-        self.error = ""  # «Toca … usar mi ubicación» from an earlier «Siguiente» is done
-        self._invalidate_audience()
-        return PromotionState.refresh_reach()
+        return [PromotionState.refresh_reach(), PromotionState.remember_business_location()]
 
     @rx.var
     def error_by_locate(self) -> bool:
@@ -981,6 +1128,7 @@ class PromotionState(rx.State):
                         )
                     elif result:
                         changes, self._audience_version = result
+                        PromotionState._reset_point(self)  # nothing of an older point sticks
                         self.form = replace(self.form, **changes)
                         self.place_query = self.form.city_name
                         self._invalidate_audience()
@@ -1005,8 +1153,11 @@ class PromotionState(rx.State):
                 and context == await self._session()
                 and revision == self._audience_revision
             )
+            near = refresh and self.form.near
         if refresh:
             await PromotionState.refresh_reach.fn(self)
+        if near:
+            await PromotionState.use_saved_business_location.fn(self)
 
     @rx.var
     def title(self) -> str:
@@ -1238,8 +1389,7 @@ class PromotionState(rx.State):
                 ],
             )
             self.interest_results = []
-            self.locating = False
-            self.location_error = ""
+            PromotionState._reset_point(self)
             if getattr(self, "custom_kind", "engagement") == "lookalike":
                 self.custom_kind = "engagement"
                 self.custom_seed = ""
@@ -1523,8 +1673,7 @@ class PromotionState(rx.State):
         self.interest_query = ""
         self.place_results = []
         self.interest_results = []
-        self.locating = False
-        self.location_error = ""
+        PromotionState._reset_point(self)
         self._invalidate_audience()
         self._invalidate_review()
         return (
@@ -1718,8 +1867,7 @@ class PromotionState(rx.State):
             self.place_results = []
             self.interest_results = []
             self.audience_working = ""
-            self.locating = False
-            self.location_error = ""
+            PromotionState._reset_point(self)
             self._audience_version = 0
             self._invalidate_audience()
             self._invalidate_review()
