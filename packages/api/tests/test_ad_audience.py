@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from qualify_api.ads import audience_service as service
+from qualify_api.ads import client as client_module
 from qualify_api.ads.activation_repository import ActivationReview
 from qualify_api.ads.audience import (
     AudienceDraft,
@@ -146,9 +147,29 @@ async def test_read_only_wire_calls_and_safe_normalized_results(monkeypatch):
         return await original(target, operation, params, api=api)
 
     monkeypatch.setattr(service, "_read", fake_read)
-    found = await service.search_audience_locations(**ids, query="Cúc", location_type="city")
+    found = await service.search_audience_locations(**ids, query="Cúc", location_types=("city",))
     assert found == (audience().location,)
     assert api.calls[-1][2]["location_types"] == ["city"]
+    # «En una ciudad o región»: one Meta call for both kinds, each row keeps its own type.
+    api.responses[("GET", "search")] = {
+        "data": [
+            {"key": "456", "name": "Táchira", "type": "region", "country_code": "VE"},
+            {"key": "123", "name": "Cúcuta", "type": "city", "country_code": "CO"},
+            {"key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"},
+        ]
+    }
+    calls = len(api.calls)
+    found = await service.search_audience_locations(
+        **ids, query="ta", location_types=("city", "region")
+    )
+    assert len(api.calls) == calls + 1
+    assert api.calls[-1][2]["type"] == "adgeolocation"
+    assert api.calls[-1][2]["location_types"] == ["city", "region"]
+    # On the wire: GET search?type=adgeolocation&location_types=["city","region"]
+    assert client_module._encode(api.calls[-1][2])["location_types"] == '["city","region"]'
+    assert [(row.key, row.type) for row in found] == [("456", "region"), ("123", "city")]
+    with pytest.raises(AudienceUnavailable):
+        await service.search_audience_locations(**ids, query="ta", location_types=())
     api.responses[("GET", "act_12/reachestimate")] = {
         "data": [{"estimate_ready": True, "users_lower_bound": 10, "users_upper_bound": 20}]
     }

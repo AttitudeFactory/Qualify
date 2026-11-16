@@ -367,11 +367,14 @@ def _near_business() -> rx.Component:
                 width="100%",
             ),
         ),
-        rx.text(
-            "Tócalo cuando estés en tu local. ¿No estás allí ahora? Elige «En una ciudad o "
-            "región» o vuelve cuando estés.",
-            size="2",
-            color=T.TEXT_MUTED,
+        rx.cond(
+            ~has_point,
+            rx.text(
+                "Tócalo cuando estés en tu local. ¿No estás allí ahora? Elige «En una ciudad o "
+                "región» o vuelve cuando estés.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
         ),
         rx.cond(
             ~has_point & (S.location_error == ""),
@@ -383,11 +386,8 @@ def _near_business() -> rx.Component:
             ),
         ),
         rx.cond(S.location_error != "", callout(S.location_error, "error")),
-        # «Siguiente» before the location: say it here too, not only in the top banner.
-        rx.cond(
-            ~has_point & (S.location_error == "") & (S.error != ""),
-            callout(S.error, "error"),
-        ),
+        # «Siguiente» before the location: said here, by the button (the top banner is off).
+        rx.cond(S.error_by_locate, callout(S.error, "error")),
         rx.cond(
             has_point,
             rx.vstack(
@@ -471,15 +471,20 @@ def _place_search() -> rx.Component:
                     "radius_km",
                     S.form.radius_km,
                 ),
-                rx.text(
-                    "Para una ciudad, la distancia mínima es 17 km. Si quieres llegar más "
-                    "cerca, elige «Cerca de mi negocio». Si la dejas vacía, el anuncio se "
-                    "muestra en toda la ciudad.",
-                    size="2",
-                    color=rx.cond(
-                        S.radius_out_of_range,
-                        T.tone_color("error", 11),
-                        T.TEXT_MUTED,
+                # Explains the empty field and is the error out of 17-80 km; a valid
+                # distance needs neither.
+                rx.cond(
+                    (S.form.radius_km == "") | S.radius_out_of_range,
+                    rx.text(
+                        "Para una ciudad, la distancia mínima es 17 km. Si quieres llegar más "
+                        "cerca, elige «Cerca de mi negocio». Si la dejas vacía, el anuncio se "
+                        "muestra en toda la ciudad.",
+                        size="2",
+                        color=rx.cond(
+                            S.radius_out_of_range,
+                            T.tone_color("error", 11),
+                            T.TEXT_MUTED,
+                        ),
                     ),
                 ),
                 # Open whenever a distance exists, so a saved one outside 17-80 km shows;

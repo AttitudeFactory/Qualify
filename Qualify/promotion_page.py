@@ -1005,7 +1005,7 @@ def promotion_index() -> rx.Component:
 def _wizard(body: rx.Component, foot: rx.Component) -> rx.Component:
     return step_frame(
         step_sync(S.step, S.direction),
-        rx.cond(S.error != "", callout(S.error, "error")),
+        rx.cond((S.error != "") & ~S.error_by_locate, callout(S.error, "error")),
         rx.cond(S.success != "", callout(S.success, "ok")),
         rx.cond(
             S.paid_operation_locked & (S.result.status != "active"),

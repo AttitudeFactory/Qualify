@@ -260,27 +260,32 @@ def test_a_saved_region_counts_as_city_or_region_and_has_no_distance() -> None:
 def test_city_or_region_search_returns_both_tagged_and_a_region_is_selectable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    asked: list[str] = []
+    asked: list[tuple[str, ...]] = []
 
     async def search(**kwargs: object) -> tuple[LocationOption, ...]:
-        asked.append(str(kwargs["location_type"]))
-        if kwargs["location_type"] == "city":
-            return (LocationOption("123", "Cúcuta", "city", "CO", "Norte de Santander"),)
-        return (LocationOption("456", "Táchira", "region", "VE"),)
+        kinds = kwargs["location_types"]
+        asked.append(kinds)  # type: ignore[arg-type]
+        if kinds == ("country",):
+            return (LocationOption("CO", "Colombia", "country", "CO"),)
+        # Meta mixes both kinds in one answer; cities still come first.
+        return (
+            LocationOption("456", "Táchira", "region", "VE"),
+            LocationOption("123", "Cúcuta", "city", "CO", "Norte de Santander"),
+        )
 
     monkeypatch.setattr(provider, "search_audience_locations", search)
     rows = provider.find_places({}, "ta", "city")
-    assert asked == ["city", "region"]
+    assert asked == [("city", "region")]  # one Meta call per search
     assert [(row.label, row.kind_label) for row in rows] == [
         ("Cúcuta", "(ciudad)"),
         ("Táchira", "(región)"),
     ]
     asked.clear()
     assert provider.find_places({}, "col", "region")[1].kind == "region"
-    assert asked == ["city", "region"]  # a chosen region searches both kinds again
+    assert asked == [("city", "region")]  # a chosen region searches both kinds again
     asked.clear()
     assert provider.find_places({}, "col", "country")[0].kind_label == ""
-    assert asked == ["country"]
+    assert asked == [("country",)]
 
     context = NearContext()
     context.form = replace(context.form, radius_km="20")
@@ -346,3 +351,40 @@ def test_the_step_renders_the_three_choices_and_never_technical_words() -> None:
         assert text in rendered
     for banned in ("coordenadas", "radio ", "geolocalizaci", "punto en el mapa"):
         assert banned not in rendered.lower()
+
+
+def test_the_next_error_shows_once_by_the_location_button() -> None:
+    context = NearContext()
+    context.reviewed = False
+    context.step = 3
+    PromotionState.choose_area.fn(context, "near")
+    assert PromotionState.next_step.fn(context) is None
+    assert "usar mi ubicación" in context.error
+    assert PromotionState.error_by_locate.fget(context)  # top banner off, inline on
+    # A failed reading says its own thing; the «Siguiente» error goes back to the top.
+    context.location_error = LOCATION_DENIED
+    assert not PromotionState.error_by_locate.fget(context)
+    context.location_error = ""
+    captured(context)
+    assert context.error == "" and not PromotionState.error_by_locate.fget(context)
+    # Other steps keep the top banner.
+    context.form = replace(context.form, point_latitude="")
+    context.error, context.step = "Algo falta", 1
+    assert not PromotionState.error_by_locate.fget(context)
+    # The page hides the top banner only for this case; the step shows it once.
+    rendered = repr(promotion_audience().render())
+    assert rendered.count("error_by_locate") == 1
+
+
+def test_help_texts_hide_once_done() -> None:
+    """«Tócalo…» goes once the location is taken; the 17 km help once a valid distance is."""
+    rendered = repr(promotion_audience().render())
+
+    def condition_of(text: str) -> str:
+        at = rendered.index(text)
+        start = rendered.rindex("cond_state", 0, at)
+        return rendered[start : rendered.index("true_value", start)]
+
+    assert "point_latitude" in condition_of("calo cuando est")
+    city = condition_of("Para una ciudad, la distancia")
+    assert "radius_km" in city and "radius_out_of_range" in city

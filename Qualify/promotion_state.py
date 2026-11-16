@@ -691,6 +691,18 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.var
+    def error_by_locate(self) -> bool:
+        """«Siguiente» before the location: the error shows under «usar mi ubicación», so the
+        top banner stays quiet and it is not said twice."""
+        return (
+            self.error != ""
+            and step_key_at(self.form, self.step) == "audience"
+            and self.form.near
+            and self.form.point_latitude == ""
+            and self.location_error == ""
+        )
+
+    @rx.var
     def radius_out_of_range(self) -> bool:
         """A typed or saved city distance outside 17-80 km (empty = the whole city)."""
         return radius_problem(self.form.radius_km) != ""
