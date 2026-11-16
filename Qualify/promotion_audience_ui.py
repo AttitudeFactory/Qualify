@@ -14,6 +14,8 @@ from .promotion_audience_vm import (
     PLACEMENT_LABELS,
     POINT_CAPTURED,
     POINT_DISTANCES,
+    POINT_FROM_SAVED,
+    POINT_LOADING,
 )
 from .promotion_state import PromotionState as S
 from .ui import callout, card, choice_card, choice_card_check, loading_spinner
@@ -332,6 +334,8 @@ def _distance_chip(km: str) -> rx.Component:
 
 def _near_business() -> rx.Component:
     has_point = S.form.point_latitude != ""
+    from_saved = S.point_origin == "saved"
+    asking = ~has_point & ~S.point_loading
     return rx.vstack(
         rx.text("¿Dónde está tu negocio?", weight="medium"),
         rx.cond(
@@ -339,17 +343,23 @@ def _near_business() -> rx.Component:
             rx.flex(
                 rx.flex(
                     rx.icon("map-pin", size=18, color=T.tone_color("ok", 11)),
-                    rx.text(POINT_CAPTURED, weight="medium"),
+                    rx.text(rx.cond(from_saved, POINT_FROM_SAVED, POINT_CAPTURED), weight="medium"),
                     align="center",
                     gap="2",
                 ),
                 rx.button(
-                    "Volver a tomar la ubicación",
+                    rx.cond(
+                        from_saved,
+                        "Estoy en el negocio: actualizarla",
+                        "Volver a tomar la ubicación",
+                    ),
                     on_click=S.locate,
                     loading=S.locating,
-                    disabled=S.busy,
-                    variant="ghost",
+                    disabled=S.busy | S.point_saving,
+                    variant=rx.cond(from_saved, "outline", "ghost"),
                     min_height="44px",
+                    height="auto",
+                    white_space="normal",
                 ),
                 align="center",
                 justify="between",
@@ -357,31 +367,43 @@ def _near_business() -> rx.Component:
                 gap="2",
                 width="100%",
             ),
-            rx.button(
-                rx.icon("locate-fixed", size=18),
-                "Estoy en el negocio: usar mi ubicación",
-                id=LOCATE_BUTTON_ID,
-                on_click=S.locate,
-                loading=S.locating,
-                disabled=S.busy,
-                min_height="44px",
-                height="auto",
-                white_space="normal",
-                size="3",
-                width="100%",
+            rx.cond(
+                S.point_loading,
+                rx.flex(
+                    loading_spinner("sm"),
+                    rx.text(POINT_LOADING, size="2", color=T.TEXT_MUTED),
+                    align="center",
+                    gap="2",
+                    min_height="44px",
+                    role="status",
+                    id=LOCATE_BUTTON_ID,  # «Siguiente» while reading still scrolls here
+                ),
+                rx.button(
+                    rx.icon("locate-fixed", size=18),
+                    "Estoy en el negocio: usar mi ubicación",
+                    id=LOCATE_BUTTON_ID,
+                    on_click=S.locate,
+                    loading=S.locating,
+                    disabled=S.busy,
+                    min_height="44px",
+                    height="auto",
+                    white_space="normal",
+                    size="3",
+                    width="100%",
+                ),
             ),
         ),
         rx.cond(
-            ~has_point,
+            asking & ~from_saved,
             rx.text(
-                "Tócalo cuando estés en tu local. ¿No estás allí ahora? Elige «En una ciudad o "
-                "región» o vuelve cuando estés.",
+                "Tócalo cuando estés en tu local. Guardamos esa ubicación para la próxima vez. "
+                "¿No estás allí ahora? Elige «En una ciudad o región» o vuelve cuando estés.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
         ),
         rx.cond(
-            ~has_point & (S.location_error == ""),
+            asking & (S.location_error == ""),
             rx.text(
                 "Tu teléfono te va a preguntar si permites usar tu ubicación: toca «Permitir».",
                 size="2",
@@ -392,6 +414,20 @@ def _near_business() -> rx.Component:
         rx.cond(S.location_error != "", callout(S.location_error, "error")),
         # «Siguiente» before the location: said here, by the button (the top banner is off).
         rx.cond(S.error_by_locate, callout(S.error, "error")),
+        # The reading was saved as the business location (or why not); never blocking.
+        rx.box(
+            rx.cond(
+                has_point & (S.point_save_notice != ""),
+                rx.text(S.point_save_notice, size="2", color=T.tone_color("ok", 11)),
+            ),
+            rx.cond(
+                has_point & (S.point_save_error != ""),
+                rx.text(S.point_save_error, size="2", color=T.TEXT_MUTED),
+            ),
+            role="status",
+            aria_live="polite",
+            width="100%",
+        ),
         rx.cond(
             has_point,
             rx.vstack(

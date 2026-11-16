@@ -6,11 +6,14 @@ import math
 from dataclasses import replace
 
 import pytest
-from qualify_api.ads.audience import AudienceDraft, LocationOption, MapPoint
+from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable, LocationOption, MapPoint
+from qualify_api.tenancy.acting import current_acting_login
 
 from . import promotion_audience_provider as provider
+from . import promotion_state as state_module
 from .promotion_audience_ui import promotion_audience
 from .promotion_audience_vm import (
+    BUSINESS_LOCATION_SAVE_FAILED,
     COUNTRY_UNKNOWN,
     LOCATE_BUTTON_ID,
     LOCATION_DENIED,
@@ -22,6 +25,7 @@ from .promotion_audience_vm import (
     NEAR_LOCATION_MISSING,
     POINT_NAME,
     AudiencePlaceVM,
+    AudienceReachVM,
     captured_point,
     location_problem,
     point_distance_hint,
@@ -30,7 +34,7 @@ from .promotion_audience_vm import (
 from .promotion_state import PromotionState
 from .promotion_vm import step_problem
 from .test_promotion_audience import AudienceContext
-from .test_promotion_wizard import review
+from .test_promotion_wizard import LOGIN, TENANT, USER, review
 
 CUCUTA = {"latitude": 7.893907, "longitude": -72.50782, "accuracy": 50}
 
@@ -43,6 +47,13 @@ class NearContext(AudienceContext):
         self.sources = [replace(self.sources[0], default_country=country)]
         self.locating = False
         self.location_error = ""
+        self.point_origin = ""
+        self.point_loading = False
+        self.point_saving = False
+        self.point_save_notice = ""
+        self.point_save_error = ""
+        self._point_operation = ""
+        self._point_save_message = ""
 
 
 def captured(context: NearContext, reading: object = CUCUTA) -> object:
@@ -58,7 +69,8 @@ def near(context: NearContext) -> NearContext:
 
 def test_choosing_near_asks_for_the_location_and_blocks_until_it_arrives() -> None:
     context = NearContext()
-    assert PromotionState.choose_area.fn(context, "near") is None  # no estimate yet
+    # No estimate yet: only the saved business location is asked for.
+    assert PromotionState.choose_area.fn(context, "near") is not None
     form = context.form
     assert form.near and not form.location_key and not form.point_latitude
     assert form.radius_km == "5"
@@ -436,3 +448,305 @@ def test_a_city_and_a_region_with_the_same_key_are_chosen_by_kind() -> None:
     context.place_results = list(rows)
     PromotionState.choose_place.fn(context, "777", "city")
     assert (context.form.location_kind, context.form.location_region) == ("city", "Mérida")
+
+
+# m-25038694: the saved business location.
+SAVED = ("7.893907", "-72.50782")
+
+
+def no_reach(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        state_module, "read_reach", lambda scope, form: AudienceReachVM(label="ready")
+    )
+
+
+def reads_saved(monkeypatch: pytest.MonkeyPatch, saved: tuple[str, str] | None) -> list:
+    calls: list = []
+
+    def read(tenant: object) -> tuple[str, str] | None:
+        assert current_acting_login() == LOGIN
+        calls.append(tenant)
+        return saved
+
+    monkeypatch.setattr(state_module, "read_business_location", read)
+    no_reach(monkeypatch)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_near_starts_from_the_saved_business_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = reads_saved(monkeypatch, SAVED)
+    context = NearContext()
+    PromotionState.choose_area.fn(context, "near")
+    context.error = step_problem(context.form, 3)  # «Siguiente» tapped while reading
+    await PromotionState.use_saved_business_location.fn(context)
+    assert calls == [TENANT] and not context.point_loading
+    form = context.form
+    assert (form.point_latitude, form.point_longitude) == SAVED
+    assert (form.location_key, form.city_name) == ("CO", "Colombia")
+    assert context.point_origin == "saved"
+    assert context.error == "" and context.location_error == ""
+    assert not PromotionState.error_by_locate.fget(context)  # m-25038695 error gone too
+    assert step_problem(form, 3) == ""
+    assert context.audience_reach.label == "ready"
+    # Used exactly like a captured point.
+    assert provider.audience_from_form(form).point == MapPoint(7.893907, -72.50782, POINT_NAME)
+
+
+@pytest.mark.asyncio
+async def test_reading_the_saved_location_shows_it_is_looking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = NearContext()
+    seen: list[bool] = []
+
+    def read(tenant: object) -> None:
+        seen.append(context.point_loading)
+        return None
+
+    monkeypatch.setattr(state_module, "read_business_location", read)
+    PromotionState.choose_area.fn(context, "near")
+    await PromotionState.use_saved_business_location.fn(context)
+    assert seen == [True] and not context.point_loading
+    assert PromotionState.locate.fn(context) is not None  # usable again
+
+
+@pytest.mark.asyncio
+async def test_without_a_saved_location_near_asks_for_the_phone_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads_saved(monkeypatch, None)
+    context = NearContext()
+    PromotionState.choose_area.fn(context, "near")
+    await PromotionState.use_saved_business_location.fn(context)
+    assert not context.form.point_latitude and context.point_origin == ""
+    assert not context.point_loading
+    assert "usar mi ubicación" in step_problem(context.form, 3)
+
+
+@pytest.mark.asyncio
+async def test_saved_location_never_replaces_a_point_already_on_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = reads_saved(monkeypatch, ("1.0", "2.0"))
+    context = near(NearContext())
+    await PromotionState.use_saved_business_location.fn(context)
+    assert calls == []  # a fresh reading: not even read
+    assert context.form.point_latitude == "7.893907" and context.point_origin == "captured"
+
+
+@pytest.mark.parametrize("saved,origin", [(SAVED, "saved"), (("1.0", "2.0"), "")])
+@pytest.mark.asyncio
+async def test_a_draft_restored_near_the_business_tells_if_it_is_the_saved_location(
+    monkeypatch: pytest.MonkeyPatch, saved: tuple[str, str], origin: str
+) -> None:
+    reads_saved(monkeypatch, saved)
+    restored = AudienceDraft(
+        location=LocationOption("CO", "Colombia", "country", "CO"),
+        radius_km=3,
+        point=MapPoint(7.893907, -72.50782, POINT_NAME),
+    )
+    monkeypatch.setattr(
+        state_module,
+        "read_saved_audience",
+        lambda scope: (provider.form_audience_changes(restored), 2),
+    )
+    context = NearContext()
+    await context._persist_audience(save=False)
+    assert (context.form.point_latitude, context.form.point_longitude) == SAVED
+    assert context.point_origin == origin and not context.point_loading
+
+
+@pytest.mark.asyncio
+async def test_a_late_saved_location_after_leaving_near_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = NearContext()
+    PromotionState.choose_area.fn(context, "near")
+
+    def read(tenant: object) -> tuple[str, str]:
+        PromotionState.choose_area.fn(context, "city")
+        PromotionState.choose_area.fn(context, "near")  # back again: a new choice
+        context.point_loading = True  # the new choice's own read is running
+        return SAVED
+
+    monkeypatch.setattr(state_module, "read_business_location", read)
+    no_reach(monkeypatch)
+    await PromotionState.use_saved_business_location.fn(context)
+    assert context.form.near and not context.form.point_latitude
+    assert context.point_origin == "" and context.point_loading  # not the old read's to clear
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_leaves_the_step_as_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    def read(tenant: object) -> None:
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(state_module, "read_business_location", read)
+    context = NearContext()
+    PromotionState.choose_area.fn(context, "near")
+    await PromotionState.use_saved_business_location.fn(context)
+    assert not context.form.point_latitude and context.location_error == ""
+    assert not context.point_loading
+
+
+def test_a_good_reading_saves_the_business_location() -> None:
+    context = NearContext()
+    PromotionState.choose_area.fn(context, "near")
+    events = captured(context)
+    names = [str(event.handler.fn.__name__) for event in events]
+    assert names == ["refresh_reach", "remember_business_location"]
+    assert context.point_origin == "captured"
+    # A refused reading saves nothing.
+    other = NearContext()
+    PromotionState.choose_area.fn(other, "near")
+    assert captured(other, {"error": "1"}) is None
+
+
+@pytest.mark.parametrize("updating,message", [(False, "La próxima vez"), (True, "actualizamos")])
+@pytest.mark.asyncio
+async def test_the_saved_reading_is_confirmed(
+    monkeypatch: pytest.MonkeyPatch, updating: bool, message: str
+) -> None:
+    saved: list = []
+
+    def store(tenant: object, user: object, latitude: str, longitude: str) -> None:
+        assert current_acting_login() == LOGIN
+        saved.append((tenant, user, latitude, longitude))
+
+    monkeypatch.setattr(state_module, "store_business_location", store)
+    context = NearContext()
+    PromotionState.choose_area.fn(context, "near")
+    if updating:
+        context.point_origin = "saved"  # «Estoy en el negocio: actualizarla»
+    captured(context)
+    await PromotionState.remember_business_location.fn(context)
+    assert saved == [(TENANT, USER, "7.893907", "-72.50782")]
+    assert message in context.point_save_notice and not context.point_saving
+    assert context.point_save_error == ""
+
+
+@pytest.mark.parametrize(
+    "error,message",
+    [
+        (AudienceUnavailable("No pudimos leer la ubicación de tu negocio."), "No pudimos leer"),
+        (ValueError("user is outside the tenant"), BUSINESS_LOCATION_SAVE_FAILED),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_failed_save_keeps_the_point_and_does_not_block(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, message: str
+) -> None:
+    def store(*args: object) -> None:
+        raise error
+
+    monkeypatch.setattr(state_module, "store_business_location", store)
+    context = near(NearContext())
+    await PromotionState.remember_business_location.fn(context)
+    assert message in context.point_save_error and not context.point_save_notice
+    assert "outside" not in context.point_save_error
+    assert context.point_origin == "captured" and not context.point_saving
+    assert context.form.point_latitude == "7.893907" and step_problem(context.form, 3) == ""
+    assert context.error == ""
+
+
+@pytest.mark.asyncio
+async def test_a_save_finishing_after_leaving_near_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = near(NearContext())
+
+    def store(*args: object) -> None:
+        PromotionState.choose_area.fn(context, "city")
+
+    monkeypatch.setattr(state_module, "store_business_location", store)
+    await PromotionState.remember_business_location.fn(context)
+    assert context.point_origin == "" and not context.point_saving
+    assert context.point_save_notice == "" and context.point_save_error == ""
+
+
+@pytest.mark.asyncio
+async def test_a_save_for_an_older_reading_says_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    context = near(NearContext())
+
+    def store(*args: object) -> None:
+        context.form = replace(context.form, point_latitude="7.9")  # a newer reading
+
+    monkeypatch.setattr(state_module, "store_business_location", store)
+    await PromotionState.remember_business_location.fn(context)
+    assert context.point_save_notice == "" and not context.point_saving
+
+
+def test_busy_saving_or_reading_blocks_a_new_reading() -> None:
+    context = near(NearContext())
+    context.point_saving = True
+    assert PromotionState.locate.fn(context) is None and not context.locating
+    context.point_saving, context.point_loading = False, True
+    assert PromotionState.locate.fn(context) is None and not context.locating
+
+
+def test_provider_reads_and_stores_the_business_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider, "get_business_location", lambda tenant: (7.8939074, -72.50782))
+    assert provider.read_business_location(TENANT) == SAVED
+    monkeypatch.setattr(provider, "get_business_location", lambda tenant: None)
+    assert provider.read_business_location(TENANT) is None
+    stored: list = []
+    monkeypatch.setattr(provider, "save_business_location", lambda *a: stored.append(a))
+    provider.store_business_location(TENANT, USER, *SAVED)
+    assert stored == [(TENANT, USER, 7.893907, -72.50782)]
+
+
+def test_the_step_names_the_saved_location_and_has_no_save_button() -> None:
+    rendered = repr(promotion_audience().render())
+    # The render escapes accents, so match the plain-ASCII part of each label.
+    for text in (
+        "Estoy en el negocio: actualizarla",
+        "Usamos la ubicaci",
+        "Buscando la ubicaci",
+        "Guardamos esa ubicaci",  # told before the tap that it is remembered
+    ):
+        assert text in rendered
+    assert "Guardar como la ubicaci" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_restored_point_drops_the_older_point_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads_saved(monkeypatch, SAVED)
+    restored = AudienceDraft(
+        location=LocationOption("CO", "Colombia", "country", "CO"),
+        radius_km=3,
+        point=MapPoint(7.893907, -72.50782, POINT_NAME),
+    )
+    monkeypatch.setattr(
+        state_module,
+        "read_saved_audience",
+        lambda scope: (provider.form_audience_changes(restored), 2),
+    )
+    context = near(NearContext())
+    context.form = replace(context.form, point_latitude="1.0", point_longitude="2.0")
+    context.point_save_notice = "Guardamos la ubicación de tu negocio."
+    await context._persist_audience(save=False)
+    assert context.point_save_notice == ""
+    assert context.point_origin == "saved"  # compared against the saved one, not skipped
+
+
+@pytest.mark.asyncio
+async def test_the_loading_flag_clears_even_if_the_session_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = NearContext()
+
+    def read(tenant: object) -> tuple[str, str]:
+        context.auth.session_tenant_id = str(USER)  # another business opened meanwhile
+        return SAVED
+
+    monkeypatch.setattr(state_module, "read_business_location", read)
+    PromotionState.choose_area.fn(context, "near")
+    await PromotionState.use_saved_business_location.fn(context)
+    assert not context.point_loading and not context.form.point_latitude

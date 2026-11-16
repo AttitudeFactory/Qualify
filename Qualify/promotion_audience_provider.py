@@ -14,6 +14,7 @@ from qualify_api.ads.audience_service import (
     search_audience_locations,
     suggest_audience_interests,
 )
+from qualify_api.ads.business_location import get_business_location, save_business_location
 from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
 from .ad_custom_audiences_vm import CustomAudienceVM
@@ -22,6 +23,7 @@ from .promotion_audience_vm import (
     AudienceInterestVM,
     AudiencePlaceVM,
     AudienceReachVM,
+    captured_point,
     place_kind_label,
     reach_label,
 )
@@ -158,3 +160,14 @@ def read_saved_audience(scope: dict[str, UUID]) -> tuple[dict[str, object], int]
 def store_audience(scope: dict[str, UUID], form: PromotionDraftVM, version: int) -> int:
     saved = save_audience(**scope, audience=audience_from_form(form), expected_version=version)
     return saved.version
+
+
+def read_business_location(tenant_id: UUID) -> tuple[str, str] | None:
+    """The business's saved point as the form's 6-decimal strings, or None."""
+    saved = get_business_location(tenant_id)
+    return captured_point({"latitude": saved[0], "longitude": saved[1]}) if saved else None
+
+
+def store_business_location(tenant_id: UUID, user_id: UUID, latitude: str, longitude: str) -> None:
+    """Only on the owner's explicit tap; raises AudienceUnavailable with a Spanish message."""
+    save_business_location(tenant_id, user_id, float(latitude), float(longitude))
