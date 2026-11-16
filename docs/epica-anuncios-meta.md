@@ -253,7 +253,7 @@ Al terminar se crea todo en `PAUSED`, se muestra la vista previa de Meta (`adpre
 - Advantage+ audience (`targeting_automation.advantage_audience`), siempre enviado explícitamente (obligatorio desde v23).
 - Alcance estimado (`reachestimate`).
 - Con «Vivienda» activado, la UI esconde lo que la categoría no permite.
-- Ubicaciones: «Automáticas» por defecto, o elegir Instagram feed/historias/reels/explorar, Facebook y WhatsApp Estados (rama B de m-24789525: confirmar en ADS-00 que `publisher_platforms` lo admite).
+- Ubicaciones: «Automáticas» por defecto, o elegir Instagram feed/historias/reels/explorar, Facebook y WhatsApp Estados (rama B de m-24789525, verificado 2026-11-16 en `docs/discovery-anuncios-estados-whatsapp.md`: `publisher_platforms: ["instagram","whatsapp"]` + `whatsapp_positions: ["status"]` **siempre con** `instagram_positions: ["story"]`; imagen o video único 9:16; objetivos TRAFFIC, ENGAGEMENT, LEADS, SALES, AWARENESS; nunca con Vivienda; enviar `user_age_unknown` explícito y leer `effective_whatsapp_positions` tras crear. Hoy «Automáticas» envía solo Facebook + Instagram, así que no sale en Estados. Entrega con nuestros creativos por confirmar en m-24828971).
 
 **Criterios de aceptación**
 - [ ] El público elegido se guarda en `ad_promotions.targeting` y se reconstruye igual al editar.
@@ -381,6 +381,8 @@ entonces siempre se sube el archivo y no se publica la historia orgánica.
 **Criterios de aceptación**
 - [ ] Veredicto con fuente oficial para (B) y, si es viable, la posición anotada en ADS-07.
 - [ ] Veredicto de una línea, con fuente, para (A).
+
+**Resultado (2026-11-16):** (B) **viable con requisitos** (historias de Instagram obligatorias, sin categorías especiales, cuenta lista para clic a WhatsApp); (A) **no disponible hoy**. Detalle, textos e historias candidatas: `docs/discovery-anuncios-estados-whatsapp.md`. Recomendación: esperar a la prueba en vivo m-24828971 y luego sumar la casilla.
 
 ---
 
