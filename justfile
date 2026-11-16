@@ -589,6 +589,11 @@ eval-copy *args:
 eval-hashtags *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/hashtag_ai/run_experiment.py {{args}}
 
+# «Sugerir con IA» over a publication's text (m-25032581): 34 real captions, local scorer,
+# no Langfuse. MONEY (Haiku calls, ~USD 0.004 each); `--rescore <file>` scores a saved run free.
+eval-hashtags-caption *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/hashtag_caption/run_eval.py --env-file .env {{args}}
+
 # Fase 6 (plan §7): referentes (real labelled accounts), Brand Kit documents (fictional),
 # ad-image scenes (Seedream, images go to the review queue) and local Whisper (needs `ml`).
 eval-referentes *args:
