@@ -182,9 +182,10 @@ from qualify_creative.schemas import (
 from qualify_creative.subtitles import chunk_script, clip_cues, timed_cues
 from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
+from qualify_creative.video._source import frame_rotation
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
-from qualify_creative.video.upright import upright_image
+from qualify_creative.video.upright import upright_image, upright_size
 from qualify_shared.objects.keys import (
     is_object_store_key,
     reel_windows_root,
@@ -1327,15 +1328,31 @@ def reference_trim_seconds(media: MediaInputs, model: str | None) -> float | Non
 
 
 def _video_dimensions(data: bytes) -> tuple[int, int] | None:
-    """The actual canvas: an edit preserves its source, including nonstandard ratios."""
+    """The actual canvas: an edit preserves its source, including nonstandard ratios.
+    Upright (EF-01): the size a player shows, so a phone video stored 1920×1080 with a
+    quarter-turn display matrix is 1080×1920 (`upright_size`, with the first decoded
+    frame's `frame_rotation`); a turn that is not a right angle, or no decodable frame,
+    keeps the stored size."""
     try:
         import av  # noqa: PLC0415
 
         with av.open(io.BytesIO(data)) as container:
             video = container.streams.video[0]
-            return video.codec_context.width, video.codec_context.height
+            width, height = video.codec_context.width, video.codec_context.height
+            return upright_size(width, height, _first_frame_rotation(container, video))
     except Exception:  # noqa: BLE001 — preserve paid media even if metadata is unreadable
         return None
+
+
+def _first_frame_rotation(container: Any, stream: Any) -> int:
+    """The display rotation of `stream`'s first decoded frame (0/90/180/270); 0 when none
+    decodes or its turn is not a right angle — the caller then keeps the stored size."""
+    try:
+        for frame in container.decode(stream):
+            return frame_rotation(frame)
+    except Exception:  # noqa: BLE001 — the stored size is still a usable answer
+        return 0
+    return 0
 
 
 def _media_seconds(data: bytes) -> float | None:

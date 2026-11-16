@@ -203,3 +203,23 @@ def test_a_reference_video_with_such_a_rotation_fails_as_unreadable() -> None:
         producer._fitted_references(uuid4(), media, _Save())
     assert failed.value.detail == media_module.REFERENCE_VIDEO_UNREADABLE_TEXT
     assert isinstance(failed.value.__cause__, VideoSourceError)
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_a_phone_video_measures_as_it_is_shown(rotation: int) -> None:
+    """m-25029131: stored 64×36 with a quarter-turn display matrix → the 36×64 a player
+    shows, so an edit of a phone video keeps a vertical canvas."""
+    assert media_module._video_dimensions(_rotated(rotation)) == (36, 64)
+
+
+def test_a_video_without_a_turn_measures_as_before() -> None:
+    video = (FIXTURES / "video-portrait-2s.mp4").read_bytes()
+    assert media_module._video_dimensions(video) == (180, 320)
+
+
+def test_a_turn_that_is_not_a_right_angle_keeps_the_stored_size() -> None:
+    assert media_module._video_dimensions(_rotated(45)) == (64, 36)
+
+
+def test_an_unreadable_video_has_no_dimensions() -> None:
+    assert media_module._video_dimensions(b"not a video") is None
