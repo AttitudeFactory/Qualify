@@ -8,6 +8,8 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from qualify_api import claude_tools
 from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.hashtags.caption import (
@@ -20,6 +22,8 @@ from qualify_api.hashtags.caption import (
     WATCHED_ADDENDUM,
     SeenTag,
     WatchedTag,
+    is_platform_tag,
+    named_in_text,
     suggest_for_caption,
 )
 
@@ -198,3 +202,104 @@ def test_a_watched_pick_survives_the_cleaning() -> None:
         attribution=TEST_ATTRIBUTION,
     )
     assert [(p.tag, p.seen_count) for p in picks] == [("comidasaludable", 0), ("ensaladas", 7)]
+
+
+# -- UX review of m-25032581: «Mejor», platform tags, the reason the owner reads ---------
+
+
+def test_the_addendum_tells_the_model_how_to_write_the_reason() -> None:
+    assert WATCHED_ADDENDUM.endswith(
+        "- El motivo dice qué palabra o idea del texto nombra el hashtag. No menciones "
+        "TikTok, videos, vistas, «virales», «audiencia» ni el rubro, y escribe sin palabras "
+        "en inglés."
+    )
+
+
+_DIRECTIONS = "¿Cómo llegar? Estamos en la carrera 5 con calle 10, frente al parque."
+_SHAWARMA = "Shawarma de pollo con salsa de ajo, recién salido del trompo."
+
+
+@pytest.mark.parametrize(
+    ("tag", "caption", "named"),
+    [
+        ("carne", _DIRECTIONS, False),  # measured: a directions text marked «Mejor»
+        ("pollo", _DIRECTIONS, False),
+        ("comidasaludable", _SHAWARMA, False),  # the text never says «saludable»
+        ("pollo", _SHAWARMA, True),
+        ("pollo", "Hoy: el POLLO jugoso de siempre", True),
+        ("pollo", "Pollos asados", True),  # the end may run into the word
+        ("pollo", "Ensalada de repollo", False),  # it must start a word
+        ("ensalada", "Una ensalada fresca", True),
+        ("ensaladas", "Una ensalada fresca", True),  # plural either way
+        ("ensalada", "Tenemos ensaladas", True),
+        ("ensaladasaludable", "Ensalada saludable, sin culpa.", True),
+        ("ensaladasaludable", "Ensalada muy saludable", False),
+        ("cafe", "Un café de especialidad", True),  # accents fold
+        ("recetasfaciles", "Una receta fácil", False),  # nothing smarter on purpose
+        ("sol", "Disfruta el sol", True),  # short: whole word only
+        ("sol", "Soleado y rico", False),
+        ("sol", "", False),
+        ("#Pollo", _SHAWARMA, True),
+    ],
+)
+def test_named_in_text(tag: str, caption: str, named: bool) -> None:
+    assert named_in_text(tag, caption) is named
+
+
+@pytest.mark.parametrize(
+    ("tag", "platform"),
+    [
+        ("foodtok", True),
+        ("booktok", True),
+        ("FoodTok", True),
+        ("tiktok", True),
+        ("tiktokfood", True),
+        ("comidatiktok", True),
+        ("autoestok", True),  # merely ends in «tok»: dropped, on purpose (docstring)
+        ("stock", False),
+        ("tokio", False),
+        ("tok", False),
+        ("comidasaludable", False),
+    ],
+)
+def test_platform_tags(tag: str, platform: bool) -> None:
+    assert is_platform_tag(tag) is platform
+
+
+def test_platform_tags_are_dropped_before_the_cap() -> None:
+    platform = [WatchedTag(f"plato{i:02d}tok", 9_000_000, 9) for i in range(5)]
+    useful = [WatchedTag(f"etiqueta{i:02d}", 1000, 1) for i in range(MAX_WATCHED)]
+    fake, _ = _ask(watched=[*platform, WatchedTag("tiktokfood", 1, 1), *useful])
+    message = _request(fake)["messages"][0]["content"]
+    assert "tok" not in message.replace("TikTok", "")
+    assert all(f"- etiqueta{i:02d} (" in message for i in range(MAX_WATCHED))
+
+
+def test_only_platform_tags_send_the_previous_request() -> None:
+    plain, _ = _ask()
+    only_platform, _ = _ask(watched=[WatchedTag("foodtok", 2_000_000, 3)])
+    assert _request(only_platform) == _request(plain)
+
+
+def test_a_watched_pick_is_flagged_unless_the_catalog_has_it() -> None:
+    fake = _FakeClient(
+        [
+            {"tag": "comidasaludable", "tipo": "popular", "motivo": "Habla de comida sana"},
+            {"tag": "ensaladas", "tipo": "nicho", "motivo": "Del catálogo"},
+            {"tag": "almuerzo", "tipo": "nicho", "motivo": "Lo dice el texto"},
+        ]
+    )
+    picks = suggest_for_caption(
+        "Ensalada fresca para el almuerzo",
+        seen=[SeenTag("ensaladas", 7)],
+        watched=[WatchedTag("comidasaludable", 2_400_000, 1), WatchedTag("ensaladas", 9, 1)],
+        api_key="test",
+        client_factory=lambda _key: fake,
+        attribution=TEST_ATTRIBUTION,
+    )
+    assert [(p.tag, p.watched) for p in picks] == [
+        ("comidasaludable", True),
+        ("ensaladas", False),  # also a `seen` catalog tag
+        ("almuerzo", False),
+    ]
+    assert all(not p.watched for p in _ask()[1])  # without watched tags nothing is flagged

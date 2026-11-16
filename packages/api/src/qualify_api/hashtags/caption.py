@@ -75,6 +75,74 @@ class CaptionHashtag:
     kind: str  # popular / nicho / marca
     reason: str  # one short line, in Spanish, for the chip's tooltip
     seen_count: int = 0  # > 0 when the catalog has seen it on real posts
+    #: True when the pick is one of the watched tags sent to the model AND not one of the
+    #: `seen` catalog tags (m-25032581, UX review): the editor marks it «Mejor» only when
+    #: `named_in_text` says the publication names it.
+    watched: bool = False
+
+
+#: A tag shorter than this (folded) only matches a whole word of the text: `te`, `sol`
+#: inside longer words mean nothing.
+NAMED_MIN_LENGTH = 4
+
+
+def _folded_words(text: str) -> list[str]:
+    return [word for word in (fold(chunk) for chunk in text.split()) if word]
+
+
+def named_in_text(tag: str, caption: str) -> bool:
+    """Whether the publication's text names `tag` — pure, deterministic, no model.
+
+    Both are folded (`fold`: accents, case, anything not a letter or digit dropped). The
+    tag must appear in the text with spaces and punctuation removed, STARTING at the
+    start of one of its words (so `ensaladasaludable` matches «ensalada saludable» and
+    `pollo` «el pollo jugoso», while `pollo` does not match «repollo»); its end may run
+    into the word (`pollo` matches «pollos»). A trailing plural differs either way: a tag
+    ending in «s» / «es» also matches without it (`ensaladas` ↔ «ensalada»), provided what
+    is left keeps `NAMED_MIN_LENGTH`. A tag shorter than `NAMED_MIN_LENGTH` matches only
+    a whole word of the text. Nothing smarter: «receta fácil» does not name
+    `recetasfaciles`."""
+    target = fold(tag)
+    words = _folded_words(caption)
+    if not target or not words:
+        return False
+    if len(target) < NAMED_MIN_LENGTH:
+        return target in words
+    variants = {target}
+    for suffix in ("es", "s"):
+        stem = target[: -len(suffix)]
+        if target.endswith(suffix) and len(stem) >= NAMED_MIN_LENGTH:
+            variants.add(stem)
+    squashed = "".join(words)
+    starts, offset = [], 0
+    for word in words:
+        starts.append(offset)
+        offset += len(word)
+    return any(squashed.startswith(v, start) for v in variants for start in starts)
+
+
+#: Tags of a platform's own communities (`foodtok`, `booktok`, `tiktokfood`): on
+#: Instagram or Facebook they name TikTok, not what the publication is about.
+_PLATFORM_NAME = "tiktok"
+_PLATFORM_SUFFIX = "tok"
+#: `<community>tok` needs at least this much before «tok» (`foodtok`); `tok` alone is not.
+_PLATFORM_STEM = 2
+
+
+def is_platform_tag(tag: str) -> bool:
+    """A TikTok tag that means nothing on Instagram or Facebook (UX review, m-25032581).
+    Narrow and explicit, on the folded tag: it contains «tiktok» (`tiktok`, `tiktokfood`,
+    `comidatiktok`), or it ends in «tok» with at least `_PLATFORM_STEM` characters before
+    it (`foodtok`, `booktok`, `momtok`). A word that merely ends in «tok» is dropped too
+    (`autoestok`): Spanish has no common word ending so, and losing a misspelling is
+    cheaper than a TikTok tag on Instagram. `stock` (ends in «ock»), `tokio`, `toki`
+    and `tok` alone are kept."""
+    folded = fold(tag)
+    if _PLATFORM_NAME in folded:
+        return True
+    return folded.endswith(_PLATFORM_SUFFIX) and (
+        len(folded) - len(_PLATFORM_SUFFIX) >= _PLATFORM_STEM
+    )
 
 
 SYSTEM = """Eres estratega de redes sociales para marcas de Latinoamérica.
@@ -112,7 +180,9 @@ cuenta: nunca lo elijas, aunque lleve el nombre del plato.
 - Hashtags de recetas o de cocinar en casa solo si el texto enseña a preparar algo.
 - Las vistas no hacen que encaje: un video viral puede llevar hashtags que no tienen \
 nada que ver con este texto. Uno visto en un solo video es una pista débil.
-- Son videos de TikTok y no dicen nada de «tendencia hoy»."""
+- Son videos de TikTok y no dicen nada de «tendencia hoy».
+- El motivo dice qué palabra o idea del texto nombra el hashtag. No menciones TikTok, \
+videos, vistas, «virales», «audiencia» ni el rubro, y escribe sin palabras en inglés."""
 
 
 def _views_label(views: int) -> str:
@@ -208,7 +278,7 @@ def suggest_for_caption(
     `PROMPT_VERSION` with watched tags, `PROMPT_VERSION_WITHOUT_WATCHED` without."""
     if not caption.strip():
         return []
-    watched = tuple(watched)[:MAX_WATCHED]
+    watched = tuple(w for w in watched if not is_platform_tag(w.tag))[:MAX_WATCHED]
     client = (client_factory or default_client)(api_key)
     meter = Meter(CAPTION_MODEL)
     response = create_turn(
@@ -228,6 +298,7 @@ def suggest_for_caption(
     if use is None:
         return []
     counts = {fold(t.tag): t.seen_count for t in seen}
+    watched_only = {fold(w.tag) for w in watched} - set(counts)
     taken = {fold(t) for t in current}
     picks: list[CaptionHashtag] = []
     for item in (use.input or {}).get("hashtags", []):
@@ -242,6 +313,7 @@ def suggest_for_caption(
                 kind=kind,
                 reason=str(item.get("motivo", "")).strip(),
                 seen_count=counts.get(tag, 0),
+                watched=tag in watched_only,
             )
         )
         if len(picks) >= max_picks:
