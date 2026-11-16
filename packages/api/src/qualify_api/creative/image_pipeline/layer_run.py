@@ -47,7 +47,7 @@ Its failure is the caller's to handle: a priced piece is never published without
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -139,6 +139,22 @@ def _seams(producer: MediaProducer) -> tuple[Callable[..., Any], ...]:
         getattr(producer, "_layer_claim", None) or _default_claim,
         getattr(producer, "_layer_context", None) or _default_context,
     )
+
+
+def piece_products(
+    found: Sequence[CatalogProduct], *, price_line: str, product_ref: str | None
+) -> tuple[CatalogProduct, ...]:
+    """m-25040499: the catalog products the layer may point at, priced only as the piece
+    is. `price_line` empty (the angle hides the price, or none is stored): no product is
+    offered priced. Set: only ONE product — the one whose catalog label IS that line,
+    the brief's own name first when the name matched several — so a layer can never
+    print another product's price, nor a price the piece does not show."""
+    line = price_line.strip()
+    matching = [p for p in found if line and p.price_text.strip() == line]
+    ref = (product_ref or "").strip().casefold()
+    own = next((p for p in matching if p.name.strip().casefold() == ref), None)
+    chosen = own or (matching[0] if matching else None)
+    return tuple(replace(p, has_price=p is chosen) for p in found)
 
 
 def piece_type(brief: ContentBrief, *, gallery: bool) -> str:
@@ -266,6 +282,7 @@ def run_layer_stage(
     gallery: bool,
     slide_count: int | None = None,
     title_font: str = "",
+    price_line: str = "",
     env: Mapping[str, str] | None = None,
 ) -> LayerOutcome:
     """The layers of `scenes` (position → base), regenerating a base once when Claude saw
@@ -276,7 +293,8 @@ def run_layer_stage(
     writer, claim, context = _seams(producer)
     budget = DollarMeter(LAYER_BUDGET_USD)  # ONE meter for every call of this piece
     try:
-        facts, products = context(tenant_id, brief.brand_id, brief.product_ref)
+        facts, found = context(tenant_id, brief.brand_id, brief.product_ref)
+        products = piece_products(found, price_line=price_line, product_ref=brief.product_ref)
         request = LayerRequest(
             tenant_id=tenant_id,
             brand_id=brief.brand_id,
@@ -292,6 +310,7 @@ def run_layer_stage(
             facts=facts,
             products=products,
             title_font=title_font,
+            price_line=price_line.strip(),
         )
 
         def first() -> dict[str, Any]:
@@ -362,7 +381,8 @@ def run_layer_stage(
         layers = {p: w for p in scenes if (w := _layer_write(result, p)) is not None}
         if result.failed:
             logger.warning("draft %s: no layer for %s", draft_id, sorted(result.failed))
-        prices = {str(p.product_id): p.price_text for p in products if p.price_text}
+        # only the piece's own price can be drawn (`piece_products`)
+        prices = {str(p.product_id): p.price_text for p in products if p.has_price}
         return LayerOutcome(scenes, layers, tuple(regenerated), request, budget, prices)
     except QUEUE_SIGNALS:
         raise

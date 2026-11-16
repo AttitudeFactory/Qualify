@@ -22,14 +22,22 @@ render costs nothing.
   layer call (`layer_run.rewrite_layers`, the piece's US$0.25 meter) and composed again; a
   slide still refused fails the piece. A priced piece is never published without its price —
   a report that dropped the price counts as a refusal.
-- *Transient* (`ComposeJobFailed`, a timeout: the job ran and failed): one more attempt as a
-  NEW job (`attempt` is in the job id), at most `MAX_ATTEMPTS` per slide; then the piece fails.
-- *Outage* (the service does not answer): inside the queue the piece waits — the pass stops
-  with `CheckpointError` and the worker retries it — up to `OUTAGE_WINDOW` counted from the
-  FIRST failure of the piece, saved once in step `FIRST_FAILURE_STEP` and never reset. Then
-  it fails. Outside the queue (inline) nothing can wait: it fails at once.
-- Never the Pillow still instead: a failure is the piece's failure, with the owner's text of
-  ADR 49 §2.4 (a failed generation gives its creation back, `_refund_if_not_delivered`).
+- *Transient* (`ComposeJobFailed`, a job `wait` gave up on, any other 5xx): one more attempt
+  as a NEW job (`attempt` is in the job id), at most `MAX_ATTEMPTS` per slide; then it fails.
+- *Outage* (no answer at all: a transport error, 502/503/504): inside the queue the piece
+  waits — the pass stops with `RenderWait` and the worker retries it — up to `OUTAGE_WINDOW`
+  counted from the FIRST failure of the piece, saved once in step `FIRST_FAILURE_STEP` and
+  never reset. Then it fails. A pass tries the service at most once per `OUTAGE_BACKOFF`
+  (`raise_if_waiting`, called before anything is replayed). Outside the queue (inline)
+  nothing can wait: it fails at once.
+- *Rejected* (any other 4xx, an error of ours): the piece fails at once.
+- Never the Pillow still instead: a failure is the piece's failure, under its own code
+  (`price_does_not_fit`, `compose_unavailable`) so the owner reads one reason (a failed
+  generation gives its creation back, `_refund_if_not_delivered`).
+
+**The price** (founder 2026-11-16, D5; review 2026-11-16): a piece with `price_line` prints it
+on its first image — a layer there without the price reference is refused like a price that
+does not fit, and rewritten. A piece without `price_line` prints no price at all.
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -45,7 +53,7 @@ from uuid import UUID
 
 from qualify_creative.enums import FailureReason
 from qualify_creative.photo.normalize import to_meta_jpeg
-from qualify_creative.render.client import RenderServiceError
+from qualify_creative.render.client import RenderServiceError, RenderTimeout
 from qualify_creative.render.layer_compose import (
     TEMPLATE_ID,
     TEMPLATE_VERSION,
@@ -78,19 +86,20 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
 #: How long a piece waits for the render service, from its FIRST failure (D4).
 OUTAGE_WINDOW = timedelta(minutes=10)
+#: While the service is down, a piece tries it at most once per this long (review: no hot loop).
+OUTAGE_BACKOFF = timedelta(seconds=45)
 #: The step that keeps the piece's first render failure (saved once: never reset).
 FIRST_FAILURE_STEP = -200
 #: The composer's provenance tag in `image_assets.params`.
 COMPOSE_PIPELINE = "layer_still"
+#: A waiting piece logs at most once a minute.
+_WAIT_LOG_EVERY = timedelta(minutes=1)
+_last_wait_log: dict[tuple[UUID, UUID, int], datetime] = {}
 
-#: What the owner reads (ADR 49 §2.4; client-facing, Spanish).
-OWNER_FAILED = (
-    "No pudimos terminar tu publicación. Inténtalo de nuevo; no se te descuenta otra creación."
-)
-OWNER_PRICE = (
-    "No pudimos poner el precio completo en tu publicación. Inténtalo de nuevo; "
-    "no se te descuenta otra creación."
-)
+#: The draft's failure codes: the owner's text is the screen's (`Qualify/creative_vm.py`
+#: FAILURE_INFO), so the draft carries no second sentence (`failure_detail` empty).
+PRICE_FAILURE = FailureReason.PRICE_DOES_NOT_FIT.value
+COMPOSE_FAILURE = FailureReason.COMPOSE_UNAVAILABLE.value
 
 #: Fixed namespace of the root layers' compose references (never change it).
 _LAYER_REF_NAMESPACE = uuid.UUID("2b7d4f0e-9c1a-4e55-8f3b-6a0d1e2c3b4f")
@@ -102,8 +111,19 @@ def attempt_step(position: int, round_: int, attempt: int) -> int:
     return -1000 - 100 * position - 10 * round_ - attempt
 
 
+def outage_step(bucket: int) -> int:
+    """The step that says «the service was tried in this `OUTAGE_BACKOFF` bucket and did not
+    answer» (bucket 0 starts at the first failure): -201, -202, … — at most 14 in 10 min."""
+    return FIRST_FAILURE_STEP - 1 - bucket
+
+
 class RenderUnavailable(Exception):
     """No render service to call (not configured): waited for like an outage."""
+
+
+class RenderWait(CheckpointError):
+    """The piece waits for the render service: the pass stops, the worker retries later.
+    Logged here at WARNING (at most once a minute per piece), never as a preparation error."""
 
 
 @dataclass(frozen=True)
@@ -113,7 +133,9 @@ class ComposedSlide:
 
     position: int
     key: str
-    image: bytes
+    #: the JPEG, only for the positions the caller asked to keep (`keep_images`): a Reel
+    #: pushes in its first still; every other slide is just its key
+    image: bytes | None
     layer: LayerWrite
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -130,7 +152,12 @@ class _Piece:
     save: _Saver
     composer: Callable[[LayerComposeRequest, Callable[[str], bytes]], ComposedStill]
     clock: Callable[[], datetime]
+    #: the piece's printed price (`LayerRequest.price_line`): required on the first image
+    price_line: str = ""
     first_failure: datetime | None = None
+
+    def price_required(self, position: int) -> bool:
+        return position == 0 and bool(self.price_line)
 
 
 def compose_brand(kit: BrandKit, brand_name: str) -> dict[str, Any]:
@@ -179,13 +206,56 @@ def compose_slides(
     brand_name: str,
     logo_key: str | None,
     save: _Saver,
+    keep_images: Collection[int] = (),
     env: Mapping[str, str] | None = None,
 ) -> dict[int, ComposedSlide]:
     """The composed slides by position, for every slide of `outcome` with a layer. Off, or
-    with no layer: {} and nothing is called. Raises `_MediaFailed` (the owner's text) when a
-    slide cannot be drawn, and `CheckpointError` while the piece waits for the service."""
+    with no layer: {} and nothing is called. Raises `_MediaFailed` (the piece's failure code)
+    when a slide cannot be drawn, and `RenderWait` while the piece waits for the service.
+    Inside the queue the run's lease is kept alive while the slides render."""
     if not outcome.layers or not layer_enabled(dict(env) if env is not None else None):
         return {}
+    run = pipeline.current_preparation()
+    if run is None:
+        return _compose_slides(
+            producer,
+            outcome,
+            tenant_id,
+            draft_id,
+            revision,
+            kit,
+            brand_name,
+            logo_key,
+            save,
+            keep_images,
+        )
+    with pipeline.lease_kept(pipeline.PipelineStore(), run):
+        return _compose_slides(
+            producer,
+            outcome,
+            tenant_id,
+            draft_id,
+            revision,
+            kit,
+            brand_name,
+            logo_key,
+            save,
+            keep_images,
+        )
+
+
+def _compose_slides(
+    producer: MediaProducer,
+    outcome: LayerOutcome,
+    tenant_id: UUID,
+    draft_id: UUID,
+    revision: int,
+    kit: BrandKit,
+    brand_name: str,
+    logo_key: str | None,
+    save: _Saver,
+    keep_images: Collection[int],
+) -> dict[int, ComposedSlide]:
     logo_key = logo_key or kit.logo_asset_key
     logo = producer._logo(kit, logo_key) if logo_key else None
     piece = _Piece(
@@ -199,15 +269,19 @@ def compose_slides(
         save=save,
         composer=getattr(producer, "_layer_composer", None) or _default_composer(producer),
         clock=getattr(producer, "_compose_clock", None) or _now,
+        price_line=(outcome.request.price_line.strip() if outcome.request else ""),
     )
     layers = dict(outcome.layers)
     drawn: dict[int, dict[str, Any]] = {}
     refused: dict[int, dict[str, Any]] = {}
     for position in sorted(layers):
+        if piece.price_required(position) and not layers[position].spec.get("price_ref"):
+            refused[position] = _PRICE_MISSING  # the piece's price, left out: never drawn
+            continue
         result = _compose(piece, position, 0, layers[position], outcome.scenes[position])
         (drawn if result["status"] == "composed" else refused)[position] = result
     if refused:
-        notes = {p: _note(r, layers[p]) for p, r in refused.items()}
+        notes = {p: _note(r, layers[p], piece.price_required(p)) for p, r in refused.items()}
         try:
             rewritten = rewrite_layers(producer, outcome, notes)
         except QUEUE_SIGNALS:
@@ -221,7 +295,7 @@ def compose_slides(
             if layer is None:
                 still_refused[position] = refused[position]
                 continue
-            if layers[position].spec.get("price_ref") and not layer.spec.get("price_ref"):
+            if piece.price_required(position) and not layer.spec.get("price_ref"):
                 # a rewrite that gave the price up is not a fix: never priceless (D5)
                 still_refused[position] = {**refused[position], "slot": "price"}
                 continue
@@ -233,16 +307,30 @@ def compose_slides(
                 still_refused[position] = result
         if still_refused:
             raise _refusal_failure(still_refused, layers)
-    return {
-        position: ComposedSlide(
+    out: dict[int, ComposedSlide] = {}
+    for position, result in sorted(drawn.items()):
+        image = result.pop("_image", None)  # the JPEG just stored, when this pass made it
+        if position not in keep_images:
+            image = None  # nobody needs it: never kept in memory, never read back
+        elif image is None:
+            image = producer._store.read(str(result["key"]))  # a replay: read back once
+        out[position] = ComposedSlide(
             position=position,
             key=str(result["key"]),
-            image=result.pop("_image", None) or producer._store.read(str(result["key"])),
+            image=image,
             layer=layers[position],
             params=compose_params(result, layers[position]),
         )
-        for position, result in sorted(drawn.items())
-    }
+    return out
+
+
+#: A first image without the piece's price reference (`LayerRequest.price_line` set).
+_PRICE_MISSING: dict[str, Any] = {
+    "status": "refused",
+    "slot": "price",
+    "reason": "price_missing",
+    "detail": "the piece's price is not on its first image",
+}
 
 
 def compose_params(result: Mapping[str, Any], layer: LayerWrite) -> dict[str, Any]:
@@ -387,11 +475,17 @@ def _compose(
                         "job_id": request.job_id(),
                     },
                 )
-            _waited(piece, run, store, position, exc)
+            if kind == "fatal":
+                raise _render_failure(exc, position, why="rejected") from exc
+            first = _waited(piece, run, store, position, exc)
             if kind == "outage":
-                if run is None:
+                if run is None or store is None:
                     raise _render_failure(exc, position) from exc
-                raise CheckpointError(
+                now = piece.clock()
+                bucket = int((now - first) / OUTAGE_BACKOFF)
+                store.save_step(run, outage_step(bucket), {"at": now.isoformat()}, None)
+                _log_wait(run, now, f"render service unavailable ({_code(exc)})")
+                raise RenderWait(
                     f"render service unavailable for slide {position + 1}; the piece waits"
                 ) from exc
             logger.warning(
@@ -399,14 +493,14 @@ def _compose(
                 piece.draft_id,
                 position + 1,
                 attempt,
-                getattr(exc, "code", type(exc).__name__),
+                _code(exc),
             )
             if run is not None and store is not None:
                 store.complete_step(
                     run.tenant_id,
                     identity={**run.params(), "s": step},
                     result=None,
-                    error=f"transient: {getattr(exc, 'code', type(exc).__name__)}",
+                    error=f"transient: {_code(exc)}",
                     run=run,
                 )
             continue
@@ -451,7 +545,7 @@ def _compose(
         _done(run, store, step, value)
         return {**value, "_image": jpeg}
     raise _render_failure(
-        RuntimeError(f"{MAX_ATTEMPTS} attempts failed"), position, attempts=MAX_ATTEMPTS
+        RuntimeError(f"{MAX_ATTEMPTS} attempts failed"), position, why=f"{MAX_ATTEMPTS} attempts"
     )
 
 
@@ -483,17 +577,68 @@ def _price_missing(request: LayerComposeRequest, layer: LayerWrite) -> dict[str,
     return None
 
 
+#: HTTP statuses that mean «nobody answered» (a proxy in front of a service that is down).
+_OUTAGE_STATUSES = frozenset({502, 503, 504})
+
+
 def _kind(exc: BaseException) -> str:
-    """`refused` (never retried), `transient` (a new job) or `outage` (wait)."""
-    if isinstance(exc, ComposeJobFailed):
-        return "transient"
+    """`refused` (rewrite, never retried as such), `transient` (a new job, counted),
+    `outage` (wait, not counted) or `fatal` (the piece fails at once)."""
+    if isinstance(exc, ComposeJobFailed | RenderTimeout):
+        return "transient"  # the job ran and failed, or ran too long and was cancelled
     if isinstance(exc, RenderServiceError):
         if exc.code == "invalid_parameters":
             return "refused"
-        if exc.code == "timeout":
-            return "transient"  # the job was cancelled after its wait: a new job
+        if exc.status in _OUTAGE_STATUSES:
+            return "outage"
+        if exc.status >= 500:
+            return "transient"
+        return "fatal"  # 4xx: the request is wrong, another try is the same request
+    if isinstance(exc, RenderUnavailable | ConnectionError | TimeoutError) or _transport(exc):
         return "outage"
-    return "outage"  # the service did not answer (connection refused, DNS, not configured)
+    return "fatal"
+
+
+def _transport(exc: BaseException) -> bool:
+    """An httpx transport error (connect, read, DNS): the service did not answer."""
+    try:
+        import httpx  # noqa: PLC0415 - lazy, like the client
+    except ImportError:  # pragma: no cover - httpx is a dependency of the render client
+        return False
+    return isinstance(exc, httpx.TransportError)
+
+
+def _code(exc: BaseException) -> str:
+    return str(getattr(exc, "code", "") or type(exc).__name__)
+
+
+def _log_wait(run: pipeline.Preparation, now: datetime, why: str) -> None:
+    key = (run.tenant_id, run.draft_id, run.revision)
+    last = _last_wait_log.get(key)
+    if last is None or now - last >= _WAIT_LOG_EVERY:
+        _last_wait_log[key] = now
+        logger.warning("draft %s r%s waits: %s", run.draft_id, run.revision, why)
+
+
+def raise_if_waiting(run: pipeline.Preparation, now: datetime | None = None) -> None:
+    """Called before a queued generation replays anything: when the render service did not
+    answer in this `OUTAGE_BACKOFF` bucket already, the pass stops at once (`RenderWait`) —
+    no replay, no render call. Past `OUTAGE_WINDOW` the pass goes on, and fails the piece.
+    Off (`QUALIFY_IMAGE_LAYER`): returns at once, without reading anything."""
+    if not layer_enabled():
+        return
+    store = pipeline.PipelineStore()
+    row = store.load_step(run, FIRST_FAILURE_STEP)
+    if row is None:
+        return
+    now = now or _now()
+    elapsed = now - datetime.fromisoformat(str(row["request"]["first_failure_at"]))
+    if elapsed >= OUTAGE_WINDOW:
+        return
+    if store.load_step(run, outage_step(int(elapsed / OUTAGE_BACKOFF))) is None:
+        return  # not tried in this bucket yet: this pass tries
+    _log_wait(run, now, "render service tried in the last 45 s")
+    raise RenderWait("the piece waits for the render service")
 
 
 def _waited(
@@ -502,9 +647,9 @@ def _waited(
     store: Any,
     position: int,
     exc: BaseException,
-) -> None:
+) -> datetime:
     """Record the piece's FIRST render failure (once: a later one never resets it) and fail
-    the piece once `OUTAGE_WINDOW` has passed since then."""
+    the piece once `OUTAGE_WINDOW` has passed since then. Returns the first failure."""
     now = piece.clock()
     if run is not None and store is not None:
         row = store.load_step(run, FIRST_FAILURE_STEP)
@@ -525,32 +670,29 @@ def _waited(
             piece.first_failure = now
         first = piece.first_failure
     if now - first >= OUTAGE_WINDOW:
-        raise _render_failure(exc, position, waited=now - first)
+        raise _render_failure(exc, position, why=f"waited {int((now - first).total_seconds())} s")
+    return first
 
 
 def _render_failure(
-    exc: BaseException,
-    position: int,
-    *,
-    attempts: int | None = None,
-    waited: timedelta | None = None,
+    exc: BaseException, position: int, *, why: str = "no queue to wait in"
 ) -> _MediaFailed:
-    why = (
-        f"{attempts} attempts"
-        if attempts
-        else f"waited {int(waited.total_seconds())} s"
-        if waited is not None
-        else "no queue to wait in"
-    )
     return _MediaFailed(
-        FailureReason.RENDER_ERROR.value,
-        OWNER_FAILED,
+        COMPOSE_FAILURE,
+        "",  # the screen's text is the code's (FAILURE_INFO): one reason, not two
         raw=f"compose of slide {position + 1} failed ({why}): {type(exc).__name__}: {exc}",
     )
 
 
-def _note(result: Mapping[str, Any], layer: LayerWrite) -> str:
+def _note(result: Mapping[str, Any], layer: LayerWrite, price_required: bool) -> str:
     """Why the compositor refused this layer, for the rewrite (the model's language)."""
+    if result.get("reason") == "price_unavailable" and not price_required:
+        return "esta publicación no muestra precio: deja price_product_id vacío."
+    if result.get("reason") in ("price_missing", "price_unavailable"):
+        return (
+            "esta imagen debe llevar el precio de la publicación: pon price_product_id con el "
+            "producto que tiene precio y elige un diseño que lleve precio (plate o band)."
+        )
     if result.get("slot") == "price":
         return (
             f"el precio no cabe en el diseño «{layer.layout_id}» ni en los de su cadena. "
@@ -573,7 +715,7 @@ def _refusal_failure(
         for p, r in sorted(refused.items())
     )
     return _MediaFailed(
-        FailureReason.INVALID_PARAMETERS.value,
-        OWNER_PRICE if price else OWNER_FAILED,
+        PRICE_FAILURE if price else COMPOSE_FAILURE,
+        "",  # the screen's text is the code's (FAILURE_INFO)
         raw=f"the compositor refused the layer after its rewrite: {detail}",
     )

@@ -124,12 +124,17 @@ unknown family uses the fallback, deterministically, with a `warnings` entry.
 
 **In live generation** (m-25040499, behind `QUALIFY_IMAGE_LAYER`): Python composes each slide
 that has a layer as one `layer_still` job (`qualify_api/creative/image_pipeline/compose_run.py`).
-A job that ran and failed for a transient reason (`render_error`, `timeout`, `internal_error`,
-a completed job without a report) is resubmitted under a NEW id — `attempt` N>0 is part of the
-`uuid5` name, attempt 0 keeps the id it always had — at most 3 attempts per slide. A refusal
-(`invalid_parameters`) is never resubmitted: the layer is rewritten once instead. When the service
-does not answer, the piece waits in the queue up to 10 minutes from its first failure (never
-reset), then fails; it is never drawn by another compositor instead.
+A job that ran and failed (`render_error`, `internal_error`, a completed job without a report,
+a job `wait` gave up on) or any other 5xx is resubmitted under a NEW id — `attempt` N>0 is part
+of the `uuid5` name, attempt 0 keeps the id it always had — at most 3 attempts per slide. A
+refusal (`invalid_parameters`) is never resubmitted: the layer is rewritten once instead; any
+other 4xx fails the piece at once. When the service does not answer (a transport error,
+502/503/504), the piece waits in the queue up to 10 minutes from its first failure (never reset),
+trying at most once every 45 s, then fails; it is never drawn by another compositor instead.
+In practice a catalog price never triggers the price refusal: at the minimum title size the
+price line takes about 21–26 characters in `band` 1:1 (≈0.6–0.75 em per glyph), and
+`price_label` writes «$1.250.000» (10) or «Bs. 1.250.000,50» (16) — the refusal is the safety
+net for an unusually wide brand face or an implausible amount.
 
 `video_text` **v1** (EF-05, m-25026573; D1 of ADR 50) draws the owner's text over a video as
 ONE transparent PNG (port `overlay`, 1080×1920, format 9:16) that Python lays over every frame

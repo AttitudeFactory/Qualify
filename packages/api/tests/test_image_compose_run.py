@@ -14,9 +14,11 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+import httpx
 import pytest
-from qualify_creative.enums import FailureReason
 from qualify_creative.layer_spec import LayerSpec
+from qualify_creative.render.client import RenderServiceError, RenderTimeout
+from qualify_creative.render.layer_compose import ComposeJobFailed
 
 from qualify_api.claude_tools import DollarMeter
 from qualify_api.creative import pipeline
@@ -24,16 +26,21 @@ from qualify_api.creative.brand_references import BrandReferencesSet
 from qualify_api.creative.image_pipeline import compose_run
 from qualify_api.creative.image_pipeline.base import BaseScene
 from qualify_api.creative.image_pipeline.compose_run import (
+    COMPOSE_FAILURE,
     FIRST_FAILURE_STEP,
     MAX_ATTEMPTS,
-    OWNER_FAILED,
-    OWNER_PRICE,
+    PRICE_FAILURE,
+    RenderWait,
     attempt_step,
     compose_slides,
+    outage_step,
+    raise_if_waiting,
 )
 from qualify_api.creative.image_pipeline.layer import (
     FREE_IDEA,
     LAYER_BUDGET_USD,
+    BusinessFacts,
+    CatalogProduct,
     LayerRequest,
     SlideInput,
 )
@@ -41,6 +48,7 @@ from qualify_api.creative.image_pipeline.layer_run import (
     LAYER_STEPS,
     REWRITE_SUFFIX,
     LayerOutcome,
+    piece_products,
 )
 from qualify_api.creative.media import BasePhoto, LayerWrite, _MediaFailed, _Saver
 from qualify_api.creative.queue_dispatch import CheckpointError
@@ -198,7 +206,9 @@ def _layer(position: int, *, price: bool = False) -> LayerWrite:
     )
 
 
-def _outcome(layers: dict[int, LayerWrite], *, prices: bool = True) -> LayerOutcome:
+def _outcome(
+    layers: dict[int, LayerWrite], *, prices: bool = True, price_line: str = ""
+) -> LayerOutcome:
     scenes = {
         p: BaseScene(
             image=f"photo-{p}".encode(),
@@ -221,6 +231,7 @@ def _outcome(layers: dict[int, LayerWrite], *, prices: bool = True) -> LayerOutc
         format="4:5",
         piece_type=FREE_IDEA,
         slides=tuple(SlideInput(position=p, photo=scenes[p].image) for p in sorted(scenes)),
+        price_line=price_line,
     )
     return LayerOutcome(
         scenes=scenes,
@@ -277,10 +288,12 @@ def _compose(
     clock: Clock | None = None,
     env: dict[str, str] | None = None,
     store: MemoryStore | None = None,
+    keep_images: Any = (),
 ) -> dict[int, Any]:
     producer = _producer(composer, writer, clock, store)
     return compose_slides(
         producer,
+        keep_images=keep_images,
         outcome=outcome,
         tenant_id=TENANT_ID,
         draft_id=DRAFT,
@@ -353,7 +366,7 @@ def test_an_attempt_left_unanswered_is_made_again_with_the_same_job(
 
 def test_the_catalog_price_reaches_the_render(monkeypatch: pytest.MonkeyPatch) -> None:
     composer = Composer()
-    composed = _compose(_outcome({0: _layer(0, price=True)}), composer)
+    composed = _compose(_outcome({0: _layer(0, price=True)}, price_line=PRICE), composer)
     assert composer.requests[0].price_text == PRICE
     assert composed[0].params["printed"]["price"] is True
 
@@ -362,7 +375,7 @@ def test_a_price_that_does_not_fit_is_rewritten_once_and_drawn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     writer = PricedWriter(spend=Decimal("0.05"))
-    outcome = _outcome({0: _layer(0, price=True)})
+    outcome = _outcome({0: _layer(0, price=True)}, price_line=PRICE)
     outcome.budget.charge(Decimal("0.10"), what="the stage's first call")
     composer = Composer({0: ["refuse_price"]})
     composed = _compose(outcome, composer, writer=writer)
@@ -380,37 +393,43 @@ def test_a_price_that_does_not_fit_is_rewritten_once_and_drawn(
 def test_a_rewrite_that_gives_the_price_up_fails_the_piece() -> None:
     composer = Composer({0: ["refuse_price"]})
     with pytest.raises(_MediaFailed) as failed:
-        _compose(_outcome({0: _layer(0, price=True)}), composer, writer=Writer())
-    assert failed.value.detail == OWNER_PRICE
+        _compose(_outcome({0: _layer(0, price=True)}, price_line=PRICE), composer, writer=Writer())
+    assert failed.value.failure == PRICE_FAILURE
     assert len(composer.requests) == 1  # the priceless rewrite is never drawn
 
 
 def test_a_price_still_too_wide_fails_the_piece_never_drops_it() -> None:
     composer = Composer({0: ["refuse_price", "refuse_price"]})
     with pytest.raises(_MediaFailed) as failed:
-        _compose(_outcome({0: _layer(0, price=True)}), composer, writer=PricedWriter())
-    assert failed.value.detail == OWNER_PRICE
-    assert failed.value.failure == FailureReason.INVALID_PARAMETERS.value
+        _compose(
+            _outcome({0: _layer(0, price=True)}, price_line=PRICE), composer, writer=PricedWriter()
+        )
+    assert failed.value.failure == PRICE_FAILURE
+    assert failed.value.detail == ""  # one reason on screen: the code's text
     assert len(composer.requests) == 2  # the layer, then its rewrite — no other attempt
 
 
 def test_a_report_that_dropped_the_price_is_never_accepted() -> None:
     composer = Composer({0: ["drop_price", "drop_price"]})
     with pytest.raises(_MediaFailed) as failed:
-        _compose(_outcome({0: _layer(0, price=True)}), composer, writer=PricedWriter())
-    assert failed.value.detail == OWNER_PRICE
+        _compose(
+            _outcome({0: _layer(0, price=True)}, price_line=PRICE), composer, writer=PricedWriter()
+        )
+    assert failed.value.failure == PRICE_FAILURE
 
 
 def test_a_price_the_catalog_lost_is_never_drawn_without_it() -> None:
     composer = Composer()
     with pytest.raises(_MediaFailed) as failed:
-        _compose(_outcome({0: _layer(0, price=True)}, prices=False), composer)
-    assert failed.value.detail == OWNER_PRICE and composer.requests == []
+        _compose(_outcome({0: _layer(0, price=True)}, price_line=PRICE, prices=False), composer)
+    assert failed.value.failure == PRICE_FAILURE and composer.requests == []
 
     composer = Composer()  # a rewrite that keeps the reference cannot print it either
     with pytest.raises(_MediaFailed):
         _compose(
-            _outcome({0: _layer(0, price=True)}, prices=False), composer, writer=PricedWriter()
+            _outcome({0: _layer(0, price=True)}, price_line=PRICE, prices=False),
+            composer,
+            writer=PricedWriter(),
         )
     assert composer.requests == []
 
@@ -418,8 +437,12 @@ def test_a_price_the_catalog_lost_is_never_drawn_without_it() -> None:
 def test_a_failed_rewrite_fails_the_piece() -> None:
     composer = Composer({0: ["refuse_price"]})
     with pytest.raises(_MediaFailed) as failed:
-        _compose(_outcome({0: _layer(0, price=True)}), composer, writer=Writer(fail=True))
-    assert failed.value.detail == OWNER_PRICE
+        _compose(
+            _outcome({0: _layer(0, price=True)}, price_line=PRICE),
+            composer,
+            writer=Writer(fail=True),
+        )
+    assert failed.value.failure == PRICE_FAILURE
 
 
 def test_a_refusal_is_never_retried_as_such() -> None:
@@ -429,7 +452,7 @@ def test_a_refusal_is_never_retried_as_such() -> None:
         composer = Composer({0: [step, step]})
         with pytest.raises(_MediaFailed) as failed:
             _compose(_outcome({0: _layer(0)}), composer)
-        assert failed.value.detail == OWNER_FAILED
+        assert failed.value.failure == COMPOSE_FAILURE
         assert [r.attempt for r in composer.requests] == [0, 0]
 
 
@@ -445,8 +468,8 @@ def test_a_transient_failure_is_a_new_job_at_most_three_times() -> None:
     with pytest.raises(_MediaFailed) as failed:
         _compose(_outcome({0: _layer(0)}), composer)
     assert len(composer.requests) == MAX_ATTEMPTS == 3
-    assert failed.value.detail == OWNER_FAILED
-    assert failed.value.failure == FailureReason.RENDER_ERROR.value
+    assert failed.value.failure == COMPOSE_FAILURE
+    assert failed.value.detail == ""
 
 
 def test_attempt_zero_keeps_the_job_id_it_always_had() -> None:
@@ -501,8 +524,8 @@ def test_an_outage_waits_ten_minutes_from_the_first_failure_never_reset(
     clock.now = T0 + timedelta(minutes=10)
     with pytest.raises(_MediaFailed) as failed:
         _in_pass(checkpoints, monkeypatch, outcome, Composer({0: ["outage"]}), clock=clock)
-    assert failed.value.detail == OWNER_FAILED
-    assert failed.value.failure == FailureReason.RENDER_ERROR.value
+    assert failed.value.failure == COMPOSE_FAILURE
+    assert failed.value.detail == ""
 
 
 def test_the_window_counts_transient_failures_too(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,7 +545,7 @@ def test_the_window_counts_transient_failures_too(monkeypatch: pytest.MonkeyPatc
 def test_outside_the_queue_an_outage_fails_at_once() -> None:
     with pytest.raises(_MediaFailed) as failed:
         _compose(_outcome({0: _layer(0)}), Composer({0: ["outage"]}))
-    assert failed.value.detail == OWNER_FAILED
+    assert failed.value.failure == COMPOSE_FAILURE
 
 
 def test_no_render_service_is_an_outage_never_a_pillow_still() -> None:
@@ -541,14 +564,14 @@ def test_no_render_service_is_an_outage_never_a_pillow_still() -> None:
             save=_Saver(producer._store, TENANT_ID, DRAFT, 1),
             env=ON,
         )
-    assert failed.value.detail == OWNER_FAILED
+    assert failed.value.failure == COMPOSE_FAILURE
 
 
 def test_the_rewrite_is_a_layer_step_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replayed like the stage's own calls: a restart reads the rewrite back, pays nothing."""
     checkpoints, store = JsonCheckpoints(), MemoryStore()
     writer = PricedWriter()
-    outcome = _outcome({0: _layer(0, price=True)})
+    outcome = _outcome({0: _layer(0, price=True)}, price_line=PRICE)
     _in_pass(
         checkpoints,
         monkeypatch,
@@ -563,7 +586,7 @@ def test_the_rewrite_is_a_layer_step_of_its_own(monkeypatch: pytest.MonkeyPatch)
     again = _in_pass(
         checkpoints,
         monkeypatch,
-        _outcome({0: _layer(0, price=True)}),
+        _outcome({0: _layer(0, price=True)}, price_line=PRICE),
         composer,
         writer=writer,
         store=store,
@@ -577,3 +600,203 @@ def test_compose_run_keeps_its_steps_below_the_layer_s() -> None:
     assert len(set(steps)) == len(steps)
     assert max(steps) < FIRST_FAILURE_STEP < min(LAYER_STEPS)
     assert compose_run.OUTAGE_WINDOW == timedelta(minutes=10)
+
+
+# -- review 2026-11-16 ---------------------------------------------------------------------
+
+
+def test_review1_a_cover_without_the_piece_s_price_is_rewritten_never_drawn() -> None:
+    """`price_line` set: the first image without its price reference is refused (slot price)
+    before any render, rewritten once, and drawn only with the price."""
+    composer = Composer()
+    writer = PricedWriter()
+    composed = _compose(_outcome({0: _layer(0)}, price_line=PRICE), composer, writer=writer)
+    assert "precio" in writer.requests[0].rewrite_note
+    assert len(composer.requests) == 1 and composer.requests[0].price_text == PRICE
+    assert composed[0].layer.spec["price_ref"] == {"product_id": PRODUCT}
+
+    composer = Composer()
+    with pytest.raises(_MediaFailed) as failed:  # the rewrite still leaves it out
+        _compose(_outcome({0: _layer(0)}, price_line=PRICE), composer, writer=Writer())
+    assert failed.value.failure == PRICE_FAILURE and composer.requests == []
+
+
+def test_review1_only_the_first_image_must_carry_the_price() -> None:
+    composer = Composer()
+    outcome = _outcome({0: _layer(0, price=True), 1: _layer(1)}, price_line=PRICE)
+    composed = _compose(outcome, composer)
+    assert set(composed) == {0, 1} and len(composer.requests) == 2
+
+
+def test_review2_no_price_line_no_price_and_only_the_brief_s_own_product() -> None:
+    a = CatalogProduct(uuid4(), "Shawarma mixto", has_price=True, price_text="$12.000")
+    b = CatalogProduct(uuid4(), "Shawarma mixto grande", has_price=True, price_text="$18.000")
+    c = CatalogProduct(uuid4(), "Shawarma", has_price=True, price_text="$12.000")
+    hidden = piece_products((a, b, c), price_line="", product_ref="Shawarma mixto")
+    assert [p.has_price for p in hidden] == [False, False, False]  # the angle hides it
+    shown = piece_products((a, b, c), price_line="$12.000", product_ref="shawarma mixto")
+    assert [p.has_price for p in shown] == [True, False, False]  # ONE: its label, its name
+    other = piece_products((b, c), price_line="$12.000", product_ref="Shawarma mixto")
+    assert [p.has_price for p in other] == [False, True]  # the label decides the price
+
+
+def test_review2_the_stage_offers_only_the_piece_s_price() -> None:
+    from qualify_creative.enums import ContentKind
+
+    from qualify_api.creative.image_pipeline import layer_run
+
+    from .test_creative_media_byteplus import _brief
+
+    mine = CatalogProduct(uuid4(), "Shawarma mixto", has_price=True, price_text="$12.000")
+    other = CatalogProduct(uuid4(), "Shawarma grande", has_price=True, price_text="$18.000")
+    producer = SimpleNamespace()
+    writer = Writer()
+    _wire(producer, writer, [])
+    producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), (mine, other))
+    outcome = layer_run.run_layer_stage(
+        producer,
+        tenant_id=TENANT_ID,
+        draft_id=DRAFT,
+        revision=1,
+        brief=_brief(ContentKind.STATIC_FLYER),
+        copy=COPY,
+        brand="Korner",
+        scenes={0: BaseScene(b"a", "p0")},
+        regenerate=lambda p: None,
+        gallery=False,
+        price_line="$12.000",
+        env=ON,
+    )
+    request = writer.requests[0]
+    assert request.price_line == "$12.000"
+    assert [p.has_price for p in request.products] == [True, False]
+    assert outcome.prices == {str(mine.product_id): "$12.000"}
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind"),
+    [
+        (ComposeJobFailed("render_error", 500, "x"), "transient"),
+        (RenderTimeout("timeout", 504, "waited"), "transient"),
+        (RenderServiceError("internal_error", 500, "x"), "transient"),
+        (RenderServiceError("internal_error", 502, "bad gateway"), "outage"),
+        (RenderServiceError("internal_error", 503, "x"), "outage"),
+        (RenderServiceError("timeout", 504, "proxy"), "outage"),
+        (RenderServiceError("not_found", 404, "x"), "fatal"),
+        (RenderServiceError("not_ready", 409, "x"), "fatal"),
+        (RenderServiceError("invalid_parameters", 422, "x"), "refused"),
+        (ConnectionError("refused"), "outage"),
+        (httpx.ConnectError("refused"), "outage"),
+        (compose_run.RenderUnavailable("none"), "outage"),
+        (KeyError("bug"), "fatal"),
+    ],
+)
+def test_review3_failures_are_classified(exc: BaseException, kind: str) -> None:
+    assert compose_run._kind(exc) == kind
+
+
+class Raising(Composer):
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__()
+        self.exc = exc
+
+    def __call__(self, request: Any, read_media: Any) -> Any:
+        self.requests.append(request)
+        raise self.exc
+
+
+def test_review3_a_rejected_request_fails_at_once_and_5xx_spends_attempts() -> None:
+    composer = Raising(RenderServiceError("not_found", 404, "no template"))
+    with pytest.raises(_MediaFailed) as failed:
+        _compose(_outcome({0: _layer(0)}), composer)
+    assert failed.value.failure == COMPOSE_FAILURE and len(composer.requests) == 1
+
+    composer = Raising(RenderServiceError("internal_error", 500, "crash"))
+    with pytest.raises(_MediaFailed):
+        _compose(_outcome({0: _layer(0)}), composer)
+    assert [r.attempt for r in composer.requests] == [0, 1, 2]
+
+    composer = Raising(RenderServiceError("internal_error", 503, "down"))
+    with pytest.raises(_MediaFailed):  # inline: nothing can wait
+        _compose(_outcome({0: _layer(0)}), composer)
+    assert len(composer.requests) == 1
+
+
+def test_review4_an_outage_tries_at_most_once_per_backoff(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("QUALIFY_IMAGE_LAYER", "on")
+    checkpoints, clock = JsonCheckpoints(), Clock()
+    outcome = _outcome({0: _layer(0)})
+    run = pipeline.Preparation(TENANT_ID, DRAFT, 1, "generation", uuid4(), 1)
+    compose_run._last_wait_log.clear()
+    with caplog.at_level("WARNING", logger=compose_run.__name__):
+        with pytest.raises(RenderWait):
+            _in_pass(checkpoints, monkeypatch, outcome, Composer({0: ["outage"]}), clock=clock)
+        assert checkpoints.rows[outage_step(0)]["request"]["at"] == T0.isoformat()
+        # the next passes within 45 s stop before anything is replayed
+        for seconds in (1, 20, 44):
+            with pytest.raises(RenderWait):
+                raise_if_waiting(run, now=T0 + timedelta(seconds=seconds))
+    waits = [r for r in caplog.records if "waits" in r.getMessage()]
+    assert len(waits) == 1  # four stopped passes, one WARNING (once a minute)
+    assert all(r.levelname == "WARNING" for r in waits)
+    raise_if_waiting(run, now=T0 + timedelta(seconds=46))  # a new bucket: this pass tries
+    raise_if_waiting(run, now=T0 + timedelta(minutes=10))  # past the window: goes on, fails
+    assert issubclass(RenderWait, CheckpointError)  # the worker retries it
+
+
+def test_review4_off_the_wait_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("QUALIFY_IMAGE_LAYER", raising=False)
+
+    class Untouchable:
+        def load_step(self, *args: Any) -> None:
+            raise AssertionError("read with the switch off")
+
+    monkeypatch.setattr(pipeline, "PipelineStore", Untouchable)
+    raise_if_waiting(pipeline.Preparation(TENANT_ID, DRAFT, 1, "generation", uuid4(), 1))
+
+
+def test_review5_the_lease_is_kept_while_the_slides_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    kept: list[Any] = []
+
+    @contextmanager
+    def lease_kept(store: Any, run: Any):  # noqa: ANN202
+        kept.append(run)
+        yield
+
+    monkeypatch.setattr(pipeline, "lease_kept", lease_kept)
+    _in_pass(JsonCheckpoints(), monkeypatch, _outcome({0: _layer(0)}), Composer())
+    assert len(kept) == 1
+    _compose(_outcome({0: _layer(0)}), Composer())  # inline: no lease to keep
+    assert len(kept) == 1
+
+
+class CountingStore(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: list[str] = []
+
+    def read(self, key: str) -> bytes:
+        self.reads.append(key)
+        return super().read(key)
+
+
+def test_review6_only_the_still_a_reel_needs_is_kept_in_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _outcome({0: _layer(0), 1: _layer(1)})
+    composed = _compose(outcome, Composer())
+    assert all(c.image is None for c in composed.values())
+    composed = _compose(outcome, Composer(), keep_images={0})
+    assert composed[0].image is not None and composed[1].image is None
+
+    checkpoints, store = JsonCheckpoints(), CountingStore()
+    _in_pass(checkpoints, monkeypatch, outcome, Composer(), store=store, keep_images={0})
+    store.reads.clear()
+    again = _in_pass(checkpoints, monkeypatch, outcome, Composer(), store=store, keep_images={0})
+    assert store.reads == [again[0].key]  # a replay reads back the Reel's still only

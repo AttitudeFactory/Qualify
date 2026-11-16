@@ -226,6 +226,11 @@ class LayerRequest:
     #: m-25040499: why the compositor could not draw the previous layer of these images (a
     #: price wider than its box, ADR 49 D5) — sent once, as a rewrite; "" on a first call
     rewrite_note: str = ""
+    #: m-25040499: the price the piece prints (`MediaInputs.price_line`, the catalog's label of
+    #: the brief's product). Set: the first image MUST point at that product's price (the
+    #: Pillow composer printed it on the cover; a priced piece never loses it). Empty: no
+    #: price on any image (the angle hides it). Only the matching product is offered priced.
+    price_line: str = ""
 
     @property
     def is_carousel(self) -> bool:
@@ -653,12 +658,22 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
         )
     price_ref = None
     product_id = str(raw.get("price_product_id") or "").strip()
+    priced = [str(p.product_id) for p in request.products if p.has_price]
     if product_id:
-        priced = {str(p.product_id) for p in request.products if p.has_price}
         if product_id not in priced:
-            problems.append(f"{product_id} is not a catalog product with a price")
+            problems.append(
+                f"{product_id} is not the price of this piece"
+                if request.price_line.strip()
+                else f"{product_id} is not a catalog product with a price"
+            )
         else:
             price_ref = {"product_id": product_id}
+    elif slide.position == 0 and request.price_line.strip() and priced:
+        # m-25040499: the piece's price is printed on its first image — never left out
+        problems.append(
+            f"the price is required on this image: set price_product_id to {priced[0]} "
+            "and pick a layout that takes a price (plate or band)"
+        )
     highlight = None
     kind = raw.get("highlight_kind")
     if kind and kind != "none":

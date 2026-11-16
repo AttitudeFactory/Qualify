@@ -166,6 +166,8 @@ def ad_image(
         gallery=media.carousel,
         slide_count=len(based) + 1 if media.carousel else None,
         title_font=kit.typeface,  # the face the render draws titles with (heading, else body)
+        # m-25040499: the price Pillow prints on the cover — required there, else none at all
+        price_line=media.price_line,
     )
     based = [outcome.scenes[index] for index in range(len(based))]
     layers = outcome.layers
@@ -194,6 +196,8 @@ def ad_image(
         brand_name=brand,
         logo_key=media.brand_logo_key,
         save=save,
+        # only a Reel needs a still's bytes (it pushes in on the first); the rest are keys
+        keep_images={0} if brief.format is ContentFormat.REELS_9_16 else (),
     )
     layers = {**layers, **{p: c.layer for p, c in composed.items()}}
     width, height = brief.format.dimensions
@@ -205,7 +209,7 @@ def ad_image(
         return [
             replace(
                 producer._ad_reel(
-                    composed[0].image if 0 in composed else slides[0],
+                    composed[0].image or slides[0] if 0 in composed else slides[0],
                     brief=brief,
                     model_id=model_id,
                     params={

@@ -2627,6 +2627,14 @@ class ContentService:
         execution = current_preparation()
         if execution is not None and execution.revision != draft.revision:
             return  # A superseded job never reads the current revision as its own request.
+        if execution is not None:
+            # m-25040499: a piece waiting for the render service stops here, before anything
+            # is replayed, until its next try (at most one per 45 s, 10 minutes in all)
+            from qualify_api.creative.image_pipeline.compose_run import (  # noqa: PLC0415
+                raise_if_waiting,
+            )
+
+            raise_if_waiting(execution)
 
         try:
             self._generate(tenant_id=tenant_id, draft=draft)

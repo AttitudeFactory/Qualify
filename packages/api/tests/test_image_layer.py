@@ -406,3 +406,22 @@ def test_business_info_takes_info_card_only() -> None:
     assert "«Información de tu negocio»: info_card" in text
     with pytest.raises(ValueError, match="is not one of info_card"):
         layer.spec_from_answer(_slide(), request, request.slides[0])
+
+
+def test_a_priced_piece_points_at_its_price_on_its_first_image() -> None:
+    """m-25040499 (review 2026-11-16): the Pillow composer printed `price_line` on the cover;
+    the layer must too — a missing reference there is a problem for the repair turn."""
+    request = _request(price_line="$12.000")
+    with pytest.raises(ValueError, match="price is required on this image"):
+        layer.spec_from_answer(_slide(price_product_id=""), request, request.slides[0])
+    assert layer.spec_from_answer(_slide(), request, request.slides[0]).price_ref is not None
+    with pytest.raises(ValueError, match="is not the price of this piece"):
+        layer.spec_from_answer(
+            _slide(price_product_id=str(NO_PRICE.product_id)), request, request.slides[0]
+        )
+    gallery = _request(count=3, price_line="$12.000")
+    body = _slide(position=1, price_product_id="")
+    assert layer.spec_from_answer(body, gallery, gallery.slides[1]).price_ref is None
+    # no price line: nothing required (the stage then offers no priced product at all)
+    plain = _request()
+    assert layer.spec_from_answer(_slide(price_product_id=""), plain, plain.slides[0])
