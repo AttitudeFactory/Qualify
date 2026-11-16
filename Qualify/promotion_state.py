@@ -781,8 +781,11 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.event
-    def choose_place(self, key: str) -> rx.event.EventSpec | None:
-        place = next((row for row in self.place_results if row.key == key), None)
+    def choose_place(self, key: str, kind: str) -> rx.event.EventSpec | None:
+        # A city and a region may share a key: match both.
+        place = next(
+            (row for row in self.place_results if row.key == key and row.kind == kind), None
+        )
         if self.busy or place is None:
             return None
         self.form = replace(

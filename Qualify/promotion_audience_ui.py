@@ -75,7 +75,7 @@ def _place(place: rx.Var) -> rx.Component:
             align_items="start",
             width="100%",
         ),
-        on_click=S.choose_place(place.key),
+        on_click=S.choose_place(place.key, place.kind),
         disabled=S.busy,
         variant="outline",
         min_height="44px",

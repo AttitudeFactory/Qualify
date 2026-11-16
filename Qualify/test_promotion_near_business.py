@@ -21,6 +21,7 @@ from .promotion_audience_vm import (
     NEAR_HOUSING_PROBLEM,
     NEAR_LOCATION_MISSING,
     POINT_NAME,
+    AudiencePlaceVM,
     captured_point,
     location_problem,
     point_distance_hint,
@@ -292,7 +293,7 @@ def test_city_or_region_search_returns_both_tagged_and_a_region_is_selectable(
     context = NearContext()
     context.form = replace(context.form, radius_km="20")
     context.place_results = rows
-    PromotionState.choose_place.fn(context, "456")
+    PromotionState.choose_place.fn(context, "456", "region")
     form = context.form
     assert (form.location_kind, form.location_key, form.radius_km) == ("region", "456", "")
     assert step_problem(form, 3) == ""
@@ -301,7 +302,7 @@ def test_city_or_region_search_returns_both_tagged_and_a_region_is_selectable(
     }
     # A city keeps its 17-80 km distance.
     context.place_results = rows
-    PromotionState.choose_place.fn(context, "123")
+    PromotionState.choose_place.fn(context, "123", "city")
     PromotionState.edit.fn(context, "radius_km", "20")
     assert step_problem(context.form, 3) == ""
     assert provider.audience_from_form(context.form).targeting()["geo_locations"] == {
@@ -421,3 +422,17 @@ def test_help_texts_hide_once_done() -> None:
     assert "radius_km" in condition_of("Si la dejas vac")
     assert "radius_out_of_range" in condition_of("Escribe una distancia entre 17 y 80")
     assert "Para una ciudad, la distancia" not in rendered
+
+
+def test_a_city_and_a_region_with_the_same_key_are_chosen_by_kind() -> None:
+    context = NearContext()
+    rows = [
+        AudiencePlaceVM("777", "city", "VE", "Mérida", "Mérida", "(ciudad)"),
+        AudiencePlaceVM("777", "region", "VE", "Mérida", "", "(región)"),
+    ]
+    context.place_results = list(rows)
+    PromotionState.choose_place.fn(context, "777", "region")
+    assert (context.form.location_kind, context.form.location_key) == ("region", "777")
+    context.place_results = list(rows)
+    PromotionState.choose_place.fn(context, "777", "city")
+    assert (context.form.location_kind, context.form.location_region) == ("city", "Mérida")

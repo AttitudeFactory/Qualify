@@ -46,10 +46,10 @@ def test_arbitrary_search_text_is_not_a_resolved_location_and_invalidates_consen
 def test_only_server_results_can_be_selected() -> None:
     context = AudienceContext()
     original = context.form
-    assert PromotionState.choose_place.fn(context, "untrusted") is None
+    assert PromotionState.choose_place.fn(context, "untrusted", "city") is None
     assert context.form == original
     context.place_results = [AudiencePlaceVM("1234", "city", "CO", "Cúcuta", "Norte de Santander")]
-    PromotionState.choose_place.fn(context, "1234")
+    PromotionState.choose_place.fn(context, "1234", "city")
     assert context.form.location_key == "1234"
     assert context.form.location_region == "Norte de Santander"
     assert not context.place_results
