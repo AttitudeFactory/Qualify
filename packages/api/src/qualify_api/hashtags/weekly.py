@@ -782,6 +782,11 @@ class PostgresRubroSource:
         return business_rubro(tenant_id, [(r.brand_id, r.connect) for r in rows], country)
 
 
+#: Where the editor's «Sugerir con IA» reads a business's rubro tags (m-25032581) — the
+#: same read the weekly pass makes; tests install a `MemoryRubroSource`.
+RUBRO_SOURCE: RubroSource = PostgresRubroSource()
+
+
 def has_headroom(tenant_id: UUID, now: datetime) -> bool:
     """False when the business already spent more than `DAILY_HEADROOM` credits today or
     `MONTHLY_HEADROOM` this month (its local day and month); always True for a business
@@ -1163,6 +1168,7 @@ __all__ = [
     "MONTHLY_HEADROOM",
     "PARSER_VERSION",
     "PATH",
+    "RUBRO_SOURCE",
     "REREAD_AFTER",
     "RETRY_AFTER",
     "SOURCE",

@@ -931,6 +931,10 @@ def _catalog(monkeypatch, *, views: dict[str, int] | None = None, fuzzy: bool = 
             ],
         )
     monkeypatch.setattr(hashtag_catalog, "REPOSITORY", repo)
+    # m-25032581: no rubro read reaches a database; a test that needs one installs it
+    from qualify_api.hashtags import weekly as hashtag_weekly
+
+    monkeypatch.setattr(hashtag_weekly, "RUBRO_SOURCE", hashtag_weekly.MemoryRubroSource())
     return repo
 
 
@@ -1026,3 +1030,116 @@ async def test_a_catalog_failure_leaves_the_editor_working(monkeypatch) -> None:
     await _load_catalog(state)
     assert state.edit_catalog_tags == ["antes"]  # untouched, no error raised
     assert "shawarma" in state.hashtag_suggestions  # the caption's own words still help
+
+
+# -- m-25032581: the tags that accompany the rubro's own on the most watched videos -----
+
+
+def _rubro_with_companions(monkeypatch, repo) -> None:
+    """The business's rubro is `ensaladas`; the weekly read found it on two videos with
+    `comidasaludable` (and the generic `like`) and on one with `recetasfaciles`."""
+    from datetime import UTC, datetime, timedelta
+
+    from qualify_api.hashtags import Classification
+    from qualify_api.hashtags import weekly as hashtag_weekly
+    from qualify_api.hashtags.repository import NewPostSighting
+
+    now = datetime.now(UTC)
+    videos = {
+        "v1": (["ensaladas", "comidasaludable", "like"], 2_000_000),
+        "v2": (["ensaladas", "comidasaludable"], 400_000),
+        "v3": (["ensaladas", "recetasfaciles"], 9_000),
+    }
+    repo.record_post_sightings(
+        _TENANT_ID,
+        [
+            NewPostSighting(
+                tag=tag,
+                network="tiktok",
+                post_id=post,
+                source="hashtag_weekly",
+                source_ref="tiktok:hashtag_weekly",
+                parser_version="tiktok-hashtag-weekly/2",
+                posted_at=now - timedelta(days=4),
+                views=views,
+            )
+            for post, (tags, views) in videos.items()
+            for tag in tags
+        ],
+    )
+    repo.apply_classifications(
+        _TENANT_ID, [Classification("like", "generic", classified_by="rule")]
+    )
+    source = hashtag_weekly.MemoryRubroSource(
+        {_TENANT_ID: hashtag_weekly.BusinessRubro(_TENANT_ID, ("ensaladas",))}
+    )
+    monkeypatch.setattr(hashtag_weekly, "RUBRO_SOURCE", source)
+
+
+def _capture_watched(monkeypatch) -> list[dict]:
+    from qualify_api.hashtags import caption as caption_module
+
+    received: list[dict] = []
+
+    def fake_suggest(caption, *, attribution, seen=(), watched=(), current=(), api_key, **_):
+        received.append(
+            {
+                "seen": [s.tag for s in seen],
+                "watched": [(w.tag, w.views, w.posts) for w in watched],
+            }
+        )
+        return []
+
+    monkeypatch.setattr(caption_module, "suggest_for_caption", fake_suggest)
+    monkeypatch.setenv("QUALIFY_ANTHROPIC_API_KEY", "test-key-not-used")
+    return received
+
+
+async def test_the_model_gets_the_tags_that_accompany_the_rubro(monkeypatch) -> None:
+    repo = _catalog(monkeypatch)
+    _rubro_with_companions(monkeypatch, repo)
+    received = _capture_watched(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Ensalada fresca con pollo"
+    await _suggest(state)
+    # the rubro's own tag and the generic `like` are left out; most videos first
+    assert received[0]["watched"] == [
+        ("comidasaludable", 2_400_000, 2),
+        ("recetasfaciles", 9_000, 1),
+    ]
+
+
+async def test_without_rubro_tags_the_model_gets_no_watched_tags(monkeypatch) -> None:
+    repo = _catalog(monkeypatch)
+    _rubro_with_companions(monkeypatch, repo)
+    from qualify_api.hashtags import weekly as hashtag_weekly
+
+    monkeypatch.setattr(hashtag_weekly, "RUBRO_SOURCE", hashtag_weekly.MemoryRubroSource())
+
+    def never(*args, **kwargs):
+        raise AssertionError("no companions read without rubro tags")
+
+    monkeypatch.setattr(repo, "companions", never)
+    received = _capture_watched(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    await _suggest(state)
+    assert received == [{"seen": ["shawarmalovers", "shawarmacasero"], "watched": []}]
+
+
+async def test_a_companions_failure_leaves_the_suggestion_working(monkeypatch) -> None:
+    repo = _catalog(monkeypatch)
+    _rubro_with_companions(monkeypatch, repo)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(repo, "companions", broken)
+    received = _capture_watched(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    await _suggest(state)
+    # the model is still asked, with the catalog grounding and no watched tags
+    assert received == [{"seen": ["shawarmalovers", "shawarmacasero"], "watched": []}]
+    assert state.ai_hashtags_loading is False
+    assert state.ai_hashtags_note == "No hubo sugerencias nuevas para este texto."
