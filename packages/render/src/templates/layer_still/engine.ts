@@ -425,8 +425,12 @@ const titleMetrics = (ctx: Ctx, fit: Fit): {lh: number; below: number} => {
 /**
  * Fits title / price / subtitle / call phrase into `width`, dropping call_phrase then subtitle
  * (§1.7 check 3) while the stack is taller than `maxHeight` or a slot does not fit its lines.
- * The title is never dropped: null when it cannot fit at its minimum.
+ * The title is never dropped: null when it cannot fit at its minimum. The price is never
+ * dropped either (founder, 2026-11-16, ADR 49 §8.1 D5): a price line wider than the title box
+ * even at the smallest sizes answers `PRICE_DOES_NOT_FIT`, so this layout fails and the chain
+ * moves on — and when no layout of the chain can draw it, the layer is refused (slot `price`).
  */
+const PRICE_DOES_NOT_FIT = 'price' as const;
 const fitStack = (
   ctx: Ctx,
   width: number,
@@ -436,7 +440,7 @@ const fitStack = (
   titleWidth = width,
   /** slots this layout draws elsewhere (info_card puts the call phrase under its blocks) */
   skip: Array<'subtitle' | 'call_phrase'> = [],
-): Stack | null => {
+): Stack | null | typeof PRICE_DOES_NOT_FIT => {
   const {layer, def, format, measure} = ctx;
   const limit = (slot: 'title' | 'subtitle' | 'call_phrase'): number => def.slots[slot]?.[format]?.[1] ?? 0;
   const title = (layer.title ?? '').trim();
@@ -453,11 +457,9 @@ const fitStack = (
   // `step` lowers every slot's starting size by 4 px per step (never below its minimum):
   // a stack that is too tall first gets smaller, then loses slots
   const cap = ([max, min]: SizePair, step: number): SizePair => [Math.max(max - 4 * step, min), min];
-  let priceDropped = false;
   const build = (step: number): {pieces: Piece[]; failed: SlotName | null; atMin: boolean} => {
     const pieces: Piece[] = [];
     let atMin = true;
-    priceDropped = false;
     const capped = (pair: SizePair): SizePair => {
       const c = cap(pair, step);
       if (c[0] > c[1]) atMin = false;
@@ -478,7 +480,7 @@ const fitStack = (
         if (pfit) {
           pieces.push({slot: 'price', text: ctx.priceText.trim(), fit: pfit, role: 'heading', weight: 700, lh: LINE_HEIGHT.title, gapBefore: Math.max(GAP.price, afterTitle)});
           afterTitle = 0;
-        } else priceDropped = true; // wider than the title box: reported, never silent (review 2 #3)
+        } else return {pieces, failed: 'price', atMin}; // wider than the box: never dropped
       }
     }
     if (keep.subtitle) {
@@ -501,11 +503,19 @@ const fitStack = (
     const {pieces, failed, atMin} = build(step);
     const tooTall = failed === null && stackHeight(pieces) > maxHeight;
     if (failed === null && !tooTall) {
-      if (priceDropped) dropped.push('price');
       const w = Math.max(0, ...pieces.map((p) => Math.max(...p.fit.widths)));
       return {pieces, width: w, height: stackHeight(pieces)};
     }
     if (failed === 'title') return null;
+    if (failed === 'price') {
+      // smaller sizes first (the price line is 70 % of the title's); at the minimum, the
+      // layout cannot carry its price
+      if (!atMin) {
+        step += 1;
+        continue;
+      }
+      return PRICE_DOES_NOT_FIT;
+    }
     if (failed === 'subtitle' || failed === 'call_phrase') {
       // a slot that does not fit its own lines even at its minimum goes first
       keep = {...keep, [failed]: false};
@@ -669,6 +679,14 @@ const titleFailure = (ctx: Ctx, width: number, key: 'title' | 'title_brand_fill'
   return {ok: false, reason: fallback, slot: 'title', detail: `does not fit the room left at ${min} px`};
 };
 
+/** The price line does not fit this layout's box even at the smallest sizes (D5). */
+const priceFailure = (ctx: Ctx): Failure => ({
+  ok: false,
+  reason: 'price_does_not_fit',
+  slot: 'price',
+  detail: `«${ctx.priceText.trim()}» is wider than the box of '${ctx.layoutId}' at its smallest size`,
+});
+
 const fullCanvas = (ctx: Ctx): Rect => ({x: 0, y: 0, w: ctx.fmt.width, h: ctx.fmt.height});
 
 const photoFull = (ctx: Ctx): {placement: PhotoPlacement | null; subject: Rect | null} => {
@@ -712,6 +730,7 @@ const tryPlate = (ctx: Ctx, anchor: string, fallbacks: string[], dropped: string
   if (subj0) room = v === 'top' ? subj0.y - SUBJECT_TOLERANCE - sy0 : sy1 - (subj0.y + subj0.h + SUBJECT_TOLERANCE);
   if (room < 2 * pad + 60) return {ok: false, reason: 'covers_subject'};
   const stack = fitStack(ctx, maxW - 2 * pad, room - 2 * pad, dropped);
+  if (stack === PRICE_DOES_NOT_FIT) return priceFailure(ctx);
   if (!stack) return titleFailure(ctx, maxW - 2 * pad, 'title', subj0 ? 'no_room_beside_subject' : 'title_does_not_fit');
   const w = Math.ceil(stack.width + 2 * pad);
   const h = Math.ceil(stack.height + 2 * pad);
@@ -761,6 +780,7 @@ const tryScrim = (ctx: Ctx, anchor: 'top' | 'bottom', _fallbacks: string[], drop
   const bottomEdge = counter0 ? Math.min(sy1, counter0.rect.y - 16) : sy1;
   const room = anchor === 'bottom' ? bottomEdge - (H - cover + minFade + textPad) : cover - minFade - textPad - sy0;
   const stack = fitStack(ctx, width, room, dropped);
+  if (stack === PRICE_DOES_NOT_FIT) return priceFailure(ctx);
   if (!stack) return titleFailure(ctx, width);
   const top = anchor === 'bottom' ? bottomEdge - stack.height : sy0;
   const rect: Rect = {x: x0, y: top, w: stack.width, h: stack.height};
@@ -811,6 +831,7 @@ const tryBand = (ctx: Ctx, anchor: 'top' | 'bottom', reduced: boolean, fallbacks
     maxText = anchor === 'bottom' ? sy1 - (bandTop + pad) : H - bandTop - pad - sy0;
   } else maxText = maxF * H - pad - fmt.margin - counterRoom; // the text keeps the band's padding and the safe margin
   const stack = fitStack(ctx, width, maxText, dropped);
+  if (stack === PRICE_DOES_NOT_FIT) return priceFailure(ctx);
   if (!stack) return titleFailure(ctx, width);
 
   let band: Rect;
@@ -986,6 +1007,7 @@ const tryInfoCard = (ctx: Ctx, fallbacks: string[], dropped: string[]): Outcome 
   const room = bottom - top;
   const stack = fitStack(ctx, width, Math.max(0, room - probe.height - 40), dropped, 'title', titleW, ['call_phrase']);
   const hasTitle = !!(ctx.layer.title ?? '').trim();
+  if (stack === PRICE_DOES_NOT_FIT) return priceFailure(ctx);
   if (hasTitle && !stack) return titleFailure(ctx, titleW);
   const stackH = stack && stack.pieces.length ? stack.height + 40 : 0;
   if (stackH + probe.height > room) {
@@ -1067,6 +1089,7 @@ const tryBrandFill = (ctx: Ctx, fallbacks: string[], dropped: string[]): Outcome
   const blocksGap = blocks.length ? 48 : 0;
   const room = bottom - top;
   const stack = fitStack(ctx, width, room - probe.height - blocksGap, dropped, 'title_brand_fill', titleW);
+  if (stack === PRICE_DOES_NOT_FIT) return priceFailure(ctx);
   if (!stack) return titleFailure(ctx, titleW, 'title_brand_fill');
   const total = stack.height + blocksGap + probe.height;
   if (total > room) return {ok: false, reason: 'too_tall', slot: 'title', detail: `content ${Math.round(total)} px > ${Math.round(room)} px available`};
