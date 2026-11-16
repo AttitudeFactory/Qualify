@@ -76,10 +76,12 @@ from .planner_vm import (
     is_pending_card,
     sort_approved,
     sort_pending,
+    stories_option,
     tab_label,
     view_from_param,
     with_origin,
 )
+from .stories_vm import device_platform, story_share_message, story_share_offered
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -168,9 +170,15 @@ def approved_posts(posts: list[PostOptionVM]) -> list[PostOptionVM]:
 
 def kind_options(posts: list[PostOptionVM]) -> list[CategoryOptionVM]:
     """The creation types that exist and have something, first-seen order — never an
-    invented category."""
+    invented category; «Historias» first when there is one (founder 2026-11-16)."""
+    posts = list(posts)
     kinds = {p.content_kind: p.content_kind_label for p in posts if p.content_kind_label}
-    return [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
+    options = [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
+    return stories_option(posts) + options
+
+
+#: Reads the browser's user agent once per visit, for «Abrir en Instagram» (Android only).
+USER_AGENT_JS = "(navigator && navigator.userAgent) || ''"
 
 
 class GalleryState(rx.State):
@@ -206,6 +214,13 @@ class GalleryState(rx.State):
     approved_state_filter: str = GALLERY_FILTER_ALL
     #: …and its slug as the address had it, so writing the address keeps it.
     approved_state_slug: str = ""
+    #: The phone this tab runs on (`stories_vm.device_platform`): «Abrir en Instagram» on
+    #: a historia is offered on Android only. "" until the browser said it.
+    device: str = ""
+
+    @rx.var
+    def story_share_here(self) -> bool:
+        return story_share_offered(self.device)
 
     # -- «Por aprobar» --------------------------------------------------------------------
 
@@ -407,8 +422,25 @@ class GalleryState(rx.State):
         return rx.call_script(replace_url_script(self._address()))
 
     @rx.event
+    def set_device(self, user_agent: str) -> None:
+        self.device = device_platform(str(user_agent or ""))
+
+    @rx.event
+    def handle_story_share(self, result: str):
+        """The outcome of a gallery historia's «Abrir en Instagram»: a toast, or nothing
+        when the owner closed the share panel. Never publishes, never touches Meta."""
+        message = story_share_message(str(result or ""))
+        if message is None:
+            return None
+        kind, text = message
+        return getattr(rx.toast, kind)(text)
+
+    @rx.event
     def set_content_kind_filter(self, value: str) -> None:
-        known = {p.content_kind for p in self.posts}
+        # «Historias» only while «Por aprobar» has one (its own list, not the whole grid)
+        known = {p.content_kind for p in self.posts} | {
+            o.value for o in stories_option(self.pending)
+        }
         self.content_kind_filter = value if value in known else GALLERY_FILTER_ALL
 
     @rx.event
@@ -464,6 +496,7 @@ class GalleryState(rx.State):
         if moved:
             yield rx.redirect(moved, replace=True)
             return
+        yield rx.call_script(USER_AGENT_JS, callback=GalleryState.set_device)
         async for event in self._fetch():
             yield event
 
@@ -479,6 +512,7 @@ class GalleryState(rx.State):
             known = requested is not None and requested in APPROVED_CARD_STATES
             self.approved_state_filter = requested if known else GALLERY_FILTER_ALL
             self.approved_state_slug = slug if known else ""
+        yield rx.call_script(USER_AGENT_JS, callback=GalleryState.set_device)
         async for event in self._fetch():
             yield event
 

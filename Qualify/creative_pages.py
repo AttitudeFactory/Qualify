@@ -57,6 +57,7 @@ from .planner_vm import (
 from .post_card import (
     campaign_badge,
     color_swatches,
+    destination_badge,
     kind_chip,
     media_fill,
     readiness_note,
@@ -66,6 +67,8 @@ from .promotion_entry import promotion_link
 from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
 from .seasonal_ui import fold_summary
+from .stories_page import story_share_button_id, story_share_from_url
+from .stories_vm import STORY_SHARE_BUSY, STORY_SHARE_HELP, STORY_SHARE_LABEL
 from .ui import (
     app_shell,
     callout,
@@ -992,6 +995,45 @@ def _card_main_button(post, *, approved: bool = False) -> rx.Component:
     )
 
 
+STORY_BADGE = "Historia"
+
+
+def _story_share(post) -> rx.Component:
+    """«Abrir en Instagram» on an approved historia, on Android only (founder 2026-11-16):
+    the phone's share panel hands the file to Instagram's story composer, where the
+    owner adds the music. An iPhone or a computer never sees it — «Descargar» stays on
+    the historia's own page, as before."""
+    return rx.cond(
+        (post.story_share_url != "") & GalleryState.story_share_here,
+        rx.vstack(
+            rx.button(
+                rx.icon("share-2", size=15),
+                # the script swaps these two while the file downloads (`data-busy`)
+                rx.text(STORY_SHARE_LABEL, as_="span", class_name="q-share-idle"),
+                rx.text(STORY_SHARE_BUSY, as_="span", class_name="q-share-busy"),
+                id=story_share_button_id(post.post_id),
+                variant="soft",
+                size="2",
+                width="100%",
+                min_height="44px",
+                style={
+                    "& .q-share-busy": {"display": "none"},
+                    "&[data-busy] .q-share-idle": {"display": "none"},
+                    "&[data-busy] .q-share-busy": {"display": "inline"},
+                },
+                on_click=story_share_from_url(
+                    post.story_share_url,
+                    story_share_button_id(post.post_id),
+                    GalleryState.handle_story_share,
+                ),
+            ),
+            rx.text(STORY_SHARE_HELP, size="1", color=T.TEXT_MUTED),
+            spacing="1",
+            width="100%",
+        ),
+    )
+
+
 def _gallery_card(post, *, approved: bool = False) -> rx.Component:
     """One publication of «Por aprobar», picture first: its state in words on the media
     (a ready one is solid, one that is not ready has a dashed frame), whether it is
@@ -1023,6 +1065,8 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
             ),
             _card_main_button(post, approved=approved),
         ),
+        # founder 2026-11-16 (UX review): right under the main button
+        _story_share(post),
         # On a ready card the main button opens Tu semana, and on a «preparing» card it
         # is disabled, so opening the publication gets its own quiet link — it never
         # depends on knowing the picture is tappable (the picture is hidden from
@@ -1090,6 +1134,8 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
         ),
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
+            # founder 2026-11-16: a historia says so, glyph and word (never colour alone)
+            rx.cond(post.is_story, destination_badge("story", STORY_BADGE)),
             rx.cond(
                 post.content_kind_label != "",
                 rx.badge(post.content_kind_label, color_scheme="gray", variant="surface"),
@@ -1105,7 +1151,7 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
                 ),
             ),
             rx.flex(
-                rx.text(post.media_label, size="1", color=T.TEXT_MUTED),
+                rx.text(post.card_media_label, size="1", color=T.TEXT_MUTED),
                 rx.cond(
                     post.in_calendar,
                     rx.box(
