@@ -5,9 +5,13 @@ them live — pure, serializable, no Reflex and no `qualify_creative` import.
 Two halves, on purpose:
 
 - **The recipe** (`SourceSegment`, `VideoTextLayer`, `EffectUse`, `PartRecipe`) uses
-  EXACTLY the names and limits of EF-02 (`qualify_creative.schemas`, built in another
-  session and not merged yet), so the day the backend takes it the screen hands it over
-  as is. A normal Clip is a recipe of length 1 (`PartRecipe` alone).
+  EXACTLY the names and limits of EF-02 (`qualify_creative.schemas`), so the day the
+  backend takes it the screen hands it over as is. A normal Clip is a recipe of length 1
+  (`PartRecipe` alone). ED-15 (contract v2, m-25029105): up to `TEXT_LAYERS_MAX` texts
+  (`PartRecipe.text_layers`; `text_layer` stays as the first one), still photos among
+  the stretches (`SourceSegment.kind`) and an effect used more than once where its uses
+  do not overlap. `packages/api/tests/test_editor_contract_parity.py` keeps these names
+  and limits equal to the backend's.
 - **What only the browser needs** (`PreviewSource`, `PreviewEffect`): the playable
   address of each `key`, the source's length the browser measured, and an effect's
   `preview_asset` / `blend`. It never travels in the recipe.
@@ -30,6 +34,12 @@ from typing import Literal, get_args
 EFFECTS_MAX = 8
 SEGMENTS_MAX = 8
 VIDEO_TEXT_MAX = 120
+#: ED-15 (D-T2): at most this many texts over one part (or Clip).
+TEXT_LAYERS_MAX = 3
+#: ED-15 (D-T1): a still photo among the stretches shows 1 to 5 s, from 0, at speed 1.
+PHOTO_SECONDS_MIN = 1.0
+PHOTO_SECONDS_MAX = 5.0
+SegmentKind = Literal["video", "photo"]
 #: The speeds the backend can make: EF-04's `speed.MIN_SPEED`/`MAX_SPEED` (a test pins it).
 SEGMENT_SPEED_MIN = 1.0
 SEGMENT_SPEED_MAX = 30.0
@@ -39,6 +49,7 @@ _EFFECT_ID = re.compile(EFFECT_ID_PATTERN)
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
 ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
+SEGMENT_KINDS: tuple[str, ...] = get_args(SegmentKind)
 EffectParamValue = bool | int | float | str
 
 # -- the screen's own rules ------------------------------------------------------------------
@@ -62,12 +73,20 @@ SegmentProblem = Literal[
     "outside_video",
     "bad_speed",
     "bad_rotate",
+    # ED-15 — the screen's own (the backend refuses an unknown `kind` while reading it):
+    "bad_kind",
+    # ED-15 — the backend's own codes (`qualify_creative.schemas.RECIPE_REFUSALS`):
+    "photo_not_from_start",
+    "photo_with_speed",
+    "photo_length_out_of_range",
 ]
 RecipeProblem = Literal[
     "too_many_effects",
     "too_many_segments",
     "bad_effect_id",
     "bad_effect_version",
+    #: Kept so maps that name it keep working; no longer emitted (ED-15: an effect may
+    #: repeat where its uses do not overlap — `effect_uses_overlap`).
     "effect_twice",
     "effect_span",
     "text_empty",
@@ -75,6 +94,10 @@ RecipeProblem = Literal[
     "bad_text_place",
     "text_span",
     "bad_text_layout",
+    # ED-15: the backend's own codes (`qualify_creative.schemas.RECIPE_REFUSALS`)
+    "too_many_texts",
+    "texts_overlap",
+    "effect_uses_overlap",
 ]
 
 
@@ -82,13 +105,17 @@ RecipeProblem = Literal[
 class SourceSegment:
     """A stretch of the owner's own video: from `start_s` to `end_s` seconds of `key`,
     at `speed` (1 = as recorded), turned `rotate` degrees clockwise. Order in the recipe's
-    tuple = order in the video."""
+    tuple = order in the video.
+
+    ED-15: `kind` "photo" is a still photo in the same tuple, in its place among the
+    videos: from 0 to `end_s` = how long it shows (1-5 s), at speed 1."""
 
     key: str
     start_s: float
     end_s: float
     speed: float = 1.0
     rotate: int = 0
+    kind: str = "video"
 
     @property
     def source_seconds(self) -> float:
@@ -137,14 +164,29 @@ class EffectUse:
 
 @dataclass(frozen=True)
 class PartRecipe:
-    """One part of the video — a normal Clip is exactly one: its effects, its text and
+    """One part of the video — a normal Clip is exactly one: its effects, its texts and
     the stretches of own video it uses (EF-02's `PartRecipe` subset the screen writes;
     `mode`, `seconds` and the mode rule are the server's). A stretch's number is its
-    position in `segments`, 0-based (EF-03 «Preparar», PR #679)."""
+    position in `segments`, 0-based (EF-03 «Preparar», PR #679).
+
+    ED-15: `text_layers` are its texts (up to `TEXT_LAYERS_MAX`), in order. `text_layer`
+    stays for v1 callers and always equals the first text (None without any): given
+    alone it is read as `text_layers` of one; given with `text_layers`, it is kept first
+    unless they already hold it (the backend's rule). To change the texts of a recipe,
+    build a new one with `text_layers` (a `dataclasses.replace` of `text_layers` alone
+    would put the old first text back)."""
 
     effects: tuple[EffectUse, ...] = ()
     text_layer: VideoTextLayer | None = None
     segments: tuple[SourceSegment, ...] = ()
+    text_layers: tuple[VideoTextLayer, ...] = ()
+
+    def __post_init__(self) -> None:
+        layers = tuple(self.text_layers)
+        if self.text_layer is not None and self.text_layer not in layers:
+            layers = (self.text_layer, *layers)
+        object.__setattr__(self, "text_layers", layers)
+        object.__setattr__(self, "text_layer", layers[0] if layers else None)
 
 
 @dataclass(frozen=True)
@@ -333,22 +375,33 @@ def whole_video(key: str, source_duration_s: float) -> SourceSegment:
 
 def segment_problems(segment: SourceSegment, source_duration_s: float = 0.0) -> list[str]:
     """Every problem of a stretch, as codes. `source_duration_s` 0 = the length is not
-    known yet: the «inside the video» check waits for it."""
+    known yet: the «inside the video» check waits for it. A photo (ED-15) has no length
+    of its own to fall inside: it shows 1-5 s from 0, at speed 1."""
     problems: list[str] = []
+    photo = segment.kind == "photo"
     if not segment.key.strip():
         problems.append("empty_key")
+    if segment.kind not in SEGMENT_KINDS:
+        problems.append("bad_kind")
     if segment.end_s <= segment.start_s:
         problems.append("ends_before_start")
-    elif segment.source_seconds < SEGMENT_MIN_SECONDS:
+    elif segment.source_seconds < SEGMENT_MIN_SECONDS and not photo:
         problems.append("too_short")
     if segment.start_s < 0 or (
-        source_duration_s > 0 and segment.end_s > float(source_duration_s) + 0.01
+        not photo and source_duration_s > 0 and segment.end_s > float(source_duration_s) + 0.01
     ):
         problems.append("outside_video")
     if not SEGMENT_SPEED_MIN <= segment.speed <= SEGMENT_SPEED_MAX:
         problems.append("bad_speed")
     if segment.rotate not in ROTATIONS:
         problems.append("bad_rotate")
+    if photo:
+        if segment.start_s != 0:
+            problems.append("photo_not_from_start")
+        if segment.speed != 1:
+            problems.append("photo_with_speed")
+        if not PHOTO_SECONDS_MIN <= segment.end_s <= PHOTO_SECONDS_MAX:
+            problems.append("photo_length_out_of_range")
     return problems
 
 
@@ -395,8 +448,8 @@ def rotate_quarter(rotate: int) -> int:
 
 
 def used_seconds(segments: Sequence[SourceSegment]) -> float:
-    """How much of the owner's video the recipe uses (before any speed)."""
-    return _round(sum(segment.source_seconds for segment in segments))
+    """How much of the owner's video the recipe uses (before any speed; photos aside)."""
+    return _round(sum(s.source_seconds for s in segments if s.kind != "photo"))
 
 
 def output_seconds(segments: Sequence[SourceSegment]) -> float:
@@ -407,28 +460,50 @@ def output_seconds(segments: Sequence[SourceSegment]) -> float:
 # -- the recipe ------------------------------------------------------------------------------
 
 
+def _overlaps(spans: Sequence[tuple[float, float]]) -> bool:
+    """Whether any two spans cover the same seconds (meeting at a second is fine)."""
+    ordered = sorted(spans)
+    return any(later[0] < earlier[1] for earlier, later in zip(ordered, ordered[1:]))
+
+
 def recipe_problems(recipe: PartRecipe) -> list[str]:
-    """The recipe's own problems (the stretches' are `segment_problems`)."""
+    """The recipe's own problems (the stretches' are `segment_problems`). ED-15: up to
+    `TEXT_LAYERS_MAX` texts, no two in the same place at the same time (`texts_overlap`),
+    and an effect used again only where its other uses are not (`effect_uses_overlap`; a
+    use with no span covers the whole part). The part's length is not known here, so an
+    open end runs to the end of everything.
+
+    How many times EACH effect may be used is the library's (`max_per_part`, v2), which
+    this module does not read: the backend refuses past it (`too_many_of_effect`), so the
+    screen offers a second use only of an effect the library lets repeat."""
     problems: list[str] = []
     if len(recipe.effects) > EFFECTS_MAX:
         problems.append("too_many_effects")
     if len(recipe.segments) > SEGMENTS_MAX:
         problems.append("too_many_segments")
-    seen: set[str] = set()
+    uses_of: dict[str, list[tuple[float, float]]] = {}
     for use in recipe.effects:
         if not _EFFECT_ID.match(use.effect_id):
             problems.append("bad_effect_id")
         if use.version < 1:
             problems.append("bad_effect_version")
-        if use.effect_id in seen:
-            problems.append("effect_twice")
-        seen.add(use.effect_id)
         if (use.start_s is None) != (use.end_s is None) or (
             use.start_s is not None and use.end_s is not None and use.end_s <= use.start_s
         ):
             problems.append("effect_span")
-    layer = recipe.text_layer
-    if layer is not None:
+        span = (
+            0.0 if use.start_s is None else float(use.start_s),
+            math.inf if use.end_s is None else float(use.end_s),
+        )
+        uses_of.setdefault(use.effect_id, []).append(span)
+    if any(_overlaps(spans) for spans in uses_of.values()):
+        problems.append("effect_uses_overlap")
+    if len(recipe.text_layers) > TEXT_LAYERS_MAX:
+        problems.append("too_many_texts")
+    texts_at: dict[str, list[tuple[float, float]]] = {}
+    for layer in recipe.text_layers:
+        end = math.inf if layer.end_s is None else float(layer.end_s)
+        texts_at.setdefault(layer.place, []).append((float(layer.start_s), end))
         if not layer.text.strip():
             problems.append("text_empty")
         if len(layer.text) > VIDEO_TEXT_MAX:
@@ -440,7 +515,9 @@ def recipe_problems(recipe: PartRecipe) -> list[str]:
         has_id, has_version = bool(layer.layout_id), layer.layout_version is not None
         if has_id != has_version or (has_version and (layer.layout_version or 0) < 1):
             problems.append("bad_text_layout")
-    return problems
+    if any(_overlaps(spans) for spans in texts_at.values()):
+        problems.append("texts_overlap")
+    return list(dict.fromkeys(problems))
 
 
 def _num(value: object) -> float:
@@ -461,8 +538,21 @@ def _param(value: object) -> EffectParamValue:
     raise ValueError("an effect's parameter is a bool, a number or a text")
 
 
+def _layer_dict(layer: VideoTextLayer) -> dict[str, object]:
+    return {
+        "text": layer.text,
+        "place": layer.place,
+        "start_s": _round(layer.start_s),
+        "end_s": _opt_num(layer.end_s),
+        "layout_id": layer.layout_id,
+        "layout_version": layer.layout_version,
+    }
+
+
 def to_dict(recipe: PartRecipe) -> dict[str, object]:
-    """The recipe as JSON-ready data, in EF-02's shape (seconds rounded to 0.01)."""
+    """The recipe as JSON-ready data, in EF-02's shape (seconds rounded to 0.01). ED-15:
+    `text_layers` carries every text; `text_layer` (the first, or None) stays for v1
+    readers — the backend reads both and counts a text once."""
     layer = recipe.text_layer
     return {
         "effects": [
@@ -475,16 +565,7 @@ def to_dict(recipe: PartRecipe) -> dict[str, object]:
             }
             for use in recipe.effects
         ],
-        "text_layer": None
-        if layer is None
-        else {
-            "text": layer.text,
-            "place": layer.place,
-            "start_s": _round(layer.start_s),
-            "end_s": _opt_num(layer.end_s),
-            "layout_id": layer.layout_id,
-            "layout_version": layer.layout_version,
-        },
+        "text_layer": None if layer is None else _layer_dict(layer),
         "segments": [
             {
                 "key": segment.key,
@@ -492,15 +573,20 @@ def to_dict(recipe: PartRecipe) -> dict[str, object]:
                 "end_s": _round(segment.end_s),
                 "speed": _round(segment.speed),
                 "rotate": int(segment.rotate),
+                # a video's stretch keeps v1's exact shape (no `kind`: video by default)
+                **({} if segment.kind == "video" else {"kind": segment.kind}),
             }
             for segment in recipe.segments
         ],
+        "text_layers": [_layer_dict(each) for each in recipe.text_layers],
     }
 
 
 def from_dict(data: Mapping[str, object]) -> PartRecipe:
     """The recipe back from `to_dict`'s data (rounded the same way). Raises ValueError on
-    a shape it does not know; the limits are `recipe_problems`'s."""
+    a shape it does not know; the limits are `recipe_problems`'s. ED-15: a v1 recipe's
+    `text_layer` reads as `text_layers` of one (with both, it is kept first unless
+    `text_layers` holds it); a stretch without `kind` is a video."""
     if not isinstance(data, Mapping):
         raise ValueError("a recipe is an object")
     effects_raw = data.get("effects") or []
@@ -534,23 +620,34 @@ def from_dict(data: Mapping[str, object]) -> PartRecipe:
                 end_s=_round(_num(item.get("end_s", 0))),
                 speed=_round(_num(item.get("speed", 1.0))),
                 rotate=int(_num(item.get("rotate", 0))),
+                kind=str(item.get("kind") or "video"),
             )
         )
     layer_raw = data.get("text_layer")
-    layer = None
-    if layer_raw is not None:
-        if not isinstance(layer_raw, Mapping):
-            raise ValueError("the text layer is an object")
-        layer = VideoTextLayer(
-            text=str(layer_raw.get("text") or ""),
-            place=str(layer_raw.get("place") or "bottom"),
-            # EF-02: a missing or null start is the start of the part
-            start_s=_round(_num(layer_raw.get("start_s") or 0.0)),
-            end_s=_opt_num(layer_raw.get("end_s")),
-            layout_id=_opt_layout_id(layer_raw.get("layout_id")),
-            layout_version=_opt_layout_version(layer_raw.get("layout_version")),
-        )
-    return PartRecipe(effects=tuple(effects), text_layer=layer, segments=tuple(segments))
+    layer = None if layer_raw is None else _layer_of(layer_raw)
+    layers_raw = data.get("text_layers") or []
+    if not isinstance(layers_raw, list | tuple):
+        raise ValueError("the texts are a list")
+    return PartRecipe(
+        effects=tuple(effects),
+        text_layer=layer,
+        segments=tuple(segments),
+        text_layers=tuple(_layer_of(item) for item in layers_raw),
+    )
+
+
+def _layer_of(raw: object) -> VideoTextLayer:
+    if not isinstance(raw, Mapping):
+        raise ValueError("the text layer is an object")
+    return VideoTextLayer(
+        text=str(raw.get("text") or ""),
+        place=str(raw.get("place") or "bottom"),
+        # EF-02: a missing or null start is the start of the part
+        start_s=_round(_num(raw.get("start_s") or 0.0)),
+        end_s=_opt_num(raw.get("end_s")),
+        layout_id=_opt_layout_id(raw.get("layout_id")),
+        layout_version=_opt_layout_version(raw.get("layout_version")),
+    )
 
 
 # -- words the screen shows (numbers only; the sentences are `clip_editor_vm`'s) ------------

@@ -46,6 +46,7 @@ from qualify_creative.schemas import (
     PART_DESCRIPTION_MAX,
     PARTS_MAX,
     PARTS_REMOVED_MAX,
+    TEXT_LAYERS_MAX,
     ContentBrief,
     EffectUse,
     VideoPartPlan,
@@ -244,7 +245,7 @@ def merge_short_part(
     if description:
         notices = tuple(n for n in notices if n != "describe_it")
     # the joined length first: every span of the recipe is cut at it (`merged_recipe`)
-    effects, text_layer = merged_recipe(current, following, seconds)
+    effects, text_layers = merged_recipe(current, following, seconds)
     values = {
         **current.model_dump(),
         "mode": "edit",
@@ -257,7 +258,7 @@ def merge_short_part(
         # EF-02: the joined part keeps both parts' effects and text (`merged_recipe`) and
         # the first part's transition — the one between them is now inside one part
         "effects": effects,
-        "text_layer": text_layer,
+        "text_layers": text_layers,
         "transition_in": current.transition_in,
         # EF-02: the joined part is `edit` because the join forces it, not because the
         # mode rule proposed it nor the owner chose it: its provenance says so — the
@@ -317,8 +318,8 @@ def _same_text(a: VideoTextLayer, b: VideoTextLayer) -> bool:
 
 def merged_recipe(
     current: VideoPartPlan, following: VideoPartPlan, total: float | None = None
-) -> tuple[tuple[EffectUse, ...], VideoTextLayer | None]:
-    """EF-02, «Juntar con la siguiente»: the effects and the text the joined part keeps
+) -> tuple[tuple[EffectUse, ...], tuple[VideoTextLayer, ...]]:
+    """EF-02, «Juntar con la siguiente»: the effects and the texts the joined part keeps
     (pure). `c` = `current.seconds`, `f` = `following.seconds`, `total` = the joined part's
     own length (`merge_short_part` passes `round(sum of its cuts)`, which may differ from
     `c + f` by the rounding of each part; default `c + f`). The rule:
@@ -328,19 +329,23 @@ def merged_recipe(
       `following`'s moves `c` seconds later. Every END is cut at `total`; a span that
       would START at or after `total` → refused (`PLAN_MERGE_EFFECTS` / `PLAN_MERGE_TEXT`):
       nothing of it would show, and a choice is never dropped in silence;
-    - effects: `current`'s, then `following`'s. The same effect id in both, with the same
-      parameters and spans that MEET at the join (`_touch`: the first ends at `c` or is
-      the whole part, the second starts at 0 or is the whole part) → ONE use from the
-      first's start to the second's end. Different parameters, or spans that do not meet
-      (joining them would put the effect where the owner did not) → refused
-      (`PLAN_MERGE_EFFECTS`): `max_per_part` = 1 leaves no room for two uses;
-    - text over the video: the one either part has, with explicit times. Both with the
-      same words, place and design (times aside) whose times meet at the join → one;
-      differing in any of those, or not meeting → refused (`PLAN_MERGE_TEXT`);
+    - effects: `current`'s, then `following`'s. A use of `following` that starts the part
+      and has a twin in `current` — the same effect, version and parameters, ending at
+      the join (`_touch`) — continues it: ONE use from the first's start to the second's
+      end. Any other use is kept as its own use; whether the library lets the effect
+      repeat (`max_per_part`, ED-15) and the uses do not overlap is `validate_recipe`'s —
+      with v1's one use of each, two uses are refused (`PLAN_MERGE_EFFECTS` in
+      `merge_short_part`): never one use filled in where the owner put none;
+    - texts over the video (ED-15, up to `TEXT_LAYERS_MAX`): `current`'s, then
+      `following`'s, with explicit times. A text of `following` that starts the part and
+      has a twin in `current` (same words, place and design, times aside) ending at the
+      join → one text. Any other text is kept as its own; more than `TEXT_LAYERS_MAX` in
+      the joined part → refused (`PLAN_MERGE_TEXT`);
     - the transition: the first part's (`merge_short_part`), with the part before it.
 
     What the library refuses of the result (a parameter out of range, two «Con IA»
-    effects in one part) is `PLAN_MERGE_EFFECTS` in `merge_short_part`."""
+    effects in one part, an effect used more than it allows) is `PLAN_MERGE_EFFECTS` in
+    `merge_short_part`."""
     c, f = float(current.seconds), float(following.seconds)
     total = c + f if total is None else float(total)
 
@@ -350,38 +355,56 @@ def merged_recipe(
             raise PartsPlanRefused(PLAN_MERGE_EFFECTS, use.effect_id)
         return use.model_copy(update={"start_s": span[0], "end_s": span[1]})
 
-    firsts = {use.effect_id: use for use in current.effects}
+    def same_effect(a: EffectUse, b: EffectUse) -> bool:
+        return (a.effect_id, a.version, a.params) == (b.effect_id, b.version, b.params)
+
     effects = [placed(use, 0.0, c) for use in current.effects]
+    #: positions in `effects` of `current`'s uses that end at the join, not yet continued
+    open_effects = [at for at, use in enumerate(current.effects) if _touch(use.end_s, None, c)]
     for use in following.effects:
-        twin = firsts.get(use.effect_id)
+        twin = next(
+            (
+                at
+                for at in open_effects
+                if same_effect(current.effects[at], use) and _touch(None, use.start_s, c)
+            ),
+            None,
+        )
         if twin is None:
             effects.append(placed(use, c, c + f))
             continue
-        if twin.params != use.params or not _touch(twin.end_s, use.start_s, c):
-            raise PartsPlanRefused(PLAN_MERGE_EFFECTS, use.effect_id)
-        at = next(i for i, e in enumerate(effects) if e.effect_id == use.effect_id)
-        effects[at] = effects[at].model_copy(update={"end_s": placed(use, c, c + f).end_s})
-    first, second = current.text_layer, following.text_layer
-    if (
-        first is not None
-        and second is not None
-        and (not _same_text(first, second) or not _touch(first.end_s, second.start_s, c))
-    ):
-        raise PartsPlanRefused(PLAN_MERGE_TEXT)
-    text: VideoTextLayer | None = None
-    for layer, part_start, part_end in ((first, 0.0, c), (second, c, c + f)):
-        if layer is None:
-            continue
+        open_effects.remove(twin)
+        effects[twin] = effects[twin].model_copy(update={"end_s": placed(use, c, c + f).end_s})
+
+    def placed_text(layer: VideoTextLayer, part_start: float, part_end: float) -> VideoTextLayer:
         # a text's `end_s` None is «until its part's end»
         end = part_end - part_start if layer.end_s is None else layer.end_s
         span = _place(layer.start_s, end, part_start, part_end, total)
         if span is None:
             raise PartsPlanRefused(PLAN_MERGE_TEXT)
-        if text is None:
-            text = layer.model_copy(update={"start_s": span[0], "end_s": span[1]})
-        else:
-            text = text.model_copy(update={"end_s": span[1]})
-    return tuple(effects), text
+        return layer.model_copy(update={"start_s": span[0], "end_s": span[1]})
+
+    texts = [placed_text(layer, 0.0, c) for layer in current.text_layers]
+    open_texts = [
+        at for at, layer in enumerate(current.text_layers) if _touch(layer.end_s, None, c)
+    ]
+    for layer in following.text_layers:
+        twin = next(
+            (
+                at
+                for at in open_texts
+                if _same_text(current.text_layers[at], layer) and _touch(None, layer.start_s, c)
+            ),
+            None,
+        )
+        if twin is None:
+            texts.append(placed_text(layer, c, c + f))
+            continue
+        open_texts.remove(twin)
+        texts[twin] = texts[twin].model_copy(update={"end_s": placed_text(layer, c, c + f).end_s})
+    if len(texts) > TEXT_LAYERS_MAX:
+        raise PartsPlanRefused(PLAN_MERGE_TEXT)
+    return tuple(effects), tuple(texts)
 
 
 #: What the owner may change of a saved part without it becoming another part: the
@@ -402,7 +425,7 @@ _EDITOR_FIELDS = frozenset(
         "clip_video_keys",
         "clip_audio_keys",
         "effects",
-        "text_layer",
+        "text_layers",
         "segments",
         "transition_in",
         "mode_changed_by_owner",
@@ -511,7 +534,7 @@ def _same_entries(
                 "clip_video_keys": (),
                 "clip_audio_keys": (),
                 "effects": (),
-                "text_layer": None,
+                "text_layers": (),
                 "segments": (),
                 "transition_in": None,
             }

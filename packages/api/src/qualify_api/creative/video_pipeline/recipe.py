@@ -25,6 +25,13 @@ need no library and never change — `local` needs own video, effects only on a 
 no transition on the first part — so every stored brief stays coherent; the rules that
 need the library live here, because a stored brief must keep reading even if an effect
 stops being offered.
+
+ED-15 (contract v2): up to `TEXT_LAYERS_MAX` texts per part (`text_layers`; two in the
+same place may not overlap: `texts_overlap`), photos among the stretches
+(`SourceSegment.kind`), effects the library v2 lets repeat (`effect_uses_overlap`), and
+the parent's `VideoRecipe` — what crosses parts, in seconds of the whole video —, checked
+by `validate_video_recipe`. `PartRecipe` lives in `qualify_creative.schemas` now (the
+parent's `VideoRecipe` holds it) and is re-exported here under the same name.
 """
 
 from __future__ import annotations
@@ -32,29 +39,26 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
 from qualify_creative.effects import (
     EffectsLibrary,
     RecipeProblem,
     load_effects,
     part_effect_problems,
-    text_layer_problems,
+    text_layers_problems,
     transition_problems,
 )
 from qualify_creative.enums import ContentKind
 from qualify_creative.schemas import (
-    EFFECTS_MAX,
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
     PART_TRIM_TOLERANCE_S,
-    PARTS_MAX,
-    SEGMENTS_MAX,
     ContentBrief,
     EffectUse,
     MediaInputs,
     PartMode,
-    SourceSegment,
+    PartRecipe,
     VideoPartPlan,
+    VideoRecipe,
     VideoTextLayer,
     _PartSource,
 )
@@ -70,32 +74,6 @@ _PART_MODE_OF_CLIP: dict[str, PartMode] = {
 }
 
 
-class PartRecipe(BaseModel):
-    """One part of the engine's work (a Clip is a recipe of one): its 1-based `index`
-    in the video, how it is made (`mode`), its length in the video (`seconds`), its
-    effects, its text over the video and the stretches of own video it uses, how it
-    blends with the part before it (`transition_in`, None in a Clip) and what the mode
-    rule said. Pure data: frozen, JSON round-trips, nothing derived is stored."""
-
-    model_config = ConfigDict(frozen=True)
-
-    index: int = Field(ge=1, le=PARTS_MAX)
-    mode: PartMode = "reference"
-    seconds: float = Field(gt=0)
-    effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
-    text_layer: VideoTextLayer | None = None
-    segments: tuple[SourceSegment, ...] = Field(default=(), max_length=SEGMENTS_MAX)
-    transition_in: EffectUse | None = None
-    mode_rule_version: int = Field(default=0, ge=0)
-    mode_reason: str = ""
-    mode_changed_by_owner: bool = False
-
-    @property
-    def has_own_video(self) -> bool:
-        """«Video propio»: at least one stretch of a file the owner uploaded."""
-        return bool(self.segments)
-
-
 def _from_source(
     source: _PartSource | MediaInputs,
     *,
@@ -109,7 +87,7 @@ def _from_source(
         mode=mode,
         seconds=seconds,
         effects=source.effects,
-        text_layer=source.text_layer,
+        text_layers=source.text_layers,
         segments=source.segments,
         transition_in=transition_in,
         mode_rule_version=source.mode_rule_version,
@@ -215,7 +193,7 @@ def validate_recipe(
     Times are seconds of each part's OWN output, from its start, speed applied: each
     effect and text must fall in `[0, part_length]` (`span_outside_part`) — a part's
     `seconds`, a Clip's `clip_seconds`. What crosses parts (seconds of the whole video)
-    belongs to the parent's recipe (ED-15), not here."""
+    belongs to the parent's recipe (`validate_video_recipe`, ED-15), not here."""
     library = library or load_effects()
     found: list[RecipeProblem] = []
     in_clip = not video_by_parts
@@ -241,12 +219,69 @@ def validate_recipe(
                 part.transition_in, library, part=number, first=at == 0, in_clip=in_clip
             )
         )
-        found.extend(text_layer_problems(part.text_layer, part=number, window=window))
+        found.extend(text_layers_problems(part.text_layers, part=number, window=window))
         if tenant_id is not None:
             found.extend(
                 p.model_copy(update={"part": number}) for p in _key_problems(part, tenant_id)
             )
     return tuple(found)
+
+
+def whole_video_problems(
+    text_layers: tuple[VideoTextLayer, ...],
+    effects: tuple[EffectUse, ...],
+    *,
+    seconds: float,
+    has_own_video: bool,
+    library: EffectsLibrary | None = None,
+    texts_field: str = "text_layers",
+) -> tuple[RecipeProblem, ...]:
+    """What crosses the parts of a video by parts (ED-15), as `part=None`: its texts and
+    effects in seconds of the WHOLE video, inside `[0, seconds]`, with the same limits
+    as a part's — at most `TEXT_LAYERS_MAX` texts, none overlapping another in the same
+    place, at most `max_per_part` uses of an effect with no two overlapping, no
+    transition among them (`transition_in_effects`: that is a part's `transition_in`).
+    Pure.
+
+    The effects are checked as in a `reference` part, so today a `seedance_prompt` effect
+    over the whole video passes these rules (the library does not offer one yet). WHICH
+    effects may cross parts is not decided here: ED-07 decides it with the architect —
+    until then this rule is deliberately unchanged."""
+    library = library or load_effects()
+    window = (0.0, float(seconds))
+    return (
+        *text_layers_problems(text_layers, part=None, window=window, field=texts_field),
+        *part_effect_problems(
+            effects,
+            library,
+            part=None,
+            mode="reference",
+            has_own_video=has_own_video,
+            window=window,
+        ),
+    )
+
+
+def validate_video_recipe(
+    recipe: VideoRecipe,
+    *,
+    tenant_id: UUID | None = None,
+    library: EffectsLibrary | None = None,
+) -> tuple[RecipeProblem, ...]:
+    """Every problem of a whole video's recipe (ED-15, pure): its parts as
+    `validate_recipe` sees the parts of a video by parts (times of each part's own), then
+    what crosses them (`whole_video_problems`, times of the whole video, `part=None`)."""
+    library = library or load_effects()
+    return (
+        *validate_recipe(recipe.parts, video_by_parts=True, tenant_id=tenant_id, library=library),
+        *whole_video_problems(
+            recipe.text_layers,
+            recipe.effects,
+            seconds=recipe.seconds,
+            has_own_video=any(part.has_own_video for part in recipe.parts),
+            library=library,
+        ),
+    )
 
 
 def validate_brief_recipe(
@@ -256,18 +291,41 @@ def validate_brief_recipe(
     library: EffectsLibrary | None = None,
 ) -> tuple[RecipeProblem, ...]:
     """`validate_recipe` of `recipe_of(brief)`: a parent's plan or a child are parts of
-    a video by parts; a normal Clip is not. A parent's own text over the WHOLE video
-    (`media.text_layer` of a `SHOT_VIDEO`) is checked too, as `part=None`."""
+    a video by parts; a normal Clip is not. A parent's own texts over the WHOLE video
+    (`media.text_layers` of a `SHOT_VIDEO`) are checked too, as `part=None`, and so is
+    its `video_recipe` (ED-15) when it has one: its parts, and what crosses them against
+    the length of the plan that is made (`media.parts`)."""
+    library = library or load_effects()
     by_parts = brief.kind is ContentKind.SHOT_VIDEO or brief.media.part is not None
     problems = validate_recipe(
         recipe_of(brief), video_by_parts=by_parts, tenant_id=tenant_id, library=library
     )
     if brief.kind is ContentKind.SHOT_VIDEO:
-        whole = (0.0, float(sum(plan.seconds for plan in brief.media.parts)))
+        media = brief.media
+        whole = float(sum(plan.seconds for plan in media.parts))
+        own = any(plan.segments for plan in media.parts)
         problems = (
             *problems,
-            *text_layer_problems(brief.media.text_layer, part=None, window=whole),
+            *whole_video_problems(
+                media.text_layers, (), seconds=whole, has_own_video=own, library=library
+            ),
         )
+        recipe = media.video_recipe
+        if recipe is not None:
+            problems = (
+                *problems,
+                *validate_recipe(
+                    recipe.parts, video_by_parts=True, tenant_id=tenant_id, library=library
+                ),
+                *whole_video_problems(
+                    recipe.text_layers,
+                    recipe.effects,
+                    seconds=whole,
+                    has_own_video=own,
+                    library=library,
+                    texts_field="video_recipe.text_layers",
+                ),
+            )
     return problems
 
 
@@ -286,8 +344,9 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     """What a valid recipe still cannot be made with today (pure), so the owner never
     pays for a video without what he chose: a `local` part (`local_unavailable`, EF-05/
     EF-06 produce it) and ANY recipe at all — effects, a video text, stretches of own
-    video, a transition, the parent's whole-video text — (`recipe_unavailable`) until
-    the effects engine composes them (EF-05/EF-06 stamp `effects_pipeline_version`).
+    video or photos, a transition, the parent's whole-video texts or its `video_recipe`
+    (ED-15) — (`recipe_unavailable`) until the effects engine composes them (EF-05/EF-06
+    stamp `effects_pipeline_version`).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
     producing is refused."""
     found: list[RecipeProblem] = []
@@ -298,14 +357,16 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
             found.append(RecipeProblem(code="local_unavailable", part=number, field="mode"))
         for field, value in (
             ("effects", part.effects),
-            ("text_layer", part.text_layer),
+            ("text_layers", part.text_layers),
             ("segments", part.segments),
             ("transition_in", part.transition_in),
         ):
             if value:
                 found.append(RecipeProblem(code="recipe_unavailable", part=number, field=field))
-    if brief.kind is ContentKind.SHOT_VIDEO and brief.media.text_layer is not None:
-        found.append(RecipeProblem(code="recipe_unavailable", part=None, field="text_layer"))
+    if brief.kind is ContentKind.SHOT_VIDEO and brief.media.text_layers:
+        found.append(RecipeProblem(code="recipe_unavailable", part=None, field="text_layers"))
+    if brief.kind is ContentKind.SHOT_VIDEO and brief.media.video_recipe is not None:
+        found.append(RecipeProblem(code="recipe_unavailable", part=None, field="video_recipe"))
     return tuple(found)
 
 
@@ -332,4 +393,6 @@ __all__ = [
     "unbuilt_recipe_problems",
     "validate_brief_recipe",
     "validate_recipe",
+    "validate_video_recipe",
+    "whole_video_problems",
 ]
