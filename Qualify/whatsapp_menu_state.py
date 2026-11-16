@@ -1569,7 +1569,7 @@ class WhatsAppMenuState(rx.State):
             "const style=getComputedStyle(panel);"
             "const raw=style.getPropertyValue('--q-dur-slow').trim();"
             "const duration=(parseFloat(raw)||380)*(raw.endsWith('ms')?1:raw.endsWith('s')?1000:1);"
-            "const x=panel.dataset.dir==='back'?-8:8;"
+            "const x=panel.dataset.dir==='back'?-18:18;"
             "panel.getAnimations().forEach(a=>a.cancel());"
             "panel.animate([{transform:'translateX('+x+'px)'},{transform:'none'}],"
             "{duration,"

@@ -150,6 +150,78 @@ Las sombras ya **no** salen de la rampa Radix (`--shadow-1..6`) sino de las dos 
 
 Iconos: lucide, tres tamaños (`ICON_SM`=14 dentro de badges/botones size 1, `ICON_MD`=18 en nav y botones size 2, `ICON_LG`=40 en empty states). Nada intermedio.
 
+### 3.3.1 Movimiento: el mismo de la landing (m-24840374, 2026-11-16)
+
+Pasar de qualify.la a la app tiene que sentirse como un solo producto. La landing
+(`qualify-landing`, `origin/main`) y la app ya compartían las dos curvas y las tres
+duraciones (`--q-ease`, `--q-spring`, 140/240/380 ms: los mismos valores en
+`src/styles/tokens.css` y en `assets/qualify.css`), así que no hay tokens nuevos. Lo que se
+trae son las **entradas** de la landing (`src/styles/scenes.css`, `sc-*`, y la cascada
+`.q-reveal--stagger` de `global.css`), su **cargador** (`LiquidLoading`, variante «trace») y
+su **apagado global** con `prefers-reduced-motion`. Sólo CSS, sin dependencias nuevas.
+
+**El vocabulario** (todo en `assets/qualify.css`, bloque «Motion vocabulary»). Cada
+keyframe dice sólo **de dónde viene** el elemento; la regla del elemento elige duración,
+curva y distancia con propiedades registradas que **no se heredan** (`--q-from-x` 0,
+`--q-from-y` 18 px, `--q-from-scale` 1, `--q-from-opacity` 0, `--q-pop-from` 0,3), así un
+bloque anidado nunca toma la distancia de su padre.
+
+| Keyframe | Viene de (landing) | Qué hace |
+|---|---|---|
+| `q-enter` | `sc-in`, `sc-from-left`, `sc-from-right`, `.q-reveal` | desde un desplazamiento y una escala. **Sólo `transform`**: la regla de la app se mantiene — una entrada congelada deja el bloque un poco corrido, nunca invisible |
+| `q-fade` | `sc-fade` | desde una opacidad (0 por defecto; 0,55 en `.q-content-ready`) |
+| `q-pop` | `sc-pop` | desde una escala, sobre la propiedad `scale` (no pelea con el `transform` de Sonner ni de los scripts de arrastre) |
+| `q-pulse` | `sc-pulse` | sube a 1,12; siempre un número par de veces y `alternate`, para terminar en reposo |
+| `q-ping` | el «ping» del cargador de scraping | un anillo que sale y se apaga (`box-shadow`) |
+| `q-trace` | `LiquidLoading` «trace» (`lq-trace`) | un trazo se dibuja, se queda y se vacía por el otro extremo |
+
+**Emparejamiento** (lo viejo de la app → lo de la landing):
+
+| Antes (app) | Dónde | Ahora | Par en la landing |
+|---|---|---|---|
+| `q-settle` (8 px, 40 ms entre bloques, tope 160 ms) | entrada de toda página (`page_body`), auth, listas | `q-enter`: 18 px, **70 ms** entre bloques, desde el 6.º todos a 350 ms | `.q-reveal--stagger` |
+| `q-step-in-next` / `q-step-in-back` (8 px) | cuerpo del paso a paso (§4.5) | `q-enter` con `--q-from-x` ±18 px | `sc-from-right` / `sc-from-left` |
+| `q-conv-pop` (6 px abajo, 97 %) | burbujas de Conversaciones y WhatsApp (`.q-chat-msg`) | `q-enter`: el cliente entra por la izquierda, tú por la derecha, desde 90 %, con muelle; **sólo la burbuja más nueva** (la última fila del hilo): abrir un chat no repite el historial. El contenedor (`.q-wa-scroll`) recorta en horizontal | `si-in-left` / `si-in-right` (StepInbox) |
+| `q-progress-in` | `progress_panel` y su comentario de etapa | `q-enter` + `q-fade` (sube 18 px y aparece) | `.q-reveal` |
+| `q-content-in` (0,55 → 1) | `.q-content-ready` | `q-fade` con `--q-from-opacity: 0.55` | `sc-fade` |
+| `q-orbit-rise` / `q-orbit-fade` | píldoras del «+» (`orbit_menu`) | `q-enter` (12 px) + `q-fade`; con movimiento reducido sólo `q-fade` | `sc-in` / `sc-fade` |
+| `q-deck-enter` | la tarjeta de la baraja del Brand Kit | `q-enter` (14 px, 96 %) + `q-fade` | `sc-in` |
+| `q-toast-pop` | toasts | `q-pop` desde 0,82 | `sc-pop` |
+| `q-cr-slide-land` | una diapositiva soltada (Generador) | `q-pop` desde 1,07 | `sc-pop` |
+| `q-spin` (anillo del kit) | `loading_spinner` en toda la app, también dentro de botones ocupados | `q-trace` + `q-pulse` sobre la marca Q (`MARK_Q`/`MARK_WAVES`); en `sm` (botones ocupados) `q-trace-run`, 1,6 s sin pausa, para que se lea «trabajando» | `LiquidLoading` «trace» |
+| `q-conv-breathe` (infinito) | punto de no leído (Chats) · punto de grabación | `q-pulse`: el de no leído late 4 veces y para; el de grabación late mientras graba (dice «grabando») | `sc-pulse` |
+| `q-flicker` (infinito) | llama de «Por probar» (Planificador, tarjetas) | `q-pulse` 6 veces y para | `sc-pulse` |
+| `q-pulse` del Planificador (anillo) · `q-clip-wait` | punto «en vivo» · botón de un clip que carga | `q-ping` (con `--q-ping-color`) | ping del cargador |
+| `q-cr-sheen` · `q-progress-sweep` | tarjeta fantasma del Generador · barra de progreso | `q-shimmer` (eran el mismo barrido, duplicado) | — (barrido del kit) |
+| — (nuevo) | icono de `empty_state` | `q-pop` con muelle (sólo escala: nunca parte de invisible) | `sc-pop` del final de cada escena |
+| apagado global con `transition-duration: 0.01ms` y sin tocar retardos | toda la app | como la landing: animaciones a 0,01 ms, **retardos a 0**, transiciones a 0,01 ms (no los 0 s de la landing: así `transitionend` sigue llegando a vaul y Sonner); botones y `choice_card` no suben ni se hunden | `global.css` (KIT:869-879), `LinkButton` |
+| `q-embers` / `q-frost` (infinitos) | chips de temperatura del Planificador | brasas 2 × 2,4 s, escarcha 2 × 2 s (menos de 5 s); cada vuelta empieza y termina en el aspecto de reposo, así nada salta al parar | regla de la landing: lo que se mueve solo para antes de 5 s |
+| `q-step-in-*` en JS (±8 px) | paso a paso del menú de WhatsApp (`whatsapp_menu_state._guided_settle`) | ±18 px, igual que `.q-step-body` (que además recorta en horizontal: el desliz no saca barra en 360 px) | `sc-from-*` |
+
+**Se quedan como están** (la landing no tiene nada equivalente; son de una interacción
+propia de la app): `q-shimmer` (skeleton, del kit), `q-progress-creep` (avance de una
+espera sin progreso real), `q-drawer-in` (panel lateral), la cápsula y la etiqueta zen del
+sidebar (`q-glass-shimmer`, `q-glass-travel-*`, `q-glass-label-shimmer`, del kit), la
+baraja y el ordenar del Brand Kit (`q-deck-nudge`, `q-deck-float`, `q-zone-*-pop`,
+`q-fly-*`, `q-rank-flash`, `q-rank-pulse`), `q-conv-pulse` (fila con mensaje nuevo),
+y `q-slow-hint-show`, que no
+es movimiento sino un aviso a los 12 s (por eso conserva su retardo aun con movimiento
+reducido). Los botones ya se movían como los de la landing (suben 2 px, `scale(0.975)` al
+pulsar): sin cambios.
+
+**No aplica** (de la landing, no se porta):
+
+| Landing | Por qué |
+|---|---|
+| `HeroDevice` (`hero-orbit`, `hero-device-float`, `hero-wave`) | es la escena de marketing del teléfono; la app no tiene hero |
+| Escenas de las secciones (`FeatBrand`, `FeatCapture`, `FeatCreate`, `FeatInbox`, `FeatPublish`, `FeatTrends`, `StepBrand`, `StepInbox`, `StepSchedule`: `fb-*`, `fk-*`, `fc-*`, `fi-*`, `fp-*`, `sb-*`, `si-typing`, `ss-*`) | coreografías de demostración con tiempos fijos de varios segundos; de ellas se toman sólo las piezas sueltas (`sc-*`, `si-in-*`) de arriba |
+| Revelado al hacer scroll (`.js-reveal`, `src/scripts/liquid.ts`) | depende de JS (IntersectionObserver); en la app la cascada corre al montar la página |
+| `ScrapeLoader` / `ScrapeLoaderV2` | lo maneja un script (saltos al azar, progreso por `data-progress`) |
+| `LiquidLoading` «charge» y «drops» | variantes alternativas de la landing; la app usa «trace», la de por defecto |
+| `NotFoundLiquid` (404) | la app no tiene una 404 propia (usa la de Reflex); hacerla es una pantalla nueva con su texto, fuera de este cambio |
+
+Demo en vivo: `/design` → «Movimiento y elevación» (botón «Repetir»).
+
 ### 3.4 Material (Glass Lab)
 
 **El material lo definen los diales del Glass Lab del kit, uno por token** (`--q-lab-*` en `assets/qualify.css`, bloque «Glass Lab dials»; refracción y frecuencia también en `LAB_REFRACTION`/`LAB_FREQUENCY` de `ui/layout.py`, que renderiza el filtro SVG `#q-refraction` una vez por `app_shell`). Son los valores del fundador del 2026-10-08. Para probar otro material: mover los diales en el Lab (`reference/liquid-glass/LiquidOS-Studio-v3.0/index.html#builder`) y copiar los números aquí — **no** se aproxima a mano.
@@ -460,7 +532,7 @@ reservada (`--q-bottom-bar-h`) y la misma zona segura.
   `popstate`). El «atrás» del celular o del navegador retrocede un paso; en el paso 1 sale al
   destino de la cabeza. Nunca saca del módulo (N5).
 - **Salir nunca borra.** Lo escrito se conserva en el estado y se retoma al volver (N6).
-- **Movimiento:** el cuerpo del paso entra con `q-settle`, desplazándose 8 px en la dirección del
+- **Movimiento:** el cuerpo del paso entra con `q-enter` (§3.3.1), desplazándose 18 px en la dirección del
   avance: desde la derecha al ir adelante, desde la izquierda al volver (`data-dir`). La barra
   avanza con `--q-dur` y `--q-ease`. Con `prefers-reduced-motion` no hay desplazamiento, solo el
   cambio.
@@ -520,7 +592,7 @@ Skin del kit (`.lq-badge`): todo `rx.badge` es píldora (radio 999px), peso 650,
 
 ### 5.4 Feedback y espera
 
-**La regla de espera (fundador, 2026-10-08; D12):** hay dos formas de esperar y no son intercambiables. **Skeleton = carga de contenido, SIEMPRE**: algo se está *leyendo* y va a aparecer en ese sitio — el placeholder tiene la forma de lo que viene. **Spinner = trabajo en curso**: algo se está *haciendo* — scraping, generación, sync, publicación, subida, clonado de voz — y no hay «forma» todavía, hay trabajo; el anillo va junto a la frase que dice qué pasa. Un spinner sobre una lista vacía no dice nada; un skeleton sobre un scraping mentiría. Las dos puertas son `ui.skeleton_card`/`ui.skeleton_rows` y `ui.loading_spinner`; `test_design_system_guard.py` falla el build ante un `rx.skeleton(` o un `rx.spinner(` en una página (§9.1). Un `rx.button(loading=…)` es un prop, no una llamada, y sigue permitido.
+**La regla de espera (fundador, 2026-10-08; D12):** hay dos formas de esperar y no son intercambiables. **Skeleton = carga de contenido, SIEMPRE**: algo se está *leyendo* y va a aparecer en ese sitio — el placeholder tiene la forma de lo que viene. **Spinner = trabajo en curso**: algo se está *haciendo* — scraping, generación, sync, publicación, subida, clonado de voz — y no hay «forma» todavía, hay trabajo; el cargador va junto a la frase que dice qué pasa. Un spinner sobre una lista vacía no dice nada; un skeleton sobre un scraping mentiría. Las dos puertas son `ui.skeleton_card`/`ui.skeleton_rows` y `ui.loading_spinner`; `test_design_system_guard.py` falla el build ante un `rx.skeleton(` o un `rx.spinner(` en una página (§9.1). Un `rx.button(loading=…)` es un prop, no una llamada, y sigue permitido.
 
 | Primitiva / Radix | Cuándo | Cuándo no |
 |---|---|---|
@@ -535,9 +607,9 @@ Skin del kit (`.lq-badge`): todo `rx.badge` es píldora (radio 999px), peso 650,
 
 Iconos por defecto del callout: `error`/`warn` → `triangle-alert`, `ok` → `check`, `info` → `info`. Un callout de error lleva `role="alert"`; los demás `role="status"`.
 
-`loading_spinner` (`.q-spinner`) es el anillo del kit (`.lq-spinner`): pista `gray-a4`, acento encima, 0,85 s por vuelta. Su color sale de las escalas del tema, así que **se adapta solo a claro/oscuro: no existe una variante de tema que elegir**. La única variante real es `size` — `sm` (1.25rem) en línea junto a texto, `md` (2.25rem, por defecto) una espera aislada, `lg` (3.5rem) una espera de panel completo. Demo en vivo: `/design` → «Estados de pantalla».
+`loading_spinner` (`.q-spinner`) es el cargador de la landing (`LiquidLoading` «trace», §3.3.1; antes el anillo del kit): la marca Q dos veces, tenue (`accent-a5`) y en acento (`accent-11`), y el acento corre por los trazos — la Q parte por parte, luego las ondas —, se queda y se vacía; 2,8 s por vuelta. Dentro del botón ocupado del paso a paso los dos tonos pasan a blanco translúcido y `accent-contrast`. Con movimiento reducido, quieto y dibujado entero. Su color sale de las escalas del tema, así que **se adapta solo a claro/oscuro: no existe una variante de tema que elegir**. La única variante real es `size` — `sm` (1.25rem) en línea junto a texto, `md` (2.25rem, por defecto) una espera aislada, `lg` (3.5rem) una espera de panel completo. Demo en vivo: `/design` → «Estados de pantalla».
 
-**Toasts** (`rx.toast`, Sonner): la misma lámina de vidrio que los overlays (`lq-toast`: `--q-overlay-fill`, radio 16 px, blur 28 px, `ELEV_LIFT`) entrando por la esquina inferior derecha con el pop de muelle (`q-toast-pop`, sobre `scale`, que no pelea con el `transform` de Sonner).
+**Toasts** (`rx.toast`, Sonner): la misma lámina de vidrio que los overlays (`lq-toast`: `--q-overlay-fill`, radio 16 px, blur 28 px, `ELEV_LIFT`) entrando por la esquina inferior derecha con el pop de muelle (`q-pop` desde 0,82, sobre `scale`, que no pelea con el `transform` de Sonner).
 
 ### 5.5 Botones (Radix directo, con el skin del kit)
 
@@ -839,7 +911,7 @@ Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca
 - **Teclado:** todo lo interactivo es un botón/link/control Radix nativo (los diálogos atrapan foco y cierran con Esc). Un `rx.box` con `on_click` está prohibido: usa `rx.button variant="ghost"`. La cápsula del menú sigue al foco igual que al puntero (§4.2).
 - **Semántica:** un solo `h1` por página (`page_header`); `section`/`empty_state` emiten `h2`, títulos de entidad en tarjeta `h3`; las cifras y el wordmark son `rx.text`, no headings (Radix `Heading` es `h1` por defecto — pasar siempre `as_=`). El sidebar es `<nav aria-label="Secciones">` con `aria-current="page"` (que además es lo que la cápsula lee para reposar), el cuerpo es `<main>`; callouts de error `role="alert"`; skeletons `aria-busy`; el spinner `role="status"` con `aria-label="Cargando"`; la cápsula, la etiqueta zen y el filtro SVG son `aria-hidden`. Verificado en `/design`: 1 h1, `nav` y `main` presentes.
 - **Tamaño de toque:** controles ≥ 32px de alto (Radix size 2); size 1 solo en contextos densos y secundarios. El kit pide 46 px (`--lq-control-height`); se registra pero **no** se adopta: la escala de Radix se queda.
-- **Movimiento:** `prefers-reduced-motion` cubre, pieza a pieza, lo que el vidrio añadió: la **cápsula** no viaja ni se deforma (el script la coloca en seco), la **luz del puntero** se apaga, el **brillo** de cápsula y etiqueta zen (`::after`) no barre, el **shimmer** del skeleton y el **sweep** de la barra de progreso se detienen, el drawer no desliza y el panel de progreso no funde. No hay un apagado global: la entrada `.q-settle`, el ascenso `.q-lift` y el pop del toast siguen (pendiente en §9.3).
+- **Movimiento:** `prefers-reduced-motion` cubre, pieza a pieza, lo que el vidrio añadió: la **cápsula** no viaja ni se deforma (el script la coloca en seco), la **luz del puntero** se apaga, el **brillo** de cápsula y etiqueta zen (`::after`) no barre, el **shimmer** del skeleton y el **sweep** de la barra de progreso se detienen, el drawer no desliza y el panel de progreso no funde. Y desde m-24840374 hay **apagado global**, el de la landing (§3.3.1): toda animación a 0,01 ms y sin retardo, toda transición a 0 s, y ni `.q-lift`, ni los botones, ni `choice_card` suben o se hunden. La única excepción es el aviso `.q-slow-hint`, que conserva sus 12 s porque no es movimiento.
 - **Táctil:** la etiqueta zen y la luz del puntero no existen con puntero grueso — bajo un dedo no dicen nada.
 - **Celular (N12):** en ≤ 640 px todo objetivo mide ≥ 44 × 44 px (filas del menú, botón del cajón, celdas de la barra inferior) y nada depende de `:hover`. La barra inferior (§4.4) es un segundo `<nav>` («Accesos rápidos») con texto siempre visible, `aria-current` en la celda activa y «Más» como botón con `aria-expanded`.
 - **Idioma:** `rx.App(html_lang="es")` — verificado en el `<html>` emitido.
@@ -881,7 +953,7 @@ Abierto:
 
 1. **`liquidos.css` no se carga, por diseño** (D2, §3.4). Consecuencia: cada componente del kit que se quiera usar hay que redibujarlo en el skin; lo que el kit tiene y el skin aún no cubre (range/slider, check/radio, accordion, tabs, separator, `lq-tilt`/`lq-reveal`) **se ve Radix crudo** hasta que un lote lo necesite y lo traiga (regla §9.1-8). El JS del kit (ripple, sheen) tampoco: sólo la luz del puntero está portada, en `glass-nav.js`.
 2. **Presupuesto de `backdrop-filter`.** El shell con sesión ya gasta 7 (6 islas + header). Un overlay abierto son 8; una página con vidrio propio se pasa. Medición por ruta pendiente (lote 6); la regla «nunca en grids» hay que comprobarla en planificador, borradores y catálogo (`.q-kind-chip--glass` ya lleva un blur de 6 px por tile).
-3. **`prefers-reduced-motion` no es global** (§8): `.q-settle`, `.q-lift` y el pop del toast siguen moviéndose. Decidir si se apagan (v2 decía que sí y no era cierto).
+3. ~~**`prefers-reduced-motion` no es global**~~ — cerrado por m-24840374 (2026-11-16): apagado global como el de la landing (§3.3.1, §8).
 4. **Venv compartido con reflex 0.9.7 mientras `uv.lock` pide 0.9.12.** El skin se verificó en 0.9.7; las clases `.rt-*` de Radix Themes que el skin selecciona pueden cambiar entre versiones. No se sincroniza en worktrees (trampa documentada en `CLAUDE.md`); el upgrade se decide fuera de esta migración y obliga a repasar `/design`.
 5. **Contraste sobre vidrio claro** sin verificar ruta a ruta (lote 6).
 6. **Duraciones:** `--lq-duration` (420 ms) está en el puente como registro, pero `--q-dur*` siguen en 140/240/380 ms. El plan (D7) hablaba de escalarlas; hoy no se hace. Decidir si se adopta o se retira del puente.

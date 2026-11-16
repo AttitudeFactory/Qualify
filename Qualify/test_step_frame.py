@@ -249,7 +249,7 @@ def test_foot_shares_the_bottom_bar_material_and_adds_no_glass() -> None:
 
 def test_entrance_follows_direction_and_respects_reduced_motion() -> None:
     assert '.q-step-body[data-dir="back"]' in _CSS
-    assert "translateX(8px)" in _CSS and "translateX(-8px)" in _CSS
+    assert "--q-from-x: 18px" in _CSS and "--q-from-x: -18px" in _CSS  # landing sc-from-*
     assert re.search(
         r"prefers-reduced-motion: reduce\) \{\s*\.q-step-body > \* \{ animation: none; \}", _CSS
     )

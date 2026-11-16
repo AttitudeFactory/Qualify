@@ -1588,7 +1588,7 @@ def test_the_gallery_slide_editor_sits_under_the_slides_and_picks_catalog_photos
     script = (Path(__file__).parent.parent / "assets" / "slide-drag.js").read_text("utf-8")
     assert '"dragstart"' in script and '"drop"' in script and "q-shifting" in script
     css = (Path(__file__).parent.parent / "assets" / "qualify-creative.css").read_text("utf-8")
-    assert ".q-cr-slide--drag.q-shifting" in css and "q-cr-slide-land" in css
+    assert ".q-cr-slide--drag.q-shifting" in css and "animation: q-pop 0.36s" in css
 
 
 def test_a_gallery_slide_keeps_its_identity_through_moves_and_kind_changes() -> None:

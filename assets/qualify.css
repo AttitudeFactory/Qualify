@@ -1005,18 +1005,18 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   padding: 0 var(--q-page-x) var(--q-gap);
 }
 
-/* Entrance: the step's blocks slide 8 px in from the side the owner moves to
-   (transform only, like `q-settle`: a frozen animation never hides content). */
-@keyframes q-step-in-next {
-  from { transform: translateX(8px); }
-  to   { transform: none; }
+/* Entrance: the step's blocks slide in from the side the owner moves to — the
+   landing's sc-from-right / sc-from-left (`q-enter`, transform only like `q-settle`:
+   a frozen animation never hides content). */
+.q-step-body > * {
+  --q-from-x: 18px;
+  --q-from-y: 0px;
+  animation: q-enter var(--q-dur-slow) var(--q-ease) both;
 }
-@keyframes q-step-in-back {
-  from { transform: translateX(-8px); }
-  to   { transform: none; }
-}
-.q-step-body > * { animation: q-step-in-next var(--q-dur-slow) var(--q-ease) both; }
-.q-step-body[data-dir="back"] > * { animation-name: q-step-in-back; }
+.q-step-body[data-dir="back"] > * { --q-from-x: -18px; }
+/* the 18 px slide never shows a horizontal scrollbar (360 px phones); `clip`, not
+   `hidden`: no scroll container, so the sticky foot keeps working */
+.q-step-body { overflow-x: clip; }
 @media (prefers-reduced-motion: reduce) {
   .q-step-body > * { animation: none; }
   .q-step-bar-fill { transition: none; }
@@ -1097,38 +1097,92 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   padding-right: env(safe-area-inset-right, 0px);
 }
 
+/* ── Motion vocabulary, from the landing (m-24840374) ─────────────────────────
+   The app moves like qualify.la: the same two curves and three durations (above) and
+   the same entrances, ported from the landing's `src/styles/scenes.css` (`sc-*`) and
+   its reveal cascade (`global.css`, `.q-reveal--stagger`). Each keyframe only says
+   where an element comes FROM; the element's own rule picks duration, curve and how
+   far, through the non-inherited properties below (so a nested block never picks up
+   its parent's distance). Pairing table: docs/design-system.md §3.3.1.
+
+     q-enter  sc-in / sc-from-left / sc-from-right / .q-reveal: from a translate and a
+              scale, TRANSFORM ONLY — a frozen entrance leaves a block a little off,
+              never invisible (the app's rule, kept: content never depends on it)
+     q-fade   sc-fade: from an opacity (--q-from-opacity, 0 by default)
+     q-pop    sc-pop: from a scale on the independent `scale` property, so it composes
+              with any `transform` the element (or a library like Sonner) already uses
+     q-pulse  sc-pulse: up to 1.12 — run it an even number of times, `alternate`, so it
+              ends at rest; the exception is a loader (or a «grabando» dot), which
+              loops `infinite` for as long as the work lasts
+     q-ping   a ring going out and fading (the landing loader's ping), box-shadow only
+     q-trace  LiquidLoading «trace»: a stroke draws, holds, drains (`ui.loading_spinner`) */
+@property --q-from-x { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --q-from-y { syntax: "<length>"; inherits: false; initial-value: 18px; }
+@property --q-from-scale { syntax: "<number>"; inherits: false; initial-value: 1; }
+@property --q-from-opacity { syntax: "<number>"; inherits: false; initial-value: 0; }
+@property --q-pop-from { syntax: "<number>"; inherits: false; initial-value: 0.3; }
+@keyframes q-enter {
+  from { transform: translate(var(--q-from-x), var(--q-from-y)) scale(var(--q-from-scale)); }
+}
+@keyframes q-fade {
+  from { opacity: var(--q-from-opacity); }
+}
+@keyframes q-pop {
+  from { scale: var(--q-pop-from); }
+}
+@keyframes q-pulse {
+  to { scale: 1.12; }
+}
+@keyframes q-ping {
+  from { box-shadow: 0 0 0 0 var(--q-ping-color, var(--accent-a7)); }
+  70%, to { box-shadow: 0 0 0 7px transparent; }
+}
+@keyframes q-trace {
+  0% { stroke-dashoffset: 1; }
+  40%, 72% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -1; }
+}
+
 /* ── Entrance ─────────────────────────────────────────────────────────────────
-   One orchestrated moment per screen: blocks settle in from below, staggered by
-   depth. Applied by `page_body`, never by hand. */
-
-/* Deliberately animates transform only, never opacity: an entrance must not be the
-   only path to visible content. If the animation is frozen, throttled or unsupported,
-   the worst case is a block sitting 8 px low — not a blank page. */
-@keyframes q-settle {
-  from { transform: translateY(8px); }
-  to   { transform: none; }
-}
+   One orchestrated moment per screen: the landing's reveal cascade — each block rises
+   18 px, 70 ms after the one before; from the 6th on they share its delay, so the
+   whole cascade ends within ~0.75 s. Applied by `page_body`, never by hand. */
 .q-settle > * {
-  animation: q-settle var(--q-dur-slow) var(--q-ease) both;
+  animation: q-enter var(--q-dur-slow) var(--q-ease) both;
 }
-.q-settle > *:nth-child(1) { animation-delay: 0ms; }
-.q-settle > *:nth-child(2) { animation-delay: 40ms; }
-.q-settle > *:nth-child(3) { animation-delay: 80ms; }
-.q-settle > *:nth-child(4) { animation-delay: 120ms; }
-.q-settle > *:nth-child(n + 5) { animation-delay: 160ms; }
+.q-settle > *:nth-child(2) { animation-delay: 70ms; }
+.q-settle > *:nth-child(3) { animation-delay: 140ms; }
+.q-settle > *:nth-child(4) { animation-delay: 210ms; }
+.q-settle > *:nth-child(5) { animation-delay: 280ms; }
+.q-settle > *:nth-child(n + 6) { animation-delay: 350ms; }
 
-/* ── Reduced motion (global) ─────────────────────────────────────────────────
-   Motion here is decorative, never informational, so it can be turned off whole. */
+/* An empty state's icon pops in like the result badge at the end of a landing scene:
+   scale only, never from invisible (the q-settle rule). */
+.q-empty > * > svg:first-child {
+  animation: q-pop var(--q-dur-slow) var(--q-spring) 120ms both;
+}
+
+/* ── Reduced motion (global, as the landing: global.css, KIT:869-879) ─────────
+   Motion here is decorative, never informational, so it is turned off whole:
+   animations cut to 0.01 ms (above 0 so `animationend` still fires — Radix waits for
+   it), no delays, transitions at 0.01 ms (not the landing's 0 s: above 0 so
+   `transitionend` still fires — vaul and Sonner wait for it). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
     scroll-behavior: auto !important;
   }
+  /* A delay used as a TIMER is not motion and needs an exemption here, like this one:
+     the «tarda más de lo normal» hint waits 12 s. */
+  .q-slow-hint { animation-delay: 12s !important; }
   .q-lift:hover { transform: none; }
+  /* buttons and choice cards: after their skin («Buttons, reduced motion» below) */
 }
 
 /* ── Shared primitives (founder, 2026-10-09) ─────────────────────────────────
@@ -1410,11 +1464,8 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .q-clip[data-clip-state="playing"] .q-clip__video { visibility: visible; }
 .q-clip[data-clip-state="loading"] .q-clip__play {
   opacity: 0.7;
-  animation: q-clip-wait 1.1s var(--q-ease) infinite;
-}
-@keyframes q-clip-wait {
-  0%, 100% { box-shadow: 0 0 0 0 var(--black-a6); }
-  50% { box-shadow: 0 0 0 0.4rem var(--black-a3); }
+  --q-ping-color: var(--black-a6);
+  animation: q-ping 1.1s var(--q-ease) infinite;
 }
 /* the first second of a playing clip: the pause mark shows (a phone has no hover) */
 .q-clip[data-clip-hint] .q-clip__pause-mark { opacity: 1; }
@@ -1479,37 +1530,65 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   to { transform: translateX(100%); }
 }
 
-/* Spinner: the kit's ring — a quiet track in the gray scale and the accent on top —
-   instead of Radix's dashed `rx.spinner`. Only `size` varies (`ui.loading_spinner`
-   sets `--q-spinner-track` and the box's own width/height); the colour adapts to
-   light/dark on its own. */
-@keyframes q-spin {
-  to { transform: rotate(360deg); }
-}
+/* Spinner: the landing's LiquidLoading «trace» (m-24840374) instead of the kit's ring —
+   the Qualify mark drawn twice, faint (`--q-loader-faint`) and in the accent
+   (`--q-loader-ink`); the liquid runs along the accent strokes, the Q part by part,
+   then the waves, holds, and drains out at the far end. Every path has pathLength 1
+   (`ui.loading_spinner`). Reduced motion: still, fully drawn. */
 .q-spinner {
-  border-radius: 9999px;
-  border: var(--q-spinner-track, 3px) solid var(--gray-a4);
-  border-top-color: var(--accent-9);
-  animation: q-spin 0.85s linear infinite;
+  --q-loader-faint: var(--accent-a5);
+  --q-loader-ink: var(--accent-11);
+  display: block;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
+.q-spinner .q-loader-faint { stroke: var(--q-loader-faint); }
+.q-spinner .q-loader-faint circle { fill: var(--q-loader-faint); }
+.q-spinner .q-loader-ink { stroke: var(--q-loader-ink); }
+.q-spinner .q-loader-ink path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: q-trace 2.8s var(--q-ease) infinite;
+}
+.q-spinner .q-loader-ink circle {
+  fill: var(--q-loader-ink);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: q-pulse 0.7s var(--q-spring) infinite alternate;
+}
+.q-spinner .q-loader-ink .q-loader-q path:nth-child(2) { animation-delay: 0.12s; }
+.q-spinner .q-loader-ink .q-loader-q path:nth-child(3) { animation-delay: 0.24s; }
+.q-spinner .q-loader-ink .q-loader-q path:nth-child(4) { animation-delay: 0.32s; }
+.q-spinner .q-loader-ink .q-loader-waves path:nth-child(1) { animation-delay: 0.44s; }
+.q-spinner .q-loader-ink .q-loader-waves path:nth-child(2) { animation-delay: 0.56s; }
+.q-spinner .q-loader-ink .q-loader-waves path:nth-child(3) { animation-delay: 0.68s; }
+/* `sm` (inside a busy button, next to a sentence): a shorter round with no hold, so it
+   reads as «working» at a glance; `md`/`lg` keep the landing's 2.8 s with its hold. */
+@keyframes q-trace-run {
+  0% { stroke-dashoffset: 1; }
+  50% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -1; }
+}
+.q-spinner--sm .q-loader-ink path { animation-name: q-trace-run; animation-duration: 1.6s; }
 @media (prefers-reduced-motion: reduce) {
   .radix-themes .rt-Skeleton::after { animation: none; }
+  .q-spinner .q-loader-ink path,
+  .q-spinner .q-loader-ink circle { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; }
 }
 
 /* ── Toast focus cue ──────────────────────────────────────────────────────────
    Bug reported 2026-08-25: Sonner's own default entrance (a quiet slide+fade) was
    easy to miss in the bottom-right corner — the position stays (revised same day),
-   but the appearance itself needs to be evident. A springy overshoot pop, layered on
-   TOP of Sonner's own animation, not replacing it: this deliberately animates the
+   but the appearance itself needs to be evident. A springy overshoot pop (`q-pop`),
+   layered on TOP of Sonner's own animation, not replacing it: it animates the
    independent `scale` property, never `transform` — Sonner itself animates
    `transform` for slide-in and for stacking multiple toasts, so animating that
    property here would fight it. `scale` composes with `transform` for free. */
-@keyframes q-toast-pop {
-  from { scale: 0.82; }
-  to   { scale: 1; }
-}
 [data-sonner-toast] {
-  animation: q-toast-pop var(--q-dur) var(--q-spring) both;
+  --q-pop-from: 0.82;
+  animation: q-pop var(--q-dur) var(--q-spring) both;
 }
 
 
@@ -1535,28 +1614,22 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .q-progress-creep {
   animation: q-progress-creep var(--q-creep, 30s) cubic-bezier(0.1, 0.6, 0.3, 1) forwards;
 }
-@keyframes q-progress-sweep {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(100%); }
-}
+/* the skeleton's sweep (`q-shimmer`), lighter, over the bar */
 .q-progress-track::after {
   content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.28), transparent);
-  animation: q-progress-sweep 1.6s ease-in-out infinite;
+  transform: translateX(-100%);
+  animation: q-shimmer 1.6s ease-in-out infinite;
 }
-/* § 2026-10-02: a short fade-in when the view switches to the panel, and again for
-   each stage comment over the bar as the stage changes. */
-@keyframes q-progress-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: none; }
-}
-.q-progress-panel {
-  animation: q-progress-in var(--q-dur-slow) var(--q-ease) both;
-}
+/* § 2026-10-02: the panel fades in when the view switches to it, and again each stage
+   comment over the bar as the stage changes — the landing's reveal (rise + fade). */
+.q-progress-panel,
 .q-progress-comment {
-  animation: q-progress-in var(--q-dur-slow) var(--q-ease) both;
+  animation:
+    q-enter var(--q-dur-slow) var(--q-ease) both,
+    q-fade var(--q-dur-slow) var(--q-ease) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .q-progress-track::after { animation: none; }
@@ -1865,8 +1938,8 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   background: var(--q-temp-cold);
   box-shadow: var(--q-temp-cold-glow);
 }
-.q-temp--hot svg { animation: q-flicker 2.4s ease-in-out infinite; }
-@keyframes q-flicker { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15) rotate(-4deg); } }
+/* the flame beats a few times and rests (landing sc-pulse; stops within 5 s, WCAG 2.2.2) */
+.q-temp--hot svg { animation: q-pulse 0.6s ease-in-out 6 alternate; }
 
 /* ══ Liquid Glass: token bridge ═══════════════════════════════════════════════
    The kit's tokens (reference/liquid-glass/LiquidOS-Studio-v3.0/assets/css/
@@ -1994,6 +2067,12 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .radix-themes :is(.rt-Button, .rt-IconButton):where(:disabled, [data-disabled], [aria-disabled="true"]) {
   transform: none;
   box-shadow: none;
+}
+/* Buttons, reduced motion (as the landing's LinkButton): nothing rises under the
+   pointer or sinks when pressed. Same specificity as the skin above, later, so it wins. */
+@media (prefers-reduced-motion: reduce) {
+  .radix-themes :is(.rt-Button, .rt-IconButton):is(:hover, :active),
+  .radix-themes .q-choice-card:is(:hover, :active) { transform: none; }
 }
 
 /* `.lq-field` / `.lq-select` / `.lq-textarea` → TextField / TextArea / Select trigger:
@@ -2364,17 +2443,14 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 
 /* PASOS-11: content arrives in place, over the existing material. Keep a readable
    first frame even when an animation is frozen; no opacity-zero entrance. */
-@keyframes q-content-in {
-  from { opacity: 0.55; }
-  to { opacity: 1; }
-}
 .q-content-ready > *,
 .q-content-ready .q-card {
-  animation: q-content-in var(--q-dur) var(--q-ease) both;
+  --q-from-opacity: 0.55;
+  animation: q-fade var(--q-dur) var(--q-ease) both;
 }
 .q-settle.q-content-ready > * {
-  animation: q-settle var(--q-dur-slow) var(--q-ease) both,
-             q-content-in var(--q-dur) var(--q-ease) both;
+  animation: q-enter var(--q-dur-slow) var(--q-ease) both,
+             q-fade var(--q-dur) var(--q-ease) both;
 }
 /* The solid skin's gradient must not make a disabled primary look available.
    This selector also wins over the solid hover skin, including [data-disabled]. */
@@ -2407,8 +2483,8 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   cursor: progress;
 }
 .q-step-primary[aria-busy="true"] .q-spinner {
-  border-color: rgba(255, 255, 255, 0.35);
-  border-top-color: var(--accent-contrast);
+  --q-loader-faint: rgba(255, 255, 255, 0.35);
+  --q-loader-ink: var(--accent-contrast);
 }
 @media (prefers-reduced-motion: reduce) {
   .q-content-ready > *,
@@ -2501,7 +2577,10 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   width: max-content;
   /* `backwards`, not `both`: once risen the pill lets go of `transform`, so the
      pressed scale below shows */
-  animation: q-orbit-rise var(--q-dur) var(--q-spring) backwards;
+  --q-from-y: 12px;
+  animation:
+    q-enter var(--q-dur) var(--q-spring) backwards,
+    q-fade var(--q-dur) var(--q-spring) backwards;
   animation-delay: calc(var(--q-orbit-i, 0) * 30ms);
 }
 .radix-themes .rt-BaseMenuItem.q-orbit-pill[data-highlighted] {
@@ -2521,18 +2600,10 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   color: var(--accent-11);
   flex-shrink: 0;
 }
-@keyframes q-orbit-rise {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes q-orbit-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
 @media (prefers-reduced-motion: reduce) {
   .rt-IconButton.q-orbit-trigger, .q-orbit-glyph { transition: none; }
   .rt-IconButton.q-orbit-trigger:active { transform: none; }
-  .radix-themes .rt-BaseMenuItem.q-orbit-pill { animation: q-orbit-fade var(--q-dur-fast) linear backwards; animation-delay: 0ms; }
+  .radix-themes .rt-BaseMenuItem.q-orbit-pill { animation: q-fade var(--q-dur-fast) linear backwards; animation-delay: 0ms; }
   .radix-themes .rt-BaseMenuItem.q-orbit-pill:active { transform: none; }
 }
 

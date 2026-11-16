@@ -14,7 +14,7 @@
  * of a surface that has no panel under it, and the system's entrance. */
 .q-auth-stage .q-card {
   box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-overlay);
-  animation: q-settle var(--q-dur-slow) var(--q-ease) both;
+  animation: q-enter var(--q-dur-slow) var(--q-ease) both;
 }
 
 /* The selectable local card is `ui.choice_card` now (qualify.css, "Shared primitives"). */

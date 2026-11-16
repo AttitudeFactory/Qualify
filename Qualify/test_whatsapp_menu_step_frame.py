@@ -134,5 +134,5 @@ const getComputedStyle=()=>({getPropertyValue:name=>name==='--q-dur-slow'?'DURAT
     if reduced:
         assert result == []
     else:
-        assert result[0]["frames"] == [{"transform": "translateX(-8px)"}, {"transform": "none"}]
+        assert result[0]["frames"] == [{"transform": "translateX(-18px)"}, {"transform": "none"}]
         assert result[0]["options"]["duration"] == 380
