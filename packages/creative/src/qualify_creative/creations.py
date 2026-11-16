@@ -75,6 +75,10 @@ REQUEST_PRESENTER = "presenter"
 #: The parent of a video by parts (ADR 44): it uses nothing of its own — each part, a
 #: child clip, pays its preview and its video in its own row.
 REQUEST_SHOT_VIDEO = "shot_video"
+#: EF-06 (D3): «Tu video, con efectos» — a `local` Clip (or part) made from the owner's
+#: own video, with no vendor: no creation, no vista previa, no video second. Its charge
+#: row (weight 0) still records that it was made.
+REQUEST_LOCAL_VIDEO = "local_video"
 
 #: How fast a presenter reads the operator's own script — the same estimate the media
 #: producer uses before the voice exists (`media._CHARS_PER_SECOND`).
@@ -399,9 +403,13 @@ def weight_for_request(
     reference_video_seconds: float | None = None,
     audio: bool = False,
     redo: bool = False,
+    local: bool = False,
     weights: CreationWeights | None = None,
 ) -> CreationPrice:
     """The creations one request uses, from what the form (or the brief) says.
+
+    - EF-06 (D3): a `local` clip («Tu video, con efectos», `local=True`) uses nothing —
+      no creation, no vista previa, no video second;
 
     - an image: 1 (its other version too); as a carousel, by how many images it makes;
     - a script for a real person, a template (still or video): 1;
@@ -415,6 +423,8 @@ def weight_for_request(
       5, 10, 15 and 30 s only).
     """
     table = weights or load_weights()
+    if local and kind == ContentKind.CLIP.value:
+        return CreationPrice(REQUEST_LOCAL_VIDEO, 0, videos=0, video_seconds=0)
     if kind == ContentKind.SHOT_VIDEO.value:
         # the parent's copy uses no creations and it makes no video: its parts do
         return CreationPrice(REQUEST_SHOT_VIDEO, 0, videos=0)
@@ -493,6 +503,7 @@ def weight_for(
         reference_videos=len(media.clip_video_keys) if clip else 0,
         audio=media.clip_audio if clip else False,
         redo=redo,
+        local=clip and media.clip_reference_mode == "local",
         weights=weights,
     )
 
@@ -504,6 +515,7 @@ __all__ = [
     "REQUEST_GENERATED_VIDEO",
     "REQUEST_IMAGE",
     "REQUEST_IMAGE_REDO",
+    "REQUEST_LOCAL_VIDEO",
     "REQUEST_PRESENTER",
     "REQUEST_SCRIPT",
     "REQUEST_SHOT_VIDEO",

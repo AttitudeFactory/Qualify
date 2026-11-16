@@ -108,6 +108,24 @@ def generation_jobs(brief: Any) -> list[tuple[str, int, str]]:
     return [(q.KIND_PREVIEW, 0, q.SEEDANCE_POOL)]
 
 
+def job_pricing_version(brief: Any, default: str) -> str:
+    """The pricing table a generation's job is priced with: EF-06's local table for a
+    `local` Clip the server stamped (made in preparation, no vendor: `local_video` 0.00),
+    the dispatcher's own for anything else."""
+    media = brief.media
+    if (
+        brief.kind is ContentKind.CLIP
+        and media.clip_reference_mode == "local"
+        and media.effects_pipeline_version >= 1
+    ):
+        from qualify_api.creative.video_pipeline.local import (  # noqa: PLC0415
+            LOCAL_PRICING_VERSION,
+        )
+
+        return LOCAL_PRICING_VERSION
+    return default
+
+
 class QueueDispatcher:
     """The same two-UUID contract as InlineDispatcher, with no request threads."""
 
@@ -124,7 +142,13 @@ class QueueDispatcher:
         brief = self.repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
             raise ValueError("draft has no brief")
-        self._enqueue(tenant_id, draft, "generation", generation_jobs(brief))
+        self._enqueue(
+            tenant_id,
+            draft,
+            "generation",
+            generation_jobs(brief),
+            pricing_version=job_pricing_version(brief, self.pricing_version),
+        )
 
     def dispatch_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
         draft = self.repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
@@ -153,6 +177,7 @@ class QueueDispatcher:
         *,
         policy: Any = None,
         preview_created_at: float | datetime | None = None,
+        pricing_version: str | None = None,
     ) -> None:
         deadline = deadline_for_preview(preview_created_at) if phase.startswith("final:") else None
         policy_deadline = (
@@ -199,6 +224,6 @@ class QueueDispatcher:
                     not_before=UNPREPARED,
                     deadline=deadline,
                     charge_id=charge_id,
-                    pricing_version=self.pricing_version,
+                    pricing_version=pricing_version or self.pricing_version,
                     pipeline_version=draft.pipeline_version,
                 )

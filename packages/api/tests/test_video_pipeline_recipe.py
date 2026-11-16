@@ -130,6 +130,13 @@ def _codes(problems: tuple) -> list[str]:
     return [p.code for p in problems]
 
 
+def ledger_price(row: Any) -> tuple[str, int, int, int]:
+    """What a charge row of the in-memory ledger priced: (kind, creations, vistas previas,
+    video seconds)."""
+    price = row.price
+    return price.request_kind, price.weight, price.videos, price.video_seconds
+
+
 # ---------------------------------------------------------------------------
 # recipe_of
 
@@ -340,20 +347,19 @@ def test_saving_a_plan_with_a_stretch_of_another_business_is_refused(
 
 
 # ---------------------------------------------------------------------------
-# `local` fails closed until EF-05/EF-06: never a Seedance call, never a charge
+# `local` (EF-06): its stretches are made; what the engine does not draw yet fails closed
 
 
-def test_a_local_clip_is_refused_before_any_row_or_dispatch() -> None:
+def test_a_local_clip_with_effects_is_refused_before_any_row_or_dispatch() -> None:
+    """EF-06 makes a `local` Clip from its stretches; its EFFECTS (layers, EF-08) are
+    still refused — and only they: neither `local` nor its stretches."""
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     brief = _clip(clip_reference_mode="local", segments=(_stretch(),), effects=(FAST,))
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief, user_id=USER_ID)
-    assert _codes(refused.value.problems) == [
-        "local_unavailable",
-        "recipe_unavailable",  # its effects
-        "recipe_unavailable",  # its stretches
+    assert [(p.code, p.field) for p in refused.value.problems] == [
+        ("recipe_unavailable", "effects")
     ]
-    assert refused.value.reason == "local_unavailable"
     assert repo.drafts == {} and repo.briefs == {} and dispatcher.calls == []
 
 
@@ -389,12 +395,19 @@ def test_the_effects_pipeline_version_is_the_servers() -> None:
         ({"effects": (SMOKE,)}, "effects"),
         ({"text_layer": WORDS}, "text_layers"),  # the v1 key reads as `text_layers`
         ({"text_layers": (WORDS,)}, "text_layers"),
+        # stretches of a Clip that is NOT `local`: Seedance would only follow them
         ({"segments": (_stretch(),)}, "segments"),
+        # EF-05 draws the texts: a `local` Clip with a text is refused for its text only
+        (
+            {"clip_reference_mode": "local", "segments": (_stretch(),), "text_layers": (WORDS,)},
+            "text_layers",
+        ),
     ],
 )
 def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) -> None:
     """EF-02: the owner never pays for a video without what he chose — a Clip with effects,
-    a text over the video or stretches of own video is refused before any row."""
+    a text over the video or stretches of own video (outside `local`) is refused before
+    any row."""
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(
@@ -461,7 +474,10 @@ def test_the_parents_whole_video_text_is_validated() -> None:
     ]
 
 
-def test_a_plan_with_a_local_part_makes_no_part_and_charges_nothing() -> None:
+def test_a_plan_with_a_local_part_makes_it_and_charges_it_nothing() -> None:
+    """EF-06: a `local` part is made like the others — its child stamped for the local
+    pipeline, its charge of 0 creations, 0 vistas previas, 0 seconds (D3); the
+    `reference` part beside it is charged as before."""
     plan = (
         VideoPartPlan(seconds=5, description="Uno."),
         VideoPartPlan(seconds=5, description="Dos."),
@@ -472,23 +488,32 @@ def test_a_plan_with_a_local_part_makes_no_part_and_charges_nothing() -> None:
     repo.briefs[repo.drafts[parent].brief_id] = brief.model_copy(
         update={"media": brief.media.model_copy(update={"parts": (plan[0], local)})}
     )
-    before = dict(ledger.rows)
-    calls = len(router.budgets)
-    with pytest.raises(PartsLocalUnavailable) as refused:
-        parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
-    assert refusal_of(refused.value) == ("local_unavailable", None, 0)
-    assert repo.parts_of(tenant_id=TENANT_ID, parent_id=parent) == ()
-    assert ledger.rows == before and dispatcher.calls == [] and len(router.budgets) == calls
+    ids = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+    assert len(ids) == 2 and len(dispatcher.calls) == 2
+    child = repo.briefs[repo.drafts[ids[1]].brief_id]
+    assert child.media.clip_reference_mode == "local"
+    assert child.media.effects_pipeline_version == 1
+    first = repo.briefs[repo.drafts[ids[0]].brief_id]
+    assert first.media.effects_pipeline_version == 0
+    assert parts.estimated_usd([child]) == 0
+    prices = {key[0]: row for key, row in ledger.rows.items()}
+    assert ledger_price(prices[ids[1]]) == ("local_video", 0, 0, 0)
+    assert ledger_price(prices[ids[0]])[2] == 1  # the `reference` part: one vista previa
 
 
-def test_a_parent_with_a_local_part_is_refused_at_creation() -> None:
+def test_a_stored_local_refusal_still_reads() -> None:
+    """EF-06 no longer raises `PartsLocalUnavailable`; a refusal stored before it reads."""
+    assert refusal_of(PartsLocalUnavailable()) == ("local_unavailable", None, 0)
+
+
+def test_a_parent_with_a_local_part_may_be_created() -> None:
+    """EF-06: a `local` part is made — the parent with one is no longer refused."""
     service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
     local = VideoPartPlan(mode="local", seconds=5, segments=(_stretch(),), description="Uno.")
-    with pytest.raises(RecipeRefused, match="local_unavailable"):
-        service.create_draft(
-            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=parent_brief(local), user_id=USER_ID
-        )
-    assert repo.drafts == {}
+    service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=parent_brief(local), user_id=USER_ID
+    )
+    assert len(repo.drafts) == 1
 
 
 def test_a_recipe_refusal_of_a_part_is_a_stored_code() -> None:
@@ -498,13 +523,16 @@ def test_a_recipe_refusal_of_a_part_is_a_stored_code() -> None:
     assert refusal_of(refused) == ("effects_invalid", 2, 0)
 
 
-def test_the_producer_never_sends_a_local_clip_to_seedance() -> None:
+def test_the_producer_never_sends_an_unstamped_local_clip_to_seedance() -> None:
+    """A `local` brief the server never stamped (`effects_pipeline_version` 0: stored
+    before EF-06) is refused before any read — never made as a Seedance clip."""
     from .test_creative_media import TENANT_ID as MEDIA_TENANT
     from .test_creative_media import MemoryStore, SpyVendor, _produce, _producer
 
     vendor = SpyVendor()
     stretch = _stretch(f"uploads/{MEDIA_TENANT}/mi-cocina.mp4")
     brief = _clip(clip_reference_mode="local", segments=(stretch,))
+    assert brief.media.effects_pipeline_version == 0
     outcome = _produce(_producer(MemoryStore(), vendor), brief, uuid4())
     assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
     assert outcome.detail == LOCAL_CLIP_UNAVAILABLE
@@ -853,8 +881,10 @@ def test_a_local_part_must_last_its_seconds() -> None:
     short = SourceSegment(key=OWN, start_s=0.0, end_s=6.0, speed=3.0)
     part = PartRecipe(index=1, mode="local", seconds=5, segments=(short,))
     problems = validate_recipe((part,), video_by_parts=True)
-    assert [(p.code, p.part, p.field) for p in problems] == [
-        ("segments_length_mismatch", 1, "segments")
+    # option A: 2 s is also under the speed step's 3 s
+    assert [(p.code, p.part, p.field, p.duration_s) for p in problems] == [
+        ("local_length_out_of_range", 1, "segments", 2.0),
+        ("segments_length_mismatch", 1, "segments", 2.0),
     ]
     fits = SourceSegment(key=OWN, start_s=0.0, end_s=15.3, speed=3.0)  # 5.1 s: within 0.5
     ok = part.model_copy(update={"segments": (fits,)})
