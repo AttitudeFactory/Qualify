@@ -179,7 +179,7 @@ def _parse_client_business_response(payload: dict[str, Any]) -> str | None:
     {"client_business_id": "<id>", "id": "<user id>"}. Only a Business Integration System
     User token carries it (ADR 29); a plain user token answers without the field → None."""
     value = payload.get("client_business_id")
-    return str(value) if isinstance(value, str | int) and value else None
+    return str(value) if type(value) in (str, int) and value else None  # bool is not an id
 
 
 class HttpMetaOAuthClient:

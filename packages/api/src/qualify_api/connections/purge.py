@@ -452,7 +452,7 @@ def _purge_connection(
             session.execute(
                 text("""UPDATE social_connections SET
                 external_account_id='purged:' || CAST(id AS text), external_username=NULL,
-                linked_page_id='purged',
+                linked_page_id='purged', client_business_id=NULL,
                 granted_scopes='{}'::text[], data_access_expires_at=NULL, last_verified_at=NULL,
                 last_health_checked_at=NULL, reconnect_reason=NULL, temporary_failure_count=0,
                 recovery_refresh_pending=false, purged_at=:now WHERE id=:cid"""),

@@ -371,7 +371,6 @@ class ConnectService:
             )
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)
-        client_business_id = await self._client_business_id(grant.access_token)
         # A normal Instagram reconnect may already grant advertising permissions through
         # the principal Meta configuration. Keep that same USER grant for Marketing API
         # calls before the organic path replaces it with a Page token.
@@ -394,6 +393,8 @@ class ConnectService:
         now = datetime.now(UTC)
         if payload.request_ads or keep_ads_grant:
             self._require_ads_member(payload.tenant_id, payload.user_id)
+        # After the membership gate: a refused connect spends no Meta call.
+        client_business_id = await self._client_business_id(grant.access_token)
         record = self._repo.persist_grant(
             GrantInput(
                 tenant_id=payload.tenant_id,
