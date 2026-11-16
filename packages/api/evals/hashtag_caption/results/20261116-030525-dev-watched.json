@@ -1837,6 +1837,61 @@
     "min": 0.0,
     "max": 0.0
    },
+   "picks_shown": {
+    "mean": 203,
+    "min": 203,
+    "max": 203
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0148,
+    "min": 0.0148,
+    "max": 0.0148
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.0148,
+    "min": 0.0148,
+    "max": 0.0148
+   },
+   "trap_any_shown": {
+    "mean": 0.0296,
+    "min": 0.0296,
+    "max": 0.0296
+   },
+   "fit_shown": {
+    "mean": 0.8374,
+    "min": 0.8374,
+    "max": 0.8374
+   },
+   "generica_shown": {
+    "mean": 0.0099,
+    "min": 0.0099,
+    "max": 0.0099
+   },
+   "no_encaja_shown": {
+    "mean": 0.0493,
+    "min": 0.0493,
+    "max": 0.0493
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0837,
+    "min": 0.0837,
+    "max": 0.0837
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "picks_all": {
     "mean": 212,
     "min": 212,
@@ -1912,10 +1967,30 @@
     "min": 0.3823,
     "max": 0.3823
    },
+   "cases_with_trap_shown": {
+    "mean": 0.2778,
+    "min": 0.2778,
+    "max": 0.2778
+   },
+   "watched_uptake_shown": {
+    "mean": 0.4312,
+    "min": 0.4312,
+    "max": 0.4312
+   },
    "mejor_fewer_than_5": {
     "mean": 0.0,
     "min": 0.0,
     "max": 0.0
+   },
+   "dropped_per_call": {
+    "mean": 0.5,
+    "min": 0.5,
+    "max": 0.5
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.4444,
+    "min": 0.4444,
+    "max": 0.4444
    },
    "catalog_backed": {
     "mean": 0.0,
@@ -1928,6 +2003,11 @@
     "max": 11.7778
    },
    "stability_top": null,
+   "dropped_tags": {
+    "arabe:encaja": 7,
+    "ensalada:encaja": 1,
+    "pollo:vigilada_no_encaja": 1
+   },
    "reasons": 212,
    "reason_platform": 0.1132,
    "reason_english": 0.0047,
@@ -2058,6 +2138,61 @@
     "min": 0.0,
     "max": 0.0
    },
+   "picks_shown": {
+    "mean": 203,
+    "min": 203,
+    "max": 203
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0148,
+    "min": 0.0148,
+    "max": 0.0148
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.0148,
+    "min": 0.0148,
+    "max": 0.0148
+   },
+   "trap_any_shown": {
+    "mean": 0.0296,
+    "min": 0.0296,
+    "max": 0.0296
+   },
+   "fit_shown": {
+    "mean": 0.8374,
+    "min": 0.8374,
+    "max": 0.8374
+   },
+   "generica_shown": {
+    "mean": 0.0099,
+    "min": 0.0099,
+    "max": 0.0099
+   },
+   "no_encaja_shown": {
+    "mean": 0.0493,
+    "min": 0.0493,
+    "max": 0.0493
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0837,
+    "min": 0.0837,
+    "max": 0.0837
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "picks_all": {
     "mean": 212,
     "min": 212,
@@ -2133,10 +2268,30 @@
     "min": 0.3823,
     "max": 0.3823
    },
+   "cases_with_trap_shown": {
+    "mean": 0.2778,
+    "min": 0.2778,
+    "max": 0.2778
+   },
+   "watched_uptake_shown": {
+    "mean": 0.4312,
+    "min": 0.4312,
+    "max": 0.4312
+   },
    "mejor_fewer_than_5": {
     "mean": 0.0,
     "min": 0.0,
     "max": 0.0
+   },
+   "dropped_per_call": {
+    "mean": 0.5,
+    "min": 0.5,
+    "max": 0.5
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.4444,
+    "min": 0.4444,
+    "max": 0.4444
    },
    "catalog_backed": {
     "mean": 0.0,
@@ -2149,6 +2304,11 @@
     "max": 11.7778
    },
    "stability_top": null,
+   "dropped_tags": {
+    "arabe:encaja": 7,
+    "ensalada:encaja": 1,
+    "pollo:vigilada_no_encaja": 1
+   },
    "reasons": 212,
    "reason_platform": 0.1132,
    "reason_english": 0.0047,
@@ -2162,5 +2322,5 @@
    "p50_seconds": 4.38
   }
  },
- "rescored_at": "2026-11-16T23:16:01+00:00"
+ "rescored_at": "2026-11-16T23:23:32+00:00"
 }

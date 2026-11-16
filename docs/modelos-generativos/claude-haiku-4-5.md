@@ -9,7 +9,7 @@
 | Otros usos | Clasificación de hashtags del catálogo (`hashtags.ai`, eval `packages/api/evals/hashtag_ai/`) |
 | Datos | El texto de la publicación, los hashtags del catálogo del negocio y, con `/2`, etiquetas públicas de TikTok. Siempre con revisión humana antes de publicar |
 
-## Prueba HASHTAGS-PIE-001 — 2026-11-15/17 · `/2` activado; pasa con la regla de «Mejor», no en el top 5 sin filtrar
+## Prueba HASHTAGS-PIE-001 — 2026-11-15/17 · `/2` activado; las cinco «Mejor» pasan con el filtro y la regla finales
 
 - **Quién:** Claude Code (data scientist), a pedido del líder, con la barra acordada antes de correr.
 - **Eval:** `packages/api/evals/hashtag_caption/` (README con reglas, adjudicaciones y todos los números).
@@ -55,3 +55,15 @@
 - **Motivos que hablan de TikTok, vistas, audiencia o el rubro:** bajan de 8–20 % a 0,6–2,1 %; con inglés, de ≤2,2 % a ≤0,5 %.
 - **Queda:** nombres de otros negocios entre las propuestas sin marca (1,5–1,7 % en `own+watched`).
 - **Gasto:** US$0.836 en esta re-medición; total registrado US$2.372. Detalle: [pruebas.md#hashtags-pie-001](pruebas.md#hashtags-pie-001).
+
+### Filtro de salida y regla de «Mejor» finales — 2026-11-17 (re-puntuación, US$0)
+
+- **Qué se hizo:** las respuestas guardadas de la re-medición se pasaron por `shown_pick` (una vigilada sin nombrar se muestra solo si es `topic`), el corte a 12 y la regla de «Mejor» con `named_in_text` por palabras enteras. Test ya usado: no es una corrida nueva.
+- **Cinco «Mejor»: pasan** en dev y test:
+  - 0 otros negocios y 0 vigiladas que no encajan;
+  - «encaja» test 0.892 / 0.967 (base 0.800 / 0.975);
+  - toma de vigiladas 0.208 / 0.125.
+- **Lo que se muestra:**
+  - el filtro quita casi todos los nombres de otros negocios (`manosalsazon` 17, `yaalashawarma` 3);
+  - con catálogo siguen visibles vigiladas `topic` que no encajan (4,5–5 % frente a ≤0,6 % de la base);
+  - pierde 0,6–1 propuesta que encajaba por llamada, casi siempre `arabe`.

@@ -353,15 +353,50 @@ def mejor_indices(run: dict[str, Any], case: dict[str, Any], sent: set[str]) -> 
     return marked
 
 
+def _watched_only(run: dict[str, Any], case: dict[str, Any], sent: set[str]) -> set[str]:
+    """The picks `suggest_for_caption` flags `watched`: from the list sent, not `seen`."""
+    if "watched" not in run["variant"]:
+        return set()
+    seen = {clean(t) for t in case["had"]} if "own" in run["variant"] else set()
+    return sent - seen
+
+
+def shown_picks(
+    run: dict[str, Any], case: dict[str, Any], sent: set[str], kinds: dict[str, str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(shown, dropped): the product's final post-processing on a stored answer, with the
+    product's own functions (commit 73670f6a) — `caption.shown_pick` on every watched-only
+    pick (kept when the text names it or its catalog kind is `topic`), the rest cut to
+    `MAX_PICKS`. Stored picks were already ≤ 12, so a pick the model put 13th can never
+    take a dropped one's place here (it can in the product)."""
+    only = _watched_only(run, case, sent)
+    shown: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for pick in run["picks"]:
+        tag = clean(pick["tag"])
+        if tag in only and not caption_mod.shown_pick(
+            tag, watched_kind=kinds.get(tag, "unknown"), caption=case["text"]
+        ):
+            dropped.append(pick)
+            continue
+        shown.append({**pick, "watched": tag in only})
+    return shown[: caption_mod.MAX_PICKS], dropped
+
+
 def score_pass(
-    runs: list[dict[str, Any]], labeler: Labeler, watched: set[str], sent: set[str]
+    runs: list[dict[str, Any]],
+    labeler: Labeler,
+    watched: set[str],
+    sent: set[str],
+    kinds: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Metrics of ONE full pass (one variant, one repeat) over the split: the raw top 5
     (`top`), the five marked «Mejor» (`mejor`) and every pick (`all`)."""
-    counts = {"all": Counter(), "top": Counter(), "mejor": Counter()}
-    trap_cases = {"top": 0, "mejor": 0}
-    uptakes: dict[str, list[float]] = {"top": [], "mejor": []}
-    short_mejor = 0
+    counts = {"all": Counter(), "top": Counter(), "mejor": Counter(), "shown": Counter()}
+    trap_cases = {"top": 0, "mejor": 0, "shown": 0}
+    uptakes: dict[str, list[float]] = {"top": [], "mejor": [], "shown": []}
+    short_mejor = dropped_n = dropped_fit = 0
+    kinds = kinds or {}
     backed = total = 0
     for run in runs:
         if run.get("error") or run.get("skipped"):
@@ -369,9 +404,23 @@ def score_pass(
         case = labeler.cases[run["case"]]
         tags = [clean(p["tag"]) for p in run["picks"]]
         labels = [labeler.label(run["case"], t, watched) for t in tags]
-        marked = mejor_indices(run, case, sent)
+        shown, dropped = shown_picks(run, case, sent, kinds)
+        dropped_n += len(dropped)
+        dropped_fit += sum(
+            labeler.label(run["case"], clean(p["tag"]), watched) in FITS for p in dropped
+        )
+        shown_ids = [
+            next(i for i, q in enumerate(run["picks"]) if clean(q["tag"]) == clean(p["tag"]))
+            for p in shown
+        ]
+        marked_in_shown = mejor_indices({**run, "picks": shown}, case, sent)
+        marked = [shown_ids[i] for i in marked_in_shown]
         short_mejor += len(marked) < TOP
-        chosen = {"top": list(range(min(TOP, len(tags)))), "mejor": marked}
+        chosen = {
+            "top": list(range(min(TOP, len(tags)))),
+            "mejor": marked,
+            "shown": shown_ids,
+        }
         for lab in labels:
             counts["all"][lab] += 1
         # only the fitting tags the list actually offers (a reaction text admits
@@ -387,7 +436,7 @@ def score_pass(
         total += len(tags)
     scored = [r for r in runs if not r.get("error") and not r.get("skipped")]
     out: dict[str, Any] = {"cases": len(scored)}
-    for scope in ("top", "mejor", "all"):
+    for scope in ("top", "mejor", "shown", "all"):
         n = sum(counts[scope].values())
         out[f"picks_{scope}"] = n
         for cls in TRAPS:
@@ -396,12 +445,14 @@ def score_pass(
         out[f"fit_{scope}"] = _ratio(sum(counts[scope][c] for c in FITS), n)
         for cls in ("generica", "no_encaja", "mal_escrita", "sin_etiqueta"):
             out[f"{cls}_{scope}"] = _ratio(counts[scope][cls], n)
-    for scope in ("top", "mejor"):
+    for scope in ("top", "mejor", "shown"):
         out[f"cases_with_trap_{scope}"] = _ratio(trap_cases[scope], len(scored))
         out[f"watched_uptake_{scope}"] = (
             round(statistics.mean(uptakes[scope]), 4) if uptakes[scope] else None
         )
     out["mejor_fewer_than_5"] = _ratio(short_mejor, len(scored))
+    out["dropped_per_call"] = _ratio(dropped_n, len(scored))
+    out["dropped_fitting_per_call"] = _ratio(dropped_fit, len(scored))
     out["catalog_backed"] = _ratio(backed, total)
     out["picks_per_call"] = _ratio(total, len(scored))
     return out
@@ -415,12 +466,15 @@ def score(doc: dict[str, Any], overrides: dict[str, str] | None = None) -> dict[
     # what the runs were SENT: saved since 2026-11-16 (platform tags dropped by the
     # product); before that, the whole 20-tag list
     sent = {clean(t) for t in doc.get("watched_sent") or [w["tag"] for w in cases["watched"]]}
+    kinds = {clean(w["tag"]): w.get("kind", "unknown") for w in cases["watched"]}
     by_variant: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for run in doc["runs"]:
         by_variant[run["variant"]][run["repeat"]].append(run)
     report: dict[str, Any] = {}
     for variant, passes in by_variant.items():
-        per_pass = [score_pass(runs, labeler, watched, sent) for _, runs in sorted(passes.items())]
+        per_pass = [
+            score_pass(runs, labeler, watched, sent, kinds) for _, runs in sorted(passes.items())
+        ]
         agg: dict[str, Any] = {}
         for key in per_pass[0]:
             vals = [p[key] for p in per_pass if p[key] is not None]
@@ -448,6 +502,13 @@ def score(doc: dict[str, Any], overrides: dict[str, str] | None = None) -> dict[
         )
         tokens_out = sum(u["output"] for r in ok for u in r["usage"])
         agg["stability_top"] = round(statistics.mean(jac), 4) if jac else None
+        dropped_tags: Counter = Counter()
+        for r in ok:
+            case = labeler.cases[r["case"]]
+            for pick in shown_picks(r, case, sent, kinds)[1]:
+                tag = clean(pick["tag"])
+                dropped_tags[f"{tag}:{labeler.label(r['case'], tag, watched)}"] += 1
+        agg["dropped_tags"] = dict(dropped_tags.most_common())
         reasons = [reason_flags(p.get("reason", "")) for r in ok for p in r["picks"]]
         agg["reasons"] = len(reasons)
         agg["reason_platform"] = _ratio(sum(f[0] for f in reasons), len(reasons))
@@ -500,6 +561,14 @@ SHORT_ROWS = (
 
 def print_report(report: dict[str, Any], *, short: bool = False) -> None:
     rows = [
+        "trap_any_shown",
+        "trap_competidor_shown",
+        "trap_otro_lugar_shown",
+        "trap_vigilada_no_encaja_shown",
+        "fit_shown",
+        "mal_escrita_shown",
+        "dropped_per_call",
+        "dropped_fitting_per_call",
         "trap_any_mejor",
         "trap_competidor_mejor",
         "trap_relleno_mejor",

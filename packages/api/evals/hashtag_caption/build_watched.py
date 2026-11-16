@@ -77,7 +77,8 @@ def build(videos: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]
     repo.apply_classifications(TENANT, known)
     repo.apply_classifications(TENANT, weekly.rule_classifications(sightings))
     companions = repo.companions(TENANT, RUBRO, now=NOW)
-    return [{"tag": c.tag, "views": c.views, "posts": c.posts} for c in companions], dropped
+    rows = [{"tag": c.tag, "views": c.views, "posts": c.posts, "kind": c.kind} for c in companions]
+    return rows, dropped
 
 
 def main() -> None:
@@ -96,7 +97,10 @@ def main() -> None:
     CASES.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print("dropped by readable_tag:", dropped)
     for name, rows in (("watched", watched), ("without 2026-08-18", without)):
-        print(f"{name} ({len(rows)}):", ", ".join(f"{w['tag']}({w['posts']})" for w in rows))
+        print(
+            f"{name} ({len(rows)}):",
+            ", ".join(f"{w['tag']}({w['posts']},{w['kind']})" for w in rows),
+        )
 
 
 if __name__ == "__main__":

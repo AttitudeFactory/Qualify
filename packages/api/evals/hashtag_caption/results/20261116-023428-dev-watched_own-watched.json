@@ -10263,6 +10263,61 @@
     "min": 0.0333,
     "max": 0.0353
    },
+   "picks_shown": {
+    "mean": 181.6667,
+    "min": 178,
+    "max": 185
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0018,
+    "min": 0.0,
+    "max": 0.0055
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0018,
+    "min": 0.0,
+    "max": 0.0054
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0149,
+    "min": 0.0,
+    "max": 0.0281
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.1558,
+    "min": 0.1236,
+    "max": 0.1923
+   },
+   "trap_any_shown": {
+    "mean": 0.1743,
+    "min": 0.1517,
+    "max": 0.2143
+   },
+   "fit_shown": {
+    "mean": 0.7175,
+    "min": 0.6703,
+    "max": 0.7416
+   },
+   "generica_shown": {
+    "mean": 0.0074,
+    "min": 0.0,
+    "max": 0.0112
+   },
+   "no_encaja_shown": {
+    "mean": 0.0147,
+    "min": 0.011,
+    "max": 0.0169
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0477,
+    "min": 0.0378,
+    "max": 0.0604
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0458,
+    "min": 0.044,
+    "max": 0.0486
+   },
    "picks_all": {
     "mean": 210,
     "min": 210,
@@ -10338,10 +10393,30 @@
     "min": 0.2781,
     "max": 0.3094
    },
+   "cases_with_trap_shown": {
+    "mean": 0.8148,
+    "min": 0.7778,
+    "max": 0.8889
+   },
+   "watched_uptake_shown": {
+    "mean": 0.3805,
+    "min": 0.351,
+    "max": 0.426
+   },
    "mejor_fewer_than_5": {
     "mean": 0.0371,
     "min": 0.0,
     "max": 0.0556
+   },
+   "dropped_per_call": {
+    "mean": 1.5741,
+    "min": 1.3889,
+    "max": 1.7778
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.6667,
+    "min": 0.6111,
+    "max": 0.7222
    },
    "catalog_backed": {
     "mean": 0.0,
@@ -10354,6 +10429,15 @@
     "max": 11.6667
    },
    "stability_top": 0.2939,
+   "dropped_tags": {
+    "yaalashawarma:competidor": 30,
+    "arabe:encaja": 27,
+    "manosalsazon:competidor": 10,
+    "amirexpress:competidor": 7,
+    "comer:aceptable": 7,
+    "ensalada:encaja": 2,
+    "pollo:vigilada_no_encaja": 2
+   },
    "reasons": 630,
    "reason_platform": 0.1984,
    "reason_english": 0.0175,
@@ -10482,6 +10566,61 @@
     "min": 0.0,
     "max": 0.0225
    },
+   "picks_shown": {
+    "mean": 177.3333,
+    "min": 173,
+    "max": 181
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.1859,
+    "min": 0.1734,
+    "max": 0.1934
+   },
+   "trap_any_shown": {
+    "mean": 0.1859,
+    "min": 0.1734,
+    "max": 0.1934
+   },
+   "fit_shown": {
+    "mean": 0.7841,
+    "min": 0.768,
+    "max": 0.7977
+   },
+   "generica_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_shown": {
+    "mean": 0.0113,
+    "min": 0.011,
+    "max": 0.0116
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0055,
+    "min": 0.0,
+    "max": 0.0166
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0132,
+    "min": 0.011,
+    "max": 0.0173
+   },
    "picks_all": {
     "mean": 208.6667,
     "min": 206,
@@ -10557,10 +10696,30 @@
     "min": 0.0958,
     "max": 0.1062
    },
+   "cases_with_trap_shown": {
+    "mean": 0.8333,
+    "min": 0.7778,
+    "max": 0.8889
+   },
+   "watched_uptake_shown": {
+    "mean": 0.2958,
+    "min": 0.2802,
+    "max": 0.3167
+   },
    "mejor_fewer_than_5": {
     "mean": 0.1111,
     "min": 0.0556,
     "max": 0.2222
+   },
+   "dropped_per_call": {
+    "mean": 1.7408,
+    "min": 1.5556,
+    "max": 2.0556
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.7407,
+    "min": 0.6111,
+    "max": 0.8889
    },
    "catalog_backed": {
     "mean": 0.4473,
@@ -10573,6 +10732,15 @@
     "max": 11.6667
    },
    "stability_top": 0.6047,
+   "dropped_tags": {
+    "arabe:encaja": 31,
+    "yaalashawarma:competidor": 26,
+    "manosalsazon:competidor": 21,
+    "comer:aceptable": 8,
+    "amirexpress:competidor": 4,
+    "pollo:vigilada_no_encaja": 3,
+    "ensalada:encaja": 1
+   },
    "reasons": 626,
    "reason_platform": 0.1294,
    "reason_english": 0.0224,
@@ -10703,6 +10871,61 @@
     "min": 0.0333,
     "max": 0.0353
    },
+   "picks_shown": {
+    "mean": 181.6667,
+    "min": 178,
+    "max": 185
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0018,
+    "min": 0.0,
+    "max": 0.0055
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0018,
+    "min": 0.0,
+    "max": 0.0054
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0149,
+    "min": 0.0,
+    "max": 0.0281
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.1228,
+    "min": 0.1011,
+    "max": 0.1538
+   },
+   "trap_any_shown": {
+    "mean": 0.1413,
+    "min": 0.1189,
+    "max": 0.1758
+   },
+   "fit_shown": {
+    "mean": 0.7504,
+    "min": 0.7088,
+    "max": 0.7784
+   },
+   "generica_shown": {
+    "mean": 0.0074,
+    "min": 0.0,
+    "max": 0.0112
+   },
+   "no_encaja_shown": {
+    "mean": 0.0147,
+    "min": 0.011,
+    "max": 0.0169
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0477,
+    "min": 0.0378,
+    "max": 0.0604
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0458,
+    "min": 0.044,
+    "max": 0.0486
+   },
    "picks_all": {
     "mean": 210,
     "min": 210,
@@ -10778,10 +11001,30 @@
     "min": 0.2781,
     "max": 0.3094
    },
+   "cases_with_trap_shown": {
+    "mean": 0.7778,
+    "min": 0.7222,
+    "max": 0.8889
+   },
+   "watched_uptake_shown": {
+    "mean": 0.3805,
+    "min": 0.351,
+    "max": 0.426
+   },
    "mejor_fewer_than_5": {
     "mean": 0.0371,
     "min": 0.0,
     "max": 0.0556
+   },
+   "dropped_per_call": {
+    "mean": 1.5741,
+    "min": 1.3889,
+    "max": 1.7778
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.6667,
+    "min": 0.6111,
+    "max": 0.7222
    },
    "catalog_backed": {
     "mean": 0.0,
@@ -10794,6 +11037,15 @@
     "max": 11.6667
    },
    "stability_top": 0.2939,
+   "dropped_tags": {
+    "yaalashawarma:competidor": 30,
+    "arabe:encaja": 27,
+    "manosalsazon:competidor": 10,
+    "amirexpress:competidor": 7,
+    "comer:aceptable": 7,
+    "ensalada:encaja": 2,
+    "pollo:vigilada_no_encaja": 2
+   },
    "reasons": 630,
    "reason_platform": 0.1984,
    "reason_english": 0.0175,
@@ -10922,6 +11174,61 @@
     "min": 0.0,
     "max": 0.0225
    },
+   "picks_shown": {
+    "mean": 177.3333,
+    "min": 173,
+    "max": 181
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.1466,
+    "min": 0.1445,
+    "max": 0.1492
+   },
+   "trap_any_shown": {
+    "mean": 0.1466,
+    "min": 0.1445,
+    "max": 0.1492
+   },
+   "fit_shown": {
+    "mean": 0.8234,
+    "min": 0.8122,
+    "max": 0.8315
+   },
+   "generica_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_shown": {
+    "mean": 0.0113,
+    "min": 0.011,
+    "max": 0.0116
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0055,
+    "min": 0.0,
+    "max": 0.0166
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0132,
+    "min": 0.011,
+    "max": 0.0173
+   },
    "picks_all": {
     "mean": 208.6667,
     "min": 206,
@@ -10997,10 +11304,30 @@
     "min": 0.0958,
     "max": 0.1062
    },
+   "cases_with_trap_shown": {
+    "mean": 0.8333,
+    "min": 0.7778,
+    "max": 0.8889
+   },
+   "watched_uptake_shown": {
+    "mean": 0.2958,
+    "min": 0.2802,
+    "max": 0.3167
+   },
    "mejor_fewer_than_5": {
     "mean": 0.1111,
     "min": 0.0556,
     "max": 0.2222
+   },
+   "dropped_per_call": {
+    "mean": 1.7408,
+    "min": 1.5556,
+    "max": 2.0556
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.7407,
+    "min": 0.6111,
+    "max": 0.8889
    },
    "catalog_backed": {
     "mean": 0.4473,
@@ -11013,6 +11340,15 @@
     "max": 11.6667
    },
    "stability_top": 0.6047,
+   "dropped_tags": {
+    "arabe:encaja": 31,
+    "yaalashawarma:competidor": 26,
+    "manosalsazon:competidor": 21,
+    "comer:aceptable": 8,
+    "amirexpress:competidor": 4,
+    "pollo:vigilada_no_encaja": 3,
+    "ensalada:encaja": 1
+   },
    "reasons": 626,
    "reason_platform": 0.1294,
    "reason_english": 0.0224,
@@ -11026,5 +11362,5 @@
    "p50_seconds": 4.21
   }
  },
- "rescored_at": "2026-11-16T23:16:00+00:00"
+ "rescored_at": "2026-11-16T23:23:32+00:00"
 }

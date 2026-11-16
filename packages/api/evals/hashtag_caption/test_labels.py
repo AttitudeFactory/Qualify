@@ -109,3 +109,21 @@ def test_reason_flags() -> None:
     assert run_eval.reason_flags("Muy visto en videos de TikTok") == (True, False)
     assert run_eval.reason_flags("Popular entre food lovers") == (False, True)
     assert run_eval.reason_flags("El texto nombra el pollo") == (False, False)
+
+
+def test_shown_picks_applies_the_products_filter() -> None:
+    case = next(c for c in DATA["cases"] if c["id"] == "c48")  # «¿Cómo llegar?»
+    kinds = {run_eval.clean(w["tag"]): w["kind"] for w in DATA["watched"]}
+    sent = set(kinds)
+    run = {
+        "variant": "watched",
+        "picks": [
+            {"tag": "yaalashawarma"},  # unknown and not named: dropped
+            {"tag": "carne"},  # topic: shown, though the text does not name it
+            {"tag": "shawarma"},  # not from the list: always shown
+        ],
+    }
+    shown, dropped = run_eval.shown_picks(run, case, sent, kinds)
+    assert [p["tag"] for p in shown] == ["carne", "shawarma"]
+    assert [p["tag"] for p in dropped] == ["yaalashawarma"]
+    assert [p["watched"] for p in shown] == [True, False]

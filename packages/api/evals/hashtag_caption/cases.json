@@ -11,102 +11,122 @@
   {
    "tag": "recetasfaciles",
    "views": 4016304,
-   "posts": 2
+   "posts": 2,
+   "kind": "topic"
   },
   {
    "tag": "amirexpress",
    "views": 149949,
-   "posts": 2
+   "posts": 2,
+   "kind": "unknown"
   },
   {
    "tag": "yaalashawarma",
    "views": 133960,
-   "posts": 2
+   "posts": 2,
+   "kind": "unknown"
   },
   {
    "tag": "comidasaludable",
    "views": 2432426,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "comidacasera",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "comidareal",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "manosalsazon",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "recetasrapidas",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "arabe",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "carne",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "comer",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "pollo",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "cocina",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "foodtok",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "navidad",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "recipes",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "ensalada",
    "views": 490383,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "ensaladasaludable",
    "views": 490383,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "recetafacil",
    "views": 490383,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "contenido",
    "views": 107956,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   }
  ],
  "cases": [
@@ -3443,102 +3463,122 @@
   {
    "tag": "amirexpress",
    "views": 149949,
-   "posts": 2
+   "posts": 2,
+   "kind": "unknown"
   },
   {
    "tag": "yaalashawarma",
    "views": 133960,
-   "posts": 2
+   "posts": 2,
+   "kind": "unknown"
   },
   {
    "tag": "comidacasera",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "comidareal",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "manosalsazon",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "recetasfaciles",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "recetasrapidas",
    "views": 1583878,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "arabe",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "carne",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "comer",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "pollo",
    "views": 962729,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "cocina",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "foodtok",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "navidad",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "recipes",
    "views": 886423,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "ensalada",
    "views": 490383,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "ensaladasaludable",
    "views": 490383,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "recetafacil",
    "views": 490383,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   },
   {
    "tag": "contenido",
    "views": 107956,
-   "posts": 1
+   "posts": 1,
+   "kind": "unknown"
   },
   {
    "tag": "probandocomida",
    "views": 55724,
-   "posts": 1
+   "posts": 1,
+   "kind": "topic"
   }
  ],
  "watched_doc": "Built by build_watched.py through the product code (readable_tag, rule_classifications, MemoryHashtagRepository.companions) from weekly_snapshot.json, now=2026-11-15. Production's list moves every week."
