@@ -9848,6 +9848,61 @@
     "min": 0.0,
     "max": 0.0
    },
+   "picks_mejor": {
+    "mean": 90,
+    "min": 90,
+    "max": 90
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0111,
+    "min": 0.0111,
+    "max": 0.0111
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0074,
+    "min": 0.0,
+    "max": 0.0111
+   },
+   "trap_any_mejor": {
+    "mean": 0.0185,
+    "min": 0.0111,
+    "max": 0.0222
+   },
+   "fit_mejor": {
+    "mean": 0.8519,
+    "min": 0.8333,
+    "max": 0.8667
+   },
+   "generica_mejor": {
+    "mean": 0.0037,
+    "min": 0.0,
+    "max": 0.0111
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0259,
+    "min": 0.0111,
+    "max": 0.0333
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.1037,
+    "min": 0.0889,
+    "max": 0.1111
+   },
+   "sin_etiqueta_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "picks_all": {
     "mean": 211.6667,
     "min": 211,
@@ -9913,6 +9968,21 @@
     "min": 0.0125,
     "max": 0.0646
    },
+   "cases_with_trap_mejor": {
+    "mean": 0.0926,
+    "min": 0.0556,
+    "max": 0.1111
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.0299,
+    "min": 0.0125,
+    "max": 0.0646
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "catalog_backed": {
     "mean": 0.0,
     "min": 0.0,
@@ -9924,6 +9994,9 @@
     "max": 11.7778
    },
    "stability_top": 0.2409,
+   "reasons": 635,
+   "reason_platform": 0.0378,
+   "reason_english": 0.0142,
    "calls": 54,
    "errors": 0,
    "skipped": 0,
@@ -9990,6 +10063,61 @@
     "max": 0.0333
    },
    "sin_etiqueta_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_mejor": {
+    "mean": 90,
+    "min": 90,
+    "max": 90
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "fit_mejor": {
+    "mean": 0.9519,
+    "min": 0.9333,
+    "max": 0.9667
+   },
+   "generica_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0333,
+    "min": 0.0222,
+    "max": 0.0444
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.0148,
+    "min": 0.0,
+    "max": 0.0333
+   },
+   "sin_etiqueta_mejor": {
     "mean": 0.0,
     "min": 0.0,
     "max": 0.0
@@ -10059,6 +10187,21 @@
     "min": 0.0,
     "max": 0.0
    },
+   "cases_with_trap_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "catalog_backed": {
     "mean": 0.4833,
     "min": 0.4571,
@@ -10070,6 +10213,9 @@
     "max": 11.6667
    },
    "stability_top": 0.6754,
+   "reasons": 615,
+   "reason_platform": 0.0244,
+   "reason_english": 0.0228,
    "calls": 54,
    "errors": 0,
    "skipped": 0,
@@ -10080,7 +10226,7 @@
    "p50_seconds": 4.25
   }
  },
- "rescored_at": "2026-11-16T03:07:50+00:00",
+ "rescored_at": "2026-11-16T23:15:59+00:00",
  "report_comidacasera_aceptable": {
   "none": {
    "cases": {
@@ -10139,6 +10285,61 @@
     "max": 0.1111
    },
    "sin_etiqueta_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_mejor": {
+    "mean": 90,
+    "min": 90,
+    "max": 90
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0111,
+    "min": 0.0111,
+    "max": 0.0111
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0111,
+    "min": 0.0111,
+    "max": 0.0111
+   },
+   "fit_mejor": {
+    "mean": 0.8593,
+    "min": 0.8444,
+    "max": 0.8667
+   },
+   "generica_mejor": {
+    "mean": 0.0037,
+    "min": 0.0,
+    "max": 0.0111
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0259,
+    "min": 0.0111,
+    "max": 0.0333
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.1037,
+    "min": 0.0889,
+    "max": 0.1111
+   },
+   "sin_etiqueta_mejor": {
     "mean": 0.0,
     "min": 0.0,
     "max": 0.0
@@ -10208,6 +10409,21 @@
     "min": 0.0125,
     "max": 0.0646
    },
+   "cases_with_trap_mejor": {
+    "mean": 0.0556,
+    "min": 0.0556,
+    "max": 0.0556
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.0299,
+    "min": 0.0125,
+    "max": 0.0646
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "catalog_backed": {
     "mean": 0.0,
     "min": 0.0,
@@ -10219,6 +10435,9 @@
     "max": 11.7778
    },
    "stability_top": 0.2409,
+   "reasons": 635,
+   "reason_platform": 0.0378,
+   "reason_english": 0.0142,
    "calls": 54,
    "errors": 0,
    "skipped": 0,
@@ -10289,6 +10508,61 @@
     "min": 0.0,
     "max": 0.0
    },
+   "picks_mejor": {
+    "mean": 90,
+    "min": 90,
+    "max": 90
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "fit_mejor": {
+    "mean": 0.9519,
+    "min": 0.9333,
+    "max": 0.9667
+   },
+   "generica_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0333,
+    "min": 0.0222,
+    "max": 0.0444
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.0148,
+    "min": 0.0,
+    "max": 0.0333
+   },
+   "sin_etiqueta_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "picks_all": {
     "mean": 205,
     "min": 202,
@@ -10354,6 +10628,21 @@
     "min": 0.0,
     "max": 0.0
    },
+   "cases_with_trap_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
    "catalog_backed": {
     "mean": 0.4833,
     "min": 0.4571,
@@ -10365,6 +10654,9 @@
     "max": 11.6667
    },
    "stability_top": 0.6754,
+   "reasons": 615,
+   "reason_platform": 0.0244,
+   "reason_english": 0.0228,
    "calls": 54,
    "errors": 0,
    "skipped": 0,

@@ -31,10 +31,12 @@ import argparse
 import inspect
 import json
 import os
+import re
 import statistics
 import sys
 import threading
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -46,7 +48,7 @@ from typing import Any
 from qualify_api import claude_tools
 from qualify_api.claude_tools import PRICES, PRICING_TABLE_VERSION, Attribution, cost_breakdown
 from qualify_api.hashtags import caption as caption_mod
-from qualify_api.hashtags.caption import CAPTION_MODEL, SeenTag, suggest_for_caption
+from qualify_api.hashtags.caption import CAPTION_MODEL, SeenTag, named_in_text, suggest_for_caption
 
 HERE = Path(__file__).resolve().parent
 CASES = HERE / "cases.json"
@@ -307,11 +309,59 @@ def _ratio(num: float, den: float) -> float | None:
     return round(num / den, 4) if den else None
 
 
-def score_pass(runs: list[dict[str, Any]], labeler: Labeler, watched: set[str]) -> dict[str, Any]:
-    """Metrics of ONE full pass (one variant, one repeat) over the split."""
-    counts = {"all": Counter(), "top": Counter()}
-    traps_top_cases = 0
-    uptakes: list[float] = []
+#: «Motivo» strings (the chip's tooltip) that talk about the platform instead of the text
+#: (UX review, m-25032581): TikTok, videos, views, «viral», «audiencia», the rubro.
+REASON_PLATFORM = re.compile(r"tiktok|\bvideos?\b|\bvistas?\b|viral|audiencia|\brubro\b")
+#: English words a Spanish tooltip should not carry (explicit list, folded, whole words).
+ENGLISH_WORDS = frozenset(
+    """food foodie foodies street fast lunch breakfast trending trend trends engagement reach
+    content lovers lover lifestyle healthy fresh delivery feed post posts reel reels niche
+    branding brand target insight insights community hashtag hashtags views viral""".split()
+    + ["fyp", "foryou", "tiktok", "foodtok"]
+)
+_ENGLISH_ALWAYS = ENGLISH_WORDS - {"hashtag", "hashtags", "viral", "tiktok"}
+
+
+def reason_flags(reason: str) -> tuple[bool, bool]:
+    """(talks about the platform, carries an English word). «hashtag» and «viral» are
+    common in Spanish: they count only as platform talk (viral) or not at all."""
+    folded = "".join(
+        ch for ch in unicodedata.normalize("NFKD", reason.lower()) if not unicodedata.combining(ch)
+    )  # `fold` would also drop the spaces the word checks need
+    words = set(re.findall(r"[a-z0-9]+", folded))
+    return bool(REASON_PLATFORM.search(folded)), bool(words & _ENGLISH_ALWAYS)
+
+
+def mejor_indices(run: dict[str, Any], case: dict[str, Any], sent: set[str]) -> list[int]:
+    """The picks the editor marks «Mejor» under the rule of 2026-11-16: a watched pick
+    (`CaptionHashtag.watched`: from the list and not a `seen` tag) is eligible only when
+    the text names it (`named_in_text`); the first `TOP` eligible picks get the mark. For
+    runs saved before `watched` existed it is derived from the list the run was sent."""
+    seen = {clean(t) for t in case["had"]} if "own" in run["variant"] else set()
+    marked: list[int] = []
+    for i, pick in enumerate(run["picks"]):
+        tag = clean(pick["tag"])
+        if "watched" in pick:
+            flagged = bool(pick["watched"])
+        else:
+            flagged = "watched" in run["variant"] and tag in sent and tag not in seen
+        if flagged and not named_in_text(tag, case["text"]):
+            continue
+        marked.append(i)
+        if len(marked) == TOP:
+            break
+    return marked
+
+
+def score_pass(
+    runs: list[dict[str, Any]], labeler: Labeler, watched: set[str], sent: set[str]
+) -> dict[str, Any]:
+    """Metrics of ONE full pass (one variant, one repeat) over the split: the raw top 5
+    (`top`), the five marked «Mejor» (`mejor`) and every pick (`all`)."""
+    counts = {"all": Counter(), "top": Counter(), "mejor": Counter()}
+    trap_cases = {"top": 0, "mejor": 0}
+    uptakes: dict[str, list[float]] = {"top": [], "mejor": []}
+    short_mejor = 0
     backed = total = 0
     for run in runs:
         if run.get("error") or run.get("skipped"):
@@ -319,21 +369,25 @@ def score_pass(runs: list[dict[str, Any]], labeler: Labeler, watched: set[str]) 
         case = labeler.cases[run["case"]]
         tags = [clean(p["tag"]) for p in run["picks"]]
         labels = [labeler.label(run["case"], t, watched) for t in tags]
-        for i, lab in enumerate(labels):
+        marked = mejor_indices(run, case, sent)
+        short_mejor += len(marked) < TOP
+        chosen = {"top": list(range(min(TOP, len(tags)))), "mejor": marked}
+        for lab in labels:
             counts["all"][lab] += 1
-            if i < TOP:
-                counts["top"][lab] += 1
-        traps_top_cases += any(lab in TRAPS for lab in labels[:TOP])
         # only the fitting tags the list actually offers (a reaction text admits
         # `probandocomida`, which the 2026-11-15 list does not carry)
         fit = {clean(t) for t in case["watched_fit"]} & watched
-        if fit:
-            uptakes.append(len(set(tags[:TOP]) & fit) / min(TOP, len(fit)))
+        for scope, idx in chosen.items():
+            for i in idx:
+                counts[scope][labels[i]] += 1
+            trap_cases[scope] += any(labels[i] in TRAPS for i in idx)
+            if fit:
+                uptakes[scope].append(len({tags[i] for i in idx} & fit) / min(TOP, len(fit)))
         backed += sum(1 for p in run["picks"] if p.get("seen_count", 0) > 0)
         total += len(tags)
     scored = [r for r in runs if not r.get("error") and not r.get("skipped")]
     out: dict[str, Any] = {"cases": len(scored)}
-    for scope in ("top", "all"):
+    for scope in ("top", "mejor", "all"):
         n = sum(counts[scope].values())
         out[f"picks_{scope}"] = n
         for cls in TRAPS:
@@ -342,8 +396,12 @@ def score_pass(runs: list[dict[str, Any]], labeler: Labeler, watched: set[str]) 
         out[f"fit_{scope}"] = _ratio(sum(counts[scope][c] for c in FITS), n)
         for cls in ("generica", "no_encaja", "mal_escrita", "sin_etiqueta"):
             out[f"{cls}_{scope}"] = _ratio(counts[scope][cls], n)
-    out["cases_with_trap_top"] = _ratio(traps_top_cases, len(scored))
-    out["watched_uptake_top"] = round(statistics.mean(uptakes), 4) if uptakes else None
+    for scope in ("top", "mejor"):
+        out[f"cases_with_trap_{scope}"] = _ratio(trap_cases[scope], len(scored))
+        out[f"watched_uptake_{scope}"] = (
+            round(statistics.mean(uptakes[scope]), 4) if uptakes[scope] else None
+        )
+    out["mejor_fewer_than_5"] = _ratio(short_mejor, len(scored))
     out["catalog_backed"] = _ratio(backed, total)
     out["picks_per_call"] = _ratio(total, len(scored))
     return out
@@ -354,12 +412,15 @@ def score(doc: dict[str, Any], overrides: dict[str, str] | None = None) -> dict[
     lexicon = json.loads(LEXICON.read_text(encoding="utf-8"))
     labeler = Labeler(cases["cases"], lexicon, overrides)
     watched = {clean(w["tag"]) for w in cases["watched"]}
+    # what the runs were SENT: saved since 2026-11-16 (platform tags dropped by the
+    # product); before that, the whole 20-tag list
+    sent = {clean(t) for t in doc.get("watched_sent") or [w["tag"] for w in cases["watched"]]}
     by_variant: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for run in doc["runs"]:
         by_variant[run["variant"]][run["repeat"]].append(run)
     report: dict[str, Any] = {}
     for variant, passes in by_variant.items():
-        per_pass = [score_pass(runs, labeler, watched) for _, runs in sorted(passes.items())]
+        per_pass = [score_pass(runs, labeler, watched, sent) for _, runs in sorted(passes.items())]
         agg: dict[str, Any] = {}
         for key in per_pass[0]:
             vals = [p[key] for p in per_pass if p[key] is not None]
@@ -387,6 +448,10 @@ def score(doc: dict[str, Any], overrides: dict[str, str] | None = None) -> dict[
         )
         tokens_out = sum(u["output"] for r in ok for u in r["usage"])
         agg["stability_top"] = round(statistics.mean(jac), 4) if jac else None
+        reasons = [reason_flags(p.get("reason", "")) for r in ok for p in r["picks"]]
+        agg["reasons"] = len(reasons)
+        agg["reason_platform"] = _ratio(sum(f[0] for f in reasons), len(reasons))
+        agg["reason_english"] = _ratio(sum(f[1] for f in reasons), len(reasons))
         agg["calls"] = len(runs)
         agg["errors"] = sum(1 for r in runs if r.get("error"))
         agg["skipped"] = sum(1 for r in runs if r.get("skipped"))
@@ -435,6 +500,18 @@ SHORT_ROWS = (
 
 def print_report(report: dict[str, Any], *, short: bool = False) -> None:
     rows = [
+        "trap_any_mejor",
+        "trap_competidor_mejor",
+        "trap_relleno_mejor",
+        "trap_otro_lugar_mejor",
+        "trap_vigilada_no_encaja_mejor",
+        "cases_with_trap_mejor",
+        "fit_mejor",
+        "mal_escrita_mejor",
+        "watched_uptake_mejor",
+        "mejor_fewer_than_5",
+        "reason_platform",
+        "reason_english",
         "trap_any_top",
         "trap_competidor_top",
         "trap_relleno_top",
@@ -565,6 +642,10 @@ def main() -> None:
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "model": CAPTION_MODEL.model_id,
         "model_revisions": revisions,
+        # what the product sends after its platform filter (2026-11-16: `foodtok` goes)
+        "watched_sent": [
+            w["tag"] for w in data["watched"] if not caption_mod.is_platform_tag(w["tag"])
+        ][: caption_mod.MAX_WATCHED],
         "prompt_versions": {v: prompt_version(v) for v in variants},
         "pricing_table": PRICING_TABLE_VERSION,
         "split": args.split,

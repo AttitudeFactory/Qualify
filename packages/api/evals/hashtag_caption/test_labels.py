@@ -86,3 +86,26 @@ def test_broad_region_and_text_named_brands() -> None:
     assert LABELER.label("c48", "pedidosya", WATCHED) == "competidor"
     assert LABELER.label("c32", "sancrystobal", WATCHED) == "mal_escrita"
     assert LABELER.label("c30", "almuerzo", WATCHED) == "no_encaja"  # the video-game control
+
+
+def test_mejor_skips_watched_picks_the_text_does_not_name() -> None:
+    case = next(c for c in DATA["cases"] if c["id"] == "c48")  # «¿Cómo llegar?»
+    run = {
+        "variant": "watched",
+        "picks": [
+            {"tag": "carne", "watched": True},  # not in the text: no mark
+            {"tag": "shawarma", "watched": False},
+            {"tag": "comidacasera"},  # saved before the flag: derived from the list
+            {"tag": "minegocio"},
+        ],
+    }
+    assert run_eval.mejor_indices(run, case, {"carne", "comidacasera"}) == [1, 3]
+    run["variant"] = "none"  # /1 gets no list: every pick is eligible
+    del run["picks"][0]["watched"]
+    assert run_eval.mejor_indices(run, case, {"carne"}) == [0, 1, 2, 3]
+
+
+def test_reason_flags() -> None:
+    assert run_eval.reason_flags("Muy visto en videos de TikTok") == (True, False)
+    assert run_eval.reason_flags("Popular entre food lovers") == (False, True)
+    assert run_eval.reason_flags("El texto nombra el pollo") == (False, False)
