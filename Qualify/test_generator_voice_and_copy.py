@@ -2457,6 +2457,7 @@ def test_the_tag_suggestions_agree_with_etiquetas() -> None:
     assert "de nicho" not in rendered and "La IA" not in rendered
     # m-25032581 (UX review): the group heading speaks like the explanation above it
     assert "De nicho" not in rendered and "De tu tipo de negocio" in rendered
+    assert "Locales y de marca" not in rendered and "De tu zona y tu marca" in rendered
 
 
 def test_each_ai_idea_opens_its_reason_by_touch_and_keyboard() -> None:

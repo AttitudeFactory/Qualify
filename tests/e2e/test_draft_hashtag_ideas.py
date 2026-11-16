@@ -45,6 +45,7 @@ def test_best_marks_and_reasons_of_ai_ideas(app_server: str, context: Any, width
     page.get_by_role("button", name="Sugerir con IA", exact=True).click()
     expect(page.get_by_text("De tu tipo de negocio", exact=True)).to_be_visible()
     expect(page.get_by_text("De nicho", exact=True)).to_have_count(0)
+    expect(page.get_by_text("De tu zona y tu marca", exact=True)).to_be_visible()
 
     # «Mejor» lands on the first five ELIGIBLE ideas; the unnamed watched ones are shown
     for tag in ("carne", "pollo"):
@@ -60,6 +61,12 @@ def test_best_marks_and_reasons_of_ai_ideas(app_server: str, context: Any, width
     # nothing wider than the screen
     overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
     assert overflow <= 0, f"horizontal overflow of {overflow}px at {width}px"
+    layout = page.evaluate(
+        """() => ({panel: document.querySelector('.q-rv-suggest').clientWidth,
+        rows: new Set([...document.querySelectorAll('.q-rv-idea')]
+            .map(e => Math.round(e.getBoundingClientRect().top))).size})"""
+    )
+    print(f"ideas layout at {width}px: {layout}")  # noqa: T201 — read with -s
     why = page.get_by_role("button", name="Por qué te sugerimos #carne", exact=True)
     box = why.evaluate(
         """el => { const r = el.getBoundingClientRect(), a = getComputedStyle(el, '::after');
@@ -69,7 +76,7 @@ def test_best_marks_and_reasons_of_ai_ideas(app_server: str, context: Any, width
 
     # by touch (a click is what a tap fires): the reason opens; the chip did not add it
     why.click()
-    reason = page.get_by_role("dialog").get_by_text("Se ve mucho en videos de tu rubro")
+    reason = page.get_by_role("dialog").get_by_text("Tu texto nombra la carne")
     expect(reason).to_be_visible()
     _shot(page, f"m-25032581-motivo-{width}.png")
     page.keyboard.press("Escape")

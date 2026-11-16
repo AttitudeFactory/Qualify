@@ -23,8 +23,8 @@ if os.environ.get("QUALIFY_E2E_FAKE_CAPTION_HASHTAGS") == "1":
         def _fake_suggest_for_caption(caption, **_kwargs):  # noqa: ANN001, ANN202
             pick = _caption.CaptionHashtag
             return [
-                pick("carne", "nicho", "Se ve mucho en videos de tu rubro", watched=True),
-                pick("pollo", "nicho", "Se ve mucho en videos de tu rubro", watched=True),
+                pick("carne", "nicho", "Tu texto nombra la carne", watched=True),
+                pick("pollo", "nicho", "Tu texto nombra el pollo", watched=True),
                 pick("recienhecho", "nicho", "Tu texto habla de algo recién hecho", watched=True),
                 pick("cafeteria", "popular", "La buscan quienes quieren un café cerca"),
                 pick("desayuno", "popular", "Muy usada por la mañana", seen_count=1200),

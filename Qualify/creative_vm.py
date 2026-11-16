@@ -2342,7 +2342,7 @@ def remove_phrase(current: str, phrase: str) -> str:
 HASHTAG_KIND_LABELS: dict[str, str] = {
     "popular": "Populares",
     "nicho": "De tu tipo de negocio",  # m-25032581: the words BEST_IDEAS_EXPLAINED uses
-    "marca": "Locales y de marca",
+    "marca": "De tu zona y tu marca",  # m-25032581: the words BEST_IDEAS_EXPLAINED uses
 }
 
 
