@@ -159,18 +159,18 @@ sin anglicismos, cifras propias en palabras, sin decimales):
 | Etiqueta | «Le está yendo muy bien» |
 | Aviso (reel) | «En {días} días se vio {el doble \| el triple \| {n} veces} de lo que suele ver una publicación tuya.» |
 | Aviso (foto) | «En {días} días recibió {el doble \| el triple \| {n} veces} los me gusta y comentarios que suele recibir una publicación tuya.» |
-| Beneficio, sin promesas | «Si la promocionas, la verán más personas de tu zona. Tú decides cuánto gastar.» (+ «desde {mínimo}» cuando ADS-00 confirme el mínimo en COP) |
+| Beneficio, sin promesas | «Si la promocionas, la verán más personas. Tú decides cuánto gastar.» (+ «desde {mínimo}» cuando ADS-00 confirme el mínimo en COP) |
 | Garantía (siempre visible) | «Nada se gasta hasta que tú lo confirmes.» |
 | Aceptar (botón) | «Ver cómo promocionarla» |
 | Rechazar (botón) | «No, gracias» |
-| Tras rechazar | «Listo, no te la volveremos a sugerir. Si cambias de idea, tócala y elige Promocionar.» |
+| Tras rechazar | «Listo, no te la volveremos a sugerir. Si cambias de idea, tócala y elige Promocionar.» Tras rechazar, la tarjeta vuelve a mostrar «Promocionar». |
 | Sin datos suficientes (una vez, en «Anuncios») | «Cuando tengas {faltan} publicaciones más, te diremos cuál le está yendo mejor para promocionarla.» |
 
 `{días}` = días reales desde la publicación (3 a 7). `{n}` se redondea hacia abajo a entero:
 2 → «el doble», 3 → «el triple», 4 o más → «{n} veces».
 
 **Qué pasa al aceptar:** abre el asistente que ya existe (`/drafts/{id}/promote`, ADS-06), con
-«‹ Tu semana» para volver (`PromotionState.back_label`, `Qualify/promotion_state.py:169`). Se
+«‹ Tu semana» para volver (`?desde=semana` en el enlace, vía `promotion_link` de `Qualify/promotion_entry.py`; lo fija `Qualify/promotion_state.py:1742-1743`, y sin ese parámetro vuelve a «Por aprobar»). Se
 prepara **en pausa**; el cliente revisa presupuesto, fechas y público; **solo su confirmación
 explícita** pide la activación. El aviso **no** prepara nada por su cuenta.
 
