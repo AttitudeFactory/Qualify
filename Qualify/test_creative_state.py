@@ -1068,7 +1068,11 @@ def _rubro_with_companions(monkeypatch, repo) -> None:
         ],
     )
     repo.apply_classifications(
-        _TENANT_ID, [Classification("like", "generic", classified_by="rule")]
+        _TENANT_ID,
+        [
+            Classification("like", "generic", classified_by="rule"),
+            Classification("comidasaludable", "topic", "food_drink", classified_by="rule"),
+        ],
     )
     source = hashtag_weekly.MemoryRubroSource(
         {_TENANT_ID: hashtag_weekly.BusinessRubro(_TENANT_ID, ("ensaladas",))}
@@ -1085,7 +1089,7 @@ def _capture_watched(monkeypatch) -> list[dict]:
         received.append(
             {
                 "seen": [s.tag for s in seen],
-                "watched": [(w.tag, w.views, w.posts) for w in watched],
+                "watched": [(w.tag, w.views, w.posts, w.kind) for w in watched],
             }
         )
         return []
@@ -1104,8 +1108,8 @@ async def test_the_model_gets_the_tags_that_accompany_the_rubro(monkeypatch) -> 
     await _suggest(state)
     # the rubro's own tag and the generic `like` are left out; most videos first
     assert received[0]["watched"] == [
-        ("comidasaludable", 2_400_000, 2),
-        ("recetasfaciles", 9_000, 1),
+        ("comidasaludable", 2_400_000, 2, "topic"),  # the catalog kind travels along
+        ("recetasfaciles", 9_000, 1, "unknown"),
     ]
 
 

@@ -289,6 +289,9 @@ class CompanionTag:
     tag: str
     posts: int
     views: int
+    #: The catalog kind of the kept spelling (`topic` / `unknown` with `COMPANION_KINDS`):
+    #: `caption.shown_pick` keeps an unnamed watched pick only when it is a `topic`.
+    kind: str = "unknown"
 
 
 #: What `companions` returns unless told otherwise: a generic (`fyp`), place or noise tag
@@ -326,6 +329,7 @@ def _collapse_companions(
     excluded = {fold(row.tag) for row in rows if row.kind not in kinds}
     posts: dict[str, dict[tuple[str, str], int]] = {}
     spellings: dict[str, dict[str, tuple[int, int]]] = {}
+    kind_of: dict[str, str] = {}
     for row in rows:
         slug = fold(row.tag)
         if not slug or slug in excluded or readable_tag(row.tag) != row.tag:
@@ -336,11 +340,16 @@ def _collapse_companions(
         names = spellings.setdefault(slug, {})
         carried, seen = names.get(row.tag, (0, row.seen_count))
         names[row.tag] = (carried + 1, max(seen, row.seen_count))
+        kind_of[row.tag] = row.kind
     out = []
     for slug, per_post in posts.items():
         names = spellings[slug]
         tag = min(names, key=lambda name: (-names[name][0], -names[name][1], name))
-        out.append(CompanionTag(tag=tag, posts=len(per_post), views=sum(per_post.values())))
+        out.append(
+            CompanionTag(
+                tag=tag, posts=len(per_post), views=sum(per_post.values()), kind=kind_of[tag]
+            )
+        )
     out.sort(key=lambda c: (-c.posts, -c.views, c.tag))
     return tuple(out[: max(limit, 0)])
 

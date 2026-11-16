@@ -24,6 +24,7 @@ from qualify_api.hashtags.caption import (
     WatchedTag,
     is_platform_tag,
     named_in_text,
+    shown_pick,
     suggest_for_caption,
 )
 
@@ -196,7 +197,7 @@ def test_a_watched_pick_survives_the_cleaning() -> None:
     picks = suggest_for_caption(
         "Ensalada fresca",
         seen=[SeenTag("ensaladas", 7)],
-        watched=[WatchedTag("comidasaludable", 2_400_000, 1)],
+        watched=[WatchedTag("comidasaludable", 2_400_000, 1, kind="topic")],
         api_key="test",
         client_factory=lambda _key: fake,
         attribution=TEST_ATTRIBUTION,
@@ -240,6 +241,15 @@ _SHAWARMA = "Shawarma de pollo con salsa de ajo, recién salido del trompo."
         ("sol", "Soleado y rico", False),
         ("sol", "", False),
         ("#Pollo", _SHAWARMA, True),
+        # third review pass: a match starts AND ends on word boundaries
+        ("carnes", "Este carnaval tenemos promo", False),
+        ("postres", "El postrero del día", False),
+        ("salsa", "Una sal sabrosa", False),
+        ("carne", "Un car nervioso", False),
+        ("pollo", "Pollito a la brasa", False),  # a diminutive is another word
+        ("panes", "Pan recién horneado", True),  # «es» off: the stem ends in a consonant
+        ("tacos", "Un taco al pastor", True),
+        ("salsas", "Salsa de ajo", True),
     ],
 )
 def test_named_in_text(tag: str, caption: str, named: bool) -> None:
@@ -292,7 +302,10 @@ def test_a_watched_pick_is_flagged_unless_the_catalog_has_it() -> None:
     picks = suggest_for_caption(
         "Ensalada fresca para el almuerzo",
         seen=[SeenTag("ensaladas", 7)],
-        watched=[WatchedTag("comidasaludable", 2_400_000, 1), WatchedTag("ensaladas", 9, 1)],
+        watched=[
+            WatchedTag("comidasaludable", 2_400_000, 1, kind="topic"),
+            WatchedTag("ensaladas", 9, 1),
+        ],
         api_key="test",
         client_factory=lambda _key: fake,
         attribution=TEST_ATTRIBUTION,
@@ -303,3 +316,62 @@ def test_a_watched_pick_is_flagged_unless_the_catalog_has_it() -> None:
         ("almuerzo", False),
     ]
     assert all(not p.watched for p in _ask()[1])  # without watched tags nothing is flagged
+
+
+# -- re-measure of m-25032581: other businesses' names never reach the owner -----------
+
+
+_SHAWARMA_TEXT = "Shawarma de pollo con papas y salsa de ajo. Te esperamos esta noche."
+
+
+def _picks_for(tags: list[str], watched: list[WatchedTag], **extra: Any) -> list[Any]:
+    fake = _FakeClient([{"tag": t, "tipo": "nicho", "motivo": "m"} for t in tags])
+    return suggest_for_caption(
+        _SHAWARMA_TEXT,
+        watched=watched,
+        api_key="test",
+        client_factory=lambda _key: fake,
+        attribution=TEST_ATTRIBUTION,
+        **extra,
+    )
+
+
+def test_shown_pick() -> None:
+    for name in ("yaalashawarma", "amirexpress", "manosalsazon"):
+        assert not shown_pick(name, watched_kind="unknown", caption=_SHAWARMA_TEXT)
+    assert shown_pick("comidasaludable", watched_kind="topic", caption=_SHAWARMA_TEXT)
+    assert shown_pick("pollo", watched_kind="unknown", caption=_SHAWARMA_TEXT)
+    assert not shown_pick("pollo", watched_kind="unknown", caption="Ensalada fresca")
+
+
+def test_unnamed_unknown_watched_picks_are_dropped() -> None:
+    names = ["yaalashawarma", "amirexpress", "manosalsazon"]
+    watched = [WatchedTag(n, 100_000, 1) for n in names]
+    watched += [
+        WatchedTag("comidasaludable", 2_400_000, 1, kind="topic"),
+        WatchedTag("pollo", 50_000, 2),
+        WatchedTag("navidad", 900_000, 1),
+    ]
+    picks = _picks_for([*names, "comidasaludable", "pollo", "navidad", "shawarmalovers"], watched)
+    assert [(p.tag, p.watched) for p in picks] == [
+        ("comidasaludable", True),  # a topic, kept though the text does not say it
+        ("pollo", True),  # named by the text
+        ("shawarmalovers", False),  # not a watched tag: always kept
+    ]
+    assert named_in_text("comidasaludable", _SHAWARMA_TEXT) is False  # no «Mejor» for it
+
+
+def test_a_catalog_tag_that_is_also_watched_is_always_kept() -> None:
+    picks = _picks_for(
+        ["amirexpress"], [WatchedTag("amirexpress", 9, 1)], seen=[SeenTag("amirexpress", 3)]
+    )
+    assert [(p.tag, p.watched, p.seen_count) for p in picks] == [("amirexpress", False, 3)]
+
+
+def test_dropped_picks_do_not_count_toward_max_picks_nor_block_a_duplicate() -> None:
+    watched = [WatchedTag("yaalashawarma", 1, 1), WatchedTag("amirexpress", 1, 1)]
+    tags = ["yaalashawarma", "amirexpress", "uno1", "dos2", "tres3", "cuatro4"]
+    picks = _picks_for(tags, watched, max_picks=3)
+    assert [p.tag for p in picks] == ["uno1", "dos2", "tres3"]
+    # without watched tags the same answer is kept as before, cut at max_picks
+    assert [p.tag for p in _picks_for(tags, [], max_picks=3)] == tags[:3]

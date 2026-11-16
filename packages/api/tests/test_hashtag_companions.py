@@ -277,3 +277,14 @@ def test_a_cancelled_read_leaves_the_caller_s_transaction_usable() -> None:
             module.COMPANIONS_TIMEOUT, module._COMPANIONS = original, slow
         assert outer.execute(text("SELECT 1")).scalar_one() == 1
         assert outer.execute(text("SHOW statement_timeout")).scalar_one() == "0"
+
+
+def test_each_companion_carries_its_catalog_kind(repo: HashtagRepository) -> None:
+    rubro, topic, unknown = _word(), _word(), _word()
+    _video(repo, [rubro, topic, unknown], views=10)
+    _video(repo, [rubro, topic], views=10)
+    repo.apply_classifications(
+        TENANT, [Classification(topic, "topic", "food_drink", classified_by="rule")]
+    )
+    found = repo.companions(TENANT, [rubro], now=NOW)
+    assert [(c.tag, c.kind) for c in found] == [(topic, "topic"), (unknown, "unknown")]

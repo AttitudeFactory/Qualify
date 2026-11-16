@@ -2116,7 +2116,7 @@ class CreativeState(rx.State):
                     rubro = hashtag_weekly.RUBRO_SOURCE.rubro(ids[0]).tags
                     if rubro:
                         watched = [
-                            WatchedTag(c.tag, views=c.views, posts=c.posts)
+                            WatchedTag(c.tag, views=c.views, posts=c.posts, kind=c.kind)
                             for c in hashtag_catalog.REPOSITORY.companions(ids[0], rubro)
                         ]
                 except Exception as exc:  # noqa: BLE001 — grounding is optional

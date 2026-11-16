@@ -67,6 +67,9 @@ class WatchedTag:
     tag: str
     views: int  # summed views of the rubro's read videos carrying it (last 90 days)
     posts: int  # how many of those videos
+    #: The catalog kind (`topic` / `unknown`): an unnamed watched pick is shown only when
+    #: it is a `topic` (`shown_pick`). Defaults to `unknown`, the stricter reading.
+    kind: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -90,35 +93,65 @@ def _folded_words(text: str) -> list[str]:
     return [word for word in (fold(chunk) for chunk in text.split()) if word]
 
 
+_VOWELS = frozenset("aeiou")
+#: Plural endings a text word may add to the tag (or to its last word): «pollo» → «pollos».
+_TEXT_PLURALS = ("", "s", "es")
+
+
+def _tag_variants(target: str) -> set[str]:
+    """The tag and its singular: strip «s» (`tacos` → `taco`, `ensaladas` → `ensalada`),
+    or strip «es» only when what is left ends in a consonant (`panes` → `pan`)."""
+    variants = {target}
+    if target.endswith("s") and len(target) > 1:
+        variants.add(target[:-1])
+    stem = target[:-2]
+    if target.endswith("es") and stem and stem[-1] not in _VOWELS:
+        variants.add(stem)
+    return variants
+
+
 def named_in_text(tag: str, caption: str) -> bool:
     """Whether the publication's text names `tag` — pure, deterministic, no model.
 
-    Both are folded (`fold`: accents, case, anything not a letter or digit dropped). The
-    tag must appear in the text with spaces and punctuation removed, STARTING at the
-    start of one of its words (so `ensaladasaludable` matches «ensalada saludable» and
-    `pollo` «el pollo jugoso», while `pollo` does not match «repollo»); its end may run
-    into the word (`pollo` matches «pollos»). A trailing plural differs either way: a tag
-    ending in «s» / «es» also matches without it (`ensaladas` ↔ «ensalada»), provided what
-    is left keeps `NAMED_MIN_LENGTH`. A tag shorter than `NAMED_MIN_LENGTH` matches only
-    a whole word of the text. Nothing smarter: «receta fácil» does not name
-    `recetasfaciles`."""
+    Both are folded (`fold`: accents, case, anything not a letter or digit dropped) and
+    the text is split into words. The tag (or its singular, `_tag_variants`) must equal
+    one whole word of the text or a run of consecutive whole words joined
+    (`ensaladasaludable` = «ensalada saludable»), where the run's last word may add a
+    plural «s» / «es» (`pollo` = «Pollos», `ensalada` = «ensaladas»). So a match starts
+    AND ends on word boundaries: `pollo` is not «repollo» nor «pollito» (a diminutive is
+    another word), `carnes` is not «carnaval», `salsa` is not «sal sabrosa». A tag
+    shorter than `NAMED_MIN_LENGTH` must equal a single word exactly. Nothing smarter:
+    «receta fácil» does not name `recetasfaciles`. Cost: each word starts at most one run,
+    which stops once it is longer than the longest variant plus a plural."""
     target = fold(tag)
     words = _folded_words(caption)
     if not target or not words:
         return False
     if len(target) < NAMED_MIN_LENGTH:
         return target in words
-    variants = {target}
-    for suffix in ("es", "s"):
-        stem = target[: -len(suffix)]
-        if target.endswith(suffix) and len(stem) >= NAMED_MIN_LENGTH:
-            variants.add(stem)
-    squashed = "".join(words)
-    starts, offset = [], 0
-    for word in words:
-        starts.append(offset)
-        offset += len(word)
-    return any(squashed.startswith(v, start) for v in variants for start in starts)
+    variants = _tag_variants(target)
+    accepted = {variant + plural for variant in variants for plural in _TEXT_PLURALS}
+    longest = max(len(word) for word in accepted)
+    for start in range(len(words)):
+        run = ""
+        for word in words[start:]:
+            run += word
+            if run in accepted:
+                return True
+            if len(run) >= longest or not any(v.startswith(run) for v in variants):
+                break
+    return False
+
+
+def shown_pick(tag: str, *, watched_kind: str, caption: str) -> bool:
+    """Whether a pick that came only from the watched tags (not a `seen` catalog tag —
+    the same set `CaptionHashtag.watched` marks) is returned at all (m-25032581
+    re-measure): only when the text names it (`named_in_text`) OR the catalog's rule
+    classified it a `topic`. The rule keeps other businesses' names (`yaalashawarma`,
+    `amirexpress`) `unknown`, while common compounds (`comidasaludable`,
+    `recetasfaciles`) are `topic`. A pick that is not a watched-only tag is always shown;
+    call this only for watched-only picks."""
+    return watched_kind == "topic" or named_in_text(tag, caption)
 
 
 #: Tags of a platform's own communities (`foodtok`, `booktok`, `tiktokfood`): on
@@ -298,7 +331,8 @@ def suggest_for_caption(
     if use is None:
         return []
     counts = {fold(t.tag): t.seen_count for t in seen}
-    watched_only = {fold(w.tag) for w in watched} - set(counts)
+    watched_kinds = {fold(w.tag): w.kind for w in watched}
+    watched_only = set(watched_kinds) - set(counts)
     taken = {fold(t) for t in current}
     picks: list[CaptionHashtag] = []
     for item in (use.input or {}).get("hashtags", []):
@@ -306,6 +340,10 @@ def suggest_for_caption(
         kind = str(item.get("tipo", ""))
         if len(tag) < 3 or tag in taken or kind not in KINDS:
             continue
+        if tag in watched_only and not shown_pick(
+            tag, watched_kind=watched_kinds[tag], caption=caption
+        ):
+            continue  # skipped: not returned, not counted, not blocking a later duplicate
         taken.add(tag)
         picks.append(
             CaptionHashtag(
