@@ -76,14 +76,18 @@ from .planner_upload_vm import (
     PHOTO_UNREADABLE_TEXT,
     SAVE_FAILED_TEXT,
     SAVING_WAIT_TEXT,
+    STORY_MARK_LATER_TEXT,
     TOO_MANY_TEXT,
     UPLOAD_FAILED_TEXT,
+    VIDEO,
     VIDEO_CONTENT_TYPES,
     VIEW_TITLE_ID,
     WRONG_TYPE_TEXT,
     looks_like_video,
     media_kind,
+    photo_saved_as_story,
     size_problem,
+    video_story_choice,
 )
 from .planner_upload_vm import progress_text as own_upload_progress_text
 from .planner_upload_vm import rejection_text as own_upload_rejection_text
@@ -144,6 +148,7 @@ from .planner_vm import (
 )
 from .promotion_unpublished_provider import story_ad_ready
 from .promotion_vm import story_ad_href
+from .story_mark_provider import set_story
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .ui.steps import step_settle_script
@@ -170,6 +175,17 @@ def _suffix(name: str) -> str:
 
 #: How many bytes of a video are read to check what it is (never the whole file).
 _VIDEO_HEAD_BYTES = 12
+
+
+async def _mark_story(tenant_id: UUID, draft_id: UUID) -> bool:
+    """m-25040496: the just-recorded video marked a historia (`story_mark_provider`).
+    True when it is one now; False on any refusal or failure — never raises."""
+    try:
+        mark = await asyncio.to_thread(set_story, tenant_id, draft_id, story=True)
+    except Exception as exc:  # noqa: BLE001 — the upload stands; the owner is told
+        logger.warning("planner upload story mark failed: %s", type(exc).__name__)
+        return False
+    return mark.is_story
 
 
 def _spooled_head(upload: Any) -> bytes:
@@ -492,6 +508,14 @@ class PlannerState(rx.State):
     # The poster key is public (like `own_upload_key`): the view shows it on the video.
     _own_upload_duration: float = 0.0
     own_upload_poster_key: str = ""
+    # m-25040496: a video's «Es una historia» (`video_story_choice`): on by default for a
+    # 9:16 one; off and disabled, with its reason, when it lasts over 60 s.
+    own_upload_story: bool = False
+    own_upload_story_can: bool = False
+    own_upload_story_reason: str = ""
+    #: A photo the backend will save as a historia (`own_upload.shape_for`, from the
+    #: size read at upload): step 1 says so.
+    own_upload_photo_story: bool = False
 
     # -- the event panel --------------------------------------------------------
     detail_open: bool = False
@@ -1821,6 +1845,21 @@ class PlannerState(rx.State):
         self._own_upload_size = size
         self._own_upload_duration = duration
         self.own_upload_poster_key = poster_key
+        self.own_upload_photo_story = kind == IMAGE and photo_saved_as_story(width, height)
+        if kind == IMAGE:  # a 9:16 photo becomes a historia by itself (`shape_for`)
+            story, can, reason = False, False, ""
+        else:
+            story, can, reason = video_story_choice(width, height, duration)
+        self.own_upload_story = story
+        self.own_upload_story_can = can
+        self.own_upload_story_reason = reason
+
+    @rx.event
+    def set_own_upload_story(self, value: bool) -> None:
+        """Step 1's «Es una historia» for the stored video (never while saving)."""
+        if self.own_upload_saving or not self.own_upload_story_can:
+            return
+        self.own_upload_story = bool(value)
 
     @staticmethod
     async def _video_still(upload: Any, name: str) -> VideoStill | None:
@@ -1862,6 +1901,10 @@ class PlannerState(rx.State):
         self._own_upload_size = 0
         self._own_upload_duration = 0.0
         self.own_upload_poster_key = ""
+        self.own_upload_story = False
+        self.own_upload_story_can = False
+        self.own_upload_story_reason = ""
+        self.own_upload_photo_story = False
 
     def _own_upload_request(self) -> OwnUpload:
         return OwnUpload(
@@ -1895,6 +1938,12 @@ class PlannerState(rx.State):
             self.own_upload_error = ""
             self.own_upload_not_listed = False
             request = self._own_upload_request()
+            # m-25040496: decided on screen now; marked right after the piece exists
+            as_story = (
+                self.own_upload_media == VIDEO
+                and self.own_upload_story
+                and self.own_upload_story_can
+            )
             week = (self.monday_iso, self.connection_filter, self.view_tz, tuple(self.tag_filter))
         # m-25026384 re-review: every exit clears the flag, even one nobody planned —
         # a stuck flag would lock the whole view (zone, text, both buttons).
@@ -1924,11 +1973,22 @@ class PlannerState(rx.State):
                     self.own_upload_error = SAVE_FAILED_TEXT
                 return
             post_id = str(piece.draft_id)
+            # m-25040496: the mark goes BEFORE the week is read (step 2 then proposes
+            # «Historia») and before step 2 can create an event (which would block it).
+            # A mark that fails never costs the upload: the piece exists, the owner is
+            # told where to finish, and the flow goes on.
+            # Only a piece THIS save created: «Mostrarla otra vez» (same upload id, same
+            # piece) never marks again one the owner may have unmarked or scheduled since.
+            story_failed = (
+                as_story and piece.created and not await _mark_story(tenant_id, piece.draft_id)
+            )
             try:
                 data = await asyncio.to_thread(load_week, tenant_id, *week)
             except Exception as exc:  # noqa: BLE001 — said below: the piece exists anyway
                 logger.warning("planner reload after upload failed: %s", type(exc).__name__)
                 data = None
+            if story_failed:  # said even when another file replaced this one meanwhile
+                yield rx.toast.warning(STORY_MARK_LATER_TEXT)
             async with self:
                 self.own_upload_saving = False
                 if data is not None:

@@ -224,3 +224,44 @@ def test_marking_a_piece_as_a_historia_on_its_page_shows_it_in_historias(
     expect(switch).to_have_attribute("aria-checked", "true", timeout=60_000)
     switch.click()
     expect(page.get_by_text("Listo: vuelve a ser una publicación.")).to_be_visible(timeout=30_000)
+
+
+def test_a_vertical_video_uploaded_as_a_historia_lands_in_historias(
+    pre_fase_c_page,  # noqa: ANN001 — a Playwright Page with an Instagram account
+    app_server: str,
+    tmp_path: Path,
+) -> None:
+    """«Nueva publicación» › «Subir foto o video»: a 9:16 video comes with «Es una
+    historia» off; turned on and saved, step 2 proposes «Historia», and «Aprobados» ›
+    «Historias» lists it. Nothing is scheduled (the drawer is closed on step 2)."""
+    from .test_planner_own_upload import (
+        _open_step_one,
+        _pick_video,
+        _skip_without_fake_bucket,
+        _skip_without_ffmpeg,
+    )
+
+    _skip_without_fake_bucket()
+    _skip_without_ffmpeg()
+    page = pre_fase_c_page
+    page.set_viewport_size({"width": 375, "height": 900})
+
+    _open_step_one(page, app_server)
+    _pick_video(page, "video-portrait-2s.mp4", "historia-del-dia.mp4", tmp_path)
+    switch = page.locator("#q-own-upload-story")
+    expect(switch).to_have_attribute("aria-checked", "false")  # off until the owner says
+    switch.click()
+    expect(switch).to_have_attribute("aria-checked", "true")
+    expect(page.locator(".q-drawer").get_by_text("Es una historia")).to_be_visible()
+    page.locator("#q-own-upload-caption").fill("Historia del día")
+    _shot(page, "upload-historia-switch-375")
+    page.get_by_role("button", name="Guardar y continuar").click()
+    expect(page.get_by_text("Paso 2 de 3").first).to_be_visible(timeout=60_000)
+    page.locator(".q-drawer").get_by_role("button", name="Más opciones", exact=True).first.click()
+    expect(page.locator(".q-drawer .q-dest-btn--on.q-dest-story").first).to_be_visible()
+    _shot(page, "upload-historia-step2-375")
+
+    page.goto(f"{app_server}/aprobados?ver=publicaciones&tipo=historias")
+    card = page.locator(".q-gcard").filter(has_text="Historia del día")
+    expect(card).to_have_count(1, timeout=60_000)
+    expect(card.get_by_text("Historia", exact=True)).to_be_visible()
