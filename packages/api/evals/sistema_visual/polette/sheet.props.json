@@ -1,0 +1,69 @@
+{
+ "title": "Polette — 3 sistemas visuales propuestos por IA, sobre el contenido real de la marca",
+ "subtitle": "Spike m-25042530 · claude-fable-5-2, 1 corrida, US$1,76 · JSON del modelo → brand_still sin ediciones · fotos del brandboard (sin recorte)",
+ "cell": {
+  "w": 540,
+  "h": 675
+ },
+ "columns": [
+  "Producto estrella (4:5)",
+  "Horario (4:5)",
+  "Historia (9:16)"
+ ],
+ "rows": [
+  {
+   "label": "Propuesta 1 · Violeta pop",
+   "note": "pop gráfico de alto contraste · Peralta + Sour Gummy",
+   "cells": [
+    {
+     "src": "polette/propuesta-1/producto-estrella.png",
+     "cellH": 675
+    },
+    {
+     "src": "polette/propuesta-1/horario.png",
+     "cellH": 675
+    },
+    {
+     "src": "polette/propuesta-1/historia.png",
+     "cellH": 960
+    }
+   ]
+  },
+  {
+   "label": "Propuesta 2 · Crema y mora",
+   "note": "editorial cálido de heladería · Peralta + Sour Gummy",
+   "cells": [
+    {
+     "src": "polette/propuesta-2/producto-estrella.png",
+     "cellH": 675
+    },
+    {
+     "src": "polette/propuesta-2/horario.png",
+     "cellH": 675
+    },
+    {
+     "src": "polette/propuesta-2/historia.png",
+     "cellH": 960
+    }
+   ]
+  },
+  {
+   "label": "Propuesta 3 · Fiesta de frutas",
+   "note": "lúdico ilustrado con trama de frutas · Peralta + Sour Gummy",
+   "cells": [
+    {
+     "src": "polette/propuesta-3/producto-estrella.png",
+     "cellH": 675
+    },
+    {
+     "src": "polette/propuesta-3/horario.png",
+     "cellH": 675
+    },
+    {
+     "src": "polette/propuesta-3/historia.png",
+     "cellH": 960
+    }
+   ]
+  }
+ ]
+}

@@ -22,6 +22,27 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="sisvis-001"></a>
+
+## SISVIS-001 — La IA propone 3 sistemas visuales para Polette desde cero (m-25042530) — 2026-11-17 · SPIKE
+
+- **Modelo:** `claude-fable-5-2`, esfuerzo `high`, streaming, `max_tokens` 64.000, respaldo `fallbacks: "default"`. Ficha: [claude-fable-5-2.md](claude-fable-5-2.md).
+- **Prompt:** `sistema-visual-propose-v1` en `packages/api/evals/sistema_visual/propose.py`. El SYSTEM describe la biblioteca de componentes de `brand_still`; el mensaje lleva el esquema JSON completo, los datos de «Tu marca», los huecos con el contenido real y 3 imágenes.
+- **Entrada:** `packages/api/evals/sistema_visual/polette/brand_input.json` y `slots.json`. Qué se usó y qué faltaba: `docs/spike-sistema-visual-marca.md` §4.1.
+- **Salida:** `packages/api/evals/sistema_visual/polette/out/20261117T044842Z/` (texto crudo, las 3 propuestas, validación, uso).
+- **Resultado:**
+  - 1 corrida. 3 de 3 propuestas válidas contra el esquema a la primera, sin reintentos ni ediciones.
+  - Familias distintas: «Violeta pop» (pop de alto contraste), «Crema y mora» (editorial cálido) y «Fiesta de frutas» (lúdico con la trama de la marca).
+  - Las tres conservan las tipografías (Peralta + Sour Gummy) y la paleta del brandboard.
+  - Se dibujaron en Remotion las 9 piezas (3 × producto estrella 4:5, horario 4:5, historia 9:16).
+- **Zonas seguras de la historia:** las tres respetan los 250 px de arriba y los 300 de abajo. La cinta de la propuesta 1 va de y 259 a 336, y todo bloque de texto termina antes de y 1613.
+- **Debilidades frente a la vara de Bianki:** juicio en `docs/spike-sistema-visual-marca.md` §4.3.
+- **Defectos míos (entrada):** los huecos que escribí traen «crema soft» (texto del producto en Pedidos) y «toppings» en la cinta, dos anglicismos que el modelo respetó.
+- **Costo:** 17.051 tokens de entrada + 40.588 de salida = **US$1,76**. Tardó 423 s. El render es local, costo 0.
+- **Imágenes de producto:** sin llamadas a Seedream. Las fotos del brandboard van dentro de un disco o un arco, sin recorte.
+
+---
+
 <a id="hashtags-pie-001"></a>
 
 ## HASHTAGS-PIE-001 — «Sugerir con IA» de hashtags: prompt de hoy contra el que lee las etiquetas vigiladas del rubro (m-25032581) — 2026-11-15/17 · `/2` ACTIVADO POR EL FUNDADOR; con el filtro de salida y la regla de «Mejor» finales, las cinco «Mejor» pasan la barra en dev y test (re-puntuación, test ya usado); lo que se muestra sin marca con catálogo, no

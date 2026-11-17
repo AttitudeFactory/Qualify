@@ -1,0 +1,10 @@
+{
+ "publicDir": "/Users/herwin/dev/qualify-eval-out/sistema-visual",
+ "jobs": [
+  {
+   "composition": "brand-still-contact-sheet",
+   "props": "sheet.props.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/vista-general-polette.jpg"
+  }
+ ]
+}

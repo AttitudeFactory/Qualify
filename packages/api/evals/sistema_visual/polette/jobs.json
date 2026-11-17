@@ -1,0 +1,59 @@
+{
+ "publicDir": "/Users/herwin/dev/qualify-eval-out/sistema-visual/_assets",
+ "jobs": [
+  {
+   "system": "out/20261117T044842Z/propuesta-1.system.json",
+   "recipe": "product_hero",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-1/producto-estrella.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-1.system.json",
+   "recipe": "hours",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-1/horario.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-1.system.json",
+   "recipe": "story",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-1/historia.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-2.system.json",
+   "recipe": "product_hero",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-2/producto-estrella.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-2.system.json",
+   "recipe": "hours",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-2/horario.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-2.system.json",
+   "recipe": "story",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-2/historia.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-3.system.json",
+   "recipe": "product_hero",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-3/producto-estrella.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-3.system.json",
+   "recipe": "hours",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-3/horario.png"
+  },
+  {
+   "system": "out/20261117T044842Z/propuesta-3.system.json",
+   "recipe": "story",
+   "content": "slots.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/polette/propuesta-3/historia.png"
+  }
+ ]
+}
