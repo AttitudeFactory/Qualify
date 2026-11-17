@@ -7,8 +7,8 @@ import ast
 import json
 from pathlib import Path
 
-import reflex as rx
 from reflex.constants import Page404
+from reflex_base.utils.format import format_route
 
 from .not_found_page import (
     NOT_FOUND_ACTION,
@@ -44,6 +44,5 @@ def test_registered_as_the_reflex_404() -> None:
     assert len(calls) == 1
     keywords = {kw.arg: ast.literal_eval(kw.value) for kw in calls[0].keywords}
     assert keywords["title"] == NOT_FOUND_TAB_TITLE
-    app = rx.App()
-    app.add_page(not_found_index, route=keywords["route"], title=keywords["title"])
-    assert Page404.SLUG in app._unevaluated_pages
+    # Reflex's own normalisation of the route is what makes it the 404 page.
+    assert format_route(keywords["route"]) == Page404.SLUG
