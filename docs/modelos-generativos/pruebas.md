@@ -24,7 +24,7 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 <a id="capa-004"></a>
 
-## CAPA-004 — Primera imagen real con la capa encendida en producción: Bianki, «Shawarma mixto» (m-25040499, m-25042157) — 2026-11-17 · UNA SOLA IMAGEN, NO ES UNA MEDICIÓN
+## CAPA-004 — Primera imagen real con la capa encendida en producción: Bianki, «Shawarma mixto», una imagen y un carrusel (m-25040499, m-25042157) — 2026-11-17 · DOS PIEZAS, NO ES UNA MEDICIÓN
 
 - **Qué corrió:** producción, `QUALIFY_IMAGE_LAYER=on` para todos los negocios (decisión del fundador, 2026-11-17 ~03:40 UTC). Bianki, tipo «Imagen» (`static_flyer`, modo producto), producto del catálogo «Shawarma mixto» (precio $22.000, puesto por el dueño en «Datos clave: Precio»), formato 4:5, borrador `0afc545b-113e-4f19-8b49-ac9e73615ecc`. La corrió el fundador desde la app; datos de su reporte y de la fila guardada, no de una evaluación.
 - **Modelos:** texto de la publicación `claude-opus-5-5`; foto base `dola-seedream-5-0-pro-260628` (1280×1600); capa `claude-sonnet-5-5` con `capa-v4` (sin medir antes); composición `layer_still` v1, `engine_revision` 4.
@@ -43,7 +43,11 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 **C — Costo de la capa fuera del registro.** Ver «Costo» arriba.
 
-**Lo que no dice:** una imagen no es una medición; no hay calidad, tasa de caídas ni costo medio que sacar de aquí. Sirve para saber que el camino funciona de punta a punta en producción y para encontrar A, B y C.
+**Segunda pieza, mismo día — carrusel de 3 diapositivas generadas** (Bianki, «Shawarma mixto», 4:5, borrador `70399135-dd5e-4e14-9923-98c63754cc93`): salió bien en ~4 min 10 s. Seedream 70,4 s, 45,6 s y 53,4 s (una tras otra); capa ~12 s; un cuarto Seedream de 36,5 s y una segunda capa de ~6 s (la regeneración de una base, abajo); tres renders `layer_still` de 1,5–2,0 s. Las tres diapositivas `composer: layer_still`, `price_status: hidden`, intento 0, `base_invented_text_kept: false`. Costo en el registro: `calls=5`, US$0,224011 = texto US$0,044 + 4 × Seedream US$0,045; **faltan las dos llamadas de la capa** (el mismo error, m-25042157). Caídas: diapositiva 1 `accent_word below 3:1` y `counter: crosses the subject box (fixed place, not moved)` — el contador «1/3», en una pastilla del color claro de la marca, queda en su lugar fijo abajo a la derecha, encima de una parte del plato (el catálogo no lo mueve: va en el mismo lugar en todas las diapositivas); diapositiva 2 `band: subject does not fit the photo window, photo reduced` (A); diapositiva 3 ninguna.
+
+- **El cuarto Seedream y el aviso de R2.** Justo después, el worker escribió `WARNING R2 key t/<tenant>/generated/70399135-…/r1/base/slide-2.jpg already holds another file: never overwritten`. Leyendo el código: es la única regeneración de la base que permite 0168 (Claude vio letras inventadas en la base de la diapositiva 2, posición 1). La base nueva quería la clave fija de la diapositiva, que ya tenía la primera base; R2 no sobrescribe, y `_Saver` la guarda **al lado**, con una clave con su propio sha256 (`r1/base/slide-2-<12 hex>.jpg`). Esa base nueva es la que se le dio a la segunda llamada de la capa, la que dibujó el compositor y la que la pieza registra (`base` y `base_regenerated: true` en la diapositiva 2). No se tiró: los US$0,045 y la segunda capa compraron la foto que se publica. `base_invented_text_kept: false` es correcto: la segunda capa ya no vio letras en la base nueva. El aviso no era una pérdida: ahora el almacén lo deja en INFO («the new one goes beside it») y `_Saver` dice dónde quedó («kept as …»). Test: `test_image_base_regeneration_r2.py`.
+
+**Lo que no dice:** dos piezas no son una medición; no hay calidad, tasa de caídas ni costo medio que sacar de aquí. Sirven para saber que el camino funciona de punta a punta en producción y para encontrar A, B y C.
 
 ---
 
