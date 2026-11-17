@@ -20,6 +20,16 @@ const read = (v) => (typeof v === 'string' ? JSON.parse(fs.readFileSync(path.res
 const serveUrl = await bundle({entryPoint: path.join(root, 'src/index.ts'), publicDir: path.resolve(path.dirname(jobsFile), spec.publicDir)});
 let failed = 0;
 for (const job of spec.jobs) {
+  if (job.composition) {
+    // a plain composition (the contact sheet): {composition, props, out}
+    const out = path.resolve(path.dirname(jobsFile), job.out);
+    fs.mkdirSync(path.dirname(out), {recursive: true});
+    const inputProps = read(job.props);
+    const composition = await selectComposition({serveUrl, id: job.composition, inputProps});
+    await renderStill({composition, serveUrl, output: out, inputProps, ...(job.out.endsWith('.jpg') ? {imageFormat: 'jpeg', jpegQuality: 90} : {imageFormat: 'png'})});
+    console.log(`ok ${job.out} (${job.composition} ${composition.width}x${composition.height})`);
+    continue;
+  }
   const system = read(job.system);
   const content = read(job.content);
   const recipe = system.recipes?.[job.recipe];
@@ -35,7 +45,7 @@ for (const job of spec.jobs) {
   const t0 = Date.now();
   try {
     const composition = await selectComposition({serveUrl, id, inputProps});
-    await renderStill({composition, serveUrl, output: out, inputProps, imageFormat: job.out.endsWith('.jpg') ? 'jpeg' : 'png', jpegQuality: 92,
+    await renderStill({composition, serveUrl, output: out, inputProps, ...(job.out.endsWith('.jpg') ? {imageFormat: 'jpeg', jpegQuality: 92} : {imageFormat: 'png'}),
       onBrowserLog: (l) => { if (l.type === 'warning' || l.type === 'error') console.log(`  [browser ${l.type}] ${l.text}`); }});
     console.log(`ok ${job.out} (${id}, ${Date.now() - t0} ms)`);
   } catch (e) {

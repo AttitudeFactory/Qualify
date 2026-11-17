@@ -24,6 +24,7 @@ import {OVERLAY as VIDEO_TEXT_OVERLAY, VideoText, videoTextMetadata, type VideoT
 import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
 import brandStillManifest from '../templates/brand_still/manifest.json';
 import {BrandStill} from './templates/brand_still/BrandStill';
+import {ContactSheet, sheetMetadata, type SheetProps} from './templates/brand_still/ContactSheet';
 import type {BrandStillProps} from './templates/brand_still/types';
 import {
   FPS as SEASONAL_VIDEO_FPS,
@@ -235,6 +236,14 @@ export const RemotionRoot: React.FC = () => {
       />
       {layerStillCompositions()}
       {brandStillCompositions()}
+      <Still
+        id="brand-still-contact-sheet"
+        component={ContactSheet}
+        width={1200}
+        height={800}
+        defaultProps={{title: 'Hoja de contacto', cell: {w: 270, h: 480}, columns: [], rows: []} as SheetProps}
+        calculateMetadata={sheetMetadata}
+      />
       <Still
         id={VIDEO_TEXT_OVERLAY.composition}
         component={VideoText}

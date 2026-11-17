@@ -227,7 +227,7 @@ const Rich: React.FC<{ctx: Ctx; text: string}> = ({ctx, text}) => {
     if (m.index > last) out.push(text.slice(last, m.index));
     if (m[1] !== undefined)
       out.push(
-        <strong key={k++} style={{display: 'inline-block', background: color(ctx, b.chip_fill, 'surface'), color: color(ctx, b.chip_ink, 'background'), padding: '0 .3em', borderRadius: '.2em', textShadow: 'none', fontWeight: 800}}>
+        <strong key={k++} style={{display: 'inline-block', background: color(ctx, b.chip_fill, 'surface'), color: color(ctx, b.chip_ink, 'background'), padding: '0 .3em', borderRadius: '.2em', textShadow: 'none', fontWeight: 900}}>
           {m[1]}
         </strong>,
       );
@@ -387,7 +387,9 @@ const bannerWidth = (ctx: Ctx, shape: FlagShape, pieces: Array<[string, 'big' | 
     else w += measure({...ctx.faces.body, letter_spacing_em: 0}, t, s * smallEm, 900) + (i > 0 ? 0.5 * smallEm * s : 0);
     if (i > 0) w += 0.1 * s;
   });
-  return w + 12;
+  // the pointed tips carry no text and may bleed past the box (gen.py's banners do)
+  const tips: Record<FlagShape, number> = {pennant: 0.04, double: 0.08, arrow: 0.04, rect: 0};
+  return (w + 12) * (1 - tips[shape]);
 };
 
 const piecesOf = (text: string): Array<[string, 'big' | 'small' | 'code']> => {
@@ -508,7 +510,7 @@ const TextStack: React.FC<{ctx: Ctx; block: Block; boxPx: {w: number; h: number}
     else if (it.type === 'body' || it.type === 'note') {
       const f = it.type === 'note' ? ctx.faces.label : ctx.faces.body;
       node = (
-        <p style={{...fontOf(f, size, it.type === 'note' ? 900 : undefined), lineHeight: it.line_height ?? (it.type === 'note' ? 1.5 : (f.line_height ?? 1.38)), color: color(ctx, 'ink'), textShadow: (ctx.sys.shapes?.shadow ?? 'hard') === 'none' ? 'none' : it.type === 'note' ? `0 2px 6px ${deep(ctx)}` : `0 3px 8px ${deep(ctx)}`, margin: 0, textTransform: it.type === 'note' && f.uppercase ? 'uppercase' : 'none'}}>
+        <p style={{...fontOf(f, size, it.type === 'note' ? 900 : undefined), lineHeight: it.line_height ?? (it.type === 'note' ? 1.5 : (f.line_height ?? 1.38)), color: color(ctx, 'ink'), textShadow: (ctx.sys.shapes?.shadow ?? 'hard') === 'none' ? 'none' : it.type === 'note' ? `0 2px 6px ${deep(ctx)}` : `0 3px 8px ${deep(ctx)}`, margin: 0, textTransform: it.type === 'note' && f.uppercase ? 'uppercase' : 'none', ...(it.type === 'note' ? {letterSpacing: '.16em'} : {})}}>
           <Rich ctx={ctx} text={str(raw)} />
         </p>
       );
@@ -646,8 +648,8 @@ const StampBlock: React.FC<{ctx: Ctx; block: Block; boxPx: {w: number; h: number
   const fill = color(ctx, st.fill, 'surface');
   const ink = color(ctx, st.ink, 'background');
   const ring = color(ctx, st.ring, 'accent');
-  const bigSize = fitSize({...f, letter_spacing_em: -0.06}, str(big), d * 0.82, d * 0.31, 10) ?? d * 0.2;
-  const smallSize = fitSize(f, str(small), d * 0.78, d * 0.16, 8) ?? d * 0.1;
+  const bigSize = fitSize({...f, letter_spacing_em: -0.06}, str(big), d * 0.82, Math.round(d * 0.31), 10) ?? d * 0.2;
+  const smallSize = fitSize(f, str(small), d * 0.78, Math.round(d * 0.16), 8) ?? d * 0.1;
   const clip =
     v === 'starburst'
       ? `polygon(${Array.from({length: 32}, (_, i) => {

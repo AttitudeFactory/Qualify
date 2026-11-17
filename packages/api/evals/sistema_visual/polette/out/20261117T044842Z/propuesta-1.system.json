@@ -1,0 +1,563 @@
+{
+ "schema_version": 0,
+ "id": "polette-violeta-pop",
+ "version": 1,
+ "parent_version": null,
+ "brand": "Polette",
+ "name": "Violeta pop",
+ "style_family": "pop gráfico de alto contraste",
+ "rationale": "El violeta profundo de la marca hace de fondo y el naranja y el amarillo saltan en precio, sello y cinta, así cada publicación se entiende de un vistazo. El logo va sobre un círculo violeta medio para que la palabra blanca «polette» nunca se pierda, y la foto con fondo violeta se integra dentro de un disco.",
+ "provenance": {
+  "source": "ai_proposal",
+  "model": "claude-fable-5-2",
+  "prompt_version": "sistema-visual-propose-v1",
+  "created_at": "2026-11-17T04:48:42+00:00",
+  "notes": "El logo tiene la palabra en blanco: siempre va sobre un círculo violeta."
+ },
+ "colors": {
+  "background": "#430098",
+  "background_alt": "#6A28B8",
+  "surface": "#FFFFFF",
+  "on_surface": "#430098",
+  "ink": "#FFFFFF",
+  "accent": "#FF6A00",
+  "on_accent": "#2B0066",
+  "shadow": "#23004F",
+  "pop": "#FFB718",
+  "background_edge": "#2B0066",
+  "shadow_deep": "#1A003D"
+ },
+ "typography": {
+  "display": {
+   "family": "Peralta",
+   "weight": 400,
+   "letter_spacing_em": 0,
+   "line_height": 0.98,
+   "uppercase": false
+  },
+  "body": {
+   "family": "Sour Gummy",
+   "weight": 500,
+   "letter_spacing_em": 0,
+   "line_height": 1.25,
+   "uppercase": false
+  },
+  "label": {
+   "family": "Sour Gummy",
+   "weight": 800,
+   "letter_spacing_em": 0.06,
+   "line_height": 1,
+   "uppercase": true
+  }
+ },
+ "background": {
+  "base": "radial",
+  "layers": [
+   {
+    "kind": "rays",
+    "color": "#AA7BC9",
+    "opacity": 0.16,
+    "scale": 1,
+    "center": [
+     0.5,
+     0.45
+    ]
+   },
+   {
+    "kind": "pattern_image",
+    "color": "surface",
+    "opacity": 0.07,
+    "scale": 1,
+    "image": "polette/trama.svg"
+   },
+   {
+    "kind": "grain",
+    "color": "shadow",
+    "opacity": 0.12
+   }
+  ]
+ },
+ "shapes": {
+  "radius_px": 28,
+  "tilt_deg": -3,
+  "shadow": "hard",
+  "shadow_offset_px": 10,
+  "stroke_px": 0
+ },
+ "components": {
+  "body": {
+   "strong_color": "pop",
+   "strong_uppercase": true,
+   "chip_fill": "surface",
+   "chip_ink": "on_surface"
+  },
+  "tag": {
+   "variant": "tilted_block",
+   "fill": "pop",
+   "ink": "on_accent"
+  },
+  "headline": {
+   "variant": "two_tone_stacked",
+   "split": "first_word",
+   "first_color": "ink",
+   "second_color": "pop",
+   "shadow": true
+  },
+  "price": {
+   "variant": "flag",
+   "fill": "accent",
+   "ink": "on_accent",
+   "show_code": true
+  },
+  "stamp": {
+   "variant": "starburst",
+   "fill": "pop",
+   "ink": "on_accent",
+   "ring": "surface"
+  },
+  "ticker": {
+   "enabled": true,
+   "fill": "accent",
+   "ink": "on_accent",
+   "separator": "✦"
+  },
+  "product_frame": {
+   "variant": "disc",
+   "ring": "surface",
+   "glow": "pop"
+  },
+  "info_card": {
+   "variant": "card",
+   "fill": "surface",
+   "ink": "on_surface"
+  },
+  "logo": {
+   "variant": "on_badge",
+   "badge": "#8446AC"
+  },
+  "sparkle": {
+   "enabled": true,
+   "glyph": "✦",
+   "color": "pop"
+  }
+ },
+ "tone": {
+  "voice": "Directa y con chispa: frases cortas, antojo inmediato y el precio bien claro.",
+  "exclamations": true
+ },
+ "recipes": {
+  "product_hero": {
+   "format": "4:5",
+   "blocks": [
+    {
+     "type": "glow",
+     "box": [
+      0.38,
+      0.27,
+      0.76,
+      0.6
+     ],
+     "z": 1,
+     "colors": [
+      "accent"
+     ]
+    },
+    {
+     "type": "product",
+     "box": [
+      0.46,
+      0.33,
+      0.6,
+      0.48
+     ],
+     "slot": "product.photo",
+     "z": 3
+    },
+    {
+     "type": "logo",
+     "box": [
+      0.07,
+      0.035,
+      0.16,
+      0.128
+     ],
+     "slot": "brand.logo",
+     "z": 6
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.07,
+      0.19,
+      0.62,
+      0.28
+     ],
+     "align": "left",
+     "valign": "top",
+     "z": 6,
+     "items": [
+      {
+       "type": "tag",
+       "text": "Yogur helado"
+      },
+      {
+       "type": "headline",
+       "slot": "product.title",
+       "size": 150,
+       "space_before": 14
+      }
+     ]
+    },
+    {
+     "type": "stamp",
+     "box": [
+      0.815,
+      0.29,
+      0.17,
+      0.136
+     ],
+     "slot": "product.stamp",
+     "rotate_deg": 10,
+     "z": 7
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.07,
+      0.5,
+      0.37,
+      0.37
+     ],
+     "align": "left",
+     "valign": "top",
+     "z": 6,
+     "items": [
+      {
+       "type": "body",
+       "slot": "product.description",
+       "size": 38
+      },
+      {
+       "type": "price",
+       "slot": "product.price",
+       "size": 104,
+       "space_before": 30
+      }
+     ]
+    },
+    {
+     "type": "sparkle",
+     "box": [
+      0.9,
+      0.2,
+      0.05,
+      0.04
+     ],
+     "z": 5
+    },
+    {
+     "type": "sparkle",
+     "box": [
+      0.37,
+      0.83,
+      0.06,
+      0.048
+     ],
+     "z": 5
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0,
+      0.905,
+      1,
+      0.062
+     ],
+     "slot": "ticker",
+     "z": 8
+    }
+   ]
+  },
+  "hours": {
+   "format": "4:5",
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.07,
+      0.04,
+      0.17,
+      0.136
+     ],
+     "slot": "brand.logo",
+     "z": 6
+    },
+    {
+     "type": "icon_feature",
+     "box": [
+      0.7,
+      0.07,
+      0.22,
+      0.176
+     ],
+     "icon": "clock",
+     "rotate_deg": 8,
+     "z": 4
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.07,
+      0.23,
+      0.86,
+      0.62
+     ],
+     "align": "left",
+     "valign": "top",
+     "z": 6,
+     "items": [
+      {
+       "type": "tag",
+       "slot": "hours.days"
+      },
+      {
+       "type": "headline",
+       "slot": "hours.title",
+       "size": 170,
+       "space_before": 16
+      },
+      {
+       "type": "flag",
+       "slot": "hours.range",
+       "size": 96,
+       "shape": "double",
+       "space_before": 40,
+       "small_em": 0.5
+      },
+      {
+       "type": "body",
+       "slot": "hours.address",
+       "size": 42,
+       "space_before": 44,
+       "line_height": 1.3
+      }
+     ]
+    },
+    {
+     "type": "sparkle",
+     "box": [
+      0.82,
+      0.6,
+      0.08,
+      0.064
+     ],
+     "z": 5
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0,
+      0.905,
+      1,
+      0.062
+     ],
+     "slot": "hours.ticker",
+     "z": 8
+    }
+   ]
+  },
+  "story": {
+   "format": "9:16",
+   "blocks": [
+    {
+     "type": "photo",
+     "box": [
+      0,
+      0,
+      1,
+      1
+     ],
+     "slot": "story.photo",
+     "focus": [
+      0.5,
+      0.42
+     ],
+     "saturate": 1.1,
+     "z": 1,
+     "veil": [
+      {
+       "color": "shadow",
+       "alpha": 0.6,
+       "at": 0
+      },
+      {
+       "color": "shadow",
+       "alpha": 0,
+       "at": 22
+      },
+      {
+       "color": "background",
+       "alpha": 0,
+       "at": 42
+      },
+      {
+       "color": "background",
+       "alpha": 0.82,
+       "at": 58
+      },
+      {
+       "color": "background",
+       "alpha": 0.97,
+       "at": 76
+      },
+      {
+       "color": "background",
+       "alpha": 1,
+       "at": 100
+      }
+     ]
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0,
+      0.135,
+      1,
+      0.04
+     ],
+     "slot": "story.ticker",
+     "z": 6
+    },
+    {
+     "type": "logo",
+     "box": [
+      0.07,
+      0.195,
+      0.17,
+      0.096
+     ],
+     "slot": "brand.logo",
+     "z": 6
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.07,
+      0.48,
+      0.86,
+      0.358
+     ],
+     "align": "left",
+     "valign": "bottom",
+     "z": 5,
+     "items": [
+      {
+       "type": "tag",
+       "slot": "story.kicker"
+      },
+      {
+       "type": "headline",
+       "slot": "story.title",
+       "size": 160,
+       "space_before": 14
+      },
+      {
+       "type": "flag",
+       "slot": "story.hours",
+       "size": 92,
+       "shape": "double",
+       "space_before": 34,
+       "small_em": 0.5
+      },
+      {
+       "type": "note",
+       "slot": "story.place",
+       "size": 40,
+       "space_before": 26
+      }
+     ]
+    }
+   ]
+  },
+  "payments": {
+   "format": "4:5",
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.07,
+      0.04,
+      0.17,
+      0.136
+     ],
+     "slot": "brand.logo",
+     "z": 6
+    },
+    {
+     "type": "icon_feature",
+     "box": [
+      0.68,
+      0.08,
+      0.24,
+      0.192
+     ],
+     "icon": "card",
+     "rotate_deg": 8,
+     "z": 4
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.07,
+      0.27,
+      0.86,
+      0.1
+     ],
+     "align": "left",
+     "valign": "top",
+     "z": 6,
+     "items": [
+      {
+       "type": "tag",
+       "text": "Medios de pago",
+       "size": 44
+      }
+     ]
+    },
+    {
+     "type": "info_list",
+     "box": [
+      0.07,
+      0.38,
+      0.86,
+      0.44
+     ],
+     "slot": "payments",
+     "align": "left",
+     "z": 5
+    },
+    {
+     "type": "sparkle",
+     "box": [
+      0.84,
+      0.72,
+      0.07,
+      0.056
+     ],
+     "z": 5
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0,
+      0.905,
+      1,
+      0.062
+     ],
+     "slot": "ticker",
+     "z": 8
+    }
+   ]
+  }
+ }
+}

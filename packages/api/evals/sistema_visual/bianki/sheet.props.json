@@ -1,0 +1,88 @@
+{
+ "title": "Bianki — sistema visual como datos (Remotion) vs. originales (gen.py + Chrome)",
+ "subtitle": "Spike m-25042530 · fila 1: original del set de noviembre · fila 2: el mismo sistema transcrito a BrandVisualSystem v0 y dibujado por brand_still · leyenda: diferencia media por canal · % de píxeles con diferencia > 32",
+ "cell": {
+  "w": 360,
+  "h": 640
+ },
+ "columns": [
+  "Shawarma de pollo",
+  "Shawarma de carne",
+  "Shawarma mixto",
+  "Shawarma de cerdo",
+  "Combo mixto",
+  "Horarios",
+  "Métodos de pago",
+  "Historia «Abrimos»"
+ ],
+ "rows": [
+  {
+   "label": "Original",
+   "note": "HTML de gen.py / stories.py → Chrome",
+   "cells": [
+    {
+     "src": "_assets/originales/flyer-shawarma-pollo.png"
+    },
+    {
+     "src": "_assets/originales/flyer-shawarma-carne.png"
+    },
+    {
+     "src": "_assets/originales/flyer-shawarma-mixto.png"
+    },
+    {
+     "src": "_assets/originales/flyer-shawarma-cerdo.png"
+    },
+    {
+     "src": "_assets/originales/08-menu-combo-mixto.png"
+    },
+    {
+     "src": "_assets/originales/flyer-horarios.png"
+    },
+    {
+     "src": "_assets/originales/flyer-pagos.png"
+    },
+    {
+     "src": "_assets/originales/1-abrimos.jpg"
+    }
+   ]
+  },
+  {
+   "label": "Qualify",
+   "note": "system.v1.json + datos → Remotion",
+   "cells": [
+    {
+     "src": "bianki/hero-pollo.png",
+     "caption": "0,54 · 0,44 %"
+    },
+    {
+     "src": "bianki/hero-carne.png",
+     "caption": "0,59 · 0,46 %"
+    },
+    {
+     "src": "bianki/hero-mixto.png",
+     "caption": "0,58 · 0,46 %"
+    },
+    {
+     "src": "bianki/hero-cerdo.png",
+     "caption": "0,59 · 0,45 %"
+    },
+    {
+     "src": "bianki/combo-mixto.png",
+     "caption": "0,42 · 0,29 %"
+    },
+    {
+     "src": "bianki/horarios.png",
+     "caption": "0,01 · 0,00 %"
+    },
+    {
+     "src": "bianki/pagos.png",
+     "caption": "0,02 · 0,00 %"
+    },
+    {
+     "src": "bianki/historia-abrimos.png",
+     "caption": "1,18 · 0,72 % (JPG)"
+    }
+   ]
+  }
+ ]
+}

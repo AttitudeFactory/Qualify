@@ -1,0 +1,20 @@
+[
+ {
+  "n": 1,
+  "id": "polette-violeta-pop",
+  "name": "Violeta pop",
+  "valid": true
+ },
+ {
+  "n": 2,
+  "id": "polette-crema-y-mora",
+  "name": "Crema y mora",
+  "valid": true
+ },
+ {
+  "n": 3,
+  "id": "polette-fiesta-de-frutas",
+  "name": "Fiesta de frutas",
+  "valid": true
+ }
+]

@@ -1,0 +1,11 @@
+{
+ "run": "20261117T044842Z",
+ "model_requested": "claude-fable-5-2",
+ "model_served": "claude-fable-5-2",
+ "prompt_version": "sistema-visual-propose-v1",
+ "stop_reason": "end_turn",
+ "input_tokens": 17051,
+ "output_tokens": 40588,
+ "usd": 1.7599,
+ "seconds": 423.2
+}

@@ -1,0 +1,487 @@
+{
+ "schema_version": 0,
+ "id": "polette-crema-y-mora",
+ "version": 1,
+ "parent_version": null,
+ "brand": "Polette",
+ "name": "Crema y mora",
+ "style_family": "editorial cálido de heladería",
+ "rationale": "Fondo crema de vainilla con tinta violeta y acentos color mora: una versión más serena, tipo carta de heladería, donde la foto en arco y las ondas del logo llevan la atención. Le sirve para mostrar el producto con calma y dar los datos del local con claridad, sin dejar los colores ni las tipografías de la marca.",
+ "provenance": {
+  "source": "ai_proposal",
+  "model": "claude-fable-5-2",
+  "prompt_version": "sistema-visual-propose-v1",
+  "created_at": "2026-11-17T04:48:42+00:00",
+  "notes": "El logo tiene la palabra en blanco: sobre el fondo crema siempre va en un círculo violeta."
+ },
+ "colors": {
+  "background": "#FFF4E6",
+  "background_alt": "#FFFBF4",
+  "surface": "#430098",
+  "on_surface": "#FFFFFF",
+  "ink": "#430098",
+  "accent": "#EA1D75",
+  "on_accent": "#FFFFFF",
+  "shadow": "#D8C3E6",
+  "pop": "#F98D29",
+  "background_edge": "#FBE6D0",
+  "shadow_deep": "#8446AC"
+ },
+ "typography": {
+  "display": {
+   "family": "Peralta",
+   "weight": 400,
+   "letter_spacing_em": 0,
+   "line_height": 1,
+   "uppercase": false
+  },
+  "body": {
+   "family": "Sour Gummy",
+   "weight": 400,
+   "letter_spacing_em": 0,
+   "line_height": 1.3,
+   "uppercase": false
+  },
+  "label": {
+   "family": "Sour Gummy",
+   "weight": 600,
+   "letter_spacing_em": 0.12,
+   "line_height": 1,
+   "uppercase": true
+  }
+ },
+ "background": {
+  "base": "radial",
+  "layers": [
+   {
+    "kind": "waves",
+    "color": "pop",
+    "opacity": 0.14,
+    "scale": 1.4
+   },
+   {
+    "kind": "grain",
+    "color": "ink",
+    "opacity": 0.06
+   }
+  ]
+ },
+ "shapes": {
+  "radius_px": 40,
+  "tilt_deg": 0,
+  "shadow": "soft",
+  "shadow_offset_px": 8,
+  "stroke_px": 0
+ },
+ "components": {
+  "body": {
+   "strong_color": "accent",
+   "strong_uppercase": false,
+   "chip_fill": "surface",
+   "chip_ink": "on_surface"
+  },
+  "tag": {
+   "variant": "underline",
+   "fill": "pop",
+   "ink": "ink"
+  },
+  "headline": {
+   "variant": "two_tone_stacked",
+   "split": "first_word",
+   "first_color": "ink",
+   "second_color": "accent",
+   "shadow": false
+  },
+  "price": {
+   "variant": "ticket",
+   "fill": "accent",
+   "ink": "on_accent",
+   "show_code": true
+  },
+  "stamp": {
+   "variant": "circle_ring",
+   "fill": "pop",
+   "ink": "ink",
+   "ring": "ink"
+  },
+  "ticker": {
+   "enabled": true,
+   "fill": "surface",
+   "ink": "background",
+   "separator": "·"
+  },
+  "product_frame": {
+   "variant": "arch",
+   "ring": "pop",
+   "glow": "#FFB718"
+  },
+  "info_card": {
+   "variant": "card",
+   "fill": "#FFFFFF",
+   "ink": "ink"
+  },
+  "logo": {
+   "variant": "on_badge",
+   "badge": "#8446AC"
+  },
+  "sparkle": {
+   "enabled": false,
+   "glyph": "✦",
+   "color": "pop"
+  }
+ },
+ "tone": {
+  "voice": "Cálida y pausada, como quien recomienda su postre favorito: nombra la fruta y el sabor sin gritar.",
+  "exclamations": false
+ },
+ "recipes": {
+  "product_hero": {
+   "format": "4:5",
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.43,
+      0.03,
+      0.14,
+      0.112
+     ],
+     "slot": "brand.logo",
+     "z": 5
+    },
+    {
+     "type": "product",
+     "box": [
+      0.26,
+      0.155,
+      0.48,
+      0.42
+     ],
+     "slot": "product.photo",
+     "z": 2
+    },
+    {
+     "type": "stamp",
+     "box": [
+      0.655,
+      0.44,
+      0.18,
+      0.144
+     ],
+     "slot": "product.stamp",
+     "rotate_deg": -8,
+     "z": 4
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.1,
+      0.6,
+      0.8,
+      0.37
+     ],
+     "align": "center",
+     "valign": "top",
+     "z": 5,
+     "items": [
+      {
+       "type": "headline",
+       "slot": "product.title",
+       "size": 104
+      },
+      {
+       "type": "body",
+       "slot": "product.description",
+       "size": 36,
+       "space_before": 18
+      },
+      {
+       "type": "price",
+       "slot": "product.price",
+       "size": 84,
+       "space_before": 26
+      }
+     ]
+    }
+   ]
+  },
+  "hours": {
+   "format": "4:5",
+   "blocks": [
+    {
+     "type": "sun",
+     "box": [
+      0.66,
+      0.66,
+      0.46,
+      0.368
+     ],
+     "z": 0,
+     "colors": [
+      "pop",
+      "#FFB718"
+     ]
+    },
+    {
+     "type": "logo",
+     "box": [
+      0.08,
+      0.05,
+      0.16,
+      0.128
+     ],
+     "slot": "brand.logo",
+     "z": 5
+    },
+    {
+     "type": "icon_feature",
+     "box": [
+      0.72,
+      0.06,
+      0.2,
+      0.16
+     ],
+     "icon": "pin",
+     "z": 4
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.08,
+      0.22,
+      0.84,
+      0.62
+     ],
+     "align": "left",
+     "valign": "top",
+     "z": 5,
+     "items": [
+      {
+       "type": "tag",
+       "slot": "hours.days"
+      },
+      {
+       "type": "headline",
+       "slot": "hours.title",
+       "size": 150,
+       "space_before": 18
+      },
+      {
+       "type": "flag",
+       "slot": "hours.range",
+       "size": 84,
+       "shape": "rect",
+       "space_before": 36,
+       "small_em": 0.5
+      },
+      {
+       "type": "body",
+       "slot": "hours.address",
+       "size": 42,
+       "space_before": 40,
+       "line_height": 1.35
+      }
+     ]
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0,
+      0.91,
+      1,
+      0.06
+     ],
+     "slot": "hours.ticker",
+     "z": 8
+    }
+   ]
+  },
+  "story": {
+   "format": "9:16",
+   "blocks": [
+    {
+     "type": "photo",
+     "box": [
+      0,
+      0,
+      1,
+      0.6
+     ],
+     "slot": "story.photo",
+     "focus": [
+      0.5,
+      0.35
+     ],
+     "z": 1,
+     "veil": [
+      {
+       "color": "background",
+       "alpha": 0,
+       "at": 0
+      },
+      {
+       "color": "background",
+       "alpha": 0,
+       "at": 36
+      },
+      {
+       "color": "background",
+       "alpha": 0.9,
+       "at": 54
+      },
+      {
+       "color": "background",
+       "alpha": 1,
+       "at": 60
+      },
+      {
+       "color": "background",
+       "alpha": 1,
+       "at": 100
+      }
+     ]
+    },
+    {
+     "type": "sun",
+     "box": [
+      0.25,
+      0.875,
+      0.5,
+      0.28
+     ],
+     "z": 2,
+     "colors": [
+      "pop",
+      "#FFB718"
+     ]
+    },
+    {
+     "type": "logo",
+     "box": [
+      0.07,
+      0.14,
+      0.17,
+      0.096
+     ],
+     "slot": "brand.logo",
+     "z": 5
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.1,
+      0.53,
+      0.8,
+      0.31
+     ],
+     "align": "center",
+     "valign": "center",
+     "z": 4,
+     "items": [
+      {
+       "type": "tag",
+       "slot": "story.kicker"
+      },
+      {
+       "type": "headline",
+       "slot": "story.title",
+       "size": 136,
+       "space_before": 14
+      },
+      {
+       "type": "flag",
+       "slot": "story.hours",
+       "size": 78,
+       "shape": "rect",
+       "space_before": 30,
+       "small_em": 0.5
+      },
+      {
+       "type": "note",
+       "slot": "story.place",
+       "size": 38,
+       "space_before": 24
+      }
+     ]
+    }
+   ]
+  },
+  "payments": {
+   "format": "4:5",
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.42,
+      0.04,
+      0.16,
+      0.128
+     ],
+     "slot": "brand.logo",
+     "z": 5
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.1,
+      0.2,
+      0.8,
+      0.08
+     ],
+     "align": "center",
+     "valign": "center",
+     "z": 5,
+     "items": [
+      {
+       "type": "tag",
+       "text": "Medios de pago",
+       "size": 44
+      }
+     ]
+    },
+    {
+     "type": "icon_feature",
+     "box": [
+      0.39,
+      0.3,
+      0.22,
+      0.176
+     ],
+     "icon": "card",
+     "z": 4
+    },
+    {
+     "type": "info_list",
+     "box": [
+      0.1,
+      0.51,
+      0.8,
+      0.32
+     ],
+     "slot": "payments",
+     "align": "center",
+     "z": 5
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.1,
+      0.86,
+      0.8,
+      0.08
+     ],
+     "align": "center",
+     "valign": "center",
+     "z": 5,
+     "items": [
+      {
+       "type": "note",
+       "slot": "brand.handle",
+       "size": 40
+      }
+     ]
+    }
+   ]
+  }
+ }
+}
