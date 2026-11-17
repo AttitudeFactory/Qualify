@@ -22,6 +22,31 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="capa-004"></a>
+
+## CAPA-004 — Primera imagen real con la capa encendida en producción: Bianki, «Shawarma mixto» (m-25040499, m-25042157) — 2026-11-17 · UNA SOLA IMAGEN, NO ES UNA MEDICIÓN
+
+- **Qué corrió:** producción, `QUALIFY_IMAGE_LAYER=on` para todos los negocios (decisión del fundador, 2026-11-17 ~03:40 UTC). Bianki, tipo «Imagen» (`static_flyer`, modo producto), producto del catálogo «Shawarma mixto» (precio $22.000, puesto por el dueño en «Datos clave: Precio»), formato 4:5, borrador `0afc545b-113e-4f19-8b49-ac9e73615ecc`. La corrió el fundador desde la app; datos de su reporte y de la fila guardada, no de una evaluación.
+- **Modelos:** texto de la publicación `claude-opus-5-5`; foto base `dola-seedream-5-0-pro-260628` (1280×1600); capa `claude-sonnet-5-5` con `capa-v4` (sin medir antes); composición `layer_still` v1, `engine_revision` 4.
+- **Tiempos:** Seedream 43,2 s; llamada de la capa ~9 s; render `layer_still` 3,0 s (1,18 MB). Resultado: pieza hecha, sin errores.
+- **Costo:** registro `creative.cost.total calls=2 cost_usd=0.090503` = texto US$0,045503 + Seedream US$0,045. **La llamada de la capa no aparece**: su costo es desconocido en este registro (por los datos de CAPA-003, unos US$0,015). Es el error m-25042157: la etapa de la capa nunca agregaba su uso al de la pieza (el registro de consumo de Claude sí la anota por el interceptor, `_book_consumption`; no se miró la fila en producción). Arreglado en la rama de m-25042157: cada llamada (la reescritura y una llamada fallida que pagó, incluidas) queda como una línea `anthropic` / `claude-sonnet-5-5` con tokens y costo, una sola vez aunque la cola repita la pasada.
+- **Lo que guardó la imagen:** `composer: layer_still`, `price_status: "hidden"`, `brief_price_line: ""`, `printed.price: false`, y dos caídas del compositor:
+  - `band: subject does not fit the photo window, photo reduced` (ver A);
+  - `accent_word: below 3:1, drawn in the text colour` (la palabra de acento no llegaba a 3:1 sobre la franja y se dibujó del color del texto; caída prevista en el catálogo, regla de 3:1 del `accent_word`).
+
+**A — La foto se achicó.** La franja de `band` en 4:5 mide entre el 32 y el 40 % del alto (432–540 px de 1350, según cuánto texto lleva). La foto llena el resto: a lo ancho, la base de 1280×1600 se dibuja a 1080×1350, y la ventana deja ver solo el 68 % de su alto (franja mínima) o el 60 % (franja máxima). Si el recuadro del sujeto que Claude marcó (`subject_box`) es más alto que eso, o queda donde ningún recorte lo deja entero, el compositor no corta el sujeto: pasa a «contener» la foto entera en la ventana (`engine.ts`, `tryBand`, ~871). Una foto de 1280×1600 contenida en 1080×918 queda de 734 px de ancho, con bandas a los lados (rellenas con la foto difuminada). Eso ve el dueño: franja roja arriba y la foto más chica con laterales borrosos. En la corrida local de CAPA-003 (16 imágenes de comida) los sujetos medían de 0,40 a 0,85 del alto (mediana 0,55) y 3 de 16 cayeron en «photo reduced»; con fotos de producto de cerca (Seedream suele llenar el cuadro con el plato) pasará a menudo. Opciones para el fundador (no se implementó ninguna):
+  1. **Recortar para llenar con tolerancia:** cortar hasta ~15 % del sujeto por el lado opuesto a la franja (borde del plato o del fondo) antes de achicar; achicar solo si hace falta más. Recomendada: la foto siempre llena el ancho, y lo que se pierde es borde.
+  2. **Franja más baja:** bajar el mínimo de `band` en 4:5 (p. ej. 26 %) con títulos más cortos: más foto, menos texto; cambia el catálogo y sus límites.
+  3. **Otro diseño cuando el sujeto es alto:** que la regla prefiera `plate` o `scrim` (texto sobre la foto) si el sujeto ocupa más del ~60 % del alto; cambia el prompt (`capa-v5`) y hay que medirlo.
+
+**B — El precio no salió en la imagen.** `media.price_line` solo lo pone `angle_brief` (`packages/creative/src/qualify_creative/angles.py` ~757-761), es decir, las piezas de «Variaciones» (motor de ángulos, `AngleSetService`): con producto con precio y un ángulo que no sea `UNAWARE`, el precio va en la línea y en el destacado «precio». El pedido normal de «Imagen» desde la app no la llena nunca: «Datos clave: Precio» es un destacado para el texto de la publicación (`brief_highlights` en `Qualify/creative_state.py`), no `price_line`. Por eso la capa vio `price_line` vacío, `price_status: hidden`, y la imagen salió sin precio mientras el texto sí lo dice. Hoy un pedido normal de «Imagen» no puede llegar al camino del precio; solo «Variaciones». El paso 2 todavía dice «La imagen sale sin letras ni precios: escríbelos en el texto de la publicación» (`Qualify/content_generator.py:4280-4281`), falso con la capa encendida (ahora sí lleva letras). No se cambió el texto (decisión de producto).
+
+**C — Costo de la capa fuera del registro.** Ver «Costo» arriba.
+
+**Lo que no dice:** una imagen no es una medición; no hay calidad, tasa de caídas ni costo medio que sacar de aquí. Sirve para saber que el camino funciona de punta a punta en producción y para encontrar A, B y C.
+
+---
+
 <a id="hashtags-pie-001"></a>
 
 ## HASHTAGS-PIE-001 — «Sugerir con IA» de hashtags: prompt de hoy contra el que lee las etiquetas vigiladas del rubro (m-25032581) — 2026-11-15/17 · `/2` ACTIVADO POR EL FUNDADOR; con el filtro de salida y la regla de «Mejor» finales, las cinco «Mejor» pasan la barra en dev y test (re-puntuación, test ya usado); lo que se muestra sin marca con catálogo, no
