@@ -336,7 +336,7 @@ def run_layer_stage(
     """The layers of `scenes` (position → base), regenerating a base once when Claude saw
     invented text in it. Off (`QUALIFY_IMAGE_LAYER`), or on any failure: no layers."""
     scenes = dict(scenes)
-    if not scenes or not layer_enabled(dict(env) if env is not None else None):
+    if not scenes or not layer_enabled(env, tenant_id):
         return LayerOutcome(scenes, {})
     writer, claim, context = _seams(producer)
     budget = DollarMeter(LAYER_BUDGET_USD)  # ONE meter for every call of this piece

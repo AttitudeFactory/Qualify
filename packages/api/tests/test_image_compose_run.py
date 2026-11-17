@@ -1070,3 +1070,57 @@ def test_review4_a_piece_without_price_keeps_the_fallback() -> None:
     off = _stage_outcome(Writer(fail=True), price_text="$12.000", env={})
     assert off.request is None and off.layers == {}  # off: nothing built, nothing checked
     require_price_drawn(off, {})
+
+
+# -- the pilot: per business (founder, 2026-11-16, Bianki first) ----------------------------
+
+PILOT = "QUALIFY_IMAGE_LAYER_TENANTS"
+
+
+def test_pilot_the_switch_is_per_business(caplog: pytest.LogCaptureFixture) -> None:
+    from qualify_api.creative.image_pipeline.layer import layer_enabled
+
+    other = uuid4()
+    listed = {PILOT: f" {TENANT_ID} , {other}"}
+    assert layer_enabled(listed, TENANT_ID) and layer_enabled(listed, other)
+    assert not layer_enabled(listed, uuid4())  # not listed
+    assert not layer_enabled(listed)  # no business: never on through the list
+    assert layer_enabled({"QUALIFY_IMAGE_LAYER": "on"}, uuid4())  # global on: everyone
+    assert not layer_enabled({}, TENANT_ID)  # neither: off
+    with caplog.at_level("WARNING"):
+        bad = {PILOT: f"not-a-uuid,{str(TENANT_ID)[:-1]}, ;"}
+        assert not layer_enabled(bad, TENANT_ID)  # a typo turns it on for nobody
+    assert "ignored 3 entries" in caplog.text and str(TENANT_ID)[:8] not in caplog.text
+
+
+def test_pilot_a_listed_business_gets_the_layer_and_the_compositor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUALIFY_IMAGE_LAYER", raising=False)
+    monkeypatch.setenv(PILOT, str(TENANT_ID))
+    producer, brief, _ = gallery_setup(monkeypatch)
+    writer = Writer()
+    composer = _wire(producer, writer, [])
+    outcome = _produce(producer, brief)
+    assert outcome.failure is None and len(writer.requests) == 1
+    assert len(composer.requests) == 2
+    assert all(w.params.get("composer") == "layer_still" for w in outcome.media)
+
+
+def test_pilot_another_business_is_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not listed: no layer call, no compose call, no pipeline step, no wait read — and the
+    same writes as with no switch at all."""
+    monkeypatch.delenv("QUALIFY_IMAGE_LAYER", raising=False)
+    monkeypatch.setenv(PILOT, f"{uuid4()},not-a-uuid")
+    producer, brief, _ = gallery_setup(monkeypatch)
+    writer = Writer()
+    composer = _wire(producer, writer, [])
+    checkpoints = JsonCheckpoints()
+    monkeypatch.setattr(pipeline, "PipelineStore", lambda: checkpoints)
+    run = pipeline.Preparation(TENANT_ID, uuid4(), 1, "generation", uuid4(), 1)
+    with pipeline.preparing(run):
+        raise_if_waiting(run)
+        outcome = _produce(producer, brief)
+    assert writer.requests == [] and composer.requests == []
+    assert not any(step < -99 for step in checkpoints.rows)  # no layer, compose or wait step
+    assert all(w.layer is None and "composer" not in w.params for w in outcome.media)

@@ -219,7 +219,7 @@ def compose_slides(
     with no layer: {} and nothing is called. Raises `_MediaFailed` (the piece's failure code)
     when a slide cannot be drawn, and `RenderWait` while the piece waits for the service.
     Inside the queue the run's lease is kept alive while the slides render."""
-    if not outcome.layers or not layer_enabled(dict(env) if env is not None else None):
+    if not outcome.layers or not layer_enabled(env, tenant_id):
         return {}
     run = pipeline.current_preparation()
     if run is None:
@@ -659,7 +659,7 @@ def raise_if_waiting(run: pipeline.Preparation, now: datetime | None = None) -> 
     answer in this `OUTAGE_BACKOFF` bucket already, the pass stops at once (`RenderWait`) —
     no replay, no render call. Past `OUTAGE_WINDOW` the pass goes on, and fails the piece.
     Off (`QUALIFY_IMAGE_LAYER`): returns at once, without reading anything."""
-    if not layer_enabled():
+    if not layer_enabled(tenant_id=run.tenant_id):
         return
     store = pipeline.PipelineStore()
     row = store.load_step(run, FIRST_FAILURE_STEP)

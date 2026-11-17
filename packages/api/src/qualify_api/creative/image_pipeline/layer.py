@@ -48,7 +48,7 @@ import base64
 import logging
 import math
 import os
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
@@ -88,6 +88,11 @@ logger = logging.getLogger(__name__)
 
 #: The switch (ADR 49, m-25017283): `on` turns the layer stage on; anything else, off.
 LAYER_SWITCH_ENV = "QUALIFY_IMAGE_LAYER"
+#: The pilot (founder, 2026-11-16: Bianki first): tenant UUIDs separated by commas that get
+#: the layer stage while `QUALIFY_IMAGE_LAYER` is not `on` — the allowlist pattern of
+#: `QUALIFY_HASHTAG_WEEKLY_TENANTS`. Empty or unset = nobody; an entry that is not a UUID is
+#: skipped and logged by count (a typo never turns it on for anyone).
+LAYER_TENANTS_ENV = "QUALIFY_IMAGE_LAYER_TENANTS"
 LAYER_MODEL = ModelConfig("claude-sonnet-5-5", effort="low")
 #: Prompt provenance (`piece_layers.prompt_version`, the ledger's prompt version).
 #: v1: CAPA-001; v2: CAPA-002; v3: per-piece slot table (CAPA-003); v4: review wording
@@ -128,10 +133,37 @@ def image_tokens(width: int | None, height: int | None) -> int:
     return min(VISION_TOKEN_CEILING, math.ceil(pixels / 750))
 
 
-def layer_enabled(env: dict[str, str] | None = None) -> bool:
-    """Whether the layer stage runs (`QUALIFY_IMAGE_LAYER=on`). Off by default."""
-    value = (env if env is not None else os.environ).get(LAYER_SWITCH_ENV, "")
-    return value.strip().lower() == "on"
+def layer_enabled(env: Mapping[str, str] | None = None, tenant_id: UUID | None = None) -> bool:
+    """THE switch of the image layer (layer stage, compose, the render wait): on for every
+    business with `QUALIFY_IMAGE_LAYER=on`; else only for `tenant_id` listed in
+    `QUALIFY_IMAGE_LAYER_TENANTS` (the pilot). Neither: off — only the environment is read."""
+    source = env if env is not None else os.environ
+    if source.get(LAYER_SWITCH_ENV, "").strip().lower() == "on":
+        return True
+    if tenant_id is None:
+        return False
+    return tenant_id in layer_tenants(source)
+
+
+def layer_tenants(env: Mapping[str, str] | None = None) -> frozenset[UUID]:
+    """The pilot's businesses (`QUALIFY_IMAGE_LAYER_TENANTS`); entries that are not UUIDs
+    are skipped and counted in the log, never their values."""
+    raw = (env if env is not None else os.environ).get(LAYER_TENANTS_ENV, "")
+    out: set[UUID] = set()
+    invalid = 0
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            out.add(UUID(piece))
+        except ValueError:
+            invalid += 1
+    if invalid:
+        logger.warning(
+            "image layer %s: ignored %d entries that are not UUIDs", LAYER_TENANTS_ENV, invalid
+        )
+    return frozenset(out)
 
 
 class LayerError(ClaudeToolError):
