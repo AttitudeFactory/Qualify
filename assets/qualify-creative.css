@@ -1339,6 +1339,18 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-edit-seq .q-edit-seq__layer { visibility: hidden; }
 .q-edit-seq .q-edit-seq__layer[data-on] { visibility: visible; }
 .q-edit-seq .q-edit-seq__overlay:not([data-on]) { display: none; }
+/* B6 (m-25048789): a text appears as the final video draws it — its alpha from 0 to 1 in
+   0.5 s (EF-05's default `fade_s`, the one the editor sends), and leaves at once. Kept in
+   the layout while off so the fade can run; no fade with reduced motion. */
+.q-edit-seq .q-edit-seq__overlay[data-seq-text]:not([data-on]) {
+  display: block; opacity: 0; visibility: hidden; transition: none;
+}
+.q-edit-seq .q-edit-seq__overlay[data-seq-text][data-on] {
+  opacity: 1; visibility: visible; transition: opacity 0.5s linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-edit-seq .q-edit-seq__overlay[data-seq-text][data-on] { transition: none; }
+}
 /* Each block carries its own turn — the video's AND the photo's (both share the
    centred base above: top/left 50% and translate(-50%, -50%)). */
 .q-edit-seq .q-edit-preview__video[data-rotate="90"],

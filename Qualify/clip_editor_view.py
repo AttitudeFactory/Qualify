@@ -404,7 +404,7 @@ def _block_extra() -> rx.Component:
                         color=T.TEXT_MUTED,
                         role="status",
                     ),
-                    rx.text(vm.MOTION_ONLY_NOTE, size="2", color=T.TEXT_MUTED),
+                    rx.text(vm.SECOND_VIDEO_NOTE, size="2", color=T.TEXT_MUTED),
                 ),
             ),
         ),
@@ -582,6 +582,17 @@ def _timeline() -> rx.Component:
     )
 
 
+def _problem() -> rx.Component:
+    """B6 (m-25048789): why «Crear» cannot make this video yet — under 3 s or over 60 s
+    with its seconds (EF-06 option A), a video still being read, … — said here, before
+    «Crear», in the same words «Crear» uses (`clip_edit_problem`)."""
+    words, tone = S.clip_edit_problem[0], S.clip_edit_problem[1]
+    return rx.cond(
+        words != "",
+        rx.cond(tone == "info", callout(words, "info"), callout(words, "warn")),
+    )
+
+
 def arma_tu_video(media_body: rx.Component) -> rx.Component:
     """The step's body, top to bottom (Deivid, 2026-11-16): the preview (centred on a
     wide step), the timeline with its bar, the chosen block's panel under them («menú
@@ -598,6 +609,7 @@ def arma_tu_video(media_body: rx.Component) -> rx.Component:
         rx.box(_timeline(), class_name="q-edit__timeline"),
         rx.box(
             rx.cond(S.clip_tl_selected != "", _block_panel()),
+            _problem(),
             rx.text(vm.PREVIEW_FREE, size="1", color=T.TEXT_MUTED),
             class_name="q-edit__main",
         ),

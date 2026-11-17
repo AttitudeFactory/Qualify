@@ -13,6 +13,7 @@ back and what the live line says, and `recipe_of` turns the fields into the
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping, Sequence
 
@@ -21,11 +22,16 @@ from .ui import timeline_vm
 
 # -- the switch ----------------------------------------------------------------------------
 
-#: The editor is behind `QUALIFY_CLIP_EDITOR`: `off` (the default, as in `.env.example`)
-#: keeps the Clip's step 1 as «Qué mostrar», exactly as before, so this merges without
-#: promising what the backend does not do yet; `1` (or `on`/`true`) turns it on — once
-#: EF-06 (m-25026574) reads the editor's recipe. Anything else is off. Read once, at
-#: import, like the other `QUALIFY_*` of `Qualify/`; tests patch `CLIP_EDITOR_ON`.
+#: The editor is behind `QUALIFY_CLIP_EDITOR`: `off` (the default, as in `.env.example`
+#: and `deploy/.env.prod.example`) keeps the Clip's step 1 as «Qué mostrar», exactly as
+#: before; `1` (or `on`/`true`) turns it on. Anything else is off. Read once, at import,
+#: like the other `QUALIFY_*` of `Qualify/`; tests patch `CLIP_EDITOR_ON`.
+#: B6 (m-25048789): «Crear» now sends the recipe the backend makes (EF-06's `local` Clip:
+#: `segments` / `text_layers` / `effects` of `MediaInputs`), so what the preview shows is
+#: what comes out. Turning it on in production still needs Deivid's OK, with A9
+#: (m-25042483) on main and the production `.env.prod` changed through `just env-push`
+#: (`qualify-prod-ops`); the generation queue (`QUALIFY_CREATIVE_DISPATCHER=queue`) is
+#: required — with threads a `local` Clip is refused (`local_unavailable`).
 CLIP_EDITOR_SWITCH = "QUALIFY_CLIP_EDITOR"
 _ON_VALUES = ("1", "on", "true")
 
@@ -89,8 +95,9 @@ FLOW_TABS: tuple[tuple[str, str, str], ...] = (
 #: The side panel's title (the tab's question goes under it, over its fields).
 FLOW_PANEL_TITLE = "Agregar a tu video"
 FLOW_TABS_LABEL = "Qué agregar"
-#: No effect loop exists yet (EF-05 makes them): «+ Efecto» says so and what to do in the
-#: meantime, with a button to the «Texto» tab (ED-10 UX review).
+#: Shown only when no effect loop exists under `assets/effects/` (EF-08 made all three):
+#: «+ Efecto» says so and what to do in the meantime, with a button to the «Texto» tab
+#: (ED-10 UX review).
 NO_EFFECTS_YET = "Todavía no hay efectos para tu video. Mientras tanto, agrega un texto."
 NO_EFFECTS_GO_TEXT = "Agregar un texto"
 
@@ -99,11 +106,10 @@ NO_EFFECTS_GO_TEXT = "Agregar un texto"
 #: «Orden de tu video»: the first and the last file (the off-switch keeps «…el clip»).
 STRIP_OPENS = "Abre tu video"
 STRIP_CLOSES = "Cierra tu video"
-#: Under a second video of the order: it only lends its movement (joining several is a
-#: video by parts; the background is ED-10's).
-MOTION_ONLY_NOTE = (
-    "Este video solo guía el movimiento. Para unir varios, usa «Armar mi video por partes»."
-)
+#: Under a second video of the order. B6 (m-25048789): it is a stretch of the video that
+#: comes out — its first 15 s at most, as the timeline shows it — no longer a guide for
+#: the AI's movement.
+SECOND_VIDEO_NOTE = "De este video usamos hasta 15 s, como se ve en la línea de tiempo."
 #: The tag under the video the editor plays and cuts (other videos stay «Movimiento»).
 OWN_VIDEO_TAG = "Tu video"
 ORDER_TITLE = "Orden de tu video"
@@ -283,7 +289,7 @@ PIECE_REMOVED_LINE = "Quitaste un pedazo de tu video."
 #: video); a piece also keeps at least `contract.SEGMENT_MIN_SECONDS` of the source.
 CUT_EDGE_SECONDS = 0.5
 TOO_SHORT = "El pedazo tiene que durar al menos 1 segundo."
-CUT_WAITING = "Estamos leyendo cuánto dura tu video."
+CUT_WAITING = "Espera unos segundos: estamos leyendo cuánto dura tu video."
 #: Any refusal code (EF-03 «Preparar», PR #679) with no words of its own.
 REFUSAL_GENERIC = "No pudimos usar ese pedazo de tu video. Prueba con otro."
 UNREADABLE = "No pudimos leer tu video. Prueba con otro archivo."
@@ -513,6 +519,8 @@ def pop_undo(
 #: The Clip's video the editor works on: the owner's (an upload, the catalog, the
 #: Galería, a publication), never the reel's original, Pinterest nor — Deivid 2026-11-14 —
 #: Inspiración stock, which stays a reference for the AI only (never cut, never a stretch).
+#: «stock» (Pixabay's photos and videos) is shown to the owner as «Inspiración» too
+#: (`PICKER_TAB_LABELS`, «Video de inspiración»), so `NOT_IN_VIDEO` names it that way.
 _NOT_OWN = ("reel", "pinterest", "stock", "inspiration")
 
 
@@ -535,6 +543,20 @@ def own_video(videos: Sequence[Mapping[str, str]]) -> dict[str, str]:
         if str(item.get("source") or "") not in _NOT_OWN and item.get("key"):
             return {"key": str(item["key"]), "name": str(item.get("name") or "")}
     return {}
+
+
+def ai_only(
+    images: Sequence[Mapping[str, str]],
+    videos: Sequence[Mapping[str, str]],
+    audios: Sequence[Mapping[str, str]] = (),
+) -> bool:
+    """B6 (m-25048789): the Clip holds something only an AI reads — an Inspiración or
+    Pinterest image or video (never on the timeline) or a reference audio. The video made
+    from the owner's photos and videos has no place for them."""
+    foreign = any(
+        str(item.get("source") or "") in _NOT_OWN and item.get("key") for item in (*images, *videos)
+    )
+    return foreign or any(item.get("key") for item in audios)
 
 
 def editor_shown(
@@ -574,10 +596,12 @@ def recipe_of(
     text_end: float | None = None,
     effect_times: Mapping[str, Sequence[float]] | None = None,
     pieces: Sequence[Sequence[float]] = (),
+    timeline: Sequence[Mapping[str, object]] | None = None,
 ) -> contract.PartRecipe:
     """The Clip's recipe of one part, in EF-02's shape. «Cámara rápida»'s speed goes in
-    the stretch only (`segments[].speed`); the `camara_rapida` effect carries empty
-    params (provisional, see `editor_preview_contract`). An unset stretch is left out.
+    the stretch only (`segments[].speed`): the `camara_rapida` effect never travels — the
+    backend makes no such effect (B6 m-25048789: it would refuse the Clip as
+    `recipe_unavailable`). An unset stretch is left out.
 
     ED-10: when the owner moved the text or an effect on the timeline, its seconds of
     the final video (`text_start`/`text_end`, `effect_times[id]` = `[start, end]`);
@@ -587,11 +611,20 @@ def recipe_of(
     «Cortar» (Deivid 2026-11-17): the own video cut in `pieces` is one `SourceSegment`
     per piece, in the video's order — the same `key`, each with its own `start_s`/`end_s`
     of the source, all at the video's speed and turn (contract v2 takes up to
-    `SEGMENTS_MAX`). Without pieces, the one stretch `start`-`end`."""
+    `SEGMENTS_MAX`). Without pieces, the one stretch `start`-`end`.
+
+    B6 (m-25048789): with `timeline` (`timeline_media`'s blocks, what the preview plays)
+    the stretches are EVERY block, in its order — the photos as still stretches of their
+    seconds (`kind` photo), the own video's pieces at its speed and turn, any other video
+    from 0:00 — so the video that comes out is the one the preview shows. The texts' and
+    effects' seconds are then kept inside that video's length (as the backend reads it:
+    the stretches at their speed, to the hundredth), an end at the end left open."""
     fast = contract.FAST_MOTION in effects and bool(video_key)
-    stretches = [(float(a), float(b)) for a, b in pieces] or [(float(start), float(end))]
     segments: tuple[contract.SourceSegment, ...] = ()
-    if video_key:
+    if timeline is not None:
+        segments = timeline_segments(timeline)
+    elif video_key:
+        stretches = [(float(a), float(b)) for a, b in pieces] or [(float(start), float(end))]
         segments = tuple(
             contract.SourceSegment(
                 key=video_key,
@@ -603,29 +636,33 @@ def recipe_of(
             for a, b in stretches
             if b > a
         )
+    total = recipe_seconds(segments) if timeline is not None else None
     uses: list[contract.EffectUse] = []
     for effect_id in effects:
         effect = contract.effect_of(effect_id)
-        if effect is None or (effect.needs_own_video and not video_key):
+        if effect is None or effect_id == contract.FAST_MOTION:
             continue
         span = (effect_times or {}).get(effect_id)
-        if span and len(span) == 2 and float(span[1]) > float(span[0]):
+        bounds = _inside(span, total) if span and len(span) == 2 else None
+        if bounds is not None:
             uses.append(
-                contract.EffectUse(
-                    effect_id,
-                    effect.version,
-                    start_s=round(float(span[0]), 2),
-                    end_s=round(float(span[1]), 2),
-                )
+                contract.EffectUse(effect_id, effect.version, start_s=bounds[0], end_s=bounds[1])
             )
         else:
             uses.append(contract.EffectUse(effect_id, effect.version))
+    begin = round(max(float(text_start), 0.0), 2)
+    finish = None if text_end is None else round(float(text_end), 2)
+    if total is not None:
+        top = _floor2(total)
+        begin = min(begin, max(top - contract.SEGMENT_MIN_SECONDS, 0.0))
+        if finish is not None and finish >= top - 0.01:
+            finish = None  # it runs to the end: left open, as ED-02's
     layer = (
         contract.VideoTextLayer(
             text=text.strip(),
             place=place,
-            start_s=round(max(float(text_start), 0.0), 2),
-            end_s=None if text_end is None else round(float(text_end), 2),
+            start_s=begin,
+            end_s=finish,
             layout_id=contract.TEXT_LAYOUT_ID,
             layout_version=contract.TEXT_LAYOUT_VERSION,
         )
@@ -633,6 +670,172 @@ def recipe_of(
         else None
     )
     return contract.PartRecipe(effects=tuple(uses), text_layer=layer, segments=segments)
+
+
+def _floor2(value: float) -> float:
+    """`value` down to the hundredth (a time never past the video's rounded length)."""
+    return math.floor(float(value) * 100 + 1e-6) / 100
+
+
+def _inside(span: Sequence[float], total: float | None) -> tuple[float, float] | None:
+    """An effect's `[start, end]` to the hundredth, inside a video of `total` s (None =
+    not known: as given). None = no span: it covers the whole video, or nothing is left."""
+    start, end = round(float(span[0]), 2), round(float(span[1]), 2)
+    if total is not None:
+        top = _floor2(total)
+        if start <= 0.01 and end >= top - 0.01:
+            return None  # the whole video: no span, as ED-02's
+        start, end = max(start, 0.0), min(end, top)
+    return (start, end) if end > start else None
+
+
+def timeline_segments(media: Sequence[Mapping[str, object]]) -> tuple[contract.SourceSegment, ...]:
+    """B6 (m-25048789): the recipe's stretches from the timeline's blocks
+    (`timeline_media`), in their order — a photo is a still stretch (`kind` photo, from 0
+    to its seconds, speed 1); a video, its `[src_start, src_end)` of the source at its
+    speed and turn. Seconds to the hundredth, as `to_dict` keeps them."""
+    out: list[contract.SourceSegment] = []
+    for item in media:
+        key = str(item.get("key") or "")
+        if not key:
+            continue
+        if item.get("kind") == "photo":
+            seconds = round(float(item.get("dur") or 0.0), 2)  # type: ignore[arg-type]
+            if seconds > 0:
+                out.append(contract.SourceSegment(key, 0.0, seconds, 1.0, 0, "photo"))
+            continue
+        start = round(float(item.get("src_start") or 0.0), 2)  # type: ignore[arg-type]
+        end = round(float(item.get("src_end") or 0.0), 2)  # type: ignore[arg-type]
+        speed = float(item.get("speed") or 1.0) or 1.0  # type: ignore[arg-type]
+        if end > start:
+            out.append(
+                contract.SourceSegment(
+                    key,
+                    start,
+                    end,
+                    round(speed, 2),
+                    int(item.get("rotate") or 0),  # type: ignore[call-overload]
+                )
+            )
+    return tuple(out)
+
+
+def recipe_seconds(segments: Sequence[contract.SourceSegment]) -> float:
+    """How long the video of `segments` lasts, as the backend reads it (EF-06
+    `segments_seconds`: each stretch at its speed; a photo its seconds)."""
+    return sum((s.end_s - s.start_s) / (s.speed or 1.0) for s in segments)
+
+
+# -- B6 (m-25048789): what «Crear» needs on «Arma tu video» ----------------------------------
+
+#: EF-06's bounds for a Clip made from the owner's photos and videos (`LOCAL_TOTAL_MIN_S`
+#: / `LOCAL_TOTAL_MAX_S` of `qualify_creative.schemas`; a test pins they agree).
+LOCAL_MIN_SECONDS = 3.0
+LOCAL_MAX_SECONDS = 60.0
+#: A text or an effect needs something to go over.
+NEEDS_MEDIA = "Para poner un texto o un efecto, primero agrega una foto o un video tuyo."
+#: A video whose length the browser has not read: it cannot be cut to the second yet.
+LENGTH_UNKNOWN = (
+    "No pudimos abrir uno de tus videos y no sabemos cuánto dura. Quítalo o cámbialo por otro."
+)
+TOO_MANY_PIECES = (
+    f"Tu video puede tener hasta {contract.SEGMENTS_MAX} fotos y pedazos de video. Quita alguno."
+)
+#: What the preview cannot show and the video made here does not take: the AI's
+#: references — «Inspiración» (its banks' photos and videos, `stock` too) and Pinterest —
+#: and the music (`clip_gallery_vm.AUDIO_TAG`). Said where they are taken out: their
+#: tiles, with their ✕, in «Agregar» (`timeline_vm.ADD_LABEL`).
+NOT_IN_VIDEO = (
+    "Tu video se arma solo con tus fotos y videos. En «Agregar», quita las fotos y videos "
+    "de Inspiración o Pinterest y la música para poder crearlo."
+)
+#: The generation queue is off (`local_unavailable`): only the creative worker builds it.
+LOCAL_UNAVAILABLE = (
+    "Por ahora no podemos armar tu video. Tus cambios siguen aquí: inténtalo más tarde."
+)
+#: Any other refusal of the recipe (a bug of ours: the screen only sends what it offers).
+RECIPE_REFUSED = (
+    "No pudimos crear tu video con esos cambios. Quita el último texto o efecto e "
+    "inténtalo de nuevo."
+)
+
+
+def length_out_of_range_line(seconds: float, *, fast: bool = False, video: bool = False) -> str:
+    """EF-06 option A (Deivid 2026-11-16, «avisar y no crear»): the video would last under
+    3 s or over 60 s — how long, and what to change. Only what the owner can do on the
+    screen is offered, in the words of the control (`SPEED_TITLE`, «más rápido»): `fast`,
+    a stretch is already faster (lower it when too short, raise it when too long);
+    `video`, the timeline holds a video that «Velocidad» could make faster."""
+    shown = contract.seconds_text(seconds)
+    if seconds < LOCAL_MIN_SECONDS:
+        line = f"Tu video dura {shown} s y necesita al menos 3 s. Agrega otra foto o video"
+        return f"{line}, o baja la velocidad." if fast else f"{line}."
+    line = f"Tu video dura {shown} s y puede durar hasta 60 s. Quita alguna foto o pedazo de video"
+    if fast:
+        return f"{line}, o sube la velocidad."
+    return f"{line}, o hazlo más rápido en «{SPEED_TITLE}»." if video else f"{line}."
+
+
+def speed_facts(
+    segments: Sequence[contract.SourceSegment], *, speed_offered: bool = True
+) -> tuple[bool, bool]:
+    """`(fast, video)` of a recipe's stretches, for `length_out_of_range_line`: a stretch
+    faster than recorded; a video stretch «Velocidad» could make faster — none when no
+    speed is on for the own video (`speed_offered` False, e.g. under 6 s)."""
+    fast = any(float(s.speed or 1.0) > 1.0 + 1e-6 for s in segments)
+    video = speed_offered and any(s.kind != "photo" for s in segments)
+    return fast, video
+
+
+def recipe_problem(
+    recipe: contract.PartRecipe,
+    *,
+    unmeasured: Sequence[str] = (),
+    waiting: bool = False,
+    not_in_video: bool = False,
+    speed_offered: bool = True,
+) -> tuple[str, str]:
+    """B6 (m-25048789): why «Crear» cannot make the editor's video yet — `(words, tone)`,
+    ("", "") when it can. Said in the editor before «Crear» and by «Crear» itself, with
+    what the editor already knows: the backend would refuse the same (EF-06).
+
+    `unmeasured`: the timeline's videos whose length the browser has not read (their
+    stretch is a guess); `waiting`: …and it is still reading them (`CUT_WAITING`, info),
+    else it cannot (`LENGTH_UNKNOWN`). `not_in_video`: the Clip also holds what only an
+    AI reads (a reference image, an audio) — it would not come out."""
+    has_overlay = bool(recipe.text_layers or recipe.effects)
+    if not recipe.segments:
+        return (NEEDS_MEDIA, "warn") if has_overlay else ("", "")
+    if unmeasured:
+        return (CUT_WAITING, "info") if waiting else (LENGTH_UNKNOWN, "warn")
+    if len(recipe.segments) > contract.SEGMENTS_MAX:
+        return TOO_MANY_PIECES, "warn"
+    seconds = recipe_seconds(recipe.segments)
+    if not LOCAL_MIN_SECONDS - 1e-6 <= seconds <= LOCAL_MAX_SECONDS + 1e-6:
+        fast, video = speed_facts(recipe.segments, speed_offered=speed_offered)
+        return length_out_of_range_line(round(seconds, 1), fast=fast, video=video), "warn"
+    if not_in_video:
+        return NOT_IN_VIDEO, "warn"
+    return "", ""
+
+
+def refusal_line(
+    codes: Sequence[str],
+    duration_s: float | None = None,
+    segments: Sequence[contract.SourceSegment] = (),
+    *,
+    speed_offered: bool = True,
+) -> str:
+    """The backend's refusal of the editor's video (`RecipeRefused` codes), in the owner's
+    words: the length with its seconds (`local_length_out_of_range`, `duration_s`; what
+    to change read from the editor's `segments`), the queue off (`local_unavailable`),
+    anything else the generic line."""
+    if "local_unavailable" in codes:
+        return LOCAL_UNAVAILABLE
+    if "local_length_out_of_range" in codes and duration_s is not None:
+        fast, video = speed_facts(segments, speed_offered=speed_offered)
+        return length_out_of_range_line(float(duration_s), fast=fast, video=video)
+    return RECIPE_REFUSED
 
 
 # -- the timeline (ED-10 m-25026648) ---------------------------------------------------------

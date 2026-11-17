@@ -344,15 +344,19 @@ def test_the_brief_carries_the_recipe(editor_on: None) -> None:
     state = _measured(20.0)
     CreativeState.commit_clip_cut.fn(state, [8, 24])
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
-    recipe = state._clip_edit_media()["edit_recipe"]
-    assert recipe["segments"] == [  # type: ignore[index]
+    recipe = state._clip_edit_media()
+    # B6 (m-25048789): EF-06's `local` Clip, in `MediaInputs`' own fields
+    assert recipe["clip_reference_mode"] == "local"
+    assert recipe["segments"] == [
         {"key": _KEY, "start_s": 0.0, "end_s": 20.0, "speed": 5.0, "rotate": 0}
     ]
-    # the speed travels in the stretch only; the effect's params stay empty
-    assert recipe["effects"] == [  # type: ignore[index]
-        {"effect_id": "camara_rapida", "version": 1, "params": {}, "start_s": None, "end_s": None}
-    ]
-    assert state._clip_media()["edit_recipe"] == recipe
+    # the speed travels in the stretch only: `camara_rapida` is never an effect
+    assert recipe["effects"] == [] and recipe["text_layers"] == []
+    # silent and without the AI's subtitles; nothing goes as `edit_recipe` any more
+    assert (recipe["clip_audio"], recipe["clip_subtitles"]) == (False, False)
+    media = state._clip_media()
+    assert {key: media[key] for key in recipe} == recipe
+    assert "edit_recipe" not in media and "text_layer" not in media
     state.clip_videos = [{"key": "r", "name": "reel", "source": "reel"}]
     assert state._clip_edit_media() == {}
 
@@ -395,10 +399,12 @@ def test_the_history_does_not_bring_undo_back(editor_on: None) -> None:
     assert state.clip_edit_notice == ""  # a part sheet: gone too
 
 
-def test_media_inputs_drop_the_edit_recipe_today(editor_on: None) -> None:
-    """Pinned before the switch goes on: qualify_creative's real `MediaInputs` accepts the
-    brief with `edit_recipe` WITHOUT an error and drops it (extra keys are ignored) —
-    nothing reaches the producer until EF-02/EF-06 read `effects`/`text_layer`/`segments`."""
+def test_media_inputs_read_the_recipe_and_still_read_an_old_edit_recipe(
+    editor_on: None,
+) -> None:
+    """B6 (m-25048789): qualify_creative's real `MediaInputs` reads the editor's video as
+    EF-06's `local` Clip — and a media stored before B6 with `edit_recipe` still reads
+    WITHOUT an error (extra keys are ignored: it is dropped)."""
     from qualify_creative.schemas import MediaInputs
 
     state = _measured(20.0)
@@ -406,9 +412,12 @@ def test_media_inputs_drop_the_edit_recipe_today(editor_on: None) -> None:
     CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
     CreativeState.commit_clip_overlay_text.fn(state, "")
     media = state._clip_media()
-    assert "edit_recipe" in media
     inputs = MediaInputs.model_validate(media)
-    assert "edit_recipe" not in inputs.model_dump()
+    assert inputs.clip_reference_mode == "local"
+    assert [(s.key, s.speed) for s in inputs.segments] == [(_KEY, 5.0)]
+    assert [layer.text for layer in inputs.text_layers] == ["2×1 hoy"]
+    old = {**media, "edit_recipe": {"effects": [], "text_layer": None, "segments": []}}
+    assert "edit_recipe" not in MediaInputs.model_validate(old).model_dump()
 
 
 def test_fast_motion_past_sixty_seconds_says_so(editor_on: None) -> None:
@@ -433,8 +442,11 @@ def test_inspiration_stock_stays_a_reference(editor_on: None) -> None:
     assert state._clip_edit_media() == {} or not state._clip_edit_media().get("segments")
     state.clip_videos = [stock, {"key": _KEY, "name": "video.mp4", "source": "upload"}]
     CreativeState.report_clip_source.fn(state, _KEY, 20.0, 1080, 1920)
-    segments = state._clip_edit_media()["edit_recipe"]["segments"]  # type: ignore[index]
-    assert [segment["key"] for segment in segments] == [_KEY]
+    segments = state._clip_edit_media()["segments"]
+    assert [segment["key"] for segment in segments] == [_KEY]  # type: ignore[index]
+    # B6: an Inspiración video would not come out — «Crear» says so and does not go on
+    assert state.clip_edit_problem == [clip_editor_vm.NOT_IN_VIDEO, "warn"]
+    assert state._clip_problem() == clip_editor_vm.NOT_IN_VIDEO
 
 
 async def test_a_video_picked_from_publicaciones_is_the_own_video(
@@ -491,7 +503,7 @@ def test_what_the_owner_reads_ends_with_the_video(editor_on: None) -> None:
     assert state.clip_cut_usage_text == "Usas 12 s de tu video."
     assert state.clip_cut_range_text == "Desde 0:00 · Hasta 0:12"
     assert state.clip_cut_end_clock == "0:12"
-    recipe = state._clip_edit_media()["edit_recipe"]
+    recipe = state._clip_edit_media()
     assert recipe["segments"][0]["end_s"] == 12.04  # type: ignore[index]
 
 
@@ -628,8 +640,13 @@ def test_fast_motion_that_cannot_reach_three_seconds_stays_out_of_the_recipe(
         "Tu video duraría 2,5 s: muy poco para un reel. Vuelve a la velocidad normal o usa "
         "un video más largo."
     )
-    recipe = state._clip_edit_media()["edit_recipe"]
+    recipe = state._clip_edit_media()
     assert [e["effect_id"] for e in recipe["effects"]] == []  # type: ignore[index]
+    # B6: the timeline still plays it at the chosen speed (here 1 s), so «Crear» does not
+    # go on (option A) — the recipe is what the preview shows, never a silent speed 1
+    assert state._clip_problem() == (
+        "Tu video dura 1 s y necesita al menos 3 s. Agrega otra foto o video, o baja la velocidad."
+    )
 
 
 def test_marking_fast_motion_says_what_it_did(editor_on: None) -> None:
@@ -715,8 +732,20 @@ def test_siguiente_untouched_leaves_ed02s_recipe(editor_on: None) -> None:
         speed=state.clip_speed,
         text="2×1 hoy",
         place="bottom",
+        timeline=state._clip_tl_media(),
     )
-    assert state._clip_edit_media() == {"edit_recipe": contract.to_dict(expected)}
+    data = contract.to_dict(expected)
+    media = state._clip_edit_media()
+    assert (media["segments"], media["text_layers"]) == (data["segments"], data["text_layers"])
+    # B6: every block of the timeline, in its order — the photo held 2 s, the own video
+    # 0–15 s, the second video 0–8 s — and the text from 0 to the end (ED-02's)
+    shown = [(s["key"], s["start_s"], s["end_s"], s.get("kind")) for s in data["segments"]]
+    assert shown == [
+        (_PHOTO, 0.0, 2.0, "photo"),
+        (_KEY, 0.0, 15.0, None),
+        (_SECOND, 0.0, 8.0, None),
+    ]
+    assert (data["text_layers"][0]["start_s"], data["text_layers"][0]["end_s"]) == (0.0, None)
 
 
 def test_choosing_a_block_writes_the_address_and_back_lets_it_go(editor_on: None) -> None:
@@ -771,9 +800,9 @@ def test_dragging_a_block_reorders_the_clip_with_undo(editor_on: None) -> None:
     assert (state.clip_first_frame_key, state.clip_last_frame_key) == (_KEY, _PHOTO)
     CreativeState.undo_clip_edit.fn(state)
     assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, _SECOND]
-    # the recipe never changes with the order (one own video, ED-02's)
-    recipe = state._clip_edit_media()["edit_recipe"]
-    assert recipe["segments"][0]["key"] == _KEY  # type: ignore[index]
+    # B6: the recipe follows the timeline's order, as the preview plays it
+    keys = [s["key"] for s in state._clip_edit_media()["segments"]]  # type: ignore[union-attr]
+    assert keys == [_PHOTO, _KEY, _SECOND]
 
 
 def test_the_keyboard_moves_a_block_one_place(editor_on: None) -> None:
@@ -799,7 +828,7 @@ def test_a_text_slides_in_time_and_the_recipe_carries_it(editor_on: None) -> Non
     text = state.clip_tl_text_rows[0]
     assert (text["start"], text["length"]) == ("3.5", "20")
     assert state.clip_edit_notice == "Cambiaste cuándo sale el texto."
-    layer = state._clip_edit_media()["edit_recipe"]["text_layer"]  # type: ignore[index]
+    layer = state._clip_edit_media()["text_layers"][0]  # type: ignore[index]
     assert (layer["start_s"], layer["end_s"]) == (3.5, 23.5)
     CreativeState.clip_block_key.fn(state, "texto-1", "", "ArrowRight")
     assert state.clip_tl_text_rows[0]["start"] == "4"
@@ -913,12 +942,14 @@ def test_cortar_in_the_middle_splits_the_video_in_two_blocks(editor_on: None) ->
     # the marker rests where the halves meet: the piece that starts there is chosen
     assert state.clip_edit_block == second
     # the recipe: two stretches of the same video, in order (contract v2's segments)
-    segments = state._clip_edit_media()["edit_recipe"]["segments"]  # type: ignore[index]
-    assert [(s["key"], s["start_s"], s["end_s"]) for s in segments] == [
+    segments = state._clip_edit_media()["segments"]
+    assert [(s["key"], s["start_s"], s["end_s"]) for s in segments] == [  # type: ignore[union-attr]
+        (_PHOTO, 0.0, 2.0),
         (_KEY, 0.0, 5.0),
         (_KEY, 5.0, 15.0),
+        (_SECOND, 0.0, 8.0),
     ]
-    recipe = contract.from_dict(state._clip_edit_media()["edit_recipe"])  # type: ignore[arg-type]
+    recipe = contract.from_dict(state._clip_edit_media())
     assert contract.recipe_problems(recipe) == []
     assert all(contract.segment_problems(seg, 20.0) == [] for seg in recipe.segments)
     # the second half (already chosen) goes away with «Quitar»: the video uses 0:00–0:05
@@ -938,8 +969,8 @@ def test_cortar_respects_the_speed(editor_on: None) -> None:
     CreativeState.hear_clip_time.fn(state, 1.0, "seek")  # 1 s of the video = 5 s of source
     CreativeState.cut_clip_video.fn(state)
     assert state.clip_cut_pieces == [[0.0, 5.0], [5.0, 20.0]]
-    segments = state._clip_edit_media()["edit_recipe"]["segments"]  # type: ignore[index]
-    assert [s["speed"] for s in segments] == [5.0, 5.0]
+    segments = state._clip_edit_media()["segments"]
+    assert [s["speed"] for s in segments] == [5.0, 5.0]  # type: ignore[index]
 
 
 def test_cortar_is_off_at_an_edge_or_off_the_video(editor_on: None) -> None:
@@ -1000,8 +1031,9 @@ def test_deshacer_puts_the_cut_video_back_in_one_block(editor_on: None) -> None:
     CreativeState.undo_clip_edit.fn(state)
     assert state.clip_cut_pieces == []
     assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, _SECOND]
-    segments = state._clip_edit_media()["edit_recipe"]["segments"]  # type: ignore[index]
-    assert [(s["start_s"], s["end_s"]) for s in segments] == [(0.0, 15.0)]
+    segments = state._clip_edit_media()["segments"]
+    own = [(s["start_s"], s["end_s"]) for s in segments if s["key"] == _KEY]  # type: ignore[index, union-attr]
+    assert own == [(0.0, 15.0)]
 
 
 def test_the_pieces_move_together(editor_on: None) -> None:
@@ -1280,3 +1312,29 @@ def test_the_empty_effect_tab_offers_a_text(editor_on: None) -> None:
     CreativeState.open_clip_flow.fn(state, clip_editor_vm.FLOW_EFFECT)
     CreativeState.switch_clip_flow.fn(state, clip_editor_vm.FLOW_TEXT)
     assert clip_editor_vm.flow_of(state.clip_edit_block) == clip_editor_vm.FLOW_TEXT
+
+
+def test_with_own_media_on_the_timeline_inspiration_and_music_are_not_offered(
+    editor_on: None,
+) -> None:
+    """UX review B6: once the owner's photos or videos are on the timeline the video is
+    made from them only — «Inspiración» is not offered (nor kept chosen), and «Más
+    opciones» names no sound nor subtitles. An empty timeline is the AI's Clip, which
+    keeps them."""
+    state = _state()
+    state.clip_videos = []  # nothing on the timeline yet
+    assert not state.clip_edit_local
+    assert "inspiration" in state._clip_source_tabs()
+    CreativeState.set_clip_source_tab.fn(state, "inspiration")
+    assert state.clip_source_tab_shown == "inspiration"
+    assert state.gen_campaign_hint.startswith("El sonido, los subtítulos")
+    state.clip_videos = [{"key": _KEY, "name": "video.mp4", "source": "upload"}]
+    CreativeState.report_clip_source.fn(state, _KEY, 20.0, 1080, 1920)
+    assert state.clip_edit_local
+    assert "inspiration" not in state._clip_source_tabs()
+    assert state.clip_source_tab_shown == "catalog"  # the hidden tab is not shown
+    assert CreativeState.set_clip_source_tab.fn(state, "inspiration") is None
+    CreativeState.set_clip_source_tab.fn(state, "upload")
+    assert state.clip_source_tab == state.clip_source_tab_shown == "upload"
+    assert "sonido" not in state.gen_campaign_hint
+    assert "subtítulos" not in state.gen_campaign_hint

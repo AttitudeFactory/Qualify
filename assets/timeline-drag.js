@@ -12,7 +12,11 @@
    - Near the scroller's edges the tracks scroll on their own (phone only: on a desktop
      they fit the width). Every position is measured against the canvas, so the
      scroller's own scroll never skews it.
-   - Escape, a cancelled pointer or a drop on its own place puts everything back.
+   - A held block never leaves its track: it moves only along X, inside the row (or the
+     video's length), never up or down out of it.
+   - Escape, a cancelled pointer, a drop on its own place or one off the tracks
+     (`.q-tl__scroller`; Deivid 2026-11-17: «puedo sacar los componentes fuera de la time
+     line no quiero eso») puts everything back.
    No visible grip (D-T6): the keyboard keeps its ←/→ (`assets/timeline.js`).
 
    The screen hears a drop through the hidden `[data-tl-drag-trigger]` button
@@ -41,6 +45,22 @@
   function canvasX(d, clientX) {
     var box = d.canvas.getBoundingClientRect();
     return clientX - box.left - d.canvas.clientLeft;
+  }
+
+  // Is the pointer off the tracks (`.q-tl__scroller`, else the timeline itself)? A drop
+  // there changes nothing (Deivid, 2026-11-17).
+  function outsideTracks(d, clientX, clientY) {
+    var area = d.scroller || d.root;
+    if (!area || clientX === undefined || clientY === undefined) return false;
+    var box = area.getBoundingClientRect();
+    return !core().insideTracks({
+      x: clientX,
+      y: clientY,
+      left: box.left,
+      right: box.right,
+      top: box.top,
+      bottom: box.bottom,
+    });
   }
 
   // The liquid lens under the chosen block follows it in the same frame
@@ -83,6 +103,14 @@
         return it.getBoundingClientRect().width;
       });
       d.left0 = d.item.getBoundingClientRect().left - origin;
+      // the block stays inside the row: the blocks' own extent
+      d.bound = {
+        left: d.left0,
+        width: d.widths[d.from] || 0,
+        span: d.widths.reduce(function (sum, w) {
+          return sum + w;
+        }, 0),
+      };
       d.items.forEach(function (it) {
         if (it !== d.item) it.classList.add("q-tl__item--shifting");
       });
@@ -100,6 +128,11 @@
       });
       d.newStart = d.start;
       d.item.setAttribute("data-tl-time", core().clock(d.start));
+      // the block stays inside the video (unknown length: no bound to keep)
+      d.bound =
+        total > 0
+          ? { left: d.start * d.px, width: d.length * d.px, span: total * d.px }
+          : null;
     }
     d.item.classList.add("q-tl__item--lifted");
     d.root.setAttribute("data-tl-dragging", d.mode);
@@ -113,10 +146,23 @@
     var d = drag;
     if (!d || !d.armed) return;
     var dx = canvasX(d, d.clientX) - d.x0;
+    if (d.bound) {
+      // never out of its track: only X moves, inside the track's own range
+      dx = core().clampShift({
+        dx: dx,
+        left: d.bound.left,
+        width: d.bound.width,
+        span: d.bound.span,
+      });
+    }
     d.dx = dx;
+    d.outside = outsideTracks(d, d.clientX, d.clientY);
+    if (d.outside) d.root.setAttribute("data-tl-outside", "");
+    else d.root.removeAttribute("data-tl-outside");
     d.item.style.transform = "translateX(" + dx + "px)";
     if (d.mode === "move") {
-      var to = core().dropIndex(d.widths, d.from, d.left0 + dx);
+      // held outside the tracks: the others are back in place — that is the drop
+      var to = d.outside ? d.from : core().dropIndex(d.widths, d.from, d.left0 + dx);
       if (to !== d.to) {
         d.to = to;
         var shifts = core().layoutShifts(d.widths, d.from, d.to);
@@ -146,7 +192,11 @@
     if (!d || !d.armed || d.released) return;
     if (d.phone && d.scroller && d.clientX !== undefined) {
       var box = d.scroller.getBoundingClientRect();
-      var step = core().autoScrollStep({ x: d.clientX, left: box.left, right: box.right });
+      // held above or below the tracks: they stay still (a drop there changes nothing)
+      var level = d.clientY >= box.top && d.clientY <= box.bottom;
+      var step = level
+        ? core().autoScrollStep({ x: d.clientX, left: box.left, right: box.right })
+        : 0;
       if (step) {
         var max = d.scroller.scrollWidth - d.scroller.clientWidth;
         var next = core().clampScroll(d.scroller.scrollLeft, step, max);
@@ -171,6 +221,7 @@
       it.removeAttribute("data-tl-time");
     });
     d.root.removeAttribute("data-tl-dragging");
+    d.root.removeAttribute("data-tl-outside");
     liftHint(d.root, false);
     syncLens(d.root, true);
   }
@@ -183,6 +234,7 @@
     });
     d.item.removeAttribute("data-tl-time");
     d.root.removeAttribute("data-tl-dragging");
+    d.root.removeAttribute("data-tl-outside");
     liftHint(d.root, false);
     syncLens(d.root);
     window.setTimeout(function () {
@@ -253,6 +305,7 @@
       clientX0: e.clientX,
       clientY0: e.clientY,
       clientX: e.clientX,
+      clientY: e.clientY,
       t0: Date.now(),
       armed: false,
       aborted: false,
@@ -267,6 +320,7 @@
       var d = drag;
       if (!d || e.pointerId !== d.pointer || d.aborted || d.released) return;
       d.clientX = e.clientX;
+      d.clientY = e.clientY;
       if (!d.armed) {
         var verdict = core().liftDecision({
           touch: d.touch,
@@ -340,7 +394,13 @@
     }, 0);
     var same =
       d.mode === "move" ? d.to === d.from : Math.abs(d.newStart - d.start) < core().STEP / 2;
-    if (e.type === "pointercancel" || same) {
+    // dropped off the tracks: it goes back to its place and nothing changes
+    var verdict = core().dropVerdict({
+      cancelled: e.type === "pointercancel",
+      outside: outsideTracks(d, e.clientX, e.clientY),
+      same: same,
+    });
+    if (verdict === "back") {
       drag = null;
       putBack(d);
       return;

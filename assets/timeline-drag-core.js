@@ -12,7 +12,9 @@
    - **time** — a text or an effect slides along its track: px → seconds at the track's
      scale (`scaleOf`), snapped to ½ s, kept inside the video (`shiftedStart`).
 
-   Near the scroller's edges the tracks scroll on their own (`autoScrollStep`). */
+   Near the scroller's edges the tracks scroll on their own (`autoScrollStep`). A held
+   block never leaves its track (`clampShift`), and one dropped outside the tracks
+   (`insideTracks`) goes back to its place with nothing changed (`dropVerdict`). */
 (function (root) {
   "use strict";
 
@@ -134,6 +136,37 @@
     return 0;
   }
 
+  /* Is the pointer (`x`, `y`, client px) over the tracks' box (`left`/`right`/`top`/
+     `bottom`, the scroller's `getBoundingClientRect()`)? A block dropped outside goes
+     back to its place (Deivid, 2026-11-17: «puedo sacar los componentes fuera de la
+     time line no quiero eso»). The edges count as inside. */
+  function insideTracks(opts) {
+    if (!opts) return false;
+    var x = num(opts.x);
+    var y = num(opts.y);
+    return (
+      x >= num(opts.left) && x <= num(opts.right) && y >= num(opts.top) && y <= num(opts.bottom)
+    );
+  }
+
+  /* The `dx` a held block may show: its left edge (`left`, px from the track's start)
+     plus `dx` stays inside 0…`span` − `width`, so the block never leaves its track (the
+     row's other blocks' extent for a move; the video's length for a text or an effect). */
+  function clampShift(opts) {
+    if (!opts) return 0;
+    var left = num(opts.left);
+    var lo = -left;
+    var hi = Math.max(num(opts.span) - Math.max(num(opts.width), 0) - left, lo);
+    return Math.min(Math.max(num(opts.dx), lo), hi);
+  }
+
+  /* What a release does: «back» (a cancelled pointer, a drop outside the tracks or on
+     its own place: nothing changes) or «apply». */
+  function dropVerdict(opts) {
+    if (!opts || opts.cancelled || opts.outside || opts.same) return "back";
+    return "apply";
+  }
+
   /* The scroller's next `scrollLeft` after a `step`, inside 0…`max`. */
   function clampScroll(current, step, max) {
     return Math.min(Math.max(num(current) + num(step), 0), Math.max(num(max), 0));
@@ -188,6 +221,9 @@
     dropIndex: dropIndex,
     layoutShifts: layoutShifts,
     autoScrollStep: autoScrollStep,
+    insideTracks: insideTracks,
+    clampShift: clampShift,
+    dropVerdict: dropVerdict,
     clampScroll: clampScroll,
     liftDecision: liftDecision,
     clock: clock,

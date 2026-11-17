@@ -1906,7 +1906,7 @@ def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Com
         # ED-05: a second video only guides the movement (only on «Arma tu video»)
         rx.cond(
             CreativeState.clip_strip_motion_keys.contains(key),
-            rx.text(clip_editor_vm.MOTION_ONLY_NOTE, size="1", color=T.TEXT_MUTED),
+            rx.text(clip_editor_vm.SECOND_VIDEO_NOTE, size="1", color=T.TEXT_MUTED),
         ),
         on_drag_start=CreativeState.start_clip_image_drag(index),
         on_drop=CreativeState.drop_clip_image(index),
@@ -2146,7 +2146,9 @@ def _ref_upload(kind: str, upload_id: str, accept: dict, handler: object) -> rx.
 
 def _clip_upload_tab() -> rx.Component:
     """The Clip drawer's «Subir»: one place per kind — photos, videos, music — each with
-    what it takes, «Subir …», and what it could not take."""
+    what it takes, «Subir …», and what it could not take. With the owner's photos or
+    videos on the timeline (`clip_edit_local`) the music is not offered: the video made
+    from them is silent, and an audio would block «Crear» (B6 UX review)."""
     image, video, audio = clip_gallery_vm.IMAGE, clip_gallery_vm.VIDEO, clip_gallery_vm.AUDIO
     uploads = {
         image: _ref_upload(
@@ -2159,20 +2161,27 @@ def _clip_upload_tab() -> rx.Component:
             audio, "clip_audios", _CLIP_AUDIO_ACCEPT, CreativeState.handle_clip_audio_uploads
         ),
     }
+
+    def place(kind: str) -> rx.Component:
+        return rx.vstack(
+            rx.text(clip_gallery_vm.SECTION_TITLES[kind], size="2", weight="medium"),
+            rx.text(clip_gallery_vm.SECTION_HINTS[kind], size="1", color=T.TEXT_MUTED),
+            uploads[kind],
+            _ref_note(CreativeState.clip_notes[kind].to(str)),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        )
+
     return rx.vstack(
         *(
-            rx.vstack(
-                rx.text(clip_gallery_vm.SECTION_TITLES[kind], size="2", weight="medium"),
-                rx.text(clip_gallery_vm.SECTION_HINTS[kind], size="1", color=T.TEXT_MUTED),
-                uploads[kind],
-                _ref_note(CreativeState.clip_notes[kind].to(str)),
-                spacing="2",
-                width="100%",
-                align_items="start",
-            )
+            place(kind) if kind != audio else rx.cond(~CreativeState.clip_edit_local, place(kind))
             for kind in clip_gallery_vm.KINDS
         ),
-        rx.text(clip_gallery_vm.AUDIO_SOURCE_NOTE, size="1", color=T.TEXT_MUTED),
+        rx.cond(
+            ~CreativeState.clip_edit_local,
+            rx.text(clip_gallery_vm.AUDIO_SOURCE_NOTE, size="1", color=T.TEXT_MUTED),
+        ),
         spacing="5",
         width="100%",
         align_items="start",
@@ -2262,15 +2271,25 @@ def _clip_drawer_body(*, inline: bool = False) -> rx.Component:
             ),
         ),
     ]
-    return rx.vstack(
-        _source_tabs(
-            list(CLIP_SOURCE_TABS),
-            CreativeState.clip_source_tab,
+
+    def tabs(items: list[str]) -> rx.Component:
+        return _source_tabs(
+            items,
+            CreativeState.clip_source_tab_shown,
             CreativeState.set_clip_source_tab,
             "clip-source-tabs",
+        )
+
+    return rx.vstack(
+        # B6 UX review: with the owner's photos or videos on the timeline the video is
+        # made from them only — «Inspiración» is not offered (it would block «Crear»)
+        rx.cond(
+            CreativeState.clip_edit_local,
+            tabs([tab for tab in CLIP_SOURCE_TABS if tab != "inspiration"]),
+            tabs(list(CLIP_SOURCE_TABS)),
         ),
         rx.match(
-            CreativeState.clip_source_tab,
+            CreativeState.clip_source_tab_shown,
             (
                 "catalog",
                 _products_tab(
@@ -4637,9 +4656,10 @@ def _section_channel() -> rx.Component:
                 ),
             ),
         ),
-        # § request 2026-10-23: a clip's length, from 5 s up to 15 s
+        # § request 2026-10-23: a clip's length, from 5 s up to 15 s. B6 (m-25048789): the
+        # editor's video made here lasts what its timeline lasts — no «Duración»
         rx.cond(
-            CreativeState.brief_kind == "clip",
+            (CreativeState.brief_kind == "clip") & ~CreativeState.clip_edit_local,
             _field(
                 "Duración",
                 # CREAR-5 v2: only the lengths the month can pay for
@@ -6033,7 +6053,9 @@ def _more_options(
 def _step_how() -> rx.Component:
     """③ Cómo la quieres: format and length; behind «Más opciones» the campaign and,
     for a clip, «Con sonido» (UX review 2026-10-24, finding 4)."""
-    is_clip = CreativeState.brief_kind == "clip"
+    # B6 (m-25048789): the editor's video made here is silent and draws its own texts —
+    # the AI's «Con sonido» and subtitles do not apply to it
+    is_clip = (CreativeState.brief_kind == "clip") & ~CreativeState.clip_edit_local
     return rx.vstack(
         _section_channel(),
         rx.divider(),
