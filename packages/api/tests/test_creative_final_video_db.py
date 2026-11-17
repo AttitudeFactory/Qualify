@@ -24,6 +24,7 @@ from qualify_api.creative.final_video import (
     RecreateRefused,
     rejoin,
 )
+from qualify_api.creative.local_cap import LocalDailyCapReached
 from qualify_api.creative.parts import PartChanges
 
 from . import test_creative_parts_db as parts_db
@@ -428,3 +429,28 @@ def test_recreate_makes_a_redo_part_again_db(world) -> None:  # noqa: ANN001, F8
     assert _recreate(world, 3) == ids[2]
     assert _revision(tenant, ids[2]) == revision + 1
     assert _previews_left(brand, tenant) == previews - 1
+
+
+def test_recreating_local_parts_past_the_days_cap_makes_none_db(
+    world,  # noqa: ANN001, F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EF-15: two expired local parts with one place left today — refused together
+    before any part is made again (the parts of this world are generated: their being
+    local is what `_is_local` answers here)."""
+    from .test_creative_local_cap_db import _builds
+
+    service, _, _, tenant, brand, user, parent, ids = world
+    _age(tenant, ids[0], 8)
+    _age(tenant, ids[2], 9)
+    monkeypatch.setattr(FinalVideoReader, "_is_local", lambda self, tenant_id, draft_id: True)
+    _builds(tenant, brand, 9)
+    revisions = [_revision(tenant, c) for c in ids]
+    previews = _previews_left(brand, tenant)
+    with pytest.raises(LocalDailyCapReached) as refused:
+        FinalVideoReader(service).recreate_expired_parts(
+            tenant_id=tenant, parent_id=parent, user_id=user
+        )
+    assert (refused.value.used, refused.value.asked) == (9, 2)
+    assert [_revision(tenant, c) for c in ids] == revisions
+    assert _previews_left(brand, tenant) == previews

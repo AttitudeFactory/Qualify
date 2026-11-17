@@ -10854,6 +10854,8 @@ class CreativeState(rx.State):
                 self.create_error = _NO_SESSION
             return None
         tenant_id, brand_id, user_id = ids
+        from qualify_api.creative.local_cap import LocalDailyCapReached
+
         try:
             draft_id = await asyncio.to_thread(
                 lambda: submit(tenant_id, brand_id, user_id, **options, **form)
@@ -10911,6 +10913,13 @@ class CreativeState(rx.State):
             async with self:
                 self.is_submitting = False
                 self.create_error = PRESENTER_TOO_LONG if self._is_presenter() else VIDEO_TOO_LONG
+            return None
+        except LocalDailyCapReached as exc:
+            # EF-15: today's videos made with the owner's photos and videos are spent —
+            # its own sentence, before the generic `ValueError` line below
+            async with self:
+                self.is_submitting = False
+                self.create_error = exc.text
             return None
         except (ValidationError, ValueError) as exc:
             # the validators' messages only — never `input_value`, which holds the form
@@ -12013,6 +12022,8 @@ class CreativeState(rx.State):
                 self.action_error = _NO_SESSION
             return
         tenant_id, brand_id, user_id = ids
+        from qualify_api.creative.local_cap import LocalDailyCapReached
+
         try:
             vm = await asyncio.to_thread(
                 lambda: reject_draft(
@@ -12026,6 +12037,12 @@ class CreativeState(rx.State):
         except UnknownDraft:
             async with self:
                 self.action_error = _DRAFT_GONE
+            return
+        except LocalDailyCapReached as exc:
+            # EF-15: another version would pass today's videos made with the owner's
+            # photos and videos — the piece stays as it was
+            async with self:
+                self.action_error = exc.text
             return
         except InvalidTransition:
             # The draft moved on (another tab, or an already-rejected/approved draft):

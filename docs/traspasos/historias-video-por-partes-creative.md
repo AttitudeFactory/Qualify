@@ -394,7 +394,7 @@ Un PR por historia (`qualify-pr`), cada uno con su `m-<id>`. Tras la firma de VE
 **Visto en el código y fuera de esta área** (sin historias escritas aquí):
 
 - **backend-engineer:** en la migración de VE-03 (el siguiente número libre después de R3), además de lo del diseño, guardar qué brief usó cada versión (`piece_versions.brief_id` o equivalente, §1 #12); excluir hijas (`parent_draft_id IS NOT NULL`) del Planificador (`planner/publishable.py`, `planner/draft_post_reader.py`), del correo de la mañana (`mail/final_summary.py`), de «Tu semana» (`home/summary.py`) y de las listas de piezas; `source_window` llama a `cut_window` (VE-02); progreso por parte en `queue_visibility.py` si la pantalla lo pide.
-- **platform-engineer:** confirmar `QUALIFY_CREATIVE_DISPATCHER=queue` en producción (no aparece en `deploy/` salvo `deploy/measure/creative-worker-memory.sh:73`; mismo hallazgo que RN10 del traspaso de backend); escenario de unión en `deploy/measure/creative_worker_memory.py`; decidir si 512 MiB alcanzan con `QUALIFY_CREATIVE_WORKER_DOWNLOADS=2` más una unión 1080p.
+- **platform-engineer:** ~~confirmar `QUALIFY_CREATIVE_DISPATCHER=queue` en producción~~ (hecho el 2026-11-16, m-25026575; no aparece en `deploy/` salvo `deploy/measure/creative-worker-memory.sh:73`; mismo hallazgo que RN10 del traspaso de backend); escenario de unión en `deploy/measure/creative_worker_memory.py`; decidir si 512 MiB alcanzan con `QUALIFY_CREATIVE_WORKER_DOWNLOADS=2` más una unión 1080p.
 - **reflex-ui-engineer:** `KIND_OPTIONS` sin `shot_video` y su test (`Qualify/test_creative_kinds.py:24-35`); dónde se guarda «Me gusta así» (ni el diseño ni la máquina de estados lo guardan); «Aprueba antes del …» con los bloques de las hijas (§1 #20); textos que reemplazan `REAL_PERSON_TEXT` en pantalla.
 - **principal-architect:** enmienda de ADR 41 §3.2 con `part_final` y el bloque `join` del padre; que los estados del padre sean calculados y no estados nuevos de `fsm.py`; aprobar las hijas con la variante heredada del padre.
 
@@ -418,5 +418,5 @@ Un PR por historia (`qualify-pr`), cada uno con su `m-<id>`. Tras la firma de VE
 ## 7. Lo que necesita al fundador
 
 - **F1 (cobro):** con (a) todo cabe en VE-08/VE-10b sin tabla nueva; con (b) o (c) se suma VE-21 (§3). La pantalla necesita una sola cifra antes de «Crear».
-- **Operación:** confirmar que producción corre `QUALIFY_CREATIVE_DISPATCHER=queue` antes de la fase 1: VE-08 rechaza el modo con hilos.
+- **Operación:** producción corre `QUALIFY_CREATIVE_DISPATCHER=queue`: confirmado el 2026-11-16 (m-25026575) [V]: `/opt/qualify/.env.prod` tiene `QUALIFY_CREATIVE_DISPATCHER=queue`, leído por Deivid sin cambios. VE-08 rechaza el modo con hilos.
 - **Para el arquitecto, no para el fundador:** estados calculados del padre y aprobación de las hijas con la variante heredada (§5).

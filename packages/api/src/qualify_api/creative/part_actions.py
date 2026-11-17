@@ -46,6 +46,7 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
+from qualify_api.creative.local_cap import check_local_daily_cap
 from qualify_api.creative.part_progress import (
     EDIT,
     EXTEND,
@@ -70,6 +71,7 @@ from qualify_api.creative.parts import (
     removed_part_indexes,
 )
 from qualify_api.creative.service import DraftRecord, UnknownDraft
+from qualify_api.creative.video_pipeline.local import is_local_recipe
 
 # Refusals (nothing written, nothing charged). Copy proposed, pending UX review.
 #: The part is being made again (another tab asked for it first).
@@ -589,6 +591,10 @@ class PartRecovery:
             if refused is not None:
                 raise PartChangeRefused(refused)
             new_status = apply_transition(status, DraftTrigger.PART_RETRY)
+            if is_local_recipe(priced):
+                # EF-15: «Intentar de nuevo» / «Cambiar» of a local part is one more local
+                # build today — refused before the charge, the brief and the revision
+                check_local_daily_cap(self._repo, tenant_id=tenant_id)
             creations = self._content.creations
             if creations is not None:
                 # the same price creating the part charged (`create_parts`): 1 vista previa

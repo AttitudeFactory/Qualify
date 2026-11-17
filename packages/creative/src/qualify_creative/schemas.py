@@ -1179,6 +1179,8 @@ PartsRefusal = Literal[
     "error",  # anything else (logged); asking again is safe
     # EF-06 (option A): appended, never reordered
     "local_length_out_of_range",  # a `local` part lasting under 3 s or over 60 s
+    # EF-15 (m-25026575): appended, never reordered
+    "local_daily_cap_reached",  # today's local builds of the business are spent
 ]
 PARTS_REFUSALS: tuple[str, ...] = get_args(PartsRefusal)
 

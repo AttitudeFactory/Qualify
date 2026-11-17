@@ -70,6 +70,7 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
+from qualify_api.creative.local_cap import check_local_daily_cap
 from qualify_api.creative.media import PartWindowRefused
 from qualify_api.creative.part_extend import extend_available, release_next_extend
 from qualify_api.creative.part_join import PART_FINAL
@@ -80,6 +81,7 @@ from qualify_api.creative.service import (
     PostgresContentRepository,
     UnknownDraft,
 )
+from qualify_api.creative.video_pipeline.local import is_local_recipe
 from qualify_api.creative.video_pipeline.mode_choice import (
     ModeContext,
     ModePart,
@@ -1634,6 +1636,13 @@ class PartsService:
             _, locked = self._parent(tenant_id, parent_id)
             if locked.media.parts != plan:
                 raise _PlanMoved()
+            # EF-15: every `local` part is one local build today — all of them fit in
+            # the day's cap or none is made (before any row, charge or job)
+            check_local_daily_cap(
+                self._repo,
+                tenant_id=tenant_id,
+                asking=sum(1 for child in children if is_local_recipe(child)),
+            )
             if creations is not None:
                 # before any row: all of them or none (the ledger checks again under the
                 # brand's lock when it charges)
@@ -1697,6 +1706,10 @@ class PartsService:
         if old is None or old.media.part is None:
             raise UnknownDraft(str(child.id))
         new = part_brief_with(parent_brief, old, changes)
+        if is_local_recipe(new):
+            # EF-15: refused before the new brief is written (`reject` checks again under
+            # the fence, where the count is serialized)
+            check_local_daily_cap(self._repo, tenant_id=tenant_id)
         with self._unit(tenant_id) as session:
             if session is not None:
                 fence: AbstractContextManager[Any] = part_changing(

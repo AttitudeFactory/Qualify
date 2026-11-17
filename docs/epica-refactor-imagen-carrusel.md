@@ -134,7 +134,7 @@ No había tickets abiertos para «Subir», «Mejorar mi texto» ni la cantidad d
 ## Precondiciones (las responde m-25017277)
 
 - ¿Producción corre la cola de ADR 41 (`creative-worker`) para imagen y carrusel, o hilos
-  `InlineDispatcher`? Sin cola no hay reintento al caer el render. — *pendiente*
+  `InlineDispatcher`? Sin cola no hay reintento al caer el render. — **Sí, la cola:** confirmado el 2026-11-16 (m-25026575) [V]: `/opt/qualify/.env.prod` tiene `QUALIFY_CREATIVE_DISPATCHER=queue`, leído por Deivid sin cambios; con `queue`, `composition.py` arma `QueueDispatcher` para toda la generación
 - Contrato de publicación como test. — *pendiente*
 
 ## Destacados (lo responde m-25017301)

@@ -62,6 +62,7 @@ from uuid import UUID
 import reflex as rx
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
+from qualify_api.creative.local_cap import LocalDailyCapReached
 from qualify_api.creative.part_progress import SERVED_ACTIONS, PartAction, PartProgress
 from qualify_api.creative.parts import PartChangeRefused, PartRemoved
 from qualify_api.creative.service import UnknownDraft
@@ -148,6 +149,8 @@ def action_error_text(exc: BaseException) -> str:
     from the service, so its own sentence is shown."""
     if isinstance(exc, PartChangeRefused):
         return str(exc) or GENERIC_ERROR_TEXT
+    if isinstance(exc, LocalDailyCapReached):
+        return exc.text  # EF-15: the day's local builds, in `local_cap`'s words
     if isinstance(exc, NotEnoughCreations):
         return NOT_ENOUGH_TEXT
     if isinstance(exc, InvalidTransition | provider.StaleAction):
@@ -726,7 +729,13 @@ class PartProgressState(rx.State):
                 user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001 - every refusal is worded for the owner
-            expected = PartChangeRefused | NotEnoughCreations | provider.StaleAction | PartRemoved
+            expected = (
+                PartChangeRefused
+                | NotEnoughCreations
+                | LocalDailyCapReached
+                | provider.StaleAction
+                | PartRemoved
+            )
             if not isinstance(exc, expected):
                 logger.exception("part action %s failed on %s#%s", action, parent_id, index)
             already_removed = isinstance(exc, PartRemoved)

@@ -28,6 +28,7 @@ import reflex as rx
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.final_video import RecreateRefused
 from qualify_api.creative.fsm import InvalidTransition
+from qualify_api.creative.local_cap import LocalDailyCapReached
 from qualify_api.creative.part_final import PartFailed, PartsNotReady, StaleJoinedPreview
 from qualify_api.creative.parts import (
     PART_FINAL_IN_FLIGHT_TEXT,
@@ -211,6 +212,8 @@ def refusal_text(
     if isinstance(exc, PartChangeRefused):
         said = exc.args[0] if exc.args else ""
         return said if said in _PART_CHANGE_TEXTS else FAILED_TEXT.get(action, FAILED_TEXT[CHANGE])
+    if isinstance(exc, LocalDailyCapReached):
+        return exc.text  # EF-15: the day's local builds, in `local_cap`'s words
     # «Crear la parte 6» (`create_parts`' refusals, `part_request.refusal_of`)
     if isinstance(exc, PartsUnavailable | ParentTextMissing | PartNeedsDescription):
         return exc.text  # written for the owner in `parts.py`

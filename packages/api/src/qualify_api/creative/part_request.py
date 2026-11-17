@@ -58,6 +58,7 @@ from sqlalchemy import text
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.final_video import PreviewUse
 from qualify_api.creative.fsm import DRAFTING
+from qualify_api.creative.local_cap import LocalDailyCapReached
 from qualify_api.creative.parts import (
     ExtendOutOfOrder,
     ExtendTooShort,
@@ -113,6 +114,8 @@ def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | Non
     cannot be made yet, not that one of them is wrong."""
     if isinstance(exc, PartsLocalUnavailable):
         return "local_unavailable", None, 0
+    if isinstance(exc, LocalDailyCapReached):  # EF-15: before any other ValueError
+        return "local_daily_cap_reached", None, 0
     if isinstance(exc, RecipeRefused):
         # EF-02: what the engine cannot make yet says so; anything else is a bad recipe
         codes = {p.code for p in exc.problems}

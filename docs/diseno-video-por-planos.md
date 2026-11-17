@@ -208,7 +208,7 @@ Supuestos: 9:16; 480p = 9.607,5 tokens/s y 1080p = 48.600 tokens/s (`byteplus_ar
 
 | # | Dependencia o riesgo | Efecto | Qué se hace |
 |---|---|---|---|
-| R1 | Cola de ADR 41: `QUALIFY_CREATIVE_DISPATCHER` vale `inline` por defecto (`queue_dispatch.py:19, 37`) y no verifiqué si producción ya usa `queue` [H] | Con hilos, 6 partes = 6 hilos sin tope ni reparto | La fase 1 exige `queue` en producción |
+| R1 | Cola de ADR 41: `QUALIFY_CREATIVE_DISPATCHER` vale `inline` por defecto (`queue_dispatch.py:19, 37`); producción ya usa `queue`: confirmado el 2026-11-16 (m-25026575) [V]: `/opt/qualify/.env.prod` tiene `QUALIFY_CREATIVE_DISPATCHER=queue`, leído por Deivid sin cambios | Con hilos, 6 partes = 6 hilos sin tope ni reparto | La fase 1 exige `queue` en producción |
 | R2 | ADR 42 R1/R3/R6 sin construir (E18) | No hay `public_reels` al que apuntar; la URL del MP4 sale de la tarjeta en memoria | El análisis se identifica por `(red, post_id, sha256)`; cuando exista `public_reels` se agrega la referencia sin tocar el análisis |
 | R3 | m-24880328 (Extender video) | `extend` por parte depende de lo que mida: ¿tramo nuevo o video entero?, ¿admite borrador? | `extend` va en la fase 2 y consume ese código; no se duplica |
 | R4 | Rechazo por rostro en una parte `edit` | Falla tarde, tras el copy y la espera | Modo por defecto según Haiku; estado `refused_face` con un botón a `reference`; la vista previa se devuelve |
@@ -460,4 +460,4 @@ Decidió: **Deivid Vargas, 2026-11-02**. La fila del ADR 44 ya está en `docs/ar
 | P5 | ¿«Extender video» es la entrada C? | Sí (13.6) | — | Dos vías |
 | P6 | ¿Avisar que «Igual al original» conserva manos y fondo de otra cuenta? | Validar con 3 dueños; sin aviso en la fase 1 | — | Dos vías |
 
-**Lo que este documento no cierra:** el fundador confirma 40/80/160 s y «+20 s»; backend y creative alinean VE-03, VE-04a, VE-04b, VE-04d, VE-12 y VE-21 con 13.2–13.5 y 13.8 (en especial `wanted_at`, el tope de flota en lugar del diario por negocio, la purga global en el `reels-worker` y la ventana a 30 d); platform-engineer confirma `QUALIFY_CREATIVE_DISPATCHER=queue` en producción y fija el `mem_limit` del `reels-worker`.
+**Lo que este documento no cierra:** el fundador confirma 40/80/160 s y «+20 s»; backend y creative alinean VE-03, VE-04a, VE-04b, VE-04d, VE-12 y VE-21 con 13.2–13.5 y 13.8 (en especial `wanted_at`, el tope de flota en lugar del diario por negocio, la purga global en el `reels-worker` y la ventana a 30 d); `QUALIFY_CREATIVE_DISPATCHER=queue` en producción ya está confirmado (2026-11-16, m-25026575); falta que platform-engineer fije el `mem_limit` del `reels-worker`.
