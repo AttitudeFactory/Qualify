@@ -1899,7 +1899,7 @@ def build_post_option(
         view_only=view_only,
         is_story=(story := is_story_post(category or "", [chip.port for chip in chips])),
         card_media_label=(
-            f"{medium} · 9:16"
+            story_card_line(medium, image_size)
             if story
             else f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}")
         ),
@@ -1928,6 +1928,17 @@ STORIES_FILTER = "historias"
 STORIES_OPTION = "Historias"
 STORY_CATEGORY = "story"
 STORY_PORT = "story"
+
+
+def story_card_line(medium: str, image_size: tuple[int, int] | None) -> str:
+    """The gallery card's media line for a historia (its label already says
+    «Historia»): «Imagen · 9:16» only when the picture is KNOWN to be 9:16; otherwise —
+    a 4:5 photo marked a historia, a video (its size is not read here) — «Imagen ·
+    Historia» / «Video · Historia», never a ratio it does not have."""
+    if image_size and image_size[0] > 0 and image_size[1] > 0:
+        if abs(image_size[0] / image_size[1] - 9 / 16) <= 0.02:
+            return f"{medium} · 9:16"
+    return f"{medium} · Historia"
 
 
 def is_story_post(category: str, output_ports: Iterable[str] = ()) -> bool:

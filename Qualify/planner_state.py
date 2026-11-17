@@ -36,6 +36,7 @@ from .campaign_provider import (
     error_message as campaign_error_message,
 )
 from .creative_provider import acting_user_id
+from .gallery_state import GalleryState
 from .nav_url import (
     back_url_script,
     close_flow_script,
@@ -149,6 +150,7 @@ from .planner_vm import (
 from .promotion_unpublished_provider import story_ad_ready
 from .promotion_vm import story_ad_href
 from .story_mark_provider import set_story
+from .story_mark_vm import STORY as STORY_CATEGORY
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .ui.steps import step_settle_script
@@ -175,6 +177,30 @@ def _suffix(name: str) -> str:
 
 #: How many bytes of a video are read to check what it is (never the whole file).
 _VIDEO_HEAD_BYTES = 12
+
+
+#: The upload's fields `_clear_own_upload` resets — what the «Subir historia» dialog
+#: keeps aside for a pending planner upload (m-25040496).
+_OWN_UPLOAD_FIELDS: tuple[str, ...] = (
+    "own_upload_view",
+    "own_upload_key",
+    "own_upload_media",
+    "own_upload_name",
+    "own_upload_caption",
+    "own_upload_error",
+    "own_upload_not_listed",
+    "_own_upload_id",
+    "_own_upload_content_type",
+    "_own_upload_width",
+    "_own_upload_height",
+    "_own_upload_size",
+    "_own_upload_duration",
+    "own_upload_poster_key",
+    "own_upload_story",
+    "own_upload_story_can",
+    "own_upload_story_reason",
+    "own_upload_photo_story",
+)
 
 
 async def _mark_story(tenant_id: UUID, draft_id: UUID) -> bool:
@@ -513,6 +539,12 @@ class PlannerState(rx.State):
     own_upload_story: bool = False
     own_upload_story_can: bool = False
     own_upload_story_reason: str = ""
+    #: «Subir historia» in «Aprobados» (founder 2026-11-17): the same upload, in a
+    #: dialog, saved as a historia and never scheduled (`save_story_upload`).
+    story_upload_open: bool = False
+    #: A file the owner left pending in «Nueva publicación» while the dialog borrows the
+    #: same upload fields: put back as it was when the dialog closes (backend-only).
+    _planner_upload_stash: dict[str, Any] = {}
     #: A photo the backend will save as a historia (`own_upload.shape_for`, from the
     #: size read at upload): step 1 says so.
     own_upload_photo_story: bool = False
@@ -1886,6 +1918,19 @@ class PlannerState(rx.State):
             logger.warning("planner video poster not kept: %s", type(exc).__name__)
             return ""
 
+    def _stash_planner_upload(self) -> None:
+        """Keep a pending planner upload aside (nothing when there is none)."""
+        pending = self.own_upload_key != "" or self.own_upload_view
+        self._planner_upload_stash = (
+            {name: getattr(self, name) for name in _OWN_UPLOAD_FIELDS} if pending else {}
+        )
+
+    def _restore_planner_upload(self) -> None:
+        """The dialog is done: the planner's pending upload is back exactly as it was."""
+        stash, self._planner_upload_stash = self._planner_upload_stash, {}
+        for name, value in stash.items():
+            setattr(self, name, value)
+
     def _clear_own_upload(self) -> None:
         self.own_upload_view = False
         self.own_upload_key = ""
@@ -1919,6 +1964,117 @@ class PlannerState(rx.State):
             duration_seconds=self._own_upload_duration or None,
             poster_object_key=self.own_upload_poster_key or None,
         )
+
+    # «Subir historia» in «Aprobados» (m-25040496, founder 2026-11-17) ---------------
+
+    @rx.var
+    def story_upload_too_long(self) -> bool:
+        """A video known to last over 60 s: it cannot be a historia (said before saving)."""
+        return self.own_upload_media == VIDEO and self.own_upload_story_reason != ""
+
+    @rx.event
+    def open_story_upload(self) -> None:
+        """The entry: a fresh upload in the dialog (one decision: the file)."""
+        if self.own_upload_saving or self.story_upload_open:
+            return
+        # the planner's own pending file (same fields) is kept aside, never lost
+        self._stash_planner_upload()
+        self._clear_own_upload()
+        self.story_upload_open = True
+
+    @rx.event
+    def set_story_upload_open(self, value: bool) -> None:
+        """Closing the dialog drops the stored file's form (never while saving)."""
+        if value:
+            self.story_upload_open = True
+            return
+        self._close_story_upload()
+
+    def _close_story_upload(self) -> None:
+        """The dialog's ONE close path (idempotent): its file's form is dropped and the
+        planner's pending upload put back exactly once. Never while a save is in flight
+        — that save closes the dialog and restores the stash itself when it ends."""
+        if not self.story_upload_open or self.own_upload_saving:
+            return
+        self.story_upload_open = False
+        self._clear_own_upload()
+        self._restore_planner_upload()
+
+    @rx.event
+    def leave_story_upload(self) -> None:
+        """On_load of «Aprobados» and of «Tu semana»: a dialog left open by leaving the
+        page (back, a menu link) is closed, so the drawer never shows — or saves as a
+        planner piece — the dialog's file, and coming back never reopens it."""
+        self._close_story_upload()
+
+    @rx.event(background=True)
+    async def save_story_upload(self):
+        """«Guardar historia»: the stored file becomes an approved own piece (the
+        planner's `record_upload_piece`, idempotent on the file's id), marked a historia
+        when THIS save created it and it is not one already; then the dialog closes and
+        «Aprobados» reads again on «Historias». Nothing is scheduled. A refusal keeps the
+        file and says why; a failed mark keeps the piece and says where to finish."""
+        async with self:
+            if self.own_upload_saving or self.own_upload_busy:
+                return
+            if not self.own_upload_key or not self._own_upload_id:
+                self.own_upload_error = NO_FILE_TEXT
+                return
+            if self.story_upload_too_long:
+                self.own_upload_error = self.own_upload_story_reason
+                return
+            self.own_upload_saving = True
+            self.own_upload_error = ""
+            request = self._own_upload_request()
+        try:
+            tenant_id = await self._tenant()
+            if tenant_id is None:
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = _NO_TENANT
+                return
+            try:
+                piece = await asyncio.to_thread(record_upload_piece, tenant_id, request)
+            except OwnUploadRefused as exc:
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = exc.text
+                return
+            except PlannerError as exc:
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = planner_error_message(exc)
+                return
+            except Exception as exc:  # noqa: BLE001 — the same id retries onto the same piece
+                logger.error("story upload piece failed: %s", type(exc).__name__)
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = SAVE_FAILED_TEXT
+                return
+            # The owner chose «historia» by choosing this entry: whatever piece the file
+            # landed on (a retry finds the same one) is marked unless it already is one;
+            # `marked` is what it IS now, never assumed.
+            marked = str(piece.category) == STORY_CATEGORY or await _mark_story(
+                tenant_id, piece.draft_id
+            )
+            async with self:
+                self.own_upload_saving = False
+                self.story_upload_open = False
+                self._clear_own_upload()
+                self._restore_planner_upload()
+            yield GalleryState.show_saved_story(marked)
+        except Exception as exc:  # noqa: BLE001 — the file and its id stay for a retry
+            logger.error("story upload save broke: %s", type(exc).__name__)
+            async with self:
+                self.own_upload_saving = False
+                self.own_upload_error = SAVE_FAILED_TEXT
+        except BaseException:  # cancelled: never leave the dialog locked
+            try:
+                async with self:
+                    self.own_upload_saving = False
+            except BaseException:  # noqa: BLE001
+                pass
+            raise
 
     @rx.event(background=True)
     async def save_own_upload(self):

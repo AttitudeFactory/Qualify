@@ -265,3 +265,38 @@ def test_a_vertical_video_uploaded_as_a_historia_lands_in_historias(
     card = page.locator(".q-gcard").filter(has_text="Historia del día")
     expect(card).to_have_count(1, timeout=60_000)
     expect(card.get_by_text("Historia", exact=True)).to_be_visible()
+
+
+def test_subir_historia_in_aprobados_saves_a_photo_as_a_historia(
+    pre_fase_c_page,  # noqa: ANN001 — a Playwright Page with an Instagram account
+    app_server: str,
+    tmp_path: Path,
+) -> None:
+    """«Aprobados» › «Subir historia» with a 4:5 photo (which alone would be a
+    publicación): saved as a historia, nothing scheduled, the gallery shows it under
+    «Historias» with its label and, on Android, «Abrir en Instagram»."""
+    from .test_planner_own_upload import _jpeg, _skip_without_fake_bucket
+
+    _skip_without_fake_bucket()
+    page = pre_fase_c_page
+    page.set_viewport_size({"width": 375, "height": 900})
+    _as_phone(page, _ANDROID)
+    page.goto(f"{app_server}/aprobados")
+    entry = page.get_by_role("button", name="Subir historia")
+    expect(entry).to_be_visible(timeout=60_000)
+    entry.click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog.get_by_text("Sube tu historia")).to_be_visible()
+    photo = tmp_path / "historia-cuadrada.jpg"
+    photo.write_bytes(_jpeg((1080, 1350), (20, 120, 110)))
+    dialog.locator("input[type=file]").first.set_input_files(str(photo))
+    expect(dialog.get_by_text("Cambiar archivo")).to_be_visible(timeout=60_000)
+    _shot(page, "subir-historia-dialog-375")
+    dialog.get_by_role("button", name="Guardar historia").click()
+    expect(page.get_by_text("Toca «Abrir en Instagram»")).to_be_visible(timeout=60_000)
+    expect(page.get_by_role("dialog")).to_have_count(0)
+    expect(page).to_have_url(re.compile(r"tipo=historias"))
+    card = page.locator(".q-gcard").first
+    expect(card.get_by_text("Historia", exact=True)).to_be_visible(timeout=30_000)
+    expect(card.get_by_role("button", name="Abrir en Instagram")).to_be_visible()
+    _shot(page, "subir-historia-saved-375")

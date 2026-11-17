@@ -564,6 +564,10 @@ def _own_upload_preview() -> rx.Component:
     )
 
 
+#: The same zone and preview, reused by «Aprobados» › «Subir historia» (m-25040496).
+own_upload_pick = _own_upload_pick
+own_upload_preview = _own_upload_preview
+
 _STORY_SWITCH_ID = "q-own-upload-story"
 _STORY_NOTE_ID = "q-own-upload-story-note"
 

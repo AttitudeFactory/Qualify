@@ -62,6 +62,7 @@ from .planner_vm import (
     KIND_PARAM,
     PENDING_CARD_STATES,
     PENDING_STATE_FILTERS,
+    STORIES_FILTER,
     VIEW_PARAM,
     VIEW_POSTS,
     VIEW_STICKERS,
@@ -82,6 +83,7 @@ from .planner_vm import (
     with_origin,
 )
 from .stories_vm import device_platform, story_share_message, story_share_offered
+from .story_mark_vm import story_saved_toast
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -515,6 +517,25 @@ class GalleryState(rx.State):
         yield rx.call_script(USER_AGENT_JS, callback=GalleryState.set_device)
         async for event in self._fetch():
             yield event
+
+    @rx.event(background=True)
+    async def show_saved_story(self, marked: bool):
+        """After «Subir historia» (founder 2026-11-17): read «Aprobados» again, on
+        «Publicaciones» › «Historias» when the new piece is one, and say so — the music
+        only where «Abrir en Instagram» is (Android)."""
+        async for event in self._fetch():
+            yield event
+        async with self:
+            self.view = VIEW_POSTS
+            self.view_chosen = True
+            if marked and STORIES_FILTER in self._approved_kinds():
+                self.approved_kind_filter = STORIES_FILTER
+            kind, text = story_saved_toast(platform=self.device, marked=bool(marked))
+            address = self._address()
+        yield rx.call_script(replace_url_script(address))
+        # the newest approved comes first (`sort_approved`): the new card is on top
+        yield rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
+        yield getattr(rx.toast, kind)(text)
 
     @rx.event(background=True)
     async def reload(self):

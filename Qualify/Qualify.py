@@ -603,7 +603,13 @@ app.add_page(
 app.add_page(
     approved_index,
     route="/aprobados",
-    on_load=[AuthState.require_login, GalleryState.load_approved, SeasonalState.read_kind_filter],
+    on_load=[
+        AuthState.require_login,
+        # m-25040496: a «Subir historia» dialog left open never comes back open
+        PlannerState.leave_story_upload,
+        GalleryState.load_approved,
+        SeasonalState.read_kind_filter,
+    ],
     title="Qualify · Aprobados",
 )
 app.add_page(
@@ -651,6 +657,8 @@ app.add_page(
     route="/planner",
     on_load=[
         AuthState.require_login,
+        # m-25040496: the «Subir historia» dialog's file never reaches the drawer
+        PlannerState.leave_story_upload,
         WeekBackState.read,  # m-24986801: «‹ Aprobados» when opened from there
         PlannerState.load_current_week,
         FinalReviewState.from_route,

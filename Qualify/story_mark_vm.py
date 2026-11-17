@@ -125,3 +125,33 @@ def target_category(mark: StoryMarkVM, *, story: bool) -> str | None:
     if not mark.can_change or mark.is_story == story:
         return None
     return STORY if story else mark.undo_category
+
+
+# -- «Subir historia» in «Aprobados» (founder 2026-11-17) ------------------------------
+# The owner chose «historia» by choosing this entry: the piece is saved as one whatever
+# its shape; nothing is scheduled.
+
+UPLOAD_STORY_ENTRY: Final = "Subir historia"
+UPLOAD_STORY_TITLE: Final = "Sube tu historia"
+UPLOAD_STORY_HINT: Final = (
+    "Elige una foto o un video tuyo. La guardamos en Historias y nada se publica hasta "
+    "que tú lo hagas."
+)
+UPLOAD_STORY_SAVE: Final = "Guardar historia"
+STORY_SAVED_ANDROID: Final = (
+    "Tu historia quedó guardada. Toca «Abrir en Instagram» en su tarjeta para ponerle música."
+)
+STORY_SAVED: Final = "Tu historia quedó guardada. La encuentras en Historias."
+STORY_SAVED_NOT_MARKED: Final = (
+    "Tu archivo quedó guardado, pero no como historia. Toca su tarjeta y activa «Es una historia»."
+)
+
+
+def story_saved_toast(*, platform: str, marked: bool) -> tuple[str, str]:
+    """`(toast kind, words)` after «Guardar historia»: the music only where the button
+    is (Android); a mark that failed says where to finish."""
+    if not marked:
+        return "warning", STORY_SAVED_NOT_MARKED
+    if platform == "android":
+        return "success", STORY_SAVED_ANDROID
+    return "success", STORY_SAVED

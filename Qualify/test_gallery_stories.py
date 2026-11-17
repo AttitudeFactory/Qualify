@@ -188,9 +188,14 @@ def test_a_package_or_a_story_with_more_files_shares_nothing() -> None:
 
 
 def test_the_card_line_drops_historia_where_the_label_says_it() -> None:
-    story = _post("s")
+    story = _post("s", image_size=(1080, 1920))
     assert story.card_media_label == "Imagen · 9:16"
     assert "Historia" in story.media_label  # other screens keep the format's name
+    # a 4:5 photo marked a historia, or a size not read: never a ratio it does not have
+    assert _post("f", image_size=(1080, 1350)).card_media_label == "Imagen · Historia"
+    assert _post("u").card_media_label == "Imagen · Historia"
+    video = _post("v", media_types=("VIDEO",), video_url="/r2media/v")
+    assert video.card_media_label == "Video · Historia"
     feed = _post("p", category="galeria")
     assert feed.card_media_label == feed.media_label
 
