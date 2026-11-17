@@ -37,8 +37,9 @@ def test_fixed_words() -> None:
         "20 veces más rápido",
     ]
     assert (vm.STRIP_OPENS, vm.STRIP_CLOSES) == ("Abre tu video", "Cierra tu video")
-    assert vm.MOTION_ONLY_NOTE == (
-        "Este video solo guía el movimiento. Para unir varios, usa «Armar mi video por partes»."
+    # B6 (m-25048789): a second video is a stretch of the video that comes out
+    assert vm.SECOND_VIDEO_NOTE == (
+        "De este video usamos hasta 15 s, como se ve en la línea de tiempo."
     )
     assert vm.FAST_NEEDS_LONGER == (
         "Para hacerlo más rápido, tu video tiene que durar al menos 6 s."
@@ -271,8 +272,9 @@ def test_recipe_of_a_clip() -> None:
         place="top",
     )
     assert recipe.segments[0].speed == 10 and recipe.segments[0].rotate == 90
-    assert [u.effect_id for u in recipe.effects] == ["vapor_capa", "camara_rapida"]
-    assert recipe.effects[1].param_values == {}  # the speed is the stretch's only
+    # B6: the speed is the stretch's only — `camara_rapida` never travels as an effect
+    # (the backend makes no such effect and would refuse the Clip)
+    assert [u.effect_id for u in recipe.effects] == ["vapor_capa"]
     assert recipe.text_layer is not None and recipe.text_layer.text == "Hola"
     photos = vm.recipe_of(
         video_key="",
@@ -438,7 +440,7 @@ def test_untouched_the_recipe_is_ed02s() -> None:
         "start": 0.0,
         "end": 15.0,
         "rotate": 0,
-        "effects": ["camara_rapida"],
+        "effects": ["camara_rapida", "vapor_capa"],
         "speed": 10,
         "text": "2×1 hoy",
         "place": "bottom",
@@ -564,3 +566,87 @@ def test_cut_and_piece_changes_say_what_changed() -> None:
     assert vm.change_message(one, two) == vm.CUT_DONE_LINE
     assert vm.change_message(two, _snap(start=4.0, pieces=[])) == vm.PIECE_REMOVED_LINE
     assert vm.change_message(two, swapped) == vm.ORDER_LINE
+
+
+# -- B6 review and UX review (m-25048789) -------------------------------------------------
+
+
+def test_a_pixabay_photo_or_video_blocks_crear_and_the_warning_names_it() -> None:
+    """Review B6 (a): Pixabay's photos and videos (`stock`) only guide the AI — they block
+    «Crear» on a Clip made here, and `NOT_IN_VIDEO` names them as the screen does
+    («Inspiración»), where to take them out («Agregar») and the music."""
+    stock_photo = {"key": "t/x/stock/f.jpg", "name": "Inspiración", "source": "stock"}
+    stock_video = {"key": "t/x/stock/v.mp4", "name": "Inspiración", "source": "stock"}
+    own = {"key": "uploads/x/clip/v.mp4", "name": "v.mp4", "source": "upload"}
+    assert vm.ai_only([stock_photo], [own])
+    assert vm.ai_only([], [stock_video, own])
+    assert not vm.ai_only([], [own])
+    assert vm.own_video([stock_video, own]) == {"key": own["key"], "name": "v.mp4"}
+    recipe = vm.recipe_of(
+        video_key=own["key"],
+        start=0.0,
+        end=8.0,
+        rotate=0,
+        effects=[],
+        speed=1,
+        text="",
+        place="bottom",
+    )
+    assert vm.recipe_problem(recipe, not_in_video=vm.ai_only([stock_photo], [own])) == (
+        vm.NOT_IN_VIDEO,
+        "warn",
+    )
+    assert vm.NOT_IN_VIDEO == (
+        "Tu video se arma solo con tus fotos y videos. En «Agregar», quita las fotos y "
+        "videos de Inspiración o Pinterest y la música para poder crearlo."
+    )
+
+
+def test_the_length_line_offers_only_what_the_screen_has() -> None:
+    """UX review B6: what to change, in the words of «Velocidad» («más rápido»)."""
+    assert vm.length_out_of_range_line(2.0) == (
+        "Tu video dura 2 s y necesita al menos 3 s. Agrega otra foto o video."
+    )
+    assert vm.length_out_of_range_line(2.5, fast=True, video=True) == (
+        "Tu video dura 2,5 s y necesita al menos 3 s. Agrega otra foto o video, o baja la "
+        "velocidad."
+    )
+    assert vm.length_out_of_range_line(75.0, video=True) == (
+        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video, o "
+        "hazlo más rápido en «Velocidad»."
+    )
+    assert vm.length_out_of_range_line(75.0, fast=True, video=True) == (
+        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video, o "
+        "sube la velocidad."
+    )
+    assert vm.length_out_of_range_line(62.0) == (
+        "Tu video dura 62 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video."
+    )
+
+
+def test_speed_facts_read_the_stretches() -> None:
+    photo = vm.contract.SourceSegment("f.jpg", 0.0, 2.0, 1.0, 0, "photo")
+    video = vm.contract.SourceSegment("v.mp4", 0.0, 8.0)
+    faster = vm.contract.SourceSegment("v.mp4", 0.0, 8.0, 2.0)
+    assert vm.speed_facts([photo]) == (False, False)
+    assert vm.speed_facts([photo, video]) == (False, True)
+    assert vm.speed_facts([faster]) == (True, True)
+    # no speed is on for the own video (under 6 s): «Velocidad» is never offered as a way out
+    assert vm.speed_facts([photo, video], speed_offered=False) == (False, False)
+    assert vm.length_out_of_range_line(110.0, video=False).endswith("pedazo de video.")
+    assert vm.refusal_line(["local_length_out_of_range"], 70.0, [faster]) == (
+        vm.length_out_of_range_line(70.0, fast=True, video=True)
+    )
+
+
+def test_the_waiting_and_the_refusals_say_what_to_do() -> None:
+    assert vm.CUT_WAITING == "Espera unos segundos: estamos leyendo cuánto dura tu video."
+    assert vm.LENGTH_UNKNOWN == (
+        "No pudimos abrir uno de tus videos y no sabemos cuánto dura. Quítalo o cámbialo por otro."
+    )
+    assert vm.LOCAL_UNAVAILABLE == (
+        "Por ahora no podemos armar tu video. Tus cambios siguen aquí: inténtalo más tarde."
+    )
+    assert vm.NEEDS_MEDIA == (
+        "Para poner un texto o un efecto, primero agrega una foto o un video tuyo."
+    )

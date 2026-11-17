@@ -213,3 +213,73 @@ def test_every_move_of_a_block_moves_the_lens_in_the_same_frame() -> None:
     assert "shiftOf(getComputedStyle(item).transform)" in place
     assert "lens.style.transform = moved" in place
     assert "getComputedStyle(item).transition" in place
+
+
+# -- a block never leaves the timeline (Deivid, 2026-11-17: «puedo sacar los componentes
+# fuera de la time line no quiero eso») ---------------------------------------------------
+
+
+def test_the_drop_point_is_inside_the_tracks_or_not() -> None:
+    got = _run(
+        "const box = {left: 10, right: 385, top: 100, bottom: 220};"
+        " return [[200, 160], [10, 100], [385, 220], [9, 160], [386, 160], [200, 99],"
+        " [200, 221], [200, 600]].map(([x, y]) => core.insideTracks("
+        "Object.assign({x: x, y: y}, box)));"
+    )
+    # the edges count as inside; one px off any side is outside
+    assert got == [True, True, True, False, False, False, False, False]
+
+
+def test_a_held_block_stays_inside_its_track() -> None:
+    # the 1 s photo (left 176, 44 px wide) in a 572 px row: it can go 176 px left and
+    # 572 - 44 - 176 = 352 px right, never further
+    got = _run(
+        "return [-9999, -176, -10, 0, 100, 352, 9999].map(dx => core.clampShift("
+        "{dx: dx, left: 176, width: 44, span: 572}));"
+    )
+    assert got == [-176, -176, -10, 0, 100, 352, 352]
+
+
+def test_a_text_held_stays_inside_the_video() -> None:
+    # a 3 s text from 2 s in a 12 s video at 44 px per second: from 0 to 9 s
+    got = _run(
+        "return [-9999, 9999].map(dx => core.clampShift("
+        "{dx: dx, left: 2 * 44, width: 3 * 44, span: 12 * 44}));"
+    )
+    assert got == [-88, 7 * 44]
+    # the clamped move gives the same start as the magnet's own bound
+    starts = _run(
+        "return [-88, 308].map(dx => core.shiftedStart("
+        "{start: 2, length: 3, total: 12, dx: dx, px: 44}));"
+    )
+    assert starts == [0, 9]
+
+
+def test_a_block_wider_than_its_track_does_not_move() -> None:
+    assert _run("return core.clampShift({dx: 50, left: 0, width: 600, span: 500});") == 0
+
+
+def test_a_drop_outside_the_tracks_changes_nothing() -> None:
+    got = _run(
+        "return ["
+        " core.dropVerdict({outside: true, same: false}),"
+        " core.dropVerdict({outside: false, same: false}),"
+        " core.dropVerdict({outside: false, same: true}),"
+        " core.dropVerdict({cancelled: true, outside: false, same: false}),"
+        " core.dropVerdict(null)];"
+    )
+    assert got == ["back", "apply", "back", "back", "back"]
+
+
+def test_the_drag_puts_a_block_dropped_outside_back() -> None:
+    """The DOM half asks the core at the release: off the tracks it goes back (the
+    existing return), without telling the screen; held, X is clamped and Y never moves."""
+    drag = (_ASSETS / "timeline-drag.js").read_text(encoding="utf-8")
+    release = drag[drag.index("function release(e)") :]
+    verdict = release.index("core().dropVerdict(")
+    assert "outside: outsideTracks(d, e.clientX, e.clientY)" in release
+    back = release.index('if (verdict === "back")')
+    assert verdict < back < release.index("putBack(d)") < release.index("report(d.root")
+    update = drag[drag.index("function update()") : drag.index("function loop()")]
+    assert "core().clampShift(" in update
+    assert "translateY" not in drag  # only X ever moves

@@ -122,3 +122,20 @@ memoria en arm64 debería ser parecida; el tiempo no.
   cuando haya una imagen arm64 construida.
 - `QUALIFY_CREATIVE_DISPATCHER=queue` en producción: confirmado el 2026-11-16 (`/opt/qualify/.env.prod`,
   línea 149, leído por Deivid sin cambios).
+
+## Encender el editor «Arma tu video» (B6, m-25048789)
+
+Desde B6, «Crear» en el editor del Clip manda su receta en los campos que lee EF-06
+(`media.segments`, `media.text_layers`, `media.effects`, con `clip_reference_mode = "local"`): las
+fotos y los videos de la línea de tiempo en su orden, las velocidades, los cortes, el texto con su
+lugar y sus tiempos, y Vapor, Humo y Brasas con sus tiempos. `media.edit_recipe` ya no se manda; un
+borrador guardado con esa clave se sigue leyendo (se ignora). El interruptor sigue apagado
+(`QUALIFY_CLIP_EDITOR=off` en `.env.example` y `deploy/.env.prod.example`). Para encenderlo en
+producción falta:
+
+- el OK de Deivid;
+- A9 (m-25042483) en main;
+- `QUALIFY_CREATIVE_DISPATCHER=queue` (ya confirmado) y el `creative-worker` corriendo: con hilos el
+  backend rechaza el video (`local_unavailable`) y la pantalla lo dice;
+- cambiar `QUALIFY_CLIP_EDITOR=1` en `/opt/qualify/.env.prod` por el camino documentado
+  (`just env-push`, skill `qualify-prod-ops`) y reiniciar la app.

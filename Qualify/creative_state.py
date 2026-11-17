@@ -1818,8 +1818,9 @@ class CreativeState(rx.State):
     #: source; `clip_cut_end` 0 = not proposed yet), its turn, the text over the video,
     #: where and when, the effects chosen and when, «Cámara rápida»'s speed, the length
     #: the browser measured (and for which key) — kept at once, with «Deshacer» (D-E6).
-    #: In the session only, and in the brief as `media.edit_recipe` (EF-02's shape; the
-    #: backend ignores it until EF-02).
+    #: In the session only, and in the brief as the `local` Clip's recipe — `segments` /
+    #: `text_layers` / `effects` of `MediaInputs`, what EF-06 makes (B6 m-25048789,
+    #: `_clip_edit_media`).
     clip_edit_block: str = ""
     #: Where the preview's clock last rested (a pause or a seek: never per frame), in
     #: seconds of the final video — a text or effect added starts there (§1.1).
@@ -6661,7 +6662,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_tl_effect_choices(self) -> list[dict[str, str]]:
-        """«+ Efecto»'s list: the layer effects whose loop exists (none yet: EF-05)."""
+        """«+ Efecto»'s list: the layer effects whose loop exists (Vapor, Humo, Brasas: EF-08)."""
         return [
             row for row in self.clip_edit_effect_rows if row["id"] != editor_contract.FAST_MOTION
         ]
@@ -6763,8 +6764,8 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_edit_effect_srcs(self) -> list[str]:
-        """The loops of the chosen layer effects that really exist (none today: the
-        `.webm` files are not made yet, so no layer is drawn and nothing 404s)."""
+        """The loops of the chosen layer effects whose file exists under `assets/effects/`
+        (EF-08 made Vapor, Humo and Brasas): one missing is not drawn, so nothing 404s."""
         srcs: list[str] = []
         for effect_id in self.clip_effect_ids:
             effect = editor_contract.effect_of(effect_id)
@@ -6776,8 +6777,9 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_edit_effect_rows(self) -> list[dict[str, str]]:
-        """«Efectos»'s list: `{id, label, on}` — a layer (Vapor, Humo, Brasas) only once
-        its loop exists (none today), and no «Cámara rápida» with photos only."""
+        """«Efectos»'s list: `{id, label, on}` — a layer (Vapor, Humo, Brasas) only while
+        its loop exists under `assets/effects/` (EF-08 made all three; the final video lays
+        the same library layer, B6 m-25048789), and no «Cámara rápida» with photos only."""
         own = bool(clip_editor_vm.own_video(self.clip_videos))
         rows = []
         for effect in editor_contract.effects_offered(has_own_video=own):
@@ -7087,31 +7089,118 @@ class CreativeState(rx.State):
         self._clip_cut_before = {}
         self._clip_fast_before = {}
 
-    def _clip_edit_media(self) -> dict[str, object]:
-        """The editor's recipe for the brief (`media.edit_recipe`, EF-02's shape), only
-        on «Arma tu video» and when it says something. The backend's `MediaInputs` drops
-        it until EF-02 adds `effects` / `text_layer` / `segments`."""
-        if not self.clip_editor_shown:
-            return {}
-        key = self._clip_edit_key() if self._clip_cut_known() else ""
-        effects = self.clip_effect_ids
-        if self._clip_fast_impossible():
-            effects = [e for e in effects if e != editor_contract.FAST_MOTION]
-        recipe = clip_editor_vm.recipe_of(
-            video_key=key,
+    def _clip_edit_recipe(self) -> editor_contract.PartRecipe:
+        """B6 (m-25048789): the editor's recipe as the timeline shows it — every block in
+        its order (photos, the own video's pieces at its speed and turn, other videos),
+        the text and the layer effects at their seconds (`clip_editor_vm.recipe_of`)."""
+        media, _overlays, _total = self._clip_tl()
+        return clip_editor_vm.recipe_of(
+            video_key=self._clip_edit_key() if self._clip_cut_known() else "",
             start=self.clip_cut_start,
             end=self._clip_end_real(),
             rotate=self.clip_rotate,
-            effects=effects,
+            effects=self.clip_effect_ids,
             speed=self.clip_speed,
             text=self._clip_text_committed,
             place=self.clip_text_place,
-            pieces=self.clip_cut_pieces if key else [],
+            timeline=media,
             **self._clip_recipe_times(),
         )
-        if not (recipe.segments or recipe.effects or recipe.text_layer):
+
+    def _clip_local(self) -> bool:
+        """The Clip is made here from the owner's photos and videos (EF-06 `local`): the
+        editor is on screen and its timeline holds at least one of them. Without any, the
+        Clip is what it was before the editor (references for the AI)."""
+        return self.clip_editor_shown and bool(self._clip_tl_media())
+
+    @rx.var
+    def clip_edit_local(self) -> bool:
+        """`_clip_local`: «Duración», «Con sonido» and «Subtítulos» are the AI's choices —
+        a video made here lasts what its timeline lasts, silent, with its own texts."""
+        return self._clip_local()
+
+    def _clip_source_tabs(self) -> tuple[str, ...]:
+        """The Clip selector's sources on offer. With the owner's photos or videos on the
+        timeline (`_clip_local`) the video is made from them only, so «Inspiración» —
+        a reference for the AI that would then block «Crear» (`NOT_IN_VIDEO`) — is not
+        offered (B6 UX review); an empty timeline is the AI's Clip, which uses it."""
+        if self._clip_local():
+            return tuple(tab for tab in CLIP_SOURCE_TABS if tab != "inspiration")
+        return CLIP_SOURCE_TABS
+
+    @rx.var
+    def clip_source_tab_shown(self) -> str:
+        """The Clip selector's chosen source as shown: one no longer offered
+        (`_clip_source_tabs`) shows «Tus productos»."""
+        tab = self.clip_source_tab
+        return tab if tab in self._clip_source_tabs() else "catalog"
+
+    def _clip_edit_problem(self) -> tuple[str, str]:
+        """B6: why «Crear» cannot make the editor's video yet (`recipe_problem`), with
+        what the editor already measured — ("", "") when it can."""
+        if not self.clip_editor_shown:
+            return "", ""
+        media = self._clip_tl_media()
+        own = self._clip_edit_key()
+        known = dict(self.clip_media_seconds)
+        if self._clip_cut_known():
+            known[own] = self.clip_source_seconds
+        unmeasured = [
+            str(item["key"])
+            for item in media
+            if item.get("kind") == "video" and float(known.get(str(item["key"])) or 0) <= 0
+        ]
+        sources = self._clip_seq_sources()
+        broken = self.clip_source_broken and self.clip_source_key == own
+        pending = self.clip_edit_r2_pending  # the own R2 video's path is being minted
+        waiting = bool(unmeasured) and all(
+            (bool(sources.get(key)) or (key == own and pending)) and not (broken and key == own)
+            for key in unmeasured
+        )
+        return clip_editor_vm.recipe_problem(
+            self._clip_edit_recipe(),
+            unmeasured=unmeasured,
+            waiting=waiting,
+            not_in_video=clip_editor_vm.ai_only(
+                self.clip_images, self.clip_videos, self.clip_audios
+            ),
+            speed_offered=self._clip_fast_allowed(),
+        )
+
+    @rx.var
+    def clip_edit_problem(self) -> list[str]:
+        """`[words, tone]` of `_clip_edit_problem`, under the editor's timeline — the same
+        words «Crear» says (`_clip_problem`); `["", ""]` when it can be made."""
+        return list(self._clip_edit_problem())
+
+    @rx.var
+    def clip_edit_seconds(self) -> str:
+        """How long the editor's video lasts («8», «8,5»), as the backend makes it."""
+        return editor_contract.seconds_text(
+            clip_editor_vm.recipe_seconds(self._clip_edit_recipe().segments)
+        )
+
+    def _clip_edit_media(self) -> dict[str, object]:
+        """B6 (m-25048789): the editor's video for the brief — EF-06's `local` Clip, made
+        by the creative worker at cost 0 from `segments` (the timeline's photos and
+        videos), with its `text_layers` (place, seconds, fade) and its layer `effects`
+        (seconds), in EF-02's shape (`editor_contract.to_dict`; the v1 `text_layer` key
+        is left out). It is silent and has no subtitles: the AI's sound and subtitles do
+        not apply. Only on «Arma tu video» with something on its timeline: without it the
+        Clip is the AI's, as before (a text or effect alone stops «Crear»,
+        `_clip_edit_problem`). Nothing goes as `edit_recipe` any more; a stored brief
+        with it still reads (`MediaInputs` ignores unknown keys)."""
+        if not self._clip_local():
             return {}
-        return {"edit_recipe": editor_contract.to_dict(recipe)}
+        data = editor_contract.to_dict(self._clip_edit_recipe())
+        return {
+            "clip_reference_mode": "local",
+            "segments": data["segments"],
+            "text_layers": data["text_layers"],
+            "effects": data["effects"],
+            "clip_audio": False,
+            "clip_subtitles": False,
+        }
 
     def _clip_recipe_times(self) -> dict[str, object]:
         """When the text and the effects show, for the recipe — only what the owner
@@ -7558,6 +7647,8 @@ class CreativeState(rx.State):
             tab = "catalog"  # Deivid 2026-11-13: «Tus productos» first while none is chosen
         if tab in CLIP_SOURCE_TABS:
             self.clip_source_tab = tab
+        if self.clip_source_tab not in self._clip_source_tabs():
+            self.clip_source_tab = "catalog"  # «Inspiración» is not offered here now
         loads = self._tab_loads(self.clip_source_tab)
         events: list[Any] = [GenGalleryPickState.reset_choice]
         if loads is not None:
@@ -8541,8 +8632,9 @@ class CreativeState(rx.State):
     @rx.var
     def gen_campaign_hint(self) -> str:
         """Live test 2026-11-03: the campaign kept by «Crear otra» is named while
-        «Más opciones» is folded."""
-        clip = self.brief_kind == "clip"
+        «Más opciones» is folded. A Clip made here (`_clip_local`) has no sound nor
+        subtitles to choose: its hint names the campaign only (B6 UX review)."""
+        clip = self.brief_kind == "clip" and not self._clip_local()
         if self.gen_campaign == NEW_CAMPAIGN:
             name = " ".join(self.gen_campaign_new_name.split())
             return campaign_hint(name, clip=clip, new=True)
@@ -8970,7 +9062,7 @@ class CreativeState(rx.State):
         """The Clip drawer's «Tus productos · Tu Galería · Subir · Publicaciones ·
         Inspiración»."""
         value = tab[0] if isinstance(tab, list) and tab else tab
-        if value not in CLIP_SOURCE_TABS:
+        if value not in self._clip_source_tabs():
             return None
         self.clip_source_tab = str(value)
         self._stop_playing()
@@ -10467,7 +10559,9 @@ class CreativeState(rx.State):
             return f"Un clip admite hasta {CLIP_MAX_IMAGES} fotos. Quita alguna."
         if self.clip_last_frame_key and not self.clip_first_frame_key:
             return "Para usar un fotograma final, elige primero el inicial."
-        return ""
+        # B6 (m-25048789, EF-06 option A): the editor's video says why it cannot be made
+        # (under 3 s or over 60 s with its seconds, …) and «Crear» does not go on
+        return self._clip_edit_problem()[0]
 
     def _presenter_problem(self) -> str:
         """The wizard's «¿Quién lo presenta?» step: the avatar or character, and the
@@ -10985,6 +11079,8 @@ class CreativeState(rx.State):
                 ),
                 reference_videos=len(self.clip_videos) if clip else 0,
                 audio=self.clip_audio if clip else False,
+                # EF-06 (D3): the editor's video made here uses nothing of the month
+                local=clip and self._clip_local(),
             )
         except (CreationNotOffered, ValueError):
             return None
@@ -11323,9 +11419,13 @@ class CreativeState(rx.State):
         content_type = dict((opt.value, opt.label) for opt in content_type_options()).get(
             self.brief_content_type, ""
         )
+        local = kind == "clip" and not parts and self._clip_local()
         length = (
             f" · {self.media_duration} s"
             if kind == "creator_script"
+            # B6: the editor's video lasts what its timeline lasts, not «Duración»'s
+            else f" · {self.clip_edit_seconds} s"
+            if local
             else f" · {self.clip_duration} s"
             if kind == "clip" and not parts
             else ""
@@ -11335,9 +11435,9 @@ class CreativeState(rx.State):
             f"{content_type} · {_FORMAT_LABELS.get(self.effective_format, '')}{length}",
             "channel",
         )
-        if kind == "clip":
+        if kind == "clip" and not local:
             # its own row: «Editar» opens step 3's «Más opciones», where the switch is
-            # (UX review 2026-10-24, N2/N6)
+            # (UX review 2026-10-24, N2/N6). B6: the editor's video is silent — no row
             row(
                 "Sonido",
                 "Con sonido" if self.clip_audio else "Sin sonido",
@@ -11789,6 +11889,7 @@ class CreativeState(rx.State):
             return None
         tenant_id, brand_id, user_id = ids
         from qualify_api.creative.local_cap import LocalDailyCapReached
+        from qualify_api.creative.video_pipeline.recipe import RecipeRefused
 
         try:
             draft_id = await asyncio.to_thread(
@@ -11854,6 +11955,34 @@ class CreativeState(rx.State):
             async with self:
                 self.is_submitting = False
                 self.create_error = exc.text
+            return None
+        except RecipeRefused as exc:
+            # B6 (m-25048789): the backend refused the editor's video before anything was
+            # written or charged — under 3 s or over 60 s says its seconds (EF-06 option
+            # A), the queue off says so; any other piece keeps the generic line. Only the
+            # Clip made here, or a problem of the whole piece (no `part`), is told in the
+            # editor's words: a part of a video by parts out of 3–60 s is not «tu video»
+            logger.warning("recipe refused: %s", ", ".join(p.code for p in exc.problems)[:300])
+            async with self:
+                self.is_submitting = False
+                local = self._clip_local()
+                mine = [p for p in exc.problems if local or p.part is None]
+                codes = [p.code for p in mine]
+                seconds = next(
+                    (p.duration_s for p in mine if p.code == "local_length_out_of_range"),
+                    None,
+                )
+                ours = local or bool(
+                    {"local_unavailable", "local_length_out_of_range"} & set(codes)
+                )
+                segments = self._clip_edit_recipe().segments if local else ()
+                self.create_error = (
+                    clip_editor_vm.refusal_line(
+                        codes, seconds, segments, speed_offered=self._clip_fast_allowed()
+                    )
+                    if ours
+                    else _BRIEF_INVALID
+                )
             return None
         except (ValidationError, ValueError) as exc:
             # the validators' messages only — never `input_value`, which holds the form
