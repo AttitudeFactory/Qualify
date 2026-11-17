@@ -55,6 +55,54 @@ def yuv_to_rgb(frame: object) -> np.ndarray:
     return np.clip(np.stack([r, g, b], axis=-1) * 255.0, 0.0, 255.0)
 
 
+#: Why the LAYER path's encodes are compared with a tolerance and not byte for byte
+#: (m-25029128, CI run 44005325893 on Linux: two runs gave different hashes). What was
+#: measured in Docker (python:3.12-slim, PyAV 19.0.1) limited to 2 cores
+#: (`--cpuset-cpus=0-1`), 12 runs each, on the 216×384 test video with smoke + embers:
+#: - the TEXT-only path (`overlay_text_layers`): identical every time (24/24);
+#: - the LAYER path as shipped: 5-6 distinct outputs in 12 (none in 4 runs on 8 cores, none
+#:   seen on Windows);
+#: - the same with `graph.threads = 1` (read back as 1; the default reads 3): still 6 in 12 —
+#:   not the filter graph's slice threads;
+#: - the same with the loop decoder on one thread: still varies — not the VP9 decoder;
+#: - the same with x264 `rc-lookahead=0`: identical 12/12 (twice) — but that changes the
+#:   published quality (no mb-tree), so it is not used;
+#: - pushing a fresh copy of every loop frame instead of the decoded one: 1-2 distinct in 12.
+#: The differences start at frame 0 (one level on a few pixels) and x264 carries them on
+#: (at most 6 levels, mean ≈ 0.002 a frame). HYPOTHESIS, not proven: a lifetime/timing
+#: interaction between the frames the layer path hands on (the reused loop frame, the
+#: filters' buffer pools) and x264's delayed encode; the root cause is not identified.
+#: PSNR ≥ 45 dB and a mean ≤ 0.5 per plane is far below what an eye sees and far above
+#: that noise. The text-only path stays byte for byte (its tests use exact hashes).
+PSNR_MIN_DB = 45.0
+MEAN_ABS_MAX = 0.5
+
+
+def planes_of(path: Path) -> list[list[np.ndarray]]:
+    """Every decoded frame as its Y, U and V planes (int), as stored."""
+    out: list[list[np.ndarray]] = []
+    with av.open(str(path)) as src:
+        for frame in src.decode(src.streams.video[0]):
+            stacked = frame.to_ndarray().astype(np.int32)
+            h = frame.height
+            out.append([stacked[:h], stacked[h : h + h // 4], stacked[h + h // 4 :]])
+    return out
+
+
+def assert_same_frames(a: Path, b: Path) -> None:
+    """The same video within the x264 tolerance above: same frame count, and per plane a
+    PSNR ≥ `PSNR_MIN_DB` and a mean absolute difference ≤ `MEAN_ABS_MAX`."""
+    first, second = planes_of(a), planes_of(b)
+    assert len(first) == len(second)
+    for index, (x, y) in enumerate(zip(first, second, strict=True)):
+        for plane, (p, q) in enumerate(zip(x, y, strict=True)):
+            diff = (p - q).astype(np.float64)
+            mse = float(np.mean(diff * diff))
+            psnr = float("inf") if mse == 0 else 10 * np.log10(255.0**2 / mse)
+            assert psnr >= PSNR_MIN_DB, (index, plane, psnr)
+            assert float(np.mean(np.abs(diff))) <= MEAN_ABS_MAX, (index, plane)
+
+
 def rgb_frames(path: Path) -> list[np.ndarray]:
     with av.open(str(path)) as src:
         return [yuv_to_rgb(f) for f in src.decode(src.streams.video[0])]
@@ -260,7 +308,7 @@ def test_the_same_layers_give_the_same_frames(tmp_path: Path) -> None:
     uses = [layer("brasas_capa"), layer("humo_capa", start_s=0.3, end_s=0.8)]
     a = overlay_effect_layers(src, tmp_path / "a.mp4", uses)
     b = overlay_effect_layers(src, tmp_path / "b.mp4", uses)
-    assert decoded_frame_hashes(a.path) == decoded_frame_hashes(b.path)
+    assert_same_frames(a.path, b.path)  # not bytes: see PSNR_MIN_DB (m-25029128)
 
 
 def test_a_span_changes_only_the_frames_inside_it(tmp_path: Path) -> None:
@@ -307,7 +355,7 @@ def test_one_pass_with_no_text_is_the_layers_alone(tmp_path: Path) -> None:
     uses = [layer("humo_capa"), layer("brasas_capa", start_s=0.2, end_s=0.7)]
     alone = overlay_effect_layers(src, tmp_path / "a.mp4", uses)
     single = overlay_layers_and_texts(src, tmp_path / "b.mp4", uses, ())
-    assert decoded_frame_hashes(alone.path) == decoded_frame_hashes(single.path)
+    assert_same_frames(alone.path, single.path)  # not bytes: see PSNR_MIN_DB
 
 
 def test_one_pass_with_no_layer_is_the_texts_alone(tmp_path: Path) -> None:
@@ -366,17 +414,21 @@ def test_saturated_colours_come_back_exact_outside_the_span(
     tmp_path: Path, rgb: tuple[int, int, int]
 ) -> None:
     """yuv420p → gbrp → yuv420p with `accurate_rnd+full_chroma_int`: outside the layer's
-    span every frame's Y/U/V planes are the input's (no one-level darkening)."""
+    span every frame's Y/U/V planes are the input's — no one-level darkening (without the
+    flags every Y dropped by exactly 1, so the mean moved by 1.0). Compared on the mean
+    per plane: signed mean drift ≤ 0.1 and mean absolute difference ≤ `MEAN_ABS_MAX`,
+    not byte for byte (m-25029128)."""
     src = make_video(tmp_path / "src.mp4", rgb)
-    with av.open(str(src)) as source:
-        before = [f.to_ndarray() for f in source.decode(source.streams.video[0])]
+    before = planes_of(src)
     late = layer("vapor_capa", params={"intensity": 1.0}, start_s=0.8, end_s=1.0)
-    out = overlay_effect_layers(src, tmp_path / "out.mp4", [late])
-    with av.open(str(out.path)) as made:
-        after = [f.to_ndarray() for f in made.decode(made.streams.video[0])]
+    after = planes_of(overlay_effect_layers(src, tmp_path / "out.mp4", [late]).path)
     assert len(after) == len(before) == FPS
     for i in range(round(0.8 * FPS)):
-        assert np.array_equal(after[i], before[i]), i
+        for name, a, b in zip("YUV", after[i], before[i], strict=True):
+            diff = (a - b).astype(np.float64)
+            # each plane on its own: a tint (U up, V down) cannot cancel out
+            assert abs(float(diff.mean())) <= 0.1, (i, name)  # no shift (Y was -1.0)
+            assert float(np.abs(diff).mean()) <= MEAN_ABS_MAX, (i, name)
 
 
 def test_a_loop_that_fails_closes_the_ones_already_open(

@@ -209,7 +209,8 @@ def _two_texts() -> list[TimedLayer]:
 def test_texts_alone_are_the_same_through_the_layers_single_pass(tmp_path: Path) -> None:
     """EF-08 shares the texts' graph section (`_link_texts`) with the layers' single pass:
     with no layer, `overlay_layers_and_texts` gives exactly `overlay_text_layers`' decoded
-    frames, and two runs in a row give the same frames (checked within the run: no
+    frames, and two runs in a row give the same frames — byte for byte (the text-only
+    path measured identical 24/24 on a 2-core Linux runner; checked within the run, no
     platform-dependent hash is pinned)."""
     from qualify_creative.video.layer_overlay import overlay_layers_and_texts
 

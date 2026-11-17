@@ -27,8 +27,13 @@ one decode and ONE x264 encode for both, the words on top of the smoke and reada
 no layer it is exactly `overlay_text_layers`; with no text exactly `overlay_effect_layers`.
 
 The soundtrack is
-copied as it is. Deterministic like `text_overlay`: x264 on ONE thread, the same layers over
-the same file → the same decoded frames (`decoded_frame_hashes`). Written to `out`.partial
+copied as it is. x264 runs on ONE thread like `text_overlay`. Byte-for-byte determinism
+is NOT guaranteed on this path (m-25029128): on a 2-core Linux runner two runs can differ
+by a few levels on a handful of pixels — not the filter graph's threads, not the loop
+decoder's; x264 without lookahead makes it stable but is not used (it would change the
+published quality); the root cause is not identified (see `test_video_layer_overlay.
+PSNR_MIN_DB` for what was measured). The text-only path stays byte for byte.
+Written to `out`.partial
 and moved into place only when complete; `src` is never touched. Cost: US$0.
 """
 
