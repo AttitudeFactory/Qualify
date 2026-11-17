@@ -35,16 +35,20 @@ no longer validates, so its replay falls to «no layer» before the regeneration
 claimed regenerations are not made again on that pass. None exist (the switch is off).
 
 Nothing here may cost the owner the piece: any failure (the switch on without a key, the
-model, the budget, the database) is logged and the piece goes on without a layer — the
-composition does not read one yet (m-25017285). The queue's own signals (deferred,
-pending, checkpoint lost) are never swallowed.
+model, the budget, the database) is logged and the piece goes on without a layer. The
+queue's own signals (deferred, pending, checkpoint lost) are never swallowed.
+
+**The rewrite** (m-25040499, ADR 49 §8.1 D5): when the compositor refuses a layer (a price
+wider than its box in every layout of the chain), `rewrite_layers` asks Claude ONCE more for
+those images, with the reason, on the SAME meter as the stage's calls (step `LAYER_STEPS[2]`).
+Its failure is the caller's to handle: a priced piece is never published without its price.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -81,7 +85,9 @@ logger = logging.getLogger(__name__)
 #: The pipeline step slots of the layer calls: the first call, then the call after a
 #: regeneration. Negative and fixed, like the frozen inputs (-1…-3), so they never shift
 #: the router's step numbers whether the switch is on or off.
-LAYER_STEPS = (-100, -101)
+LAYER_STEPS = (-100, -101, -102)
+#: The prompt version a rewritten layer is recorded with (its prompt carries the correction).
+REWRITE_SUFFIX = "+reescritura"
 #: The queue's signals: the stage re-raises them, never turns them into «no layer».
 QUEUE_SIGNALS = (GenerationDeferred, CheckpointError, _MediaPending)
 
@@ -93,6 +99,13 @@ class LayerOutcome:
     scenes: dict[int, BaseScene]
     layers: dict[int, LayerWrite]
     regenerated: tuple[int, ...] = ()
+    #: m-25040499: what the compose step needs to ask for a rewrite on the same meter, and
+    #: each catalog product's printed price (product id → `price_label`)
+    request: LayerRequest | None = None
+    budget: DollarMeter | None = None
+    prices: Mapping[str, str] = field(default_factory=dict)
+    #: how the piece's price was decided (for the compose provenance and the Pillow cover)
+    price: PiecePrice | None = None
 
 
 def _default_writer(request: LayerRequest, *, budget: DollarMeter) -> LayerResult:
@@ -128,6 +141,68 @@ def _seams(producer: MediaProducer) -> tuple[Callable[..., Any], ...]:
         getattr(producer, "_layer_claim", None) or _default_claim,
         getattr(producer, "_layer_context", None) or _default_context,
     )
+
+
+@dataclass(frozen=True)
+class PiecePrice:
+    """m-25040499: the price this piece prints, decided ONCE from the catalog (ADR 49:
+    «precio del catálogo»): `label` is the product's CURRENT catalog label ("" = the piece
+    shows no price), `status` why, `brief_line` what the brief said when it was made."""
+
+    status: str  # hidden | matches | changed | product_not_found | ambiguous | no_price_today
+    brief_line: str = ""
+    label: str = ""
+    product_id: str = ""
+
+    def provenance(self) -> dict[str, str]:
+        return {
+            "price_status": self.status,
+            "brief_price_line": self.brief_line,
+            "catalog_price_label": self.label,
+        }
+
+
+def resolve_piece_price(
+    found: Sequence[CatalogProduct], *, price_line: str, product_ref: str | None
+) -> tuple[tuple[CatalogProduct, ...], PiecePrice]:
+    """The brief's product among `found` (the catalog's matches for `product_ref`) and the
+    price the piece prints. The brief's `price_line` only says whether the piece shows a
+    price; the figure is the catalog's TODAY — never the stale line:
+
+    - no `price_line` (the angle hides it): no product priced, no price;
+    - the brief's product is found and priced today: it is the ONE priced product and its
+      current label is printed, also when it changed since the brief (logged, recorded);
+    - not found, several candidates with nothing to tell them apart, or no price today: the
+      piece shows no price (recorded, logged) — nothing required, nothing accepted.
+
+    The product: the one named exactly like `product_ref` (the one whose label is the
+    brief's line first, when several share the name), else the one whose label is the brief's
+    line, else the only match."""
+    line = price_line.strip()
+    unpriced = tuple(replace(p, has_price=False) for p in found)
+    if not line:
+        return unpriced, PiecePrice("hidden")
+    ref = (product_ref or "").strip().casefold()
+    named = [p for p in found if p.name.strip().casefold() == ref]
+    product = (
+        next((p for p in named if p.price_text.strip() == line), None)
+        or (named[0] if named else None)
+        or next((p for p in found if p.price_text.strip() == line), None)
+        or (found[0] if len(found) == 1 else None)
+    )
+    if product is None:
+        status = "ambiguous" if found else "product_not_found"
+        logger.warning("piece price: %s for %r, printed without a price", status, product_ref)
+        return unpriced, PiecePrice(status, line)
+    label = product.price_text.strip()
+    if not label:
+        logger.warning("piece price: %r has no price today, printed without one", product.name)
+        return unpriced, PiecePrice("no_price_today", line, product_id=str(product.product_id))
+    status = "matches" if label == line else "changed"
+    if status == "changed":
+        logger.warning("piece price: the catalog says %r, the brief said %r", label, line)
+    products = tuple(replace(p, has_price=p is product) for p in found)
+    return products, PiecePrice(status, line, label, str(product.product_id))
 
 
 def piece_type(brief: ContentBrief, *, gallery: bool) -> str:
@@ -228,6 +303,16 @@ def _checkpointed(
     return value
 
 
+def _charge_back(budget: DollarMeter, saved: Mapping[str, Any] | None) -> None:
+    """A step read back from an earlier pass: charge this meter what the piece had spent
+    by then (`spent_usd`, cumulative), so a crash never hands a later call a fresh cap."""
+    if not saved:
+        return
+    paid = Decimal(str(saved.get("spent_usd", "0")))
+    if paid > budget.spent_usd:
+        budget.charge(paid - budget.spent_usd, what="layer call saved in an earlier pass")
+
+
 # -- the stage ----------------------------------------------------------------------------
 
 
@@ -245,17 +330,30 @@ def run_layer_stage(
     gallery: bool,
     slide_count: int | None = None,
     title_font: str = "",
+    price_line: str = "",
     env: Mapping[str, str] | None = None,
 ) -> LayerOutcome:
     """The layers of `scenes` (position → base), regenerating a base once when Claude saw
     invented text in it. Off (`QUALIFY_IMAGE_LAYER`), or on any failure: no layers."""
     scenes = dict(scenes)
-    if not scenes or not layer_enabled(dict(env) if env is not None else None):
+    if not scenes or not layer_enabled(env, tenant_id):
         return LayerOutcome(scenes, {})
     writer, claim, context = _seams(producer)
     budget = DollarMeter(LAYER_BUDGET_USD)  # ONE meter for every call of this piece
+    request: LayerRequest | None = None
+    price: PiecePrice | None = None
+
+    def without_layers() -> LayerOutcome:
+        """The stage failed: no layers. The request and the price, once known, still ride
+        along, so a priced piece fails (`require_price_drawn`, founder's D5: never published
+        without its price) instead of falling back; a piece without price goes on as before."""
+        return LayerOutcome(scenes, {}, (), request, budget, {}, price)
+
     try:
-        facts, products = context(tenant_id, brief.brand_id, brief.product_ref)
+        facts, found = context(tenant_id, brief.brand_id, brief.product_ref)
+        products, price = resolve_piece_price(
+            found, price_line=price_line, product_ref=brief.product_ref
+        )
         request = LayerRequest(
             tenant_id=tenant_id,
             brand_id=brief.brand_id,
@@ -271,6 +369,7 @@ def run_layer_stage(
             facts=facts,
             products=products,
             title_font=title_font,
+            price_line=price.label,  # the catalog's label today, "" = no price
         )
 
         def first() -> dict[str, Any]:
@@ -300,10 +399,8 @@ def run_layer_stage(
 
         saved = _checkpointed(LAYER_STEPS[0], request, first)
         if saved is None:
-            return LayerOutcome(scenes, {})
-        paid = Decimal(str(saved.get("spent_usd", "0")))
-        if budget.spent_usd == 0 and paid > 0:  # a replay: this meter has not seen it yet
-            budget.charge(paid, what="layer call saved in an earlier pass")
+            return without_layers()
+        _charge_back(budget, saved)  # a replay: this meter has not seen the first call yet
         result = _result_from_json(saved["layer"])
         regenerated: list[int] = []
         for position in saved["regenerate"]:
@@ -317,11 +414,13 @@ def run_layer_stage(
                 slides=tuple(SlideInput(position=p, photo=scenes[p].image) for p in sorted(scenes)),
             )
             try:
-                again = _checkpointed(
-                    LAYER_STEPS[1],
-                    again_request,
-                    lambda: {"layer": _result_json(writer(again_request, budget=budget))},
-                )
+
+                def second() -> dict[str, Any]:
+                    answer = writer(again_request, budget=budget)
+                    return {"layer": _result_json(answer), "spent_usd": str(budget.spent_usd)}
+
+                again = _checkpointed(LAYER_STEPS[1], again_request, second)
+                _charge_back(budget, again)
             except QUEUE_SIGNALS:
                 raise
             except Exception:  # noqa: BLE001 - as a replay of the failed step: None
@@ -341,11 +440,52 @@ def run_layer_stage(
         layers = {p: w for p in scenes if (w := _layer_write(result, p)) is not None}
         if result.failed:
             logger.warning("draft %s: no layer for %s", draft_id, sorted(result.failed))
-        return LayerOutcome(scenes, layers, tuple(regenerated))
+        # only the piece's own price can be drawn (`resolve_piece_price`)
+        prices = {price.product_id: price.label} if price.label else {}
+        return LayerOutcome(scenes, layers, tuple(regenerated), request, budget, prices, price)
     except QUEUE_SIGNALS:
         raise
     except Exception:  # noqa: BLE001 - the layer never costs the paid piece
         logger.warning(
             "draft %s: layer stage failed, piece goes on without it", draft_id, exc_info=True
         )
-        return LayerOutcome(scenes, {})
+        return without_layers()
+
+
+# -- the rewrite after a refusal (m-25040499) ----------------------------------------------
+
+
+def rewrite_layers(
+    producer: MediaProducer,
+    outcome: LayerOutcome,
+    notes: Mapping[int, str],
+) -> dict[int, LayerWrite]:
+    """ONE more layer call for the images the compositor refused (`notes`: position → why,
+    in the model's language), on the stage's meter. Returns the new layers it could write
+    (a position missing = no layer). Raises what the call raises — the caller fails the
+    piece, never publishes it without its price — and the queue's signals as they are."""
+    request = outcome.request
+    if request is None or outcome.budget is None or not notes:
+        return {}
+    writer, _claim, _context = _seams(producer)
+    budget = outcome.budget
+    scenes = outcome.scenes
+    again = replace(
+        request,
+        slides=tuple(SlideInput(position=p, photo=scenes[p].image) for p in sorted(notes)),
+        # a gallery keeps its roles: the count is the whole gallery's
+        slide_count=request.count if request.is_carousel else None,
+        rewrite_note="\n".join(f"- imagen {p}: {why}" for p, why in sorted(notes.items())),
+    )
+
+    def call() -> dict[str, Any]:
+        answer = writer(again, budget=budget)
+        return {"layer": _result_json(answer), "spent_usd": str(budget.spent_usd)}
+
+    saved = _checkpointed(LAYER_STEPS[2], again, call)
+    if saved is None:
+        raise RuntimeError("the layer rewrite was left unfinished in an earlier pass")
+    _charge_back(budget, saved)
+    result = _result_from_json(saved["layer"])
+    result = replace(result, prompt_version=result.prompt_version + REWRITE_SUFFIX)
+    return {p: w for p in notes if (w := _layer_write(result, p)) is not None}

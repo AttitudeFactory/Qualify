@@ -23,6 +23,7 @@ from qualify_api.creative.final_deadline import (
     FinalDeadlineExpired,
     final_deadline_passed,
 )
+from qualify_api.creative.image_pipeline.compose_run import RenderWait
 from qualify_api.creative.part_final import JOIN_FINAL_PHASE, run_join_final
 from qualify_api.creative.part_join import JOIN_PHASE, run_join
 from qualify_api.creative.pipeline import (
@@ -728,6 +729,10 @@ class PipelinePreparation:
                         # again from the screen («Crear las que faltan», `request_parts`)
                         self._after_generation_safely(run)
                     completed = True
+                except RenderWait:
+                    # m-25040499: the piece waits for the render service (logged there at
+                    # WARNING, once a minute): not a failed preparation, retried next pass
+                    pass
                 except Exception as exc:
                     logger.error(
                         "creative.pipeline.preparation_failed draft_id=%s error_type=%s",

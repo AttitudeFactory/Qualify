@@ -540,13 +540,29 @@ test('review 2 #2: a band fallback never puts the logo on the subject', () => {
   assert.ok(ic.report.logo !== 'top_left' || !ic.logo || ic.logo.rect.y >= ic.photo.window.h, JSON.stringify(ic.logo));
 });
 
-test('review 2 #3: a price that does not fit is reported, never dropped silently', () => {
-  const r = run(
-    {layout_id: 'band', title: 'Pan', anchor: 'bottom', price_ref: {product_id: 'p'}, subject_box: [0.3, 0.1, 0.7, 0.5]},
-    {priceText: '$ 1.234.567.890.123.456.789.012'},
+test('2026-11-16 (D5): a price too wide for plate falls to a wider layout and is still drawn', () => {
+  // plate's box is ~72 % of the width; band spans the canvas: a price that only band fits
+  const priceText = '$ 1.250.000.000';
+  const r = run({layout_id: 'plate', title: 'Pan', anchor: 'top_left', price_ref: {product_id: 'p'}, subject_box: [0.3, 0.6, 0.7, 0.9]}, {priceText});
+  assert.ok(r.texts.some((t) => t.slot === 'price'), r.report.fallbacks.join(' | '));
+  assert.ok(!r.report.dropped_slots.includes('price'));
+});
+
+test('2026-11-16 (D5): a price that fits no layout refuses the layer, never drops the price', () => {
+  assert.throws(
+    () =>
+      run(
+        {layout_id: 'band', title: 'Pan', anchor: 'bottom', price_ref: {product_id: 'p'}, subject_box: [0.3, 0.1, 0.7, 0.5]},
+        {priceText: '$ 1.234.567.890.123.456.789.012.345.678.901'},
+      ),
+    (err) => {
+      assert.ok(err instanceof LayerRefusal, String(err));
+      assert.equal(err.refusal.slot, 'price');
+      assert.equal(err.refusal.reason, 'price_does_not_fit');
+      assert.ok(err.refusal.attempts.every((a) => /price_does_not_fit/.test(a)), err.refusal.attempts.join(' | '));
+      return true;
+    },
   );
-  assert.ok(!r.texts.some((t) => t.slot === 'price'));
-  assert.ok(r.report.dropped_slots.includes('price'));
   const none = run({layout_id: 'band', title: 'Pan', anchor: 'bottom', price_ref: {product_id: 'p'}, subject_box: [0.3, 0.1, 0.7, 0.5]}, {priceText: ''});
   assert.ok(none.report.fallbacks.some((f) => /no catalog price/.test(f)));
 });

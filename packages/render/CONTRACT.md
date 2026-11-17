@@ -110,7 +110,9 @@ script title the render refuses.
 
 **Band 1:1 height** (2026-11-15, `layout_version` 3, `engine_revision` 3): a 1:1 `band` may take up to 43 % of the height (was 42 %), so a script `plate` that falls to `band` keeps its price line. The fallback chain never drops the price for lack of height; a price line wider than its box (the title's width) is still dropped and reported in `dropped_slots`. **Decided by the founder on 2026-11-16, not built yet:** a price that does not fit its box must make the layer be refused so Claude rewrites the text, and a piece with a price is never published without it (ADR 49 §8.1, D5); it lands with the story that wires `compose_layer` to live generation.
 
-**Engine revision** (`layer_catalog.engine_revision`, today 3). The template version pins the
+**Price that does not fit** (engine revision 4, founder 2026-11-16, ADR 49 §8.1 D5 — built): a price line wider than the box of a layout, even at the smallest sizes, fails that layout (`price_does_not_fit`) and the fallback chain moves on; when no layout of the chain can draw it the output fails with `invalid_parameters` and `refusal {slot: 'price', reason: 'price_does_not_fit'}`. The price is never dropped: Python asks the layer stage to rewrite the text once, and fails the piece if it still cannot be drawn.
+
+**Engine revision** (`layer_catalog.engine_revision`, today 4). The template version pins the
 props contract; the engine revision pins the pixels. It is bumped with ANY change to
 `engine.ts`, `LayerStill.tsx`, `icons.tsx` or the font loading that can move a pixel, it is
 echoed as `report.engine_revision`, and Python puts it in the compose job id (and therefore in
@@ -119,6 +121,20 @@ new object, never «same key, different pixels». Fonts follow the same rule: a 
 Google Fonts catalogue knows is measured AND drawn with that face or the job fails (`timeout` /
 `dependency_failed`) — it never silently falls back to Noto Sans under the same key; only an
 unknown family uses the fallback, deterministically, with a `warnings` entry.
+
+**In live generation** (m-25040499, behind `QUALIFY_IMAGE_LAYER`): Python composes each slide
+that has a layer as one `layer_still` job (`qualify_api/creative/image_pipeline/compose_run.py`).
+A job that ran and failed (`render_error`, `internal_error`, a completed job without a report,
+a job `wait` gave up on) or any other 5xx is resubmitted under a NEW id — `attempt` N>0 is part
+of the `uuid5` name, attempt 0 keeps the id it always had — at most 3 attempts per slide. A
+refusal (`invalid_parameters`) is never resubmitted: the layer is rewritten once instead; any
+other 4xx fails the piece at once. When the service does not answer (a transport error,
+502/503/504), the piece waits in the queue up to 10 minutes from its first failure (never reset),
+trying at most once every 45 s, then fails; it is never drawn by another compositor instead.
+In practice a catalog price never triggers the price refusal: at the minimum title size the
+price line takes about 21–26 characters in `band` 1:1 (≈0.6–0.75 em per glyph), and
+`price_label` writes «$1.250.000» (10) or «Bs. 1.250.000,50» (16) — the refusal is the safety
+net for an unusually wide brand face or an implausible amount.
 
 `video_text` **v1** (EF-05, m-25026573; D1 of ADR 50) draws the owner's text over a video as
 ONE transparent PNG (port `overlay`, 1080×1920, format 9:16) that Python lays over every frame

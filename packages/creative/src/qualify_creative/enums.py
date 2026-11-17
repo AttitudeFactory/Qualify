@@ -250,6 +250,12 @@ class FailureReason(StrEnum):
     # or configuration bug, a folder of another business): the part keeps its form, its
     # vista previa is given back — not the template meaning of `invalid_parameters`.
     PART_FAILED = "part_failed"
+    # The text layer's compositor (m-25040499, ADR 49 §8.1 D4/D5): a priced image whose
+    # price could not be drawn even after one rewrite, and a still the render service
+    # could not draw (down for 10 minutes, three failed jobs, a request it rejected) —
+    # their own codes so the owner reads one reason, not the template's «no caben».
+    PRICE_DOES_NOT_FIT = "price_does_not_fit"
+    COMPOSE_UNAVAILABLE = "compose_unavailable"
 
     @property
     def is_part_reason(self) -> bool:

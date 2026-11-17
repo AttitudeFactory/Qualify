@@ -48,7 +48,7 @@ import base64
 import logging
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
@@ -88,6 +88,11 @@ logger = logging.getLogger(__name__)
 
 #: The switch (ADR 49, m-25017283): `on` turns the layer stage on; anything else, off.
 LAYER_SWITCH_ENV = "QUALIFY_IMAGE_LAYER"
+#: The pilot (founder, 2026-11-16: Bianki first): tenant UUIDs separated by commas that get
+#: the layer stage while `QUALIFY_IMAGE_LAYER` is not `on` — the allowlist pattern of
+#: `QUALIFY_HASHTAG_WEEKLY_TENANTS`. Empty or unset = nobody; an entry that is not a UUID is
+#: skipped and logged by count (a typo never turns it on for anyone).
+LAYER_TENANTS_ENV = "QUALIFY_IMAGE_LAYER_TENANTS"
 LAYER_MODEL = ModelConfig("claude-sonnet-5-5", effort="low")
 #: Prompt provenance (`piece_layers.prompt_version`, the ledger's prompt version).
 #: v1: CAPA-001; v2: CAPA-002; v3: per-piece slot table (CAPA-003); v4: review wording
@@ -128,10 +133,37 @@ def image_tokens(width: int | None, height: int | None) -> int:
     return min(VISION_TOKEN_CEILING, math.ceil(pixels / 750))
 
 
-def layer_enabled(env: dict[str, str] | None = None) -> bool:
-    """Whether the layer stage runs (`QUALIFY_IMAGE_LAYER=on`). Off by default."""
-    value = (env if env is not None else os.environ).get(LAYER_SWITCH_ENV, "")
-    return value.strip().lower() == "on"
+def layer_enabled(env: Mapping[str, str] | None = None, tenant_id: UUID | None = None) -> bool:
+    """THE switch of the image layer (layer stage, compose, the render wait): on for every
+    business with `QUALIFY_IMAGE_LAYER=on`; else only for `tenant_id` listed in
+    `QUALIFY_IMAGE_LAYER_TENANTS` (the pilot). Neither: off — only the environment is read."""
+    source = env if env is not None else os.environ
+    if source.get(LAYER_SWITCH_ENV, "").strip().lower() == "on":
+        return True
+    if tenant_id is None:
+        return False
+    return tenant_id in layer_tenants(source)
+
+
+def layer_tenants(env: Mapping[str, str] | None = None) -> frozenset[UUID]:
+    """The pilot's businesses (`QUALIFY_IMAGE_LAYER_TENANTS`); entries that are not UUIDs
+    are skipped and counted in the log, never their values."""
+    raw = (env if env is not None else os.environ).get(LAYER_TENANTS_ENV, "")
+    out: set[UUID] = set()
+    invalid = 0
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            out.add(UUID(piece))
+        except ValueError:
+            invalid += 1
+    if invalid:
+        logger.warning(
+            "image layer %s: ignored %d entries that are not UUIDs", LAYER_TENANTS_ENV, invalid
+        )
+    return frozenset(out)
 
 
 class LayerError(ClaudeToolError):
@@ -168,6 +200,9 @@ class CatalogProduct:
     product_id: UUID
     name: str
     has_price: bool
+    #: the price as the piece prints it (`catalog.read.price_label`: whole, in the business's
+    #: currency) — for the compositor only, never sent to the model (m-25040499)
+    price_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -220,6 +255,13 @@ class LayerRequest:
     #: A gallery's number of slides when only some are sent (its generated ones): the
     #: roles (cover, body, closing) follow the whole gallery. None: `len(slides)`.
     slide_count: int | None = None
+    #: m-25040499: why the compositor could not draw the previous layer of these images (a
+    #: price wider than its box, ADR 49 D5) — sent once, as a rewrite; "" on a first call
+    rewrite_note: str = ""
+    #: m-25040499: the price the piece prints — the CURRENT catalog label of the brief's
+    #: product (`layer_run.resolve_piece_price`), "" when the piece shows no price. Set, the
+    #: piece carries it exactly once, where `price_slots` says (catalog §4).
+    price_line: str = ""
 
     @property
     def is_carousel(self) -> bool:
@@ -228,6 +270,65 @@ class LayerRequest:
     @property
     def count(self) -> int:
         return self.slide_count or len(self.slides)
+
+
+def price_required(request: LayerRequest) -> bool:
+    """m-25040499: whether the piece MUST carry its price — the one condition the layer's
+    validation and the compositor both use (a price line and a product priced today)."""
+    return bool(request.price_line.strip()) and any(p.has_price for p in request.products)
+
+
+def price_slots(request: LayerRequest) -> tuple[int, ...]:
+    """The images that may carry the piece's price (catalog §4 and §6), () when it shows
+    none: a single image carries it on itself; a carousel on ONE of its development slides
+    (2 … N-1), never on the cover nor the closing; a carousel with no development slide
+    (cover + closing) on its cover — §4 excludes only «portada de carrusel con varios
+    productos», and the piece has one priced product."""
+    if not price_required(request):
+        return ()
+    if not request.is_carousel:
+        return tuple(s.position for s in request.slides)
+    development = tuple(range(1, request.count - 1))
+    return development or (0,)
+
+
+def piece_price_problems(
+    request: LayerRequest, priced: Collection[int], present: Collection[int]
+) -> dict[int, str]:
+    """The piece-level price rule (once per product, in its slot): `priced` are the images
+    whose layer points at the price, `present` the images that have a layer. A second
+    price is a problem on the extra image; a missing one, on the first slot with a layer.
+    The layer's validation and the compositor call this same function."""
+    slots = price_slots(request)
+    if not slots:
+        return {}
+    problems = {
+        p: "the price goes on a development image, never on the cover nor the closing: "
+        "leave price_product_id empty here"
+        for p in priced
+        if p not in slots
+    }
+    found = sorted(p for p in priced if p in slots)
+    if len(found) > 1:
+        problems.update(
+            {
+                p: f"the price is already on image {found[0]}: leave price_product_id empty"
+                for p in found[1:]
+            }
+        )
+        return problems
+    if found:
+        return problems
+    candidates = [p for p in slots if p in present]
+    if not candidates:
+        return problems
+    product = next(str(p.product_id) for p in request.products if p.has_price)
+    where = "this image" if not request.is_carousel else "this development image"
+    problems[candidates[0]] = (
+        f"the piece's price goes on {where}: set price_product_id to {product} and "
+        "pick a layout that takes a price (plate or band)"
+    )
+    return problems
 
 
 @dataclass
@@ -537,7 +638,9 @@ def _instructions(request: LayerRequest) -> str:
         f"Formato: {request.format}. Imágenes, en el orden de arriba: {positions}.\n\n"
         f"{_coverage_text(request)}\n\nDiseños de esta pieza en {request.format}:\n"
         f"{_limits_text(request)}\n\n{_facts_text(request)}\n\n"
-        f"La publicación:\n{_brief_text(request)}\n\nEntrega la capa con {LAYER_TOOL}."
+        f"La publicación:\n{_brief_text(request)}\n\n"
+        + (f"Corrección:\n{request.rewrite_note}\n\n" if request.rewrite_note else "")
+        + f"Entrega la capa con {LAYER_TOOL}."
     )
 
 
@@ -645,12 +748,25 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
         )
     price_ref = None
     product_id = str(raw.get("price_product_id") or "").strip()
+    priced = [str(p.product_id) for p in request.products if p.has_price]
     if product_id:
-        priced = {str(p.product_id) for p in request.products if p.has_price}
         if product_id not in priced:
-            problems.append(f"{product_id} is not a catalog product with a price")
+            problems.append(
+                f"{product_id} is not the price of this piece"
+                if request.price_line.strip()
+                else f"{product_id} is not a catalog product with a price"
+            )
         else:
             price_ref = {"product_id": product_id}
+    if price_ref is not None and price_required(request):
+        slots = price_slots(request)
+        if slide.position not in slots:
+            # catalog §4/§6: in a carousel the price goes on a development slide, once
+            problems.append(
+                "the price goes on a development image, never on the cover nor the closing: "
+                "leave price_product_id empty here"
+            )
+            price_ref = None
     highlight = None
     kind = raw.get("highlight_kind")
     if kind and kind != "none":
@@ -854,6 +970,11 @@ def write_layers(
             result.specs[position] = spec_from_answer(raw, request, slide)
         except ValueError as exc:
             broken[position] = str(exc)
+    if not request.rewrite_note:  # a rewrite sees a few images: the compositor checks the piece
+        priced_now = {p for p, spec in result.specs.items() if spec.price_ref is not None}
+        for position, why in piece_price_problems(request, priced_now, set(raw_of)).items():
+            result.specs.pop(position, None)
+            broken[position] = f"{broken[position]}; {why}" if position in broken else why
     if broken:
         result.repairs = 1
         repair = (

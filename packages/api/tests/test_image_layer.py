@@ -406,3 +406,36 @@ def test_business_info_takes_info_card_only() -> None:
     assert "«Información de tu negocio»: info_card" in text
     with pytest.raises(ValueError, match="is not one of info_card"):
         layer.spec_from_answer(_slide(), request, request.slides[0])
+
+
+def test_a_priced_piece_carries_its_price_once_where_the_catalog_says() -> None:
+    """m-25040499 (reviews of 2026-11-16): a single image carries its price; a carousel on one
+    development slide, never on the cover; a missing or second price is a problem the repair
+    turn fixes (`piece_price_problems`, the same rule the compositor applies)."""
+    request = _request(price_line="$12.000")
+    result, client = _run(
+        request, _response([_slide(price_product_id="")]), _response([_slide()], "toolu_2")
+    )
+    assert result.repairs == 1 and result.specs[0].price_ref is not None
+    assert "price goes on this image" in str(client.requests[1]["messages"][-1]["content"])
+    with pytest.raises(ValueError, match="is not the price of this piece"):
+        layer.spec_from_answer(
+            _slide(price_product_id=str(NO_PRICE.product_id)), request, request.slides[0]
+        )
+    gallery = _request(count=3, price_line="$12.000")
+    with pytest.raises(ValueError, match="never on the cover"):
+        layer.spec_from_answer(_slide(), gallery, gallery.slides[0])
+    assert layer.spec_from_answer(_slide(position=1), gallery, gallery.slides[1]).price_ref
+    # no price line: nothing required, nothing placed
+    plain = _request()
+    assert layer.spec_from_answer(_slide(price_product_id=""), plain, plain.slides[0])
+
+
+def test_the_piece_price_problem_is_added_to_a_slide_s_own() -> None:
+    """Review 3: a slide already broken keeps its problem; the price one is appended."""
+    request = _request(price_line="$12.000")
+    broken_slide = _slide(price_product_id="", layout_id="nope")
+    result, client = _run(request, _response([broken_slide]), _response([_slide()], "toolu_2"))
+    repair = str(client.requests[1]["messages"][-1]["content"])
+    assert "nope is not one of" in repair and "price goes on this image" in repair
+    assert result.specs[0].price_ref is not None

@@ -206,6 +206,20 @@ def test_every_failure_reason_maps_to_action() -> None:
             assert vm.action_label  # a CONCRETE action, never empty
 
 
+def test_a_still_the_compositor_could_not_draw_reads_one_honest_reason() -> None:
+    """m-25040499 (UX review 2026-11-16): not the template's «no caben» nor its «acorta el
+    texto» — one reason, that it was not charged, and a new order (no free retry yet)."""
+    for reason in ("price_does_not_fit", "compose_unavailable"):
+        vm = failure_vm(reason)
+        assert vm is not None
+        assert vm.label == (
+            "No pudimos terminar tu publicación. Esta no se te cobró. "
+            "Créala otra vez cuando quieras."
+        )
+        assert vm.action_label == "Crear otra publicación" and vm.action_route == "/create"
+        assert "caben" not in vm.label and "acorta" not in vm.action_label
+
+
 def test_a_part_that_failed_on_our_side_says_so_not_the_template() -> None:
     vm = failure_vm("part_failed")
     assert vm is not None

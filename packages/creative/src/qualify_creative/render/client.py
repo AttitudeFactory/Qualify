@@ -61,6 +61,11 @@ class RenderServiceError(Exception):
         self.message = message
 
 
+class RenderTimeout(RenderServiceError):
+    """`wait` gave up on a job (and cancelled it): the job ran too long — not the service
+    being down (a proxy's HTTP 504 is a plain `RenderServiceError`)."""
+
+
 @dataclass(frozen=True)
 class AssetRef:
     asset_id: str
@@ -305,7 +310,7 @@ class RemotionRenderClient:
                     self.cancel(job_id)
                 except RenderServiceError:
                     pass
-                raise RenderServiceError(
+                raise RenderTimeout(
                     "timeout", 504, f"render job {job_id} not finished after {timeout_seconds:.0f}s"
                 )
             self._sleep(interval_seconds)

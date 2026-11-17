@@ -160,6 +160,20 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "Ajusta el encargo: acorta el texto o agrega fotos del producto",
         "/create",
     ),
+    # The text layer's compositor (m-25040499): one honest reason, the piece is refunded
+    # (`_refund_if_not_delivered`); there is no free retry yet, so the button opens a new
+    # order. A catalog price label never overflows its box (≤ 21 characters fit the
+    # narrowest one), so the price code says the same — the owner has nothing to shorten.
+    "price_does_not_fit": (
+        "No pudimos terminar tu publicación. Esta no se te cobró. Créala otra vez cuando quieras.",
+        "Crear otra publicación",
+        "/create",
+    ),
+    "compose_unavailable": (
+        "No pudimos terminar tu publicación. Esta no se te cobró. Créala otra vez cuando quieras.",
+        "Crear otra publicación",
+        "/create",
+    ),
     "dependency_failed": (
         "No pudimos leer una foto, un video o una tipografía de tu marca.",
         "Revisa los archivos del producto y de tu marca y reintenta",

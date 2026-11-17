@@ -86,6 +86,9 @@ def test_the_products_a_brief_names_with_whether_their_price_prints(seeded) -> N
         ("Shawarma mixto", True),
         ("Shawarma de pollo", False),  # no price: the layer may not point at it
     ]
+    # m-25040499: the compositor prints the catalog's own label, whole (price_label)
+    assert all(bool(p.price_text) == p.has_price for p in prefix)
+    assert prefix[1].price_text == ""
     assert load_catalog_products(TENANT, seeded["brand"], "Descontinuado") == ()  # inactive
     assert load_catalog_products(TENANT, seeded["brand"], " ") == ()
 

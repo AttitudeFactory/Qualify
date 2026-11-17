@@ -14,6 +14,7 @@ from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.client import RemotionRenderClient, RenderServiceError
 from qualify_creative.render.layer_compose import (
     LAYOUT_VERSION,
+    ComposeJobFailed,
     LayerComposeRequest,
     LayerRefused,
     build_layer_props,
@@ -258,7 +259,20 @@ def test_a_refused_layer_raises_and_stores_nothing() -> None:
         )
     assert err.value.code == "invalid_parameters"
     assert not isinstance(err.value, LayerRefused)
+    assert not isinstance(err.value, ComposeJobFailed)  # a refusal is never an attempt to repeat
     assert stored == {}
+
+
+def test_a_job_that_failed_is_worth_a_new_attempt() -> None:
+    """m-25040499: a render that ran and failed is `ComposeJobFailed`; the next attempt is a
+    new job id (attempt 0 keeps the one it always had)."""
+    service = FakeRenderService(fail="render_error")
+    with pytest.raises(ComposeJobFailed) as err:
+        compose_layer(_client(service), _request(), read_media=MEDIA.__getitem__)
+    assert err.value.code == "render_error"
+    assert _request(attempt=0).job_id() == _request().job_id()
+    ids = {_request(attempt=n).job_id() for n in range(3)}
+    assert len(ids) == 3
 
 
 def test_an_unrenderable_layer_surfaces_the_slot_to_rewrite() -> None:
