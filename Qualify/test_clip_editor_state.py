@@ -313,18 +313,29 @@ def test_text_is_kept_when_the_field_is_left(editor_on: None) -> None:
 
 
 def test_effects_offer_only_what_exists(editor_on: None) -> None:
+    # EF-08 (m-25029102): the smoke, ember and steam loops exist in assets/effects/
     state = _measured()
-    assert [row["id"] for row in state.clip_edit_effect_rows] == ["camara_rapida"]
+    assert [row["id"] for row in state.clip_edit_effect_rows] == [
+        "vapor_capa",
+        "humo_capa",
+        "brasas_capa",
+        "camara_rapida",
+    ]
     CreativeState.toggle_clip_effect.fn(state, "humo_capa")
-    assert state.clip_effect_ids == []  # its loop does not exist yet: never offered
-    assert state.clip_edit_effect_srcs == []
+    assert state.clip_effect_ids == ["humo_capa"]
+    assert state.clip_edit_effect_srcs == ["/effects/humo_capa/v1/preview.webm"]
 
 
 def test_photos_only_has_no_cut_nor_fast_motion(editor_on: None) -> None:
     state = _state()
     state.clip_videos = []
     assert state.clip_edit_tools == ["media", "idea", "effects"]
-    assert state.clip_edit_effect_rows == []
+    # the layers need no own video (EF-08: their loops exist); fast motion does
+    assert [row["id"] for row in state.clip_edit_effect_rows] == [
+        "vapor_capa",
+        "humo_capa",
+        "brasas_capa",
+    ]
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
     assert state.clip_effect_ids == []
     state.clip_edit_tool = "cut"

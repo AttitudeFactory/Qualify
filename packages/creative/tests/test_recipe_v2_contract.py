@@ -223,7 +223,7 @@ def test_v2_lets_an_effect_repeat_v1_still_refuses_it() -> None:
 
 def test_v2_is_v1_but_for_max_per_part() -> None:
     v1, v2 = load_effects("v1"), load_effects("v2")
-    assert load_effects() is v2 and (v1.version, v2.version) == (1, 2)
+    assert (v1.version, v2.version) == (1, 2)  # EF-08: the default is v3 now
     assert [(e.id, e.version) for e in v1.entries] == [(e.id, e.version) for e in v2.entries]
     for old, new in zip(v1.entries, v2.entries, strict=True):
         assert old.model_dump(exclude={"max_per_part"}) == new.model_dump(exclude={"max_per_part"})

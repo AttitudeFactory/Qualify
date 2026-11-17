@@ -19,7 +19,8 @@ reads nothing from R2). The service calls it on every new request through
 `refuse_unbuilt_recipe`, which adds the refusals that are not about validity: what the
 effects engine does not draw yet (`unbuilt_recipe_problems`: fail closed, nothing is
 written, charged or sent to Seedance). EF-06 makes `local` pieces from their stretches
-(`video_pipeline.local`).
+(`video_pipeline.local`), and EF-08 lays the library's recorded layers (smoke,
+embers, steam) over them.
 
 Where each rule lives (decided in EF-02): the brief's own validator keeps the rules that
 need no library and never change — `local` needs own video, effects only on a video,
@@ -363,6 +364,20 @@ class RecipeRefused(ValueError):
         super().__init__(", ".join(p.code for p in self.problems))
 
 
+def is_built_layer(use: EffectUse, library: EffectsLibrary | None = None) -> bool:
+    """Whether `use` names a layer the compose lays (EF-08): its library entry, at its
+    version, is of stage `compose` with an `asset` folder and a blend (`humo_capa`,
+    `brasas_capa`, `vapor_capa`). Whether it is offered and its params are valid is
+    `validate_recipe`'s. Pure (the library is cached)."""
+    entry = (library or load_effects()).get(use.effect_id, use.version)
+    return (
+        entry is not None
+        and entry.stage == "compose"
+        and entry.asset is not None
+        and entry.blend is not None
+    )
+
+
 def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     """What a valid recipe still cannot be made with today (pure), so the owner never
     pays for a video without what he chose.
@@ -371,11 +386,14 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     turned, sped up, held still: `video_pipeline.local`), and EF-05's compose draws the
     texts over it, so neither `local` nor the stretches nor the texts of a `local` piece
     are refused any more (a text's design is still checked: only the `scrim` is drawn,
-    `unknown_layout`). Still refused (`recipe_unavailable`) until the effects engine
-    draws them: effects (layers, EF-08), a text over a piece that is not `local` (no
-    compose runs after Seedance), a transition (`fundido`/`barrido`), stretches of a
-    piece that is not `local` (Seedance would only follow them), the parent's
-    whole-video texts and its `video_recipe` (ED-15).
+    `unknown_layout`). EF-08 lays the library's recorded layers (`is_built_layer`: an
+    entry of stage `compose` with an `asset`) over a `local` piece, so those uses are not
+    refused either. Still refused (`recipe_unavailable`) until the effects engine draws
+    them: any other effect (a Seedance template, `camara_rapida` as an effect, an unknown
+    one) and any effect on a piece that is not `local` (no compose runs after Seedance),
+    a text over a piece that is not `local`, a transition (`fundido`/`barrido`),
+    stretches of a piece that is not `local` (Seedance would only follow them), the
+    parent's whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
     producing is refused."""
     found: list[RecipeProblem] = []
@@ -383,8 +401,10 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     for part in recipe_of(brief):
         number = None if in_clip else part.index
         local = part.mode == "local"
+        unbuilt = tuple(use for use in part.effects if not (local and is_built_layer(use)))
         for field, value in (
-            ("effects", part.effects),
+            # EF-08: a library layer over a `local` piece is laid (`video_pipeline.local`)
+            ("effects", unbuilt),
             # EF-05: the compose step draws the texts over a `local` piece's built video
             ("text_layers", part.text_layers if not local else ()),
             ("segments", part.segments if not local else ()),
@@ -420,6 +440,7 @@ __all__ = [
     "recipe_of_parts",
     "refuse_unbuilt_recipe",
     "unbuilt_recipe_problems",
+    "is_built_layer",
     "validate_brief_recipe",
     "validate_recipe",
     "validate_video_recipe",

@@ -137,6 +137,70 @@ def _frame_rate(stream: Any) -> Fraction:
     return Fraction(30)
 
 
+def _prepare_texts(
+    layers: Sequence[TimedLayer], size: tuple[int, int]
+) -> list[tuple[Any, tuple[int, int], TimedLayer]]:
+    """Each visible layer at the video's `size`, cropped: (RGBA array, top-left, layer)."""
+    prepared: list[tuple[Any, tuple[int, int], TimedLayer]] = []
+    for layer in layers:
+        crop = _layer_ndarray(layer.png, size)
+        if crop is not None:
+            prepared.append((crop[0], crop[1], layer))
+    return prepared
+
+
+def _link_texts(
+    graph: Any,
+    head: Any,
+    prepared: Sequence[tuple[Any, tuple[int, int], TimedLayer]],
+    base: Fraction,
+    origin: float,
+) -> tuple[Any, list[tuple[Any, Any]]]:
+    """The texts' part of a filter graph (shared with `layer_overlay`'s single pass): over
+    a yuv420p `head`, one `buffer` (+ `fade` on the alpha) + `overlay` per layer, shown
+    from its start to its end on the video's own clock. Returns the new head and the
+    (buffer, pixels) pairs `_push_texts` feeds once per video frame."""
+    inputs: list[tuple[Any, Any]] = []
+    for pixels, (x, y), layer in prepared:
+        h, w = pixels.shape[:2]
+        buffer = graph.add(
+            "buffer",
+            f"video_size={w}x{h}:pix_fmt=rgba"
+            f":time_base={base.numerator}/{base.denominator}:pixel_aspect=1/1",
+        )
+        start = layer.start_s + origin
+        last = buffer
+        if layer.fade_in_s > 0:
+            fade = graph.add(
+                "fade",
+                f"type=in:start_time={start:.6f}:duration={layer.fade_in_s:.6f}:alpha=1",
+            )
+            buffer.link_to(fade)
+            last = fade
+        shown_when = f"gte(t,{start:.6f})"
+        if layer.end_s is not None:
+            shown_when += f"*lt(t,{layer.end_s + origin:.6f})"
+        over = graph.add(
+            "overlay",
+            f"x={x}:y={y}:format=yuv420:eof_action=repeat:enable={_escape(shown_when)}",
+        )
+        head.link_to(over, 0, 0)
+        last.link_to(over, 0, 1)
+        head = over
+        inputs.append((buffer, pixels))
+    return head, inputs
+
+
+def _push_texts(av: Any, inputs: Sequence[tuple[Any, Any]], frame: Any, base: Fraction) -> None:
+    """One picture of every text for the video `frame` about to be pushed, same timestamp."""
+    for buffer, pixels in inputs:
+        # a fresh frame each time: `fade` writes into the frame it gets
+        copy = av.VideoFrame.from_ndarray(pixels, format="rgba")
+        copy.pts = frame.pts
+        copy.time_base = base
+        buffer.push(copy)
+
+
 def overlay_text_layers(
     src: Path | str,
     out: Path | str,
@@ -197,11 +261,7 @@ def _encode(
         origin = float(stream.start_time * base) if stream.start_time is not None else 0.0
         audio_in = source.streams.audio[0] if source.streams.audio else None
 
-        prepared: list[tuple[Any, tuple[int, int], TimedLayer]] = []
-        for layer in layers:
-            crop = _layer_ndarray(layer.png, (width, height))
-            if crop is not None:
-                prepared.append((crop[0], crop[1], layer))
+        prepared = _prepare_texts(layers, (width, height))
 
         frames = 0
         with av.open(str(out), mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
@@ -229,45 +289,13 @@ def _encode(
             to_yuv = graph.add("format", "yuv420p")
             head.link_to(to_yuv)
             head = to_yuv
-            inputs: list[tuple[Any, Any]] = []
-            for pixels, (x, y), layer in prepared:
-                h, w = pixels.shape[:2]
-                buffer = graph.add(
-                    "buffer",
-                    f"video_size={w}x{h}:pix_fmt=rgba"
-                    f":time_base={base.numerator}/{base.denominator}:pixel_aspect=1/1",
-                )
-                start = layer.start_s + origin
-                last = buffer
-                if layer.fade_in_s > 0:
-                    fade = graph.add(
-                        "fade",
-                        f"type=in:start_time={start:.6f}:duration={layer.fade_in_s:.6f}:alpha=1",
-                    )
-                    buffer.link_to(fade)
-                    last = fade
-                shown_when = f"gte(t,{start:.6f})"
-                if layer.end_s is not None:
-                    shown_when += f"*lt(t,{layer.end_s + origin:.6f})"
-                over = graph.add(
-                    "overlay",
-                    f"x={x}:y={y}:format=yuv420:eof_action=repeat:enable={_escape(shown_when)}",
-                )
-                head.link_to(over, 0, 0)
-                last.link_to(over, 0, 1)
-                head = over
-                inputs.append((buffer, pixels))
+            head, inputs = _link_texts(graph, head, prepared, base, origin)
             sink_out = graph.add("buffersink")
             head.link_to(sink_out)
             graph.configure()
 
             def push(frame: Any) -> None:
-                for buffer, pixels in inputs:
-                    # a fresh frame each time: `fade` writes into the frame it gets
-                    copy = av.VideoFrame.from_ndarray(pixels, format="rgba")
-                    copy.pts = frame.pts
-                    copy.time_base = base
-                    buffer.push(copy)
+                _push_texts(av, inputs, frame, base)
                 video_in.push(frame)
 
             def drain() -> int:

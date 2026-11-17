@@ -106,11 +106,22 @@ def layers_offered(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.Tem
 def test_the_real_v1_library_refuses_an_unoffered_layer() -> None:
     from qualify_creative.effects import load_effects
 
+    # EF-08: the default library (v3) offers the recorded layers; v2 still does not
     part = PartRecipe(index=1, seconds=5, effects=(SMOKE,))
-    problems = validate_recipe((part,), video_by_parts=False, library=load_effects())
+    problems = validate_recipe((part,), video_by_parts=False, library=load_effects("v2"))
     assert [(p.code, p.field, p.effect_id) for p in problems] == [
         ("not_offered", "effects[0]", "humo_capa")
     ]
+
+
+def test_the_real_v3_library_offers_the_recorded_layers() -> None:
+    """EF-08 (m-25029102): smoke, embers and steam are recorded and offered from v3."""
+    from qualify_creative.effects import load_effects
+
+    for layer in ("humo_capa", "brasas_capa", "vapor_capa"):
+        use = SMOKE.model_copy(update={"effect_id": layer, "params": ()})
+        part = PartRecipe(index=1, seconds=5, effects=(use,))
+        assert validate_recipe((part,), video_by_parts=False, library=load_effects()) == ()
 
 
 def _stretch(key: str = OWN) -> SourceSegment:
@@ -351,8 +362,9 @@ def test_saving_a_plan_with_a_stretch_of_another_business_is_refused(
 
 
 def test_a_local_clip_with_effects_is_refused_before_any_row_or_dispatch() -> None:
-    """EF-06 makes a `local` Clip from its stretches; its EFFECTS (layers, EF-08) are
-    still refused — and only they: neither `local` nor its stretches."""
+    """EF-06 makes a `local` Clip from its stretches and EF-08 lays the library's layers
+    over it; any OTHER effect (here fast motion as an effect) is still refused — and only
+    it: neither `local` nor its stretches."""
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     brief = _clip(clip_reference_mode="local", segments=(_stretch(),), effects=(FAST,))
     with pytest.raises(RecipeRefused) as refused:
@@ -417,7 +429,8 @@ def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) 
 def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> None:
     """EF-06 + EF-05: the texts of a `local` Clip or a `local` part are drawn over the
     built video, so they are no longer `recipe_unavailable`; a text over a part that is
-    NOT `local` (Seedance) still is, and so are a local piece's effects."""
+    NOT `local` (Seedance) still is. EF-08: a library layer over a `local` part is laid
+    too, so it is no longer refused either."""
     from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
 
     local_clip = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(WORDS,))
@@ -437,7 +450,6 @@ def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> No
     )
     assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)] == [
         ("recipe_unavailable", 1, "text_layers"),
-        ("recipe_unavailable", 3, "effects"),
     ]
 
 
