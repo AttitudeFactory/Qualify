@@ -116,13 +116,35 @@ def test_dry_run_compares_without_file_changes_backups_or_restart(stage):
 @pytest.mark.parametrize("action", ["env-push", "env-stage"])
 @pytest.mark.parametrize(
     "key",
-    ["QUALIFY_DEV_FERNET_KEY", "QUALIFY_PUBLIC_URL", "COMPOSE_PROJECT_NAME", "QUALIFY_IMAGE_APP"],
+    [
+        "QUALIFY_DEV_FERNET_KEY",
+        "QUALIFY_PUBLIC_URL",
+        "COMPOSE_PROJECT_NAME",
+        "COMPOSE_PROFILES",
+        "QUALIFY_IMAGE_PREFIX",
+        "QUALIFY_IMAGE_TAG",
+    ],
 )
 def test_both_modes_keep_dangerous_key_refusals_before_ssh(stage, action, key):
     run, _, _, calls = stage
     result = run(key, action=action)
     assert result.returncode != 0 and f"refusing {key}" in result.stderr
     assert not calls.exists()
+
+
+@pytest.mark.parametrize("action", ["env-push", "env-stage"])
+@pytest.mark.parametrize("key", ["QUALIFY_IMAGE_LAYER", "QUALIFY_IMAGE_LAYER_TENANTS"])
+def test_image_layer_flags_are_runtime_settings_not_refused(stage, action, key):
+    # m-25041793: the stack-shape guard covers the image coordinates only, not these flags.
+    run, source, destination, calls = stage
+    source.write_text(source.read_text() + f"{key}=on\n")
+    before = destination.read_bytes()
+    result = run("--dry-run", key, action=action)
+    assert result.returncode == 0, result.stderr
+    assert "refusing" not in result.stderr
+    assert "Dry run: .env.prod untouched" in result.stdout
+    assert destination.read_bytes() == before
+    assert len(calls.read_text().splitlines()) == 1
 
 
 def test_env_push_still_refuses_role_password_and_points_to_staging(stage):
