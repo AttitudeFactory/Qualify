@@ -172,6 +172,7 @@ def ad_image(
         title_font=kit.typeface,  # the face the render draws titles with (heading, else body)
         # m-25040499: the price Pillow prints on the cover — required there, else none at all
         price_line=media.price_line,
+        usage=usage,  # m-25042157: the layer calls are part of the piece's cost
     )
     based = [outcome.scenes[index] for index in range(len(based))]
     layers = outcome.layers
@@ -555,6 +556,7 @@ def carousel(
             style=style,
             save=save,
             total=total,
+            usage=usage,
         )
     if media.closing_slide:
         closing = render_closing_slide(
@@ -620,6 +622,7 @@ def _gallery_layers(
     style: TextStyle,
     save: _Saver,
     total: int,
+    usage: list[MediaUsage] | None = None,
 ) -> None:
     """m-25017283: ONE layer call for the gallery's generated still slides (ADR 49 §2.5),
     only with QUALIFY_IMAGE_LAYER=on. A slide whose base was made again once (invented text)
@@ -636,6 +639,7 @@ def _gallery_layers(
         regenerate=lambda position: carousel_slide_scene(producer, **generated[position][1]),
         gallery=True,
         slide_count=total,
+        usage=usage,  # m-25042157: the layer calls are part of the piece's cost
         title_font=kit.typeface,  # the face the render draws titles with (heading, else body)
     )
     composed = compose_slides(
