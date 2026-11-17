@@ -30,8 +30,7 @@ class LockedBucket(MemoryStore):
     def keep_outcome(self, tenant_id: Any, key: str, data: bytes, content_type: str) -> str:
         if key in self.files and self.files[key] != data:
             logging.getLogger("qualify_api.creative.media").info(
-                "R2 key %s already holds another file: never overwritten, the new one goes "
-                "beside it",
+                "R2 key %s already holds another file: never overwritten",
                 key,
             )
             return OCCUPIED
@@ -75,7 +74,7 @@ def test_a_regenerated_base_is_kept_beside_and_is_the_one_composed(
     # the layer was written for it and the compositor drew it
     drawn = [r for r in composer.requests if r.position == 1]
     assert drawn and drawn[-1].base_sha256 == sha and drawn[-1].base_key == second.base.key
-    assert "kept as" in caplog.text and "goes beside it" in caplog.text
+    assert "kept as" in caplog.text
     assert not any(
         r.levelno >= logging.WARNING and "holds another" in r.getMessage() for r in caplog.records
     )

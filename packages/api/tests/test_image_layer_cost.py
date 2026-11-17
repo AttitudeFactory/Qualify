@@ -168,3 +168,69 @@ def test_the_service_writes_the_line_with_its_pricing_table() -> None:
         "v10",
     )
     assert (write.input_tokens, write.output_tokens, write.cost_usd) == (6000, 900, COST)
+
+
+def _failing_stage(stats: CallStats, usage: list[MediaUsage], calls: list[int]) -> Any:
+    from types import SimpleNamespace
+
+    from qualify_creative.enums import ContentKind
+
+    from qualify_api.creative.image_pipeline import layer_run
+    from qualify_api.creative.image_pipeline.base import BaseScene
+    from qualify_api.creative.image_pipeline.layer import BusinessFacts
+
+    from .test_creative_media_byteplus import _brief
+
+    def failing(request: LayerRequest, *, budget: Any) -> LayerResult:
+        calls.append(1)
+        raise LayerError("no tool call", stats=stats)
+
+    producer = SimpleNamespace()
+    _wire(producer, Writer(), [])
+    producer._layer_writer = failing
+    producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), ())
+    return layer_run.run_layer_stage(
+        producer,
+        tenant_id=TENANT_ID,
+        draft_id=DRAFT,
+        revision=1,
+        brief=_brief(ContentKind.STATIC_FLYER),
+        copy=COPY,
+        brand="Korner",
+        scenes={0: BaseScene(b"a", "p0")},
+        regenerate=lambda p: None,
+        gallery=False,
+        usage=usage,
+        env={"QUALIFY_IMAGE_LAYER": "on"},
+    )
+
+
+DRAFT = uuid4()
+
+
+def test_a_failed_paid_call_is_booked_by_the_pass_that_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review: the pass that paid and failed may die before it is written; the tokens ride
+    with the step's error row and a later pass books them — once, without calling again."""
+    from qualify_api.creative.image_pipeline.layer_run import LAYER_STEPS
+
+    checkpoints = JsonCheckpoints()
+    monkeypatch.setattr(pipeline, "PipelineStore", lambda: checkpoints)
+    calls: list[int] = []
+    for _ in range(2):  # pass 1 pays and fails; pass 2 replays the error row
+        usage: list[MediaUsage] = []
+        run = pipeline.Preparation(TENANT_ID, DRAFT, 1, "generation", uuid4(), 1)
+        with pipeline.preparing(run):
+            _failing_stage(STATS, usage, calls)
+        assert len(calls) == 1  # never called again
+        assert [_usd(u.cost_usd) for u in _layer_lines(usage)] == [COST]  # once per pass
+    row = checkpoints.rows[LAYER_STEPS[0]]
+    assert row["error"] == "layer failed: LayerError"
+    assert row["result"]["failed_usage"]["input_tokens"] == 6000
+
+
+def test_a_call_that_consumed_nothing_leaves_no_line() -> None:
+    usage: list[MediaUsage] = []
+    _failing_stage(CallStats(SONNET, None, input_tokens=0, output_tokens=0), usage, [])
+    assert usage == []

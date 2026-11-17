@@ -966,13 +966,9 @@ class R2ReadingMediaStore:
             logger.info("generated media already kept in R2 (%s): reused", key)
             return KEPT
         if held == "other":
-            # not an error (draft 70399135, 2026-11-17: a regenerated base): the caller keeps
-            # the new file beside it, under a key named by its content (`_Saver._keep`)
-            logger.info(
-                "R2 key %s already holds another file: never overwritten, the new one goes "
-                "beside it",
-                key,
-            )
+            # what the caller does with it is the caller's (`_Saver._keep` keeps the new
+            # file under a key of its own and says so; a `keep()` caller fails)
+            logger.info("R2 key %s already holds another file: never overwritten", key)
             return OCCUPIED
         for attempt in range(1, _KEEP_ATTEMPTS + 1):
             try:

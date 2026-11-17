@@ -301,24 +301,37 @@ def _media_usage(producer: Any, stats: Mapping[str, Any]) -> MediaUsage:
     )
 
 
+def _append(producer: Any, usage: list[MediaUsage] | None, stats: Mapping[str, Any] | None) -> None:
+    """One usage line for a call that consumed tokens (a budget refused before any turn
+    consumed none: no line)."""
+    if usage is None or not stats:
+        return
+    if int(stats.get("input_tokens", 0)) + int(stats.get("output_tokens", 0)) <= 0:
+        return
+    usage.append(_media_usage(producer, stats))
+
+
 def _book(producer: Any, usage: list[MediaUsage] | None, saved: Mapping[str, Any] | None) -> None:
     """Add a saved layer call to the piece's usage — on every pass, the replay included:
     the usage list is rebuilt each pass and only the pass that finishes is written."""
-    stats = ((saved or {}).get("layer") or {}).get("usage")
-    if usage is not None and stats:
-        usage.append(_media_usage(producer, stats))
+    _append(producer, usage, ((saved or {}).get("layer") or {}).get("usage"))
+
+
+def _booker(producer: Any, usage: list[MediaUsage] | None) -> Callable[[Mapping[str, Any]], None]:
+    """What `_checkpointed` calls with a FAILED step's saved usage on a replay."""
+    return lambda stats: _append(producer, usage, stats)
 
 
 def _paid(
     producer: Any, usage: list[MediaUsage] | None, call: Callable[[], LayerResult]
 ) -> LayerResult:
     """`call()`; when it fails after paying (`ClaudeToolError.stats`), that spend still
-    goes into this pass's usage before the error goes on."""
+    goes into this pass's usage before the error goes on (and `_checkpointed` saves it with
+    the step's error, so a later pass books it too)."""
     try:
         return call()
     except ClaudeToolError as exc:
-        if exc.stats is not None and usage is not None:
-            usage.append(_media_usage(producer, _stats_json(exc.stats) or {}))
+        _append(producer, usage, _stats_json(exc.stats))
         raise
 
 
@@ -335,11 +348,16 @@ def _result_from_json(data: Mapping[str, Any]) -> LayerResult:
 
 
 def _checkpointed(
-    step: int, request: LayerRequest, compute: Callable[[], dict[str, Any]]
+    step: int,
+    request: LayerRequest,
+    compute: Callable[[], dict[str, Any]],
+    book_failed: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any] | None:
     """`compute()` once per preparation: outside the queue it just runs; inside, its
     value is the step's saved result. None: an earlier pass left the step in flight or
-    failed — a paid call may have been billed, so it is never made again."""
+    failed — a paid call may have been billed, so it is never made again. A call that
+    failed AFTER paying keeps its tokens with the error (`failed_usage`), and every later
+    pass books them through `book_failed` (m-25042157): the pass that finishes writes them."""
     run = pipeline.current_preparation()
     if run is None:
         return compute()
@@ -357,9 +375,10 @@ def _checkpointed(
             },
             None,
         )
-    if row["result"] is not None:
-        return dict(row["result"])
     if row["error"] is not None:
+        failed = (row["result"] or {}).get("failed_usage") if row["result"] else None
+        if failed and book_failed is not None:
+            book_failed(failed)
         logger.warning(
             "draft %s: layer step %s was left %s, no layer this time",
             run.draft_id,
@@ -367,6 +386,8 @@ def _checkpointed(
             row["error"],
         )
         return None
+    if row["result"] is not None:
+        return dict(row["result"])
     store.intent(run, step)
     identity = {**run.params(), "s": step}
     try:
@@ -374,10 +395,12 @@ def _checkpointed(
     except QUEUE_SIGNALS:
         raise
     except Exception as exc:
+        paid = _stats_json(getattr(exc, "stats", None))
         store.complete_step(
             run.tenant_id,
             identity=identity,
-            result=None,
+            # the error row keeps what the failed call consumed (read only on that branch)
+            result={"failed_usage": paid} if paid else None,
             error=f"layer failed: {type(exc).__name__}",
             run=run,
         )
@@ -481,7 +504,7 @@ def run_layer_stage(
                 "spent_usd": str(budget.spent_usd),
             }
 
-        saved = _checkpointed(LAYER_STEPS[0], request, first)
+        saved = _checkpointed(LAYER_STEPS[0], request, first, _booker(producer, usage))
         if saved is None:
             return without_layers()
         _charge_back(budget, saved)  # a replay: this meter has not seen the first call yet
@@ -504,7 +527,9 @@ def run_layer_stage(
                     answer = _paid(producer, usage, lambda: writer(again_request, budget=budget))
                     return {"layer": _result_json(answer), "spent_usd": str(budget.spent_usd)}
 
-                again = _checkpointed(LAYER_STEPS[1], again_request, second)
+                again = _checkpointed(
+                    LAYER_STEPS[1], again_request, second, _booker(producer, usage)
+                )
                 _charge_back(budget, again)
                 _book(producer, usage, again)
             except QUEUE_SIGNALS:
@@ -570,7 +595,7 @@ def rewrite_layers(
         answer = _paid(producer, outcome.usage, lambda: writer(again, budget=budget))
         return {"layer": _result_json(answer), "spent_usd": str(budget.spent_usd)}
 
-    saved = _checkpointed(LAYER_STEPS[2], again, call)
+    saved = _checkpointed(LAYER_STEPS[2], again, call, _booker(producer, outcome.usage))
     if saved is None:
         raise RuntimeError("the layer rewrite was left unfinished in an earlier pass")
     _charge_back(budget, saved)
