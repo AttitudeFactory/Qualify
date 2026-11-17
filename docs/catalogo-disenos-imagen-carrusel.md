@@ -611,8 +611,9 @@ preferencia. «—» = esa combinación no existe.
   carrusel lo lleva en **una sola** diapositiva de desarrollo (2 … N-1), nunca en la portada ni en
   el cierre. `[H]` Un carrusel sin desarrollo (portada y cierre) lo lleva en la portada: es una
   lectura de la exclusión de arriba (la portada «con varios productos»; la pieza tiene un solo
-  producto con precio), no una decisión del fundador — pendiente de su confirmación. Un segundo precio del mismo producto en la pieza es un error que Claude corrige; la
-  validación de la capa y el compositor usan la misma regla (`piece_price_problems`).
+  producto con precio), no una decisión del fundador — pendiente de su confirmación. Un segundo
+  precio del mismo producto en la pieza es un error que Claude corrige; la validación de la capa y
+  el compositor usan la misma regla (`piece_price_problems`).
 - **El precio es el del catálogo hoy:** la pieza muestra precio si su encargo lo traía
   (`price_line`), pero la cifra es la etiqueta **actual** del producto del encargo en el catálogo.
   `[H]` Imprimir la etiqueta nueva cuando cambió desde el encargo (el texto de la publicación
@@ -625,8 +626,10 @@ preferencia. «—» = esa combinación no existe.
   con precio nunca se publica sin él. **Construido** (m-25040499, `engine_revision` 4,
   §1.7): rechazo con `slot: 'price'`, una reescritura y, si no basta, la pieza falla
   (`price_does_not_fit`). También falla si la imagen que debía llevar el precio no tiene capa
-  (queda con la composición anterior, que no dibuja precios): nunca se publica sin precio ni se
-  dibuja el precio con otro compositor.
+  (queda con la composición anterior, que no dibuja precios) y si toda la etapa de la capa falla
+  (Claude no responde, el tope de US$0,25, un paso que quedó a medias): una pieza con precio falla
+  y se devuelve la creación antes que salir sin él; una pieza sin precio sigue como antes. Nunca
+  se dibuja el precio con otro compositor.
 
 ### Logo
 

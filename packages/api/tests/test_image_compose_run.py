@@ -993,3 +993,80 @@ def test_review4_the_wait_log_is_bounded_and_forgets_finished_pieces(
     assert (TENANT_ID, DRAFT, 1) in compose_run._last_wait_log
     _compose(_outcome({0: _layer(0)}), Composer())
     assert (TENANT_ID, DRAFT, 1) not in compose_run._last_wait_log
+
+
+def _stage_outcome(writer: Writer, *, price_text: str, env: dict[str, str] | None = None):  # noqa: ANN202
+    """The layer stage of a flyer whose product is priced `price_text` today ("" = none)."""
+    from qualify_creative.enums import ContentKind
+
+    from qualify_api.creative.image_pipeline import layer_run
+
+    from .test_creative_media_byteplus import _brief
+
+    mine = CatalogProduct(
+        uuid4(), "Shawarma mixto", has_price=bool(price_text), price_text=price_text
+    )
+    producer = SimpleNamespace()
+    _wire(producer, writer, [])
+    producer._layer_context = lambda tenant, brand, ref: (BusinessFacts(), (mine,))
+    brief = _brief(ContentKind.STATIC_FLYER).model_copy(update={"product_ref": "Shawarma mixto"})
+    return layer_run.run_layer_stage(
+        producer,
+        tenant_id=TENANT_ID,
+        draft_id=DRAFT,
+        revision=1,
+        brief=brief,
+        copy=COPY,
+        brand="Korner",
+        scenes={0: BaseScene(b"a", "p0")},
+        regenerate=lambda p: None,
+        gallery=False,
+        price_line="$12.000",
+        env=ON if env is None else env,
+    )
+
+
+def test_review4_a_priced_piece_fails_when_the_layer_call_fails() -> None:
+    """Claude down / over budget: no layers, but the price still rides along — the piece
+    fails with price_does_not_fit (and is refunded) rather than publish without its price."""
+    from qualify_api.creative.image_pipeline.compose_run import require_price_drawn
+
+    outcome = _stage_outcome(Writer(fail=True), price_text="$12.000")
+    assert outcome.layers == {} and outcome.request is not None
+    with pytest.raises(_MediaFailed) as failed:
+        require_price_drawn(outcome, {})
+    assert failed.value.failure == PRICE_FAILURE
+
+
+def test_review4_a_priced_piece_fails_when_the_layer_step_was_left_unfinished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.image_pipeline.compose_run import require_price_drawn
+    from qualify_api.creative.image_pipeline.layer_run import LAYER_STEPS
+
+    checkpoints = JsonCheckpoints()
+    checkpoints.rows[LAYER_STEPS[0]] = {
+        "request": {},
+        "job_id": None,
+        "result": None,
+        "error": "in_flight",
+    }
+    monkeypatch.setattr(pipeline, "PipelineStore", lambda: checkpoints)
+    run = pipeline.Preparation(TENANT_ID, DRAFT, 1, "generation", uuid4(), 1)
+    writer = Writer()
+    with pipeline.preparing(run):
+        outcome = _stage_outcome(writer, price_text="$12.000")
+    assert writer.requests == [] and outcome.layers == {}
+    with pytest.raises(_MediaFailed) as failed:
+        require_price_drawn(outcome, {})
+    assert failed.value.failure == PRICE_FAILURE
+
+
+def test_review4_a_piece_without_price_keeps_the_fallback() -> None:
+    from qualify_api.creative.image_pipeline.compose_run import require_price_drawn
+
+    outcome = _stage_outcome(Writer(fail=True), price_text="")  # no price today
+    require_price_drawn(outcome, {})  # goes on without layers, as before
+    off = _stage_outcome(Writer(fail=True), price_text="$12.000", env={})
+    assert off.request is None and off.layers == {}  # off: nothing built, nothing checked
+    require_price_drawn(off, {})

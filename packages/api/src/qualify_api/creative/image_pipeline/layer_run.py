@@ -340,6 +340,15 @@ def run_layer_stage(
         return LayerOutcome(scenes, {})
     writer, claim, context = _seams(producer)
     budget = DollarMeter(LAYER_BUDGET_USD)  # ONE meter for every call of this piece
+    request: LayerRequest | None = None
+    price: PiecePrice | None = None
+
+    def without_layers() -> LayerOutcome:
+        """The stage failed: no layers. The request and the price, once known, still ride
+        along, so a priced piece fails (`require_price_drawn`, founder's D5: never published
+        without its price) instead of falling back; a piece without price goes on as before."""
+        return LayerOutcome(scenes, {}, (), request, budget, {}, price)
+
     try:
         facts, found = context(tenant_id, brief.brand_id, brief.product_ref)
         products, price = resolve_piece_price(
@@ -390,7 +399,7 @@ def run_layer_stage(
 
         saved = _checkpointed(LAYER_STEPS[0], request, first)
         if saved is None:
-            return LayerOutcome(scenes, {})
+            return without_layers()
         _charge_back(budget, saved)  # a replay: this meter has not seen the first call yet
         result = _result_from_json(saved["layer"])
         regenerated: list[int] = []
@@ -440,7 +449,7 @@ def run_layer_stage(
         logger.warning(
             "draft %s: layer stage failed, piece goes on without it", draft_id, exc_info=True
         )
-        return LayerOutcome(scenes, {})
+        return without_layers()
 
 
 # -- the rewrite after a refusal (m-25040499) ----------------------------------------------
