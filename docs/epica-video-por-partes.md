@@ -125,7 +125,7 @@ Lo que fijan las decisiones y los cuatro documentos:
 2. **Pista del análisis, en paralelo:** VE-02 ∥ VE-03 → VE-04a (contra un almacén en memoria y un MP4 sintético; `just reel-analysis-tick` en local) → VE-04c (+ VE-05) → se enchufa al bucle cuando R8 esté en `main` (lo hace el segundo que llega). VE-04b tras R1 y R3.
 3. **Pista creative:** BUG-01 → VE-02 ∥ VE-07 → VE-06 (con VE-03 en main) → VE-21 → VE-08 → VE-09 → VE-10a → VE-10b → VE-20; prueba con el análisis de ejemplo de VE-04a, sin esperar a la pista ADR 42.
 4. **Pista UI:** UI-1 tras R7; UI-2…UI-9 siguiendo sus bloqueos; UI-5 (mitad manual) con UI-3.
-5. **Antes de producción:** platform-engineer confirma `QUALIFY_CREATIVE_DISPATCHER=queue` (no aparece en `deploy/`; VE-08 rechaza el modo con hilos) y fija el `mem_limit` del `reels-worker` (objetivo ≤ 384 MiB).
+5. **Antes de producción:** `QUALIFY_CREATIVE_DISPATCHER=queue` ya está confirmado el 2026-11-16 (m-25026575) [V]: `/opt/qualify/.env.prod` tiene `QUALIFY_CREATIVE_DISPATCHER=queue`, leído por Deivid sin cambios (VE-08 rechaza el modo con hilos); falta que platform-engineer fije el `mem_limit` del `reels-worker` (objetivo ≤ 384 MiB).
 
 ## 4. Decisiones (ADR 44, Deivid Vargas, 2026-11-02)
 
@@ -167,6 +167,6 @@ Lo que fijan las decisiones y los cuatro documentos:
 - Pista del análisis (backend-engineer): m-24921055 (VE-03) → m-24921056 (VE-04a) → m-24921058 (VE-04c) → m-24921059 (VE-04d); m-24921057 (VE-04b) tras R1/R3; m-24921060 (VE-12) con R8; data-scientist-fde: m-24921050 (VE-05) con VE-04c en main.
 - Pista creative (creative-engineer): m-24921086 (BUG-01) → m-24921062 (VE-02) ∥ m-24921064 (VE-07) → m-24921063 (VE-06) → m-24921139 (VE-21, con backend para la migración y UI para los textos) → m-24921065 (VE-08) → m-24921066 (VE-09) → m-24921067 (VE-10a) → m-24921068 (VE-10b) → m-24921069 (VE-20).
 - Pista UI (reflex-ui-engineer, revisión de ux-designer antes de cada PR): m-24921075 (UI-1) tras R7; UI-2…UI-9 y la mitad manual de UI-5 siguiendo sus «Bloqueado por».
-- platform-engineer: confirmar QUALIFY_CREATIVE_DISPATCHER=queue en producción, arnés de memoria para VE-07/VE-10b y mem_limit del reels-worker.
+- platform-engineer: ~~confirmar QUALIFY_CREATIVE_DISPATCHER=queue en producción~~ (hecho el 2026-11-16, m-25026575), arnés de memoria para VE-07/VE-10b y mem_limit del reels-worker.
 Cada brief cita docs/epica-video-por-partes.md, docs/diseno-video-por-planos.md §13 y el documento de su área en docs/traspasos/.
 ```

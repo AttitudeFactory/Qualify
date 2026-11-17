@@ -42,7 +42,12 @@ from qualify_creative.brand import (
 )
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.brand.render import VARIANT_ANGLES
-from qualify_creative.creations import CreationNotOffered, CreationPrice, weight_for
+from qualify_creative.creations import (
+    REQUEST_LOCAL_VIDEO,
+    CreationNotOffered,
+    CreationPrice,
+    weight_for,
+)
 from qualify_creative.effects import RecipeProblem
 from qualify_creative.enums import (
     ContentKind,
@@ -119,6 +124,7 @@ from qualify_api.creative.fsm import (
     InvalidTransition,
     apply_transition,
 )
+from qualify_api.creative.local_cap import check_local_daily_cap
 from qualify_api.creative.media import (
     KEPT_FROM_REVISION,
     RESUMED_VIDEO_FAILED_TEXT,
@@ -1158,6 +1164,33 @@ class PostgresContentRepository:
                       >= (date_trunc('day', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
                 """),
                 {"tenant": tenant_id, "kind": ContentKind.SHOT_VIDEO.value},
+            )
+            return int(counted or 0)
+
+    def local_builds_today(self, *, tenant_id: UUID) -> int:
+        """EF-15 (`local_cap`): how many local builds this business started today (its
+        own day) — one `creation_charges` row per (draft, revision) with
+        `request_kind = 'local_video'`, refunded or not (a failed build spent the CPU
+        too). Under a unit of work it first takes this business's transaction lock, so
+        two builds asked at once are counted one after the other. RLS: only this
+        business's rows."""
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('local_daily_cap'), hashtext(:t))"),
+                {"t": str(tenant_id)},
+            )
+            counted = session.scalar(
+                text("""
+                WITH z AS (
+                  SELECT COALESCE(NULLIF(
+                    (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
+                )
+                SELECT count(*) FROM creation_charges c, z
+                WHERE c.request_kind = :kind
+                  AND c.charged_at
+                      >= (date_trunc('day', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
+                """),
+                {"tenant": tenant_id, "kind": REQUEST_LOCAL_VIDEO},
             )
             return int(counted or 0)
 
@@ -2365,9 +2398,12 @@ class ContentService:
         # `duration_s`). EF-06: a `local` Clip is made only in the creative worker.
         refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
         refuse_local_without_queue(brief)
-        # EF-15: the daily cap of `local` pieces per business goes here — before any
-        # row, like `check_parent_text_cap` — once EF-15 sets it (D3: a local piece
-        # uses no video seconds and no vista previa, so nothing else limits it)
+        if is_local_recipe(brief):
+            # EF-15 (m-25026575): a business builds at most `local_daily_cap()` local
+            # pieces a day — before any row, charge or job, like `check_parent_text_cap`
+            # (D3: a local piece uses no video seconds and no vista previa, so nothing
+            # else limits the CPU it takes)
+            check_local_daily_cap(self._repo, tenant_id=tenant_id)
         received_middle = len(brief.media.clip_image_keys)
         # Caller cannot select an internal compiler version through MediaInputs.
         brief = brief.model_copy(
@@ -4905,6 +4941,17 @@ class ContentService:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
+    def _check_local_cap(self, *, tenant_id: UUID, brief_id: UUID) -> None:
+        """EF-15: `check_local_daily_cap` when the stored brief is a local build; only a
+        Clip's brief is read."""
+        if self._repo.brief_kind(tenant_id=tenant_id, brief_id=brief_id) != (
+            ContentKind.CLIP.value
+        ):
+            return
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=brief_id)
+        if brief is not None and is_local_recipe(brief):
+            check_local_daily_cap(self._repo, tenant_id=tenant_id)
+
     def _refuse_own_media(self, *, tenant_id: UUID, draft_id: UUID, brief_id: UUID) -> None:
         """m-25019217: `OwnMediaLocked` for an own-media piece (see the exception)."""
         if self._repo.brief_kind(tenant_id=tenant_id, brief_id=brief_id) == (
@@ -4949,6 +4996,11 @@ class ContentService:
             # VE-08 (criterion 7): a video by parts' new text is Claude paid by the
             # platform at 0 creations — capped per business per day, before any write
             check_parent_text_cap(self._repo, tenant_id=tenant_id)
+        if regenerate:
+            # EF-15: another version of a local piece (a part's «Crear otra versión» comes
+            # through here too, with its new brief) is one more local build today —
+            # refused before the revision, the charge or the job
+            self._check_local_cap(tenant_id=tenant_id, brief_id=record.brief_id)
         version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
         stamped_revision = bool(regenerate and version == BRAND_APPLIED_PIPELINE_VERSION)
         if stamped_revision:

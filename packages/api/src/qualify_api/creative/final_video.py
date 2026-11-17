@@ -57,6 +57,7 @@ from sqlalchemy import text
 from qualify_api.creative.creations import CreationsBalance, PreviewCharge, summed_price
 from qualify_api.creative.draft_mode import draft_expired, draft_expires_at, draft_state
 from qualify_api.creative.fsm import APPROVED, DRAFTING, FAILED, GENERATED
+from qualify_api.creative.local_cap import check_local_daily_cap
 from qualify_api.creative.part_extend import continued_key, extend_is_stale, source_key
 from qualify_api.creative.part_final import approval_problem, preview_fingerprint
 from qualify_api.creative.part_join import (
@@ -69,6 +70,7 @@ from qualify_api.creative.part_join import (
     PartsToJoin,
     ready_parts,
 )
+from qualify_api.creative.video_pipeline.local import is_local_recipe
 
 logger = logging.getLogger(__name__)
 
@@ -645,6 +647,15 @@ class FinalVideoReader:
             renews_on=balance.renews_on,
         )
 
+    def _is_local(self, tenant_id: UUID, draft_id: UUID) -> bool:
+        """EF-15: the part's current brief is a local build."""
+        repo = self._content.repository
+        draft = repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        brief = (
+            None if draft is None else repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
+        )
+        return brief is not None and is_local_recipe(brief)
+
     def recreate_expired_parts(
         self,
         *,
@@ -705,6 +716,13 @@ class FinalVideoReader:
                 short = balance.shortfall(summed_price(self._charges(tenant_id, ids)))
                 if short is not None:
                     raise short
+            # EF-15: every local part made again is one more local build today — all of
+            # them fit in the day's cap or none is made (each `reject` checks again)
+            check_local_daily_cap(
+                self._content.repository,
+                tenant_id=tenant_id,
+                asking=sum(1 for draft_id in ids if self._is_local(tenant_id, draft_id)),
+            )
             for index in wanted:
                 parts.regenerate_part(
                     tenant_id=tenant_id,
