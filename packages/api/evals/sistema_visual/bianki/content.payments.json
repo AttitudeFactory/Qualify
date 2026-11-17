@@ -1,0 +1,75 @@
+{
+ "brand": {
+  "logo": "bianki/logo.svg",
+  "signature": "Shawarma & salad\nEl sabor nos une"
+ },
+ "payments_title": "Métodos de pago",
+ "payments": [
+  {
+   "title": "Bolívares",
+   "items": [
+    {
+     "label": "Pago Móvil"
+    },
+    {
+     "label": "Tarjetas",
+     "sub": "débito y crédito"
+    },
+    {
+     "label": "Efectivo Bs"
+    }
+   ]
+  },
+  {
+   "title": "Dólares y cripto",
+   "items": [
+    {
+     "label": "Binance Pay",
+     "logo": "bianki/pago-binance-pay.svg"
+    },
+    {
+     "label": "USDT"
+    },
+    {
+     "label": "Efectivo $"
+    }
+   ]
+  },
+  {
+   "title": "Pesos colombianos",
+   "items": [
+    {
+     "label": "Bancolombia",
+     "logo": "bianki/pago-bancolombia.svg"
+    },
+    {
+     "label": "Nequi",
+     "logo": "bianki/pago-nequi.svg"
+    },
+    {
+     "label": "DaviPlata",
+     "logo": "bianki/pago-daviplata.svg"
+    },
+    {
+     "label": "PSE"
+    },
+    {
+     "label": "Tarjetas",
+     "sub": "débito y crédito"
+    },
+    {
+     "label": "Efectivo COP"
+    }
+   ]
+  }
+ ],
+ "payments_ticker": [
+  "Pago Móvil",
+  "Binance",
+  "USDT",
+  "Bancolombia",
+  "Nequi",
+  "DaviPlata",
+  "PSE"
+ ]
+}

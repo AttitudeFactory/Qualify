@@ -1,0 +1,1705 @@
+{
+  "$defs": {
+    "Background": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "default": "radial",
+          "enum": [
+            "solid",
+            "radial",
+            "linear"
+          ],
+          "title": "Base",
+          "type": "string"
+        },
+        "layers": {
+          "items": {
+            "$ref": "#/$defs/BackgroundLayer"
+          },
+          "maxItems": 4,
+          "title": "Layers",
+          "type": "array"
+        }
+      },
+      "title": "Background",
+      "type": "object"
+    },
+    "BackgroundLayer": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "rays",
+            "rings",
+            "dots",
+            "stripes",
+            "grid",
+            "waves",
+            "pattern_image",
+            "blobs",
+            "grain",
+            "confetti"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "pop",
+          "title": "Color"
+        },
+        "opacity": {
+          "default": 0.3,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Opacity",
+          "type": "number"
+        },
+        "scale": {
+          "default": 1.0,
+          "description": "Size multiplier of the motif.",
+          "maximum": 5.0,
+          "minimum": 0.2,
+          "title": "Scale",
+          "type": "number"
+        },
+        "angle_deg": {
+          "default": 0.0,
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Angle Deg",
+          "type": "number"
+        },
+        "center": {
+          "default": [
+            0.5,
+            0.42
+          ],
+          "description": "rays/rings/blobs centre, canvas fractions.",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center",
+          "type": "array"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "pattern_image only: a brand asset path.",
+          "title": "Image"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "BackgroundLayer",
+      "type": "object"
+    },
+    "Block": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "photo",
+            "logo",
+            "product",
+            "stamp",
+            "text_stack",
+            "ticker",
+            "info_list",
+            "icon_feature",
+            "sparkle",
+            "glow",
+            "sun"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "box": {
+          "description": "x, y, w, h in canvas fractions; may bleed outside [0,1].",
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Box",
+          "type": "array"
+        },
+        "align": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Align",
+          "type": "string"
+        },
+        "valign": {
+          "default": "top",
+          "enum": [
+            "top",
+            "center",
+            "bottom"
+          ],
+          "title": "Valign",
+          "type": "string"
+        },
+        "rotate_deg": {
+          "default": 0.0,
+          "maximum": 30,
+          "minimum": -30,
+          "title": "Rotate Deg",
+          "type": "number"
+        },
+        "z": {
+          "default": 0,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Z",
+          "type": "integer"
+        },
+        "slot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Slot"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 60,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/StackItem"
+          },
+          "maxItems": 8,
+          "title": "Items",
+          "type": "array"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "enum": [
+                "clock",
+                "pin",
+                "card",
+                "chat",
+                "bag",
+                "star",
+                "heart"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "fade": {
+          "default": "none",
+          "description": "photo: veil.",
+          "enum": [
+            "none",
+            "bottom",
+            "full"
+          ],
+          "title": "Fade",
+          "type": "string"
+        },
+        "mirror": {
+          "default": false,
+          "title": "Mirror",
+          "type": "boolean"
+        },
+        "focus": {
+          "default": [
+            0.5,
+            0.5
+          ],
+          "description": "photo: focal point.",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Focus",
+          "type": "array"
+        },
+        "zoom": {
+          "anyOf": [
+            {
+              "maximum": 4,
+              "minimum": 0.5,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "photo: image height / box height (None = cover).",
+          "title": "Zoom"
+        },
+        "veil": {
+          "description": "photo: gradient over the whole canvas.",
+          "items": {
+            "$ref": "#/$defs/VeilStop"
+          },
+          "maxItems": 8,
+          "title": "Veil",
+          "type": "array"
+        },
+        "saturate": {
+          "default": 1.0,
+          "maximum": 1.6,
+          "minimum": 0.5,
+          "title": "Saturate",
+          "type": "number"
+        },
+        "contrast": {
+          "default": 1.0,
+          "maximum": 1.6,
+          "minimum": 0.5,
+          "title": "Contrast",
+          "type": "number"
+        },
+        "framed": {
+          "default": false,
+          "description": "photo: card with border, radius and tilt.",
+          "title": "Framed",
+          "type": "boolean"
+        },
+        "colors": {
+          "description": "glow/sun/sparkle: colour overrides.",
+          "items": {
+            "anyOf": [
+              {
+                "enum": [
+                  "background",
+                  "background_alt",
+                  "surface",
+                  "on_surface",
+                  "ink",
+                  "accent",
+                  "on_accent",
+                  "shadow",
+                  "pop"
+                ],
+                "type": "string"
+              },
+              {
+                "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+                "type": "string"
+              }
+            ]
+          },
+          "maxItems": 3,
+          "title": "Colors",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "box"
+      ],
+      "title": "Block",
+      "type": "object"
+    },
+    "BodySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "strong_color": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Strong Color"
+        },
+        "strong_uppercase": {
+          "default": true,
+          "title": "Strong Uppercase",
+          "type": "boolean"
+        },
+        "chip_fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "surface",
+          "title": "Chip Fill"
+        },
+        "chip_ink": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "background",
+          "title": "Chip Ink"
+        }
+      },
+      "title": "BodySpec",
+      "type": "object"
+    },
+    "CardSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "card",
+          "enum": [
+            "card",
+            "chip",
+            "outline",
+            "plain"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "surface",
+          "title": "Fill"
+        },
+        "ink": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "on_surface",
+          "title": "Ink"
+        }
+      },
+      "title": "CardSpec",
+      "type": "object"
+    },
+    "Colors": {
+      "additionalProperties": false,
+      "description": "Colour ROLES, not a palette: every component paints with a role.",
+      "properties": {
+        "background": {
+          "description": "Main canvas colour.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Background",
+          "type": "string"
+        },
+        "background_alt": {
+          "description": "Second background tone (glow centre, gradient end).",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Background Alt",
+          "type": "string"
+        },
+        "surface": {
+          "description": "Cards, stamps, chips.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Surface",
+          "type": "string"
+        },
+        "on_surface": {
+          "description": "Text on surface.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "On Surface",
+          "type": "string"
+        },
+        "ink": {
+          "description": "Text directly on the background.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Ink",
+          "type": "string"
+        },
+        "accent": {
+          "description": "Highlight: second headline line, price flag, tag.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Accent",
+          "type": "string"
+        },
+        "on_accent": {
+          "description": "Text on accent.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "On Accent",
+          "type": "string"
+        },
+        "shadow": {
+          "description": "Hard/soft shadow colour.",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Shadow",
+          "type": "string"
+        },
+        "pop": {
+          "description": "Secondary colour for decorations (rays, dots, sun).",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "title": "Pop",
+          "type": "string"
+        },
+        "background_edge": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Third stop of a radial base.",
+          "title": "Background Edge"
+        },
+        "shadow_deep": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Blurred shadows (defaults to shadow).",
+          "title": "Shadow Deep"
+        }
+      },
+      "required": [
+        "background",
+        "background_alt",
+        "surface",
+        "on_surface",
+        "ink",
+        "accent",
+        "on_accent",
+        "shadow",
+        "pop"
+      ],
+      "title": "Colors",
+      "type": "object"
+    },
+    "Components": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/BodySpec"
+        },
+        "tag": {
+          "$ref": "#/$defs/TagSpec"
+        },
+        "headline": {
+          "$ref": "#/$defs/HeadlineSpec"
+        },
+        "price": {
+          "$ref": "#/$defs/PriceSpec"
+        },
+        "stamp": {
+          "$ref": "#/$defs/StampSpec"
+        },
+        "ticker": {
+          "$ref": "#/$defs/TickerSpec"
+        },
+        "product_frame": {
+          "$ref": "#/$defs/ProductFrameSpec"
+        },
+        "info_card": {
+          "$ref": "#/$defs/CardSpec"
+        },
+        "logo": {
+          "$ref": "#/$defs/LogoSpec"
+        },
+        "sparkle": {
+          "$ref": "#/$defs/SparkleSpec"
+        }
+      },
+      "title": "Components",
+      "type": "object"
+    },
+    "HeadlineSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "two_tone_stacked",
+          "enum": [
+            "two_tone_stacked",
+            "single_color",
+            "outline_second",
+            "highlight_second"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "split": {
+          "default": "first_word",
+          "description": "first_word: «Shawarma|mixto»; last_word: «¡Abrimos|hoy!»; none: one group.",
+          "enum": [
+            "first_word",
+            "last_word",
+            "none"
+          ],
+          "title": "Split",
+          "type": "string"
+        },
+        "first_color": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "ink",
+          "title": "First Color"
+        },
+        "second_color": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Second Color"
+        },
+        "shadow": {
+          "default": true,
+          "title": "Shadow",
+          "type": "boolean"
+        }
+      },
+      "title": "HeadlineSpec",
+      "type": "object"
+    },
+    "LogoSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "plain",
+          "enum": [
+            "plain",
+            "on_badge"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "badge": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "surface",
+          "title": "Badge"
+        }
+      },
+      "title": "LogoSpec",
+      "type": "object"
+    },
+    "PriceSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "flag",
+          "enum": [
+            "flag",
+            "badge",
+            "circle",
+            "ticket",
+            "plain"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Fill"
+        },
+        "ink": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "on_accent",
+          "title": "Ink"
+        },
+        "show_code": {
+          "default": true,
+          "description": "Print the currency code (COP, USD) small.",
+          "title": "Show Code",
+          "type": "boolean"
+        }
+      },
+      "title": "PriceSpec",
+      "type": "object"
+    },
+    "ProductFrameSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "cutout_glow",
+          "enum": [
+            "cutout_glow",
+            "cutout_sun",
+            "disc",
+            "arch",
+            "rounded",
+            "blob"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "ring": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "surface",
+          "title": "Ring"
+        },
+        "glow": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Glow"
+        }
+      },
+      "title": "ProductFrameSpec",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": [
+            "transcribed",
+            "ai_proposal",
+            "owner_edit"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "prompt_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Version"
+        },
+        "created_at": {
+          "description": "ISO 8601.",
+          "title": "Created At",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "source",
+        "created_at"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "Recipe": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": [
+            "4:5",
+            "1:1",
+            "9:16"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "background": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Background"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Overrides the system one."
+        },
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/Block"
+          },
+          "maxItems": 14,
+          "minItems": 1,
+          "title": "Blocks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "format",
+        "blocks"
+      ],
+      "title": "Recipe",
+      "type": "object"
+    },
+    "Shapes": {
+      "additionalProperties": false,
+      "properties": {
+        "radius_px": {
+          "default": 24,
+          "description": "Corner radius at 1080 px wide.",
+          "maximum": 80,
+          "minimum": 0,
+          "title": "Radius Px",
+          "type": "integer"
+        },
+        "tilt_deg": {
+          "default": 0.0,
+          "description": "Default tilt of tags/flags/cards.",
+          "maximum": 8,
+          "minimum": -8,
+          "title": "Tilt Deg",
+          "type": "number"
+        },
+        "shadow": {
+          "default": "hard",
+          "enum": [
+            "hard",
+            "soft",
+            "none"
+          ],
+          "title": "Shadow",
+          "type": "string"
+        },
+        "shadow_offset_px": {
+          "default": 10,
+          "maximum": 30,
+          "minimum": 0,
+          "title": "Shadow Offset Px",
+          "type": "integer"
+        },
+        "stroke_px": {
+          "default": 0,
+          "description": "Outline of cards/chips (0 = none).",
+          "maximum": 12,
+          "minimum": 0,
+          "title": "Stroke Px",
+          "type": "integer"
+        }
+      },
+      "title": "Shapes",
+      "type": "object"
+    },
+    "SparkleSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "glyph": {
+          "default": "✦",
+          "maxLength": 2,
+          "title": "Glyph",
+          "type": "string"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "surface",
+          "title": "Color"
+        }
+      },
+      "title": "SparkleSpec",
+      "type": "object"
+    },
+    "StackItem": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "tag",
+            "headline",
+            "body",
+            "price",
+            "flag",
+            "note",
+            "chips"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "slot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dotted path into the slot data.",
+          "title": "Slot"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 60,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Literal short text (a tag).",
+          "title": "Text"
+        },
+        "size": {
+          "default": 0,
+          "description": "Max font size at 1080 px; 0 = default.",
+          "maximum": 220,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "space_before": {
+          "default": -1,
+          "description": "px above; -1 = default gap.",
+          "maximum": 200,
+          "minimum": -1,
+          "title": "Space Before",
+          "type": "integer"
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "enum": [
+                "pennant",
+                "double",
+                "arrow",
+                "rect"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "flag/price: outline of the banner.",
+          "title": "Shape"
+        },
+        "line_height": {
+          "anyOf": [
+            {
+              "maximum": 1.8,
+              "minimum": 0.8,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "body/note override.",
+          "title": "Line Height"
+        },
+        "small_em": {
+          "default": 0.45,
+          "description": "flag: size of <<small>> parts.",
+          "maximum": 1.0,
+          "minimum": 0.2,
+          "title": "Small Em",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "StackItem",
+      "type": "object"
+    },
+    "StampSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "circle_ring",
+          "enum": [
+            "circle_ring",
+            "starburst",
+            "scallop",
+            "none"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "surface",
+          "title": "Fill"
+        },
+        "ink": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "background",
+          "title": "Ink"
+        },
+        "ring": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Ring"
+        }
+      },
+      "title": "StampSpec",
+      "type": "object"
+    },
+    "TagSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "variant": {
+          "default": "tilted_block",
+          "enum": [
+            "tilted_block",
+            "pill",
+            "outline",
+            "underline",
+            "plain"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Fill"
+        },
+        "ink": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "on_accent",
+          "title": "Ink"
+        }
+      },
+      "title": "TagSpec",
+      "type": "object"
+    },
+    "TickerSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "accent",
+          "title": "Fill"
+        },
+        "ink": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "default": "background",
+          "title": "Ink"
+        },
+        "separator": {
+          "default": "✦",
+          "maxLength": 3,
+          "title": "Separator",
+          "type": "string"
+        }
+      },
+      "title": "TickerSpec",
+      "type": "object"
+    },
+    "Tone": {
+      "additionalProperties": false,
+      "properties": {
+        "voice": {
+          "description": "One line, Spanish: how this brand talks.",
+          "maxLength": 200,
+          "title": "Voice",
+          "type": "string"
+        },
+        "exclamations": {
+          "default": true,
+          "title": "Exclamations",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "voice"
+      ],
+      "title": "Tone",
+      "type": "object"
+    },
+    "TypeFace": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "description": "Google Fonts family name, exactly as in the catalogue.",
+          "title": "Family",
+          "type": "string"
+        },
+        "weight": {
+          "maximum": 900,
+          "minimum": 100,
+          "title": "Weight",
+          "type": "integer"
+        },
+        "letter_spacing_em": {
+          "default": 0.0,
+          "maximum": 0.3,
+          "minimum": -0.12,
+          "title": "Letter Spacing Em",
+          "type": "number"
+        },
+        "line_height": {
+          "default": 1.0,
+          "maximum": 1.6,
+          "minimum": 0.8,
+          "title": "Line Height",
+          "type": "number"
+        },
+        "uppercase": {
+          "default": false,
+          "title": "Uppercase",
+          "type": "boolean"
+        },
+        "src": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Brand font file (asset path) used instead of Google Fonts.",
+          "title": "Src"
+        }
+      },
+      "required": [
+        "family",
+        "weight"
+      ],
+      "title": "TypeFace",
+      "type": "object"
+    },
+    "Typography": {
+      "additionalProperties": false,
+      "properties": {
+        "display": {
+          "$ref": "#/$defs/TypeFace",
+          "description": "Headlines and prices."
+        },
+        "body": {
+          "$ref": "#/$defs/TypeFace",
+          "description": "Descriptions, addresses."
+        },
+        "label": {
+          "$ref": "#/$defs/TypeFace",
+          "description": "Tags, small caps labels, ticker."
+        }
+      },
+      "required": [
+        "display",
+        "body",
+        "label"
+      ],
+      "title": "Typography",
+      "type": "object"
+    },
+    "VeilStop": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "enum": [
+                "background",
+                "background_alt",
+                "surface",
+                "on_surface",
+                "ink",
+                "accent",
+                "on_accent",
+                "shadow",
+                "pop"
+              ],
+              "type": "string"
+            },
+            {
+              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+              "type": "string"
+            }
+          ],
+          "title": "Color"
+        },
+        "alpha": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Alpha",
+          "type": "number"
+        },
+        "at": {
+          "description": "Percent from the top of the canvas.",
+          "maximum": 100,
+          "minimum": 0,
+          "title": "At",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color",
+        "alpha",
+        "at"
+      ],
+      "title": "VeilStop",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 0,
+      "default": 0,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "id": {
+      "description": "Stable across versions.",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,60}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "parent_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Version"
+    },
+    "brand": {
+      "title": "Brand",
+      "type": "string"
+    },
+    "name": {
+      "description": "Spanish, shown to the owner («Rojo trompo»).",
+      "maxLength": 40,
+      "title": "Name",
+      "type": "string"
+    },
+    "style_family": {
+      "maxLength": 60,
+      "title": "Style Family",
+      "type": "string"
+    },
+    "rationale": {
+      "description": "Spanish: why this fits the brand.",
+      "maxLength": 600,
+      "title": "Rationale",
+      "type": "string"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "colors": {
+      "$ref": "#/$defs/Colors"
+    },
+    "typography": {
+      "$ref": "#/$defs/Typography"
+    },
+    "background": {
+      "$ref": "#/$defs/Background"
+    },
+    "shapes": {
+      "$ref": "#/$defs/Shapes"
+    },
+    "components": {
+      "$ref": "#/$defs/Components"
+    },
+    "tone": {
+      "$ref": "#/$defs/Tone"
+    },
+    "recipes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Recipe"
+      },
+      "propertyNames": {
+        "enum": [
+          "product_hero",
+          "combo",
+          "hours",
+          "payments",
+          "contact",
+          "story"
+        ]
+      },
+      "title": "Recipes",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "brand",
+    "name",
+    "style_family",
+    "rationale",
+    "provenance",
+    "colors",
+    "typography",
+    "background",
+    "tone",
+    "recipes"
+  ],
+  "title": "BrandVisualSystem",
+  "type": "object"
+}

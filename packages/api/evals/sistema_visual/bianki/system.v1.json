@@ -1,0 +1,813 @@
+{
+ "schema_version": 0,
+ "id": "bianki-rojo-trompo",
+ "version": 1,
+ "parent_version": null,
+ "brand": "Bianki",
+ "name": "Rojo trompo",
+ "style_family": "comida callejera, pop de alto contraste",
+ "rationale": "Transcripción literal del generador que hizo el set de noviembre 2026 (gen.py y stories.py, mismo lenguaje que las pantallas 2 y 3 del local): rojo, amarillo y crema, Unbounded 800 + Archivo, rayos, sello de gramos, precio en banderín y cinta inferior.",
+ "provenance": {
+  "source": "transcribed",
+  "model": null,
+  "prompt_version": null,
+  "created_at": "2026-11-17T00:00:00-05:00",
+  "notes": "Fuente: /Users/herwin/Documents/Bianki/Instagram y Google 2026-11/_fuentes-para-regenerar/gen.py y stories.py (CSS de marca). Sin llamada a IA."
+ },
+ "colors": {
+  "background": "#e3000f",
+  "background_alt": "#ff1a1a",
+  "background_edge": "#c8000d",
+  "surface": "#fff8df",
+  "on_surface": "#7a0008",
+  "ink": "#fff8df",
+  "accent": "#ffd200",
+  "on_accent": "#7a0008",
+  "shadow": "#7a0008",
+  "shadow_deep": "#4a0006",
+  "pop": "#ff9d00"
+ },
+ "typography": {
+  "display": {
+   "family": "Unbounded",
+   "weight": 800,
+   "letter_spacing_em": -0.065,
+   "line_height": 0.98,
+   "uppercase": true,
+   "src": "bianki/unbounded-var.woff2"
+  },
+  "body": {
+   "family": "Archivo",
+   "weight": 700,
+   "letter_spacing_em": 0,
+   "line_height": 1.38,
+   "uppercase": false,
+   "src": "bianki/archivo-var.woff2"
+  },
+  "label": {
+   "family": "Archivo",
+   "weight": 900,
+   "letter_spacing_em": 0.1,
+   "line_height": 1.0,
+   "uppercase": true,
+   "src": "bianki/archivo-var.woff2"
+  }
+ },
+ "background": {
+  "base": "radial",
+  "layers": [
+   {
+    "kind": "rays",
+    "color": "#d4000e",
+    "opacity": 0.55,
+    "scale": 1,
+    "angle_deg": 3,
+    "center": [
+     0.5,
+     0.42
+    ]
+   },
+   {
+    "kind": "rings",
+    "color": "accent",
+    "opacity": 0.11,
+    "scale": 1,
+    "center": [
+     0.5,
+     0.42
+    ]
+   }
+  ]
+ },
+ "shapes": {
+  "radius_px": 34,
+  "tilt_deg": -3,
+  "shadow": "hard",
+  "shadow_offset_px": 8,
+  "stroke_px": 0
+ },
+ "components": {
+  "body": {
+   "strong_color": "accent",
+   "strong_uppercase": true,
+   "chip_fill": "surface",
+   "chip_ink": "background"
+  },
+  "tag": {
+   "variant": "tilted_block",
+   "fill": "accent",
+   "ink": "on_accent"
+  },
+  "headline": {
+   "variant": "two_tone_stacked",
+   "split": "first_word",
+   "first_color": "ink",
+   "second_color": "accent",
+   "shadow": true
+  },
+  "price": {
+   "variant": "flag",
+   "fill": "accent",
+   "ink": "on_accent",
+   "show_code": true
+  },
+  "stamp": {
+   "variant": "circle_ring",
+   "fill": "surface",
+   "ink": "background",
+   "ring": "accent"
+  },
+  "ticker": {
+   "enabled": true,
+   "fill": "accent",
+   "ink": "#a80c1c",
+   "separator": "✦"
+  },
+  "product_frame": {
+   "variant": "cutout_glow",
+   "ring": "surface",
+   "glow": "accent"
+  },
+  "info_card": {
+   "variant": "chip",
+   "fill": "surface",
+   "ink": "on_surface"
+  },
+  "logo": {
+   "variant": "plain",
+   "badge": "surface"
+  },
+  "sparkle": {
+   "enabled": true,
+   "glyph": "✦",
+   "color": "#ffffff"
+  }
+ },
+ "tone": {
+  "voice": "Cercano y con antojo: frases cortas con exclamación, nombra el producto y el gramaje.",
+  "exclamations": true
+ },
+ "recipes": {
+  "product_hero": {
+   "format": "9:16",
+   "background": {
+    "base": "radial",
+    "layers": []
+   },
+   "blocks": [
+    {
+     "type": "photo",
+     "box": [
+      0.0,
+      0.0,
+      1.0,
+      0.67708
+     ],
+     "z": 1,
+     "slot": "place_photo",
+     "focus": [
+      0.3,
+      0
+     ],
+     "zoom": 1.0,
+     "veil": [
+      {
+       "color": "#4a0006",
+       "alpha": 0.8,
+       "at": 0
+      },
+      {
+       "color": "#4a0006",
+       "alpha": 0.35,
+       "at": 12
+      },
+      {
+       "color": "#4a0006",
+       "alpha": 0.05,
+       "at": 20
+      },
+      {
+       "color": "#000000",
+       "alpha": 0,
+       "at": 34
+      },
+      {
+       "color": "#c8000d",
+       "alpha": 0.35,
+       "at": 44
+      },
+      {
+       "color": "#c8000d",
+       "alpha": 0.93,
+       "at": 56
+      },
+      {
+       "color": "#c8000d",
+       "alpha": 1,
+       "at": 64
+      }
+     ]
+    },
+    {
+     "type": "logo",
+     "box": [
+      0.38426,
+      0.0625,
+      0.23148,
+      0.13021
+     ],
+     "z": 8,
+     "slot": "brand.logo"
+    },
+    {
+     "type": "glow",
+     "box": [
+      0.30556,
+      0.39583,
+      0.7037,
+      0.26042
+     ],
+     "z": 2,
+     "colors": [
+      "accent"
+     ]
+    },
+    {
+     "type": "product",
+     "box": [
+      0.33333,
+      0.27604,
+      0.81481,
+      0.4401
+     ],
+     "z": 4,
+     "slot": "product",
+     "mirror": true
+    },
+    {
+     "type": "sparkle",
+     "box": [
+      0.37037,
+      0.35417,
+      0.06481,
+      0.03646
+     ],
+     "z": 7,
+     "colors": [
+      "#ffffff",
+      "#ffe680"
+     ]
+    },
+    {
+     "type": "stamp",
+     "box": [
+      0.07407,
+      0.41146,
+      0.21296,
+      0.11979
+     ],
+     "z": 6,
+     "rotate_deg": -8,
+     "slot": "product.stamp"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.06481,
+      0.60677,
+      0.87037,
+      0.38542
+     ],
+     "z": 6,
+     "items": [
+      {
+       "type": "tag",
+       "text": "¡Elige tu favorito!",
+       "size": 30
+      },
+      {
+       "type": "headline",
+       "slot": "product.title",
+       "size": 112,
+       "space_before": 24
+      },
+      {
+       "type": "body",
+       "slot": "product.description",
+       "size": 38,
+       "space_before": 20
+      },
+      {
+       "type": "price",
+       "slot": "product.price",
+       "size": 96,
+       "space_before": 40,
+       "shape": "pennant"
+      }
+     ]
+    }
+   ]
+  },
+  "combo": {
+   "format": "9:16",
+   "background": {
+    "base": "radial",
+    "layers": [
+     {
+      "kind": "rays",
+      "color": "#d4000e",
+      "opacity": 0.55,
+      "scale": 1,
+      "angle_deg": 3,
+      "center": [
+       0.5,
+       0.33
+      ]
+     },
+     {
+      "kind": "rings",
+      "color": "accent",
+      "opacity": 0.11,
+      "scale": 1,
+      "center": [
+       0.5,
+       0.42
+      ]
+     }
+    ]
+   },
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.06481,
+      0.07812,
+      0.18519,
+      0.10417
+     ],
+     "z": 8,
+     "slot": "brand.logo"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.53704,
+      0.10677,
+      0.39815,
+      0.04688
+     ],
+     "z": 8,
+     "align": "right",
+     "items": [
+      {
+       "type": "note",
+       "slot": "brand.signature",
+       "size": 22
+      }
+     ]
+    },
+    {
+     "type": "sun",
+     "box": [
+      0.13889,
+      0.19792,
+      0.83333,
+      0.46875
+     ],
+     "z": 2,
+     "colors": [
+      "accent",
+      "pop",
+      "#ffb30080"
+     ]
+    },
+    {
+     "type": "product",
+     "box": [
+      0.21296,
+      0.18229,
+      0.90741,
+      0.4901
+     ],
+     "z": 4,
+     "slot": "combo.main",
+     "mirror": true
+    },
+    {
+     "type": "product",
+     "box": [
+      -0.03704,
+      0.44792,
+      0.59259,
+      0.2224
+     ],
+     "z": 5,
+     "slot": "combo.side",
+     "rotate_deg": -8
+    },
+    {
+     "type": "product",
+     "box": [
+      0.78704,
+      0.35938,
+      0.14537,
+      0.29167
+     ],
+     "z": 5,
+     "slot": "combo.drink",
+     "rotate_deg": 9
+    },
+    {
+     "type": "stamp",
+     "box": [
+      0.05556,
+      0.24479,
+      0.21296,
+      0.11979
+     ],
+     "z": 6,
+     "rotate_deg": -8,
+     "slot": "combo.stamp"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.06481,
+      0.64323,
+      0.87037,
+      0.30729
+     ],
+     "z": 6,
+     "items": [
+      {
+       "type": "tag",
+       "text": "¡El antojo viene completo!",
+       "size": 30
+      },
+      {
+       "type": "headline",
+       "slot": "combo.title",
+       "size": 104,
+       "space_before": 26
+      },
+      {
+       "type": "body",
+       "slot": "combo.description",
+       "size": 38,
+       "space_before": 18
+      },
+      {
+       "type": "price",
+       "slot": "combo.price",
+       "size": 96,
+       "space_before": 40,
+       "shape": "pennant"
+      }
+     ]
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0.0,
+      0.95208,
+      1.0,
+      0.04792
+     ],
+     "z": 9,
+     "slot": "combo.ticker"
+    }
+   ]
+  },
+  "hours": {
+   "format": "9:16",
+   "background": {
+    "base": "radial",
+    "layers": [
+     {
+      "kind": "rays",
+      "color": "#d4000e",
+      "opacity": 0.55,
+      "scale": 1,
+      "angle_deg": 3,
+      "center": [
+       0.5,
+       0.4
+      ]
+     },
+     {
+      "kind": "rings",
+      "color": "accent",
+      "opacity": 0.11,
+      "scale": 1,
+      "center": [
+       0.5,
+       0.42
+      ]
+     }
+    ]
+   },
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.38426,
+      0.0625,
+      0.23148,
+      0.13021
+     ],
+     "z": 8,
+     "slot": "brand.logo"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.0,
+      0.21875,
+      1.0,
+      0.1875
+     ],
+     "z": 5,
+     "align": "center",
+     "items": [
+      {
+       "type": "tag",
+       "text": "¡Te esperamos!",
+       "size": 30
+      },
+      {
+       "type": "headline",
+       "slot": "hours.title",
+       "size": 112,
+       "space_before": 34
+      }
+     ]
+    },
+    {
+     "type": "sun",
+     "box": [
+      0.17593,
+      0.41146,
+      0.64815,
+      0.36458
+     ],
+     "z": 2,
+     "colors": [
+      "accent",
+      "pop",
+      "#ffb30080"
+     ]
+    },
+    {
+     "type": "icon_feature",
+     "box": [
+      0.22222,
+      0.4375,
+      0.55556,
+      0.3125
+     ],
+     "z": 4,
+     "icon": "clock"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.0,
+      0.72656,
+      1.0,
+      0.22552
+     ],
+     "z": 6,
+     "align": "center",
+     "items": [
+      {
+       "type": "flag",
+       "slot": "hours.range",
+       "size": 84,
+       "shape": "double"
+      },
+      {
+       "type": "body",
+       "slot": "hours.address",
+       "size": 40,
+       "space_before": 46,
+       "line_height": 1.3
+      }
+     ]
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0.0,
+      0.95208,
+      1.0,
+      0.04792
+     ],
+     "z": 9,
+     "slot": "hours.ticker"
+    }
+   ]
+  },
+  "payments": {
+   "format": "9:16",
+   "background": {
+    "base": "radial",
+    "layers": [
+     {
+      "kind": "rays",
+      "color": "#d4000e",
+      "opacity": 0.55,
+      "scale": 1,
+      "angle_deg": 3,
+      "center": [
+       0.5,
+       0.3
+      ]
+     },
+     {
+      "kind": "rings",
+      "color": "accent",
+      "opacity": 0.11,
+      "scale": 1,
+      "center": [
+       0.5,
+       0.42
+      ]
+     }
+    ]
+   },
+   "blocks": [
+    {
+     "type": "logo",
+     "box": [
+      0.38426,
+      0.0625,
+      0.23148,
+      0.13021
+     ],
+     "z": 8,
+     "slot": "brand.logo"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.0,
+      0.20833,
+      1.0,
+      0.16667
+     ],
+     "z": 5,
+     "align": "center",
+     "items": [
+      {
+       "type": "tag",
+       "text": "¡Paga como quieras!",
+       "size": 30
+      },
+      {
+       "type": "headline",
+       "slot": "payments_title",
+       "size": 100,
+       "space_before": 30
+      }
+     ]
+    },
+    {
+     "type": "info_list",
+     "box": [
+      0.05556,
+      0.375,
+      0.88889,
+      0.57292
+     ],
+     "z": 5,
+     "slot": "payments"
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0.0,
+      0.95208,
+      1.0,
+      0.04792
+     ],
+     "z": 9,
+     "slot": "payments_ticker"
+    }
+   ]
+  },
+  "story": {
+   "format": "9:16",
+   "background": {
+    "base": "radial",
+    "layers": []
+   },
+   "blocks": [
+    {
+     "type": "photo",
+     "box": [
+      0.0,
+      0.0,
+      1.0,
+      0.67708
+     ],
+     "z": 1,
+     "slot": "story.photo",
+     "focus": [
+      0.45,
+      0.7
+     ],
+     "zoom": 1.6154,
+     "saturate": 1.15,
+     "contrast": 1.05,
+     "veil": [
+      {
+       "color": "#4a0006",
+       "alpha": 0.75,
+       "at": 0
+      },
+      {
+       "color": "#000000",
+       "alpha": 0,
+       "at": 16
+      },
+      {
+       "color": "#000000",
+       "alpha": 0,
+       "at": 45
+      },
+      {
+       "color": "#c8000d",
+       "alpha": 0.85,
+       "at": 62
+      },
+      {
+       "color": "#c8000d",
+       "alpha": 1,
+       "at": 72
+      }
+     ]
+    },
+    {
+     "type": "logo",
+     "box": [
+      0.38426,
+      0.0625,
+      0.23148,
+      0.13021
+     ],
+     "z": 8,
+     "slot": "brand.logo"
+    },
+    {
+     "type": "text_stack",
+     "box": [
+      0.06481,
+      0.5625,
+      0.87037,
+      0.38958
+     ],
+     "z": 6,
+     "items": [
+      {
+       "type": "tag",
+       "slot": "story.kicker",
+       "size": 30
+      },
+      {
+       "type": "headline",
+       "slot": "story.title",
+       "size": 140,
+       "space_before": 26
+      },
+      {
+       "type": "flag",
+       "slot": "story.hours",
+       "size": 80,
+       "shape": "arrow",
+       "small_em": 0.6,
+       "space_before": 22
+      },
+      {
+       "type": "body",
+       "slot": "story.place",
+       "size": 40,
+       "space_before": 40,
+       "line_height": 1.35
+      }
+     ]
+    },
+    {
+     "type": "ticker",
+     "box": [
+      0.0,
+      0.95208,
+      1.0,
+      0.04792
+     ],
+     "z": 9,
+     "slot": "story.ticker"
+    }
+   ]
+  }
+ }
+}

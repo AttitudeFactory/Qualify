@@ -1,0 +1,42 @@
+{
+ "brand": {
+  "logo": "bianki/logo.svg",
+  "signature": "Shawarma & salad\nEl sabor nos une"
+ },
+ "combo": {
+  "main": {
+   "photo": "bianki/mixto-ia.webp",
+   "cutout": true,
+   "box": [
+    0.21296,
+    0.18229,
+    0.90741,
+    0.49
+   ]
+  },
+  "side": {
+   "photo": "bianki/papas-baile.png",
+   "cutout": true
+  },
+  "drink": {
+   "photo": "bianki/botella-coca-cola.png",
+   "cutout": true
+  },
+  "stamp": {
+   "big": "300",
+   "small": "gramos"
+  },
+  "title": "Combo | mixto",
+  "description": "Shawarma mixto de [[300 g]]\n+ papas + Coca-Cola",
+  "price": {
+   "amount": "29.000",
+   "symbol": "$",
+   "code": "COP",
+   "secondary": "REF 9"
+  },
+  "ticker": [
+   "Shawarma de 300 g + papas + Coca-Cola",
+   "El sabor nos une"
+  ]
+ }
+}

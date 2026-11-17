@@ -1,0 +1,29 @@
+{
+ "brand": {
+  "logo": "bianki/logo.svg",
+  "signature": "Shawarma & salad\nEl sabor nos une"
+ },
+ "place_photo": "bianki/local-limpio.jpg",
+ "product": {
+  "photo": "bianki/carne-ia.webp",
+  "cutout": true,
+  "box": [
+   0.22222,
+   0.34375,
+   0.96296,
+   0.3724
+  ],
+  "title": "Shawarma | de cerdo",
+  "description": "Pan pita · [[300 g]] de cerdo · perejil · tomate · cebolla · salsa de la casa",
+  "price": {
+   "amount": "22.000",
+   "symbol": "$",
+   "code": "COP",
+   "secondary": "REF 6,50"
+  },
+  "stamp": {
+   "big": "300",
+   "small": "gramos"
+  }
+ }
+}

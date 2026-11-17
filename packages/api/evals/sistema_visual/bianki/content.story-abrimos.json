@@ -1,0 +1,19 @@
+{
+ "brand": {
+  "logo": "bianki/logo.svg",
+  "signature": "Shawarma & salad\nEl sabor nos une"
+ },
+ "story": {
+  "photo": "bianki/trompo.jpg",
+  "kicker": "¡Ya está girando el trompo!",
+  "title": "¡Abrimos | hoy!",
+  "hours": "4 PM <<a>> 11 PM",
+  "place": "Korner Club · Local 02 · Paramillo",
+  "ticker": [
+   "Abierto de 4 pm a 11 pm",
+   "Delivery",
+   "Pide en bianki.com.ve",
+   "El sabor nos une"
+  ]
+ }
+}

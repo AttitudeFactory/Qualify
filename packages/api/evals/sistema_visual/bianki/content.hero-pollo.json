@@ -1,0 +1,29 @@
+{
+ "brand": {
+  "logo": "bianki/logo.svg",
+  "signature": "Shawarma & salad\nEl sabor nos une"
+ },
+ "place_photo": "bianki/local-limpio.jpg",
+ "product": {
+  "photo": "bianki/pollo-ia.webp",
+  "cutout": true,
+  "box": [
+   0.24074,
+   0.32292,
+   0.92593,
+   0.42708
+  ],
+  "title": "Shawarma | de pollo",
+  "description": "Pan pita · [[300 g]] de pollo · perejil · tomate · cebolla · salsa de la casa",
+  "price": {
+   "amount": "22.000",
+   "symbol": "$",
+   "code": "COP",
+   "secondary": "REF 6,50"
+  },
+  "stamp": {
+   "big": "300",
+   "small": "gramos"
+  }
+ }
+}

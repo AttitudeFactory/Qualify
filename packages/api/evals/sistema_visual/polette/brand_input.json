@@ -1,0 +1,70 @@
+{
+ "name": "Polette",
+ "slug": "polette",
+ "rubro": "Yogur helado (crema soft) con toppings de fruta; local en Korner Club, Paramillo (San Cristóbal, Venezuela)",
+ "instagram": "@polette.sc",
+ "logo": "polette/logo.svg (mascota oso con una fruta por nariz sobre la palabra «polette» y una onda naranja; se ve en la primera imagen)",
+ "colors": {
+  "principal": [
+   "#430098",
+   "#8446AC",
+   "#AA7BC9"
+  ],
+  "acento": [
+   "#FF6A00",
+   "#F98D29",
+   "#FFB718"
+  ],
+  "secundario": [
+   "#EA1D75",
+   "#F55096",
+   "#FB7EB4"
+  ]
+ },
+ "fonts": {
+  "titulos": "Peralta",
+  "texto_y_precios": "Sour Gummy"
+ },
+ "products": [
+  {
+   "name": "Sunday Fruit",
+   "description": "Crema soft de vainilla, mora y durazno en almíbar; sirope a elección",
+   "weight": "150 g",
+   "price": "1,99 USD",
+   "photo": "polette/sundae-copa.jpg (foto de producto con fondo violeta, NO es recorte; segunda imagen)"
+  },
+  {
+   "name": "Bowl de yogurt",
+   "description": "Con dos toppings a elección",
+   "price": "3,50 USD",
+   "photo": null
+  },
+  {
+   "name": "Combo Dúo",
+   "description": "Dos bowls",
+   "price": "6,00 USD",
+   "photo": null
+  }
+ ],
+ "hours": "Todos los días, 4:00 pm a 12:00 am",
+ "address": "Korner Club, Paramillo",
+ "payments": [
+  "Bolívares",
+  "Dólares",
+  "Pesos colombianos",
+  "USDT"
+ ],
+ "assets": [
+  "polette/trama.svg (trama de frutas a línea, blanca, cuadro de 270 px)",
+  "polette/frutas/fresa.svg",
+  "polette/frutas/cereza.svg",
+  "polette/frutas/durazno.svg",
+  "polette/frutas/mora.svg",
+  "polette/mascota.svg"
+ ],
+ "images_for_model": [
+  "/Users/herwin/dev/qualify-eval-out/sistema-visual/_assets/polette/logo-para-modelo.png",
+  "/Users/herwin/dev/qualify-eval-out/sistema-visual/_assets/polette/sundae-copa.jpg",
+  "/Users/herwin/dev/qualify-eval-out/sistema-visual/_assets/polette/cono-mano.jpg"
+ ]
+}

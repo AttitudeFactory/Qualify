@@ -1,0 +1,69 @@
+{
+ "brand": {
+  "name": "Polette",
+  "logo": "polette/logo.svg",
+  "handle": "@polette.sc"
+ },
+ "product": {
+  "title": "Sunday | Fruit",
+  "description": "Crema soft de vainilla, [[mora]] y [[durazno]] en almíbar",
+  "photo": "polette/sundae-copa.jpg",
+  "cutout": false,
+  "price": {
+   "amount": "1,99",
+   "symbol": "$",
+   "code": "USD"
+  },
+  "stamp": {
+   "big": "150",
+   "small": "gramos"
+  }
+ },
+ "hours": {
+  "title": "Nuestro | horario",
+  "days": "Todos los días",
+  "range": "4:00 pm <<a>> 12:00 am",
+  "address": "**Korner Club**\nParamillo · __@polette.sc__",
+  "ticker": [
+   "Todos los días",
+   "4:00 pm a 12:00 am",
+   "Korner Club"
+  ]
+ },
+ "story": {
+  "photo": "polette/cono-mano.jpg",
+  "kicker": "Recién servido",
+  "title": "Abrimos | hoy",
+  "hours": "4:00 pm <<a>> 12:00 am",
+  "place": "Korner Club · Paramillo",
+  "ticker": [
+   "Yogur helado",
+   "Toppings de fruta",
+   "@polette.sc"
+  ]
+ },
+ "payments": [
+  {
+   "title": "Aceptamos",
+   "items": [
+    {
+     "label": "Bolívares"
+    },
+    {
+     "label": "Dólares"
+    },
+    {
+     "label": "Pesos"
+    },
+    {
+     "label": "USDT"
+    }
+   ]
+  }
+ ],
+ "ticker": [
+  "Yogur helado",
+  "Toppings de fruta",
+  "@polette.sc"
+ ]
+}

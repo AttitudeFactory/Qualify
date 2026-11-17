@@ -1,0 +1,16 @@
+{
+ "brand": {
+  "logo": "bianki/logo.svg",
+  "signature": "Shawarma & salad\nEl sabor nos une"
+ },
+ "hours": {
+  "title": "Nuestros horarios",
+  "range": "4:00 PM <<a>> 11:00 PM",
+  "address": "**Av. Los Agustinos en Korner**\nAl frente de la estación de servicio __«La Machiri»__",
+  "ticker": [
+   "De 4:00 PM a 11:00 PM",
+   "Av. Los Agustinos en Korner",
+   "El sabor nos une"
+  ]
+ }
+}

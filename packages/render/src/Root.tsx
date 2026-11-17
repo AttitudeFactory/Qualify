@@ -22,6 +22,9 @@ import {FIXTURE_PHOTO, FixturePhoto} from './templates/layer_still/FixturePhoto'
 import {LayerStill, PORTS as LAYER_PORTS, layerStillMetadata, type LayerStillProps} from './templates/layer_still/LayerStill';
 import {OVERLAY as VIDEO_TEXT_OVERLAY, VideoText, videoTextMetadata, type VideoTextProps} from './templates/video_text/VideoText';
 import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
+import brandStillManifest from '../templates/brand_still/manifest.json';
+import {BrandStill} from './templates/brand_still/BrandStill';
+import type {BrandStillProps} from './templates/brand_still/types';
 import {
   FPS as SEASONAL_VIDEO_FPS,
   SeasonalVideo,
@@ -132,6 +135,32 @@ const videoTextDefaults: VideoTextProps = {
   texts: {text: 'Pan recién horneado todos los días', place: 'bottom', layout_id: 'scrim', layout_version: 3},
 };
 
+// m-25042530 (spike): `brand_still` v0 — any recipe of a BrandVisualSystem (data) + slot data.
+const brandStillDefaults = {
+  system: {
+    schema_version: 0, id: 'demo', version: 1, brand: 'Demo', name: 'Demo', style_family: 'demo', rationale: '',
+    provenance: {source: 'transcribed', created_at: '2026-11-17'},
+    colors: {background: '#e3000f', background_alt: '#ff1a1a', surface: '#fff8df', on_surface: '#7a0008', ink: '#fff8df', accent: '#ffd200', on_accent: '#7a0008', shadow: '#7a0008', pop: '#ff9d00'},
+    typography: {display: {family: 'Unbounded', weight: 800, uppercase: true}, body: {family: 'Archivo', weight: 700}, label: {family: 'Archivo', weight: 900, uppercase: true}},
+    background: {base: 'radial', layers: [{kind: 'rays', color: '#d4000e', opacity: 0.55}]},
+    tone: {voice: ''},
+    recipes: {hours: {format: '9:16', blocks: [{type: 'text_stack', box: [0.06, 0.2, 0.88, 0.5], align: 'center', items: [{type: 'headline', text: 'Nuestros horarios'}, {type: 'flag', text: '4:00 PM <<a>> 11:00 PM'}]}]}},
+  },
+  recipe: 'hours',
+  content: {},
+} as unknown as BrandStillProps;
+const brandStillCompositions = (): React.ReactNode[] =>
+  Object.entries(brandStillManifest.outputs).map(([port, spec]) => (
+    <Still
+      key={spec.composition}
+      id={spec.composition}
+      component={BrandStill}
+      width={spec.width}
+      height={spec.height}
+      defaultProps={{...brandStillDefaults, meta: {templateId: 'brand_still', version: 0, port}}}
+    />
+  ));
+
 type PromoManifest = typeof promoManifest | typeof promoManifestV1;
 type PortSpec = {kind: string; width: number; height: number; composition: string};
 
@@ -205,6 +234,7 @@ export const RemotionRoot: React.FC = () => {
         calculateMetadata={seasonalVideoMetadata}
       />
       {layerStillCompositions()}
+      {brandStillCompositions()}
       <Still
         id={VIDEO_TEXT_OVERLAY.composition}
         component={VideoText}

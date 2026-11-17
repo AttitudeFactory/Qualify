@@ -1,0 +1,53 @@
+{
+ "publicDir": "/Users/herwin/dev/qualify-eval-out/sistema-visual/_assets",
+ "jobs": [
+  {
+   "system": "system.v1.json",
+   "recipe": "product_hero",
+   "content": "content.hero-pollo.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/hero-pollo.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "product_hero",
+   "content": "content.hero-carne.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/hero-carne.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "product_hero",
+   "content": "content.hero-mixto.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/hero-mixto.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "product_hero",
+   "content": "content.hero-cerdo.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/hero-cerdo.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "combo",
+   "content": "content.combo-mixto.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/combo-mixto.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "hours",
+   "content": "content.hours.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/horarios.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "payments",
+   "content": "content.payments.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/pagos.png"
+  },
+  {
+   "system": "system.v1.json",
+   "recipe": "story",
+   "content": "content.story-abrimos.json",
+   "out": "/Users/herwin/dev/qualify-eval-out/sistema-visual/bianki/historia-abrimos.png"
+  }
+ ]
+}
