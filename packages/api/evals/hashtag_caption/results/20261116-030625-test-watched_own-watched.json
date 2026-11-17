@@ -1,0 +1,6988 @@
+{
+ "ticket": "m-25032581",
+ "started_at": "2026-11-16T03:07:32+00:00",
+ "model": "claude-haiku-4-5",
+ "model_revisions": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "prompt_versions": {
+  "watched": "caption-hashtags/2",
+  "own+watched": "caption-hashtags/2"
+ },
+ "pricing_table": "v7",
+ "split": "test",
+ "variants": [
+  "watched",
+  "own+watched"
+ ],
+ "repeats": 2,
+ "runs": [
+  {
+   "case": "c26",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que menciona el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidanoctuma",
+     "kind": "nicho",
+     "reason": "Horario y concepto clave del negocio (4pm-11pm)",
+     "seen_count": 0
+    },
+    {
+     "tag": "antojosnocturos",
+     "kind": "nicho",
+     "reason": "Posicionamiento de la marca en la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtiktok",
+     "kind": "popular",
+     "reason": "Contenido de comida popular en plataforma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Servicio rápido para horas de la noche",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacalle",
+     "kind": "nicho",
+     "reason": "Concepto de comida callejera/negocio abierto",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabecomida",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazas",
+     "kind": "marca",
+     "reason": "Ubicación mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "negocionocturno",
+     "kind": "nicho",
+     "reason": "Horario diferenciador del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodlatin",
+     "kind": "popular",
+     "reason": "Alcance regional latinoamericano",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresca",
+     "kind": "nicho",
+     "reason": "Apela a la calidad del producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "tiendasabierto",
+     "kind": "marca",
+     "reason": "Información de disponibilidad",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1924,
+     "output": 439,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004119,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004119,
+   "seconds": 4.95
+  },
+  {
+   "case": "c31",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Es el plato exacto que promocionas",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "popular",
+     "reason": "El texto menciona proteína y vegetales frescos",
+     "seen_count": 0
+    },
+    {
+     "tag": "panpita",
+     "kind": "nicho",
+     "reason": "Ingrediente específico del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "proteina",
+     "kind": "nicho",
+     "reason": "Lo mencionas como atributo principal",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabeperuana",
+     "kind": "marca",
+     "reason": "Comida árabe de la región",
+     "seen_count": 0
+    },
+    {
+     "tag": "salsadelacasa",
+     "kind": "marca",
+     "reason": "Nombre específico de tu producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "popular",
+     "reason": "Proteína del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "fastfoodsaludable",
+     "kind": "nicho",
+     "reason": "Concepto de comida rápida pero nutritiva",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacasera",
+     "kind": "popular",
+     "reason": "Tono artesanal y casero que transmites",
+     "seen_count": 0
+    },
+    {
+     "tag": "vegetalesfrecos",
+     "kind": "nicho",
+     "reason": "Ingrediente que destacas en el plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "popular",
+     "reason": "Tipo de cocina que represents",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1937,
+     "output": 417,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004022,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004022,
+   "seconds": 4.74
+  },
+  {
+   "case": "c48",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "El producto principal que venden",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente clave en shawarma, buscado en el rubro",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Proteína común en shawarma, buscada en videos del rubro",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Origen y estilo de la comida que ofrecen",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacalle",
+     "kind": "popular",
+     "reason": "Formato de negocio: venta en la plaza, comida rápida",
+     "seen_count": 0
+    },
+    {
+     "tag": "fastfood",
+     "kind": "popular",
+     "reason": "Tipo de servicio de comida rápida al paso",
+     "seen_count": 0
+    },
+    {
+     "tag": "playadmin",
+     "kind": "marca",
+     "reason": "Ubicación del negocio en la plaza",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidamx",
+     "kind": "popular",
+     "reason": "Categoría general de comida callejera en Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Hashtag de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comer",
+     "kind": "popular",
+     "reason": "Acción general de comida, muy buscado en rubro",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1929,
+     "output": 386,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003859,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003859,
+   "seconds": 4.61
+  },
+  {
+   "case": "c58",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Segundo producto clave: shawarma & salad",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Formato de servicio rápido y sabroso",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtiktok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok/Instagram",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "Ensalada como opción saludable del menú",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Origen de la comida: shawarma es árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidademercado",
+     "kind": "nicho",
+     "reason": "Venta de comida lista para comer",
+     "seen_count": 0
+    },
+    {
+     "tag": "aperturarestaurante",
+     "kind": "nicho",
+     "reason": "Evento de apertura del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "gastronomialaatina",
+     "kind": "popular",
+     "reason": "Contenido gastronómico para audiencia latina",
+     "seen_count": 0
+    },
+    {
+     "tag": "comerdelicioso",
+     "kind": "popular",
+     "reason": "Tono de sabor y cariño en la propuesta",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Ingrediente común en shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacasera",
+     "kind": "nicho",
+     "reason": "Énfasis en hecho con cariño y sabor",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1954,
+     "output": 448,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004194,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004194,
+   "seconds": 4.8
+  },
+  {
+   "case": "c24",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente principal del shawarma que se menciona",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto específico que venden, plato central de la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "Tipo de negocio: comida rápida y al paso en la calle",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabelatino",
+     "kind": "nicho",
+     "reason": "Estilo de cocina árabe adaptado a Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación específica nombrada en la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaatugusto",
+     "kind": "popular",
+     "reason": "Énfasis en servicio rápido y comida lista al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtiktok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaalamano",
+     "kind": "nicho",
+     "reason": "Formato del producto: listo para comer con las manos",
+     "seen_count": 0
+    },
+    {
+     "tag": "humorarabelatino",
+     "kind": "nicho",
+     "reason": "Tono desenfadado y local de la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Propuesta de valor: servicio rápido para gente con poco tiempo",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Gastronomía árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodlocal",
+     "kind": "nicho",
+     "reason": "Negocio local de San Cristóbal",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1959,
+     "output": 475,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004334,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004334,
+   "seconds": 5.54
+  },
+  {
+   "case": "c08",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal, lo que el negocio vende",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente clave del shawarma mixto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaparallevar",
+     "kind": "popular",
+     "reason": "Formato de servicio destacado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzoenoficina",
+     "kind": "nicho",
+     "reason": "Ocasión y contexto de compra, comida de trabajo",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeartesanal",
+     "kind": "popular",
+     "reason": "Servicio adicional, tostado propio mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Conveniencia sin salir a dar vueltas",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Hashtag general de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabico",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzodelaborado",
+     "kind": "nicho",
+     "reason": "Experiencia de compartir almuerzo en oficina",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeycomida",
+     "kind": "nicho",
+     "reason": "Combinación de productos del negocio",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1985,
+     "output": 379,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.00388,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.00388,
+   "seconds": 3.57
+  },
+  {
+   "case": "c19",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "El producto principal es Shawarma Mixto",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Ingrediente clave mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente clave mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Gastronomía árabe, tipo de comida que es el shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "Comida rápida de almuerzo en el centro",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzovelocidad",
+     "kind": "popular",
+     "reason": "Enfoque en servicio rápido para almorzar sin perder tiempo",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancrystobal",
+     "kind": "marca",
+     "reason": "Ubicación específica mencionada: centro de San Cristóbal",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresh",
+     "kind": "nicho",
+     "reason": "Énfasis en vegetales frescos y recién cortados",
+     "seen_count": 0
+    },
+    {
+     "tag": "deliverycomida",
+     "kind": "popular",
+     "reason": "Servicio de comida rápida para llevar",
+     "seen_count": 0
+    },
+    {
+     "tag": "saborarabes",
+     "kind": "nicho",
+     "reason": "Cocina árabe con sabores sazonados",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeartesanal",
+     "kind": "nicho",
+     "reason": "Café tostado en casa acompañando el plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalimon",
+     "kind": "marca",
+     "reason": "Identificación local de la región/marca del negocio",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2012,
+     "output": 467,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004347,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004347,
+   "seconds": 4.11
+  },
+  {
+   "case": "c60",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que se menciona en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "nicho",
+     "reason": "Negocio de café que tuesta en el lugar",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeycafeteria",
+     "kind": "popular",
+     "reason": "Búsqueda amplia de lugares con café",
+     "seen_count": 0
+    },
+    {
+     "tag": "sanchristobaltachira",
+     "kind": "marca",
+     "reason": "Ubicación específica mencionada: San Cristóbal, Táchira",
+     "seen_count": 0
+    },
+    {
+     "tag": "desayuno",
+     "kind": "popular",
+     "reason": "Momento del día y ocasión de consumo",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de comida (Shawarma es árabe)",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacalle",
+     "kind": "nicho",
+     "reason": "Concepto de comida rápida sin salir del centro",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Promesa de pedido en menos de 5 minutos",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeartesanal",
+     "kind": "nicho",
+     "reason": "Café tostado en el mismo lugar",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachiracomidas",
+     "kind": "marca",
+     "reason": "Referencia geográfica al estado",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2007,
+     "output": 383,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003922,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003922,
+   "seconds": 3.51
+  },
+  {
+   "case": "c06",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal del negocio, lo que vende",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "acompaña al shawarma, mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzo",
+     "kind": "nicho",
+     "reason": "ocasión principal, se dirige a quien busca comer al mediodía",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidamomento",
+     "kind": "nicho",
+     "reason": "venta de comida fresca hecha al instante, diferencial del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "shawarma es comida árabe, público que busca este tipo de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazacomercial",
+     "kind": "marca",
+     "reason": "ubicación en Plaza mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "ubicación específica donde está el negocio, localización para clientes",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en TikTok, alcance amplio en la plataforma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "formato de venta rápida sin complicaciones, típico de comida de calle",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "propuesta de almuerzo rápido para oficinistas ocupados",
+     "seen_count": 0
+    },
+    {
+     "tag": "comerfuera",
+     "kind": "nicho",
+     "reason": "invita a salir de la oficina a comer, experiencia de comer afuera",
+     "seen_count": 0
+    },
+    {
+     "tag": "combos",
+     "kind": "nicho",
+     "reason": "promoción de combos mencionada en el texto",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2001,
+     "output": 500,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004501,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004501,
+   "seconds": 4.55
+  },
+  {
+   "case": "c13",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Ingrediente principal mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente principal mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "Tipo de comida rápida y al paso que vende en Plaza",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidamixta",
+     "kind": "nicho",
+     "reason": "El mixto es el diferenciador del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "polloalaplancha",
+     "kind": "nicho",
+     "reason": "Pollo jugoso hecho al momento, técnica principal",
+     "seen_count": 0
+    },
+    {
+     "tag": "sanduches",
+     "kind": "popular",
+     "reason": "Formato de pan con relleno de pollo y carne",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidachevere",
+     "kind": "popular",
+     "reason": "Tono casual y desenfadado del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzo",
+     "kind": "nicho",
+     "reason": "Ocasión de consumo mencionada explícitamente",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresca",
+     "kind": "nicho",
+     "reason": "Hecho al momento, salsa fresca de ajo",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazafood",
+     "kind": "marca",
+     "reason": "Ubicación mencionada: Plaza",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1991,
+     "output": 382,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003901,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003901,
+   "seconds": 3.37
+  },
+  {
+   "case": "c21",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que el texto nombra explícitamente",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina que define el rubro y atrae audiencia interesada",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Segundo producto mencionado en la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "Formato de comida rápida y al paso que el negocio ofrece",
+     "seen_count": 0
+    },
+    {
+     "tag": "pausaalmediodia",
+     "kind": "popular",
+     "reason": "Ocasión central del texto: pausa laboral de mediodía",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresca",
+     "kind": "popular",
+     "reason": "Énfasis del texto en 'lo que ves es lo que recibes' y elaboración al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Servicio rápido y eficiente para ejecutivos en pausa laboral",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación geográfica específica mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalapalma",
+     "kind": "marca",
+     "reason": "Negocio ubicado en San Cristóbal (ajusta si cambia el nombre)",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad general de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comerconestilo",
+     "kind": "nicho",
+     "reason": "Experiencia premium y cercana que ofrece el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "platosdelmediodia",
+     "kind": "nicho",
+     "reason": "Segmentación temporal: almuerzo rápido para trabajadores",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1964,
+     "output": 501,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004469,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004469,
+   "seconds": 4.64
+  },
+  {
+   "case": "c33",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Shawarma de carne, ingrediente principal del texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto específico que vende",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina y especialidad del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidayrapido",
+     "kind": "popular",
+     "reason": "Publicación enfatiza rapidez y conveniencia para oficinistas",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidadellambre",
+     "kind": "nicho",
+     "reason": "Hambre de oficina, momento de compra clave",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazasancristobal",
+     "kind": "marca",
+     "reason": "Ubicación específica mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Zona geográfica del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comicarico",
+     "kind": "popular",
+     "reason": "Mensaje de sabor y satisfacción de la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Acompañamiento mencionado en el combo",
+     "seen_count": 0
+    },
+    {
+     "tag": "transparencia",
+     "kind": "nicho",
+     "reason": "Venta directa, sin sorpresas, precio a la vista",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresca",
+     "kind": "popular",
+     "reason": "Énfasis en frescura y preparación al momento",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1986,
+     "output": 449,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004231,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004231,
+   "seconds": 3.88
+  },
+  {
+   "case": "c47",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "El producto principal de la publicación, hecho al momento en la plaza",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del shawarma, búsqueda común en redes",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok, muy usado en el rubro",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "El texto menciona poco tiempo y servicio rápido",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Mencionada en el texto como opción fresca recién armada",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "Plaza y venta al momento, estilo street food",
+     "seen_count": 0
+    },
+    {
+     "tag": "comerencalle",
+     "kind": "popular",
+     "reason": "Consumo en plaza, ambiente casual y rápido",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazacomercial",
+     "kind": "marca",
+     "reason": "Ubicación específica mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "hambrezapal",
+     "kind": "nicho",
+     "reason": "Tono lúdico y dirigido a quien sale del trabajo con hambre",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalatina",
+     "kind": "popular",
+     "reason": "Público hispanohablante, tono conversacional latinoamericano",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1997,
+     "output": 408,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004037,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004037,
+   "seconds": 4.19
+  },
+  {
+   "case": "c49",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "heladoartesanal",
+     "kind": "nicho",
+     "reason": "Producto principal, búsqueda específica de helado hecho en casa",
+     "seen_count": 0
+    },
+    {
+     "tag": "vainilla",
+     "kind": "nicho",
+     "reason": "Sabor del helado mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación geográfica del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladeria",
+     "kind": "popular",
+     "reason": "Categoría amplia del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Pedido rápido por WhatsApp destacado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "postres",
+     "kind": "popular",
+     "reason": "Tipo de producto principal",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladeroperu",
+     "kind": "nicho",
+     "reason": "Comunidad de heladeros artesanales",
+     "seen_count": 0
+    },
+    {
+     "tag": "chocolateymente",
+     "kind": "nicho",
+     "reason": "Topping de chocolate mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "pausadeldia",
+     "kind": "nicho",
+     "reason": "Ocasión de consumo: pausa en la tarde",
+     "seen_count": 0
+    },
+    {
+     "tag": "refrescante",
+     "kind": "popular",
+     "reason": "Beneficio principal en clima caluroso",
+     "seen_count": 0
+    },
+    {
+     "tag": "galleta",
+     "kind": "nicho",
+     "reason": "Ingrediente topping mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "cremoso",
+     "kind": "nicho",
+     "reason": "Textura destacada del producto",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1987,
+     "output": 352,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003747,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003747,
+   "seconds": 3.5
+  },
+  {
+   "case": "c34",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "comidasaludable",
+     "kind": "popular",
+     "reason": "jugo natural sin azucar, enfoque saludable",
+     "seen_count": 0
+    },
+    {
+     "tag": "jugosnaturales",
+     "kind": "nicho",
+     "reason": "producto principal, bebida sin azucar",
+     "seen_count": 0
+    },
+    {
+     "tag": "zumodetox",
+     "kind": "nicho",
+     "reason": "jugo natural sin procesar, estilo detox",
+     "seen_count": 0
+    },
+    {
+     "tag": "vidafit",
+     "kind": "popular",
+     "reason": "audiencia runner y lifestyle saludable",
+     "seen_count": 0
+    },
+    {
+     "tag": "bebidassaludables",
+     "kind": "nicho",
+     "reason": "categoria especifica del producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "runnerlife",
+     "kind": "nicho",
+     "reason": "dirigido a runners, mencionados en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "sinazucar",
+     "kind": "nicho",
+     "reason": "caracteristica principal del jugo",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida y bebida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "energinatural",
+     "kind": "nicho",
+     "reason": "jugo como power-up natural, sin procesados",
+     "seen_count": 0
+    },
+    {
+     "tag": "colombianosdesdecasa",
+     "kind": "marca",
+     "reason": "precio en pesos colombianos, mercado local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1982,
+     "output": 362,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003792,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003792,
+   "seconds": 4.68
+  },
+  {
+   "case": "c38",
+   "variant": "watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "godotengine",
+     "kind": "nicho",
+     "reason": "Motor de juego que es el tema principal del curso",
+     "seen_count": 0
+    },
+    {
+     "tag": "gamedev",
+     "kind": "popular",
+     "reason": "Desarrollo de videojuegos, búsqueda amplia de interesados",
+     "seen_count": 0
+    },
+    {
+     "tag": "programacionprincipiantes",
+     "kind": "nicho",
+     "reason": "Público sin experiencia previa en código, como menciona",
+     "seen_count": 0
+    },
+    {
+     "tag": "cursogratis",
+     "kind": "popular",
+     "reason": "Aprovechar búsquedas de contenido educativo sin costo",
+     "seen_count": 0
+    },
+    {
+     "tag": "tutorialcodigo",
+     "kind": "nicho",
+     "reason": "Explica código en pantalla paso a paso",
+     "seen_count": 0
+    },
+    {
+     "tag": "desarrollodejuegos",
+     "kind": "popular",
+     "reason": "Búsqueda amplia para quien quiere hacer videojuegos",
+     "seen_count": 0
+    },
+    {
+     "tag": "aprenderaprogramar",
+     "kind": "popular",
+     "reason": "Enfoque educativo y accesible del contenido",
+     "seen_count": 0
+    },
+    {
+     "tag": "mecanicasdejuego",
+     "kind": "nicho",
+     "reason": "Estructura específica del curso: mecánica por mecánica",
+     "seen_count": 0
+    },
+    {
+     "tag": "youtubelearning",
+     "kind": "nicho",
+     "reason": "Curso disponible en YouTube, plataforma mencionada",
+     "seen_count": 0
+    },
+    {
+     "tag": "creardejuegos",
+     "kind": "popular",
+     "reason": "Intención final de la audiencia: crear su propio juego",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2018,
+     "output": 407,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004053,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004053,
+   "seconds": 3.96
+  },
+  {
+   "case": "c26",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal que ofrece",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidanocturna",
+     "kind": "nicho",
+     "reason": "horario y propuesta del negocio (abre de noche)",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "tipo de gastronomía del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comer",
+     "kind": "popular",
+     "reason": "invitación a probar la comida nocturna",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "minegocio",
+     "kind": "marca",
+     "reason": "hashtag propio del negocio nombrado en el texto",
+     "seen_count": 1
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1958,
+     "output": 231,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003113,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003113,
+   "seconds": 2.42
+  },
+  {
+   "case": "c31",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "marca",
+     "reason": "El producto principal de la publicación",
+     "seen_count": 1
+    },
+    {
+     "tag": "proteina",
+     "kind": "nicho",
+     "reason": "Destaca los 300 g de proteína del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "Pan pita tostado y vegetales frescos, comida con ingredientes saludables",
+     "seen_count": 0
+    },
+    {
+     "tag": "minegocio",
+     "kind": "marca",
+     "reason": "Hashtag del negocio mencionado en la publicación",
+     "seen_count": 1
+    },
+    {
+     "tag": "salsadelacasa",
+     "kind": "marca",
+     "reason": "Sello diferenciador del negocio, destacado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "El shawarma es un plato de gastronomía árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtiktok",
+     "kind": "popular",
+     "reason": "Comunidad general de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Tipo de comida lista para comer, formato de negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "recetafacil",
+     "kind": "nicho",
+     "reason": "Preparación con ingredientes simples y directos",
+     "seen_count": 0
+    },
+    {
+     "tag": "streetfood",
+     "kind": "popular",
+     "reason": "Formato típico de comida al paso con proteína y pan",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1970,
+     "output": 397,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003955,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003955,
+   "seconds": 3.49
+  },
+  {
+   "case": "c48",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "marca",
+     "reason": "Producto principal que ofrece el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comida",
+     "kind": "popular",
+     "reason": "Categoria amplia del rubro de alimentos",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Tipo de servicio que ofrece (comida lista para llevar)",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Cocina arabe, origen del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Ingrediente comun en shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente principal del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalatina",
+     "kind": "nicho",
+     "reason": "Comida popular en Latinoamerica",
+     "seen_count": 0
+    },
+    {
+     "tag": "minegocio",
+     "kind": "marca",
+     "reason": "Hashtag propio del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "ubicacion",
+     "kind": "marca",
+     "reason": "Enfasis en la ubicacion fisica del local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1952,
+     "output": 356,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003732,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003732,
+   "seconds": 4.33
+  },
+  {
+   "case": "c58",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal del negocio, búsqueda directa",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad amplia de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabelatina",
+     "kind": "nicho",
+     "reason": "Cocina árabe en Latinoamérica, público específico",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarmalatino",
+     "kind": "nicho",
+     "reason": "Shawarma adaptado a Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalatina",
+     "kind": "popular",
+     "reason": "Apertura de negocio de comida en la región",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Segundo producto mencionado (salad), búsqueda específica",
+     "seen_count": 0
+    },
+    {
+     "tag": "aperturadenegocio",
+     "kind": "nicho",
+     "reason": "Anuncio de apertura, interés local",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabeconestilo",
+     "kind": "nicho",
+     "reason": "Cocina árabe servida con toque personal",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "popular",
+     "reason": "Tipo de cocina, búsqueda amplia en rubro",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodlatino",
+     "kind": "popular",
+     "reason": "Contenido de comida para Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaconcarino",
+     "kind": "nicho",
+     "reason": "Valor diferencial: servido con cariño",
+     "seen_count": 0
+    },
+    {
+     "tag": "sabor",
+     "kind": "popular",
+     "reason": "Eje principal del mensaje: sabor y cariño",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1986,
+     "output": 470,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004336,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004336,
+   "seconds": 4.18
+  },
+  {
+   "case": "c24",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmadecarne",
+     "kind": "marca",
+     "reason": "Producto principal de la publicación, nombrado explícitamente",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación exacta del negocio, mencionada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Tipo de comida, búsqueda común del público en redes",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Nombre del negocio, referenciado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente principal del shawarma, búsqueda frecuente",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Ocasión de consumo: empleados con poco tiempo",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidasancristobal",
+     "kind": "marca",
+     "reason": "Comida local de la ciudad, posicionamiento geográfico",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina, identidad del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en redes sociales, audiencia amplia",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde está ubicado el negocio",
+     "seen_count": 1
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2032,
+     "output": 394,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004002,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004002,
+   "seconds": 3.31
+  },
+  {
+   "case": "c08",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmamixto",
+     "kind": "marca",
+     "reason": "Producto exacto que ofrece el negocio en la publicación",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzoenlaoficina",
+     "kind": "nicho",
+     "reason": "Contexto central: almuerzo laboral compartido en la oficina",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Tipo de comida que busca la audiencia interesada en este rubro",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidaparallevar",
+     "kind": "popular",
+     "reason": "Formato de servicio que el texto destaca (para llevar)",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafedeeespecialidad",
+     "kind": "nicho",
+     "reason": "Tostión propia de café que menciona el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafe",
+     "kind": "popular",
+     "reason": "Complemento principal (tinto/café) que ofrece después del almuerzo",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación del negocio en San Cristóbal",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Departamento/región donde opera el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en redes que atrae audiencia interesada",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabevenezolana",
+     "kind": "nicho",
+     "reason": "Fusión de comida árabe con contexto venezolano local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2066,
+     "output": 424,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004186,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004186,
+   "seconds": 5.08
+  },
+  {
+   "case": "c19",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal, búsqueda directa",
+     "seen_count": 1
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "ingrediente clave del shawarma mixto",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "contexto de uso, comida rápida al mediodía",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafedeespecialidad",
+     "kind": "nicho",
+     "reason": "café tostado en casa, acompañamiento ofrecido",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "ubicación específica del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "estado donde opera, alcance local",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmamixto",
+     "kind": "nicho",
+     "reason": "nombre exacto del plato, búsqueda específica",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "popular",
+     "reason": "tipo de cocina, shawarma es árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidareal",
+     "kind": "popular",
+     "reason": "énfasis del texto en ingredientes frescos y visibles",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en TikTok",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2090,
+     "output": 367,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003925,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003925,
+   "seconds": 3.41
+  },
+  {
+   "case": "c60",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "nicho",
+     "reason": "Tipo de negocio y servicio ofrecido",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación geográfica nombrada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde está ubicado el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafedeespecialidad",
+     "kind": "nicho",
+     "reason": "Café tostado artesanalmente en el lugar",
+     "seen_count": 1
+    },
+    {
+     "tag": "coffeeshop",
+     "kind": "popular",
+     "reason": "Negocio tipo café con servicio rápido",
+     "seen_count": 1
+    },
+    {
+     "tag": "desayunos",
+     "kind": "nicho",
+     "reason": "Ocasión de consumo mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "nicho",
+     "reason": "Promesa de servicio en menos de 5 minutos",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Origen del plato shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "centrosancristobal",
+     "kind": "marca",
+     "reason": "Ubicación específica dentro de la ciudad",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeytapas",
+     "kind": "nicho",
+     "reason": "Combinación de café con comida",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2084,
+     "output": 433,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004249,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004249,
+   "seconds": 3.61
+  },
+  {
+   "case": "c06",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal del combo que ofrece",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensaladas",
+     "kind": "nicho",
+     "reason": "Parte clave de lo que preparan al momento",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación exacta del negocio mencionada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Nombre del negocio referenciado como «así se ve la Plaza»",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzo",
+     "kind": "popular",
+     "reason": "Contexto de la comida rápida en horario laboral",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "nicho",
+     "reason": "Propuesta de valor: combo listo al momento",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "Ensaladas frescas hechas al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Formato de contenido de comida en redes",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde se ubica San Cristóbal",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Cocina del shawarma, origen del plato",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2079,
+     "output": 378,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003969,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003969,
+   "seconds": 3.37
+  },
+  {
+   "case": "c13",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmavenezuelano",
+     "kind": "nicho",
+     "reason": "Shawarma venezolano, rubro específico",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "popular",
+     "reason": "Ingrediente principal mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "popular",
+     "reason": "Ingrediente principal mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Énfasis en resolver rápido sin enredos",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto exacto vendido",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Ubicación nombrada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ciudad donde opera el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde está ubicado",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Ocasión: hora de almuerzo mencionada",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "Estilo de venta en plaza, rápido",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida para TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "parcero",
+     "kind": "nicho",
+     "reason": "Tono coloquial venezolano del texto",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2074,
+     "output": 418,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004164,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004164,
+   "seconds": 3.68
+  },
+  {
+   "case": "c21",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que se menciona en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Complemento del plato que se arma al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina que define el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobaltachira",
+     "kind": "marca",
+     "reason": "Ubicación específica del negocio mencionada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzoenequipo",
+     "kind": "nicho",
+     "reason": "Ocasión y experiencia que el texto destaca",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Nombre del lugar donde se sirve",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde está ubicado el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "popular",
+     "reason": "Búsqueda amplia de comida árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad general de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidareal",
+     "kind": "popular",
+     "reason": "Concepto de comida hecha al momento, fresca y auténtica",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2034,
+     "output": 376,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003914,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003914,
+   "seconds": 3.11
+  },
+  {
+   "case": "c33",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmadecarne",
+     "kind": "nicho",
+     "reason": "Producto exacto mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "nicho",
+     "reason": "Tema central: comida rápida de oficina",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Ocasión: almuerzo en horario de trabajo",
+     "seen_count": 1
+    },
+    {
+     "tag": "loquevesesloquerecibes",
+     "kind": "marca",
+     "reason": "Frase clave de la propuesta de valor",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación específica mencionada",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad amplia de contenido de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "popular",
+     "reason": "Ingrediente principal del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Lugar de referencia local",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Región geográfica",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmasancristobal",
+     "kind": "marca",
+     "reason": "Identificación local del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de comida: shawarma es árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Complemento ofrecido en el texto",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2074,
+     "output": 418,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004164,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004164,
+   "seconds": 3.44
+  },
+  {
+   "case": "c47",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "El producto principal que se prepara al momento en la Plaza",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Comida rápida para quien sale de la oficina con poco tiempo",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Nombre del lugar donde está ubicado el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación geográfica donde opera",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensaladas",
+     "kind": "nicho",
+     "reason": "Alternativa fresquita que menciona la publicación",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidarica",
+     "kind": "popular",
+     "reason": "Refleja el tono y propuesta de comida deliciosa y hecha al momento",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmasancristobal",
+     "kind": "marca",
+     "reason": "Combinación específica de producto y ubicación local",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidapedida",
+     "kind": "nicho",
+     "reason": "Enfoque en el pedido rápido y directo al mostrador",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde está ubicada la Plaza",
+     "seen_count": 1
+    },
+    {
+     "tag": "fastfooddelicioso",
+     "kind": "popular",
+     "reason": "Comida rápida con énfasis en la calidad",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2076,
+     "output": 390,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004026,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004026,
+   "seconds": 3.36
+  },
+  {
+   "case": "c49",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "heladoartesanal",
+     "kind": "nicho",
+     "reason": "El texto nombra explícitamente helado artesanal como producto principal",
+     "seen_count": 1
+    },
+    {
+     "tag": "helado",
+     "kind": "popular",
+     "reason": "Término amplio que la gente busca al querer consumir helado",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "La ubicación geográfica (centro de San Cristóbal) se menciona en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "San Cristóbal está en Táchira, estado donde opera el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "postres",
+     "kind": "popular",
+     "reason": "El helado es un postre y el texto habla de pausa dulce",
+     "seen_count": 1
+    },
+    {
+     "tag": "heladovainilla",
+     "kind": "nicho",
+     "reason": "Especifica el sabor artesanal de vainilla que el texto destaca",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladorapido",
+     "kind": "nicho",
+     "reason": "El texto promete servicio rápido por WhatsApp",
+     "seen_count": 0
+    },
+    {
+     "tag": "pausa",
+     "kind": "nicho",
+     "reason": "El texto posiciona el helado como pausa refrescante de la tarde",
+     "seen_count": 0
+    },
+    {
+     "tag": "chocolateygalleta",
+     "kind": "nicho",
+     "reason": "Toppings específicos que hacen único el producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "refrescante",
+     "kind": "popular",
+     "reason": "Describe la función del helado en clima caluroso",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladosdelatarde",
+     "kind": "nicho",
+     "reason": "Momento del día específico mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodlocal",
+     "kind": "popular",
+     "reason": "Helado artesanal local de San Cristóbal",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2056,
+     "output": 493,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004521,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004521,
+   "seconds": 4.48
+  },
+  {
+   "case": "c34",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "jugosnaturales",
+     "kind": "nicho",
+     "reason": "El producto principal: jugos 100% naturales",
+     "seen_count": 1
+    },
+    {
+     "tag": "sinazucar",
+     "kind": "nicho",
+     "reason": "Característica clave destacada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "jugosinazucar",
+     "kind": "nicho",
+     "reason": "Combinación específica del producto",
+     "seen_count": 1
+    },
+    {
+     "tag": "running",
+     "kind": "nicho",
+     "reason": "Público target certificado: runners",
+     "seen_count": 1
+    },
+    {
+     "tag": "fitness",
+     "kind": "popular",
+     "reason": "Estilo de vida saludable y actividad física",
+     "seen_count": 1
+    },
+    {
+     "tag": "vidasana",
+     "kind": "popular",
+     "reason": "Bebidas saludables sin azúcar",
+     "seen_count": 1
+    },
+    {
+     "tag": "barquisimeto",
+     "kind": "marca",
+     "reason": "Ciudad donde opera el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "powerup",
+     "kind": "nicho",
+     "reason": "Energía natural para actividades deportivas",
+     "seen_count": 0
+    },
+    {
+     "tag": "bebidassaludables",
+     "kind": "nicho",
+     "reason": "Categoría de producto sin azúcar ni aditivos",
+     "seen_count": 0
+    },
+    {
+     "tag": "healthylifestyle",
+     "kind": "popular",
+     "reason": "Estilo de vida activo y saludable",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2056,
+     "output": 353,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003821,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003821,
+   "seconds": 3.11
+  },
+  {
+   "case": "c38",
+   "variant": "own+watched",
+   "repeat": 0,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "godot",
+     "kind": "nicho",
+     "reason": "Motor de juegos específico del curso",
+     "seen_count": 1
+    },
+    {
+     "tag": "gamedev",
+     "kind": "nicho",
+     "reason": "Desarrollo de videojuegos, audiencia central",
+     "seen_count": 1
+    },
+    {
+     "tag": "godotengine",
+     "kind": "nicho",
+     "reason": "Identificación exacta de la herramienta",
+     "seen_count": 1
+    },
+    {
+     "tag": "tutorial",
+     "kind": "popular",
+     "reason": "Formato educativo del contenido",
+     "seen_count": 1
+    },
+    {
+     "tag": "cursogratis",
+     "kind": "nicho",
+     "reason": "Valor clave: es acceso gratuito a educación",
+     "seen_count": 1
+    },
+    {
+     "tag": "aprendeaprogramar",
+     "kind": "nicho",
+     "reason": "Audiencia que busca aprender desde cero",
+     "seen_count": 1
+    },
+    {
+     "tag": "indiedev",
+     "kind": "nicho",
+     "reason": "Desarrolladores independientes que crean juegos",
+     "seen_count": 1
+    },
+    {
+     "tag": "desarrollodevideojuegos",
+     "kind": "nicho",
+     "reason": "Búsqueda directa del tema central",
+     "seen_count": 1
+    },
+    {
+     "tag": "programacion",
+     "kind": "popular",
+     "reason": "Término amplio que engloba el aprendizaje ofrecido",
+     "seen_count": 0
+    },
+    {
+     "tag": "coding",
+     "kind": "popular",
+     "reason": "Búsqueda común en inglés para aprender código",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2093,
+     "output": 363,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003908,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003908,
+   "seconds": 4.44
+  },
+  {
+   "case": "c26",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal que vende el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidanoturna",
+     "kind": "nicho",
+     "reason": "enfoque del horario de atención (4 pm a 11 pm)",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "popular",
+     "reason": "atrae audiencia interesada en comida de calidad",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabeperu",
+     "kind": "marca",
+     "reason": "ubicacion y tipo de cocina regional",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "comunidad amplia de contenido gastronómico",
+     "seen_count": 0
+    },
+    {
+     "tag": "antojoscallejeros",
+     "kind": "nicho",
+     "reason": "el texto dice antojo nocturno, comida de calle",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "popular",
+     "reason": "ingrediente principal del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafastfood",
+     "kind": "nicho",
+     "reason": "servicio rápido tipo fast food",
+     "seen_count": 0
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "ubicación menciona Plaza",
+     "seen_count": 0
+    },
+    {
+     "tag": "openingtiempo",
+     "kind": "nicho",
+     "reason": "horario distintivo (nocturno)",
+     "seen_count": 0
+    },
+    {
+     "tag": "deliverylocal",
+     "kind": "nicho",
+     "reason": "negocio local de comidas",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1924,
+     "output": 393,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003889,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003889,
+   "seconds": 3.61
+  },
+  {
+   "case": "c31",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "El producto principal nombrado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "Destaca proteína y vegetales frescos, concepto de comida sana",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad amplia de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacasera",
+     "kind": "nicho",
+     "reason": "Énfasis en 'salsa de la casa', receta casera",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Shawarma es comida árabe, orienta búsquedas correctas",
+     "seen_count": 0
+    },
+    {
+     "tag": "proteina",
+     "kind": "nicho",
+     "reason": "Menciona 300g de proteína, atrae a audiencia fitness",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Concepto de comida rápida y práctica",
+     "seen_count": 0
+    },
+    {
+     "tag": "panpita",
+     "kind": "nicho",
+     "reason": "Ingrediente específico del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "salsadelacasa",
+     "kind": "marca",
+     "reason": "Nombre de la especialidad de su negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "recetafacil",
+     "kind": "nicho",
+     "reason": "Apela a personas que buscan ideas simples de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "vegetales",
+     "kind": "nicho",
+     "reason": "Ingrediente destacado en el producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "negociolocal",
+     "kind": "marca",
+     "reason": "Promueve identificación con marca local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1937,
+     "output": 460,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004237,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004237,
+   "seconds": 3.89
+  },
+  {
+   "case": "c48",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que vende el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina y gastronomía que caracteriza el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Hashtag amplio de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente principal del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidadomicilio",
+     "kind": "popular",
+     "reason": "El negocio recibe clientes en su ubicación para comer",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "Formato típico de este tipo de establecimiento gastronómico",
+     "seen_count": 0
+    },
+    {
+     "tag": "playadelmercado",
+     "kind": "marca",
+     "reason": "Ubicación específica mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "restauranteslatinos",
+     "kind": "popular",
+     "reason": "Nicho de comida étnica en Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "placentero",
+     "kind": "nicho",
+     "reason": "Experiencia culinaria buscada por la audiencia de comida árabe",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1929,
+     "output": 362,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003739,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003739,
+   "seconds": 3.39
+  },
+  {
+   "case": "c58",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Segundo producto que ofrece el local",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina que define el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "Shawarma y ensaladas, opciones más saludables",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Fast casual, comida lista para llevar o comer",
+     "seen_count": 0
+    },
+    {
+     "tag": "aperturas",
+     "kind": "marca",
+     "reason": "Gran apertura del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "negociolocalista",
+     "kind": "marca",
+     "reason": "Apoyo a pequeños negocios locales",
+     "seen_count": 0
+    },
+    {
+     "tag": "saboreando",
+     "kind": "popular",
+     "reason": "Énfasis en el sabor de la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "cumple",
+     "kind": "nicho",
+     "reason": "Invitación a probar el local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1954,
+     "output": 360,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003754,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003754,
+   "seconds": 3.36
+  },
+  {
+   "case": "c24",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "ingrediente principal del shawarma que menciona el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto exacto que vende, búsqueda directa de clientes",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "categoria general del negocio, comida lista para comer",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancrisbotal",
+     "kind": "marca",
+     "reason": "ubicacion especifica del negocio mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "comunidad amplia de contenido de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "tipo de cocina del shawarma, busqueda de fans de comida arabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "estilo de venta rapida y al paso mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "hambre",
+     "kind": "popular",
+     "reason": "emocion y necesidad del publico objetivo",
+     "seen_count": 0
+    },
+    {
+     "tag": "almojar",
+     "kind": "popular",
+     "reason": "momento del dia en que buscan comida rapida",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidareal",
+     "kind": "nicho",
+     "reason": "promesa del negocio: comida autentica sin trampa",
+     "seen_count": 0
+    },
+    {
+     "tag": "sabroso",
+     "kind": "popular",
+     "reason": "qualidad percibida de la comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "preciosjustos",
+     "kind": "nicho",
+     "reason": "enfasis en transparencia de precios del texto",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1959,
+     "output": 449,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004204,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004204,
+   "seconds": 5.12
+  },
+  {
+   "case": "c08",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal del texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaparallevar",
+     "kind": "nicho",
+     "reason": "el shawarma es para llevar al escritorio",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzodetrabajo",
+     "kind": "nicho",
+     "reason": "contexto de compañeros de oficina compartiendo comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "popular",
+     "reason": "lugar con comida rápida y café tostado propio",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeartesanal",
+     "kind": "nicho",
+     "reason": "el negocio tueste su propio café",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida para redes sociales",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "shawarma es comida rápida para almuerzo",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "el shawarma es comida árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "snackoficina",
+     "kind": "nicho",
+     "reason": "comida para comer en el escritorio",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzobarato",
+     "kind": "nicho",
+     "reason": "precio accesible de $23000",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalatina",
+     "kind": "popular",
+     "reason": "contexto de Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "tiempocomida",
+     "kind": "popular",
+     "reason": "solución para el mediodía compartido",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1985,
+     "output": 430,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004135,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004135,
+   "seconds": 3.8
+  },
+  {
+   "case": "c19",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal vendido",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "popular",
+     "reason": "ingrediente clave mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "popular",
+     "reason": "ingrediente principal del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "sandwichesdeljumbo",
+     "kind": "nicho",
+     "reason": "tipo de comida rápida y callejera",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabevenezuela",
+     "kind": "nicho",
+     "reason": "gastronomía árabe en Venezuela",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancrystobal",
+     "kind": "marca",
+     "reason": "ubicación mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "venta rápida sin perder tiempo, almuerzo",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabevenezolana",
+     "kind": "nicho",
+     "reason": "gastronomía árabe localizada",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeyvidas",
+     "kind": "nicho",
+     "reason": "complemento café mencionado en la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "propuesta de valor del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en plataformas visuales",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "popular",
+     "reason": "gastronomía árabe del plato",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2012,
+     "output": 420,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004112,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004112,
+   "seconds": 3.74
+  },
+  {
+   "case": "c60",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal del local",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeartesanal",
+     "kind": "nicho",
+     "reason": "Café tostado en el lugar, diferenciador del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "popular",
+     "reason": "Tipo de establecimiento, búsqueda común",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacalle",
+     "kind": "nicho",
+     "reason": "Concepto de pedido rápido sin salir del centro",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación del negocio en San Cristóbal",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachiragastronomia",
+     "kind": "marca",
+     "reason": "Referencia a Táchira como región de origen",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaveloz",
+     "kind": "nicho",
+     "reason": "Propuesta de servicio rápido (menos de 5 minutos)",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "desayunorapido",
+     "kind": "popular",
+     "reason": "Contexto de pedido de la mañana",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodvenezuela",
+     "kind": "popular",
+     "reason": "Contenido gastronómico local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2007,
+     "output": 379,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003902,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003902,
+   "seconds": 3.56
+  },
+  {
+   "case": "c06",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Ingrediente clave del combo que describe el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Plato principal que nomina explícitamente la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaadomicilio",
+     "kind": "popular",
+     "reason": "Concepto de almuerzo rápido en horario de oficina",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "Venta en plaza con porción en mano, al instante",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "popular",
+     "reason": "Foco en solución de comida rápida para horas de trabajo",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "nicho",
+     "reason": "Comunidad de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidadestrabaio",
+     "kind": "nicho",
+     "reason": "Target específico: empleados en horario de oficina",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancritstobal",
+     "kind": "marca",
+     "reason": "Ubicación mencionada en el texto para clientes locales",
+     "seen_count": 0
+    },
+    {
+     "tag": "playadiversion",
+     "kind": "nicho",
+     "reason": "Referencia a Plaza como lugar de encuentro social",
+     "seen_count": 0
+    },
+    {
+     "tag": "combos",
+     "kind": "popular",
+     "reason": "Formato de oferta que promociona el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comerfuera",
+     "kind": "popular",
+     "reason": "Acción de salir a comprar y consumir en la zona",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de gastronomía que caracteriza al shawarma",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2001,
+     "output": 471,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004356,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004356,
+   "seconds": 4.46
+  },
+  {
+   "case": "c13",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "El pollo jugoso es el primer ingrediente que menciona el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "La carne bien sazonada es el segundo ingrediente principal del sándwich mixto",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "El formato de pan con pollo y carne sazonada es típico de comida árabe/shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacalle",
+     "kind": "popular",
+     "reason": "Venta rápida en la plaza a hora de almuerzo, sin enredos",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "popular",
+     "reason": "El texto invita a resolver rápido en hora de almuerzo",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafastfood",
+     "kind": "popular",
+     "reason": "Comida lista al momento, precio visible, servicio rápido",
+     "seen_count": 0
+    },
+    {
+     "tag": "sandwich",
+     "kind": "popular",
+     "reason": "El producto es un sándwich mixto de pollo y carne",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Descripción de pollo y carne en pan con salsa de ajo, producto típico de este rubro",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Hashtag general para contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "parcero",
+     "kind": "marca",
+     "reason": "Tono local y directo característico de la marca, dirigido a la comunidad",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazaalmuerzo",
+     "kind": "marca",
+     "reason": "La plaza es el lugar específico donde se vende, mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidamomentos",
+     "kind": "nicho",
+     "reason": "El texto enfatiza que es hecho al momento, servido fresco",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1991,
+     "output": 516,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004571,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004571,
+   "seconds": 4.55
+  },
+  {
+   "case": "c21",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que preparan al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina que define el negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Complemento que menciona y preparan fresco",
+     "seen_count": 0
+    },
+    {
+     "tag": "pausadelmedio",
+     "kind": "nicho",
+     "reason": "Ocasión específica: almuerzo de oficina",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad amplia de contenido de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "nicho",
+     "reason": "Sin esperas, porción rápida y lista",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "Formato casual de venta en esquina",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación del negocio mencionada",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzodelaboral",
+     "kind": "nicho",
+     "reason": "Audiencia: personas en pausa de trabajo",
+     "seen_count": 0
+    },
+    {
+     "tag": "recienhechofrente",
+     "kind": "nicho",
+     "reason": "Diferencial: preparan al momento visible",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazacomidas",
+     "kind": "nicho",
+     "reason": "Identidad del lugar donde se ubican",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasinvueltas",
+     "kind": "popular",
+     "reason": "Tono directo y práctico de la propuesta",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1964,
+     "output": 440,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004164,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004164,
+   "seconds": 4.33
+  },
+  {
+   "case": "c33",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "producto principal del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "combo de ensalada fresquita mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "tipo de comida y cocina",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto específico del negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaalpaso",
+     "kind": "popular",
+     "reason": "target de oficinista con poco tiempo",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "audiencia general de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "ubicación específica mencionada",
+     "seen_count": 0
+    },
+    {
+     "tag": "plaza",
+     "kind": "marca",
+     "reason": "referencia local al lugar de compra",
+     "seen_count": 0
+    },
+    {
+     "tag": "rapido",
+     "kind": "popular",
+     "reason": "valor del negocio: armado al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresquita",
+     "kind": "nicho",
+     "reason": "énfasis en frescura y calidad",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzooficina",
+     "kind": "nicho",
+     "reason": "ocasión específica: almuerzo de trabajo",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1986,
+     "output": 407,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004021,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004021,
+   "seconds": 3.52
+  },
+  {
+   "case": "c47",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "es el producto principal que se vende en la plaza",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabelatina",
+     "kind": "nicho",
+     "reason": "describe la cocina del negocio, el tipo de comida que ofrecen",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "comunidad grande de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "nicho",
+     "reason": "el texto enfatiza que es para quien sale de la oficina con poco tiempo",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresquita",
+     "kind": "nicho",
+     "reason": "el negocio subraya lo recién hecho y la opción de ensalada fresca",
+     "seen_count": 0
+    },
+    {
+     "tag": "plaza",
+     "kind": "marca",
+     "reason": "el lugar donde funciona el negocio, mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidalatina",
+     "kind": "popular",
+     "reason": "hashtag amplio para alcanzar interesados en este tipo de gastronomía",
+     "seen_count": 0
+    },
+    {
+     "tag": "deliciadetallazo",
+     "kind": "nicho",
+     "reason": "refleja el tono casual y amigable del texto sobre el primer mordisco",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "el shawarma es comida callejera, hecho al momento en la plaza",
+     "seen_count": 0
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "alternativa mencionada explícitamente en el texto, recién armada",
+     "seen_count": 0
+    },
+    {
+     "tag": "pedir",
+     "kind": "popular",
+     "reason": "invita a que la gente ordene, es un llamado a la acción general",
+     "seen_count": 0
+    },
+    {
+     "tag": "hambrentrabajo",
+     "kind": "nicho",
+     "reason": "el público objetivo es gente que sale de la oficina con hambre",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1997,
+     "output": 512,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004557,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004557,
+   "seconds": 4.89
+  },
+  {
+   "case": "c49",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "heladoartesanal",
+     "kind": "nicho",
+     "reason": "Producto principal: helado artesanal de vainilla",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladosvainilla",
+     "kind": "nicho",
+     "reason": "Sabor específico del helado que venden",
+     "seen_count": 0
+    },
+    {
+     "tag": "helados",
+     "kind": "popular",
+     "reason": "Categoria amplia de helados",
+     "seen_count": 0
+    },
+    {
+     "tag": "postre",
+     "kind": "popular",
+     "reason": "Tipo de producto y ocasión de consumo",
+     "seen_count": 0
+    },
+    {
+     "tag": "pausafria",
+     "kind": "nicho",
+     "reason": "Propuesta de valor: pausa refrescante en día caluroso",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancristo",
+     "kind": "marca",
+     "reason": "San Cristóbal es la ubicación específica mencionada",
+     "seen_count": 0
+    },
+    {
+     "tag": "sancrisbodas",
+     "kind": "marca",
+     "reason": "Localización: San Cristóbal",
+     "seen_count": 0
+    },
+    {
+     "tag": "chocolateyalleta",
+     "kind": "nicho",
+     "reason": "Topping específico del helado",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacalor",
+     "kind": "popular",
+     "reason": "Solución para días calurosos en la oficina",
+     "seen_count": 0
+    },
+    {
+     "tag": "golosasdulces",
+     "kind": "popular",
+     "reason": "Categoría de postres y dulces",
+     "seen_count": 0
+    },
+    {
+     "tag": "entregarapido",
+     "kind": "nicho",
+     "reason": "Propuesta del negocio: entrega rápida por WhatsApp",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtiktok",
+     "kind": "popular",
+     "reason": "Contenido de comida en redes sociales",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1987,
+     "output": 445,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004212,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004212,
+   "seconds": 4.22
+  },
+  {
+   "case": "c34",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "jugonatural",
+     "kind": "nicho",
+     "reason": "El producto principal: jugo 100% natural sin azúcar",
+     "seen_count": 0
+    },
+    {
+     "tag": "jugosinazucar",
+     "kind": "nicho",
+     "reason": "Característica clave del producto que diferencia la oferta",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "popular",
+     "reason": "Aparece en videos virales del rubro, encaja con jugo sin azúcar",
+     "seen_count": 0
+    },
+    {
+     "tag": "fitness",
+     "kind": "popular",
+     "reason": "El tono gamificado y referencias a runners apuntan a público de deportistas",
+     "seen_count": 0
+    },
+    {
+     "tag": "detox",
+     "kind": "nicho",
+     "reason": "Bebidas naturales sin procesados para limpieza corporal",
+     "seen_count": 0
+    },
+    {
+     "tag": "jugofresconatural",
+     "kind": "nicho",
+     "reason": "Combinación del tipo de producto: jugo fresco sin aditivos",
+     "seen_count": 0
+    },
+    {
+     "tag": "bebidassaludables",
+     "kind": "popular",
+     "reason": "Categoría amplia de bebidas saludables que la audiencia busca",
+     "seen_count": 0
+    },
+    {
+     "tag": "powerup",
+     "kind": "nicho",
+     "reason": "Referencia al lenguaje gaming del texto, atrae gamer y jóvenes",
+     "seen_count": 0
+    },
+    {
+     "tag": "vidafit",
+     "kind": "popular",
+     "reason": "Público que busca opciones saludables y deportistas",
+     "seen_count": 0
+    },
+    {
+     "tag": "jugodetox",
+     "kind": "nicho",
+     "reason": "Bebida natural para desintoxicación, sin azúcar ni procesados",
+     "seen_count": 0
+    },
+    {
+     "tag": "saludable",
+     "kind": "popular",
+     "reason": "Término amplio que engloba el posicionamiento del producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "deliverysaludable",
+     "kind": "nicho",
+     "reason": "El precio puntual ($10000) y cantidad (2000+) sugiere modelo de venta rápida",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1982,
+     "output": 505,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004507,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004507,
+   "seconds": 6.25
+  },
+  {
+   "case": "c38",
+   "variant": "watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "godotgameengine",
+     "kind": "nicho",
+     "reason": "Motor Godot mencionado explicitamente en el curso",
+     "seen_count": 0
+    },
+    {
+     "tag": "gamedev",
+     "kind": "popular",
+     "reason": "Desarrollo de videojuegos en general, termino amplio",
+     "seen_count": 0
+    },
+    {
+     "tag": "programacion",
+     "kind": "popular",
+     "reason": "Tema central: aprender a programar",
+     "seen_count": 0
+    },
+    {
+     "tag": "cursosgratis",
+     "kind": "popular",
+     "reason": "Publicacion promociona curso gratuito en YouTube",
+     "seen_count": 0
+    },
+    {
+     "tag": "desarrollojuegos",
+     "kind": "nicho",
+     "reason": "Creacion de videojuegos, audiencia especifica",
+     "seen_count": 0
+    },
+    {
+     "tag": "indie",
+     "kind": "nicho",
+     "reason": "Desarrollo independiente de juegos con motores accesibles",
+     "seen_count": 0
+    },
+    {
+     "tag": "codigoenpantalla",
+     "kind": "nicho",
+     "reason": "Metodo educativo: mostrar codigo mientras se explica",
+     "seen_count": 0
+    },
+    {
+     "tag": "tutorialgodot",
+     "kind": "nicho",
+     "reason": "Tutoriales especificos del motor Godot",
+     "seen_count": 0
+    },
+    {
+     "tag": "aprendeaprogramar",
+     "kind": "popular",
+     "reason": "Llamado a accion sobre educacion en programacion",
+     "seen_count": 0
+    },
+    {
+     "tag": "nocodigo",
+     "kind": "nicho",
+     "reason": "Accessible para principiantes sin experiencia previa",
+     "seen_count": 0
+    },
+    {
+     "tag": "gamejamattempt",
+     "kind": "nicho",
+     "reason": "Comunidad de creadores de juegos independientes",
+     "seen_count": 0
+    },
+    {
+     "tag": "youtubelearning",
+     "kind": "popular",
+     "reason": "Curso disponible en plataforma YouTube",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2018,
+     "output": 447,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004253,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004253,
+   "seconds": 4.33
+  },
+  {
+   "case": "c26",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidanocturna",
+     "kind": "nicho",
+     "reason": "enfoque horario y concepto central",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "tipo de cocina del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido gastronómico en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "minegocio",
+     "kind": "marca",
+     "reason": "nombre o identidad del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidacasera",
+     "kind": "popular",
+     "reason": "atractivo de comida casera/hecha al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "antojosdelusierto",
+     "kind": "nicho",
+     "reason": "antojos nocturnos como concepto",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarmalatino",
+     "kind": "nicho",
+     "reason": "shawarma adaptado para Latinoamérica",
+     "seen_count": 0
+    },
+    {
+     "tag": "plazacomercial",
+     "kind": "marca",
+     "reason": "ubicacion mencionada en la publicacion",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "comida de acceso rapido y practico",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1958,
+     "output": 359,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003753,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003753,
+   "seconds": 3.23
+  },
+  {
+   "case": "c31",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "marca",
+     "reason": "Producto principal nombrado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Proteína principal de 300g mencionada",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "popular",
+     "reason": "Pan pita tostado y vegetales frescos destacan lo saludable",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina y origen del plato",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida para TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente proteico del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "salsadelacasa",
+     "kind": "marca",
+     "reason": "Salsa propia del negocio, mencionada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidacasera",
+     "kind": "popular",
+     "reason": "Énfasis en lo casero y artesanal",
+     "seen_count": 0
+    },
+    {
+     "tag": "recetasrapidas",
+     "kind": "nicho",
+     "reason": "Comida rápida y lista para comer",
+     "seen_count": 0
+    },
+    {
+     "tag": "minegocio",
+     "kind": "marca",
+     "reason": "Hashtag propio del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "vegetalesfrecos",
+     "kind": "nicho",
+     "reason": "Ingrediente clave mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "proteina",
+     "kind": "nicho",
+     "reason": "Destacado como contenido principal",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1970,
+     "output": 429,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004115,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004115,
+   "seconds": 3.37
+  },
+  {
+   "case": "c48",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina que define la oferta",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente base del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "Formato de venta en ubicación pública",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Tipo de servicio que ofrece",
+     "seen_count": 0
+    },
+    {
+     "tag": "negocios",
+     "kind": "marca",
+     "reason": "Promoción del negocio local",
+     "seen_count": 0
+    },
+    {
+     "tag": "milugar",
+     "kind": "marca",
+     "reason": "Ubicación en plaza local",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1952,
+     "output": 279,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003347,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003347,
+   "seconds": 3.11
+  },
+  {
+   "case": "c58",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal, búsqueda directa de clientes interesados",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina que define la oferta, atrae público especializado",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafatiga",
+     "kind": "popular",
+     "reason": "Cena rápida y sabrosa, horario de atención tarde (4pm-11pm)",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad de comida en TikTok, alcance amplio del rubro",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacasera",
+     "kind": "nicho",
+     "reason": "Mensaje de sabor hecho con cariño, comida casera y auténtica",
+     "seen_count": 0
+    },
+    {
+     "tag": "minegocio",
+     "kind": "marca",
+     "reason": "Nombre del negocio del catálogo",
+     "seen_count": 1
+    },
+    {
+     "tag": "elsabornosune",
+     "kind": "marca",
+     "reason": "Slogan del negocio del catálogo",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "Salad en la oferta, opciones saludables",
+     "seen_count": 0
+    },
+    {
+     "tag": "comer",
+     "kind": "popular",
+     "reason": "Palabra clave general, apertura del local",
+     "seen_count": 0
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Ingrediente común en shawarma, búsqueda específica",
+     "seen_count": 0
+    },
+    {
+     "tag": "aperturalocal",
+     "kind": "popular",
+     "reason": "Anuncio de gran apertura, celebración del negocio nuevo",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 1986,
+     "output": 447,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004221,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004221,
+   "seconds": 4.07
+  },
+  {
+   "case": "c24",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto estrella mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmadecarne",
+     "kind": "nicho",
+     "reason": "especificación exacta del producto",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "nombre del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "ubicación específica del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "popular",
+     "reason": "contexto de salida de oficina con poco tiempo",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "popular",
+     "reason": "formato de comida lista para llevar",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en redes",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasancristobal",
+     "kind": "nicho",
+     "reason": "gastronomía local de la zona",
+     "seen_count": 1
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "ingrediente principal mencionado",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "tipo de cocina del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "estado donde está ubicado el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidatempo",
+     "kind": "popular",
+     "reason": "énfasis en rapidez y facilidad",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2032,
+     "output": 400,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004032,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004032,
+   "seconds": 3.42
+  },
+  {
+   "case": "c08",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmamixto",
+     "kind": "nicho",
+     "reason": "El producto principal exacto del texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Búsqueda directa del tipo de comida",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzoenlaoficina",
+     "kind": "nicho",
+     "reason": "La ocasión específica: almuerzo compartido en el trabajo",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafe",
+     "kind": "popular",
+     "reason": "El café tostado propio que menciona como complemento",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "nicho",
+     "reason": "Tipo de negocio: cafetería con comida rápida",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "popular",
+     "reason": "Cocina árabe del shawarma, búsqueda amplia del tipo de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidamosacarabana",
+     "kind": "popular",
+     "reason": "Comida para llevar, concepto clave del texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Ubicación geográfica local del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ciudad local mencionada en el catálogo",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidamontacargas",
+     "kind": "nicho",
+     "reason": "Concepto: comer en el trabajo, entre colegas",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzo",
+     "kind": "popular",
+     "reason": "Momento del día y contexto general de la oferta",
+     "seen_count": 0
+    },
+    {
+     "tag": "parailevar",
+     "kind": "popular",
+     "reason": "Concepto clave: comida para llevar sin complicarse",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2066,
+     "output": 464,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004386,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004386,
+   "seconds": 5.34
+  },
+  {
+   "case": "c19",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "marca",
+     "reason": "Producto principal nombrado explícitamente",
+     "seen_count": 1
+    },
+    {
+     "tag": "pollo",
+     "kind": "nicho",
+     "reason": "Ingrediente clave del Shawarma Mixto",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Contexto de compra en hora de almuerzo sin esperar",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación específica de la tienda",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafe",
+     "kind": "nicho",
+     "reason": "Acompañamiento y especialidad de la casa",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "popular",
+     "reason": "Tipo de negocio que vende comida rápida y bebidas",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidacalle",
+     "kind": "popular",
+     "reason": "Formato de comida rápida y portátil",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidafresh",
+     "kind": "nicho",
+     "reason": "Énfasis en ingredientes frescos y recién cortados",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Ubicación geográfica del estado",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Origen de la gastronomía del Shawarma",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2090,
+     "output": 404,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.00411,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.00411,
+   "seconds": 3.34
+  },
+  {
+   "case": "c60",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmamixto",
+     "kind": "marca",
+     "reason": "Producto exacto del texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "cafedeespecialidad",
+     "kind": "nicho",
+     "reason": "Café tostado in situ, propuesta diferenciada",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación específica del centro comercial",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Referencia geográfica del estado donde opera",
+     "seen_count": 1
+    },
+    {
+     "tag": "coffeeshop",
+     "kind": "popular",
+     "reason": "Categoría amplia de café de especialidad",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Tipo de comida que acompaña al café",
+     "seen_count": 1
+    },
+    {
+     "tag": "desayunorapido",
+     "kind": "nicho",
+     "reason": "Propuesta de desayuno sin perder tiempo",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Servicio rápido, 5 minutos y entrega a mesa",
+     "seen_count": 0
+    },
+    {
+     "tag": "cafeteria",
+     "kind": "popular",
+     "reason": "Categoría del negocio combinado",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad de contenido de comida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "centrodeliciosos",
+     "kind": "nicho",
+     "reason": "Ubicación céntrica para desayuno al paso",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2084,
+     "output": 439,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004279,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004279,
+   "seconds": 3.96
+  },
+  {
+   "case": "c06",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal, palabra clave que buscan los clientes",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzo",
+     "kind": "popular",
+     "reason": "Ocasión central de la publicación",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Servicio sin demora, preparado al momento",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación exacta del negocio mencionada",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensaladas",
+     "kind": "nicho",
+     "reason": "Producto específico ofrecido junto al shawarma",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Nombre del negocio mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Ubicación regional, San Cristóbal está en Táchira",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina: shawarma es comida árabe",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "popular",
+     "reason": "Ensaladas y opciones frescas hechas al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida rápida y casual para redes",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2079,
+     "output": 380,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003979,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003979,
+   "seconds": 3.4
+  },
+  {
+   "case": "c13",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "popular",
+     "reason": "El producto principal de la publicacion",
+     "seen_count": 1
+    },
+    {
+     "tag": "pollo",
+     "kind": "popular",
+     "reason": "Ingrediente clave que menciona el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "popular",
+     "reason": "Ingrediente clave que menciona el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "popular",
+     "reason": "Enfasis en almuerzo rapido, sin enredos",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Enfasis en la hora de almuerzo, resuelve rapido",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmamixto",
+     "kind": "nicho",
+     "reason": "Describe exactamente lo que ofrece: el mixto",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmasancristobal",
+     "kind": "marca",
+     "reason": "Identifica la ubicacion geografica del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ciudad mencionada implicitamente en la ubicacion",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Lugar especifico donde se ubica el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Contenido de comida rapida en TikTok",
+     "seen_count": 0
+    },
+    {
+     "tag": "manosalsazon",
+     "kind": "nicho",
+     "reason": "El texto enfatiza carne bien sazonada, hecho al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "alomanosarepa",
+     "kind": "nicho",
+     "reason": "Panaderia de comida rapida con salsa de ajo, sin receta",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2074,
+     "output": 460,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004374,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004374,
+   "seconds": 3.82
+  },
+  {
+   "case": "c21",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "Producto principal que se arma al momento",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Ingrediente clave mencionado en la publicación",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidaarabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobaltachira",
+     "kind": "marca",
+     "reason": "Ubicación específica del local mencionada",
+     "seen_count": 1
+    },
+    {
+     "tag": "almuerzoenequipo",
+     "kind": "nicho",
+     "reason": "Ocasión: pausa del mediodía con compañeros de oficina",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Nombre del negocio mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidafresh",
+     "kind": "popular",
+     "reason": "Se arma al momento, fresco ante el cliente",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodvenezuela",
+     "kind": "popular",
+     "reason": "Contenido de comida en Venezuela",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde está ubicado el negocio",
+     "seen_count": 1
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2034,
+     "output": 366,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.003864,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.003864,
+   "seconds": 3.3
+  },
+  {
+   "case": "c33",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarmadecarne",
+     "kind": "marca",
+     "reason": "Producto principal mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidarapida",
+     "kind": "nicho",
+     "reason": "Enfoque central: comida rápida y sin tiempo",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "Ubicación exacta del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "Sugerencia de combo mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "Contexto de hambre de oficina al mediodía",
+     "seen_count": 1
+    },
+    {
+     "tag": "shawarmasancristobal",
+     "kind": "marca",
+     "reason": "Combinación del producto y ubicación local",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "Comunidad amplia de contenido de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "carne",
+     "kind": "nicho",
+     "reason": "Ingrediente principal del shawarma",
+     "seen_count": 0
+    },
+    {
+     "tag": "loquevesesloquerecibes",
+     "kind": "marca",
+     "reason": "Propuesta de valor del negocio: transparencia",
+     "seen_count": 1
+    },
+    {
+     "tag": "arabe",
+     "kind": "nicho",
+     "reason": "Tipo de cocina del producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "Estado donde se ubica el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "Lugar específico mencionado en el texto",
+     "seen_count": 1
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2074,
+     "output": 429,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004219,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004219,
+   "seconds": 3.54
+  },
+  {
+   "case": "c47",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "shawarma",
+     "kind": "nicho",
+     "reason": "producto principal de la publicación",
+     "seen_count": 1
+    },
+    {
+     "tag": "ensalada",
+     "kind": "nicho",
+     "reason": "opción alternativa fresca mencionada en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "almuerzorapido",
+     "kind": "nicho",
+     "reason": "contexto de personas que salen de la oficina con poco tiempo",
+     "seen_count": 1
+    },
+    {
+     "tag": "laplaza",
+     "kind": "marca",
+     "reason": "nombre del lugar donde se vende",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "ubicación geográfica del negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidarica",
+     "kind": "popular",
+     "reason": "describe la calidad y atractivo del shawarma",
+     "seen_count": 1
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en TikTok, audiencia amplia interesada",
+     "seen_count": 0
+    },
+    {
+     "tag": "comidacallejera",
+     "kind": "nicho",
+     "reason": "tipo de venta de comida rápida al paso",
+     "seen_count": 0
+    },
+    {
+     "tag": "precioshonestos",
+     "kind": "nicho",
+     "reason": "el texto enfatiza transparencia en precios",
+     "seen_count": 0
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "estado donde está ubicado el negocio",
+     "seen_count": 1
+    },
+    {
+     "tag": "comerenboca",
+     "kind": "popular",
+     "reason": "experiencia de disfrutar comida rica al momento",
+     "seen_count": 0
+    },
+    {
+     "tag": "shawarmasancristobal",
+     "kind": "marca",
+     "reason": "especificidad del negocio y ubicación",
+     "seen_count": 1
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2076,
+     "output": 437,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004261,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004261,
+   "seconds": 3.76
+  },
+  {
+   "case": "c49",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "heladoartesanal",
+     "kind": "nicho",
+     "reason": "producto principal mencionado en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "helado",
+     "kind": "popular",
+     "reason": "búsqueda amplia del producto",
+     "seen_count": 1
+    },
+    {
+     "tag": "postres",
+     "kind": "popular",
+     "reason": "categoría del producto ofrecido",
+     "seen_count": 1
+    },
+    {
+     "tag": "sancristobal",
+     "kind": "marca",
+     "reason": "ubicación específica mencionada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "tachira",
+     "kind": "marca",
+     "reason": "estado donde se ubica San Cristóbal",
+     "seen_count": 1
+    },
+    {
+     "tag": "vainilla",
+     "kind": "nicho",
+     "reason": "sabor específico del helado artesanal",
+     "seen_count": 0
+    },
+    {
+     "tag": "chocolate",
+     "kind": "nicho",
+     "reason": "topping principal del producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladocasero",
+     "kind": "nicho",
+     "reason": "enfatiza lo artesanal del producto",
+     "seen_count": 0
+    },
+    {
+     "tag": "pausa",
+     "kind": "popular",
+     "reason": "ocasión de consumo mencionada",
+     "seen_count": 0
+    },
+    {
+     "tag": "tardesolitaria",
+     "kind": "nicho",
+     "reason": "momento del día descrito en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "heladerias",
+     "kind": "popular",
+     "reason": "tipo de negocio",
+     "seen_count": 0
+    },
+    {
+     "tag": "foodtok",
+     "kind": "popular",
+     "reason": "contenido de comida en redes",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2056,
+     "output": 393,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004021,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004021,
+   "seconds": 3.25
+  },
+  {
+   "case": "c34",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "jugosnaturales",
+     "kind": "nicho",
+     "reason": "Producto principal: jugos naturales sin azúcar",
+     "seen_count": 1
+    },
+    {
+     "tag": "sinazucar",
+     "kind": "nicho",
+     "reason": "Característica clave del producto destacada en el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "running",
+     "kind": "nicho",
+     "reason": "Audiencia objetivo: runners que certifican y buscan hidratación saludable",
+     "seen_count": 1
+    },
+    {
+     "tag": "vidasana",
+     "kind": "popular",
+     "reason": "Tema general: estilo de vida saludable y bebidas nutritivas",
+     "seen_count": 1
+    },
+    {
+     "tag": "fitness",
+     "kind": "popular",
+     "reason": "Contexto de ejercicio y rendimiento deportivo",
+     "seen_count": 1
+    },
+    {
+     "tag": "comidasaludable",
+     "kind": "nicho",
+     "reason": "El jugo se posiciona como opción saludable en rubro de comida",
+     "seen_count": 0
+    },
+    {
+     "tag": "powerupnatural",
+     "kind": "marca",
+     "reason": "Concepto clave del post: power-up natural como mensaje de marca",
+     "seen_count": 0
+    },
+    {
+     "tag": "jugosbarquisimeto",
+     "kind": "marca",
+     "reason": "Ubicación local: Barquisimeto (del catálogo local)",
+     "seen_count": 0
+    },
+    {
+     "tag": "smoothienacional",
+     "kind": "nicho",
+     "reason": "Categoría de bebidas naturales",
+     "seen_count": 0
+    },
+    {
+     "tag": "bebidasaludable",
+     "kind": "popular",
+     "reason": "Tipo general de producto que ofrece",
+     "seen_count": 0
+    },
+    {
+     "tag": "runnerscertificado",
+     "kind": "marca",
+     "reason": "Aval de la comunidad runner mencionado en el texto",
+     "seen_count": 0
+    },
+    {
+     "tag": "levelup",
+     "kind": "nicho",
+     "reason": "Tono gamificado del post, gamers y jóvenes activos",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2056,
+     "output": 471,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004411,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004411,
+   "seconds": 4.23
+  },
+  {
+   "case": "c38",
+   "variant": "own+watched",
+   "repeat": 1,
+   "prompt_version": "caption-hashtags/2",
+   "picks": [
+    {
+     "tag": "godot",
+     "kind": "nicho",
+     "reason": "Motor de juegos específico que el texto menciona como eje central del curso",
+     "seen_count": 1
+    },
+    {
+     "tag": "gamedev",
+     "kind": "popular",
+     "reason": "Comunidad amplia de desarrolladores de videojuegos donde buscan recursos",
+     "seen_count": 1
+    },
+    {
+     "tag": "godotengine",
+     "kind": "nicho",
+     "reason": "Búsqueda específica de usuarios interesados en este motor en particular",
+     "seen_count": 1
+    },
+    {
+     "tag": "aprendeaprogramar",
+     "kind": "nicho",
+     "reason": "Audiencia de principiantes sin experiencia, como dice el texto",
+     "seen_count": 1
+    },
+    {
+     "tag": "cursogratis",
+     "kind": "nicho",
+     "reason": "El curso es gratuito, atrae a quien busca educación sin costo",
+     "seen_count": 1
+    },
+    {
+     "tag": "indiedev",
+     "kind": "popular",
+     "reason": "Desarrolladores independientes que crean sus propios juegos",
+     "seen_count": 1
+    },
+    {
+     "tag": "programaciondesdecerotube",
+     "kind": "nicho",
+     "reason": "Audiencia que busca aprender a programar sin requisitos previos en YouTube",
+     "seen_count": 0
+    },
+    {
+     "tag": "tutorialvideojuegos",
+     "kind": "nicho",
+     "reason": "Contenido educativo paso a paso en desarrollo de juegos",
+     "seen_count": 0
+    },
+    {
+     "tag": "codigofuente",
+     "kind": "nicho",
+     "reason": "Énfasis en mostrar código en pantalla explicado",
+     "seen_count": 0
+    },
+    {
+     "tag": "desarrolladoresprincipiantes",
+     "kind": "nicho",
+     "reason": "Target principal del contenido: sin experiencia previa",
+     "seen_count": 0
+    }
+   ],
+   "error": null,
+   "usage": [
+    {
+     "model_revision": "claude-haiku-4-5-20251001",
+     "prompt_version": "caption-hashtags/2",
+     "input": 2093,
+     "output": 421,
+     "cache_read": 0,
+     "cache_creation": 0,
+     "cost_usd": 0.004198,
+     "priced": true,
+     "pricing_table": "v7"
+    }
+   ],
+   "cost_usd": 0.004198,
+   "seconds": 5.12
+  }
+ ],
+ "report": {
+  "watched": {
+   "cases": {
+    "mean": 16,
+    "min": 16,
+    "max": 16
+   },
+   "picks_top": {
+    "mean": 80,
+    "min": 80,
+    "max": 80
+   },
+   "trap_competidor_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_top": {
+    "mean": 0.0063,
+    "min": 0.0,
+    "max": 0.0125
+   },
+   "trap_vigilada_no_encaja_top": {
+    "mean": 0.0437,
+    "min": 0.0375,
+    "max": 0.05
+   },
+   "trap_any_top": {
+    "mean": 0.05,
+    "min": 0.05,
+    "max": 0.05
+   },
+   "fit_top": {
+    "mean": 0.8875,
+    "min": 0.875,
+    "max": 0.9
+   },
+   "generica_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_top": {
+    "mean": 0.0188,
+    "min": 0.0125,
+    "max": 0.025
+   },
+   "mal_escrita_top": {
+    "mean": 0.0437,
+    "min": 0.0375,
+    "max": 0.05
+   },
+   "sin_etiqueta_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_mejor": {
+    "mean": 80,
+    "min": 80,
+    "max": 80
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0125,
+    "min": 0.0125,
+    "max": 0.0125
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0125,
+    "min": 0.0125,
+    "max": 0.0125
+   },
+   "fit_mejor": {
+    "mean": 0.8812,
+    "min": 0.875,
+    "max": 0.8875
+   },
+   "generica_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0312,
+    "min": 0.025,
+    "max": 0.0375
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.075,
+    "min": 0.075,
+    "max": 0.075
+   },
+   "sin_etiqueta_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_shown": {
+    "mean": 171,
+    "min": 167,
+    "max": 175
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0118,
+    "min": 0.0057,
+    "max": 0.018
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.0321,
+    "min": 0.0299,
+    "max": 0.0343
+   },
+   "trap_any_shown": {
+    "mean": 0.044,
+    "min": 0.04,
+    "max": 0.0479
+   },
+   "fit_shown": {
+    "mean": 0.7956,
+    "min": 0.7829,
+    "max": 0.8084
+   },
+   "generica_shown": {
+    "mean": 0.0029,
+    "min": 0.0,
+    "max": 0.0057
+   },
+   "no_encaja_shown": {
+    "mean": 0.0378,
+    "min": 0.0299,
+    "max": 0.0457
+   },
+   "mal_escrita_shown": {
+    "mean": 0.1226,
+    "min": 0.1138,
+    "max": 0.1314
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_all": {
+    "mean": 180.5,
+    "min": 178,
+    "max": 183
+   },
+   "trap_competidor_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_all": {
+    "mean": 0.0112,
+    "min": 0.0055,
+    "max": 0.0169
+   },
+   "trap_vigilada_no_encaja_all": {
+    "mean": 0.036,
+    "min": 0.0328,
+    "max": 0.0393
+   },
+   "trap_any_all": {
+    "mean": 0.0473,
+    "min": 0.0383,
+    "max": 0.0562
+   },
+   "fit_all": {
+    "mean": 0.8007,
+    "min": 0.7923,
+    "max": 0.809
+   },
+   "generica_all": {
+    "mean": 0.0027,
+    "min": 0.0,
+    "max": 0.0055
+   },
+   "no_encaja_all": {
+    "mean": 0.0359,
+    "min": 0.0281,
+    "max": 0.0437
+   },
+   "mal_escrita_all": {
+    "mean": 0.1162,
+    "min": 0.1067,
+    "max": 0.1257
+   },
+   "sin_etiqueta_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "cases_with_trap_top": {
+    "mean": 0.1875,
+    "min": 0.1875,
+    "max": 0.1875
+   },
+   "watched_uptake_top": {
+    "mean": 0.4083,
+    "min": 0.3976,
+    "max": 0.419
+   },
+   "cases_with_trap_mejor": {
+    "mean": 0.0625,
+    "min": 0.0625,
+    "max": 0.0625
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.197,
+    "min": 0.1952,
+    "max": 0.1988
+   },
+   "cases_with_trap_shown": {
+    "mean": 0.3125,
+    "min": 0.25,
+    "max": 0.375
+   },
+   "watched_uptake_shown": {
+    "mean": 0.3024,
+    "min": 0.3024,
+    "max": 0.3024
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "dropped_per_call": {
+    "mean": 0.5938,
+    "min": 0.5,
+    "max": 0.6875
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.5312,
+    "min": 0.5,
+    "max": 0.5625
+   },
+   "catalog_backed": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_per_call": {
+    "mean": 11.2812,
+    "min": 11.125,
+    "max": 11.4375
+   },
+   "stability_top": 0.2822,
+   "dropped_tags": {
+    "arabe:encaja": 14,
+    "pollo:vigilada_no_encaja": 2,
+    "ensalada:encaja": 2,
+    "comer:aceptable": 1
+   },
+   "reasons": 361,
+   "reason_platform": 0.0914,
+   "reason_english": 0.0166,
+   "calls": 32,
+   "errors": 0,
+   "skipped": 0,
+   "cost_usd_total": 0.13202,
+   "cost_usd_per_call": 0.004126,
+   "tokens_in_per_call": 1977,
+   "tokens_out_per_call": 430,
+   "p50_seconds": 4.21
+  },
+  "own+watched": {
+   "cases": {
+    "mean": 16,
+    "min": 16,
+    "max": 16
+   },
+   "picks_top": {
+    "mean": 80,
+    "min": 80,
+    "max": 80
+   },
+   "trap_competidor_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_top": {
+    "mean": 0.0375,
+    "min": 0.025,
+    "max": 0.05
+   },
+   "trap_any_top": {
+    "mean": 0.0375,
+    "min": 0.025,
+    "max": 0.05
+   },
+   "fit_top": {
+    "mean": 0.9437,
+    "min": 0.9375,
+    "max": 0.95
+   },
+   "generica_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "mal_escrita_top": {
+    "mean": 0.0188,
+    "min": 0.0125,
+    "max": 0.025
+   },
+   "sin_etiqueta_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_mejor": {
+    "mean": 79,
+    "min": 78,
+    "max": 80
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "fit_mejor": {
+    "mean": 0.9685,
+    "min": 0.9625,
+    "max": 0.9744
+   },
+   "generica_mejor": {
+    "mean": 0.0063,
+    "min": 0.0,
+    "max": 0.0125
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.0316,
+    "min": 0.0256,
+    "max": 0.0375
+   },
+   "sin_etiqueta_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_shown": {
+    "mean": 159,
+    "min": 154,
+    "max": 164
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.0345,
+    "min": 0.0325,
+    "max": 0.0366
+   },
+   "trap_any_shown": {
+    "mean": 0.0345,
+    "min": 0.0325,
+    "max": 0.0366
+   },
+   "fit_shown": {
+    "mean": 0.9038,
+    "min": 0.8659,
+    "max": 0.9416
+   },
+   "generica_shown": {
+    "mean": 0.0031,
+    "min": 0.0,
+    "max": 0.0061
+   },
+   "no_encaja_shown": {
+    "mean": 0.0126,
+    "min": 0.0122,
+    "max": 0.013
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0492,
+    "min": 0.013,
+    "max": 0.0854
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_all": {
+    "mean": 171.5,
+    "min": 166,
+    "max": 177
+   },
+   "trap_competidor_all": {
+    "mean": 0.0028,
+    "min": 0.0,
+    "max": 0.0056
+   },
+   "trap_relleno_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_all": {
+    "mean": 0.0406,
+    "min": 0.0361,
+    "max": 0.0452
+   },
+   "trap_any_all": {
+    "mean": 0.0435,
+    "min": 0.0361,
+    "max": 0.0508
+   },
+   "fit_all": {
+    "mean": 0.8993,
+    "min": 0.8588,
+    "max": 0.9398
+   },
+   "generica_all": {
+    "mean": 0.0028,
+    "min": 0.0,
+    "max": 0.0056
+   },
+   "no_encaja_all": {
+    "mean": 0.0117,
+    "min": 0.0113,
+    "max": 0.012
+   },
+   "mal_escrita_all": {
+    "mean": 0.0456,
+    "min": 0.012,
+    "max": 0.0791
+   },
+   "sin_etiqueta_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "cases_with_trap_top": {
+    "mean": 0.1562,
+    "min": 0.125,
+    "max": 0.1875
+   },
+   "watched_uptake_top": {
+    "mean": 0.275,
+    "min": 0.2679,
+    "max": 0.2821
+   },
+   "cases_with_trap_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.1232,
+    "min": 0.1214,
+    "max": 0.125
+   },
+   "cases_with_trap_shown": {
+    "mean": 0.25,
+    "min": 0.25,
+    "max": 0.25
+   },
+   "watched_uptake_shown": {
+    "mean": 0.225,
+    "min": 0.1714,
+    "max": 0.2786
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0312,
+    "min": 0.0,
+    "max": 0.0625
+   },
+   "dropped_per_call": {
+    "mean": 0.7812,
+    "min": 0.75,
+    "max": 0.8125
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.6562,
+    "min": 0.625,
+    "max": 0.6875
+   },
+   "catalog_backed": {
+    "mean": 0.5167,
+    "min": 0.4972,
+    "max": 0.5361
+   },
+   "picks_per_call": {
+    "mean": 10.7188,
+    "min": 10.375,
+    "max": 11.0625
+   },
+   "stability_top": 0.5918,
+   "dropped_tags": {
+    "arabe:encaja": 18,
+    "pollo:vigilada_no_encaja": 3,
+    "comer:aceptable": 2,
+    "ensalada:encaja": 1,
+    "manosalsazon:competidor": 1
+   },
+   "reasons": 343,
+   "reason_platform": 0.0816,
+   "reason_english": 0.0117,
+   "calls": 32,
+   "errors": 0,
+   "skipped": 0,
+   "cost_usd_total": 0.12956,
+   "cost_usd_per_call": 0.004049,
+   "tokens_in_per_call": 2042,
+   "tokens_out_per_call": 401,
+   "p50_seconds": 3.46
+  }
+ },
+ "report_comidacasera_aceptable": {
+  "watched": {
+   "cases": {
+    "mean": 16,
+    "min": 16,
+    "max": 16
+   },
+   "picks_top": {
+    "mean": 80,
+    "min": 80,
+    "max": 80
+   },
+   "trap_competidor_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_top": {
+    "mean": 0.0063,
+    "min": 0.0,
+    "max": 0.0125
+   },
+   "trap_vigilada_no_encaja_top": {
+    "mean": 0.0437,
+    "min": 0.0375,
+    "max": 0.05
+   },
+   "trap_any_top": {
+    "mean": 0.05,
+    "min": 0.05,
+    "max": 0.05
+   },
+   "fit_top": {
+    "mean": 0.8875,
+    "min": 0.875,
+    "max": 0.9
+   },
+   "generica_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_top": {
+    "mean": 0.0188,
+    "min": 0.0125,
+    "max": 0.025
+   },
+   "mal_escrita_top": {
+    "mean": 0.0437,
+    "min": 0.0375,
+    "max": 0.05
+   },
+   "sin_etiqueta_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_mejor": {
+    "mean": 80,
+    "min": 80,
+    "max": 80
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0125,
+    "min": 0.0125,
+    "max": 0.0125
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0125,
+    "min": 0.0125,
+    "max": 0.0125
+   },
+   "fit_mejor": {
+    "mean": 0.8812,
+    "min": 0.875,
+    "max": 0.8875
+   },
+   "generica_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0312,
+    "min": 0.025,
+    "max": 0.0375
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.075,
+    "min": 0.075,
+    "max": 0.075
+   },
+   "sin_etiqueta_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_shown": {
+    "mean": 171,
+    "min": 167,
+    "max": 175
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0118,
+    "min": 0.0057,
+    "max": 0.018
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.0291,
+    "min": 0.024,
+    "max": 0.0343
+   },
+   "trap_any_shown": {
+    "mean": 0.041,
+    "min": 0.04,
+    "max": 0.0419
+   },
+   "fit_shown": {
+    "mean": 0.7987,
+    "min": 0.7829,
+    "max": 0.8144
+   },
+   "generica_shown": {
+    "mean": 0.0029,
+    "min": 0.0,
+    "max": 0.0057
+   },
+   "no_encaja_shown": {
+    "mean": 0.0378,
+    "min": 0.0299,
+    "max": 0.0457
+   },
+   "mal_escrita_shown": {
+    "mean": 0.1226,
+    "min": 0.1138,
+    "max": 0.1314
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_all": {
+    "mean": 180.5,
+    "min": 178,
+    "max": 183
+   },
+   "trap_competidor_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_all": {
+    "mean": 0.0112,
+    "min": 0.0055,
+    "max": 0.0169
+   },
+   "trap_vigilada_no_encaja_all": {
+    "mean": 0.0333,
+    "min": 0.0328,
+    "max": 0.0337
+   },
+   "trap_any_all": {
+    "mean": 0.0445,
+    "min": 0.0383,
+    "max": 0.0506
+   },
+   "fit_all": {
+    "mean": 0.8034,
+    "min": 0.7923,
+    "max": 0.8146
+   },
+   "generica_all": {
+    "mean": 0.0027,
+    "min": 0.0,
+    "max": 0.0055
+   },
+   "no_encaja_all": {
+    "mean": 0.0359,
+    "min": 0.0281,
+    "max": 0.0437
+   },
+   "mal_escrita_all": {
+    "mean": 0.1162,
+    "min": 0.1067,
+    "max": 0.1257
+   },
+   "sin_etiqueta_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "cases_with_trap_top": {
+    "mean": 0.1875,
+    "min": 0.1875,
+    "max": 0.1875
+   },
+   "watched_uptake_top": {
+    "mean": 0.4083,
+    "min": 0.3976,
+    "max": 0.419
+   },
+   "cases_with_trap_mejor": {
+    "mean": 0.0625,
+    "min": 0.0625,
+    "max": 0.0625
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.197,
+    "min": 0.1952,
+    "max": 0.1988
+   },
+   "cases_with_trap_shown": {
+    "mean": 0.2812,
+    "min": 0.25,
+    "max": 0.3125
+   },
+   "watched_uptake_shown": {
+    "mean": 0.3024,
+    "min": 0.3024,
+    "max": 0.3024
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "dropped_per_call": {
+    "mean": 0.5938,
+    "min": 0.5,
+    "max": 0.6875
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.5312,
+    "min": 0.5,
+    "max": 0.5625
+   },
+   "catalog_backed": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_per_call": {
+    "mean": 11.2812,
+    "min": 11.125,
+    "max": 11.4375
+   },
+   "stability_top": 0.2822,
+   "dropped_tags": {
+    "arabe:encaja": 14,
+    "pollo:vigilada_no_encaja": 2,
+    "ensalada:encaja": 2,
+    "comer:aceptable": 1
+   },
+   "reasons": 361,
+   "reason_platform": 0.0914,
+   "reason_english": 0.0166,
+   "calls": 32,
+   "errors": 0,
+   "skipped": 0,
+   "cost_usd_total": 0.13202,
+   "cost_usd_per_call": 0.004126,
+   "tokens_in_per_call": 1977,
+   "tokens_out_per_call": 430,
+   "p50_seconds": 4.21
+  },
+  "own+watched": {
+   "cases": {
+    "mean": 16,
+    "min": 16,
+    "max": 16
+   },
+   "picks_top": {
+    "mean": 80,
+    "min": 80,
+    "max": 80
+   },
+   "trap_competidor_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_top": {
+    "mean": 0.0312,
+    "min": 0.025,
+    "max": 0.0375
+   },
+   "trap_any_top": {
+    "mean": 0.0312,
+    "min": 0.025,
+    "max": 0.0375
+   },
+   "fit_top": {
+    "mean": 0.95,
+    "min": 0.95,
+    "max": 0.95
+   },
+   "generica_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "no_encaja_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "mal_escrita_top": {
+    "mean": 0.0188,
+    "min": 0.0125,
+    "max": 0.025
+   },
+   "sin_etiqueta_top": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_mejor": {
+    "mean": 79,
+    "min": 78,
+    "max": 80
+   },
+   "trap_competidor_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_any_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "fit_mejor": {
+    "mean": 0.9685,
+    "min": 0.9625,
+    "max": 0.9744
+   },
+   "generica_mejor": {
+    "mean": 0.0063,
+    "min": 0.0,
+    "max": 0.0125
+   },
+   "no_encaja_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "mal_escrita_mejor": {
+    "mean": 0.0316,
+    "min": 0.0256,
+    "max": 0.0375
+   },
+   "sin_etiqueta_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_shown": {
+    "mean": 159,
+    "min": 154,
+    "max": 164
+   },
+   "trap_competidor_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_relleno_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_shown": {
+    "mean": 0.0285,
+    "min": 0.0244,
+    "max": 0.0325
+   },
+   "trap_any_shown": {
+    "mean": 0.0285,
+    "min": 0.0244,
+    "max": 0.0325
+   },
+   "fit_shown": {
+    "mean": 0.9098,
+    "min": 0.878,
+    "max": 0.9416
+   },
+   "generica_shown": {
+    "mean": 0.0031,
+    "min": 0.0,
+    "max": 0.0061
+   },
+   "no_encaja_shown": {
+    "mean": 0.0126,
+    "min": 0.0122,
+    "max": 0.013
+   },
+   "mal_escrita_shown": {
+    "mean": 0.0492,
+    "min": 0.013,
+    "max": 0.0854
+   },
+   "sin_etiqueta_shown": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "picks_all": {
+    "mean": 171.5,
+    "min": 166,
+    "max": 177
+   },
+   "trap_competidor_all": {
+    "mean": 0.0028,
+    "min": 0.0,
+    "max": 0.0056
+   },
+   "trap_relleno_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_otro_lugar_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "trap_vigilada_no_encaja_all": {
+    "mean": 0.035,
+    "min": 0.0339,
+    "max": 0.0361
+   },
+   "trap_any_all": {
+    "mean": 0.0378,
+    "min": 0.0361,
+    "max": 0.0395
+   },
+   "fit_all": {
+    "mean": 0.9049,
+    "min": 0.8701,
+    "max": 0.9398
+   },
+   "generica_all": {
+    "mean": 0.0028,
+    "min": 0.0,
+    "max": 0.0056
+   },
+   "no_encaja_all": {
+    "mean": 0.0117,
+    "min": 0.0113,
+    "max": 0.012
+   },
+   "mal_escrita_all": {
+    "mean": 0.0456,
+    "min": 0.012,
+    "max": 0.0791
+   },
+   "sin_etiqueta_all": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "cases_with_trap_top": {
+    "mean": 0.125,
+    "min": 0.125,
+    "max": 0.125
+   },
+   "watched_uptake_top": {
+    "mean": 0.275,
+    "min": 0.2679,
+    "max": 0.2821
+   },
+   "cases_with_trap_mejor": {
+    "mean": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   },
+   "watched_uptake_mejor": {
+    "mean": 0.1232,
+    "min": 0.1214,
+    "max": 0.125
+   },
+   "cases_with_trap_shown": {
+    "mean": 0.1875,
+    "min": 0.125,
+    "max": 0.25
+   },
+   "watched_uptake_shown": {
+    "mean": 0.225,
+    "min": 0.1714,
+    "max": 0.2786
+   },
+   "mejor_fewer_than_5": {
+    "mean": 0.0312,
+    "min": 0.0,
+    "max": 0.0625
+   },
+   "dropped_per_call": {
+    "mean": 0.7812,
+    "min": 0.75,
+    "max": 0.8125
+   },
+   "dropped_fitting_per_call": {
+    "mean": 0.6562,
+    "min": 0.625,
+    "max": 0.6875
+   },
+   "catalog_backed": {
+    "mean": 0.5167,
+    "min": 0.4972,
+    "max": 0.5361
+   },
+   "picks_per_call": {
+    "mean": 10.7188,
+    "min": 10.375,
+    "max": 11.0625
+   },
+   "stability_top": 0.5918,
+   "dropped_tags": {
+    "arabe:encaja": 18,
+    "pollo:vigilada_no_encaja": 3,
+    "comer:aceptable": 2,
+    "ensalada:encaja": 1,
+    "manosalsazon:competidor": 1
+   },
+   "reasons": 343,
+   "reason_platform": 0.0816,
+   "reason_english": 0.0117,
+   "calls": 32,
+   "errors": 0,
+   "skipped": 0,
+   "cost_usd_total": 0.12956,
+   "cost_usd_per_call": 0.004049,
+   "tokens_in_per_call": 2042,
+   "tokens_out_per_call": 401,
+   "p50_seconds": 3.46
+  }
+ },
+ "rescored_at": "2026-11-16T23:23:33+00:00"
+}

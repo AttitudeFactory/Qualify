@@ -80,7 +80,11 @@ FAKE_ENV = {
     # m-25027371: Instagram DMs read through the in-memory channel, never Meta
     "QUALIFY_CONVERSATIONS_DM_CHANNEL": "memory",
     "QUALIFY_VENDOR_RECOVERY": "off",
+    # m-25032581: «Sugerir con IA» answers from `stubs/sitecustomize.py`, never Claude
+    "QUALIFY_E2E_FAKE_CAPTION_HASHTAGS": "1",
 }
+#: On the booted app's PYTHONPATH only (see `stubs/sitecustomize.py`).
+STUBS_DIR = Path(__file__).resolve().parent / "stubs"
 
 
 def fake_env() -> dict[str, str]:
@@ -142,8 +146,11 @@ def app_server() -> Iterator[str]:
         REFLEX_HOT_RELOAD_OVERRIDE_PATHS=tempfile.mkdtemp(prefix="qualify-e2e-noreload-"),
         **FAKE_ENV,
     )
-    env["PYTHONPATH"] = _PYTHONPATH + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    env["PYTHONPATH"] = (
+        str(STUBS_DIR)
+        + os.pathsep
+        + _PYTHONPATH
+        + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     )
     log_path = Path(tempfile.mkdtemp(prefix="qualify-e2e-logs-")) / "reflex.log"
     log = log_path.open("w", encoding="utf-8")

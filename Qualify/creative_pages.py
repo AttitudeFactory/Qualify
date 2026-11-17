@@ -27,6 +27,7 @@ from .creative_vm import (
     FINISH_GALLERY_MANY,
     FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
+    HASHTAG_KIND_LABELS,
     PURGED_TEXT,
     RECREATE_LABEL,
     SOURCE_REEL_HINT,
@@ -2068,15 +2069,62 @@ def _add_row(value, on_change, on_add, placeholder: str, icon: str) -> rx.Compon
     )
 
 
+def _idea_why(idea) -> rx.Component:
+    """m-25032581 (UX review): the idea's reason, reachable by touch and keyboard — a
+    `title` alone never shows on a phone. A small «i» button next to the chip opens a
+    popover (Radix: Enter/Space opens, Esc closes, focus returns); the chip's own tap
+    still only adds the etiqueta. Nothing to open when the model gave no reason."""
+    return rx.cond(
+        idea.reason != "",
+        rx.popover.root(
+            rx.popover.trigger(
+                rx.el.button(
+                    rx.icon("info", size=14, aria_hidden="true"),
+                    type="button",
+                    class_name="q-rv-chip-why",
+                    aria_label="Por qué te sugerimos #" + idea.tag,
+                ),
+            ),
+            rx.popover.content(
+                rx.vstack(
+                    rx.text("#" + idea.tag, size="2", weight="bold"),
+                    rx.text(idea.reason, size="2"),
+                    rx.cond(
+                        idea.seen_label != "",
+                        rx.text(idea.seen_label, size="1", color=T.TEXT_MUTED),
+                    ),
+                    rx.cond(
+                        idea.best,
+                        rx.hstack(
+                            rx.icon("star", size=12, aria_hidden="true"),
+                            rx.text(BEST_IDEA_MARK + ": " + BEST_IDEA_HINT.lower(), size="1"),
+                            spacing="1",
+                            align="center",
+                        ),
+                    ),
+                    spacing="1",
+                    max_width="16rem",
+                ),
+                side="bottom",
+                align="start",
+            ),
+        ),
+    )
+
+
 def _idea_chip(idea) -> rx.Component:
-    return _add_chip(
-        idea.tag,
-        CreativeState.add_hashtag(idea.tag),
-        prefix="#",
-        title=rx.cond(idea.best, BEST_IDEA_HINT + " · ", "")
-        + idea.reason
-        + rx.cond(idea.seen_label != "", " · " + idea.seen_label, ""),
-        best=idea.best,
+    return rx.el.span(
+        _add_chip(
+            idea.tag,
+            CreativeState.add_hashtag(idea.tag),
+            prefix="#",
+            title=rx.cond(idea.best, BEST_IDEA_HINT + " · ", "")
+            + idea.reason
+            + rx.cond(idea.seen_label != "", " · " + idea.seen_label, ""),
+            best=idea.best,
+        ),
+        _idea_why(idea),
+        class_name="q-rv-idea",
     )
 
 
@@ -2154,9 +2202,9 @@ def _ai_hashtags() -> rx.Component:
             CreativeState.ai_hashtags_note != "",
             rx.text(CreativeState.ai_hashtags_note, size="1", color=T.TEXT_MUTED),
         ),
-        _idea_group("flame", "Populares", CreativeState.ai_popular),
-        _idea_group("target", "De nicho", CreativeState.ai_niche),
-        _idea_group("map-pin", "Locales y de marca", CreativeState.ai_brand),
+        _idea_group("flame", HASHTAG_KIND_LABELS["popular"], CreativeState.ai_popular),
+        _idea_group("target", HASHTAG_KIND_LABELS["nicho"], CreativeState.ai_niche),
+        _idea_group("map-pin", HASHTAG_KIND_LABELS["marca"], CreativeState.ai_brand),
         rx.cond(
             (CreativeState.ai_hashtags.length() == 0)
             & (CreativeState.hashtag_suggestions.length() > 0),

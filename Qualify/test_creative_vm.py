@@ -1140,6 +1140,69 @@ def test_the_first_five_ai_ideas_are_marked_best_in_their_own_order() -> None:
     assert all(i.best for i in mark_best_ideas(ideas[:3]))
 
 
+# --- m-25032581 (UX review): «Mejor» only when it is honest ---------------------------
+
+
+def _idea(tag: str, *, watched: bool = False, in_text: bool = False):
+    from .creative_vm import HashtagIdeaVM
+
+    return HashtagIdeaVM(tag=tag, kind="nicho", reason="r", watched=watched, in_text=in_text)
+
+
+def test_a_watched_tag_the_text_does_not_name_never_gets_best() -> None:
+    """The measured failure: `carne` and `pollo` among the top five of a «¿Cómo llegar?»
+    text. They stay on screen, in place, without the mark; the next eligible ones get it."""
+    from .creative_vm import best_ideas_to_add, mark_best_ideas
+
+    ideas = [
+        _idea("bianki"),
+        _idea("carne", watched=True),
+        _idea("comoLlegar"),
+        _idea("pollo", watched=True),
+        _idea("sancristobal"),
+        _idea("shawarma"),
+        _idea("comidarapida"),
+        _idea("tachira"),
+    ]
+    marked = mark_best_ideas(ideas)
+    assert [i.tag for i in marked] == [i.tag for i in ideas]  # order and contents kept
+    best = [i.tag for i in marked if i.best]
+    assert best == ["bianki", "comoLlegar", "sancristobal", "shawarma", "comidarapida"]
+    assert best_ideas_to_add(marked, []) == best
+
+
+def test_a_watched_tag_the_text_names_is_eligible() -> None:
+    from .creative_vm import mark_best_ideas
+
+    marked = mark_best_ideas([_idea("pollo", watched=True, in_text=True), _idea("a")])
+    assert [i.best for i in marked] == [True, True]
+
+
+def test_a_non_watched_pick_is_never_affected() -> None:
+    """`in_text` means nothing for a catalog or model pick: same marks as before."""
+    from .creative_vm import mark_best_ideas
+
+    ideas = [_idea(f"t{i}", in_text=i % 2 == 0) for i in range(7)]
+    assert [i.best for i in mark_best_ideas(ideas)] == [True] * 5 + [False] * 2
+
+
+def test_fewer_than_five_eligible_marks_only_those() -> None:
+    from .creative_vm import best_ideas_button_label, best_ideas_to_add, mark_best_ideas
+
+    ideas = [_idea("a"), *(_idea(f"w{i}", watched=True) for i in range(6)), _idea("b")]
+    marked = mark_best_ideas(ideas)
+    assert [i.tag for i in marked if i.best] == ["a", "b"]
+    assert best_ideas_button_label(len(best_ideas_to_add(marked, []))) == "Agregar las 2 mejores"
+
+
+def test_zero_eligible_marks_nothing_and_offers_no_button() -> None:
+    from .creative_vm import best_ideas_button_label, best_ideas_to_add, mark_best_ideas
+
+    marked = mark_best_ideas([_idea(f"w{i}", watched=True) for i in range(5)])
+    assert not any(i.best for i in marked) and len(marked) == 5
+    assert best_ideas_button_label(len(best_ideas_to_add(marked, []))) == ""
+
+
 def test_best_button_label_agrees_with_the_number() -> None:
     from .creative_vm import best_ideas_button_label
 

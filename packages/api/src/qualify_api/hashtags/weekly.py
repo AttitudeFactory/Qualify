@@ -136,14 +136,17 @@ from qualify_api.creators.repository import (
     PostgresCreatorPoolRepository,
     params_key,
 )
+from qualify_api.hashtags.catalog import classify_tag
 from qualify_api.hashtags.repository import (
+    MAX_TAG_LENGTH,
     POPULAR_WINDOW_DAYS,
+    Classification,
     HashtagRepository,
     NewPostSighting,
     PostgresHashtagRepository,
-    fold,
-    normalize_tag,
+    readable_tag,
 )
+from qualify_api.referentes.discovery_seed import DiscoverySeed
 from qualify_api.referentes.reel_schedule import ScheduledBrand, is_active
 from qualify_api.vendors import uncapped, usage
 from qualify_api.vendors.scrapecreators import (
@@ -201,16 +204,19 @@ MONTHLY_HEADROOM = usage.MONTHLY_CAP * 5 // 6
 #: Only videos posted inside this window count — the same 90 days «popular» sums.
 WINDOW_DAYS = POPULAR_WINDOW_DAYS
 LANGUAGE = "es"
-#: A hashtag longer than this is not a rubro pill anyone types; it is not read.
-MAX_TAG_LENGTH = 50
 
 SOURCE = "hashtag_weekly"
 SOURCE_REF = "tiktok:hashtag_weekly"
-#: Bump when `parse_videos` changes what a sighting means.
-PARSER_VERSION = "tiktok-hashtag-weekly/1"
+#: Bump when `parse_videos` changes what a sighting means. 2 (m-25032581): a video's tag
+#: the catalog would not read as a `#tag` (`tachira_venezuela🇻🇪`) is no longer stored.
+PARSER_VERSION = "tiktok-hashtag-weekly/2"
+#: `catalog.classify_tag` with no business behind it: only what the tag alone decides
+#: (the generic list, any known country or city, the taxonomy's keywords). A place tag
+#: gets no country — the read's region is where the videos were searched, not what a tag
+#: names.
+_NO_SEED = DiscoverySeed(handle="", niches=())
 
 _HASHTAG_IN_TEXT = re.compile(r"#(\w+)")
-_WORD = re.compile(r"\w+")
 _COUNTRY = re.compile(r"[A-Z]{2}")
 #: A gate refusal that holds for every business (the switch, the floor, a 402): the tick
 #: stops. A cap refusal (`usage.CAP_REASONS`) only stops that business.
@@ -238,23 +244,6 @@ class BusinessRubro:
     tags: tuple[str, ...]
     country_code: str | None = None
     brand_id: UUID | None = None
-
-
-def readable_tag(raw: object) -> str | None:
-    """The tag as the catalog stores it, or None when the catalog would refuse its
-    sightings or it is not a hashtag at all: one token (`normalize_tag`), letters or digits
-    in it (`fold`), only word characters — what the catalog reads as a `#tag` in a caption
-    (`#(\\w+)`) — and at most `MAX_TAG_LENGTH` long. `🍔`, `c++`, `...` and a 300-character
-    pill are None."""
-    if not isinstance(raw, str):
-        return None
-    try:
-        tag = normalize_tag(raw)
-    except ValueError:
-        return None
-    if len(tag) > MAX_TAG_LENGTH or not _WORD.fullmatch(tag) or not fold(tag):
-        return None
-    return tag
 
 
 def rubro_tags(connect: Mapping[str, Any] | None, *, limit: int = MAX_TAGS) -> tuple[str, ...]:
@@ -326,12 +315,25 @@ def _video_tags(read_tag: str, item: Mapping[str, Any]) -> list[str]:
             raw.append(name)
     out: list[str] = []
     for value in raw:
-        try:
-            tag = normalize_tag(value)
-        except ValueError:
-            continue
-        if tag not in out:
+        # m-25032581: only what the catalog reads as a `#tag` — `tachira_venezuela🇻🇪` (a
+        # `text_extra` name) would be a row apart from the `tachira_venezuela` of the text
+        tag = readable_tag(value)
+        if tag is not None and tag not in out:
             out.append(tag)
+    return out
+
+
+def rule_classifications(sightings: Sequence[NewPostSighting]) -> list[Classification]:
+    """What a rule decides, at no cost, about the tags of a read (m-25032581): `generic`
+    (`like`, `fyp`), `place`, or a taxonomy `topic` (`catalog.classify_tag` with no
+    business seed). A tag no rule settles is left out — it stays `unknown`. Stored with
+    `apply_classifications`, so the never-downgrade rule holds: it settles a new tag and
+    repairs one an earlier read left `unknown`, never one an AI or a person decided."""
+    out: list[Classification] = []
+    for tag in sorted({s.tag for s in sightings}):
+        kind, niche, country = classify_tag(tag, _NO_SEED)
+        if kind != "unknown":
+            out.append(Classification(tag, kind, niche, country, classified_by="rule"))
     return out
 
 
@@ -760,6 +762,11 @@ class PostgresRubroSource:
         return business_rubro(tenant_id, [(r.brand_id, r.connect) for r in rows], country)
 
 
+#: Where the editor's «Sugerir con IA» reads a business's rubro tags (m-25032581) — the
+#: same read the weekly pass makes; tests install a `MemoryRubroSource`.
+RUBRO_SOURCE: RubroSource = PostgresRubroSource()
+
+
 def has_headroom(tenant_id: UUID, now: datetime) -> bool:
     """False when the business already spent more than `DAILY_HEADROOM` credits today or
     `MONTHLY_HEADROOM` this month (its local day and month); always True for a business
@@ -962,6 +969,12 @@ def _read_one(
         except Exception as exc:  # noqa: BLE001 - the raw answer is kept for a re-parse
             logger.warning("hashtags.weekly sightings not stored tenant=%s: %s", tenant, exc)
             outcome.errors += 1
+            return True
+        try:
+            repository.apply_classifications(tenant, rule_classifications(sightings))
+        except Exception as exc:  # noqa: BLE001 - the next read classifies them again
+            logger.warning("hashtags.weekly tags not classified tenant=%s: %s", tenant, exc)
+            outcome.errors += 1
     return True
 
 
@@ -1135,6 +1148,7 @@ __all__ = [
     "MONTHLY_HEADROOM",
     "PARSER_VERSION",
     "PATH",
+    "RUBRO_SOURCE",
     "REREAD_AFTER",
     "RETRY_AFTER",
     "SOURCE",
@@ -1164,6 +1178,7 @@ __all__ = [
     "read_business",
     "readable_tag",
     "rubro_tags",
+    "rule_classifications",
     "run_tick",
     "summarize",
     "switch_on",

@@ -22,6 +22,224 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="hashtags-pie-001"></a>
+
+## HASHTAGS-PIE-001 — «Sugerir con IA» de hashtags: prompt de hoy contra el que lee las etiquetas vigiladas del rubro (m-25032581) — 2026-11-15/17 · `/2` ACTIVADO POR EL FUNDADOR; con el filtro de salida y la regla de «Mejor» finales, las cinco «Mejor» pasan la barra en dev y test (re-puntuación, test ya usado); lo que se muestra sin marca con catálogo, no
+
+- **Modelo:** `claude-haiku-4-5`, revisión `claude-haiku-4-5-20251001`, herramienta forzada `sugerir_hashtags`, `max_tokens` 2048, hasta 12 etiquetas. Ficha: [claude-haiku-4-5.md](claude-haiku-4-5.md).
+- **Qué se comparó:** `qualify_api.hashtags.caption.suggest_for_caption`.
+  - `caption-hashtags/1` es el prompt de hoy. Sin `watched` el módulo envía exactamente la petición anterior, verificado byte a byte en los 34 casos.
+  - `caption-hashtags/2` agrega `WATCHED_ADDENDUM` al SYSTEM y un bloque con las etiquetas que acompañan a las del rubro en los videos más vistos de la lectura semanal de TikTok.
+- **Conjunto:** `packages/api/evals/hashtag_caption/`, **34 textos reales** de borradores del negocio piloto (shawarma y ensaladas, San Cristóbal).
+  - Anonimizados: nombre del negocio y del local cambiados; sin teléfono, dirección ni web.
+  - Partición fija: **dev 18 / test 16**. Incluye 2 controles reales sin comida (un tutorial de videojuegos), helado, un jugo en Barquisimeto y textos cortos aprobados.
+  - Reglas de etiquetado escritas antes de etiquetar; trampas por clase: otro negocio, relleno, otro lugar, vigilada que no encaja.
+  - Tres pasadas de adjudicación declaradas en el README.
+- **Lista vigilada:** armada con el código del producto (`readable_tag`, `rule_classifications`, `companions`) desde una foto de 25 videos del 2026-11-15.
+  - `tachira_venezuela🇻🇪` ya no llega al modelo: la lectura deja de guardarla y, para las filas guardadas antes del cambio, la consulta descarta lo que no sea una etiqueta legible (hallazgo de la revisión de código, corregido antes del PR).
+  - De 20 etiquetas, 3 son nombres de otros negocios o creadores (`amirexpress`, `yaalashawarma`, `manosalsazon`) y 6 son de recetas.
+  - La lista de producción cambia cada semana: desde el 16-nov sale `comidasaludable`.
+- **Variantes de `seen`:**
+  - `none`: catálogo vacío.
+  - `own`: las etiquetas que el texto ya tenía, conteo 1; es optimista.
+  - El catálogo real del piloto **no se reprodujo** (sin acceso a producción).
+- **Repeticiones:**
+  - línea base: 3;
+  - `/2` original en dev: 3;
+  - rondas de ajuste en dev: 1 (por el tope);
+  - test: 1 corrida con 2 repeticiones.
+  - Langfuse no estaba levantado: puntuador local y resultados en `results/`.
+
+**Hallazgo de la línea base:** sin catálogo, el prompt de hoy pone **etiquetas mal escritas entre las cinco «Mejor»**: 10–14 % del top 5 (`sancrystobal`, `sancristo`, `enalada`, `comidaderrapida`). Además es muy inestable: el top 5 de dos pulsaciones comparte ≈20 %. Con las etiquetas propias como catálogo baja a ≈2 %.
+
+**Resultados, top 5, media (mín–máx):**
+
+| Clase | dev base `none` | dev `/2` original | dev `/2` final (1 rep.) | test base `none` | test `/2` final `watched` | test base `own` | test `/2` final `own+watched` |
+|---|---|---|---|---|---|---|---|
+| Otro negocio | 0 | **0.133 (0.100–0.167)** | 0 | 0.004 | 0 | 0 | 0 |
+| Relleno | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Otro lugar | 0.011 | 0.004 | 0.011 | 0.004 | 0.006 | 0.004 | 0 |
+| Vigilada que no encaja | 0.007 | **0.155** | 0 | 0.021 | **0.044 (0.037–0.050)** | 0.004 | **0.037 (0.025–0.050)** |
+| Encaja | 0.852 | 0.667 | 0.911 | 0.800 | 0.887 | 0.975 | **0.944** |
+| Mal escrita | 0.104 | 0.026 | 0.067 | 0.138 | 0.044 | 0.017 | 0.019 |
+| Toma de vigiladas que encajan | 0.030 | 0.300 | 0.507 | 0.013 | **0.408** | 0 | **0.275** |
+
+- **Barra:** cero otros negocios en el top 5; ninguna trampa más de 2 puntos sobre su base; mal escritas y «encaja» no peores en más de 2 puntos; toma claramente mayor.
+- **Dev pasa con la redacción final. Test no pasa:**
+  - «vigilada que no encaja» sube 2,3 y 3,3 puntos (con `comidacasera` como aceptable: 4,4 y 3,1);
+  - «encaja» de `own+watched` baja 3,1 puntos.
+- **Qué falla en test:** el modelo pone `carne`, `pollo` o `comidasaludable` en textos que no los nombran, como «¿Cómo llegar?».
+- **Qué funcionó:** el `/2` original elegía `yaalashawarma` (40 de 108 veces en el top 5) y `amirexpress`; la ronda 1 lo llevó a 0 y test lo confirma.
+- **Rondas** (solo `WATCHED_ADDENDUM`, SYSTEM intacto):
+  1. Tomar solo lo que el texto nombra; la prueba de la palabra común contra nombres de cuentas; recetas solo si el texto enseña a cocinar.
+  2. Poner entre los cinco primeros la que sí encaja.
+
+**Costo:**
+- **US$0.0034** por llamada con `/1` y **US$0.0041** con `/2` (≈1.980 tokens de entrada y ≈430 de salida, tabla v7).
+- Por negocio y mes (supuesto: 60–160 pulsaciones al mes, del ritmo del piloto, ≈80 textos al mes): **US$0.20–0.55** con `/1` y **US$0.25–0.66** con `/2`.
+
+**Gasto total de la prueba:**
+- fase 1: US$0.690 (206 llamadas);
+- fase 2: US$0.846 registrados (208 llamadas), más ≤ US$0.44 sin registrar de dos corridas detenidas (una duplicada por error de comando y una colgada en conexiones muertas). Ninguna dejó resultados.
+- Registrado: **US$1.536**; peor caso ≈ US$1.98.
+
+**Qué no se reprodujo:**
+- el catálogo real del piloto (`seen`);
+- la lista vigilada de una semana distinta del 15-nov;
+- Langfuse.
+
+**Recomendación (no decisión):** no activar `/2` con la lista tal como sale hoy. Antes, filtrar la lista: sin nombres de cuentas y sin recetas para quien vende comida. Otra opción es darle al modelo solo las vigiladas que el texto nombra. La próxima versión se mide con casos nuevos de test.
+
+**Decisión del fundador (2026-11-16):** Herwin decidió entregar `/2` activo pese a no pasar la barra en test. Queda registrado en `docs/epica-etiquetas-publicaciones.md` (D4) con el riesgo que se asume. Después pidió aplicar las sugerencias de la revisión de UX antes de unir el PR #728; se re-midió abajo.
+
+### Re-medición 2026-11-16/17 — `/2` con los cambios de la revisión de UX y la regla nueva de «Mejor» (PR #728)
+
+**Qué cambió desde la medición anterior** (HEAD `933e79b7`):
+- `WATCHED_ADDENDUM` tiene una última línea sobre el motivo: decir qué palabra del texto nombra el hashtag; sin TikTok, videos, vistas, «virales», «audiencia», rubro ni inglés.
+- `is_platform_tag` saca las etiquetas de plataforma de la lista: `foodtok` deja de llegar al modelo.
+- **Regla de «Mejor»** (la aplica el editor): una etiqueta vigilada (`CaptionHashtag.watched`) solo puede llevar «Mejor» si el texto la nombra (`named_in_text`). Las cinco primeras elegibles llevan la marca; las demás se muestran sin marca.
+
+**Lista vigilada,** rehecha con el código del producto:
+- `companions` devuelve las mismas 20 etiquetas del 15-nov.
+- Al modelo llegan 19, porque `foodtok` sale **después** del corte de 20: `companions` corta en 20 antes del filtro de plataforma, así que el lugar no lo ocupa la siguiente.
+
+**Corridas:**
+- Redacción actual en dev y en test, variantes `watched` y `own+watched`, **3 repeticiones** (204 llamadas).
+- **El split de test ya se había usado:** esto es una comprobación de regresión contra los números anteriores, no un test nuevo.
+- Las corridas guardadas de `/1` y del `/2` anterior se volvieron a puntuar gratis con las mismas etiquetas, más una adjudicación de las etiquetas nuevas (pasada 4, mismas reglas; `manoalsazon` se sumó a `competidor`).
+- Para las corridas viejas, `watched` se deriva de la lista enviada menos el `seen` del caso.
+
+**(a) Top 5 sin filtrar,** media (mín–máx); base = `/1`:
+
+| Clase | dev base `none` | dev `/2` nuevo `watched` | dev base `own` | dev `/2` nuevo `own+watched` | test base `none` | test `/2` anterior `watched` | test `/2` nuevo `watched` | test base `own` | test `/2` anterior `own+watched` | test `/2` nuevo `own+watched` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Otro negocio | 0 | 0 | 0 | **0.004 (0–0.011)** | 0.004 | 0 | 0 | 0 | 0 | 0 |
+| Otro lugar | 0.011 | 0.004 | 0 | 0 | 0.004 | 0.006 | 0.004 | 0.004 | 0 | 0 |
+| Vigilada que no encaja | 0.007 | **0.044 (0.033–0.056)** | 0 | 0.015 | 0.021 | 0.044 | **0.062 (0.037–0.075)** | 0.004 | 0.037 | **0.058 (0.037–0.075)** |
+| · con `comidacasera` aceptable | 0 | 0.018 | 0 | 0.011 | 0 | 0.044 | 0.054 | 0 | 0.031 | 0.054 |
+| Encaja | 0.852 | 0.878 | 0.952 | 0.956 | 0.800 | 0.887 | 0.863 | 0.975 | 0.944 | **0.942** |
+| Mal escrita | 0.104 | 0.070 | 0.015 | 0.004 | 0.138 | 0.044 | 0.054 | 0.017 | 0.019 | 0 |
+| Toma de vigiladas | 0.030 | 0.645 | 0 | 0.471 | 0.013 | 0.408 | 0.509 | 0 | 0.275 | 0.375 |
+
+**(b) Las cinco que llevan «Mejor»** (lo que el dueño ve marcado y lo que agrega «Agregar las N mejores»):
+
+| Clase | dev base `none` | dev `/2` nuevo `watched` | dev base `own` | dev `/2` nuevo `own+watched` | test base `none` | test `/2` anterior `watched` | test `/2` nuevo `watched` | test base `own` | test `/2` anterior `own+watched` | test `/2` nuevo `own+watched` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Otro negocio | 0 | 0 | 0 | 0 | 0.004 | 0 | 0 | 0 | 0 | 0 |
+| Otro lugar | 0.011 | 0.007 | 0 | 0 | 0.004 | 0.013 | 0.008 | 0.004 | 0 | 0 |
+| Vigilada que no encaja | 0.007 | 0 | 0 | 0 | 0.021 | 0 | 0 | 0.004 | 0 | 0 |
+| Encaja | 0.852 | 0.874 (0.865–0.889) | 0.952 | 0.967 | 0.800 | 0.881 | 0.892 (0.875–0.912) | 0.975 | 0.969 | 0.967 (0.963–0.975) |
+| Mal escrita | 0.104 | 0.104 | 0.015 | 0.004 | 0.138 | 0.075 | 0.075 | 0.017 | 0.032 | 0.029 |
+| Toma de vigiladas | 0.030 | 0.427 | 0 | 0.334 | 0.013 | 0.197 | 0.208 | 0 | 0.123 | 0.125 |
+| Menos de 5 marcadas (casos) | 0 | 0.018 | 0 | 0 | 0 | 0 | 0 | 0 | 0.031 | 0 |
+
+- En `/1` las cinco «Mejor» son el top 5, porque no hay vigiladas.
+- La toma baja con la regla porque una vigilada que encaja pero que el texto no escribe (`arabe` en un texto de shawarma) no puede llevar la marca. De las etiquetas vigiladas que el modelo propuso, el texto nombraba 113 de 268 en dev y 58 de 205 en test.
+
+**Veredicto, misma barra que antes:**
+- **(a) Top 5 sin filtrar: NO pasa**, ni en dev ni en test.
+  - «Vigilada que no encaja» queda +3,7 puntos (dev `watched`), +4,1 (test `watched`) y +5,4 (test `own+watched`).
+  - Hay un `manosalsazon` en el top 5 de dev `own+watched`.
+  - «Encaja» de test `own+watched` cae 3,3 puntos.
+  - Con `comidacasera` aceptable, dev `watched` pasaría (+1,8); test no.
+- **(b) Cinco «Mejor»: PASA** en dev y en test, en las dos variantes.
+  - 0 otros negocios y 0 vigiladas que no encajan (la regla las excluye por construcción).
+  - «Otro lugar» como mucho +0,4 puntos.
+  - «Encaja» y mal escritas dentro de 2 puntos de la base (test `own+watched`: −0,8 y +1,2).
+  - Toma de vigiladas de 0.125 a 0.427, contra 0–0.030 de la base.
+  - El `/2` anterior también habría pasado (b).
+- **Lo que (b) no tapa:** el dueño sigue VIENDO, sin marca, las etiquetas que no encajan, incluidos nombres de otros negocios.
+  - Con la redacción nueva esos nombres volvieron a aparecer fuera del top 5: `manosalsazon` y `yaalashawarma` son el 1,5–1,7 % de todas las propuestas de `own+watched` y el 0,2–0,3 % de `watched`, frente a 0–0,3 % del `/2` anterior.
+  - El modelo pone `manosalsazon` hacia el final de la lista, con motivos como «sazón».
+
+**Motivos** (todas las propuestas; «plataforma» = TikTok, video(s), vista(s), viral, audiencia, rubro):
+- Lista de inglés, palabras enteras: food, foodie(s), street, fast, lunch, breakfast, trending, trend(s), engagement, reach, content, lover(s), lifestyle, healthy, fresh, delivery, feed, post(s), reel(s), niche, branding, brand, target, insight(s), community, views, fyp, foryou, foodtok.
+
+| | `/1` | `/2` anterior | `/2` nuevo |
+|---|---|---|---|
+| Hablan de la plataforma | 2,4–4,2 % | 8,2–19,8 % (test 9,1 % y 8,2 %) | **0,6–2,1 %** (test 1,6 % y 0,6 %) |
+| Con una palabra en inglés | 1,4–2,6 % | 0,5–2,2 % | **0–0,5 %** |
+
+Motivos reales de la corrida nueva:
+- **Buenos:**
+  - `carne` en c66: «ingrediente clave del relleno»;
+  - `arabe` en c60: «Tipo de cocina del Shawarma».
+- **Malos:**
+  - `oficinaconhambre` en c24: «Target de gente que sale de trabajar»;
+  - `comidalatina` en c47: «audiencia regional de latinoamerica»;
+  - `carne` en c48 («¿Cómo llegar?»): «Ingrediente clave de la shawarma». El texto no dice carne; la regla le quita el «Mejor».
+
+**Costo:** US$0.0041 por llamada (≈2.000 tokens de entrada, ≈430 de salida); por negocio y mes, igual que antes: US$0.25–0.66.
+
+**Gasto:**
+- esta re-medición: **US$0.836** (204 llamadas; tope US$1.00);
+- total registrado de la prueba: **US$2.372**, más ≤ US$0.44 sin registrar de la fase 2.
+
+**No verificado:**
+- la regla de «Mejor» tal como la implementa el editor: se simuló en el puntuador con `CaptionHashtag.watched` + `named_in_text`;
+- el catálogo real del piloto;
+- Langfuse;
+- una lista vigilada de otra semana.
+
+### Filtro de salida y regla de «Mejor» finales — 2026-11-17 (re-puntuación, sin llamadas)
+
+**Qué es:** las respuestas ya guardadas de la re-medición (`20261116-231200-dev…`, `20261116-231401-test…`; 3 repeticiones, ambas variantes) se pasaron por el procesamiento final del producto (commit `73670f6a`), usando las funciones del producto, no copias:
+1. `caption.shown_pick`: una propuesta que viene solo de las vigiladas se muestra si el texto la nombra o si su clase en el catálogo es `topic`.
+2. Corte a 12.
+3. La regla de «Mejor»: las cinco primeras elegibles; una vigilada es elegible solo si `named_in_text`, ya endurecido a palabras enteras.
+
+Las clases vienen de `build_watched.py` (`rule_classifications` + la foto + `companions`):
+- `topic`: recetasfaciles, comidasaludable, comidacasera, comidareal, recetasrapidas, carne, cocina, ensaladasaludable, recetafacil.
+- `unknown`: amirexpress, yaalashawarma, manosalsazon, arabe, pollo, comer, navidad, recipes, ensalada, contenido.
+
+**Esto NO es una corrida nueva:** son respuestas que el modelo ya dio, y test ya se había usado. Costo US$0.
+
+**(a) Todo lo que se muestra** (base `/1`: todas sus propuestas). Celdas `watched` / `own+watched`:
+
+| Clase | dev base | dev final | test base | test final |
+|---|---|---|---|---|
+| Otro negocio | 0 / 0 | 0 / 0 | 0.002 / 0.002 | 0 / 0.002 |
+| Otro lugar | 0.016 / 0.003 | 0.009 / 0 | 0.011 / 0.002 | 0.008 / 0.002 |
+| Vigilada que no encaja | 0.016 / 0.006 | 0.033 / **0.050** | 0.015 / 0.004 | 0.031 / **0.045** |
+| Encaja | 0.811 / 0.898 | 0.807 / 0.906 | 0.769 / 0.909 | 0.813 / **0.877** |
+| Mal escrita | 0.109 / 0.055 | 0.129 / 0.017 | 0.153 / 0.055 | 0.111 / 0.058 |
+
+**(b) Las cinco «Mejor»:**
+
+| Clase | dev base | dev final | test base | test final |
+|---|---|---|---|---|
+| Otro negocio | 0 / 0 | 0 / 0 | 0.004 / 0 | 0 / 0 |
+| Otro lugar | 0.011 / 0 | 0.007 / 0 | 0.004 / 0.004 | 0.008 / 0 |
+| Vigilada que no encaja | 0.007 / 0 | 0 / 0 | 0.021 / 0.004 | 0 / 0 |
+| Encaja | 0.852 / 0.952 | 0.874 / 0.967 | 0.800 / 0.975 | 0.892 / 0.967 |
+| Mal escrita | 0.104 / 0.015 | 0.104 / 0.004 | 0.138 / 0.017 | 0.075 / 0.029 |
+| Toma de vigiladas | 0.030 / 0 | 0.427 / 0.334 | 0.013 / 0 | 0.208 / 0.125 |
+| Menos de 5 marcadas | 0 / 0 | 0.018 / 0 | 0 / 0 | 0 / 0 |
+
+**(c) Lo que quita el filtro:** 0,74–1,15 propuestas por llamada (dev), 0,75–1,13 (test). En las cuatro corridas suman:
+- `arabe` 128 (encaja: el texto de shawarma no escribe «árabe»);
+- `comer` 23;
+- `manosalsazon` 17 (otro negocio);
+- `pollo` 10 (sin nombrar);
+- `ensalada` 11 (textos que dicen «salad»);
+- `yaalashawarma` 3.
+
+**Propuestas que encajaban y se pierden:** 0,63–0,96 por llamada, casi todas `arabe`.
+
+**Veredicto, misma barra que antes:**
+- **Cinco «Mejor»: PASA** en dev y test, en las dos variantes. Cero otros negocios y cero vigiladas que no encajan; «otro lugar» +0,4 puntos como mucho; «encaja» −0,8 a +9,2; mal escritas dentro de +1,2; toma de vigiladas 0.125–0.427 contra 0–0.030.
+- **Lo que se muestra sin marca:** el filtro quita casi todos los nombres de otros negocios. Queda un 0,2 % en test `own+watched`: una variante inventada (`manoalsazon`) que no está en la lista y por eso no se filtra.
+- Pero con catálogo (`own+watched`) siguen visibles vigiladas que no encajan: 4,5–5 % contra 0,4–0,6 % de la base. Son `topic` sin nombrar en el texto, como `comidasaludable` o `carne` en «¿Cómo llegar?».
+- «Encaja» en test `own+watched` baja 3,2 puntos.
+- Sin catálogo (`watched`), lo que se muestra queda dentro de la barra (+1,6 y +1,7 puntos).
+
+**No verificado:**
+- el producto puede mostrar una propuesta que el modelo puso en el lugar 13, cuando se cae otra; las respuestas guardadas solo tienen 12;
+- la clase `carne` = `topic` viene de la foto de producción y no se volvió a leer;
+- el editor real (la regla se simuló con las funciones del producto).
+
+---
+
 <a id="reglas-001"></a>
 
 ## REGLAS-001 — Las dos reglas de texto libre de la capa, medidas sin modelo (m-25017292) — 2026-11-15

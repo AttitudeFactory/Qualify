@@ -35,6 +35,8 @@ Two rules the callers can rely on:
   view count and the first known date, never a second row. «Popular» is
   `recent_views` — the views of the posts carrying the tag that were posted in the last
   `POPULAR_WINDOW_DAYS` — and `resolve_popular` is `resolve` re-ordered by it.
+- **What goes with the rubro** (m-25032581) is `companions`: the other tags on the posts
+  the weekly read found for a business's rubro tags, by posts and views. Read-only.
 """
 
 from __future__ import annotations
@@ -116,6 +118,29 @@ def fold(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value)
     ascii_only = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", "", ascii_only.lower())
+
+
+#: A hashtag longer than this is not one anyone types: never a rubro pill the weekly read
+#: pays for, never a companion shown to a model.
+MAX_TAG_LENGTH = 50
+_WORD = re.compile(r"\w+")
+
+
+def readable_tag(raw: object) -> str | None:
+    """The tag as the catalog stores it, or None when the catalog would refuse its
+    sightings or it is not a hashtag at all: one token (`normalize_tag`), letters or digits
+    in it (`fold`), only word characters — what the catalog reads as a `#tag` in a caption
+    (`#(\\w+)`) — and at most `MAX_TAG_LENGTH` long. `🍔`, `c++`, `...` and a 300-character
+    pill are None. (Moved from `weekly` in m-25032581: `companions` applies it too.)"""
+    if not isinstance(raw, str):
+        return None
+    try:
+        tag = normalize_tag(raw)
+    except ValueError:
+        return None
+    if len(tag) > MAX_TAG_LENGTH or not _WORD.fullmatch(tag) or not fold(tag):
+        return None
+    return tag
 
 
 def _check(value: str, allowed: tuple[str, ...], what: str) -> str:
@@ -253,6 +278,80 @@ class RecentViews:
 
     views: int = 0
     posts: int = 0
+
+
+@dataclass(frozen=True)
+class CompanionTag:
+    """A tag that accompanies a business's rubro tags on the read posts (m-25032581):
+    `posts` is how many distinct such posts carry it, `views` their summed views (a post
+    with unknown views counts 0)."""
+
+    tag: str
+    posts: int
+    views: int
+    #: The catalog kind of the kept spelling (`topic` / `unknown` with `COMPANION_KINDS`):
+    #: `caption.shown_pick` keeps an unnamed watched pick only when it is a `topic`.
+    kind: str = "unknown"
+
+
+#: What `companions` returns unless told otherwise: a generic (`fyp`), place or noise tag
+#: says nothing about what a caption is about.
+COMPANION_KINDS = ("topic", "unknown")
+#: Whose posts `companions` reads by default: the weekly TikTok read per rubro tag
+#: (m-25026378), the one read made of the business's own rubro tags.
+COMPANION_SOURCES = ("hashtag_weekly",)
+
+
+@dataclass(frozen=True)
+class _CompanionRow:
+    """One sighting of a candidate companion on a carrying post, whatever its kind."""
+
+    tag: str
+    kind: str
+    seen_count: int
+    network: str
+    post_id: str
+    views: int | None
+
+
+def _collapse_companions(
+    rows: Iterable[_CompanionRow], limit: int, kinds: Sequence[str]
+) -> tuple[CompanionTag, ...]:
+    """Both implementations' last step: the rows grouped by slug (`fold`), each post once
+    per slug (its highest known views), ordered by posts, views, tag; cut at `limit`.
+
+    Public hashtags are untrusted text that reaches a model prompt (review of
+    m-25032581), so whatever the row's age: a slug is dropped whole when ANY of its
+    spellings has a kind outside `kinds` (`tachira_venezuela🇻🇪` goes with its `place`
+    twin), and a spelling the catalog would not read as a `#tag` (`readable_tag`: word
+    characters only, at most `MAX_TAG_LENGTH`) never names, counts or reaches anyone."""
+    rows = list(rows)
+    excluded = {fold(row.tag) for row in rows if row.kind not in kinds}
+    posts: dict[str, dict[tuple[str, str], int]] = {}
+    spellings: dict[str, dict[str, tuple[int, int]]] = {}
+    kind_of: dict[str, str] = {}
+    for row in rows:
+        slug = fold(row.tag)
+        if not slug or slug in excluded or readable_tag(row.tag) != row.tag:
+            continue
+        key = (row.network, row.post_id)
+        per_post = posts.setdefault(slug, {})
+        per_post[key] = max(per_post.get(key, 0), row.views or 0)
+        names = spellings.setdefault(slug, {})
+        carried, seen = names.get(row.tag, (0, row.seen_count))
+        names[row.tag] = (carried + 1, max(seen, row.seen_count))
+        kind_of[row.tag] = row.kind
+    out = []
+    for slug, per_post in posts.items():
+        names = spellings[slug]
+        tag = min(names, key=lambda name: (-names[name][0], -names[name][1], name))
+        out.append(
+            CompanionTag(
+                tag=tag, posts=len(per_post), views=sum(per_post.values()), kind=kind_of[tag]
+            )
+        )
+    out.sort(key=lambda c: (-c.posts, -c.views, c.tag))
+    return tuple(out[: max(limit, 0)])
 
 
 @dataclass(frozen=True)
@@ -401,6 +500,28 @@ class HashtagRepository(Protocol):
           `resolve`'s.
 
         Each hit carries `recent_views`/`recent_posts` whatever its tier."""
+        ...
+
+    def companions(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+        limit: int = 20,
+        kinds: Sequence[str] = COMPANION_KINDS,
+        sources: Sequence[str] = COMPANION_SOURCES,
+    ) -> tuple[CompanionTag, ...]:
+        """The tags that accompany `tags` (a business's rubro tags) on the read posts
+        (m-25032581). A post counts when it carries at least one of `tags` through a
+        sighting from `sources` posted in the last `window_days` before `now` (a post with
+        no known date never counts, as in `recent_views`); every OTHER tag on such a post
+        whose `kind` is in `kinds` is a companion, with how many such posts carry it and
+        their summed views. `tags` themselves are left out by slug (`Shawarma` =
+        `shawarma`), and tags sharing a slug are one companion, spelled with word
+        characters only (else the most seen spelling). Ordered by posts, then views, then
+        tag; at most `limit`. `()` for no tags. Read-only."""
         ...
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
@@ -758,6 +879,37 @@ class MemoryHashtagRepository:
             now=now,
         )
 
+    def companions(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+        limit: int = 20,
+        kinds: Sequence[str] = COMPANION_KINDS,
+        sources: Sequence[str] = COMPANION_SOURCES,
+    ) -> tuple[CompanionTag, ...]:
+        own = {slug for slug in (fold(t) for t in tags) if slug}
+        if not own:
+            return ()
+        cutoff = _cutoff(window_days, now)
+        carriers = {
+            (network, post)
+            for (tag, network, post), s in self._sightings.items()
+            if fold(tag) in own
+            and s.source in sources
+            and s.posted_at is not None
+            and s.posted_at >= cutoff
+        }
+        rows = []
+        for (tag, network, post), s in self._sightings.items():
+            stored = self._tags.get(tag)
+            if (network, post) not in carriers or stored is None or fold(tag) in own:
+                continue
+            rows.append(_CompanionRow(tag, stored.kind, stored.seen_count, network, post, s.views))
+        return _collapse_companions(rows, limit, kinds)
+
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
         return tuple(r for r in self.public_reels if r.taken_at >= since)
 
@@ -959,6 +1111,42 @@ _RECENT_VIEWS = text(
     GROUP BY h.tag
     """
 )
+
+#: m-25032581: the posts carrying one of the rubro's slugs through a sighting of
+#: `:sources` posted since `:cutoff`, and every other tag on them with its kind. The
+#: kind filter, slug collapse, order and limit are `_collapse_companions`, shared with the
+#: memory implementation (a slug is dropped when ANY spelling has an excluded kind, so
+#: the SQL cannot filter by kind per row); a rubro's read is a few dozen posts.
+#:
+#: The second join (`hashtag_post_sightings` by `(network, post_id)`) has no supporting
+#: index: the unique key leads with `hashtag_id`. At 556 rows / 296 kB (production,
+#: 2026-11-16) the scan is negligible; when the table grows, the fix is an index on
+#: `hashtag_post_sightings (network, post_id)`. Until then `COMPANIONS_TIMEOUT` bounds it.
+_COMPANIONS = text(
+    """
+    WITH carriers AS (
+        SELECT DISTINCT s.network, s.post_id
+        FROM hashtag_post_sightings s JOIN hashtags h ON h.id = s.hashtag_id
+        WHERE h.slug = ANY(:slugs) AND s.source = ANY(:sources) AND s.posted_at >= :cutoff
+    )
+    SELECT h.tag, h.kind, h.seen_count, s.network, s.post_id, s.views
+    FROM carriers c
+    JOIN hashtag_post_sightings s ON s.network = c.network AND s.post_id = c.post_id
+    JOIN hashtags h ON h.id = s.hashtag_id
+    WHERE NOT (h.slug = ANY(:slugs))
+    """
+)
+
+#: `companions` runs on an owner's click («Sugerir con IA»): a slow scan fails fast
+#: (Postgres cancels it) and the editor's best-effort path goes on without the list.
+COMPANIONS_TIMEOUT = "1500ms"
+#: Local to the transaction (`is_local`), restored right after the read, so a caller's
+#: wider unit of work (`tenant_session` reuses an open one) keeps its own limit.
+_SET_TIMEOUT = text(
+    "SELECT current_setting('statement_timeout') AS previous, "
+    "set_config('statement_timeout', :timeout, true)"
+)
+_RESTORE_TIMEOUT = text("SELECT set_config('statement_timeout', :timeout, true)")
 
 _PUBLIC_REELS_SINCE = text(
     """
@@ -1189,6 +1377,38 @@ class PostgresHashtagRepository:
             kinds=kinds,
             window_days=window_days,
             now=now,
+        )
+
+    def companions(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+        limit: int = 20,
+        kinds: Sequence[str] = COMPANION_KINDS,
+        sources: Sequence[str] = COMPANION_SOURCES,
+    ) -> tuple[CompanionTag, ...]:
+        own = sorted({slug for slug in (fold(t) for t in tags) if slug})
+        if not own:
+            return ()
+        cutoff = _cutoff(window_days, now)
+        params = {"slugs": own, "sources": list(sources), "cutoff": cutoff}
+        # A savepoint: called inside a caller's wider `tenant_session`, a cancelled read
+        # rolls back to it (the local timeout with it) and the caller's transaction stays
+        # usable; the error still reaches the caller's best-effort `except`.
+        with tenant_session(tenant_id) as session, session.begin_nested():
+            previous = session.execute(_SET_TIMEOUT, {"timeout": COMPANIONS_TIMEOUT}).one()
+            rows = session.execute(_COMPANIONS, params).all()
+            session.execute(_RESTORE_TIMEOUT, {"timeout": previous.previous})
+        return _collapse_companions(
+            (
+                _CompanionRow(r.tag, r.kind, int(r.seen_count), r.network, r.post_id, r.views)
+                for r in rows
+            ),
+            limit,
+            kinds,
         )
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:

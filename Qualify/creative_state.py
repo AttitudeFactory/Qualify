@@ -2081,7 +2081,13 @@ class CreativeState(rx.State):
 
         def run() -> list[HashtagIdeaVM]:
             from qualify_api.claude_tools import Attribution
-            from qualify_api.hashtags.caption import FEATURE, SeenTag, suggest_for_caption
+            from qualify_api.hashtags.caption import (
+                FEATURE,
+                SeenTag,
+                WatchedTag,
+                named_in_text,
+                suggest_for_caption,
+            )
 
             seen: list[SeenTag] = []
             if ids is not None:
@@ -2099,6 +2105,22 @@ class CreativeState(rx.State):
                                 seen.append(SeenTag(hit.hashtag.tag, hit.hashtag.seen_count))
                 except Exception as exc:  # noqa: BLE001 — grounding is optional
                     logger.info("caption hashtags: catalog skipped (%s)", type(exc).__name__)
+            # m-25032581: the tags that go with the business's rubro tags on the most
+            # watched videos of the weekly read. Best effort, like the catalog above.
+            watched: list[WatchedTag] = []
+            if ids is not None:
+                try:
+                    from qualify_api.hashtags import catalog as hashtag_catalog
+                    from qualify_api.hashtags import weekly as hashtag_weekly
+
+                    rubro = hashtag_weekly.RUBRO_SOURCE.rubro(ids[0]).tags
+                    if rubro:
+                        watched = [
+                            WatchedTag(c.tag, views=c.views, posts=c.posts, kind=c.kind)
+                            for c in hashtag_catalog.REPOSITORY.companions(ids[0], rubro)
+                        ]
+                except Exception as exc:  # noqa: BLE001 — grounding is optional
+                    logger.info("caption hashtags: companions skipped (%s)", type(exc).__name__)
             # m-24955649: booked to the session's business («sin negocio» without one)
             attribution = (
                 Attribution(tenant_id=ids[0], brand_id=ids[1], feature=FEATURE)
@@ -2106,9 +2128,15 @@ class CreativeState(rx.State):
                 else Attribution.no_business(FEATURE)
             )
             picks = suggest_for_caption(
-                caption, seen=seen, current=current, api_key=api_key, attribution=attribution
+                caption,
+                seen=seen,
+                watched=watched,
+                current=current,
+                api_key=api_key,
+                attribution=attribution,
             )
-            # Picks come best first (`suggest_for_caption`); the first five are marked.
+            # Picks come best first (`suggest_for_caption`); the first five eligible are
+            # marked — a watched tag only when the text names it (m-25032581).
             return mark_best_ideas(
                 [
                     HashtagIdeaVM(
@@ -2116,6 +2144,8 @@ class CreativeState(rx.State):
                         kind=p.kind,
                         reason=p.reason,
                         seen_label=seen_label(p.seen_count),
+                        watched=p.watched,
+                        in_text=p.watched and named_in_text(p.tag, caption),
                     )
                     for p in picks
                 ]

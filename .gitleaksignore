@@ -8,3 +8,6 @@
 8cc309d9c5f04cfb6eac04e35734841ce2ec8367:tests/e2e/personas.py:generic-api-key:62
 # `api_key=key` in an eval runner: a keyword argument fed from an env var, not a literal.
 234b85ae765b532936c1dce34a98f033ed8e2983:packages/api/evals/scenes_ai/run_experiment.py:generic-api-key:83
+# The e2e harness's placeholder model key (`e2e-placeholder-never-valid`), set only when the
+# e2e flag is on and with the model's address pointed at a closed local port (m-25032581).
+43232ceca424a1cb6a9c794158e55a1b3068142c:tests/e2e/stubs/sitecustomize.py:generic-api-key:18
