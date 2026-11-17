@@ -2633,3 +2633,121 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) {
   .q-fold-chevron { transition: none; }
 }
+
+/* ── Not found (m-24840374) ───────────────────────────────────────────────────
+   The landing's 404 (`404.astro` + `NotFoundLiquid.astro`, «puddle» only): glass digits
+   with liquid inside — the text's own background clipped to the glyphs, a hard stop at
+   --q-nf-line tilted by --q-nf-tilt — and the Q mark rocking in a puddle spilled from
+   them. Everything scales with the scene (container units). Motion plays once and ends
+   at rest by 4.8 s (WCAG 2.2.2); the global reduced-motion rule leaves the resting frame
+   (the ripples rest at opacity 0). The page enters with `.q-settle`. Page:
+   `not_found_page.py`. */
+@property --q-nf-line { syntax: "<percentage>"; inherits: false; initial-value: 56%; }
+@property --q-nf-tilt { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+.q-not-found-stage {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.q-not-found {
+  display: grid;
+  /* One column as wide as the section: an auto track grows to the scene's 460 px and the
+     page scrolls sideways on phones (the landing's QLA-38). */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+  justify-items: center;
+  width: min(100% - 32px, 720px);
+  padding-block: 48px 72px;
+  text-align: center;
+}
+.q-nf-scene {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Fixed: a cqw gap would be measured against the scene's parent, not the scene. */
+  gap: 8px;
+  width: min(460px, 100%);
+  container-type: inline-size;
+}
+/* Small phones: the button shows without scrolling at 360 × 560. */
+@media (max-width: 640px) {
+  .q-not-found { padding-block: 24px 32px; }
+  .q-nf-scene { width: min(300px, 100%); }
+}
+.q-nf-digits {
+  font-family: var(--default-font-family);
+  font-size: 40cqw;
+  font-weight: 600;
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+  color: transparent;
+  -webkit-text-stroke: 0.45cqw var(--accent-a9);
+  background: linear-gradient(
+    calc(180deg + var(--q-nf-tilt)),
+    transparent var(--q-nf-line),
+    var(--accent-a8) var(--q-nf-line)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 1.2cqw 3cqw var(--accent-a5));
+  /* 2 × 2.4 s and 3 × 1.6 s: both end at 4.8 s, back at rest. */
+  animation: q-nf-level 2.4s ease-in-out 2, q-nf-tilt 1.6s ease-in-out 3;
+}
+@keyframes q-nf-level {
+  0%, 100% { --q-nf-line: 56%; }
+  25% { --q-nf-line: 52%; }
+  75% { --q-nf-line: 60%; }
+}
+@keyframes q-nf-tilt {
+  0%, 100% { --q-nf-tilt: 0deg; }
+  25% { --q-nf-tilt: -6deg; }
+  75% { --q-nf-tilt: 6deg; }
+}
+.q-nf-logo {
+  position: relative;
+  width: 46cqw;
+  height: 16cqw;
+}
+.q-nf-puddle,
+.q-nf-ripple {
+  position: absolute;
+  bottom: 1cqw;
+  left: 50%;
+  height: 5cqw;
+  border-radius: 50%;
+  translate: -50% 0;
+}
+.q-nf-puddle {
+  width: 44cqw;
+  background: radial-gradient(ellipse at 50% 40%, var(--accent-a6), var(--accent-a3) 60%, transparent 72%);
+}
+.q-nf-ripple {
+  width: 14cqw;
+  border: 0.3cqw solid var(--accent-a8);
+  opacity: 0;
+  animation: q-nf-ripple 2.4s ease-out 2;
+}
+/* The second ripple starts 1.3 s into its cycle and ends earlier. */
+.q-nf-ripple--late { animation-delay: -1.3s; }
+/* The mark (`ui.qualify_mark`) stands on the puddle, rocking about its foot. */
+.q-nf-logo > svg {
+  position: absolute;
+  bottom: 2.4cqw;
+  left: 50%;
+  width: 12cqw;
+  height: 12cqw;
+  margin-left: -6cqw;
+  overflow: visible;
+  transform-origin: 50% 100%;
+  animation: q-nf-rock 1.6s ease-in-out 3;
+}
+@keyframes q-nf-ripple {
+  0% { opacity: 0.8; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(2.6); }
+}
+@keyframes q-nf-rock {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-8deg); }
+  75% { transform: rotate(8deg); }
+}

@@ -106,6 +106,7 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     # Outside the menu.
     "/design": None,
     "/design/pasos": None,
+    "/404": None,  # the app's own 404: outside the sidebar
     "/login": None,
     SIGNUP_ROUTE: None,
     LEGACY_SIGNUP_ROUTE: None,

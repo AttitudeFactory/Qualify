@@ -109,7 +109,7 @@ def test_every_registered_page_compiles_complete_metadata_without_a_session(
     if "metadata_route" in context:
         assert values["og:url"] == "https://app.qualify.la" + metadata_route
     canonicals = [child for child in component.children if child.tag == "link"]
-    if "[" in route:
+    if "[" in route or route == "/404":  # the 404 has no URL of its own
         assert not canonicals
     else:
         assert len(canonicals) == 1

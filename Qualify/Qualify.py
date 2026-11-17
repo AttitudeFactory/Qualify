@@ -58,6 +58,7 @@ from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
+from .not_found_page import not_found_index
 from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
 from .pinterest_state import PinterestState
@@ -213,6 +214,12 @@ async def creative_dispatcher_lifespan():
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
 # the sidebar on purpose — it is for whoever builds screens, not for the business.
 app.add_page(styleguide_index, route="/design", title="Qualify · Design system")
+
+# m-24840374: the app's own 404, in place of Reflex's default. The route is Reflex's
+# 404 slug; the client router shows it for any unknown path, and the export's
+# 404.html (Caddy's `try_files` fallback) is the SPA shell that renders it. No session
+# needed: the button goes to `/`, which routes every visitor on its own.
+app.add_page(not_found_index, route="/404", title="Esta página no existe · Qualify")
 # PASOS-2 (m-24852241): the step frame's live sample; `enter` reads `?paso=` on load and
 # on the browser's «atrás», so each step has its own address.
 app.add_page(
