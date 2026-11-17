@@ -252,7 +252,10 @@ Se niega a propósito con estas claves, y dice qué hacer en su lugar:
 | `QUALIFY_DB_*_PASSWORD` | la contraseña se aplica al rol con `migrate` (`ALTER ROLE`) | `just env-stage qualify-prod KEY`, luego `just deploy` |
 | `QUALIFY_PUBLIC_URL` | está horneada en el frontend estático | editar `.env.prod` y `just deploy` (reconstruye) |
 | `QUALIFY_DEV_FERNET_KEY` | rotarla deja indescifrables todas las credenciales OAuth guardadas | no se rota así |
-| `COMPOSE_*`, `QUALIFY_IMAGE_*` | cambian la forma del stack, no son un secreto | editar `.env.prod` y `just deploy` |
+| `COMPOSE_*`, `QUALIFY_IMAGE_PREFIX`, `QUALIFY_IMAGE_TAG` | cambian la forma del stack, no son un secreto | editar `.env.prod` y `just deploy` |
+
+Los interruptores `QUALIFY_IMAGE_LAYER` y `QUALIFY_IMAGE_LAYER_TENANTS` son ajustes normales de la
+app (no eligen imagen) y sí pasan por `env-push`.
 
 ### Preparar claves sin reiniciar (`just env-stage`)
 
@@ -274,8 +277,8 @@ siguen usando su entorno actual. El deploy posterior ejecuta `migrate` (incluido
 `ALTER ROLE` para las contraseñas de base) antes de activar los servicios con el nuevo entorno.
 
 Solo `env-stage` permite `QUALIFY_DB_*_PASSWORD`; `env-push` sigue rechazándolas. Ambos
-conservan el rechazo de `QUALIFY_DEV_FERNET_KEY`, `QUALIFY_PUBLIC_URL`, `COMPOSE_*` y
-`QUALIFY_IMAGE_*`. Preparar claves no sustituye la autorización de operaciones ni el deploy:
+conservan el rechazo de `QUALIFY_DEV_FERNET_KEY`, `QUALIFY_PUBLIC_URL`, `COMPOSE_*`,
+`QUALIFY_IMAGE_PREFIX` y `QUALIFY_IMAGE_TAG`. Preparar claves no sustituye la autorización de operaciones ni el deploy:
 no se edita `.env.prod` manualmente en el servidor.
 
 **Deshacer un cambio:** reponer el valor anterior en el archivo local y repetir la misma

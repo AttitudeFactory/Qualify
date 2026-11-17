@@ -124,7 +124,8 @@ env_push_refusal() {
     QUALIFY_DB_*_PASSWORD) echo "a role password is applied by \`migrate\` (ALTER ROLE): use \`just env-stage\`, then \`just deploy\`" ;;
     QUALIFY_DEV_FERNET_KEY) echo "rotating the credential master key makes every stored OAuth credential undecryptable" ;;
     QUALIFY_PUBLIC_URL) echo "it is baked into the static frontend: edit .env.prod and \`just deploy\` (rebuild)" ;;
-    COMPOSE_* | QUALIFY_IMAGE_*) echo "it changes the shape of the stack, not a secret: edit .env.prod and \`just deploy\`" ;;
+    # Only the image coordinates: QUALIFY_IMAGE_LAYER* are ordinary runtime flags (m-25041793).
+    COMPOSE_* | QUALIFY_IMAGE_PREFIX | QUALIFY_IMAGE_TAG) echo "it changes the shape of the stack, not a secret: edit .env.prod and \`just deploy\`" ;;
   esac
 }
 
