@@ -71,8 +71,9 @@ CLIPS: tuple[Clip, ...] = (
     # m-25041163: a SMALL vertical source, to be enlarged to 1080x1920
     Clip("small_480x854_60.mp4", (480, 854), 60, "libx264", 2_000_000),
 )
-#: m-25041163 (not in the code yet): «preparar» always brings the video to 1080x1920 —
-#: measured apart, a PyAV graph `scale=1080:1920:flags=<flag>`, encoded as `prepare` does.
+#: m-25041163, measured before the code: a 480x854 enlarged to 1080x1920 by a PyAV graph
+#: `scale=1080:1920:flags=<flag>`, encoded as `prepare` does. The code enlarges in the speed's
+#: single encode instead (`camara_rapida-v2`): the real path is the `small_x1` case.
 UPSCALE_CASES: dict[str, tuple[str, str]] = {
     "up480_lanczos": ("small_480x854_60.mp4", "lanczos"),
     "up480_bicubic": ("small_480x854_60.mp4", "bicubic"),
@@ -96,6 +97,8 @@ CASES: dict[str, tuple[list[tuple[str, float, float, float, str]], int]] = {
     "hd_30_x2": ([("hd_h264_60.mp4", 0, 30, 2, "video")], 0),
     "hd_60_x10": ([("hd_h264_60.mp4", 0, 60, 10, "video")], 0),
     "hd15_x1": ([("hd_h264_15.mp4", 0, 15, 1, "video")], 0),
+    # m-25041163: the real path, 480x854 enlarged to 1080x1920 by `camara_rapida-v2`
+    "small_x1": ([("small_480x854_60.mp4", 0, 60, 1, "video")], 0),
     "mixed_3x4k_2photos": (
         [
             ("k4_h264_60.mp4", 0, 20, 2, "video"),
@@ -377,7 +380,7 @@ def _assemble(
 
 
 def _upscale(source: Path, out: Path, flag: str) -> Any:
-    """m-25041163 (not in the code yet): `source` enlarged to 1080x1920 by a PyAV graph
+    """m-25041163 (measured before the code): `source` enlarged to 1080x1920 by a PyAV graph
     `scale=1080:1920:flags=<flag>`, encoded as `prepare` does (H.264 yuv420p, 30 fps,
     `PREPARE_X264`, 2 slice threads for the decoder and the encoder)."""
     from types import SimpleNamespace

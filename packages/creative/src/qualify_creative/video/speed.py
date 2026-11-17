@@ -29,10 +29,18 @@ part's are thinned). A stretch lasts `round_half_up((end_s − start_s) / speed 
 frames (at least one); the total is the sum of those frames over 30, so the plan, the file
 and the preview agree to the frame. The output rate is always `SPEED_FPS`.
 
-Size: the first stretch's, floored to even numbers (yuv420p). A later stretch of another
-size is cover-cropped (centred, as `fit` and `join` do) and scaled to it — refusing it
-would make the owner re-prepare a video for a difference the eye accepts; stretching it
-would distort it. Sources must be upright: one carrying a display rotation is refused
+Size: `size` when the caller gives one (the local assembly always asks for 1080×1920,
+m-25041163), else the first stretch's, floored to even numbers (yuv420p). A stretch of
+another size is cover-cropped (centred, as `fit` and `join` do) and scaled to it, bicubic,
+in this same pass — so a small prepared video is enlarged by the ONE 1080×1920 encode the
+part needs anyway, never encoded at that size twice; a stretch already at `size` is not
+resampled (FFmpeg's `scale` passes it through). Refusing another size would make the owner
+re-prepare a video for a difference the eye accepts; stretching it would distort it.
+
+Colour: the output is tagged BT.709, limited range — what its sources (`prepare`,
+`photo_hold`) write; the crop and scale keep the YUV values as they are.
+
+Sources must be upright: one carrying a display rotation is refused
 (`rotation_unsupported`) before anything is written — `prepare` writes them upright.
 
 No audio: only the video stream is decoded; the output has no audio track (a sped-up
@@ -76,8 +84,20 @@ from qualify_creative.video._source import Timeline, VideoSourceError
 
 #: The effect's id in the effects catalogue and in the asset's `params`.
 SPEED_EFFECT_ID = "camara_rapida"
-#: Version of this effect's recipe — recorded with the asset (provenance).
-SPEED_VERSION = "camara_rapida-v1"
+#: Version of this effect's recipe — recorded with the asset (provenance). v2
+#: (m-25041163): renders at the `size` asked for (the local assembly's 1080×1920), enlarging
+#: a smaller stretch bicubic in its own pass, and tags the output BT.709 limited range. This
+#: is the RENDER recipe's provenance; the catalogue's `camara_rapida` entry (its params
+#: contract, never offered — D-T3) keeps `version: 1`, as its `speed` param did not change.
+SPEED_VERSION = "camara_rapida-v2"
+#: How a stretch of another size is scaled to the output (FFmpeg `scale` flags).
+SPEED_SCALE_FLAGS = "bicubic"
+#: The scale keeps the YUV as it is: without these, FFmpeg's `scale` converts a BT.709
+#: source to its BT.601 default even at the same size (a pure red came out with 23 of green).
+_SCALE_COLOUR = "in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv"
+#: AVCOL_* codes the output is tagged with (BT.709 primaries, transfer and matrix; limited).
+_BT709 = 1
+_LIMITED_RANGE = 1
 #: Output frame rate (CFR) — the only one: a stored plan with another is refused.
 SPEED_FPS = 30
 #: The speeds the owner may pick, inclusive.
@@ -360,9 +380,13 @@ def render_speed(
     *,
     resolve: Resolver | None = None,
     threads: int = SPEED_THREADS,
+    size: tuple[int, int] | None = None,
 ) -> SpeedResult:
-    """Encode `plan` as H.264 `yuv420p` at 30 fps CFR, no audio, `+faststart`, to
-    `out_path`. `resolve` turns each stretch's source reference into a local file
+    """Encode `plan` as H.264 `yuv420p` at 30 fps CFR, BT.709 limited, no audio,
+    `+faststart`, to `out_path`, at `size` (floored to even; default the first stretch's).
+    Sources are `prepare` / `photo_hold` output (BT.709, limited range): the scale keeps
+    their YUV as is, so a BT.601 or full-range file from elsewhere would shift colour.
+    `resolve` turns each stretch's source reference into a local file
     (default: the reference is the path); `threads` bounds the codec threads. The plan is
     re-planned first (a hand-built or stored plan is never trusted), and every distinct
     source is probed once BEFORE the encoder opens: an unreadable file, a missing video
@@ -370,6 +394,12 @@ def render_speed(
     written. Encoded beside `out_path` and renamed into place."""
     if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
         raise SpeedError(CODE_INTERVAL, f"implausible thread count {threads!r}")
+    if size is not None and (
+        len(size) != 2
+        or not all(isinstance(side, int) and not isinstance(side, bool) for side in size)
+        or min(size) < 2
+    ):
+        raise SpeedError(CODE_INTERVAL, f"implausible output size {size!r}")
     plan = plan_speed([planned.segment for planned in plan.segments])
     import av  # noqa: PLC0415 — lazy: only a rendered video needs it
 
@@ -382,7 +412,10 @@ def render_speed(
         if reference not in probed:
             probed[reference] = _probe(resolve(reference), threads)
         sources.append(_check_interval(planned, probed[reference]))
-    width, height = sources[0].width, sources[0].height
+    if size is None:
+        width, height = sources[0].width, sources[0].height
+    else:
+        width, height = size[0] // 2 * 2, size[1] // 2 * 2
     partial = out.with_name(f".{out.name}.{uuid.uuid4().hex}.partial.mp4")
     try:
         try:
@@ -457,8 +490,13 @@ def _render(
         encoder.width, encoder.height = width, height
         encoder.pix_fmt = "yuv420p"
         encoder.options = {**JOIN_X264, "threads": str(threads)}
-        encoder.codec_context.time_base = tick
-        _bound(encoder.codec_context, threads)
+        context = encoder.codec_context
+        context.time_base = tick
+        context.color_range = _LIMITED_RANGE
+        context.colorspace = _BT709
+        context.color_primaries = _BT709
+        context.color_trc = _BT709
+        _bound(context, threads)
 
         def emit(frame: Any) -> None:
             nonlocal written
@@ -518,7 +556,7 @@ def _render_segment(
         graph = av.filter.Graph()
         video_in = graph.add_buffer(template=stream)
         crop = graph.add("crop", _cover_crop(width, height))
-        scale = graph.add("scale", f"{width}:{height}")
+        scale = graph.add("scale", f"{width}:{height}:{_SCALE_COLOUR}:flags={SPEED_SCALE_FLAGS}")
         to_yuv = graph.add("format", "yuv420p")
         sink = graph.add("buffersink")
         video_in.link_to(crop)

@@ -360,6 +360,131 @@ def test_an_odd_first_size_is_floored_to_even(tmp_path: Path) -> None:
     assert _inspect(result.path)["size"] == (180, 320)
 
 
+# --- m-25041163: the local assembly's one size, 1080×1920 ---------------------------------
+
+FULL = (1080, 1920)
+
+
+def _still(path: Path, pixels: Any, *, seconds: float = 3.0, bt709: bool = True) -> Path:
+    """A still clip of `pixels` (RGB), 30 fps, BT.709-tagged like `prepare` writes."""
+    height, width = pixels.shape[:2]
+    with av.open(str(path), "w", format="mp4") as sink:
+        video = sink.add_stream("libx264", rate=30)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        video.options = {"preset": "ultrafast", "crf": "12"}
+        if bt709:
+            context = video.codec_context
+            context.color_range, context.colorspace = 1, 1
+            context.color_primaries, context.color_trc = 1, 1
+        picture = av.VideoFrame.from_ndarray(pixels, format="rgb24").reformat(
+            format="yuv420p", dst_colorspace="ITU709", dst_color_range="MPEG"
+        )
+        for i in range(round(seconds * 30)):
+            picture.pts, picture.time_base = i, Fraction(1, 30)
+            for packet in video.encode(picture):
+                sink.mux(packet)
+        for packet in video.encode():
+            sink.mux(packet)
+    return path
+
+
+def _square(width: int, height: int) -> Any:
+    """A white square (40 % of the shorter side) centred on grey: stretching shows."""
+    side = int(min(width, height) * 0.4) // 2 * 2
+    pixels = np.full((height, width, 3), 100, np.uint8)
+    top, left = (height - side) // 2, (width - side) // 2
+    pixels[top : top + side, left : left + side] = 255
+    return pixels
+
+
+def _first_rgb(path: Path) -> Any:
+    with av.open(str(path)) as out:
+        frame = next(out.decode(video=0))
+        return frame.to_ndarray(
+            format="rgb24", src_colorspace="ITU709", src_color_range="MPEG"
+        ).astype(int)
+
+
+@requires_av
+def test_a_size_asked_for_enlarges_every_stretch_in_the_same_pass(
+    sources: dict[str, Path], tmp_path: Path
+) -> None:
+    """A 180×320 stretch and a square one, rendered at 1080×1920: every frame at that size,
+    the right source frames, BT.709 limited tagged, the version that does it recorded."""
+    plan = plan_speed([_seg(4, 0, 8, str(sources["s30"])), _seg(1, 0, 2, str(sources["wide"]))])
+    result = render_speed(plan, tmp_path / "full.mp4", size=FULL)
+    info = _inspect(result.path)
+    assert info["size"] == FULL == (result.width, result.height)
+    assert info["barcodes"][:60] == [4 * n for n in range(60)]  # enlarged, still readable
+    assert len(info["barcodes"]) == plan.frames == 120
+    with av.open(str(result.path)) as out:
+        context = out.streams.video[0].codec_context
+        assert (context.color_range, context.colorspace) == (1, 1)
+        assert (context.color_primaries, context.color_trc) == (1, 1)
+    assert result.params()["effect_version"] == SPEED_VERSION == "camara_rapida-v2"
+    assert (result.params()["width"], result.params()["height"]) == FULL
+
+
+@requires_av
+@pytest.mark.parametrize("size", [(480, 854), (608, 1080), (720, 1280), (320, 180)])
+def test_an_enlarged_stretch_is_not_deformed(size: tuple[int, int], tmp_path: Path) -> None:
+    """The prepared sizes a 480×854, a 1080p landscape (608×1080) and a 720p give, and a
+    landscape one cover-cropped: the square stays square at 1080×1920."""
+    source = _still(tmp_path / "square.mp4", _square(*size))
+    result = render_speed(plan_speed([_seg(1, 0, 3, str(source))]), tmp_path / "out.mp4", size=FULL)
+    luma = _first_rgb(result.path).mean(axis=2)
+    rows = np.flatnonzero((luma > 178).any(axis=1))
+    cols = np.flatnonzero((luma > 178).any(axis=0))
+    width, height = cols[-1] - cols[0] + 1, rows[-1] - rows[0] + 1
+    assert width / height == pytest.approx(1.0, rel=0.02), (size, width, height)
+
+
+@requires_av
+@pytest.mark.parametrize("size", [FULL, None], ids=["enlarged", "same-size"])
+def test_a_stretch_keeps_its_colours(tmp_path: Path, size: tuple[int, int] | None) -> None:
+    """Pure red over a dark grey at 480×854, enlarged or not: the same colours, BT.709 kept
+    — FFmpeg's `scale` left to itself turned the red's green from 0 to 23 (BT.601)."""
+    pixels = np.zeros((854, 480, 3), np.uint8)
+    pixels[:427] = (255, 0, 0)
+    pixels[427:] = (40, 40, 40)
+    source = _still(tmp_path / "red.mp4", pixels)
+    result = render_speed(plan_speed([_seg(1, 0, 3, str(source))]), tmp_path / "out.mp4", size=size)
+    rgb = _first_rgb(result.path)
+    height, width = rgb.shape[:2]
+    top, bottom = rgb[height // 4, width // 2], rgb[3 * height // 4, width // 2]
+    assert all(abs(a - b) <= 6 for a, b in zip(top, (255, 0, 0), strict=True)), top
+    assert all(abs(a - b) <= 6 for a, b in zip(bottom, (40, 40, 40), strict=True)), bottom
+
+
+@requires_av
+def test_a_stretch_already_at_the_size_is_not_resampled(tmp_path: Path) -> None:
+    """A 1080×1920 stretch passes through the scale untouched: a one-pixel checkerboard,
+    which any resampling would blur to grey, comes out as the encode alone leaves it."""
+    board = np.zeros((1920, 1080, 3), np.uint8)
+    board[::2, ::2] = 255
+    board[1::2, 1::2] = 255
+    source = _still(tmp_path / "board.mp4", board, seconds=3.0)
+    out = render_speed(plan_speed([_seg(1, 0, 3, str(source))]), tmp_path / "out.mp4", size=FULL)
+    once, twice = _first_rgb(source), _first_rgb(out.path)
+    assert float(np.abs(twice - once).mean()) < 12  # the second encode's loss only
+    assert float(twice.std()) > 60  # still a checkerboard, not a blurred grey
+
+
+@requires_av
+@pytest.mark.parametrize(
+    "size", [(0, 1920), (1080,), (1, 1), (1080.0, 1920), ("a", "b"), (True, 1920)]
+)
+def test_an_implausible_size_is_refused_before_anything(
+    sources: dict[str, Path], tmp_path: Path, size: Any
+) -> None:
+    with pytest.raises(SpeedError) as refused:
+        render_speed(
+            plan_speed([_seg(1, 0, 3, str(sources["s30"]))]), tmp_path / "x.mp4", size=size
+        )
+    assert refused.value.code == CODE_INTERVAL
+    assert not (tmp_path / "x.mp4").exists()
+
+
 @requires_av
 @pytest.mark.parametrize(
     ("stretches", "seconds"),
@@ -418,7 +543,7 @@ def test_the_provenance_is_in_the_result(sources: dict[str, Path], tmp_path: Pat
     result = render_speed(plan, tmp_path / "p.mp4")
     params = json.loads(json.dumps(result.params()))
     assert params["effect_id"] == SPEED_EFFECT_ID == "camara_rapida"
-    assert params["effect_version"] == SPEED_VERSION == "camara_rapida-v1"
+    assert params["effect_version"] == SPEED_VERSION == "camara_rapida-v2"
     assert (params["fps"], params["frames"], params["duration_s"]) == (30, 90, 3.0)
     assert params["audio"] is False
     first, second = params["segments"]

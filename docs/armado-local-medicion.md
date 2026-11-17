@@ -45,8 +45,32 @@ limita).
 | k5_112_x10 | 5K HEVC | 112 | ×10 | no | 0 | 503 | 547 | 1642 | 937 | no |
 | k5_112_x2 | 5K HEVC | 112 | ×2 | no | 0 | 503 | 546 | 1973 | 1099 | no |
 | k5_112_x2_3textos | 5K HEVC | 112 | ×2 | no | 3 | 498 | 542 | 2094 | 1273 | no |
-| up480_lanczos (m-25041163, aún no en el código) | 480×854 → 1080×1920 | 60 | ×1 | no | 0 | 191 | 225 | 102 | 54 | no |
-| up480_bicubic (m-25041163, aún no en el código) | 480×854 → 1080×1920 | 60 | ×1 | no | 0 | 190 | 224 | 91 | 49 | no |
+| up480_lanczos (m-25041163, grafo aparte, antes del código) | 480×854 → 1080×1920 | 60 | ×1 | no | 0 | 191 | 225 | 102 | 54 | no |
+| up480_bicubic (m-25041163, grafo aparte, antes del código) | 480×854 → 1080×1920 | 60 | ×1 | no | 0 | 190 | 224 | 91 | 49 | no |
+
+Las dos filas `up480_*` midieron solo el agrandado, con un grafo aparte. El camino real desde
+m-25041163 está en la sección siguiente.
+
+## Armado a 1080×1920 (m-25041163, medido 2026-11-17)
+
+Desde m-25041163 toda salida del armado local es 1080×1920. «Preparar» no agranda; su archivo
+es un paso intermedio. La cámara rápida (`camara_rapida-v2`) agranda con bicubic en la misma
+codificación a 1080×1920 que ya hacía. Decisión de Deivid (2026-11-17), textual: «Un solo paso
+(Recomendado)». Se descartó agrandar en «preparar» (A), porque codificaba dos veces a
+1080×1920. Mismo harness, amd64 con 8 núcleos y límite de 768m; producción = CPU s ÷ 2 vCPU ÷ 0,7:
+
+| Caso | v1 (antes) CPU s · prod | A: agranda «preparar» CPU s · prod | **B: un solo paso (en el código)** CPU s · prod | Anon MiB (B) | OOM |
+|---|---|---|---|---|---|
+| hd_30_x2 (1080p horizontal, 30 s, ×2) | 71 · ~0,9 min | 296 · ~3,5 min | **191 · ~2,3 min** | 239 | no |
+| hd_60_x10 (1080p horizontal, 60 s, ×10) | 104 · ~1,2 min | 416 · ~5 min | **149 · ~1,8 min** | 238 | no |
+| small_x1 (480×854, 60 s, ×1) | — (salía en 480×854) | 436 · ~5,2 min | **386 · ~4,6 min** | 236 | no |
+
+- Antes, un 1080p horizontal salía en 608×1080. Ahora sale en 1080×1920, con 3,2 veces más
+  píxeles, y cuesta más CPU. Los casos 4K no cambian: ya salían en 1080×1920.
+- El caso más caro es un tramo largo a ×1, porque se codifican 1800 cuadros a 1080×1920. Aun
+  así queda dentro de lo que cuesta un 4K de celular (~5–12 min), que es la base del tope
+  diario de 10.
+- La memoria no sube: ~240 MiB de memoria anónima.
 
 arm64 (producción) no se midió: el build emulado de la imagen pasó de 25 min y se cortó. La
 memoria en arm64 debería ser parecida; el tiempo no.
@@ -67,8 +91,8 @@ memoria en arm64 debería ser parecida; el tiempo no.
 
 | Pieza | Tiempo de worker estimado en producción |
 |---|---|
-| 1080p, 15–60 s | ~1–1,5 min |
-| 480×854 agrandado a 1080×1920 | ~1,5 min |
+| 1080p, 15–60 s (a 1080×1920 desde m-25041163) | ~2–2,5 min |
+| 480×854 agrandado a 1080×1920, 60 s a ×1 | ~4,6 min |
 | 4K de celular, 30–60 s | ~5–12 min |
 | 4K HEVC 10 bits, 60 s | ~10 min |
 | Peor caso: 5K de 112 s con 3 textos | ~25–30 min |
