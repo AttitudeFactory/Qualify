@@ -61,12 +61,14 @@ from qualify_creative.video.text_overlay import (
     _link_texts,
     _prepare_texts,
     _push_texts,
+    bound_decoder,
     overlay_text_layers,
 )
 from qualify_creative.video.upright import upright_filters, upright_size
 
 #: The version of this compose (provenance): what the layer step did to the picture.
-LAYER_COMPOSE_VERSION = "layer-compose-v1"
+#: v2 (m-25042483): the decoder bounded and x264's lookahead shortened (`OVERLAY_X264`).
+LAYER_COMPOSE_VERSION = "layer-compose-v2"
 #: Where each zone sits, as a fraction of the height from the top: moving a layer from its
 #: default zone to another moves it by the difference.
 ZONE_OFFSET: Mapping[str, float] = {"top": 0.0, "middle": 1 / 3, "bottom": 2 / 3}
@@ -330,6 +332,7 @@ def _encode(
         if not source.streams.video:
             raise LayerOverlayError("no_video", "the file has no video stream")
         stream = source.streams.video[0]
+        bound_decoder(stream)  # before the first decode (m-25042483)
         rotation = 0
         for first in source.decode(stream):
             rotation = frame_rotation(first)

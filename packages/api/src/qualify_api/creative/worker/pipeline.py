@@ -23,6 +23,7 @@ from qualify_api.creative.final_deadline import (
     FinalDeadlineExpired,
     final_deadline_passed,
 )
+from qualify_api.creative.heavy_video import LocalVideoWait, held, hold, joining
 from qualify_api.creative.image_pipeline.compose_run import RenderWait
 from qualify_api.creative.part_final import JOIN_FINAL_PHASE, run_join_final
 from qualify_api.creative.part_join import JOIN_PHASE, run_join
@@ -660,6 +661,9 @@ class PipelinePreparation:
                 )
         else:
             tenants = self.tenant_ids
+        # m-25042483: a local video waiting for its sources' normalization is held out
+        # of the pass for a while — it never takes the turn of the pieces behind it
+        waiting = [str(draft_id) for draft_id in held()]
         for tenant_id in tenants:
             with tenant_session(tenant_id) as session:
                 runs = (
@@ -667,8 +671,10 @@ class PipelinePreparation:
                         text("""
                     SELECT draft_id,revision,phase FROM creative_pipeline_runs
                     WHERE dirty_version > prepared_version
+                      AND draft_id <> ALL(CAST(:waiting AS uuid[]))
                     ORDER BY draft_id,revision,phase LIMIT 20
-                """)
+                """),
+                        {"waiting": waiting},
                     )
                     .mappings()
                     .all()
@@ -733,6 +739,17 @@ class PipelinePreparation:
                     # m-25040499: the piece waits for the render service (logged there at
                     # WARNING, once a minute): not a failed preparation, retried next pass
                     pass
+                except LocalVideoWait as wait:
+                    hold(run.draft_id, wait.retry_after_s)
+                    # m-25042483: a local video waits — for the part join in flight
+                    # (`LocalAssemblyWait`) or for its sources' normalization on the
+                    # media-worker (`LocalSourceNormalizing`): not a failed preparation,
+                    # made on a later pass, nothing said to the owner
+                    logger.info(
+                        "creative.pipeline.local_waits draft_id=%s reason=%s",
+                        run.draft_id,
+                        type(wait).__name__,
+                    )
                 except Exception as exc:
                     logger.error(
                         "creative.pipeline.preparation_failed draft_id=%s error_type=%s",
@@ -777,10 +794,12 @@ class PipelinePreparation:
     def _join_run(self, run: Any) -> None:
         """The join of `run`: its own tenant and parent, bound from the run (never from
         the loop's variables) — the preview (`join`) or the 1080p final (`join_final`)."""
-        if run.phase == JOIN_FINAL_PHASE:
-            run_join_final(self.service._media, run.tenant_id, run.draft_id)
-        else:
-            self._join(run.tenant_id, run.draft_id)
+        # m-25042483: never alongside a local assembly (it waits for this one to end)
+        with joining():
+            if run.phase == JOIN_FINAL_PHASE:
+                run_join_final(self.service._media, run.tenant_id, run.draft_id)
+            else:
+                self._join(run.tenant_id, run.draft_id)
 
     def _settle_local(self, run: Any) -> None:
         """Image/copy-only jobs finish in preparation; videos are settled by executors."""

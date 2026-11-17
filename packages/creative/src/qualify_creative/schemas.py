@@ -715,6 +715,8 @@ RecipeRefusal = Literal[
     "photo_with_speed",  # a still photo played at a speed other than 1
     "photo_length_out_of_range",  # a still photo shown under 1 s or over 5 s
     "photo_not_from_start",  # a still photo's stretch does not start at 0
+    # m-25042483: appended, never reordered
+    "segment_source_too_long",  # a video stretch takes over `SEGMENT_SOURCE_MAX_S` of source
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -752,6 +754,11 @@ SEGMENT_SPEED_MAX = 30.0
 #: test).
 LOCAL_TOTAL_MIN_S = 3.0
 LOCAL_TOTAL_MAX_S = 60.0
+#: m-25042483 (Deivid, 2026-11-17: «Bajarlos a 4K 8 bits»): one video stretch takes at
+#: most this many seconds of its SOURCE (`end_s - start_s`, before its speed) — what the
+#: local assembly's memory and time were measured for (`docs/armado-local-medicion.md`).
+#: At ×30, 60 s of output could otherwise read 30 minutes of a 4K video.
+SEGMENT_SOURCE_MAX_S = 60.0
 SegmentRotation = Literal[0, 90, 180, 270]
 #: An effect id as the library writes it (`effects_data/vN.json`).
 EFFECT_ID_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
@@ -1181,6 +1188,8 @@ PartsRefusal = Literal[
     "local_length_out_of_range",  # a `local` part lasting under 3 s or over 60 s
     # EF-15 (m-25026575): appended, never reordered
     "local_daily_cap_reached",  # today's local builds of the business are spent
+    # m-25042483: appended, never reordered
+    "segment_source_too_long",  # a video stretch of a `local` part takes over 60 s of source
 ]
 PARTS_REFUSALS: tuple[str, ...] = get_args(PartsRefusal)
 

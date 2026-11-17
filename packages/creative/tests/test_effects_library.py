@@ -123,6 +123,7 @@ def test_recipe_refusals_are_pinned() -> None:
         "photo_with_speed",
         "photo_length_out_of_range",
         "photo_not_from_start",
+        "segment_source_too_long",
     )
 
 

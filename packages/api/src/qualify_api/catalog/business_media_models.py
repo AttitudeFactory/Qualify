@@ -22,6 +22,8 @@ from qualify_api.tenancy.models import Base
 
 JOB_INGEST = "ingest"
 JOB_CUT = "cut"
+#: m-25042483 (0171): a local-video source brought to 4K 8 bits before the assembly.
+JOB_NORMALIZE_LOCAL = "normalize_local"
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"

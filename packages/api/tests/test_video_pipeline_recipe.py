@@ -958,7 +958,44 @@ def test_a_local_clip_lasts_3_to_60_seconds(end_s: float, ok: bool) -> None:
     stretch = SourceSegment(key=OWN, start_s=0.0, end_s=end_s)
     clip = PartRecipe(index=1, mode="local", seconds=5, segments=(stretch,))
     problems = validate_recipe((clip,), video_by_parts=False)
-    assert _codes(problems) == ([] if ok else ["local_length_out_of_range"])
+    assert "local_length_out_of_range" in _codes(problems) if not ok else problems == ()
+
+
+@pytest.mark.parametrize(
+    ("start_s", "end_s", "speed", "refused"),
+    [
+        (0.0, 60.0, 1.0, False),  # exactly 60 s of source: made
+        (10.0, 70.03, 2.0, False),  # within a frame of float slack
+        (0.0, 60.5, 2.0, True),
+        (30.0, 120.0, 10.0, True),  # 90 s of source at ×10: 9 s out, still refused
+        (0.0, 1800.0, 30.0, True),  # the ×30 case the limit is for
+    ],
+)
+def test_a_video_stretch_takes_at_most_60_seconds_of_its_source(
+    start_s: float, end_s: float, speed: float, refused: bool
+) -> None:
+    """m-25042483: each video stretch reads at most 60 s of its source, whatever its
+    speed — refused before anything is created, with how much it takes."""
+    long = SourceSegment(key=OWN, start_s=start_s, end_s=end_s, speed=speed)
+    short = SourceSegment(key=OWN, start_s=0.0, end_s=20.0, speed=2.0)
+    for by_parts, number in ((False, None), (True, 2)):
+        seconds = (end_s - start_s) / speed + 10.0
+        part = PartRecipe(index=2, mode="local", seconds=seconds, segments=(short, long))
+        problems = [
+            (p.code, p.part, p.field, p.duration_s)
+            for p in validate_recipe((part,), video_by_parts=by_parts)
+            if p.code == "segment_source_too_long"
+        ]
+        want = [("segment_source_too_long", number, "segments", round(end_s - start_s, 1))]
+        assert problems == (want if refused else [])
+
+
+def test_a_photo_is_never_a_long_stretch() -> None:
+    """Photos have their own 1-5 s; the 60 s of source is a video stretch's."""
+    photo = SourceSegment(key=OWN, start_s=0.0, end_s=4.0, kind="photo")
+    video = SourceSegment(key=OWN, start_s=0.0, end_s=30.0, speed=10.0)
+    part = PartRecipe(index=1, mode="local", seconds=7, segments=(video, photo))
+    assert "segment_source_too_long" not in _codes(validate_recipe((part,), video_by_parts=False))
 
 
 # ---------------------------------------------------------------------------

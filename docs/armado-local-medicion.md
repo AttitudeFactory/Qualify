@@ -114,12 +114,65 @@ memoria en arm64 debería ser parecida; el tiempo no.
 | **10 (elegida)** | ~1,7 h | De sobra para publicar a diario con versiones |
 | 20 | ~3,3 h | Un solo negocio puede ocupar el worker media mañana |
 
+## Tope por pieza (m-25042483, medido 2026-11-17)
+
+Decisión de Deivid (2026-11-17), textual: «Bajarlos a 4K 8 bits (Recomendado)».
+
+- **Fuente de máximo 3840×2160 a 8 bits.** Si el armado local lee un video más grande o de 10
+  bits, no lo decodifica. Encola un trabajo `normalize_local` para el media-worker (ADR 47) y
+  la pieza espera sin aviso al dueño. El media-worker lo convierte a H.264 de 8 bits que entra en
+  4K, sin agrandar, sin audio, con la rotación aplicada y sin recortar el tiempo. Se normaliza el
+  archivo entero una sola vez, y la copia queda en `t/{negocio}/normalized/…` para cualquier
+  pieza que use ese video. Las fotos y videos de la Galería ya llegan en 1080×1920 y no pasan
+  por aquí. Versión: `local-source-v1`. Queda en la procedencia de cada tramo.
+- **60 s de video por tramo** (`SEGMENT_SOURCE_MAX_S`), a cualquier velocidad: se rechaza antes
+  de crear la pieza (`segment_source_too_long`). El worker lo vuelve a revisar y muestra el
+  aviso revisado por ux-designer: «Cada pedazo puede tomar hasta 1 minuto de tu video, aunque
+  lo aceleres…».
+- **No arma a la vez que una unión de partes.** La unión espera su turno y el armado local se
+  reintenta en la pasada siguiente, sin fallar (`creative/heavy_video.py`).
+- **Memoria del compose.** El decodificador quedó en 2 hilos y x264 en `rc-lookahead 10`
+  (`video_text_compose-v2`, `layer-compose-v2`). Entre pasos se devuelve la memoria libre
+  (`malloc_trim`). Probé primero solo `malloc_trim`, y el caso con 3 textos bajó apenas de 501 a
+  491. Lo que pesaba era el compose: x264 retenía ~30 cuadros de 1080×1920 y el decodificador
+  usaba hilos automáticos.
+
+Peor caso con la fuente ya normalizada (harness de EF-15, amd64 con 8 núcleos, límite de 768m):
+
+| Caso | Antes, RSS / anon MiB | Ahora, RSS / anon MiB | OOM |
+|---|---|---|---|
+| k4_60_x2_3textos (4K, 3 textos) | 501 / 455 | **343 / 296** | no |
+| k4_60_x2 | 355 / 312 | 362 / 319 | no |
+| k4rot_60_x10 (girado) | 351 / 308 | 359 / 316 | no |
+| mixed_3x4k_2photos | 369 / 326 | **376 / 333 (el peor)** | no |
+| 5K HEVC y 4K HEVC 10 bits | 531–547 / 488–503 | ya no llegan al armado: se normalizan antes | — |
+
+Todos quedan por debajo de 450 MiB de RSS.
+
+**La normalización en el media-worker** (768m, 1 CPU, ffmpeg de Debian, primeros 10 s de cada
+fuente, memoria anónima de ffmpeg):
+
+| Configuración de x264 | 4K HEVC 10 bits | 5K HEVC |
+|---|---|---|
+| veryfast por defecto, 2 hilos | 985 MiB: el kernel lo mata por memoria con 768m | 1023 MiB |
+| lookahead 5, 1 hilo | 672 | 705 |
+| **sin lookahead, sin B-frames ni mbtree, 1 hilo (en el código)** | **414** | **443** |
+| ultrafast | 359 | 387 |
+
+Con la configuración del código, el normalizador real lleva un 4K HEVC de 10 bits de 60 s a 4K
+de 8 bits (118 MiB). Pico anon: 434 MiB. Sin OOM. Tarda 314 s en amd64 con 1 CPU; en arm64 se
+espera que tarde más. La copia es un paso intermedio: el armado la vuelve a codificar en
+1080×1920, así que lo que ahorraría un lookahead no importa.
+
+Si la normalización no termina, la pieza espera hasta 11 h 15 min: 3 intentos de hasta 3 h 05
+min cada uno, más 2 h en cola. Después falla sin cobro y con el texto de siempre. Si la
+máquina falla una vez por algo pasajero, se encola un trabajo nuevo; al segundo fallo de ese
+tipo, la pieza falla. Un archivo ilegible falla de una vez.
+
 ## Pendiente
 
-- Tope por pieza (fuente de máximo 4K a 8 bits, o 60 s por tramo) y no armar en paralelo con una
-  unión de partes: propuesta aparte, sin decidir.
-- Volver a medir cuando el compose de EF-05 se enganche en `video_pipeline/local.py`, y en arm64
-  cuando haya una imagen arm64 construida.
+- Medir en arm64 cuando haya una imagen arm64 construida.
+- Encolar la normalización al subir el video, no al armar (ticket aparte).
 - `QUALIFY_CREATIVE_DISPATCHER=queue` en producción: confirmado el 2026-11-16 (`/opt/qualify/.env.prod`,
   línea 149, leído por Deivid sin cambios).
 
