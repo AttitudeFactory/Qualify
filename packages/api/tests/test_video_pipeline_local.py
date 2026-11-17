@@ -156,7 +156,7 @@ def _local_clip(*segments: SourceSegment, **media: Any) -> ContentBrief:
     )
 
 
-def _producer(store: Any, vendor: SpyVendor) -> Any:
+def _producer(store: Any, vendor: SpyVendor, *, render_client: Any = None) -> Any:
     from qualify_creative.pricing import JsonPricingTable
     from qualify_creative.router import CreativeRouter
 
@@ -164,11 +164,21 @@ def _producer(store: Any, vendor: SpyVendor) -> Any:
 
     pricing = JsonPricingTable("v2")
     router = CreativeRouter({vendor.name: vendor}, pricing, KeysByProvider())  # type: ignore[arg-type]
-    return MediaProducer(store=store, router=router, credentials=KeysByProvider(), pricing=pricing)
+    return MediaProducer(
+        store=store,
+        router=router,
+        credentials=KeysByProvider(),
+        pricing=pricing,
+        render_client=render_client,
+    )
 
 
 def _service(
-    store: Any, vendor: SpyVendor, *, ledger: InMemoryCreationsLedger | None = None
+    store: Any,
+    vendor: SpyVendor,
+    *,
+    ledger: InMemoryCreationsLedger | None = None,
+    render_client: Any = None,
 ) -> tuple[ContentService, InMemoryRepository, RecordingDispatcher]:
     repo, dispatcher = InMemoryRepository(), RecordingDispatcher()
     service = ContentService(
@@ -179,7 +189,7 @@ def _service(
         brand_service=FakeBrand(make_kit()),
         repository=repo,
         dispatcher=dispatcher,
-        media=_producer(store, vendor),
+        media=_producer(store, vendor, render_client=render_client),
         creations=ledger,
     )
     return service, repo, dispatcher
@@ -773,3 +783,253 @@ def test_a_local_part_is_its_own_final_once_approved() -> None:
 
 def _frames_of(data: bytes) -> Iterator[Any]:  # pragma: no cover — kept for debugging
     yield from _decoded(data)
+
+
+# ---------------------------------------------------------------------------
+# EF-05 hooked in: the owner's texts over the local video, drawn by our render service
+
+
+def _texts(*layers: Any, part: bool = False) -> ContentBrief:
+    """A stamped `local` Clip (4 s of video at ×2 then a photo held 1.5 s → 3.5 s) or a
+    `local` part's child (5 s), with `layers` over it."""
+    from qualify_creative.schemas import PartRef
+
+    if part:  # a part's stretches last its planned 5 s: 4 s at ×1 and a photo of 1 s
+        whole = _local_clip(_video(0.0, 4.0, 1.0), _photo(1.0), text_layers=layers)
+    else:
+        whole = _local_clip(text_layers=layers)
+    if part:
+        ref = PartRef(
+            index=2, mode="local", seconds=5, segments=whole.media.segments, text_layers=layers
+        )
+        whole = whole.model_copy(update={"media": whole.media.model_copy(update={"part": ref})})
+    return _stamped(whole)
+
+
+def _render_service(outcome: Any = "completed") -> Any:
+    """EF-05's render service double: draws a PNG per text and records the props."""
+    from .test_video_pipeline_compose import FakeService
+
+    return FakeService(outcome)
+
+
+def _branded_kit() -> Any:
+    return _kit().model_copy(update={"font_heading": "Poppins"})
+
+
+def _produce(brief: ContentBrief, store: Any, render_client: Any) -> Any:
+    return _producer(store, ExplodingByteplus(), render_client=render_client).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=brief,
+        kit=_branded_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+
+
+def _words(**over: Any) -> Any:
+    from qualify_creative.schemas import VideoTextLayer
+
+    return VideoTextLayer(**{"text": "Shawarma mixto", "place": "top", "end_s": 2.0, **over})
+
+
+def test_a_local_clip_with_texts_has_them_drawn_and_kept_in_its_provenance(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """The compose step runs after `render_speed`: each text drawn once by our render
+    service in the Brand Kit's typeface and palette, laid over the built video, at cost 0
+    and with no vendor; its provenance kept in `params.local.text_layers`."""
+    from qualify_api.creative.video_pipeline.compose import COMPOSE_VERSION
+
+    render = _render_service()
+    store = ReadingStore(sources)
+    second = _words(text="Abrimos a las 7", place="bottom", start_s=1.0, end_s=None)
+    outcome = _produce(_texts(_words(), second), store, render)
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    meta = write.params["local"]
+    assert meta["steps"]["compose"] == COMPOSE_VERSION
+    texts = meta["text_layers"]
+    assert texts["compose_version"] == COMPOSE_VERSION and texts["cost_usd"] == "0"
+    assert [layer["place"] for layer in texts["layers"]] == ["top", "bottom"]
+    assert meta["cost_usd"] == "0.00" and write.provider == "local"
+    (usage,) = outcome.usage
+    assert usage.cost_usd == 0 and usage.provider == "local"
+    # one render per text, in the brand's own type and colours (rule 7)
+    assert [call["props"]["texts"]["text"] for call in render.calls] == [
+        "Shawarma mixto",
+        "Abrimos a las 7",
+    ]
+    brand = render.calls[0]["props"]["brand"]
+    assert brand["fonts"]["heading"] == "Poppins"
+    assert brand["palette"] == ["#C4622D", "#F5C518"]
+    # the kept video is the composed one, as long as the built one (105 frames)
+    assert len(_decoded(store.files[write.object_key])) == 105
+
+
+def test_the_fade_the_owner_chose_reaches_the_compose_as_is(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ED-13: the owner's fade (0.3-1.0 s, default 0.5 s) travels to the compose untouched
+    and is what the provenance records — chosen and applied."""
+    from qualify_api.creative.video_pipeline import compose
+
+    seen: list[tuple[Any, ...]] = []
+    real = compose.compose_text_layers
+
+    def spy(video: Any, out: Any, layers: Any, brand: Any, **kw: Any) -> Any:
+        seen.append(tuple(layers))
+        return real(video, out, layers, brand, **kw)
+
+    monkeypatch.setattr(compose, "compose_text_layers", spy)
+    chosen, default = _words(fade_s=0.8), _words(place="bottom")
+    outcome = _produce(_texts(chosen, default), ReadingStore(sources), _render_service())
+    assert outcome.failure is None, outcome.detail
+    ((top, bottom),) = seen
+    assert top.fade_s == 0.8 and bottom.fade_s == compose.FADE_IN_SECONDS == 0.5
+    layers = outcome.media[0].params["local"]["text_layers"]["layers"]
+    assert [(lay["fade_s"], lay["fade_in_s"]) for lay in layers] == [(0.8, 0.8), (0.5, 0.5)]
+
+
+def test_a_local_part_with_a_text_is_composed(queue_on: None, sources: dict[str, bytes]) -> None:
+    render = _render_service()
+    outcome = _produce(_texts(_words(), part=True), ReadingStore(sources), render)
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert write.params["part"]["mode"] == "local"
+    assert len(write.params["local"]["text_layers"]["layers"]) == 1
+    assert len(render.calls) == 1
+
+
+def test_a_local_clip_without_texts_never_calls_the_render(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    def no_client() -> Any:
+        raise AssertionError("no render client without a text")
+
+    outcome = _produce(_texts(), ReadingStore(sources), no_client)
+    assert outcome.failure is None, outcome.detail
+    meta = outcome.media[0].params["local"]
+    assert "text_layers" not in meta and "compose" not in meta["steps"]
+
+
+def _failed_run(sources: dict[str, bytes], render_client: Any) -> tuple[Any, int, int]:
+    """A `local` Clip with a text made through the service: the draft, and the
+    creations balance before and after."""
+    ledger = InMemoryCreationsLedger()
+    service, repo, _ = _service(
+        ReadingStore(sources), ExplodingByteplus(), ledger=ledger, render_client=render_client
+    )
+    before = ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID)
+    draft = service.create_draft(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        brief=_local_clip(text_layers=(_words(),)),
+        user_id=USER_ID,
+    )
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft)
+    return repo.drafts[draft], before, ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID)
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (("render_error", 500, "Chromium crashed"), "OWNER_MESSAGE_UNAVAILABLE"),
+        (("invalid_parameters", 422, "texts.layout_version: stale"), "OWNER_MESSAGE_REJECTED"),
+    ],
+    ids=["unavailable", "rejected"],
+)
+def test_a_render_service_that_cannot_draw_fails_the_piece_without_charging(
+    queue_on: None, sources: dict[str, bytes], error: tuple[str, int, str], message: str
+) -> None:
+    """`ComposeUnavailable` / `ComposeRejected`: the piece fails with the stage's own
+    message (it promises «No se descontó de tus creaciones») and the balance holds."""
+    from qualify_creative.render.client import RenderServiceError
+
+    from qualify_api.creative.video_pipeline import compose
+
+    draft, before, after = _failed_run(sources, _render_service(RenderServiceError(*error)))
+    assert draft.status == "failed"
+    assert draft.failure_detail == getattr(compose, message)
+    assert "No se descontó" in draft.failure_detail
+    assert after == before
+
+
+def test_a_text_that_does_not_fit_says_which_one(queue_on: None, sources: dict[str, bytes]) -> None:
+    draft, before, after = _failed_run(sources, _render_service("refused"))
+    assert draft.status == "failed"
+    assert draft.failure_detail == (
+        "El texto 1 («Shawarma mixto») tiene una palabra demasiado larga para la pantalla. "
+        "Cámbiala por una más corta o pártela en dos, y vuelve a intentarlo."
+    )
+    assert after == before
+
+
+def _broken_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_creative.video.text_overlay import TextOverlayError
+
+    from qualify_api.creative.video_pipeline import compose
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise TextOverlayError("aspect_mismatch", "the video is 1080x1080, not 9:16 (moov)")
+
+    monkeypatch.setattr(compose, "overlay_text_layers", broken)
+
+
+def test_an_overlay_failure_of_ours_never_shows_its_technical_message(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _broken_overlay(monkeypatch)
+    draft, before, after = _failed_run(sources, _render_service())
+    assert draft.status == "failed"
+    assert (
+        draft.failure_detail
+        == local.LOCAL_COMPOSE_FAILED_TEXT
+        == (
+            "No pudimos terminar tu video por un problema nuestro. No se descontó de tus "
+            "creaciones. Inténtalo de nuevo en unos minutos."
+        )
+    )
+    assert "9:16" not in draft.failure_detail and "moov" not in draft.failure_detail
+    assert after == before
+
+
+def test_a_parts_compose_failures_charge_nothing_and_say_this_part(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In a part too: no usage row, no creation (the child of a `local` part weighs 0),
+    the stage's message for the service, «esta parte» for our overlay failure."""
+    from qualify_creative.render.client import RenderServiceError
+
+    from qualify_api.creative.video_pipeline import compose
+
+    brief = _texts(_words(), part=True)
+    price = weight_for(brief)
+    assert (price.weight, price.videos, price.video_seconds) == (0, 0, 0)
+    down = _produce(
+        brief, ReadingStore(sources), _render_service(RenderServiceError("timeout", 504, "x"))
+    )
+    assert down.detail == compose.OWNER_MESSAGE_UNAVAILABLE
+    assert down.media == () and down.usage == ()
+    _broken_overlay(monkeypatch)
+    broken = _produce(brief, ReadingStore(sources), _render_service())
+    assert (
+        broken.detail
+        == local.LOCAL_PART_COMPOSE_FAILED_TEXT
+        == (
+            "No pudimos terminar el video de esta parte por un problema nuestro. No se descontó "
+            "de tus creaciones. Inténtalo de nuevo en unos minutos."
+        )
+    )
+    assert broken.media == () and broken.usage == ()
+
+
+def test_a_producer_without_a_render_client_fails_a_text_as_the_service_down(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """Never a video without the texts the owner chose: no client wired = unavailable."""
+    from qualify_api.creative.video_pipeline import compose
+
+    outcome = _produce(_texts(_words()), ReadingStore(sources), None)
+    assert outcome.detail == compose.OWNER_MESSAGE_UNAVAILABLE and outcome.media == ()

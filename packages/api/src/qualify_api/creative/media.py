@@ -150,7 +150,7 @@ from qualify_creative.render import (
 )
 from qualify_creative.render.adapter import MODEL_ID as REMOTION_MODEL
 from qualify_creative.render.adapter import RemotionTemplateAdapter
-from qualify_creative.render.client import RenderServiceError
+from qualify_creative.render.client import RemotionRenderClient, RenderServiceError
 from qualify_creative.render.manifest import TemplateManifest
 from qualify_creative.render.props import ProductFacts, PropsProblem, RenderProps, fit_text
 from qualify_creative.render.recipes import Engine
@@ -2355,8 +2355,14 @@ class MediaProducer:
         #: continues (`part_extend.DbPreviousParts`). None = such a part fails before
         #: any spend.
         previous_parts: PreviousParts | None = None,
+        #: EF-06 + EF-05: the render service's client (the SAME `RemotionRenderClient`
+        #: the template adapter uses, `composition.py`) that draws a `local` video's
+        #: texts — our own service, cost 0. None = a local video with a text fails as
+        #: the service being down (nothing charged), never made without its texts.
+        render_client: RemotionRenderClient | None = None,
     ) -> None:
         self._store = store
+        self._render_client = render_client
         self._part_windows = part_windows
         self._part_joins = part_joins
         self._previous_parts = previous_parts
@@ -2650,8 +2656,9 @@ class MediaProducer:
             if brief.media.effects_pipeline_version >= 1:
                 # EF-06: «Tu video, con efectos» — the owner's own stretches made here, at
                 # cost 0, before any Brand Kit read, resource selection or vendor call;
-                # only in the creative worker (nothing is decoded inside Reflex)
-                return self._local_clip(tenant_id, draft_id, brief, revision, heartbeat)
+                # only in the creative worker (nothing is decoded inside Reflex). The kit
+                # already given only lends its typeface and palette to the texts (EF-05)
+                return self._local_clip(tenant_id, draft_id, brief, kit, revision, heartbeat)
             # EF-02: a `local` brief the server never stamped (stored before EF-06, or
             # without stretches) is refused before any read, spend or vendor call, never
             # made as a Seedance clip
@@ -4857,12 +4864,14 @@ class MediaProducer:
         tenant_id: UUID,
         draft_id: UUID,
         brief: ContentBrief,
+        kit: BrandKit,
         revision: int,
         heartbeat: Callable[[], None] | None,
     ) -> MediaOutcome:
         """EF-06: a `local` Clip (or part) made by `video_pipeline.local` — no vendor, no
         slot, cost 0. Allowed only inside the creative worker's preparation, or where
-        the queue dispatcher is on (never an `inline` request thread of Reflex)."""
+        the queue dispatcher is on (never an `inline` request thread of Reflex). Its
+        texts (EF-05) are drawn by our render service in `kit`'s typeface and palette."""
         from qualify_api.creative.queue_dispatch import queue_enabled  # noqa: PLC0415
         from qualify_api.creative.video_pipeline.local import produce_local  # noqa: PLC0415
 
@@ -4882,6 +4891,8 @@ class MediaProducer:
             allowed=allowed,
             # the worker's preparation: its lease is kept alive while the video is made
             run=run,
+            brand=kit,
+            render_client=self._render_client,
         )
 
     def _clip(
