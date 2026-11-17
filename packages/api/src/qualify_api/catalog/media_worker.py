@@ -47,6 +47,25 @@ the «en corte» mark. A failure between 3 and 5 is retried (both steps are idem
 when the attempts run out the job is closed `done` with `original_left_to_reconciler`,
 and the reconciler's tombstone rule (b) finishes it — a saved cut is never undone.
 
+`normalize_local` (m-25042483, migration 0171; founder's decision «Bajarlos a 4K 8 bits»):
+the creative worker asked for it because a video stretch of a local assembly is over
+3840×2160 or 10-bit (`qualify_creative.video.source_limits`); the piece waits for it,
+silently and at cost 0.
+
+1. the normalized copy's key (`payload.normalized_key`, deterministic, under `t/`) already
+   in R2 → nothing is encoded again (a retry after the upload; `t/` is write-once);
+2. the owner's file (`payload.source_key`: R2, or an old local `uploads/` key — through the
+   CM-9 key map, else the volume) into a temp dir; its header gives the length the time
+   allowed and the rate cap scale with;
+3. `FfmpegLocalSourceNormalizer` (whole length and timing, upright, inside 3840×2160, 8-bit
+   `yuv420p` BT.709, no sound), the lease held for the encode's whole allowance; the copy's
+   header checked against the rule;
+4. the copy to R2 at its key, the job `done` with `{normalized_key, version, …}`.
+
+An unreadable file, a missing one or a copy over the limit fails it for good (the piece
+then fails with «No pudimos armar tu video…», never a charge); a killed or timed-out encode
+or an R2 hiccup is retried like the other kinds.
+
 **Reconciler** (at start, then every 24 h — rule 5 of the ADR 39 amendment), per tenant:
 (a) R2 folders under `gallery/{tenant}/` with no row (live or tombstoned) and no active
 job expecting them, older than 24 h → deleted (an upload cut between the PUT and the row);
@@ -78,6 +97,7 @@ from qualify_creative.video.business_cut import BusinessVideoCutter, CutBusiness
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import (
     ObjectNotFound,
+    ObjectSizeExceeded,
     describe_failure,
     is_bucket_refusal,
     refusal_codes,
@@ -99,6 +119,7 @@ from qualify_api.catalog.business_media_models import (
     INGEST_PIPELINE_VERSION,
     JOB_CUT,
     JOB_INGEST,
+    JOB_NORMALIZE_LOCAL,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_PARTS_SAVED,
@@ -157,7 +178,8 @@ def worker_id() -> str:
 
 
 class GalleryObjects(Protocol):
-    """The `ObjectGate` methods this worker uses."""
+    """The `ObjectGate` methods this worker uses (`has_object` and `put_media` only for
+    `normalize_local`)."""
 
     def put_gallery_media(
         self, tenant_id: UUID, media_id: UUID, filename: str, fileobj: Any, content_type: str
@@ -168,6 +190,23 @@ class GalleryObjects(Protocol):
     def delete_gallery_media(self, tenant_id: UUID, media_id: UUID) -> Any: ...
 
     def list_gallery_media(self, tenant_id: UUID) -> list[Any]: ...
+
+    def has_object(self, tenant_id: UUID, object_key: str) -> bool: ...
+
+    def put_media(
+        self, tenant_id: UUID, object_key: str, fileobj: Any, content_type: str
+    ) -> None: ...
+
+
+class LocalSourceNormalizer(Protocol):
+    """`qualify_creative.video.local_normalize.FfmpegLocalSourceNormalizer`'s shape."""
+
+    @property
+    def version(self) -> str: ...
+
+    def allowance(self, duration_s: float | None) -> timedelta: ...
+
+    def normalize_file(self, source: Path, out: Path, *, duration_s: float | None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -228,6 +267,7 @@ class MediaJobRunner:
         normalizer: BusinessVideoNormalizer,
         cutter: BusinessVideoCutter | None = None,
         seasonal: SeasonalMediaJobHandler | None = None,
+        local_normalizer: LocalSourceNormalizer | None = None,
         clock: Callable[[], datetime] = _now,
         lease: timedelta = LEASE,
         max_attempts: int = MAX_ATTEMPTS,
@@ -237,6 +277,7 @@ class MediaJobRunner:
         self._normalizer = normalizer
         self._cutter = cutter
         self._seasonal = seasonal
+        self._local_normalizer = local_normalizer
         self._clock = clock
         self._lease = lease
         self._max_attempts = max_attempts
@@ -244,8 +285,12 @@ class MediaJobRunner:
     # -- claim -------------------------------------------------------------------------
 
     def claim(self, tenant_id: UUID) -> ClaimedJob | None:
-        """The oldest claimable job of the tenant (`ingest` or `cut`), leased to this
-        worker. A job already at the attempt ceiling whose lease expired (its worker kept
+        """The oldest claimable job of the tenant, leased to this worker: the Galería's
+        own (`ingest`, `cut`) first, then `normalize_local` (m-25042483: a long normalize
+        never delays an owner's upload or cut), then `seasonal_media` — except a seasonal
+        job waiting `SEASONAL_WAIT_BOUND`, which joins the Galería's by age. A job only of a
+        kind this runner can run (`seasonal_media` and `normalize_local` need their
+        handler). A job already at the attempt ceiling whose lease expired (its worker kept
         dying) is failed here instead of being run a fourth time — except a cut already
         past its point of no return (`parts_saved`), which is closed for the reconciler
         instead: a saved cut is never undone."""
@@ -255,6 +300,8 @@ class MediaJobRunner:
             expired = or_(GalleryJob.lease_until.is_(None), GalleryJob.lease_until <= now)
             # m-24976892: `seasonal_media` jobs only when this runner has their handler
             kinds = (JOB_INGEST, JOB_CUT) + ((JOB_SEASONAL,) if self._seasonal else ())
+            # m-25042483: `normalize_local` jobs only when this runner has its normalizer
+            kinds += (JOB_NORMALIZE_LOCAL,) if self._local_normalizer else ()
             with tenant_session(tenant_id) as session:
                 job = session.scalar(
                     select(GalleryJob)
@@ -274,12 +321,14 @@ class MediaJobRunner:
                     # except a seasonal job already waiting SEASONAL_WAIT_BOUND: by age
                     .order_by(
                         case(
+                            # m-25042483: after every queued `ingest`/`cut`
+                            (GalleryJob.kind == JOB_NORMALIZE_LOCAL, 1),
                             (
                                 and_(
                                     GalleryJob.kind == JOB_SEASONAL,
                                     GalleryJob.created_at > now - SEASONAL_WAIT_BOUND,
                                 ),
-                                1,
+                                2,
                             ),
                             else_=0,
                         ),
@@ -330,7 +379,128 @@ class MediaJobRunner:
             return self._process_cut(job)
         if job.kind == JOB_SEASONAL:
             return self._process_seasonal(job)
+        if job.kind == JOB_NORMALIZE_LOCAL:
+            return self._process_normalize_local(job)
         return self._fail(job, "unsupported_kind", permanent=True)
+
+    # -- normalize_local (m-25042483) --------------------------------------------------
+
+    def _process_normalize_local(self, job: ClaimedJob) -> JobOutcome:
+        """A local-video source brought to 4K 8 bits (see the module): written once at
+        its deterministic key, the job `done` with the copy's key and the version."""
+        from qualify_creative.video.source_limits import read_header  # noqa: PLC0415
+
+        from qualify_api.creative.media import owned_by  # noqa: PLC0415
+
+        normalizer = self._local_normalizer
+        if normalizer is None:
+            return self._fail(job, "normalizer_unavailable", permanent=False)
+        payload = job.payload or {}
+        source_key = str(payload.get("source_key") or "")
+        target_key = str(payload.get("normalized_key") or "")
+        if (
+            not owned_by(job.tenant_id, source_key)
+            or not target_key.startswith(f"t/{job.tenant_id}/normalized/")
+            or ".." in target_key
+        ):
+            return self._fail(job, "payload_invalid", permanent=True, cleanup=False)
+        try:
+            already = self._gate.has_object(job.tenant_id, target_key)
+        except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry
+            return self._fail(job, f"r2_head:{type(exc).__name__}", permanent=False)
+        if already:  # a retry after the upload: never encoded twice
+            return self._settle_normalized(job, target_key, normalizer.version, {"reused": True})
+        with tempfile.TemporaryDirectory(prefix="qualify-normalize-") as tmp:
+            source = Path(tmp) / "source"
+            out = Path(tmp) / "video.mp4"
+            try:
+                self._fetch_local_source(job.tenant_id, source_key, source)
+            except (ObjectNotFound, FileNotFoundError):
+                return self._fail(job, "source_missing", permanent=True, cleanup=False)
+            except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry
+                return self._fail(job, f"r2_read:{type(exc).__name__}", permanent=False)
+            try:
+                head = read_header(source)
+            except Exception:  # noqa: BLE001 — PyAV refused the owner's file
+                return self._fail(job, "unreadable", permanent=True, cleanup=False)
+            # the encode may outlast the lease: held for its whole allowance
+            if not self._renew_lease(job, until=normalizer.allowance(head.duration_s)):
+                return JobOutcome(job.id, "lost_lease")
+            try:
+                normalizer.normalize_file(source, out, duration_s=head.duration_s)
+            except UnreadableVideo:
+                return self._fail(job, "unreadable", permanent=True, cleanup=False)
+            except Exception as exc:  # noqa: BLE001 — killed, timed out, out of disk: retry
+                return self._fail(job, f"normalize:{type(exc).__name__}", permanent=False)
+            source.unlink(missing_ok=True)
+            try:
+                made = read_header(out)
+            except Exception:  # noqa: BLE001 — our own output unreadable: retry
+                return self._fail(job, "normalized_unreadable", permanent=False)
+            if made.needs_normalizing():
+                return self._fail(job, "normalized_over_limit", permanent=True, cleanup=False)
+            if not self._renew_lease(job):  # reclaimed while encoding: not ours any more
+                return JobOutcome(job.id, "lost_lease")
+            size = out.stat().st_size
+            try:
+                with out.open("rb") as fh:
+                    self._gate.put_media(job.tenant_id, target_key, fh, "video/mp4")
+            except ObjectSizeExceeded:
+                return self._fail(job, "normalized_too_large", permanent=True, cleanup=False)
+            except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry onto the same key
+                return self._fail(job, f"r2_write:{type(exc).__name__}", permanent=False)
+        return self._settle_normalized(
+            job,
+            target_key,
+            normalizer.version,
+            {
+                "source": head.to_dict(),
+                "normalized": made.to_dict(),
+                "duration_s": made.duration_s,
+                "bytes": size,
+            },
+        )
+
+    def _fetch_local_source(self, tenant_id: UUID, key: str, target: Path) -> None:
+        """The owner's file into `target`: from R2 (`t/…`, `gallery/…`), or an old local
+        `uploads/…` key through the CM-9 key map, else from the volume."""
+        from qualify_shared.objects.keys import is_object_store_key  # noqa: PLC0415
+
+        if not is_object_store_key(key):
+            from qualify_api.creative.owner_uploads import resolve_moved_key  # noqa: PLC0415
+
+            moved = resolve_moved_key(tenant_id, key)
+            if moved is None:
+                local = self._root / key
+                if not local.is_file():
+                    raise FileNotFoundError(key)
+                shutil.copyfile(local, target)
+                return
+            key = moved
+        self._download(tenant_id, key, target)
+
+    def _settle_normalized(
+        self, job: ClaimedJob, key: str, version: str, facts: dict[str, Any]
+    ) -> JobOutcome:
+        now = self._clock()
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
+                return JobOutcome(job.id, "lost_lease")
+            row.status = STATUS_DONE
+            row.lease_until = None
+            row.updated_at = now
+            row.finished_at = now
+            row.last_error_code = None
+            row.result = {
+                **facts,
+                "source_key": (job.payload or {}).get("source_key"),
+                "normalized_key": key,
+                "version": version,
+                "cost_usd": "0.00",
+                "worker": worker_id(),
+            }
+        return JobOutcome(job.id, STATUS_DONE)
 
     # -- seasonal_media (m-24976892) ---------------------------------------------------
 
@@ -619,14 +789,15 @@ class MediaJobRunner:
                 self._forget(job.tenant_id, media_id)
         return outcome
 
-    def _renew_lease(self, job: ClaimedJob) -> bool:
-        """Extend the lease before the R2 upload, if the job is still this worker's."""
+    def _renew_lease(self, job: ClaimedJob, *, until: timedelta | None = None) -> bool:
+        """Extend the lease (by `until`, else the usual lease) before a long step or the
+        R2 upload, if the job is still this worker's."""
         now = self._clock()
         with tenant_session(job.tenant_id) as session:
             row = session.get(GalleryJob, job.id, with_for_update=True)
             if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
                 return False
-            row.lease_until = now + self._lease
+            row.lease_until = now + max(self._lease, until or self._lease)
             row.updated_at = now
         return True
 
@@ -1052,6 +1223,9 @@ def run_loop(
 def production_runner() -> MediaJobRunner:
     from qualify_creative.video.business import FfmpegBusinessVideoNormalizer  # noqa: PLC0415
     from qualify_creative.video.business_cut import FfmpegBusinessVideoCutter  # noqa: PLC0415
+    from qualify_creative.video.local_normalize import (  # noqa: PLC0415
+        FfmpegLocalSourceNormalizer,
+    )
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
@@ -1066,6 +1240,7 @@ def production_runner() -> MediaJobRunner:
         normalizer=FfmpegBusinessVideoNormalizer(),
         cutter=FfmpegBusinessVideoCutter(),
         seasonal=production_seasonal_handler(gate),
+        local_normalizer=FfmpegLocalSourceNormalizer(),
     )
 
 

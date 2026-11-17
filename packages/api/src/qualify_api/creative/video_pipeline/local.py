@@ -67,6 +67,7 @@ from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
+from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
     JPEG,
     MP4,
@@ -75,6 +76,7 @@ from qualify_api.creative.media import (
     MediaWrite,
     owned_by,
 )
+from qualify_api.creative.video_pipeline.local_sources import LocalSources, with_provenance
 from qualify_api.creative.video_pipeline.recipe import (
     is_built_layer,
     recipe_of,
@@ -146,12 +148,26 @@ LOCAL_PART_LAYER_FAILED_TEXT = (
     "No pudimos poner el efecto en esta parte por un problema nuestro. No se descontó de tus "
     "creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
 )
+#: m-25042483: a video stretch takes over `SEGMENT_SOURCE_MAX_S` (60 s) of its video —
+#: the owner's to fix (refused before anything is created, `segment_source_too_long`;
+#: this is the worker's backstop and the words the editor shows in «Cortar»). Reviewed
+#: by ux-designer 2026-11-17: «tomar … aunque lo aceleres» (the reel may last 9 s), «1
+#: minuto» (not compared with the reel's seconds), both ways out.
+LOCAL_SOURCE_TOO_LONG_TEXT = (
+    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+)
+LOCAL_PART_SOURCE_TOO_LONG_TEXT = (
+    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear esta parte."
+)
 #: A part says «esta parte» where the whole piece says «tu video».
 _PART_TEXTS = {
     LOCAL_SOURCE_FAILED_TEXT: LOCAL_PART_FAILED_TEXT,
     LOCAL_SAVE_FAILED_TEXT: LOCAL_PART_SAVE_FAILED_TEXT,
     LOCAL_COMPOSE_FAILED_TEXT: LOCAL_PART_COMPOSE_FAILED_TEXT,
     LOCAL_LAYER_FAILED_TEXT: LOCAL_PART_LAYER_FAILED_TEXT,
+    LOCAL_SOURCE_TOO_LONG_TEXT: LOCAL_PART_SOURCE_TOO_LONG_TEXT,
 }
 #: How often the preparation's lease is renewed while the video is made (None =
 #: `lease_kept`'s own, a third of the lease). Tests shorten it.
@@ -216,6 +232,9 @@ class LocalRender:
     #: The layer step's provenance (`compose_version` and each use's `params()`), None
     #: when the part has no layer (the step did not run).
     effect_layers: dict[str, Any] | None = None
+    #: m-25042483: the video stretches' files as read (`local_sources.LocalSources`): each
+    #: one's original key, normalized copy and normalizer version for the provenance.
+    sources: Any = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -274,6 +293,8 @@ def render_local_part(
     beat: Callable[[], None] | None = None,
     brand: Any = None,
     render_client: Any = None,
+    draft_id: UUID | None = None,
+    source_jobs: Any = None,
 ) -> LocalRender:
     """Make `part`'s video in `root` (see the module): prepared stretches and held photos,
     sped up and laid end to end, then the part's texts over it. Raises `LocalVideoFailed`;
@@ -285,6 +306,7 @@ def render_local_part(
     one): both used only when the part has a text. Without a client a text fails as the
     service being down — never a video without the texts the owner chose."""
     from qualify_creative.video._source import VideoSourceError  # noqa: PLC0415
+    from qualify_creative.video.memory import release_memory  # noqa: PLC0415
     from qualify_creative.video.photo_hold import HOLD_VERSION, render_photo_hold  # noqa: PLC0415
     from qualify_creative.video.prepare import (  # noqa: PLC0415
         PREPARE_VERSION,
@@ -303,12 +325,23 @@ def render_local_part(
     # is an intermediate), the photos are held at it, and `render_speed` enlarges a smaller
     # stretch bicubic in the ONE encode at that size (not a second one in `prepare`)
     size = TARGET_SIZE
+    # m-25042483: only ever a source of at most 4K 8 bits is decoded — a bigger or 10-bit
+    # file is read as its normalized copy, or the video waits for the media-worker to make
+    # it (`LocalSourceNormalizing`, before anything is decoded); see `local_sources`
+    sources = LocalSources.open(
+        part,
+        tenant_id=tenant_id,
+        fetch_file=lambda key, path: _fetch(store, tenant_id, key, path),
+        jobs=source_jobs,
+        draft_id=draft_id,
+        brand_id=getattr(brand, "brand_id", None),
+    )
     try:
         for index, segment in enumerate(part.segments):
             if segment.kind != "video":
                 continue
             source = root / f"source-{index}"
-            _fetch(store, tenant_id, segment.key, source)
+            sources.fetch(segment.key, source)
             info = read_source(source)
             plan = plan_prepare(
                 info.width,
@@ -331,6 +364,8 @@ def render_local_part(
             warnings.extend({"segment": index, **w.to_dict()} for w in prepared.warnings)
             if beat is not None:
                 beat()
+        # m-25042483: each step starts from what is in use, not what the last one freed
+        release_memory()
         photos = False
         for index, segment in enumerate(part.segments):
             if segment.kind != "photo":
@@ -382,6 +417,7 @@ def render_local_part(
             raw=f"{type(exc).__name__}: {exc}",
             code="unreadable",
         ) from exc
+    release_memory()  # the speed step's decoder and encoder, before the layers and texts
     # EF-08: the library's layers (smoke, embers, steam) BEFORE the texts, so the words
     # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
     # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
@@ -414,6 +450,7 @@ def render_local_part(
     if composed.composed:
         text_params = dict(composed.params["text_layers"])
         steps["compose"] = text_params["compose_version"]
+    release_memory()  # the compose's, before the poster and the save
     return LocalRender(
         path=composed.path,
         width=result.width,
@@ -425,6 +462,7 @@ def render_local_part(
         warnings=tuple(warnings),
         text_layers=text_params,
         effect_layers=layered[1] if layered is not None else None,
+        sources=sources,
     )
 
 
@@ -682,16 +720,25 @@ def produce_local(
             ", ".join(p.code for p in problems),
         )
         foreign = any(p.code in ("foreign_key", "malformed_key") for p in problems)
+        too_long = any(p.code == "segment_source_too_long" for p in problems)
         return MediaOutcome(
             failure=(
                 FailureReason.ROUTE_BLOCKED_BY_POLICY.value
                 if foreign
                 else FailureReason.INVALID_PARAMETERS.value
             ),
-            detail=failed_text,
+            # m-25042483: a stretch over 60 s of its video says so, «esta parte» in a part
+            detail=(
+                (LOCAL_PART_SOURCE_TOO_LONG_TEXT if in_part else LOCAL_SOURCE_TOO_LONG_TEXT)
+                if too_long and not foreign
+                else failed_text
+            ),
         )
     try:
         with (
+            # m-25042483: never alongside a part join — with one in flight this raises
+            # `LocalAssemblyWait` before anything is read: the next pass makes the video
+            assembling(),
             _lease(run, lease_store),
             tempfile.TemporaryDirectory(prefix=_WORKDIR_PREFIX) as folder,
         ):
@@ -703,6 +750,7 @@ def produce_local(
                 beat=beat,
                 brand=brand,
                 render_client=render_client,
+                draft_id=draft_id,
             )
             cost = local_price(made.seconds)
             if cost != 0:  # the price guard: a local video never pays a vendor
@@ -735,7 +783,9 @@ def produce_local(
             "steps": made.steps,
             "effect_version": made.speed["effect_version"],
             "speed": made.speed,
-            "segments": [segment.model_dump(mode="json") for segment in part.segments],
+            # m-25042483: each video stretch with its file's provenance (original key,
+            # normalized copy, normalizer version)
+            "segments": with_provenance(part.segments, made.sources),
             "frames": made.frames,
             "warnings": list(made.warnings),
         },
@@ -777,6 +827,8 @@ __all__ = [
     "LOCAL_COMPOSE_FAILED_TEXT",
     "LOCAL_LAYER_FAILED_TEXT",
     "LOCAL_PART_LAYER_FAILED_TEXT",
+    "LOCAL_PART_SOURCE_TOO_LONG_TEXT",
+    "LOCAL_SOURCE_TOO_LONG_TEXT",
     "LOCAL_EFFECTS_PIPELINE_VERSION",
     "LOCAL_PART_COMPOSE_FAILED_TEXT",
     "LOCAL_MODEL_ID",

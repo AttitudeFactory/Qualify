@@ -340,6 +340,7 @@ def _assemble(
 ) -> tuple[Any, str | None, list[tuple[str, float, float, float, str]], int, dict[str, int]]:
     """EF-06's `render_local_part` over `case` (plus the compose overlay when it has texts)."""
     from qualify_api.creative.video_pipeline import local
+    from qualify_api.creative.video_pipeline.local_sources import InMemoryLocalSourceJobs
     from qualify_creative.schemas import PartRecipe, SourceSegment
     from qualify_creative.video import photo_hold, prepare, speed
 
@@ -363,7 +364,15 @@ def _assemble(
     error = None
     made: Any = None
     try:
-        made = local.render_local_part(part, tenant_id=TENANT, store=FolderStore(folder), root=work)
+        # no database here: the normalize jobs' door is the in-memory one (m-25042483) —
+        # the sources measured are what the media-worker hands over (at most 4K 8 bits)
+        made = local.render_local_part(
+            part,
+            tenant_id=TENANT,
+            store=FolderStore(folder),
+            root=work,
+            source_jobs=InMemoryLocalSourceJobs(),
+        )
         if texts:
             from qualify_creative.video.text_overlay import TimedLayer, overlay_text_layers
 

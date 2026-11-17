@@ -34,8 +34,26 @@ from qualify_creative.video._source import frame_rotation
 from qualify_creative.video.upright import upright_filters, upright_size
 
 #: The x264 settings: the composed video is the piece the owner publishes, so it keeps its
-#: detail (fit.py's `DETAIL_X264`), on ONE thread so two runs give the same bytes.
-OVERLAY_X264: Mapping[str, str] = {"crf": "18", "preset": "fast", "threads": "1"}
+#: detail (fit.py's `DETAIL_X264`), on ONE thread so two runs give the same bytes. A short
+#: `rc-lookahead` (m-25042483): x264 keeps that many whole 1080×1920 frames queued — the
+#: preset's 30 were most of the compose's memory (`join.JOIN_X264` does the same).
+OVERLAY_X264: Mapping[str, str] = {
+    "crf": "18",
+    "preset": "fast",
+    "threads": "1",
+    "rc-lookahead": "10",
+}
+#: Decoder threads for the video under the texts, slice-threaded and set before the first
+#: decode (m-25042483): FFmpeg's automatic frame threading holds a frame per core.
+DECODE_THREADS = 2
+
+
+def bound_decoder(stream: Any, threads: int = DECODE_THREADS) -> None:
+    """At most `threads` slice threads for `stream`'s decoder (`join._bound`)."""
+    stream.codec_context.thread_count = threads
+    stream.codec_context.thread_type = "SLICE"
+
+
 #: The aspect the layers are drawn for (9:16): a video off it by more than this is refused —
 #: stretching the letters would change the brand's design.
 ASPECT_TOLERANCE = 0.01
@@ -243,6 +261,7 @@ def _encode(
         if not source.streams.video:
             raise TextOverlayError("no_video", "the file has no video stream")
         stream = source.streams.video[0]
+        bound_decoder(stream)  # before the first decode
         rotation = 0
         for first in source.decode(stream):
             rotation = frame_rotation(first)
@@ -360,10 +379,12 @@ def _encode(
 
 __all__ = [
     "ASPECT_TOLERANCE",
+    "DECODE_THREADS",
     "OVERLAY_X264",
     "OverlaidVideo",
     "TextOverlayError",
     "TimedLayer",
     "decoded_frame_hashes",
+    "bound_decoder",
     "overlay_text_layers",
 ]

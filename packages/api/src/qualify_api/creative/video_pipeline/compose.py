@@ -63,7 +63,9 @@ from qualify_creative.video.text_overlay import OVERLAY_X264, TimedLayer, overla
 
 #: The version of this stage (how texts become pixels over a video): bumped with any change
 #: to the timing, the fade or the overlay that moves a pixel. Recorded with every piece.
-COMPOSE_VERSION = "video_text_compose-v1"
+#: v2 (m-25042483): the decoder bounded and x264's lookahead shortened (`OVERLAY_X264`),
+#: so a 4K piece with texts stays under the creative worker's memory budget.
+COMPOSE_VERSION = "video_text_compose-v2"
 #: The fade in of a text that does not choose one, in seconds. Deivid, 2026-11-16 («Que el
 #: dueño elija»): each text carries its own `VideoTextLayer.fade_s`, 0.3-1.0 s (the ticket's
 #: «fundido de entrada de 0,3 a 1,0 s»), 0.5 s by default — this is that default. A text

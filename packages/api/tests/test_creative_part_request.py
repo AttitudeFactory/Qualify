@@ -369,6 +369,20 @@ def test_the_length_is_kept_only_with_its_own_code() -> None:
     assert refusal_duration(PartNeedsPrevious(2)) is None and refusal_duration(None) is None
 
 
+def test_a_stretch_over_60_seconds_of_source_keeps_its_own_code_and_length() -> None:
+    """m-25042483: `segment_source_too_long` is kept as itself, with the source seconds of
+    the longest stretch — not the generic `effects_invalid`."""
+    from qualify_creative.effects import RecipeProblem
+
+    from qualify_api.creative.part_request import refusal_duration
+    from qualify_api.creative.video_pipeline.recipe import RecipeRefused
+
+    long = RecipeProblem(code="segment_source_too_long", part=3, field="segments", duration_s=90.0)
+    other = RecipeProblem(code="texts_overlap", part=1, field="text_layers")
+    assert refusal_of(RecipeRefused((other, long))) == ("segment_source_too_long", 3, 0)
+    assert refusal_duration(RecipeRefused((other, long))) == 90.0
+
+
 def test_every_refusal_has_a_code() -> None:
     assert refusal_of(PartNeedsDescription(3)) == ("needs_description", 3, 0)
     assert refusal_of(PartNeedsPrevious(2)) == ("needs_previous", 2, 0)

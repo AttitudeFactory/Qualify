@@ -146,6 +146,17 @@ def assemble_at_the_sources_size(request: pytest.FixtureRequest, monkeypatch: An
     monkeypatch.setattr(prepare, "TARGET_SIZE", SIZE)
 
 
+@pytest.fixture(autouse=True)
+def no_normalize_jobs(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """m-25042483: the `normalize_local` jobs in memory (offline), none to begin with —
+    this module's sources are 8-bit and small: read as they are, as before."""
+    from qualify_api.creative.video_pipeline import local_sources
+
+    jobs = local_sources.InMemoryLocalSourceJobs()
+    monkeypatch.setattr(local_sources, "default_jobs", lambda: jobs)
+    return jobs
+
+
 @pytest.fixture(scope="module")
 def sources() -> dict[str, bytes]:
     return {VIDEO_KEY: _video_bytes(4.0), PHOTO_KEY: _png_bytes()}
@@ -384,6 +395,26 @@ def test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once(
     assert last[0] > 150 and last[1] < 90  # red: the photo, at the same size
 
 
+def test_a_local_video_waits_for_a_part_join_before_reading_anything(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """m-25042483: with a part join holding the worker, the local video is not made now:
+    `LocalAssemblyWait` (retried on the next pass) before any file is read."""
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
+
+    store = ReadingStore(sources)
+    with joining(), pytest.raises(LocalAssemblyWait):
+        _producer(store, ExplodingByteplus()).produce(
+            tenant_id=TENANT_ID,
+            draft_id=uuid4(),
+            brief=_stamped(_local_clip()),
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        )
+    assert store.reads == []
+
+
 def test_a_photo_and_a_video_make_one_video_with_no_gaps(
     queue_on: None, sources: dict[str, bytes]
 ) -> None:
@@ -490,8 +521,12 @@ def test_a_local_clip_outside_3_to_60_seconds_is_refused_saying_how_long(
     brief = _local_clip(_video(0.0, end_s, 1.0))
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief, user_id=USER_ID)
-    (problem,) = refused.value.problems
+    # 61 s at ×1 is also a stretch over 60 s of its video (m-25042483): both are said
+    problem = refused.value.problems[0]
     assert (problem.code, problem.duration_s) == ("local_length_out_of_range", duration)
+    assert [p.code for p in refused.value.problems[1:]] == (
+        ["segment_source_too_long"] if end_s > 60 else []
+    )
     assert repo.drafts == {} and repo.briefs == {}
     assert ledger.rows == {} and dispatcher.calls == []
 
@@ -656,6 +691,30 @@ def test_a_video_the_decoder_cannot_open_is_unreadable_not_a_vendor_error(
         )
     assert failed.value.code == "unreadable"
     assert failed.value.detail == local.LOCAL_SOURCE_FAILED_TEXT
+
+
+@pytest.mark.parametrize("in_part", [False, True])
+def test_a_stored_stretch_over_60_seconds_of_video_says_so_before_any_read(
+    queue_on: None, in_part: bool
+) -> None:
+    """m-25042483: the worker's backstop — a stretch taking 90 s of its video (at ×10 it
+    would last 9 s) is refused before anything is read, in the owner's words reviewed by
+    ux-designer, «esta parte» in a part; nothing charged."""
+    from qualify_creative.schemas import PartRef
+
+    store = ReadingStore()
+    whole = _local_clip(_video(0.0, 90.0, 10.0))
+    brief = whole
+    if in_part:
+        part = PartRef(index=2, mode="local", seconds=9, segments=whole.media.segments)
+        brief = whole.model_copy(update={"media": whole.media.model_copy(update={"part": part})})
+    outcome = local.produce_local(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=_stamped(brief), store=store, save=None
+    )
+    want = local.LOCAL_PART_SOURCE_TOO_LONG_TEXT if in_part else local.LOCAL_SOURCE_TOO_LONG_TEXT
+    assert outcome.detail == want and outcome.media == ()
+    assert "aunque lo aceleres" in want and "1 minuto" in want
+    assert store.reads == []
 
 
 def test_a_part_whose_save_fails_says_this_part(queue_on: None, sources: dict[str, bytes]) -> None:

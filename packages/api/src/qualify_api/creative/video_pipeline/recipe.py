@@ -54,6 +54,7 @@ from qualify_creative.schemas import (
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
     PART_TRIM_TOLERANCE_S,
+    SEGMENT_SOURCE_MAX_S,
     ContentBrief,
     EffectUse,
     MediaInputs,
@@ -67,6 +68,9 @@ from qualify_creative.schemas import (
 
 from qualify_api.creative.media import owned_by, parse_tenant_key
 
+#: Float noise allowed over `SEGMENT_SOURCE_MAX_S` («Usar el video entero» of a 60.03 s file
+#: whose browser length was rounded): under a frame at 30 fps.
+_SOURCE_SLACK_S = 0.03
 #: A Clip's `clip_reference_mode` read as the part mode the engine works with.
 _PART_MODE_OF_CLIP: dict[str, PartMode] = {
     "motion": "reference",
@@ -192,6 +196,25 @@ def _length_problems(part: PartRecipe, number: int | None, *, in_clip: bool) -> 
     return found
 
 
+def _source_problems(part: PartRecipe, number: int | None) -> list:
+    """m-25042483: every VIDEO stretch of a `local` piece takes at most
+    `SEGMENT_SOURCE_MAX_S` of its source (`segment_source_too_long`, once per piece, with
+    the longest stretch's source seconds in `duration_s`). Photos have their own 1-5 s."""
+    if part.mode != "local" or not part.segments:
+        return []
+    longest = max((s.end_s - s.start_s for s in part.segments if s.kind == "video"), default=0.0)
+    if longest <= SEGMENT_SOURCE_MAX_S + _SOURCE_SLACK_S:
+        return []
+    return [
+        RecipeProblem(
+            code="segment_source_too_long",
+            part=number,
+            field="segments",
+            duration_s=round(longest, 1),
+        )
+    ]
+
+
 def part_length(part: PartRecipe, *, video_by_parts: bool) -> float:
     """The length a part's (or Clip's) times are read in, from 0: a part's `seconds`; a
     normal Clip's `clip_seconds`."""
@@ -227,6 +250,7 @@ def validate_recipe(
         if part.mode == "local" and not part.has_own_video:
             found.append(RecipeProblem(code="local_needs_own_video", part=number, field="mode"))
         found.extend(_length_problems(part, number, in_clip=in_clip))
+        found.extend(_source_problems(part, number))
         found.extend(
             part_effect_problems(
                 part.effects,
