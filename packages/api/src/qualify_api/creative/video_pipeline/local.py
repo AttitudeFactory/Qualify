@@ -22,16 +22,26 @@ The steps, per stretch in the recipe's order:
    still for its `end_s` seconds (`video.photo_hold`, D-T1) at the prepared size;
 3. «Cámara rápida» (EF-04) lays every stretch end to end at its `speed` (a photo at 1), 30
    fps, hard cuts, no gaps: the video lasts the sum of the stretches at their speed;
-4. «Textos sobre el video» (EF-05, `compose.compose_text_layers`): the part's (or Clip's)
+4. «Humo», «Brasas», «Vapor» (EF-08, `qualify_creative.video.layer_overlay`): each use of
+   a library layer in the part's `effects` (its entry at its version, through
+   `TimedEffectLayer.from_entry` and the read-only `effects.layer_loop_file`; its params, or
+   the entry's defaults) is screen-blended over the built video for its `[start_s, end_s)`
+   — seconds of THIS part's output — BEFORE the texts, so the words stay on top and
+   readable; skipped (no second encode) when there is no layer; with texts the layers and
+   the texts go in ONE pass (`compose_text_layers(..., effect_layers=...)` →
+   `layer_overlay.overlay_layers_and_texts`: one decode, one encode);
+5. «Textos sobre el video» (EF-05, `compose.compose_text_layers`): the part's (or Clip's)
    `text_layers` drawn by our own render service (Remotion, cost 0, in the Brand Kit's
    typeface and palette) and laid over the built video with each text's own fade
    (`fade_s`); skipped when there is no text;
-5. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried).
+6. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried).
 
 Provenance (rule 6) in the asset's `params.local`: the recipe contract, the effects
 pipeline version, the pricing table (`LOCAL_PRICING_VERSION`, where `local_video` costs
 0.00 a second), the steps' versions, the speed step's own `SpeedResult.params()` and, when
-there are texts, the compose step's own `params["text_layers"]`. The
+there are texts, the compose step's own `params["text_layers"]`, and, when there are
+layers, `effect_layers` (each use's `TimedEffectLayer.params()`: effect, version,
+intensity, zone, span, the loop's sha256, cost 0) with `steps["layer_compose"]`. The
 asset carries no `draft` block (there is no Seedance final to order: it is publishable
 as it is) and `ai_generated=False` — Instagram's «hecho con IA» is read from what was
 made, not from the kind.
@@ -65,7 +75,11 @@ from qualify_api.creative.media import (
     MediaWrite,
     owned_by,
 )
-from qualify_api.creative.video_pipeline.recipe import recipe_of, validate_recipe
+from qualify_api.creative.video_pipeline.recipe import (
+    is_built_layer,
+    recipe_of,
+    validate_recipe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +135,23 @@ LOCAL_PART_COMPOSE_FAILED_TEXT = (
     "No pudimos terminar el video de esta parte por un problema nuestro. No se descontó de "
     "tus creaciones. Inténtalo de nuevo en unos minutos."
 )
+#: A layer (smoke, embers, steam) could not be laid for a reason of ours (EF-08,
+#: `LayerOverlayError`): its own notice, which also offers the way out — removing the
+#: effect finishes the piece now.
+LOCAL_LAYER_FAILED_TEXT = (
+    "No pudimos poner el efecto en tu video por un problema nuestro. No se descontó de tus "
+    "creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
+)
+LOCAL_PART_LAYER_FAILED_TEXT = (
+    "No pudimos poner el efecto en esta parte por un problema nuestro. No se descontó de tus "
+    "creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
+)
 #: A part says «esta parte» where the whole piece says «tu video».
 _PART_TEXTS = {
     LOCAL_SOURCE_FAILED_TEXT: LOCAL_PART_FAILED_TEXT,
     LOCAL_SAVE_FAILED_TEXT: LOCAL_PART_SAVE_FAILED_TEXT,
     LOCAL_COMPOSE_FAILED_TEXT: LOCAL_PART_COMPOSE_FAILED_TEXT,
+    LOCAL_LAYER_FAILED_TEXT: LOCAL_PART_LAYER_FAILED_TEXT,
 }
 #: How often the preparation's lease is renewed while the video is made (None =
 #: `lease_kept`'s own, a third of the lease). Tests shorten it.
@@ -135,8 +161,9 @@ LEASE_RENEW_EVERY_S: float | None = None
 class LocalVideoFailed(Exception):
     """The local video could not be made: `failure` (a `FailureReason` value), a stable
     `code` (`unreadable`, `missing`, `read_failed`, `save_failed`, `foreign`, `source`,
-    `price`, and the compose step's `text_layer_unavailable`, `text_layer_rejected`,
-    `text_layer_refused`, `text_overlay_failed`), the owner's `detail`; `raw` only reaches
+    `price`, the layer step's `layer_overlay_failed`, and the compose step's
+    `text_layer_unavailable`, `text_layer_rejected`, `text_layer_refused`,
+    `text_overlay_failed`), the owner's `detail`; `raw` only reaches
     the log. None of them charges anything: a local piece never takes a creation."""
 
     def __init__(self, failure: str, detail: str, raw: str = "", *, code: str = "source") -> None:
@@ -186,6 +213,9 @@ class LocalRender:
     #: The compose step's provenance (`compose_text_layers(...).params["text_layers"]`),
     #: None when the part has no text (the step did not run).
     text_layers: dict[str, Any] | None = None
+    #: The layer step's provenance (`compose_version` and each use's `params()`), None
+    #: when the part has no layer (the step did not run).
+    effect_layers: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -349,15 +379,34 @@ def render_local_part(
             raw=f"{type(exc).__name__}: {exc}",
             code="unreadable",
         ) from exc
+    # EF-08: the library's layers (smoke, embers, steam) BEFORE the texts, so the words
+    # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
+    # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
+    video = result.path
+    effect_layers = _effect_layers(part)
+    layered: tuple[Path, dict[str, Any]] | None = None
+    if effect_layers and not part.text_layers:
+        layered = _lay_effects(effect_layers, video, root / "local-layers.mp4")
+        video.unlink(missing_ok=True)  # never two large files on disk without need
+        video = layered[0]
+        if beat is not None:
+            beat()
+    elif effect_layers:
+        layered = (video, _layers_provenance(effect_layers))
     # EF-05: the part's texts (`part.text_layers`, seconds of THIS part's output from 0,
     # speed applied — the recipe's own clock) drawn over the video already built
-    composed = _compose(part, result.path, root / "local-texts.mp4", brand, render_client)
-    if composed.composed and beat is not None:
-        # the render and the second encode can take minutes: mark the draft alive again
-        beat()
+    composed = _compose(part, video, root / "local-texts.mp4", brand, render_client, effect_layers)
+    if composed.composed:
+        if Path(composed.path) != Path(video):
+            Path(video).unlink(missing_ok=True)
+        if beat is not None:
+            # the render and the second encode can take minutes: mark the draft alive again
+            beat()
     steps: dict[str, Any] = {"prepare": PREPARE_VERSION, "speed": result.version}
     if photos:
         steps["photo_hold"] = HOLD_VERSION
+    if layered is not None:
+        steps["layer_compose"] = layered[1]["compose_version"]
     text_params: dict[str, Any] | None = None
     if composed.composed:
         text_params = dict(composed.params["text_layers"])
@@ -372,7 +421,68 @@ def render_local_part(
         steps=steps,
         warnings=tuple(warnings),
         text_layers=text_params,
+        effect_layers=layered[1] if layered is not None else None,
     )
+
+
+def _layer_failed(exc: BaseException) -> LocalVideoFailed:
+    """A layer that could not be laid: ours (the loop or the built video unreadable, the
+    encode) — the technical message only reaches the log; a local piece is never charged."""
+    return LocalVideoFailed(
+        FailureReason.RENDER_ERROR.value,
+        LOCAL_LAYER_FAILED_TEXT,
+        raw=f"{type(exc).__name__}: {exc}",
+        code="layer_overlay_failed",
+    )
+
+
+def _effect_layers(part: PartRecipe) -> list[Any]:
+    """EF-08: every use of a library layer in `part.effects` as a `TimedEffectLayer` (its
+    entry at its version, through the read-only `effects.layer_loop_file`; its params or
+    the entry's defaults; its span in seconds of this part's output). Any other effect is
+    not drawn here (`unbuilt_recipe_problems` refuses it before any row)."""
+    from qualify_creative.effects import NotALibraryLayer, load_effects  # noqa: PLC0415
+    from qualify_creative.video.layer_overlay import TimedEffectLayer  # noqa: PLC0415
+
+    library = load_effects()
+    layers: list[Any] = []
+    try:
+        for use in part.effects:
+            if not is_built_layer(use, library):
+                continue
+            entry = library.get(use.effect_id, use.version)
+            assert entry is not None  # `is_built_layer` found it
+            layers.append(
+                TimedEffectLayer.from_entry(
+                    entry, dict(use.params), start_s=use.start_s, end_s=use.end_s
+                )
+            )
+    except (NotALibraryLayer, ValueError) as exc:
+        raise _layer_failed(exc) from exc
+    return layers
+
+
+def _layers_provenance(layers: list[Any]) -> dict[str, Any]:
+    """The layer step's provenance: its version, cost 0 and each use's `params()`."""
+    from qualify_creative.video.layer_overlay import LAYER_COMPOSE_VERSION  # noqa: PLC0415
+
+    return {
+        "compose_version": LAYER_COMPOSE_VERSION,
+        "cost_usd": "0.00",
+        "layers": [layer.params() for layer in layers],
+    }
+
+
+def _lay_effects(layers: list[Any], video: Path, out: Path) -> tuple[Path, dict[str, Any]]:
+    """The layers alone (a part with no text) screen-blended over `video` into `out`
+    (`overlay_effect_layers`), with their provenance; `video` is left as it was."""
+    from qualify_creative.video import layer_overlay  # noqa: PLC0415
+
+    try:
+        made = layer_overlay.overlay_effect_layers(video, out, layers)
+    except layer_overlay.LayerOverlayError as exc:
+        raise _layer_failed(exc) from exc
+    return made.path, _layers_provenance(layers)
 
 
 def _no_render_client() -> Any:
@@ -381,10 +491,19 @@ def _no_render_client() -> Any:
     raise RuntimeError("no render client wired for the local video's texts")
 
 
-def _compose(part: PartRecipe, video: Path, out: Path, brand: Any, render_client: Any) -> Any:
+def _compose(
+    part: PartRecipe,
+    video: Path,
+    out: Path,
+    brand: Any,
+    render_client: Any,
+    effect_layers: list[Any] | None = None,
+) -> Any:
     """EF-05's compose over the built `video` (no text: nothing runs and `video` is kept),
-    its failures as `LocalVideoFailed` with what the owner reads. None charges anything
-    (a local piece takes no creation; ADR 49 §6) and each leaves `video` as it was."""
+    with EF-08's `effect_layers` under the texts in the same single pass; its failures as
+    `LocalVideoFailed` with what the owner reads. None charges anything (a local piece
+    takes no creation; ADR 49 §6) and each leaves `video` as it was."""
+    from qualify_creative.video.layer_overlay import LayerOverlayError  # noqa: PLC0415
     from qualify_creative.video.text_overlay import TextOverlayError  # noqa: PLC0415
 
     from qualify_api.creative.video_pipeline.compose import (  # noqa: PLC0415
@@ -401,6 +520,7 @@ def _compose(part: PartRecipe, video: Path, out: Path, brand: Any, render_client
             part.text_layers,
             brand,
             render_client=render_client if render_client is not None else _no_render_client,
+            effect_layers=tuple(effect_layers or ()),
         )
     except TextLayerRefused as exc:
         # one text does not fit in its place: the owner's to change, named in his words
@@ -423,6 +543,8 @@ def _compose(part: PartRecipe, video: Path, out: Path, brand: Any, render_client
             raw=exc.detail,
             code=exc.code,
         ) from exc
+    except LayerOverlayError as exc:
+        raise _layer_failed(exc) from exc
     except TextOverlayError as exc:
         # the built video itself unreadable or not 9:16: a bug of ours — its message is
         # technical (English) and only reaches the log
@@ -615,6 +737,9 @@ def produce_local(
             "warnings": list(made.warnings),
         },
     }
+    if made.effect_layers is not None:
+        # EF-08's provenance: each layer laid, its loop's sha256, the compose version
+        params["local"]["effect_layers"] = made.effect_layers
     if made.text_layers is not None:
         # EF-05's provenance: design, pixel revisions, fade chosen and applied, hashes
         params["local"]["text_layers"] = made.text_layers
@@ -647,6 +772,8 @@ def produce_local(
 
 __all__ = [
     "LOCAL_COMPOSE_FAILED_TEXT",
+    "LOCAL_LAYER_FAILED_TEXT",
+    "LOCAL_PART_LAYER_FAILED_TEXT",
     "LOCAL_EFFECTS_PIPELINE_VERSION",
     "LOCAL_PART_COMPOSE_FAILED_TEXT",
     "LOCAL_MODEL_ID",

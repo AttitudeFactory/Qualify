@@ -15,8 +15,8 @@ with no file (`texto` = an HTML layer, the transitions =
 CSS: `EffectEntry.simulated_in_browser`) or where the effect is not offered — in v1
 `camara_rapida` (D-T3: fast motion is `SourceSegment.speed`, not an effect on the track; the
 entry stays because EF-04, `video/speed.py`, records its id and version as provenance), the
-layers `humo_capa`/`brasas_capa`/`vapor_capa` (their loops are not recorded yet; a later
-ticket records them and offers them) and the Seedance templates (`measured` null, D5).
+layers `humo_capa`/`brasas_capa`/`vapor_capa` in v1 and v2 (recorded and offered from v3,
+EF-08 / m-25029102) and the Seedance templates (`measured` null, D5).
 Every non-null preview is a global, read-only relative path under
 `effects/<id>/v<version>/` — never a URL, never `..`, never a tenant's `t/` prefix — and
 its file must exist in the packaged `effects_assets/` folder (`preview_file`: the leading
@@ -26,6 +26,20 @@ The pure checks of an `EffectUse` against the library live here too
 (`effect_use_problems`, `part_effect_problems`): they return every problem as a
 `RecipeProblem` with a stable `RecipeRefusal` code, never raise and never read a file
 after the first load — cheap enough for the screen to call on each change of the owner.
+
+EF-08 (m-25029102): a layer's recorded loop (`<asset>preview.webm`, a VP9 WebM on pure
+black) is BOTH what the browser lays and what the compose lays (`video/layer_overlay.py`):
+the same pixels in the preview and in the final video. The compose reads it only through
+`layer_loop_file`, a read-only door into the packaged `effects_assets/` (global, inside the
+image, never under a tenant's `t/`, never in R2: nothing can purge it). Nothing writes there
+at runtime; `packages/creative/scripts/make_effect_loops.py` records the loops.
+
+An explicit exception to «never edited in place»: v3 offers `humo_capa`, `brasas_capa` and
+`vapor_capa` at entry version 1 — it only flips `offered`, fills their empty
+`preview_asset` and adds `categories`; their params and their asset folder `v1/` did not
+change. Nobody could use version 1 while it was not offered, and the editor sends version
+1. A future change of a loop (other bytes in `v1/`) does require `v2/` and an entry at
+version 2.
 """
 
 from __future__ import annotations
@@ -53,13 +67,22 @@ _DATA_DIR = Path(__file__).parent / "effects_data"
 _ASSETS_DIR = Path(__file__).parent / "effects_assets"
 
 #: The library a new request is checked against. ED-15: v2 — v1's entries, with the
-#: layers repeatable (`max_per_part` 3); v1 still loads and reads exactly as before.
-EFFECTS_LIBRARY_VERSION = "v2"
+#: layers repeatable (`max_per_part` 3). EF-08: v3 — v2's entries, with the smoke, ember
+#: and steam layers recorded and offered. v1 and v2 still load and read exactly as before.
+EFFECTS_LIBRARY_VERSION = "v3"
+#: The file of a layer's recorded loop inside its asset folder (`effects/<id>/v1/`).
+LAYER_LOOP_FILE = "preview.webm"
 
 EffectStage = Literal["prepare", "local", "seedance_prompt", "compose", "transition"]
 EffectScope = Literal["part", "between_parts"]
 EffectNeed = Literal["video", "own_video"]
 EffectBlend = Literal["screen", "add", "normal"]
+#: What an effect is about, for the screen to FILTER by (Deivid, 2026-11-16): a closed set
+#: of stable Spanish ids without accents. A category never hides an effect: every business
+#: may use every effect; `offered` alone says what the screen offers. Required from the
+#: library v3 on (at least one, none repeated); v1 and v2 have none.
+EffectCategory = Literal["comida", "texto", "transicion", "movimiento", "general"]
+EFFECT_CATEGORIES: tuple[str, ...] = ("comida", "texto", "transicion", "movimiento", "general")
 
 #: The placeholders a `seedance_prompt` template fills: where in the frame, and what.
 PROMPT_SLOTS = frozenset({"zone", "subject"})
@@ -164,6 +187,8 @@ class EffectEntry(BaseModel):
     blend: EffectBlend | None = None
     needs: tuple[EffectNeed, ...] = ()
     max_per_part: int = Field(default=1, ge=1)
+    #: For filtering only (never for hiding): see `EffectCategory`. () in v1 and v2.
+    categories: tuple[EffectCategory, ...] = ()
     measured: Measured | None = None
     prompt_version: str | None = None
     prompt_template: str | None = None
@@ -220,6 +245,14 @@ class EffectsLibrary(BaseModel):
         keys = [(e.id, e.version) for e in self.entries]
         if len(set(keys)) != len(keys):
             raise ValueError("an effect appears once per version")
+        if self.version >= 3:
+            for entry in self.entries:
+                if not entry.categories:
+                    raise ValueError(
+                        f"{entry.id}: from the library v3 on, an effect has a category"
+                    )
+                if len(set(entry.categories)) != len(entry.categories):
+                    raise ValueError(f"{entry.id}: a category appears once")
         return self
 
     def get(self, effect_id: str, version: int) -> EffectEntry | None:
@@ -229,7 +262,8 @@ class EffectsLibrary(BaseModel):
         return any(e.id == effect_id for e in self.entries)
 
     def offered(self) -> tuple[EffectEntry, ...]:
-        """What the screen may offer (D5), in the file's order."""
+        """What the screen may offer (D5), in the file's order — the same for every
+        business: categories only help the screen filter, they never hide an effect."""
         return tuple(e for e in self.entries if e.offered)
 
 
@@ -262,6 +296,33 @@ def parse_library(raw: object, *, assets_root: Path | None = None) -> EffectsLib
         root = _ASSETS_DIR if assets_root is None else assets_root
         raise MissingPreviewAsset(f"preview files missing under {root}: {'; '.join(missing)}")
     return library
+
+
+class NotALibraryLayer(ValueError):
+    """`layer_loop_file` was asked for something that is not a recorded layer of the
+    library (a compose entry with an asset folder and a blend), or its loop is not a file
+    inside the packaged assets folder."""
+
+
+def layer_loop_file(entry: EffectEntry) -> Path:
+    """The read-only door to a layer's recorded loop (EF-08): `<entry.asset>preview.webm`
+    inside the packaged `effects_assets/` — the file the browser lays (its `preview_asset`
+    in v3) and the compose lays. Refuses (`NotALibraryLayer`) an entry that is not a layer
+    (stage `compose` with an `asset` and a `blend`), a path that resolves outside the
+    assets folder, and a loop that is not there. Opens nothing; the caller only reads."""
+    if entry.stage != "compose" or entry.asset is None or entry.blend is None:
+        raise NotALibraryLayer(f"{entry.id} v{entry.version} is not a layer of the library")
+    problem = _asset_path_problem(entry.asset, entry.id, entry.version)
+    if problem:
+        raise NotALibraryLayer(problem)
+    path = preview_file(entry.asset + LAYER_LOOP_FILE)
+    root = _ASSETS_DIR.resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise NotALibraryLayer(f"{entry.id}'s loop resolves outside {root}")
+    if not resolved.is_file():
+        raise NotALibraryLayer(f"{entry.id} v{entry.version} has no recorded loop at {path}")
+    return resolved
 
 
 def load_effects(version: str = EFFECTS_LIBRARY_VERSION) -> EffectsLibrary:
@@ -531,13 +592,18 @@ def transition_problems(
 
 __all__ = [
     "EFFECTS_LIBRARY_VERSION",
+    "EFFECT_CATEGORIES",
+    "EffectCategory",
+    "LAYER_LOOP_FILE",
     "EffectEntry",
     "EffectsLibrary",
     "Measured",
     "MissingPreviewAsset",
+    "NotALibraryLayer",
     "ParamSpec",
     "RecipeProblem",
     "effect_use_problems",
+    "layer_loop_file",
     "load_effects",
     "parse_library",
     "preview_file",

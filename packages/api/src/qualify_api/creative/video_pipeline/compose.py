@@ -224,9 +224,15 @@ def compose_text_layers(
     *,
     render_client: RemotionRenderClient | RenderClientFactory,
     timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
+    effect_layers: Sequence[Any] = (),
 ) -> ComposeResult:
     """The texts over `video_path`, written to `out_path` (see the module's docstring).
-    Every text is drawn BEFORE anything is encoded: a render failure writes nothing."""
+    Every text is drawn BEFORE anything is encoded: a render failure writes nothing.
+
+    `effect_layers` (EF-08): the library's layers (`layer_overlay.TimedEffectLayer`) laid
+    UNDER the texts in the same single pass (`overlay_layers_and_texts`: one decode, one
+    encode). Only with texts: with no text nothing runs here and the caller lays the
+    layers itself. A layer problem raises `LayerOverlayError` as it is."""
     video_path, out_path = Path(video_path), Path(out_path)
     layers = tuple(text_layers)
     if not layers:
@@ -247,14 +253,18 @@ def compose_text_layers(
         )
         image = _draw(client, index, request, timeout_seconds)
         drawn.append((layer, image, fade_in_seconds(layer, seconds)))
-    result = overlay_text_layers(
-        video_path,
-        out_path,
-        [
-            TimedLayer(png=image.png, start_s=layer.start_s, end_s=layer.end_s, fade_in_s=fade)
-            for layer, image, fade in drawn
-        ],
-    )
+    timed = [
+        TimedLayer(png=image.png, start_s=layer.start_s, end_s=layer.end_s, fade_in_s=fade)
+        for layer, image, fade in drawn
+    ]
+    if effect_layers:
+        from qualify_creative.video import layer_overlay  # noqa: PLC0415
+
+        result = layer_overlay.overlay_layers_and_texts(
+            video_path, out_path, tuple(effect_layers), timed
+        )
+    else:
+        result = overlay_text_layers(video_path, out_path, timed)
     params = {
         "text_layers": {
             "compose_version": COMPOSE_VERSION,

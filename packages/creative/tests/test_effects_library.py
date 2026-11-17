@@ -164,7 +164,7 @@ def test_every_default_is_within_its_range() -> None:
 
 
 def test_the_library_is_loaded_once() -> None:
-    assert load_effects() is load_effects("v2")  # ED-15: v2 is what new requests use
+    assert load_effects() is load_effects("v3")  # EF-08: v3 is what new requests use
     assert load_effects("v1") is load_effects("v1")
 
 
@@ -622,3 +622,76 @@ def test_a_span_falls_in_its_parts_own_length() -> None:
             (use,), LIBRARY, part=3, mode="reference", has_own_video=False, window=(0.0, 5.0)
         )
         assert _codes(problems) == codes
+
+
+# ---------------------------------------------------------------------------
+# Categories (Deivid, 2026-11-16): for filtering, never for hiding
+
+
+def _v3_raw() -> dict[str, Any]:
+    path = Path(__file__).parents[1] / "src" / "qualify_creative" / "effects_data" / "v3.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_v3_names_a_category_for_every_entry() -> None:
+    from qualify_creative.effects import EFFECT_CATEGORIES
+
+    library = load_effects("v3")
+    assert all(entry.categories for entry in library.entries)
+    assert {c for e in library.entries for c in e.categories} <= set(EFFECT_CATEGORIES)
+    by_id = {e.id: e.categories for e in library.entries}
+    assert by_id["humo_capa"] == by_id["brasas_capa"] == by_id["vapor_capa"] == ("comida",)
+    assert by_id["texto"] == ("texto",) and by_id["camara_rapida"] == ("movimiento",)
+    assert by_id["corte"] == by_id["fundido"] == by_id["barrido"] == ("transicion",)
+
+
+@pytest.mark.parametrize("categories", [[], ["postres"], ["comida", "comida"]])
+def test_a_v3_entry_without_a_known_single_category_is_refused(categories: list[str]) -> None:
+    raw = _v3_raw()
+    raw["entries"][0]["categories"] = categories
+    with pytest.raises(ValidationError):
+        parse_library(raw)
+
+
+def test_a_v3_entry_with_no_categories_key_is_refused() -> None:
+    raw = _v3_raw()
+    del raw["entries"][0]["categories"]
+    with pytest.raises(ValidationError, match="category"):
+        parse_library(raw)
+
+
+def test_v1_and_v2_have_no_categories_and_read_as_before() -> None:
+    for version in ("v1", "v2"):
+        library = load_effects(version)
+        assert all(entry.categories == () for entry in library.entries)
+        path = Path(__file__).parents[1] / "src" / "qualify_creative" / "effects_data"
+        raw = json.loads((path / f"{version}.json").read_text(encoding="utf-8"))
+        assert all("categories" not in entry for entry in raw["entries"])
+
+
+def test_the_offer_does_not_depend_on_the_category() -> None:
+    v2, v3 = load_effects("v2"), load_effects("v3")
+    layers = {"humo_capa", "brasas_capa", "vapor_capa"}
+    # the same offer as v2 plus the recorded layers, whatever their category
+    assert (
+        [e.id for e in v3.offered()]
+        == [e.id for e in v3.entries if e.offered]
+        == [e.id for e in v2.entries if e.offered or e.id in layers]
+    )
+    # and a library with every category changed offers exactly the same effects
+    raw = _v3_raw()
+    for entry in raw["entries"]:
+        entry["categories"] = ["general"]
+    assert [e.id for e in parse_library(raw).offered()] == [e.id for e in v3.offered()]
+
+
+def test_no_library_method_filters_by_business() -> None:
+    import inspect
+
+    from qualify_creative.effects import EffectsLibrary
+
+    for name, member in inspect.getmembers(EffectsLibrary, inspect.isfunction):
+        if name.startswith("_"):
+            continue
+        params = set(inspect.signature(member).parameters) - {"self"}
+        assert not params & {"tenant_id", "tenant", "business", "brand_id", "category"}, name

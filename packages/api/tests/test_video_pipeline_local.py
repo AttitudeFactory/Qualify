@@ -7,6 +7,7 @@ BytePlus adapter is a double that fails if it is ever called, and the copy is sc
 from __future__ import annotations
 
 import io
+import tempfile
 import time
 from collections.abc import Iterator
 from fractions import Fraction
@@ -1033,3 +1034,230 @@ def test_a_producer_without_a_render_client_fails_a_text_as_the_service_down(
 
     outcome = _produce(_texts(_words()), ReadingStore(sources), None)
     assert outcome.detail == compose.OWNER_MESSAGE_UNAVAILABLE and outcome.media == ()
+
+
+# ---------------------------------------------------------------------------
+# EF-08 hooked in: the library's layers (smoke, embers, steam) before the texts
+
+
+def _smoke(**over: Any) -> Any:
+    from qualify_creative.schemas import EffectUse
+
+    return EffectUse(**{"effect_id": "humo_capa", "version": 1, **over})
+
+
+def _kept(outcome: Any, store: ReadingStore) -> bytes:
+    assert outcome.failure is None, outcome.detail
+    return store.files[outcome.media[0].object_key]
+
+
+def _top_brightness(data: bytes) -> float:
+    """The mean luma of the top third over the whole video (the smoke's default zone)."""
+    frames = _decoded(data)
+    rows = frames[0].height // 3
+    planes = [f.to_ndarray()[:rows] for f in frames]  # yuv420p: the first rows are luma
+    return sum(float(p.mean()) for p in planes) / len(planes)
+
+
+def _frame_hashes(data: bytes) -> list[str]:
+    from qualify_creative.video.text_overlay import decoded_frame_hashes
+
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "video.mp4"
+        path.write_bytes(data)
+        return decoded_frame_hashes(path)
+
+
+def test_a_local_clip_with_smoke_has_it_laid_and_kept_in_its_provenance(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """A layer of the library v3 over a `local` Clip: laid at cost 0 with no vendor, its
+    provenance (effect, version, params, span, the loop's sha256) in
+    `params.local.effect_layers` and its step version in `steps`."""
+    from qualify_creative.video.layer_overlay import LAYER_COMPOSE_VERSION
+
+    plain_store, store = ReadingStore(sources), ReadingStore(sources)
+    plain = _kept(_produce(_stamped(_local_clip()), plain_store, None), plain_store)
+    use = _smoke(params={"intensity": 1.0}, start_s=0.5, end_s=3.0)
+    outcome = _produce(_stamped(_local_clip(effects=(use,))), store, None)
+    kept = _kept(outcome, store)
+    meta = outcome.media[0].params["local"]
+    assert meta["steps"]["layer_compose"] == LAYER_COMPOSE_VERSION
+    layers = meta["effect_layers"]
+    assert layers["compose_version"] == LAYER_COMPOSE_VERSION and layers["cost_usd"] == "0.00"
+    (laid,) = layers["layers"]
+    assert (laid["effect_id"], laid["effect_version"], laid["zone"]) == ("humo_capa", 1, "top")
+    assert (laid["intensity"], laid["start_s"], laid["end_s"]) == (1.0, 0.5, 3.0)
+    assert len(laid["loop_sha256"]) == 64 and laid["cost_usd"] == "0.00"
+    assert meta["cost_usd"] == "0.00" and outcome.usage[0].cost_usd == 0
+    assert len(_decoded(kept)) == 105  # as long as the built video
+    # the smoke lights the top of the picture (a screen blend only brightens)
+    assert _top_brightness(kept) > _top_brightness(plain) + 1.0
+
+
+def test_the_layer_and_the_text_are_laid_in_one_pass_the_text_on_top(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Layers and texts: ONE call (`overlay_layers_and_texts`: one decode, one encode)
+    over the built video, the layers passed under the texts; never the layer step alone
+    nor the text-only overlay. Both provenances are kept."""
+    from qualify_creative.video import layer_overlay
+
+    from qualify_api.creative.video_pipeline import compose
+
+    calls: list[tuple[str, str, int, int]] = []
+    real = layer_overlay.overlay_layers_and_texts
+
+    def single(src: Any, out: Any, layers: Any, texts: Any, **kw: Any) -> Any:
+        calls.append((Path(src).name, Path(out).name, len(layers), len(texts)))
+        return real(src, out, layers, texts, **kw)
+
+    def never(*_: Any, **__: Any) -> Any:
+        raise AssertionError("one pass only")
+
+    monkeypatch.setattr(layer_overlay, "overlay_layers_and_texts", single)
+    monkeypatch.setattr(layer_overlay, "overlay_effect_layers", never)
+    monkeypatch.setattr(compose, "overlay_text_layers", never)
+    brief = _stamped(_local_clip(effects=(_smoke(),), text_layers=(_words(),)))
+    outcome = _produce(brief, ReadingStore(sources), _render_service())
+    assert outcome.failure is None, outcome.detail
+    assert calls == [("local.mp4", "local-texts.mp4", 1, 1)]
+    meta = outcome.media[0].params["local"]
+    assert {"layer_compose", "compose"} <= set(meta["steps"])
+    assert meta["effect_layers"]["layers"][0]["effect_id"] == "humo_capa"
+    assert meta["text_layers"]["layers"][0]["place"] == "top"
+
+
+def test_a_layer_failure_in_the_single_pass_is_ours_and_charges_nothing(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.video import layer_overlay
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise layer_overlay.LayerOverlayError("loop_unreadable", "VP9 decoder: EBML junk")
+
+    monkeypatch.setattr(layer_overlay, "overlay_layers_and_texts", broken)
+    brief = _stamped(_local_clip(effects=(_smoke(),), text_layers=(_words(),)))
+    outcome = _produce(brief, ReadingStore(sources), _render_service())
+    assert outcome.detail == local.LOCAL_LAYER_FAILED_TEXT and "VP9" not in outcome.detail
+    assert outcome.media == () and outcome.usage == ()
+
+
+def test_without_layers_nothing_is_encoded_again(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No layer: the step does not run (no second encode) and the video is as before."""
+    from qualify_creative.video import layer_overlay
+
+    first_store = ReadingStore(sources)
+    first = _kept(_produce(_stamped(_local_clip()), first_store, None), first_store)
+
+    def never(*_: Any, **__: Any) -> Any:
+        raise AssertionError("no layer: no second encode")
+
+    monkeypatch.setattr(layer_overlay, "overlay_effect_layers", never)
+    store = ReadingStore(sources)
+    outcome = _produce(_stamped(_local_clip()), store, None)
+    second = _kept(outcome, store)
+    meta = outcome.media[0].params["local"]
+    assert "effect_layers" not in meta
+    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold"}
+    assert _frame_hashes(first) == _frame_hashes(second)
+
+
+def test_a_layer_failure_of_ours_charges_nothing_and_hides_its_message(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.video import layer_overlay
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise layer_overlay.LayerOverlayError("loop_unreadable", "VP9 decoder: EBML junk")
+
+    monkeypatch.setattr(layer_overlay, "overlay_effect_layers", broken)
+    clip = _produce(_stamped(_local_clip(effects=(_smoke(),))), ReadingStore(sources), None)
+    assert clip.detail == local.LOCAL_LAYER_FAILED_TEXT and "VP9" not in clip.detail
+    assert clip.detail == (
+        "No pudimos poner el efecto en tu video por un problema nuestro. No se descontó de "
+        "tus creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
+    )
+    assert clip.media == () and clip.usage == ()
+    # in a part: «esta parte»
+    part = _stamped(_local_clip(_video(0.0, 4.0, 1.0), _photo(1.0), effects=(_smoke(),)))
+    from qualify_creative.schemas import PartRef
+
+    ref = PartRef(
+        index=2, mode="local", seconds=5, segments=part.media.segments, effects=(_smoke(),)
+    )
+    part = part.model_copy(update={"media": part.media.model_copy(update={"part": ref})})
+    in_part = _produce(part, ReadingStore(sources), None)
+    assert (
+        in_part.detail
+        == local.LOCAL_PART_LAYER_FAILED_TEXT
+        == (
+            "No pudimos poner el efecto en esta parte por un problema nuestro. No se descontó "
+            "de tus creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para "
+            "terminarlo ya."
+        )
+    )
+    assert in_part.media == () and in_part.usage == ()
+
+
+def test_an_effect_still_unbuilt_is_refused_before_any_row(queue_on: None) -> None:
+    """Only the library's layers over a `local` piece are laid: fast motion as an effect
+    stays `recipe_unavailable`, and so does smoke over a Clip that is not `local`."""
+    from qualify_creative.schemas import EffectUse
+
+    fast = EffectUse(effect_id="camara_rapida", version=1, params={"speed": 8.0})
+    service, repo, dispatcher = _service(ReadingStore(), ExplodingByteplus())
+    with pytest.raises(RecipeRefused) as refused:
+        service.create_draft(
+            tenant_id=TENANT_ID,
+            brand_id=BRAND_ID,
+            brief=_local_clip(effects=(fast,)),
+            user_id=USER_ID,
+        )
+    found = [(p.code, p.field) for p in refused.value.problems]
+    assert ("recipe_unavailable", "effects") in found
+    seedance = make_brief(
+        variants=1,
+        kind=ContentKind.CLIP,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(duration_seconds=5, effects=(_smoke(),)),
+    )
+    with pytest.raises(RecipeRefused) as refused:
+        service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=seedance, user_id=USER_ID
+        )
+    assert [(p.code, p.field) for p in refused.value.problems] == [
+        ("recipe_unavailable", "effects")
+    ]
+    assert repo.drafts == {} and dispatcher.calls == []
+
+
+def test_v3_lets_a_local_part_use_the_three_layers_up_to_three_times_each() -> None:
+    from qualify_creative.effects import load_effects
+    from qualify_creative.schemas import EffectUse
+
+    from qualify_api.creative.video_pipeline.recipe import (
+        PartRecipe,
+        unbuilt_recipe_problems,
+        validate_recipe,
+    )
+
+    stretch = SourceSegment(key=VIDEO_KEY, start_s=0.0, end_s=6.0)
+    uses = (
+        _smoke(start_s=0.0, end_s=2.0),
+        _smoke(start_s=2.0, end_s=4.0),
+        _smoke(start_s=4.0, end_s=6.0),
+        EffectUse(effect_id="brasas_capa", version=1),
+        EffectUse(effect_id="vapor_capa", version=1, params={"zone": "top"}),
+    )
+    part = PartRecipe(index=1, mode="local", seconds=6, segments=(stretch,), effects=uses)
+    library = load_effects()
+    assert library.version == 3
+    assert validate_recipe((part,), video_by_parts=False, library=library) == ()
+    four = part.model_copy(update={"effects": (*uses, _smoke(start_s=5.0, end_s=6.0))})
+    codes = [p.code for p in validate_recipe((four,), video_by_parts=False, library=library)]
+    assert codes == ["too_many_of_effect"]
+    # and nothing of it is left unbuilt
+    assert unbuilt_recipe_problems(_local_clip(_video(0.0, 4.0, 1.0), effects=uses)) == ()

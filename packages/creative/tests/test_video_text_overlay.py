@@ -197,3 +197,28 @@ def test_a_longer_fade_is_a_slower_alpha_ramp(tmp_path: Path) -> None:
     assert levels[1.0][12] < 200  # 0.4 s into a 1 s fade
     assert levels[1.0][3] < levels[1.0][15] < levels[1.0][27] < 235
     assert levels[1.0][33] > 235
+
+
+def _two_texts() -> list[TimedLayer]:
+    return [
+        TimedLayer(png=layer_png((400, 600)), start_s=0.2, end_s=0.8, fade_in_s=0.3),
+        TimedLayer(png=layer_png((1400, 1600)), start_s=0.0, end_s=None, fade_in_s=0.0),
+    ]
+
+
+def test_texts_alone_are_the_same_through_the_layers_single_pass(tmp_path: Path) -> None:
+    """EF-08 shares the texts' graph section (`_link_texts`) with the layers' single pass:
+    with no layer, `overlay_layers_and_texts` gives exactly `overlay_text_layers`' decoded
+    frames, and two runs in a row give the same frames — byte for byte (the text-only
+    path measured identical 24/24 on a 2-core Linux runner; checked within the run, no
+    platform-dependent hash is pinned)."""
+    from qualify_creative.video.layer_overlay import overlay_layers_and_texts
+
+    src = make_video(tmp_path / "src.mp4", seconds=1.0)
+    first = overlay_text_layers(src, tmp_path / "a.mp4", _two_texts())
+    again = overlay_text_layers(src, tmp_path / "b.mp4", _two_texts())
+    single = overlay_layers_and_texts(src, tmp_path / "c.mp4", [], _two_texts())
+    hashes = decoded_frame_hashes(first.path)
+    assert len(hashes) == first.frames == 30
+    assert decoded_frame_hashes(again.path) == hashes
+    assert decoded_frame_hashes(single.path) == hashes
