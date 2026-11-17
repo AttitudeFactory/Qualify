@@ -97,6 +97,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     clip_editor_vm,
     clip_gallery_vm,
+    edit_sequence,
     part_editor_provider,
     part_editor_vm,
     parts_start_vm,
@@ -295,6 +296,7 @@ from .stock_provider import import_video as import_stock_video
 from .stock_provider import search_from_kit as search_stock_from_kit
 from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
+from .ui import timeline_vm
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_images import (
@@ -586,6 +588,14 @@ _MIXED_SLOTS: dict[str, dict[str, str]] = {
     "slide_media": {"image": "slide", "video": "slide_reference"},
     "avatar_refs": {"image": "products", "video": "reference"},
 }
+
+
+def inspiration_hit_ref(media: str, choice_id: str) -> str:
+    """An inspiration hit's reference across searches: `image|pixabay:10` (an image and
+    a video bank may share an id)."""
+    return f"{media}|{choice_id}"
+
+
 #: A picker's tabs, in order (m-24985141, Deivid): «Tus productos» (`catalog`) · «Tu
 #: Galería» (`gallery`) · «Subir» · «Publicaciones» (`pieces`) · «Inspiración» — and
 #: Pinterest where it applies.
@@ -1694,6 +1704,10 @@ class CreativeState(rx.State):
     preview_sound: bool = False
     #: The inspiration hit being imported into a slot (its id), "" when none.
     inspiration_importing: str = ""
+    #: The inspiration hits imported this session: `media|hit id` → the stored file's
+    #: key (ED-10, Deivid 2026-11-17: «la inspiración que elija no se ve seleccionada»
+    #: — a slot holds the R2 key, the grid lists the bank's id; this links them).
+    inspiration_hit_keys: dict[str, str] = {}
     #: The slots whose folded «Inspiración» search the operator opened again («Buscar
     #: otra»): a slot holding inspiration folds its search away (§ request 2026-10-19).
     inspiration_reopened: list[str] = []
@@ -1797,16 +1811,35 @@ class CreativeState(rx.State):
     _pinterest_context_epoch: int = 0
     clip_videos: list[dict[str, str]] = []
     clip_audios: list[dict[str, str]] = []
-    #: ED-02 m-25026621 · ED-03 m-25026623 · ED-05 m-25026630 «Arma tu video»
-    #: (`clip_editor_vm`): the normal Clip's editor. The tool
-    #: open, the stretch of the owner's video (seconds of the source; `clip_cut_end` 0 =
-    #: not proposed yet), its turn, the text over the video and where, the effects
-    #: chosen, «Cámara rápida»'s speed, the length the browser measured (and for which
-    #: key) — kept at once, with «Deshacer» (D-E6). In the session only, and in the
-    #: brief as `media.edit_recipe` (EF-02's shape; the backend ignores it until EF-02).
-    clip_edit_tool: str = clip_editor_vm.TOOL_MEDIA
+    #: ED-02 m-25026621 · ED-03 m-25026623 · ED-05 m-25026630 · ED-10 m-25026648 «Arma tu
+    #: video» (`clip_editor_vm`): the normal Clip's editor. The block chosen on the
+    #: timeline (its id — a file's key, `texto-1`, `efecto-<id>` — or a flow «Agregar»
+    #: opened, `+media`; "" = none), the stretch of the owner's video (seconds of the
+    #: source; `clip_cut_end` 0 = not proposed yet), its turn, the text over the video,
+    #: where and when, the effects chosen and when, «Cámara rápida»'s speed, the length
+    #: the browser measured (and for which key) — kept at once, with «Deshacer» (D-E6).
+    #: In the session only, and in the brief as `media.edit_recipe` (EF-02's shape; the
+    #: backend ignores it until EF-02).
+    clip_edit_block: str = ""
+    #: Where the preview's clock last rested (a pause or a seek: never per frame), in
+    #: seconds of the final video — a text or effect added starts there (§1.1).
+    clip_edit_playhead: float = 0.0
+    #: When the text shows (`clip_text_end` -1 = to the end) and each effect (absent =
+    #: the whole video): seconds of the final video, set by dragging or ±½ s (ED-10).
+    clip_text_start: float = 0.0
+    clip_text_end: float = -1.0
+    clip_effect_times: dict[str, list[float]] = {}
+    #: Each video's length as the browser measured it (the timeline places the videos
+    #: that are not the editor's own one from these).
+    clip_media_seconds: dict[str, float] = {}
     clip_cut_start: float = 0.0
     clip_cut_end: float = 0.0
+    #: «Cortar» (Deivid 2026-11-17): the own video's pieces after a cut — `[start, end]`
+    #: of the source each, in the video's order ([] = one piece, the stretch above).
+    clip_cut_pieces: list[list[float]] = []
+    #: The id the side panel gives the focus back to when it closes ("" = the «+»): the
+    #: «Producto» row's «Cambiar» opens it too.
+    clip_flow_opener: str = ""
     clip_rotate: int = 0
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
@@ -1832,6 +1865,9 @@ class CreativeState(rx.State):
     clip_cut_focus: str = ""
     clip_cut_play: int = 0
     clip_cut_error: str = ""
+    #: Why the «Velocidad» just tapped is off («Con ×10 tu video duraría 1,2 s.»), "" =
+    #: none (Deivid 2026-11-17: an off speed says why, it never looks broken).
+    clip_speed_refused: str = ""
     #: The live line of the last change («Cambiaste el pedazo de tu video.»), "" = none.
     clip_edit_notice: str = ""
     _clip_edit_undo: list[dict[str, object]] = []
@@ -5371,6 +5407,95 @@ class CreativeState(rx.State):
     def piece_videos(self) -> list[dict[str, str]]:
         return [item for item in self.piece_items if item.get("media_type") == "video"]
 
+    def _piece_files(self, piece: str) -> list[dict[str, str]]:
+        """A publication's files in its own order (`brand_pieces`' `position`); a row
+        read before rows carried their piece is a piece of its own."""
+        files = [i for i in self.piece_items if (i.get("piece") or i.get("key")) == piece]
+        return sorted(files, key=lambda i: int(i.get("position") or 0))
+
+    @rx.var
+    def clip_piece_tiles(self) -> list[dict[str, str]]:
+        """The Clip's «Publicaciones», ONE tile per publication (ED-10, Deivid 2026-11-17:
+        «cuando selecciona una galería solo trae una imagen, no todo su contenido»): a
+        gallery shows its cover and how many files it has (`count`, "" for a single
+        file); `held` is "1" while any file of it is among the Clip's media (a carousel
+        the limit cut short is chosen too: a tap takes it out)."""
+        held = {item["key"] for item in (*self.clip_images, *self.clip_videos)}
+        order: list[str] = []
+        files: dict[str, list[dict[str, str]]] = {}
+        for item in self.piece_items:
+            if item.get("media_type") not in ("image", "video"):
+                continue
+            piece = item.get("piece") or item.get("key", "")
+            if piece not in files:
+                order.append(piece)
+                files[piece] = []
+            files[piece].append(item)
+        tiles: list[dict[str, str]] = []
+        for piece in order:
+            rows = sorted(files[piece], key=lambda i: int(i.get("position") or 0))
+            cover = rows[0]
+            view = cover.get("view", "") or next((r["view"] for r in rows if r.get("view")), "")
+            tiles.append(
+                {
+                    "piece": piece,
+                    "key": cover.get("key", ""),
+                    "media_type": cover.get("media_type", "image"),
+                    "kind": cover.get("kind", "") or "image",
+                    "label": cover.get("label", ""),
+                    "view": view,
+                    "count": str(len(rows)) if len(rows) > 1 else "",
+                    "held": "1" if any(r.get("key") in held for r in rows) else "",
+                }
+            )
+        return tiles
+
+    @rx.event
+    def pick_clip_piece(self, piece: str) -> None:
+        """A publication of the Clip's «Publicaciones», whole (ED-10): every file of a
+        carousel goes into the Clip's media in its carousel order, within the limits
+        (what did not fit is said); tapped again with all of it in — or with part of it
+        in and no room for the rest (the limit stopped it) — what is in leaves.
+        A publication of one file is a tap on that file, as before."""
+        rows = self._piece_files(str(piece))
+        if not rows:
+            return
+        slot = {"image": "clip_images", "video": "clip_videos"}
+
+        def held() -> set[str]:
+            return {item["key"] for item in (*self.clip_images, *self.clip_videos)}
+
+        def has_room(target: str) -> bool:
+            if target == "clip_images":
+                return self.clip_image_room > 0
+            return len(self.clip_videos) < CLIP_MAX_VIDEOS
+
+        self.gallery_pick_note = ""
+        inside = [r for r in rows if r.get("key") in held()]
+        missing = [r for r in rows if r.get("key") not in held()]
+        fits = any(has_room(slot[r["media_type"]]) for r in missing if r.get("media_type") in slot)
+        if inside and not fits:
+            for row in inside:
+                self._pick(slot[row.get("media_type", "image")], "pieces", row["key"])
+            return
+        added, images_full, videos_full = 0, False, False
+        for row in rows:
+            target = slot.get(row.get("media_type", ""))
+            if target is None:
+                continue
+            if row["key"] not in held():
+                self._pick(target, "pieces", row["key"])
+            if row["key"] in held():
+                added += 1
+            elif target == "clip_images":
+                images_full = True
+            else:
+                videos_full = True
+        if len(rows) > 1:  # one file says nothing more than it did before
+            self.gallery_pick_note = clip_gallery_vm.gallery_partial_text(
+                added, len(rows), images_full=images_full, videos_full=videos_full
+            )
+
     @rx.var
     def piece_views(self) -> dict[str, str]:
         """A piece's file → its `/r2media` thumbnail: a piece lives in R2, not in the
@@ -5422,6 +5547,28 @@ class CreativeState(rx.State):
             "slide_style": [current.get("guide_key", "")],
             "avatar_refs": [*(i["key"] for i in self.ref_items), self.reference_video_key],
         }
+
+    @rx.var
+    def inspiration_held_hits(self) -> dict[str, list[str]]:
+        """Each picker's «Inspiración» hits its slot holds now (`media|hit id`): their
+        tiles are marked, as «Tus productos» and «Tu Galería» mark theirs. A mixed picker
+        looks in the slot of each kind (`_MIXED_SLOTS`)."""
+        selected = self.picker_selected
+        out: dict[str, list[str]] = {}
+        for target, (kind, _several) in _PICKER_TARGETS.items():
+            medias = ("image", "video") if kind == "mixed" else (kind,)
+            held: list[str] = []
+            for media in medias:
+                slot = _MIXED_SLOTS.get(target, {}).get(media, target)
+                keys = set(selected.get(slot, [])) - {""}
+                prefix = f"{media}|"
+                held += [
+                    ref
+                    for ref, key in self.inspiration_hit_keys.items()
+                    if ref.startswith(prefix) and key in keys
+                ]
+            out[target] = held
+        return out
 
     @rx.var
     def product_previews(self) -> list[dict[str, str]]:
@@ -5673,7 +5820,9 @@ class CreativeState(rx.State):
         """A hit of a slot's «Inspiración» search into the slot: copied to R2 with its
         provenance (a backend download — never a URL the browser chose; an image as it
         is, a video ≤ 15 s without its audio) and picked like any file of the slot. Only
-        a hit this session listed, only where the licence lets stock go."""
+        a hit this session listed, only where the licence lets stock go. A hit already
+        imported is not imported again: tapped while the slot holds it, it leaves the
+        slot; else it goes back in."""
         async with self:
             spec = _PICKER_TARGETS.get(target)
             video = media == "video"
@@ -5682,6 +5831,10 @@ class CreativeState(rx.State):
             if media not in ("image", "video"):
                 return
             if not self._inspiration_allowed(target):
+                return
+            known = self.inspiration_hit_keys.get(inspiration_hit_ref(media, choice_id), "")
+            if known and known in self._inspiration_files:
+                self._pick(_MIXED_SLOTS.get(target, {}).get(media, target), "inspiration", known)
                 return
             # live bug 2026-11-04: a gallery picker imports only what ITS grid listed
             own = self._own_hits_key(target, media)
@@ -5725,6 +5878,10 @@ class CreativeState(rx.State):
         async with self:
             self.inspiration_importing = ""
             self._add_inspiration_file(imported, media)
+            self.inspiration_hit_keys = {
+                **self.inspiration_hit_keys,
+                inspiration_hit_ref(media, choice_id): imported["key"],
+            }
             # a mixed slot (an animated slide) puts it in the slot of its type
             self._pick(
                 _MIXED_SLOTS.get(target, {}).get(media, target), "inspiration", imported["key"]
@@ -6172,6 +6329,14 @@ class CreativeState(rx.State):
         return clip_gallery_vm.tiles(self.clip_images, self.clip_videos, self.clip_audios)
 
     @rx.var
+    def clip_refs_summary(self) -> str:
+        """«2 fotos y 1 video en tus referencias» at the foot of «Arma tu video»'s side
+        panel: every reference, an «Inspiración» too (never a block of the timeline)."""
+        return clip_gallery_vm.held_text(
+            len(self.clip_images), len(self.clip_videos), len(self.clip_audios)
+        )
+
+    @rx.var
     def clip_notes_line(self) -> str:
         """What the categories could not add, in one line under the grid."""
         return clip_gallery_vm.notes_line(self.clip_notes)
@@ -6343,29 +6508,234 @@ class CreativeState(rx.State):
         key = self._clip_edit_key()
         return bool(key) and key == self.clip_source_key and self.clip_source_seconds > 0
 
-    def _clip_tools(self) -> list[str]:
-        """«Cortar» only with an own video the browser plays here and did not fail on."""
+    def _clip_cut_offered(self) -> bool:
+        """The own video can be cut here: the browser plays it and did not fail on it
+        (ED-02's «Cortar» tool; ED-10: its block's «Desde/Hasta»)."""
         key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
-        ok = self._clip_playable() and not (self.clip_source_broken and self.clip_source_key == key)
-        return clip_editor_vm.tools_shown(has_own_video=ok)
+        broken = self.clip_source_broken and self.clip_source_key == key
+        return self._clip_playable() and not broken
+
+    def _clip_can_cut(self) -> bool:
+        """…and its length is measured: its stretch can be changed now."""
+        return self._clip_cut_offered() and self._clip_cut_known()
+
+    # -- ED-10 m-25026648: the timeline -------------------------------------------------
+
+    def _clip_tl_media(self) -> list[dict[str, object]]:
+        """«Fotos y videos» on the timeline (`clip_editor_vm.timeline_media`)."""
+        own = self._clip_edit_key()
+        known = self._clip_cut_known()
+        return clip_editor_vm.timeline_media(
+            self._clip_strip(),
+            own_key=own if known else "",
+            cut_start=self.clip_cut_start,
+            cut_end=self._clip_end_real() if known else 0.0,
+            speed=self.clip_edit_speed_real,
+            rotate=self.clip_rotate,
+            lengths={
+                **self.clip_media_seconds,
+                **({own: self.clip_source_seconds} if known else {}),
+            },
+            pieces=self.clip_cut_pieces if known else [],
+        )
+
+    def _clip_tl_overlays(self, total: float) -> list[dict[str, object]]:
+        return clip_editor_vm.timeline_overlays(
+            text=self.clip_overlay_text,
+            place=self.clip_text_place,
+            text_start=self.clip_text_start,
+            text_end=self.clip_text_end,
+            effects=self.clip_effect_ids,
+            effect_times=self.clip_effect_times,
+            total=total,
+        )
+
+    def _clip_tl(self) -> tuple[list[dict[str, object]], list[dict[str, object]], float]:
+        media = self._clip_tl_media()
+        total = clip_editor_vm.media_total(media)
+        return media, self._clip_tl_overlays(total), total
+
+    def _clip_tl_rows(self) -> list[dict[str, str]]:
+        """Every block's row (media, texts, effects), for the chosen one and the panel.
+        Only the own video and the texts and effects have handles the screen moves
+        today (photos and other videos: ED-03 / ED-14)."""
+        media, overlays, total = self._clip_tl()
+        mine = self._clip_edit_key()
+        own = mine if self._clip_can_cut() else ""
+        rows = timeline_vm.media_blocks(media)  # type: ignore[arg-type]
+        for row in rows:
+            # `mine`: a piece of the editor's own video; `own`: …and it can be cut now.
+            # No trim handles any more (Deivid 2026-11-17: one «Cortar» instead)
+            key = clip_editor_vm.piece_of(row["id"])[0]
+            row["mine"] = "1" if mine and key == mine else ""
+            row["own"] = "1" if own and key == own else ""
+            row["handles"] = ""
+        return [
+            *rows,
+            *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
+            *timeline_vm.overlay_blocks(overlays, "effect", total),  # type: ignore[arg-type]
+        ]
 
     @rx.var
-    def clip_edit_tools(self) -> list[str]:
-        """The tools on offer: «Cortar» only with an own video playable here."""
-        return self._clip_tools()
+    def clip_tl_media_rows(self) -> list[dict[str, str]]:
+        return [row for row in self._clip_tl_rows() if row["track"] == timeline_vm.TRACK_MEDIA]
 
     @rx.var
-    def clip_edit_tool_open(self) -> str:
-        """The tool open (one at a time); «Cortar» falls back to «Fotos y videos» when
-        the video is gone or cannot play here."""
-        tools = self._clip_tools()
-        return self.clip_edit_tool if self.clip_edit_tool in tools else tools[0]
+    def clip_tl_text_rows(self) -> list[dict[str, str]]:
+        return [row for row in self._clip_tl_rows() if row["track"] == timeline_vm.TRACK_TEXT]
 
     @rx.var
-    def clip_edit_question(self) -> str:
-        tools = self._clip_tools()
-        tool = self.clip_edit_tool if self.clip_edit_tool in tools else tools[0]
-        return clip_editor_vm.TOOL_QUESTIONS[tool]
+    def clip_tl_effect_rows(self) -> list[dict[str, str]]:
+        return [row for row in self._clip_tl_rows() if row["track"] == timeline_vm.TRACK_EFFECT]
+
+    @rx.var
+    def clip_tl_total(self) -> str:
+        return timeline_vm.num(clip_editor_vm.media_total(self._clip_tl_media()))
+
+    @rx.var
+    def clip_tl_ticks(self) -> list[dict[str, str]]:
+        return timeline_vm.ticks(clip_editor_vm.media_total(self._clip_tl_media()))
+
+    @rx.var
+    def clip_tl_chosen(self) -> dict[str, str]:
+        """The chosen block's row ({} = nothing chosen, or a flow is open)."""
+        if not self.clip_edit_block or clip_editor_vm.is_flow(self.clip_edit_block):
+            return {}
+        return timeline_vm.find_block(self._clip_tl_rows(), self.clip_edit_block)
+
+    @rx.var
+    def clip_tl_chosen_kind(self) -> str:
+        return self.clip_tl_chosen.get("kind", "")
+
+    @rx.var
+    def clip_tl_chosen_label(self) -> str:
+        return self.clip_tl_chosen.get("label", "")
+
+    @rx.var
+    def clip_tl_selected(self) -> str:
+        """The id the timeline marks chosen ("" with a flow open)."""
+        return self.clip_tl_chosen.get("id", "")
+
+    @rx.var
+    def clip_tl_flow(self) -> str:
+        """The flow «Agregar» opened in the side panel ("" = none)."""
+        return clip_editor_vm.flow_of(self.clip_edit_block)
+
+    @rx.var
+    def clip_flow_drawer_open(self) -> bool:
+        """The ONE side panel «Agregar» opened (Deivid, 2026-11-16/17), on its tab — never
+        while another drawer is up (one at a time, never nested). Explicit fields: it
+        recomputes."""
+        return bool(clip_editor_vm.flow_of(self.clip_edit_block)) and not self.media_drawer_open
+
+    @rx.var
+    def clip_tl_speed(self) -> str:
+        """«Velocidad» of the editor's video: «1» or ×5/×10/×20."""
+        fast = editor_contract.FAST_MOTION in self.clip_effect_ids
+        return clip_editor_vm.speed_value(fast=fast, speed=self.clip_speed)
+
+    @rx.var
+    def clip_tl_speed_offered(self) -> bool:
+        """«Velocidad» shows on the editor's own video ALWAYS (Deivid 2026-11-17): a speed
+        that cannot be used is off and says why (`clip_speed_reasons`)."""
+        return bool(self._clip_edit_key())
+
+    def _clip_speed_reasons(self) -> dict[str, str]:
+        return clip_editor_vm.speed_reasons(self.clip_source_seconds, known=self._clip_cut_known())
+
+    @rx.var
+    def clip_speed_reasons(self) -> dict[str, str]:
+        """«Velocidad»'s value → why it is off ("" = on): on only when the whole video
+        at that speed lasts 3–60 s; all off under 6 s (`clip_editor_vm.speed_reasons`)."""
+        return self._clip_speed_reasons()
+
+    @rx.var
+    def clip_speed_note(self) -> str:
+        """The line under «Velocidad»: under 6 s, that cámara rápida needs 6 s; else why
+        the speed just tapped is off ("" = nothing to say)."""
+        if self._clip_cut_known() and (
+            self.clip_source_seconds < clip_editor_vm.FAST_MIN_SOURCE_SECONDS - 1e-6
+        ):
+            return clip_editor_vm.FAST_NEEDS_LONGER
+        return self.clip_speed_refused
+
+    @rx.var
+    def clip_tl_effect_choices(self) -> list[dict[str, str]]:
+        """«+ Efecto»'s list: the layer effects whose loop exists (none yet: EF-05)."""
+        return [
+            row for row in self.clip_edit_effect_rows if row["id"] != editor_contract.FAST_MOTION
+        ]
+
+    # -- ED-10: the preview in sequence (ED-01b) of the timeline -------------------------
+
+    def _clip_seq_sources(self) -> dict[str, str]:
+        """Each file's playable address (photos and videos the browser can load): the
+        upload store, a publication's `/r2media` picture, the editor's own R2 video's
+        minted path; "" for what it cannot load here (the block is a card)."""
+        own = self._clip_edit_key()
+        views = self.piece_views
+        out: dict[str, str] = {}
+        for item in self._clip_strip():
+            key = str(item.get("key") or "")
+            if not key:
+                continue
+            if item.get("kind") == "image":
+                view = views.get(key, "")
+                if view:
+                    out[key] = clip_editor_vm.SEQ_BASE + view
+                elif not is_r2_key(key):
+                    out[key] = f"{clip_editor_vm.SEQ_BASE}/_upload/{key}"
+                continue
+            if key == own and is_r2_key(key):
+                if self._clip_playable():
+                    out[key] = clip_editor_vm.SEQ_BASE + self.clip_preview_url
+            elif not is_r2_key(key):
+                out[key] = f"{clip_editor_vm.SEQ_BASE}/_upload/{key}"
+        return out
+
+    def _clip_sequence(self) -> edit_sequence.PreviewSequence:
+        media, overlays, _total = self._clip_tl()
+        thumbs = self.piece_views
+        for item in media:
+            if item["kind"] == "video" and thumbs.get(str(item["key"])):
+                item["thumb"] = clip_editor_vm.SEQ_BASE + thumbs[str(item["key"])]
+        urls = {}
+        for effect_id in self.clip_effect_ids:
+            effect = editor_contract.effect_of(effect_id)
+            if effect is not None and effect.preview_asset:
+                urls[effect_id] = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+        return edit_sequence.from_timeline(
+            media, overlays, self._clip_seq_sources(), effect_urls=urls
+        )
+
+    @rx.var
+    def clip_seq_json(self) -> str:
+        """The preview in sequence of the timeline (`edit_sequence.PreviewSequence`):
+        the same blocks as the tracks, so the playhead and the preview are one clock."""
+        return self._clip_sequence().to_json()
+
+    @rx.var
+    def clip_seq_texts(self) -> list[dict[str, str]]:
+        return [
+            {"text": o.text, "place": o.place, "index": str(i)}
+            for i, o in enumerate(self._clip_sequence().texts)
+        ]
+
+    @rx.var
+    def clip_seq_effects(self) -> list[dict[str, str]]:
+        return [
+            {"url": o.url, "index": str(i)} for i, o in enumerate(self._clip_sequence().effects)
+        ]
+
+    @rx.var
+    def clip_seq_slower(self) -> bool:
+        return self._clip_sequence().slower
+
+    @rx.var
+    def clip_seq_resolve(self) -> bool:
+        """The editor's own R2 video has no playable path yet: the screen asks for one
+        (the preview in sequence has no «pending» button of its own)."""
+        return self.clip_edit_r2_pending
 
     @rx.var
     def clip_fast_on(self) -> bool:
@@ -6427,17 +6797,26 @@ class CreativeState(rx.State):
                     "label": effect.label,
                     "on": "true" if on else "",
                     "off": "true" if off else "",
-                    "reason": clip_editor_vm.FAST_NEEDS_LONGER if off else "",
+                    "reason": self._clip_fast_off_reason() if off else "",
                 }
             )
         return rows
 
     def _clip_fast_allowed(self) -> bool:
-        """«Cámara rápida» is offered on a measured video of at least 15 s."""
-        return (
-            self._clip_cut_known()
-            and self.clip_source_seconds >= clip_editor_vm.FAST_MIN_SOURCE_SECONDS
+        """«Cámara rápida» can be marked: the video is measured and at least one speed
+        leaves it 3–60 s long (6 s or more for ×2)."""
+        return self._clip_cut_known() and any(
+            not why
+            for value, why in self._clip_speed_reasons().items()
+            if value != clip_editor_vm.SPEED_NORMAL
         )
+
+    def _clip_fast_off_reason(self) -> str:
+        """Why «Cámara rápida» cannot be marked: too short (or not read yet), else what
+        the fastest speed would leave («Con ×20 tu video duraría 65 s.»)."""
+        reasons = self._clip_speed_reasons()
+        whys = [why for value, why in reasons.items() if why and value != "1"]
+        return whys[-1] if whys else clip_editor_vm.FAST_NEEDS_LONGER
 
     def _clip_fast_impossible(self) -> float:
         """With «Cámara rápida» marked: how long even the WHOLE video lasts at ×5 when that
@@ -6469,16 +6848,20 @@ class CreativeState(rx.State):
         key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
         if not key or key != self.clip_source_key:
             return ["", ""]
-        refusal, warning = clip_editor_vm.prepare_check(
-            key=key,
-            start=self.clip_cut_start,
-            end=self.clip_cut_end,
-            rotate=self.clip_rotate,
-            speed=1.0,
-            width=self.clip_source_width,
-            height=self.clip_source_height,
-            duration=self.clip_source_seconds,
-        )
+        refusal, warning = "", ""
+        # each piece after «Cortar» is judged as EF-03 will prepare it
+        for start, end in self._clip_pieces() or [(self.clip_cut_start, self.clip_cut_end)]:
+            no, careful = clip_editor_vm.prepare_check(
+                key=key,
+                start=start,
+                end=end,
+                rotate=self.clip_rotate,
+                speed=1.0,
+                width=self.clip_source_width,
+                height=self.clip_source_height,
+                duration=self.clip_source_seconds,
+            )
+            refusal, warning = refusal or no, warning or careful
         # a publication Qualify made (720p) did not come from the phone: the advice to
         # upload the original from it does not apply (QA 2026-11-14)
         if clip_editor_vm.video_source(self.clip_videos, key) in clip_editor_vm.MADE_HERE:
@@ -6494,11 +6877,6 @@ class CreativeState(rx.State):
     def clip_cut_max_units(self) -> int:
         """The slider's end, in half seconds, rounded UP (a 7.33 s video reaches 7.5)."""
         return editor_contract.max_units(self.clip_source_seconds)
-
-    @rx.var
-    def clip_cut_whole_label(self) -> str:
-        """«Usar el video entero», or «Usar los primeros 15 s» past 15 s."""
-        return clip_editor_vm.whole_label(self.clip_source_seconds)
 
     @rx.var
     def clip_cut_start_clock(self) -> str:
@@ -6519,6 +6897,20 @@ class CreativeState(rx.State):
             return min(self.clip_cut_end, self.clip_source_seconds)
         return self.clip_cut_end
 
+    def _clip_pieces(self) -> list[tuple[float, float]]:
+        """The own video's pieces in the video's order: the ones «Cortar» made, else the
+        one stretch (empty while there is none)."""
+        if self.clip_cut_pieces:
+            return [(float(a), float(b)) for a, b in self.clip_cut_pieces]
+        end = self._clip_end_real()
+        return [(self.clip_cut_start, end)] if end > self.clip_cut_start else []
+
+    def _clip_span(self) -> tuple[float, float]:
+        """`(start, end)` as long as what the pieces use of the source together (the one
+        stretch itself without a cut): what the length and speed rules measure."""
+        used = sum(end - start for start, end in self._clip_pieces())
+        return self.clip_cut_start, self.clip_cut_start + used
+
     @rx.var
     def clip_cut_end_shown(self) -> float:
         """The preview's stretch end (the real one: `_clip_end_real`)."""
@@ -6537,8 +6929,9 @@ class CreativeState(rx.State):
         impossible = self._clip_fast_impossible()
         if impossible:
             return clip_editor_vm.fast_impossible_line(impossible)
+        start, end = self._clip_span()
         _seconds, warning = clip_editor_vm.fast_check(
-            key=key, start=self.clip_cut_start, end=self._clip_end_real(), speed=self.clip_speed
+            key=key, start=start, end=end, speed=self.clip_speed
         )
         return warning
 
@@ -6548,7 +6941,8 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_cut_usage_text(self) -> str:
-        return clip_editor_vm.usage_line(max(self._clip_end_real() - self.clip_cut_start, 0.0))
+        start, end = self._clip_span()
+        return clip_editor_vm.usage_line(max(end - start, 0.0))
 
     @rx.var
     def clip_cut_start_text(self) -> str:
@@ -6569,12 +6963,12 @@ class CreativeState(rx.State):
     def _clip_lasts(self, key: str) -> float:
         """The stretch's length in the video: as cut, or — with «Cámara rápida» — EF-04's
         `plan_speed` length to the frame, the same number «Velocidad» shows."""
-        end = self._clip_end_real()
-        stretch = end - self.clip_cut_start
+        start, end = self._clip_span()
+        stretch = end - start
         if editor_contract.FAST_MOTION not in self.clip_effect_ids:
             return stretch
         seconds, _warning = clip_editor_vm.fast_check(
-            key=key, start=self.clip_cut_start, end=end, speed=self.clip_speed
+            key=key, start=start, end=end, speed=self.clip_speed
         )
         return seconds if seconds > 0 else stretch / float(self.clip_speed or 1)
 
@@ -6586,22 +6980,11 @@ class CreativeState(rx.State):
         key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
         if not key or key != self.clip_source_key or self.clip_cut_end <= self.clip_cut_start:
             return ""
+        start, end = self._clip_span()
         seconds, warning = clip_editor_vm.fast_check(
-            key=key, start=self.clip_cut_start, end=self._clip_end_real(), speed=self.clip_speed
+            key=key, start=start, end=end, speed=self.clip_speed
         )
         return "" if warning else clip_editor_vm.duration_line(seconds)
-
-    @rx.var
-    def clip_card_title(self) -> str:
-        """«Tu video · {s} s» — or «Tu video» while the length is not known."""
-        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
-        if not key or key != self.clip_source_key or self.clip_cut_end <= self.clip_cut_start:
-            return "Tu video"
-        return clip_editor_vm.card_title(self._clip_lasts(key))
-
-    @rx.var
-    def clip_card_line(self) -> str:
-        return clip_editor_vm.card_line(self.clip_effect_ids, self._clip_text_committed)
 
     @rx.var
     def clip_edit_text_shown(self) -> str:
@@ -6615,8 +6998,8 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_editor_on_screen(self) -> bool:
-        """«Arma tu video» is the step in front: the side panel's «Producto» row moves
-        into «Fotos y videos» (ED-05 m-25026630) while it is."""
+        """«Arma tu video» is the step in front: the «Producto» row's «Cambiar» opens the
+        editor's side panel on «¿Con qué lo armamos?» while it is (Deivid 2026-11-17)."""
         return (
             self.generator_view == "form" and self.gen_step_key == "show" and self.clip_editor_shown
         )
@@ -6630,17 +7013,36 @@ class CreativeState(rx.State):
             speed=self.clip_speed,
             text=self._clip_text_committed,
             place=self.clip_text_place,
+            order=[item["key"] for item in self._clip_strip()],
+            text_start=self.clip_text_start,
+            text_end=self.clip_text_end,
+            effect_times=self.clip_effect_times,
+            pieces=self.clip_cut_pieces,
         )
 
     def _clip_edit_restore(self, snap: dict[str, object]) -> None:
         self.clip_cut_start = float(snap["start"])  # type: ignore[arg-type]
         self.clip_cut_end = float(snap["end"])  # type: ignore[arg-type]
+        self.clip_cut_pieces = [
+            [float(a), float(b)]
+            for a, b in snap.get("pieces") or []  # type: ignore[union-attr]
+        ]
         self.clip_rotate = int(snap["rotate"])  # type: ignore[call-overload]
         self.clip_effect_ids = [str(e) for e in snap["effects"]]  # type: ignore[union-attr]
         self.clip_speed = int(snap["speed"])  # type: ignore[call-overload]
         self._clip_text_committed = str(snap["text"])
         self.clip_overlay_text = str(snap["text"])
         self.clip_text_place = str(snap["place"])
+        self.clip_text_start = float(snap.get("text_start", 0.0))  # type: ignore[arg-type]
+        self.clip_text_end = float(snap.get("text_end", -1.0))  # type: ignore[arg-type]
+        self.clip_effect_times = {
+            str(k): [float(v) for v in times]
+            for k, times in dict(snap.get("effect_times") or {}).items()  # type: ignore[call-overload]
+        }
+        order = [str(key) for key in snap.get("order") or []]  # type: ignore[union-attr]
+        if order and order != [item["key"] for item in self._clip_strip()]:
+            self.clip_sequence = order
+            self._sync_clip_frames()
 
     def _clip_edit_changed(self, before: dict[str, object]) -> None:
         """D-E6: a change is kept at once; the line says what changed, with «Deshacer»
@@ -6654,9 +7056,16 @@ class CreativeState(rx.State):
         self.clip_edit_notice = line
 
     def _reset_clip_editor(self) -> None:
-        self.clip_edit_tool = clip_editor_vm.TOOL_MEDIA
+        self.clip_edit_block = ""
+        self.clip_edit_playhead = 0.0
+        self.clip_text_start = 0.0
+        self.clip_text_end = -1.0
+        self.clip_effect_times = {}
+        self.clip_media_seconds = {}
         self.clip_cut_start = 0.0
         self.clip_cut_end = 0.0
+        self.clip_cut_pieces = []
+        self.clip_flow_opener = ""
         self.clip_rotate = 0
         self.clip_overlay_text = ""
         self._clip_text_committed = ""
@@ -6697,26 +7106,30 @@ class CreativeState(rx.State):
             speed=self.clip_speed,
             text=self._clip_text_committed,
             place=self.clip_text_place,
+            pieces=self.clip_cut_pieces if key else [],
+            **self._clip_recipe_times(),
         )
         if not (recipe.segments or recipe.effects or recipe.text_layer):
             return {}
         return {"edit_recipe": editor_contract.to_dict(recipe)}
 
-    @rx.event
-    def set_clip_edit_tool(self, tool: str | list[str]) -> rx.event.EventSpec | None:
-        """One tool open at a time; the address says which (`?herramienta=`, N3) — the
-        same history entry (`replaceState`): the step's «atrás» is unchanged."""
-        if not isinstance(tool, str) or tool not in clip_editor_vm.TOOLS:
-            return None
-        self.clip_edit_tool = tool
-        slug = json.dumps(clip_editor_vm.TOOL_SLUGS[tool])
-        param = json.dumps(clip_editor_vm.TOOL_PARAM)
-        return rx.call_script(
-            "(() => { const u = new URL(window.location.href);"
-            f" u.searchParams.set({param}, {slug});"
-            " window.history.replaceState(window.history.state, '',"
-            " u.pathname + u.search + u.hash); })()"
-        )
+    def _clip_recipe_times(self) -> dict[str, object]:
+        """When the text and the effects show, for the recipe — only what the owner
+        moved: untouched, the recipe is exactly ED-02's (the text from 0 with no end,
+        effects with no span). An end at the video's end stays open."""
+        _media, overlays, total = self._clip_tl()
+        times: dict[str, object] = {}
+        for row in overlays:
+            start, end = float(row["start"]), float(row["end"])  # type: ignore[arg-type]
+            open_end = abs(end - total) < 0.01
+            if row["kind"] == "text":
+                times["text_start"] = start
+                times["text_end"] = None if open_end else end
+            elif start > 0 or not open_end:
+                spans = dict(times.get("effect_times") or {})  # type: ignore[call-overload]
+                spans[str(row["effect_id"])] = [start, end]
+                times["effect_times"] = spans
+        return times
 
     async def _clip_preview_tenant(self) -> UUID | None:
         """The session's own business — never one the browser names."""
@@ -6764,6 +7177,26 @@ class CreativeState(rx.State):
 
     @rx.event
     def report_clip_source(self, key: str, seconds: float, width: int = 0, height: int = 0) -> None:
+        """The single-stretch preview's report (`edit_preview`): `_report_clip_source`."""
+        self._report_clip_source(key, seconds, width, height)
+
+    @rx.event
+    def report_clip_media(self, key: str, seconds: float, width: int = 0, height: int = 0) -> None:
+        """ED-10: the preview in sequence measured one of the timeline's videos. Its length
+        places it on the timeline; the editor's own video goes on to
+        `_report_clip_source` (the stretch it proposes, «Cortar»'s checks)."""
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if key and value > 0 and self.clip_media_seconds.get(key) != round(value, 2):
+            self.clip_media_seconds = {**self.clip_media_seconds, key: round(value, 2)}
+        if key == self._clip_edit_key():
+            self._report_clip_source(key, value, width, height)
+
+    def _report_clip_source(
+        self, key: str, seconds: float, width: int = 0, height: int = 0
+    ) -> None:
         """The browser measured the owner's video (`edit_preview`'s hidden button): its
         length and its upright size (`videoWidth`/`videoHeight`). A new video gets the
         proposed stretch — the whole of it, up to 15 s (E3) — without a «Deshacer» line:
@@ -6799,6 +7232,7 @@ class CreativeState(rx.State):
         if fresh:
             whole = editor_contract.whole_video(key, seconds)
             self.clip_cut_start, self.clip_cut_end = whole.start_s, whole.end_s
+            self.clip_cut_pieces = []
             self.clip_rotate = 0
             self._clip_edit_undo = []
             self.clip_edit_notice = ""
@@ -6833,6 +7267,7 @@ class CreativeState(rx.State):
             float(values[0]) / 2, float(values[1]) / 2, self.clip_source_seconds
         )
         self.clip_cut_start, self.clip_cut_end = start, end
+        self.clip_cut_pieces = []  # a new stretch is one piece again
         self.clip_cut_play += 1
         return self._clip_edit_changed(before)
 
@@ -6855,19 +7290,8 @@ class CreativeState(rx.State):
         self.clip_cut_error = clip_editor_vm.TOO_SHORT if too_short else ""
         self.clip_cut_focus = handle
         self.clip_cut_start, self.clip_cut_end = start, end
-        return self._clip_edit_changed(before)
-
-    @rx.event
-    def use_whole_clip_video(self) -> rx.event.EventSpec | None:
-        """«Usar el video entero»: the stretch from 0 to the end (up to 15 s)."""
-        if not self._clip_cut_known():
-            return None
-        before = self._clip_edit_snapshot()
-        whole = editor_contract.whole_video(self.clip_source_key, self.clip_source_seconds)
-        self.clip_cut_start, self.clip_cut_end = whole.start_s, whole.end_s
-        self.clip_cut_error = ""
-        self.clip_cut_focus = "start"
-        self.clip_cut_play += 1
+        if (start, end) != (before["start"], before["end"]):
+            self.clip_cut_pieces = []  # a new stretch is one piece again
         return self._clip_edit_changed(before)
 
     @rx.event
@@ -6885,10 +7309,22 @@ class CreativeState(rx.State):
         self.clip_overlay_text = str(value)[: editor_contract.VIDEO_TEXT_MAX]
 
     @rx.event
-    def commit_clip_overlay_text(self, _value: str = "") -> rx.event.EventSpec | None:
+    def commit_clip_overlay_text(self, _value: str = "") -> None:
         before = self._clip_edit_snapshot()
+        new = not self._clip_text_committed and bool(self.clip_overlay_text.strip())
         self._clip_text_committed = self.clip_overlay_text.strip()
-        return self._clip_edit_changed(before)
+        flow = self.clip_edit_block == clip_editor_vm.FLOW_MARK + clip_editor_vm.FLOW_TEXT
+        if new and flow and self.clip_editor_shown:
+            # ED-10 (§1.1): a text added from «+ Texto» starts where the playhead rests
+            # and lasts to the end — at 0:00 it covers the whole video, as before
+            _media, _overlays, total = self._clip_tl()
+            start = timeline_vm.snap(min(self.clip_edit_playhead, total))
+            if 0 < start <= total - editor_contract.SEGMENT_MIN_SECONDS:
+                self.clip_text_start, self.clip_text_end = start, -1.0
+        # the side panel stays open on «Texto» (Deivid 2026-11-17: one panel with tabs —
+        # leaving the field for «Arriba» or another tab must not close it); the text's
+        # block is on the timeline, chosen with a tap once the panel closes
+        self._clip_edit_changed(before)
 
     @rx.event
     def set_clip_text_place(self, place: str | list[str]) -> rx.event.EventSpec | None:
@@ -6934,6 +7370,7 @@ class CreativeState(rx.State):
                 else:
                     start, end = self.clip_cut_start, self.clip_cut_end
                 self.clip_cut_start, self.clip_cut_end = start, end
+                self.clip_cut_pieces = []
                 self._clip_fast_before = {}
                 self.clip_cut_focus = "start"
                 self.clip_cut_play += 1
@@ -6953,6 +7390,7 @@ class CreativeState(rx.State):
                 )
                 start, end, speed = clip_editor_vm.fast_proposal(self.clip_source_seconds)
                 self.clip_cut_start, self.clip_cut_end, self.clip_speed = start, end, speed
+                self.clip_cut_pieces = []  # sped up, the whole video is one piece again
                 self.clip_cut_focus = "start"
                 self.clip_cut_play += 1
                 self._clip_edit_changed(before)
@@ -6963,13 +7401,18 @@ class CreativeState(rx.State):
 
     @rx.event
     def set_clip_speed(self, value: str | list[str]) -> rx.event.EventSpec | None:
-        """«Velocidad»: ×5 · ×10 · ×20."""
+        """«Velocidad»: ×2 · ×3 · ×5 · ×10 · ×20 — only a speed that is on."""
         try:
             speed = int(str(value).lstrip("×x"))
         except ValueError:
             return None
         if speed not in editor_contract.FAST_MOTION_SPEEDS:
             return None
+        why = self._clip_speed_reasons().get(str(speed), "")
+        if why:
+            self.clip_speed_refused = why
+            return None
+        self.clip_speed_refused = ""
         before = self._clip_edit_snapshot()
         self.clip_speed = speed
         return self._clip_edit_changed(before)
@@ -6990,6 +7433,456 @@ class CreativeState(rx.State):
             self.clip_cut_focus = "start"
             self.clip_cut_play += 1
         self.clip_edit_notice = ""
+
+    # -- ED-10 m-25026648: the timeline's events ------------------------------------------
+
+    def _clip_block_url(self, block: str) -> rx.event.EventSpec:
+        """The address says which block is chosen (`?bloque=video-2`, N3). Choosing the
+        first one adds a history entry, so the phone's «atrás» lets it go before it leaves
+        the step (N5); choosing another replaces it; letting go walks back through that
+        entry (or, on an entry this screen did not add, drops the word). A flow
+        «Agregar» opened (its side panel, Deivid 2026-11-16) adds the same kind of entry
+        without a word: «atrás» closes the panel first."""
+        media, overlays, _total = self._clip_tl()
+        flow = clip_editor_vm.is_flow(block)
+        slug = clip_editor_vm.block_slug(media, overlays, block) if block and not flow else ""
+        param = json.dumps(clip_editor_vm.BLOCK_PARAM)
+        # `qBloque`: the entry this screen pushed (a block or a flow) — reused, never stacked
+        mine = "(window.history.state && window.history.state.qBloque)"
+        if slug or flow:
+            write = (
+                f" u.searchParams.set({param}, {json.dumps(slug)});"
+                if slug
+                else f" u.searchParams.delete({param});"
+            )
+            return rx.call_script(
+                "(() => { const u = new URL(window.location.href);"
+                f" const had = u.searchParams.has({param}) || {mine};"
+                f"{write}"
+                " const url = u.pathname + u.search + u.hash;"
+                " if (had) window.history.replaceState(window.history.state, '', url);"
+                " else window.history.pushState({ ...(window.history.state || {}),"
+                " qBloque: true }, '', url); })()"
+            )
+        return rx.call_script(
+            "(() => { const u = new URL(window.location.href);"
+            f" if ({mine}) {{ window.history.back(); return; }}"
+            f" if (!u.searchParams.has({param})) return;"
+            f" u.searchParams.delete({param});"
+            " window.history.replaceState(window.history.state, '',"
+            " u.pathname + u.search + u.hash); })()"
+        )
+
+    def _clip_choose(self, block: str) -> list[rx.event.EventSpec]:
+        """One thing under the timeline at a time: a block (its panel) or a flow."""
+        self.clip_edit_block = block
+        events = [self._clip_block_url(block)]
+        if block:
+            events.append(rx.call_script(f"window.__qTimeline?.reveal({json.dumps(block)})"))
+        return events
+
+    @rx.event
+    def select_clip_block(self, block_id: str) -> list[rx.event.EventSpec]:
+        """A block tapped (or Enter): it is chosen and its panel shows; tapped again, it
+        lets go."""
+        rows = self._clip_tl_rows()
+        if not any(row["id"] == block_id for row in rows):
+            return []
+        return self._clip_choose("" if self.clip_edit_block == block_id else block_id)
+
+    def _clip_close_flow(self) -> list[Any]:
+        """The side panel closes («Listo», ✕, Escape, the backdrop): what «Tu Galería»
+        holds chosen goes in first — as the media drawer's close always did (UX review)
+        — then nothing is chosen and the focus goes back to what opened it."""
+        from .gen_gallery_pick_state import GenGalleryPickState  # noqa: PLC0415
+
+        media = clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_MEDIA
+        events: list[Any] = list(self._clip_choose(""))
+        if media:
+            self._stop_playing()
+            events.append(GenGalleryPickState.finish(MEDIA_DRAWER_CLIP))
+        return events
+
+    @rx.event
+    def done_clip_block(self) -> list[Any]:
+        """«Listo» (or Escape): nothing chosen; a side panel open closes."""
+        block = self.clip_edit_block
+        if clip_editor_vm.is_flow(block):
+            return self._clip_close_flow()
+        # the panel goes away with the choice: the focus goes back to the block, as
+        # Escape does (ED-10 UX review)
+        return [*self._clip_choose(""), *([self._clip_focus_after(block)] if block else [])]
+
+    @staticmethod
+    def _clip_focus_after(block_id: str) -> rx.event.EventSpec:
+        """The focus once a block's panel goes away: that block (`block_id`), or «+»
+        ("") — `window.__qTimeline.focusAfter` waits for the re-render."""
+        return rx.call_script(f"window.__qTimeline?.focusAfter({json.dumps(block_id)})")
+
+    def _clip_track_place(self, block_id: str) -> tuple[str, int]:
+        """A block's track and its place in it (0-based), `("", -1)` for none."""
+        for row in self._clip_tl_rows():
+            if row["id"] == block_id:
+                same = [r["id"] for r in self._clip_tl_rows() if r["track"] == row["track"]]
+                return row["track"], same.index(block_id)
+        return "", -1
+
+    def _clip_removed(self, track: str, index: int) -> list[Any]:
+        """After «Quitar»: nothing chosen, and the focus on the block now in the removed
+        one's place in its track (the next one), else on «+» (ED-10 UX review)."""
+        same = [r["id"] for r in self._clip_tl_rows() if r["track"] == track]
+        following = same[index] if 0 <= index < len(same) else ""
+        return [*self._clip_choose(""), self._clip_focus_after(following)]
+
+    @rx.event
+    def set_clip_flow_drawer_open(self, value: bool) -> list[Any]:
+        """The side panel: its ✕, Escape and the backdrop close it as «Listo» does.
+        Never acts while another drawer is the one up."""
+        if value or self.media_drawer_open or not clip_editor_vm.is_flow(self.clip_edit_block):
+            return []
+        return self._clip_close_flow()
+
+    def _clip_media_flow(self, tab: str = "") -> list[Any]:
+        """«¿Con qué lo armamos?» in the side panel: the SAME selector the Clip's media
+        drawer has («Tus productos · Tu Galería · Subir · Publicaciones · Inspiración»),
+        on the drawer's own target so its tabs, loads and «Tu Galería» work as there —
+        but in this panel (Deivid 2026-11-17: never a second panel on top)."""
+        from .gen_gallery_pick_state import GenGalleryPickState  # noqa: PLC0415
+
+        self.media_drawer_target = MEDIA_DRAWER_CLIP
+        self.media_drawer_open = False
+        self.product_change_note = ""
+        self.product_seed_note = ""
+        self._stop_playing()
+        if not tab and not self.selected_product_id:
+            tab = "catalog"  # Deivid 2026-11-13: «Tus productos» first while none is chosen
+        if tab in CLIP_SOURCE_TABS:
+            self.clip_source_tab = tab
+        loads = self._tab_loads(self.clip_source_tab)
+        events: list[Any] = [GenGalleryPickState.reset_choice]
+        if loads is not None:
+            events += loads if isinstance(loads, list) else [loads]
+        return events
+
+    def _clip_open_flow(self, flow: str, *, tab: str = "", opener: str = "") -> list[Any]:
+        if flow not in clip_editor_vm.FLOWS:
+            return []
+        already = clip_editor_vm.flow_of(self.clip_edit_block) == flow
+        self.clip_flow_opener = opener
+        events: list[Any] = list(self._clip_choose(clip_editor_vm.FLOW_MARK + flow))
+        if flow == clip_editor_vm.FLOW_MEDIA and not (already and not tab):
+            events += self._clip_media_flow(tab)
+        return events
+
+    @rx.event
+    def open_clip_flow(self, flow: str) -> list[Any]:
+        """«Agregar» → «Foto o video», «Texto», «Efecto» or «Pedir una idea»: the ONE
+        side panel opens on that tab (Deivid 2026-11-17). «Texto» edits the one text
+        there is (ED-13 brings more)."""
+        return self._clip_open_flow(flow)
+
+    @rx.event
+    def switch_clip_flow(self, flow: str | list[str]) -> list[Any]:
+        """A tab of the side panel chosen: the panel stays, on that tab."""
+        value = flow[0] if isinstance(flow, list) and flow else flow
+        if not isinstance(value, str) or not clip_editor_vm.is_flow(self.clip_edit_block):
+            return []
+        if clip_editor_vm.flow_of(self.clip_edit_block) == value:
+            return []
+        # back on «¿Con qué lo armamos?», its source is the one left open
+        return self._clip_open_flow(value, tab=self.clip_source_tab, opener=self.clip_flow_opener)
+
+    @rx.event
+    def hear_clip_time(self, t: float, reason: str = "") -> None:
+        """The preview's clock rested (a pause or a seek): where a new text or effect
+        starts."""
+        try:
+            self.clip_edit_playhead = max(float(t), 0.0)
+        except (TypeError, ValueError):
+            return
+
+    def _clip_media_ids(self) -> list[str]:
+        return [str(item["id"]) for item in self._clip_tl_media()]
+
+    def _clip_move_media(self, block_id: str, index: int) -> None:
+        """A video or a photo to its new place on the timeline: the Clip's order of
+        files follows (the AI's opening and closing frames too, as in «Orden de tu
+        video»), with «Deshacer» and «Moviste el video 2.»."""
+        media = self._clip_tl_media()
+        moved = timeline_vm.move_to(media, block_id, index)  # type: ignore[arg-type]
+        if [item["id"] for item in moved] == [item["id"] for item in media]:
+            return
+        # the pieces «Cortar» made of the own video stay side by side (the recipe is
+        # the own video's pieces in order; the other files are references): a move
+        # that would split them up is not taken
+        own = self._clip_edit_key()
+        at = [i for i, item in enumerate(moved) if own and item["key"] == own]
+        if at and at[-1] - at[0] + 1 != len(at):
+            return
+        before = self._clip_edit_snapshot()
+        if len(self.clip_cut_pieces) > 1:
+            order = [clip_editor_vm.piece_of(str(moved[i]["id"]))[1] for i in at]
+            self.clip_cut_pieces = [list(self.clip_cut_pieces[n]) for n in order]
+        shown = list(dict.fromkeys(str(m["key"]) for m in moved))
+        keys = [item["key"] for item in self._clip_strip()]
+        self.clip_sequence = clip_editor_vm.reorder_keys(keys, shown)
+        self._sync_clip_frames()
+        self._clip_edit_changed(before)
+        if self.clip_edit_notice:
+            self.clip_edit_notice = timeline_vm.moved_text(moved, block_id)  # type: ignore[arg-type]
+        pieces_now = [str(moved[i]["id"]) for i in at]
+        if self.clip_edit_block in pieces_now:
+            # a piece's id is its place: the chosen piece keeps being the chosen one
+            place = pieces_now.index(self.clip_edit_block)
+            self.clip_edit_block = clip_editor_vm.piece_id(own, place)
+
+    def _clip_overlay(self, block_id: str) -> dict[str, object]:
+        _media, overlays, _total = self._clip_tl()
+        return next((row for row in overlays if row["id"] == block_id), {})
+
+    def _clip_set_overlay_time(self, block_id: str, start: float, end: float) -> None:
+        """A text or an effect at its new seconds (½ s, inside the video, ≥ 1 s)."""
+        row = self._clip_overlay(block_id)
+        if not row:
+            return
+        _media, _overlays, total = self._clip_tl()
+        before = self._clip_edit_snapshot()
+        end = min(end, total)
+        start = min(max(start, 0.0), max(end - editor_contract.SEGMENT_MIN_SECONDS, 0.0))
+        open_end = abs(end - total) < 0.01
+        if row["kind"] == "text":
+            self.clip_text_start = start
+            self.clip_text_end = -1.0 if open_end else end
+        else:
+            effect_id = str(row["effect_id"])
+            times = dict(self.clip_effect_times)
+            if start <= 0 and open_end:
+                times.pop(effect_id, None)
+            else:
+                times[effect_id] = [start, end]
+            self.clip_effect_times = times
+        self._clip_edit_changed(before)
+
+    def _clip_shift(self, block_id: str, delta: float) -> None:
+        """←/→ on a text or effect: the whole block ½ s (`timeline_vm.shift`)."""
+        row = self._clip_overlay(block_id)
+        if not row:
+            return
+        _media, overlays, total = self._clip_tl()
+        moved = timeline_vm.shift(overlays, block_id, delta, total)  # type: ignore[arg-type]
+        new = next(item for item in moved if item["id"] == block_id)
+        self._clip_set_overlay_time(block_id, float(new["start"]), float(new["end"]))
+
+    @rx.event
+    def nudge_clip_block(self, block_id: str, edge: str, delta: float) -> rx.event.EventSpec | None:
+        """«− ½ s / + ½ s» of the chosen block's panel, or ←/→ on its handle: when a text
+        or effect starts or ends. A video has no «Desde/Hasta» any more (Deivid
+        2026-11-17: one «Cortar» where the marker is, `cut_clip_video`)."""
+        if edge not in ("start", "end"):
+            return None
+        try:
+            delta = float(delta)
+        except (TypeError, ValueError):
+            return None
+        row = self._clip_overlay(block_id)
+        if not row:
+            return None
+        _media, overlays, _total = self._clip_tl()
+        media = self._clip_tl_media()
+        _m, nudged = timeline_vm.nudge(media, overlays, block_id, edge, delta)  # type: ignore[arg-type]
+        new = next(item for item in nudged if item["id"] == block_id)
+        self._clip_set_overlay_time(block_id, float(new["start"]), float(new["end"]))
+        return None
+
+    @rx.event
+    def clip_block_key(self, block_id: str, edge: str, key: str) -> list[rx.event.EventSpec]:
+        """The keyboard on the timeline (§3.7): Escape lets the block go; ←/→ on a video
+        or photo moves it one place (D-T6: no buttons), on a text or effect ½ s, and on a
+        handle that edge ½ s."""
+        if key == "Escape":
+            return self._clip_choose("") if self.clip_edit_block else []
+        if key not in ("ArrowLeft", "ArrowRight") or not block_id:
+            return []
+        step = -1 if key == "ArrowLeft" else 1
+        if edge in ("start", "end"):
+            spec = CreativeState.nudge_clip_block.fn(
+                self, block_id, edge, step * timeline_vm.STEP_S
+            )
+            return [spec] if spec is not None else []
+        ids = self._clip_media_ids()
+        if block_id in ids:
+            self._clip_move_media(block_id, ids.index(block_id) + step)
+        else:
+            self._clip_shift(block_id, step * timeline_vm.STEP_S)
+        return [self._clip_block_url(self.clip_edit_block)] if self.clip_edit_block else []
+
+    @rx.event
+    def drop_clip_block(self, block_id: str, what: str, value: float) -> list[rx.event.EventSpec]:
+        """Drag and drop (Deivid, 2026-11-16): a video or photo dropped at a new place
+        («move», its index), or a text or effect at a new start («time», seconds)."""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return []
+        if what == "move" and block_id in self._clip_media_ids():
+            self._clip_move_media(block_id, int(round(number)))
+        elif what == "time":
+            row = self._clip_overlay(block_id)
+            if not row:
+                return []
+            length = float(row["end"]) - float(row["start"])  # type: ignore[arg-type]
+            start = timeline_vm.snap(number)
+            self._clip_set_overlay_time(block_id, start, start + length)
+        else:
+            return []
+        return [self._clip_block_url(self.clip_edit_block)] if self.clip_edit_block else []
+
+    @rx.event
+    def set_clip_block_speed(self, block_id: str, value: str | list[str]) -> None:
+        """«Velocidad» of the editor's video (D-T3): «Normal» takes «Cámara rápida» off;
+        ×2/×3/×5/×10/×20 (the ones that are on) puts it on (the whole video, as before)
+        at that speed — one change, one «Deshacer»; an off one only says why."""
+        own = self._clip_edit_key()
+        if not own or clip_editor_vm.piece_of(block_id)[0] != own or not isinstance(value, str):
+            return
+        fast = editor_contract.FAST_MOTION in self.clip_effect_ids
+        if value == clip_editor_vm.SPEED_NORMAL:
+            self.clip_speed_refused = ""
+            if fast:
+                CreativeState.toggle_clip_effect.fn(self, editor_contract.FAST_MOTION)
+            return
+        try:
+            speed = int(value)
+        except ValueError:
+            return
+        if speed not in editor_contract.FAST_MOTION_SPEEDS:
+            return
+        # an off speed (Deivid 2026-11-17: on only for a 3–60 s result) says why
+        why = self._clip_speed_reasons().get(str(speed), "")
+        if why:
+            self.clip_speed_refused = why
+            return
+        self.clip_speed_refused = ""
+        if fast:
+            CreativeState.set_clip_speed.fn(self, value)
+            return
+        if not self._clip_fast_allowed():
+            return
+        CreativeState.toggle_clip_effect.fn(self, editor_contract.FAST_MOTION)
+        proposed = self.clip_speed
+        if editor_contract.FAST_MOTION in self.clip_effect_ids and proposed != speed:
+            self.clip_speed = speed
+            self.clip_edit_notice = self.clip_edit_notice.replace(f"×{proposed}", f"×{speed}")
+
+    @rx.event
+    def clip_block_action(self, label: str) -> list[rx.event.EventSpec]:
+        """The chosen block's bar. «Quitar»: a video or a photo leaves the Clip (as its
+        ✕ in «Fotos y videos»), the text or an effect leaves the video (with
+        «Deshacer»)."""
+        block = self.clip_edit_block
+        if label != clip_editor_vm.REMOVE or not block or clip_editor_vm.is_flow(block):
+            return []
+        key, index = clip_editor_vm.piece_of(block)
+        track, place = self._clip_track_place(block)
+        if (
+            len(self.clip_cut_pieces) > 1
+            and key == self._clip_edit_key()
+            and block in self._clip_media_ids()
+        ):
+            # after «Cortar»: only that piece leaves; the last one left is the stretch
+            before = self._clip_edit_snapshot()
+            pieces = [list(p) for n, p in enumerate(self.clip_cut_pieces) if n != index]
+            if len(pieces) == 1:
+                self.clip_cut_start, self.clip_cut_end = pieces[0][0], pieces[0][1]
+                pieces = []
+            self.clip_cut_pieces = pieces
+            self._clip_edit_changed(before)
+            return self._clip_removed(track, place)
+        if block in self._clip_media_ids():
+            if any(item["key"] == block for item in self.clip_videos):
+                CreativeState.remove_clip_video.fn(self, block)
+            else:
+                CreativeState.remove_clip_image.fn(self, block)
+            return self._clip_removed(track, place)
+        row = self._clip_overlay(block)
+        if not row:
+            return []
+        before = self._clip_edit_snapshot()
+        if row["kind"] == "text":
+            self.clip_overlay_text = ""
+            self._clip_text_committed = ""
+            self.clip_text_start, self.clip_text_end = 0.0, -1.0
+            line = clip_editor_vm.TEXT_REMOVED_LINE
+        else:
+            effect_id = str(row["effect_id"])
+            self.clip_effect_ids = [e for e in self.clip_effect_ids if e != effect_id]
+            times = dict(self.clip_effect_times)
+            times.pop(effect_id, None)
+            self.clip_effect_times = times
+            line = clip_editor_vm.effect_removed_line(effect_id)
+        self._clip_edit_changed(before)
+        self.clip_edit_notice = line
+        return self._clip_removed(track, place)
+
+    def _clip_cut_plan(self) -> tuple[int, float, str]:
+        """«Cortar» with a piece of the own video chosen: `(piece index, source second,
+        "")`, or `(-1, 0.0, why not)` ("" as the reason = not a block «Cortar» is for).
+        It cuts the piece UNDER THE MARKER, not only the chosen one (Deivid 2026-11-17:
+        «porque el cortar se desactiva cuando corto una vez?»): after a cut the marker
+        rests on the line between the two halves, and moving it into any piece of the
+        same video makes «Cortar» work there."""
+        block = self.clip_edit_block
+        own = self._clip_edit_key()
+        if not block or not own or clip_editor_vm.piece_of(block)[0] != own:
+            return -1, 0.0, ""
+        if not self._clip_can_cut():
+            return -1, 0.0, ""
+        if len(self._clip_pieces()) >= editor_contract.SEGMENTS_MAX:
+            return -1, 0.0, clip_editor_vm.CUT_FULL
+        media = self._clip_tl_media()
+        target = clip_editor_vm.block_at(media, own, self.clip_edit_playhead) or block
+        point, why = clip_editor_vm.split_check(media, target, self.clip_edit_playhead)
+        return (-1, 0.0, why) if why else (clip_editor_vm.piece_of(target)[1], point, "")
+
+    @rx.var
+    def clip_cut_here_reason(self) -> str:
+        """Why «Cortar» is off right now, in a few words ("" = it cuts)."""
+        index, _point, why = self._clip_cut_plan()
+        return "" if index >= 0 else (why or clip_editor_vm.CUT_NOT_HERE)
+
+    @rx.event
+    def cut_clip_video(self) -> list[rx.event.EventSpec]:
+        """«Cortar» (Deivid 2026-11-17): the piece of the own video under the marker
+        splits in two there — the stretch before it and the one after, each its own
+        block (and its own `SourceSegment`), at the video's speed. With «Deshacer»."""
+        index, point, _why = self._clip_cut_plan()
+        if index < 0:
+            return []
+        before = self._clip_edit_snapshot()
+        pieces = [list(p) for p in self._clip_pieces()]
+        start, end = pieces[index]
+        pieces[index : index + 1] = [[start, point], [point, end]]
+        self.clip_cut_pieces = pieces
+        self._clip_edit_changed(before)
+        # the marker rests on the line between the halves: the piece that starts there
+        # is chosen, so «Cortar» is ready again as soon as the marker moves into it
+        return self._clip_choose(clip_editor_vm.piece_id(self._clip_edit_key(), index + 1))
+
+    @rx.event
+    def add_clip_effect(self, effect_id: str) -> None:
+        """«+ Efecto» → one of the list: it starts where the playhead rests and lasts to
+        the end (§1.1); with the playhead at 0:00 it covers the whole video, as before."""
+        if effect_id in self.clip_effect_ids:
+            CreativeState.toggle_clip_effect.fn(self, effect_id)
+            return
+        CreativeState.toggle_clip_effect.fn(self, effect_id)
+        if effect_id not in self.clip_effect_ids:
+            return
+        _media, _overlays, total = self._clip_tl()
+        start = timeline_vm.snap(min(self.clip_edit_playhead, total))
+        if 0 < start <= total - editor_contract.SEGMENT_MIN_SECONDS:
+            self.clip_effect_times = {**self.clip_effect_times, effect_id: [start, total]}
+            self.clip_edit_block = clip_editor_vm.EFFECT_ID_PREFIX + effect_id
 
     def _sync_clip_frames(self) -> None:
         """The frames follow the strip's order (§ requests 2026-10-14/19: «según el
@@ -7132,6 +8025,18 @@ class CreativeState(rx.State):
             self.replication_context = ""
             self.replication_brand_text = False
         self._sync_clip_frames()
+
+    def drop_clip_reference(self, key: str) -> bool:
+        """«Tu Galería» (m-25026648): a tile already among the Clip's references, tapped
+        again, leaves them — a photo or a video, as its own ✕ does. False when `key` is
+        not among them."""
+        if key and any(item["key"] == key for item in self.clip_images):
+            CreativeState.remove_clip_image.fn(self, key)
+            return True
+        if key and any(item["key"] == key for item in self.clip_videos):
+            CreativeState.remove_clip_video.fn(self, key)
+            return True
+        return False
 
     @rx.event
     async def handle_clip_audio_uploads(self, files: list[rx.UploadFile]) -> None:
@@ -7453,12 +8358,14 @@ class CreativeState(rx.State):
         old = self.create_step_n
         if step != old or "parte" in params:
             self.media_drawer_open = False  # never two drawers
-        # ED-02 (N3): `?herramienta=cortar` opens that tool of «Arma tu video»
-        tool = clip_editor_vm.tool_from_slug(params.get(clip_editor_vm.TOOL_PARAM, [""])[0])
-        if tool:
-            self.clip_edit_tool = tool
-        # a step reached through the history: «Deshacer» does not come back with it
-        self.clip_edit_notice = ""
+        # ED-10 (N3/N5): `?bloque=video-2` chooses that block of «Arma tu video»; an
+        # address without it (the phone's «atrás») lets the chosen block go first
+        reveal = self._clip_block_from_address(params.get(clip_editor_vm.BLOCK_PARAM, [""])[0])
+        # a step reached through the history: «Deshacer» does not come back with it. Only
+        # `?bloque=` changing (choosing or letting go a block — «Quitar», «Listo» walk
+        # back through that entry) is the same step: the line and its «Deshacer» stay.
+        if step != old or "parte" in params:
+            self.clip_edit_notice = ""
         if self.gen_mode not in ("discover", "variations"):
             self._show_create_step(step)
         events = []
@@ -7474,6 +8381,8 @@ class CreativeState(rx.State):
                 )
             )
         self.create_resume_pending = False
+        if reveal:
+            events.append(rx.call_script(f"window.__qTimeline?.reveal({json.dumps(reveal)})"))
         at = part_editor_vm.position(
             params.get("parte"),
             len(self._reel_plan) + int(self.reel_edit_open and self.reel_edit_new),
@@ -7519,6 +8428,25 @@ class CreativeState(rx.State):
         if "parte" in params:
             events.append(rx.call_script(_clear_part_query_script(params["parte"])))
         return events
+
+    def _clip_block_from_address(self, slug: str) -> str:
+        """`?bloque=` read back (a reload, a deep link, «atrás»/«adelante»): the block it
+        names is chosen; no word lets a chosen block go — and closes a flow «Agregar»
+        opened in the side panel (with the media drawer it opened: «atrás» closes the
+        panels first). The id to bring into view ("" = none)."""
+        if not self.clip_editor_shown:
+            return ""
+        if not slug:
+            if clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_MEDIA:
+                if self.media_drawer_open and self.media_drawer_target == MEDIA_DRAWER_CLIP:
+                    self.media_drawer_open = False
+                    self._stop_playing()
+            self.clip_edit_block = ""
+            return ""
+        media, overlays, _total = self._clip_tl()
+        block = clip_editor_vm.block_from_slug(media, overlays, slug)
+        self.clip_edit_block = block
+        return block
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
     pop_create_step = enter_create_step
@@ -7989,6 +8917,12 @@ class CreativeState(rx.State):
         """«Cambiar» / «Elegir producto» on the side panel's «Producto» row: the media
         drawer on «Tus productos» — the Clip's own drawer for a Clip, the product alone
         for any other kind."""
+        if self.clip_editor_on_screen:
+            # Deivid 2026-11-17: the row is back above the options; on «Arma tu video»
+            # its «Cambiar» opens the editor's ONE side panel on «¿Con qué lo armamos?»
+            return self._clip_open_flow(
+                clip_editor_vm.FLOW_MEDIA, tab="catalog", opener=PRODUCT_ROW_ID
+            )
         target = MEDIA_DRAWER_CLIP if self.gen_category == "clip" else MEDIA_DRAWER_PRODUCT
         return self.open_media_drawer(target, "catalog", PRODUCT_ROW_ID)
 

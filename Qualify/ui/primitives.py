@@ -533,6 +533,7 @@ def orbit_menu(
     *,
     disabled: bool | rx.Var[bool] = False,
     icon: str = "plus",
+    direction: Literal["up", "right"] = "up",
 ) -> rx.Component:
     """The «+» that opens a column of options above it (the kit's Orbit gesture redrawn
     on our tokens; founder 2026-11-06, m-24955785). Radix DropdownMenu — the «⋯» menus'
@@ -547,12 +548,20 @@ def orbit_menu(
     tu video»'s «Agregar» (`ui.timeline.timeline_add`, approved by Deivid 2026-11-14;
     another screen needs the founder); 2 to 6 options; icon AND text of 16 characters at most;
     an option opens a flow, never sends; outside its conditions it is not drawn rather
-    than disabled."""
+    than disabled.
+
+    ``direction="right"`` (Deivid, 2026-11-16, «Arma tu video»): the options open in a
+    ROW to the right of the «+» (`side="right"`, centred on it, never flipped to the
+    left), the nearest rising first, sliding in from the button; with reduced motion
+    they only fade. The default ``"up"`` is WhatsApp's column, unchanged."""
+    if direction not in ("up", "right"):
+        raise ValueError("orbit_menu direction must be 'up' or 'right'")
     if not ORBIT_MIN_ITEMS <= len(items) <= ORBIT_MAX_ITEMS:
         raise ValueError(f"orbit_menu takes {ORBIT_MIN_ITEMS} to {ORBIT_MAX_ITEMS} options")
     for item in items:
         if not item.text.strip() or len(item.text) > ORBIT_MAX_TEXT:
             raise ValueError(f"orbit_menu option text must be 1-{ORBIT_MAX_TEXT} characters")
+    right = direction == "right"
     return rx.menu.root(
         rx.menu.trigger(
             rx.icon_button(
@@ -579,17 +588,18 @@ def orbit_menu(
                     class_name="q-orbit-pill",
                     custom_attrs={"data-orbit-key": item.key},
                     # the nearest to the button rises first, then each 30 ms (§5): a real
-                    # style mapping (React refuses a string `style`)
-                    style={"--q-orbit-i": str(len(items) - 1 - i)},
+                    # style mapping (React refuses a string `style`). Up, the nearest is
+                    # the last option; to the right, the first.
+                    style={"--q-orbit-i": str(i if right else len(items) - 1 - i)},
                 )
                 for i, item in enumerate(items)
             ],
-            side="top",
-            align="start",
+            side="right" if right else "top",
+            align="center" if right else "start",
             side_offset=8,
             avoid_collisions=False,
             loop=True,
-            class_name="q-orbit-menu",
+            class_name="q-orbit-menu q-orbit-menu--right" if right else "q-orbit-menu",
         ),
     )
 
@@ -823,6 +833,7 @@ def choice_card(
     role: Literal["radio", "checkbox"] = "radio",
     disabled: rx.Var[bool] | bool = False,
     padding: str = "1rem 1.25rem",
+    checked: rx.Var[bool] | bool | None = None,
     **props: Any,
 ) -> rx.Component:
     """A card that is a choice: a real ``<button>`` (§8 — never a box with ``on_click``)
@@ -833,7 +844,9 @@ def choice_card(
     (native ``disabled``: no click, no Enter/Space, nothing for ``on_select`` to hear),
     with ``aria-disabled`` alongside for readers; a reason belongs in the children,
     next to the title. Put the check mark the kit draws
-    in the corner with ``choice_card_check()`` when the ring alone would be too quiet."""
+    in the corner with ``choice_card_check()`` when the ring alone would be too quiet.
+    ``checked``: what ``aria-checked`` says when it differs from the ring (a tile drawn
+    on while it is still loading is not chosen yet); ``None`` = ``selected``."""
     is_disabled = disabled
     on = rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card")
     class_name = (
@@ -850,7 +863,7 @@ def choice_card(
         *children,
         type="button",
         role=role,
-        aria_checked=rx.cond(selected, "true", "false"),
+        aria_checked=rx.cond(selected if checked is None else checked, "true", "false"),
         aria_disabled=aria_disabled,
         disabled=is_disabled,
         on_click=on_select,

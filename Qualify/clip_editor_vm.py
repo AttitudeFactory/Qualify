@@ -1,9 +1,9 @@
-"""«Arma tu video» (ED-02 m-25026621, ED-03 m-25026623, ED-05 m-25026630; epic «Video
-automático con efectos, por pasos»): the
-words and the pure rules of the normal Clip's first step as an editor — a live preview
-on top, the card «Tu video», and four tools, one open at a time, each asking one
-question. Nothing is generated here; every change is kept at once with «Deshacer»
-(D-E6, no «Guardar»).
+"""«Arma tu video» (ED-02 m-25026621, ED-03 m-25026623, ED-05 m-25026630, ED-10
+m-25026648; epic «Video automático con efectos, por pasos»): the words and the pure
+rules of the normal Clip's first step as an editor — the preview in sequence on top,
+the timeline under it (`ui.timeline`: ruler, playhead, three tracks), its action bar
+and the chosen block's panel. One block chosen at a time (`?bloque=video-2`). Nothing
+is generated here; every change is kept at once with «Deshacer» (D-E6, no «Guardar»).
 
 The state (`CreativeState`, «clip editor» block) holds the owner's choices as plain
 fields; `snapshot` / `change_message` / `push_undo` here decide what «Deshacer» brings
@@ -17,6 +17,7 @@ import os
 from collections.abc import Mapping, Sequence
 
 from . import editor_preview_contract as contract
+from .ui import timeline_vm
 
 # -- the switch ----------------------------------------------------------------------------
 
@@ -60,44 +61,41 @@ PREVIEW_PAUSE = "Pausar la vista previa"
 PREVIEW_REGION = "Vista previa de tu video"
 PARTS_LINK = "Armar mi video por partes"
 
-# -- the tools (`rx.segmented_control`, one open at a time) ------------------------------
+# -- what «Agregar» opens (ED-10: the timeline's orbit, `timeline_vm.ADD_OPTIONS`) ------
 
-TOOL_MEDIA = "media"
-TOOL_IDEA = "idea"
-TOOL_EFFECTS = "effects"
-TOOL_CUT = "cut"
-TOOLS: tuple[str, ...] = (TOOL_MEDIA, TOOL_IDEA, TOOL_EFFECTS, TOOL_CUT)
-TOOL_LABELS = {
-    TOOL_MEDIA: "Fotos y videos",
-    TOOL_IDEA: "Idea",
-    TOOL_EFFECTS: "Efectos",
-    TOOL_CUT: "Cortar",
+FLOW_MEDIA = "media"
+FLOW_TEXT = "text"
+FLOW_EFFECT = "effect"
+FLOW_IDEA = "idea"
+FLOWS: tuple[str, ...] = (FLOW_MEDIA, FLOW_TEXT, FLOW_EFFECT, FLOW_IDEA)
+#: A flow open in the panel is held where a chosen block's id would be, with this mark
+#: (`+media`): one thing at a time under the timeline.
+FLOW_MARK = "+"
+FLOW_QUESTIONS = {
+    FLOW_MEDIA: "¿Con qué lo armamos?",
+    FLOW_TEXT: "¿Qué dice tu video?",
+    FLOW_EFFECT: "¿Qué le pones a tu video?",
+    FLOW_IDEA: "¿De qué trata tu video?",
 }
-TOOL_ICONS = {
-    TOOL_MEDIA: "images",
-    TOOL_IDEA: "lightbulb",
-    TOOL_EFFECTS: "sparkles",
-    TOOL_CUT: "scissors",
-}
-TOOL_QUESTIONS = {
-    TOOL_MEDIA: "¿Con qué lo armamos?",
-    TOOL_IDEA: "¿De qué trata tu video?",
-    TOOL_EFFECTS: "¿Qué le pones a tu video?",
-    TOOL_CUT: "¿Qué pedazo de tu video usas?",
-}
-TOOLS_LABEL = "Herramientas"
-#: The address's word for each tool (`/create?paso=1&herramienta=cortar`, N3).
-TOOL_SLUGS = {
-    TOOL_MEDIA: "fotos",
-    TOOL_IDEA: "idea",
-    TOOL_EFFECTS: "efectos",
-    TOOL_CUT: "cortar",
-}
-TOOL_PARAM = "herramienta"
+#: Deivid 2026-11-17 («que se junten todo en un solo slide panel»): every flow is a tab of
+#: ONE side panel — (flow, lucide icon, the tab's name). The chosen tab shows its icon and
+#: name, the others their icon (`.q-source-seg`, the name in `aria-label`/`title`).
+FLOW_TABS: tuple[tuple[str, str, str], ...] = (
+    (FLOW_MEDIA, "image-plus", "¿Con qué lo armamos?"),
+    (FLOW_TEXT, "type", "Texto"),
+    (FLOW_EFFECT, "sparkles", "Efecto"),
+    (FLOW_IDEA, "lightbulb", "Pedir una idea"),
+)
+#: The side panel's title (the tab's question goes under it, over its fields).
+FLOW_PANEL_TITLE = "Agregar a tu video"
+FLOW_TABS_LABEL = "Qué agregar"
+#: No effect loop exists yet (EF-05 makes them): «+ Efecto» says so and what to do in the
+#: meantime, with a button to the «Texto» tab (ED-10 UX review).
+NO_EFFECTS_YET = "Todavía no hay efectos para tu video. Mientras tanto, agrega un texto."
+NO_EFFECTS_GO_TEXT = "Agregar un texto"
 
 # -- «Fotos y videos» ---------------------------------------------------------------------
 
-ADD_MEDIA = "Agregar fotos o videos"
 #: «Orden de tu video»: the first and the last file (the off-switch keeps «…el clip»).
 STRIP_OPENS = "Abre tu video"
 STRIP_CLOSES = "Cierra tu video"
@@ -113,10 +111,6 @@ ORDER_HINT = (
     "Arrastra las fotos y los videos para ordenarlos: el primero abre tu video y el último "
     "lo cierra."
 )
-PRODUCT_PREFIX = "Tu producto: "
-PRODUCT_CHANGE = "Cambiar"
-PRODUCT_CHOOSE = "Elegir un producto"
-PRODUCT_CHANGE_LABEL = "Cambiar el producto"
 
 # -- «Idea» --------------------------------------------------------------------------------
 
@@ -151,6 +145,8 @@ def duration_line(seconds: float) -> str:
 
 #: Under 3 s a reel is too short (EF-04 refuses under 3 s).
 FAST_MIN_SECONDS = 3.0
+#: Past 60 s it is too long (EF-04 `MAX_TOTAL_S`).
+FAST_MAX_SECONDS = 60.0
 #: «Cámara rápida» proposes the speed whose result is closest to this.
 FAST_TARGET_SECONDS = 5.0
 
@@ -171,23 +167,50 @@ def fast_too_long_line(seconds: float) -> str:
     )
 
 
-#: «Cámara rápida» is offered on a video of at least this length (UX review 2026-11-14).
-FAST_MIN_SOURCE_SECONDS = 15.0
-FAST_NEEDS_LONGER = "Para usar cámara rápida tu video tiene que durar al menos 15 s."
+#: «Cámara rápida» needs a video of at least this length: what ×2 needs to last 3 s
+#: (Deivid 2026-11-17, with ×2 and ×3; it was 15 s while ×5 was the slowest).
+FAST_MIN_SOURCE_SECONDS = 6.0
+FAST_NEEDS_LONGER = "Para hacerlo más rápido, tu video tiene que durar al menos 6 s."
+
+
+def speed_result_line(speed: int, seconds: float) -> str:
+    """Why a speed is off: «Con ×10 tu video duraría 1,2 s.»."""
+    return f"Con ×{int(speed)} tu video duraría {contract.seconds_text(seconds)} s."
+
+
+def speed_reasons(duration: float, *, known: bool = True) -> dict[str, str]:
+    """«Velocidad»'s speeds for the whole video of `duration` s: value → why it is off
+    ("" = on). A speed is on only when the video at that speed lasts 3–60 s; under 6 s
+    every one is off with `FAST_NEEDS_LONGER`; while the length is not read yet, with
+    `CUT_WAITING`. «Normal» (`SPEED_NORMAL`) is always on."""
+    reasons = {SPEED_NORMAL: ""}
+    end = contract.grid_end(duration) if known and duration > 0 else 0.0
+    for speed in contract.FAST_MOTION_SPEEDS:
+        if not known or duration <= 0:
+            why = CUT_WAITING
+        elif duration < FAST_MIN_SOURCE_SECONDS - 1e-6:
+            why = FAST_NEEDS_LONGER
+        else:
+            seconds = end / speed
+            fits = FAST_MIN_SECONDS - 1e-6 <= seconds <= FAST_MAX_SECONDS + 1e-6
+            why = "" if fits else speed_result_line(speed, seconds)
+        reasons[str(speed)] = why
+    return reasons
 
 
 def fast_impossible_line(seconds: float) -> str:
-    """Even the whole video at ×5 lasts under 3 s: nothing the owner can fix by cutting."""
+    """Even the whole video at the slowest speed lasts under 3 s: no cut can fix it."""
     return (
         f"Tu video duraría {contract.seconds_text(seconds)} s: muy poco para un reel. "
-        "Quita la cámara rápida o usa un video más largo."
+        "Vuelve a la velocidad normal o usa un video más largo."
     )
 
 
 def fast_on_line(speed: int, *, had_cut: bool) -> str:
-    """The live line when «Cámara rápida» is marked: what it did to the stretch."""
-    line = f"Pusiste cámara rápida: usamos todo tu video a ×{int(speed)}."
-    return f"{line} Si la quitas, vuelve tu pedazo." if had_cut else line
+    """The live line when «Cámara rápida» is marked: what it did to the stretch, in the
+    words of the control the owner sees («Velocidad», ED-10 UX review)."""
+    line = f"Pusiste tu video ×{int(speed)}: usamos todo tu video."
+    return f"{line} Si vuelves a la velocidad normal, recuperas tu pedazo." if had_cut else line
 
 
 def fast_check(*, key: str, start: float, end: float, speed: float) -> tuple[float, str]:
@@ -215,11 +238,14 @@ def fast_check(*, key: str, start: float, end: float, speed: float) -> tuple[flo
 
 
 def fast_proposal(duration: float) -> tuple[float, float, int]:
-    """Marking «Cámara rápida»: the whole video (no 15 s cap: it is sped up) and the
-    speed of ×5/×10/×20 whose result is closest to 5 s — `(start, end, speed)`."""
+    """Marking «Cámara rápida»: the whole video (no 15 s cap: it is sped up) and, of
+    the speeds that are on (`speed_reasons`), the one whose result is closest to 5 s —
+    `(start, end, speed)`."""
     end = contract.grid_end(duration)
+    reasons = speed_reasons(duration)
+    on = [s for s in contract.FAST_MOTION_SPEEDS if not reasons[str(s)]]
     speed = min(
-        contract.FAST_MOTION_SPEEDS,
+        on or contract.FAST_MOTION_SPEEDS,
         key=lambda s: (abs(end / s - FAST_TARGET_SECONDS), s),
     )
     return 0.0, end, speed
@@ -244,6 +270,18 @@ def whole_label(duration: float) -> str:
     return FIRST_SECONDS if duration > contract.DEFAULT_STRETCH_SECONDS else WHOLE_VIDEO
 
 
+#: Deivid 2026-11-17: ONE button cuts the chosen video where the marker is (no
+#: «Desde/Hasta», no «Usar el video entero»): the video becomes two blocks.
+CUT = "Cortar"
+CUT_LABEL = "Cortar el video donde está el marcador"
+CUT_NOT_HERE = "Mueve el marcador dentro de tu video para cortar."
+CUT_TOO_CLOSE = "Muy cerca del borde: mueve el marcador al menos 1 s."
+CUT_FULL = "Tu video ya tiene todos los cortes que se pueden hacer."
+CUT_DONE_LINE = "Cortaste tu video."
+PIECE_REMOVED_LINE = "Quitaste un pedazo de tu video."
+#: How close to a block's edge the marker may be and still cut it (seconds of the final
+#: video); a piece also keeps at least `contract.SEGMENT_MIN_SECONDS` of the source.
+CUT_EDGE_SECONDS = 0.5
 TOO_SHORT = "El pedazo tiene que durar al menos 1 segundo."
 CUT_WAITING = "Estamos leyendo cuánto dura tu video."
 #: Any refusal code (EF-03 «Preparar», PR #679) with no words of its own.
@@ -318,21 +356,15 @@ def prepare_check(
 
 
 def usage_line(seconds: float) -> str:
-    """«Usas {s} s de tu video.»"""
-    return f"Usas {contract.seconds_text(seconds)} s de tu video."
+    """«Usas {s} s de tu video.» — rounded as the chosen block's heading and the
+    timeline round it (`timeline_vm.amount`, the ½ s magnet): the same stretch never
+    reads «6,5 s» above and «6,6 s» below (Deivid, 2026-11-16)."""
+    return f"Usas {timeline_vm.amount(seconds)} s de tu video."
 
 
 def range_line(start: float, end: float) -> str:
     """«Desde 0:04 · Hasta 0:12»."""
     return f"Desde {contract.clock_text(start)} · Hasta {contract.clock_text(end)}"
-
-
-# -- the card «Tu video» -------------------------------------------------------------------
-
-
-def card_title(seconds: float) -> str:
-    """«Tu video · {s} s»."""
-    return f"Tu video · {contract.seconds_text(seconds)} s"
 
 
 def time_of_total(t: float, total: float) -> str:
@@ -371,8 +403,18 @@ def snapshot(
     speed: int,
     text: str,
     place: str,
+    order: Sequence[str] = (),
+    text_start: float = 0.0,
+    text_end: float = -1.0,
+    effect_times: Mapping[str, Sequence[float]] | None = None,
+    pieces: Sequence[Sequence[float]] = (),
 ) -> dict[str, object]:
-    """The editor's choices as one plain value (what «Deshacer» restores exactly)."""
+    """The editor's choices as one plain value (what «Deshacer» restores exactly).
+    ED-10: the order of «Fotos y videos» (`order`, the files' keys) and when the text
+    and each effect show (`text_end` -1 = to the end; an effect absent from
+    `effect_times` covers the whole video). «Cortar»: the own video's `pieces`
+    (`[start, end]` of the source each, in the video's order; empty = one piece, the
+    stretch `start`-`end`)."""
     return {
         "start": float(start),
         "end": float(end),
@@ -381,11 +423,37 @@ def snapshot(
         "speed": int(speed),
         "text": str(text),
         "place": str(place),
+        "order": [str(key) for key in order],
+        "text_start": float(text_start),
+        "text_end": float(text_end),
+        "effect_times": {
+            str(k): [float(v) for v in times] for k, times in (effect_times or {}).items()
+        },
+        "pieces": [[float(a), float(b)] for a, b in pieces],
     }
 
 
-FAST_ON_LINE = "Pusiste cámara rápida a tu video."
-FAST_OFF_LINE = "Quitaste la cámara rápida de tu video."
+FAST_ON_LINE = "Pusiste tu video más rápido."
+FAST_OFF_LINE = "Volviste tu video a la velocidad normal."
+#: ED-10: the order changed (the screen says which block, `timeline_vm.moved_text`).
+ORDER_LINE = "Cambiaste el orden de tu video."
+TEXT_TIME_LINE = "Cambiaste cuándo sale el texto."
+TEXT_REMOVED_LINE = "Quitaste el texto de tu video."
+
+
+def _effect_label(effect_id: str) -> str:
+    effect = contract.effect_of(effect_id)
+    return effect.label if effect is not None else effect_id
+
+
+def effect_time_line(effect_id: str) -> str:
+    """«Cambiaste cuándo sale Vapor.» (§4)."""
+    return f"Cambiaste cuándo sale {_effect_label(effect_id)}."
+
+
+def effect_removed_line(effect_id: str) -> str:
+    """«Quitaste Vapor.» (§4)."""
+    return f"Quitaste {_effect_label(effect_id)}."
 
 
 def change_message(before: Mapping[str, object], after: Mapping[str, object]) -> str:
@@ -397,9 +465,30 @@ def change_message(before: Mapping[str, object], after: Mapping[str, object]) ->
         return FAST_ON_LINE
     if fast_before and not fast_after:
         return FAST_OFF_LINE
+    pieces_before = list(before.get("pieces") or [])  # type: ignore[call-overload]
+    pieces_after = list(after.get("pieces") or [])  # type: ignore[call-overload]
+    if pieces_before != pieces_after:
+        # a piece more is a cut; a piece less, one taken out; the same ones, moved
+        if len(pieces_after) > len(pieces_before):
+            return CUT_DONE_LINE
+        if len(pieces_after) < len(pieces_before):
+            return PIECE_REMOVED_LINE
+        return ORDER_LINE
     for fields, line in _CHANGE_LINES:
         if any(before.get(name) != after.get(name) for name in fields):
             return line
+    if before.get("order", []) != after.get("order", []):
+        return ORDER_LINE
+    if (before.get("text_start", 0.0), before.get("text_end", -1.0)) != (
+        after.get("text_start", 0.0),
+        after.get("text_end", -1.0),
+    ):
+        return TEXT_TIME_LINE
+    times_before = dict(before.get("effect_times") or {})  # type: ignore[call-overload]
+    times_after = dict(after.get("effect_times") or {})  # type: ignore[call-overload]
+    for effect_id in sorted(set(times_before) | set(times_after)):
+        if times_before.get(effect_id) != times_after.get(effect_id):
+            return effect_time_line(effect_id)
     return ""
 
 
@@ -424,7 +513,7 @@ def pop_undo(
 #: The Clip's video the editor works on: the owner's (an upload, the catalog, the
 #: Galería, a publication), never the reel's original, Pinterest nor — Deivid 2026-11-14 —
 #: Inspiración stock, which stays a reference for the AI only (never cut, never a stretch).
-_NOT_OWN = ("reel", "pinterest", "stock")
+_NOT_OWN = ("reel", "pinterest", "stock", "inspiration")
 
 
 #: The sources of a video Qualify itself made (a publication): no low-resolution
@@ -471,19 +560,6 @@ def editor_shown(
     )
 
 
-def tools_shown(*, has_own_video: bool) -> list[str]:
-    """«Cortar» only with an own video the browser can play here (no empty tools)."""
-    return [t for t in TOOLS if t != TOOL_CUT or has_own_video]
-
-
-def tool_from_slug(slug: str) -> str:
-    """The tool an address names ("" = none / unknown)."""
-    for tool, word in TOOL_SLUGS.items():
-        if word == slug:
-            return tool
-    return ""
-
-
 def recipe_of(
     *,
     video_key: str,
@@ -494,32 +570,62 @@ def recipe_of(
     speed: int,
     text: str,
     place: str,
+    text_start: float = 0.0,
+    text_end: float | None = None,
+    effect_times: Mapping[str, Sequence[float]] | None = None,
+    pieces: Sequence[Sequence[float]] = (),
 ) -> contract.PartRecipe:
     """The Clip's recipe of one part, in EF-02's shape. «Cámara rápida»'s speed goes in
     the stretch only (`segments[].speed`); the `camara_rapida` effect carries empty
-    params (provisional, see `editor_preview_contract`). An unset stretch is left out."""
+    params (provisional, see `editor_preview_contract`). An unset stretch is left out.
+
+    ED-10: when the owner moved the text or an effect on the timeline, its seconds of
+    the final video (`text_start`/`text_end`, `effect_times[id]` = `[start, end]`);
+    untouched, the recipe is exactly ED-02's (the text from 0 with no end, effects with
+    no span).
+
+    «Cortar» (Deivid 2026-11-17): the own video cut in `pieces` is one `SourceSegment`
+    per piece, in the video's order — the same `key`, each with its own `start_s`/`end_s`
+    of the source, all at the video's speed and turn (contract v2 takes up to
+    `SEGMENTS_MAX`). Without pieces, the one stretch `start`-`end`."""
     fast = contract.FAST_MOTION in effects and bool(video_key)
+    stretches = [(float(a), float(b)) for a, b in pieces] or [(float(start), float(end))]
     segments: tuple[contract.SourceSegment, ...] = ()
-    if video_key and end > start:
-        segments = (
+    if video_key:
+        segments = tuple(
             contract.SourceSegment(
                 key=video_key,
-                start_s=float(start),
-                end_s=float(end),
+                start_s=a,
+                end_s=b,
                 speed=float(speed) if fast else 1.0,
                 rotate=int(rotate),
-            ),
+            )
+            for a, b in stretches
+            if b > a
         )
     uses: list[contract.EffectUse] = []
     for effect_id in effects:
         effect = contract.effect_of(effect_id)
         if effect is None or (effect.needs_own_video and not video_key):
             continue
-        uses.append(contract.EffectUse(effect_id, effect.version))
+        span = (effect_times or {}).get(effect_id)
+        if span and len(span) == 2 and float(span[1]) > float(span[0]):
+            uses.append(
+                contract.EffectUse(
+                    effect_id,
+                    effect.version,
+                    start_s=round(float(span[0]), 2),
+                    end_s=round(float(span[1]), 2),
+                )
+            )
+        else:
+            uses.append(contract.EffectUse(effect_id, effect.version))
     layer = (
         contract.VideoTextLayer(
             text=text.strip(),
             place=place,
+            start_s=round(max(float(text_start), 0.0), 2),
+            end_s=None if text_end is None else round(float(text_end), 2),
             layout_id=contract.TEXT_LAYOUT_ID,
             layout_version=contract.TEXT_LAYOUT_VERSION,
         )
@@ -529,10 +635,295 @@ def recipe_of(
     return contract.PartRecipe(effects=tuple(uses), text_layer=layer, segments=segments)
 
 
-def card_line(effects: Sequence[str], text: str) -> str:
-    """The card's one line: the effects chosen and the text («Vapor · «Shawarma…»»)."""
-    labels = [e.label for e in contract.CLIP_EFFECTS if e.effect_id in effects]
-    parts = [", ".join(labels)] if labels else []
+# -- the timeline (ED-10 m-25026648) ---------------------------------------------------------
+
+#: The address's word for the chosen block (`/create?paso=1&bloque=video-2`, N3).
+BLOCK_PARAM = "bloque"
+#: How long a photo shows on the timeline (D-T1 = A; 2 s is the hypothesis of §3.1).
+PHOTO_SECONDS = 2.0
+#: The text's block id (one text today; ED-13 brings up to three).
+TEXT_ID = "texto-1"
+#: An effect's block id is this plus its library id (`efecto-vapor_capa`).
+EFFECT_ID_PREFIX = "efecto-"
+#: The chosen block's bar in the editor: only what works on this screen today. «Girar»
+#: of a photo and «Duración» (ED-14) come with their tickets; «Cortar» (where the
+#: marker is), «Girar» and «Velocidad» of the video are in its panel (one place each).
+REMOVE = "Quitar"
+EDITOR_ACTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "video": ((REMOVE, "trash-2"),),
+    "photo": ((REMOVE, "trash-2"),),
+    "text": ((REMOVE, "trash-2"),),
+    "effect": ((REMOVE, "trash-2"),),
+}
+#: «Velocidad» of the editor's video: «Normal» or one of «Cámara rápida»'s speeds.
+SPEED_NORMAL = "1"
+#: Where the browser's backend origin goes in a preview address: the server does not
+#: know the origin the browser sees, so `clip_editor_view` puts `BACKEND_BASE` there.
+SEQ_BASE = "__QB__"
+
+
+#: A piece of the own video after «Cortar» is a block of its own: the first keeps the
+#: file's key as its id, the next ones `key#parte-2`, `key#parte-3`… (by position).
+PIECE_MARK = "#parte-"
+
+
+def piece_id(key: str, index: int) -> str:
+    """The block id of the own video's piece `index` (0-based)."""
+    return key if index <= 0 else f"{key}{PIECE_MARK}{index + 1}"
+
+
+def piece_of(block_id: str) -> tuple[str, int]:
+    """`(file key, piece index)` of a block id (index 0 for any block not a later piece)."""
+    key, mark, number = block_id.rpartition(PIECE_MARK)
+    if mark and key and number.isdigit() and int(number) >= 2:
+        return key, int(number) - 1
+    return block_id, 0
+
+
+def too_close_text(edge: float) -> str:
+    """«Muy cerca del borde…» with how far the marker must be from it (`edge`, seconds
+    of the final video: 1 s at normal speed, less in «Cámara rápida»)."""
+    if edge >= 1.0 - 1e-6:
+        return CUT_TOO_CLOSE
+    shown = "½" if abs(edge - 0.5) < 1e-6 else f"{edge:.1f}".replace(".", ",")
+    return f"Muy cerca del borde: mueve el marcador al menos {shown} s."
+
+
+def _shown_length(item: Mapping[str, object]) -> float:
+    """Seconds a media block lasts in the final video (a video at its speed)."""
+    if item.get("kind") == "photo":
+        return float(item.get("dur") or 0.0)  # type: ignore[arg-type]
+    speed = float(item.get("speed") or 1.0) or 1.0  # type: ignore[arg-type]
+    src_start = float(item.get("src_start") or 0.0)  # type: ignore[arg-type]
+    src_end = float(item.get("src_end") or 0.0)  # type: ignore[arg-type]
+    return max(src_end - src_start, 0.0) / speed
+
+
+def block_at(media: Sequence[Mapping[str, object]], key: str, playhead: float) -> str:
+    """The id of the block of file `key` under the marker at `playhead` ("" = the marker
+    is on another file or past the end). On the very line between two blocks it is the
+    one that starts there — right after «Cortar», the piece after the cut."""
+    at = 0.0
+    for item in media:
+        length = _shown_length(item)
+        if at - 1e-6 <= float(playhead) < at + length - 1e-6:
+            return str(item.get("id") or "") if item.get("key") == key else ""
+        at += length
+    return ""
+
+
+def split_check(
+    media: Sequence[Mapping[str, object]], block_id: str, playhead: float
+) -> tuple[float, str]:
+    """«Cortar» on the video block `block_id` with the marker at `playhead` (seconds of
+    the final video): `(source second to cut at, "")`, or `(0.0, why not)` in the owner's
+    words — the marker is not on that video, or it is closer to one of its edges than a
+    piece may be (1 s of the source, at least ½ s of the final video): «Muy cerca del
+    borde…». The speed is respected: a second of the final video is `speed` seconds of
+    the source."""
+    at = 0.0
+    for item in media:
+        speed = float(item.get("speed") or 1.0) or 1.0  # type: ignore[arg-type]
+        length = _shown_length(item)
+        src_start = float(item.get("src_start") or 0.0)  # type: ignore[arg-type]
+        if item.get("id") != block_id:
+            at += length
+            continue
+        if item.get("kind") == "photo":
+            return 0.0, CUT_NOT_HERE
+        offset = float(playhead) - at
+        if offset < -0.01 or offset > length + 0.01:
+            return 0.0, CUT_NOT_HERE
+        edge = max(CUT_EDGE_SECONDS, contract.SEGMENT_MIN_SECONDS / speed)
+        if offset < edge - 1e-6 or length - offset < edge - 1e-6:
+            return 0.0, too_close_text(edge)
+        return round(src_start + offset * speed, 2), ""
+    return 0.0, CUT_NOT_HERE
+
+
+def is_flow(block: str) -> bool:
+    """Whether the panel holds a flow «Agregar» opened (`+media`), not a block."""
+    return block.startswith(FLOW_MARK)
+
+
+def flow_of(block: str) -> str:
+    """The flow a `+media` value names ("" = a block or nothing)."""
+    name = block[len(FLOW_MARK) :] if is_flow(block) else ""
+    return name if name in FLOWS else ""
+
+
+def timeline_media(
+    strip: Sequence[Mapping[str, str]],
+    *,
+    own_key: str,
+    cut_start: float,
+    cut_end: float,
+    speed: float,
+    rotate: int,
+    lengths: Mapping[str, float],
+    pieces: Sequence[Sequence[float]] = (),
+) -> list[dict[str, object]]:
+    """«Fotos y videos» on the timeline (`ui.timeline_vm`'s raw media), in the order of
+    «Orden de tu video» (`strip`, `CreativeState._clip_strip`), everything already in
+    place (E3): a photo shows 2 s; the editor's own video its stretch, at its speed,
+    turned; any other video from 0:00, up to 15 s of it (its length once the browser
+    measured it, `lengths`). Only the owner's files: a reel, Pinterest or Inspiración
+    stays a reference for the AI and is not on the timeline. A block's id is its file's
+    key (stable when blocks move). The own video cut with «Cortar» is one block per piece
+    (`pieces`, `piece_id`), side by side, each its stretch of the source."""
+    media: list[dict[str, object]] = []
+    for item in strip:
+        key = str(item.get("key") or "")
+        if not key or str(item.get("source") or "") in _NOT_OWN:
+            continue
+        if item.get("kind") == "image":
+            media.append({"id": key, "key": key, "kind": "photo", "dur": PHOTO_SECONDS})
+            continue
+        length = float(lengths.get(key) or 0.0)
+        if key == own_key and cut_end > cut_start:
+            stretches = [(float(a), float(b)) for a, b in pieces] or [
+                (float(cut_start), float(cut_end))
+            ]
+            for index, (start, end) in enumerate(stretches):
+                media.append(
+                    {
+                        "id": piece_id(key, index),
+                        "key": key,
+                        "kind": "video",
+                        "src_start": start,
+                        "src_end": end,
+                        "src_len": max(length, end),
+                        "speed": float(speed) if speed > 0 else 1.0,
+                        "rotate": int(rotate),
+                    }
+                )
+            continue
+        default = contract.DEFAULT_STRETCH_SECONDS
+        end = min(length, default) if length > 0 else default
+        media.append(
+            {
+                "id": key,
+                "key": key,
+                "kind": "video",
+                "src_start": 0.0,
+                "src_end": end,
+                "src_len": length or end,
+            }
+        )
+    return media
+
+
+def media_total(media: Sequence[Mapping[str, object]]) -> float:
+    """The video's length on the timeline: the media track has no gaps."""
+    total = 0.0
+    for item in media:
+        if item.get("kind") == "photo":
+            total += float(item.get("dur") or 0.0)  # type: ignore[arg-type]
+            continue
+        start = float(item.get("src_start") or 0.0)  # type: ignore[arg-type]
+        end = float(item.get("src_end") or 0.0)  # type: ignore[arg-type]
+        speed = float(item.get("speed") or 1.0) or 1.0  # type: ignore[arg-type]
+        total += max(end - start, 0.0) / speed
+    return total
+
+
+def _span(start: float, end: float | None, total: float) -> tuple[float, float]:
+    """A text's or effect's seconds inside the video (an open end runs to the end; one
+    the video no longer reaches is cut to its end, never under 1 s — §3.5)."""
+    finish = total if end is None or end < 0 else min(float(end), total)
+    begin = min(max(float(start), 0.0), max(finish - contract.SEGMENT_MIN_SECONDS, 0.0))
+    return begin, max(finish, begin)
+
+
+def timeline_overlays(
+    *,
+    text: str,
+    place: str,
+    text_start: float,
+    text_end: float,
+    effects: Sequence[str],
+    effect_times: Mapping[str, Sequence[float]],
+    total: float,
+) -> list[dict[str, object]]:
+    """«Textos» and «Efectos» on the timeline (`ui.timeline_vm`'s raw overlays): the
+    text (from 0:00 to the end unless the owner moved it) and each layer effect chosen
+    («Cámara rápida» is the video's «Velocidad», never a block — D-T3)."""
+    rows: list[dict[str, object]] = []
     if text.strip():
-        parts.append(f"«{text.strip()}»")
-    return " · ".join(parts)
+        start, end = _span(text_start, None if text_end < 0 else text_end, total)
+        rows.append(
+            {
+                "id": TEXT_ID,
+                "kind": "text",
+                "label": text.strip(),
+                "start": start,
+                "end": end,
+                "place": place,
+            }
+        )
+    for effect_id in effects:
+        effect = contract.effect_of(effect_id)
+        if effect is None or not effect.preview_asset:
+            continue
+        times = list(effect_times.get(effect_id) or [])
+        begin, finish = (
+            _span(times[0], times[1], total) if len(times) == 2 else _span(0.0, None, total)
+        )
+        rows.append(
+            {
+                "id": EFFECT_ID_PREFIX + effect_id,
+                "kind": "effect",
+                "effect_id": effect_id,
+                "label": effect.label,
+                "start": begin,
+                "end": finish,
+            }
+        )
+    return rows
+
+
+def block_slug(
+    media: Sequence[Mapping[str, object]],
+    overlays: Sequence[Mapping[str, object]],
+    block_id: str,
+) -> str:
+    """The address's word for a block (`video-2`, `foto-1`, `texto-1`, `efecto-1`): its
+    kind and its number as the owner reads it («Video 2 de 3» is `video-2`)."""
+    for n, item in enumerate(media, start=1):
+        if item.get("id") == block_id:
+            return f"{'foto' if item.get('kind') == 'photo' else 'video'}-{n}"
+    counts = {"text": 0, "effect": 0}
+    for item in overlays:
+        kind = str(item.get("kind"))
+        if kind not in counts:
+            continue
+        counts[kind] += 1
+        if item.get("id") == block_id:
+            return f"{'texto' if kind == 'text' else 'efecto'}-{counts[kind]}"
+    return ""
+
+
+def block_from_slug(
+    media: Sequence[Mapping[str, object]],
+    overlays: Sequence[Mapping[str, object]],
+    slug: str,
+) -> str:
+    """The block an address names ("" = none: unknown, or that place is not there)."""
+    for item in [*media, *overlays]:
+        block_id = str(item.get("id") or "")
+        if slug and block_slug(media, overlays, block_id) == slug:
+            return block_id
+    return ""
+
+
+def reorder_keys(keys: Sequence[str], shown: Sequence[str]) -> list[str]:
+    """`keys` (the whole order of the Clip's files) with the ones on the timeline put in
+    the order `shown` gives them; a file the timeline does not show keeps its place."""
+    on = set(shown)
+    queue = [key for key in shown if key in keys]
+    return [queue.pop(0) if key in on and queue else key for key in keys]
+
+
+def speed_value(*, fast: bool, speed: int) -> str:
+    """«Velocidad»'s value: «1» (normal) or the speed of «Cámara rápida»."""
+    return str(int(speed)) if fast else SPEED_NORMAL

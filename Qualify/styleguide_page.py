@@ -381,6 +381,26 @@ class TimelineDemoState(rx.State):
             self.status = tl_vm.timed_text(self.overlays, block_id)
 
     @rx.event
+    def drop(self, block_id: str, what: str, value: float) -> None:
+        """ED-10: drag and drop — a video or photo to a new place, a text or effect to a
+        new start (½ s)."""
+        if what == "move" and self._is_media(block_id):
+            self.media = tl_vm.move_to(self.media, block_id, int(round(float(value))))
+            self.status = tl_vm.moved_text(self.media, block_id)
+        elif what == "time":
+            total = tl_vm.total_seconds(self.media)
+            for item in self.overlays:
+                if item["id"] == block_id:
+                    delta = tl_vm.snap(float(value)) - float(item["start"])
+                    self.overlays = tl_vm.shift(self.overlays, block_id, delta, total)
+                    self.status = tl_vm.timed_text(self.overlays, block_id)
+                    break
+
+    @rx.var
+    def chosen_label(self) -> str:
+        return self.chosen.get("label", "")
+
+    @rx.event
     def set_speed(self, block_id: str, value: str) -> None:
         self.media = tl_vm.set_speed(self.media, block_id, str(value))
 
@@ -1849,8 +1869,11 @@ def _timeline_section() -> rx.Component:
                 "demo solo lo anuncia). La lente de vidrio del menú va debajo del bloque "
                 "elegido y su barra flota en una isla: arriba de la pista en el celular, "
                 "debajo en escritorio. En el panel: «Velocidad» de un video y el lugar de "
-                "un texto. Lo que no hace la demo: arrastrar, cortar de verdad y los "
-                "botones de la barra (sin acción). Encima, la vista previa en secuencia "
+                "un texto. Arrastrar (ED-10): un video o una foto cambia de lugar (con el "
+                "ratón, moviendo 5 px; con el dedo, manteniendo apretado medio segundo) y "
+                "un texto o un efecto se corre en el tiempo de a ½ s. Lo que no hace la "
+                "demo: cortar de verdad y los botones de la barra (sin acción). Encima, "
+                "la vista previa en secuencia "
                 "(ED-01b) con el mismo reloj que el cabezal: ▶ la reproduce de punta a punta "
                 "y vuelve a empezar, mover el cabezal busca, y los textos y el efecto salen "
                 "en su hora. El repositorio no tiene videos de ejemplo: cada video es una "
@@ -1906,8 +1929,9 @@ def _timeline_section() -> rx.Component:
                             on_select=s.select,
                             status=s.status,
                             on_key=s.key,
+                            on_drag=s.drop,
                         ),
-                        timeline_actions(s.chosen_kind, on_add=s.add),
+                        timeline_actions(s.chosen_kind, on_add=s.add, label=s.chosen_label),
                         rx.cond(
                             s.selected != "",
                             timeline_panel(

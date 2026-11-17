@@ -803,19 +803,46 @@ def _piece_label(title: str, media_type: str, created_at: object) -> str:
     return f"{what} del {day} {_MONTHS[month - 1]}" if day and month else what
 
 
+#: What a publication is, for its thumbnail's mark in «Publicaciones» (Deivid
+#: 2026-11-17: «quiero que haya una manera de distinguir cuales son videos, galerias e
+#: imagenes»): a file of a piece with several files is a gallery's (carousel) slide.
+PIECE_KIND_VIDEO = "video"
+PIECE_KIND_GALLERY = "gallery"
+PIECE_KIND_IMAGE = "image"
+
+
+def piece_kind(media_type: str, files_in_piece: int) -> str:
+    """`gallery` for a file of a piece with two or more files (a carousel), else
+    `video` or `image` by the file itself."""
+    if files_in_piece > 1:
+        return PIECE_KIND_GALLERY
+    return PIECE_KIND_VIDEO if media_type == "video" else PIECE_KIND_IMAGE
+
+
 def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     """The images and videos of the brand's own pieces, the most recent first — what a
     carousel's «De una pieza» slide picks from (§ request 2026-10-09). `view` is a
     short-lived `/r2media` path of the thumbnail (a video's poster frame), "" when the
-    file is not in R2 or has no poster; `label` says which piece it came from."""
+    file is not in R2 or has no poster; `label` says which piece it came from; `kind`
+    whether the piece is a video, a gallery or an image (`piece_kind`); `piece` the
+    piece's id and `position` the file's place in it ("0", "1"…) — a gallery picked
+    whole goes in in its carousel order (ED-10, Deivid 2026-11-17: «cuando selecciona
+    una galería solo trae una imagen, no todo su contenido»)."""
     from qualify_api.creative.pieces import DbPieceFiles
 
+    files = DbPieceFiles().files(tenant_id=tenant_id, brand_id=brand_id)
+    per_piece: dict[object, int] = {}
+    for piece in files:
+        per_piece[piece.draft_id] = per_piece.get(piece.draft_id, 0) + 1
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
-    for piece in DbPieceFiles().files(tenant_id=tenant_id, brand_id=brand_id):
+    placed: dict[object, int] = {}
+    for piece in files:
         if piece.object_key in seen:
             continue
         seen.add(piece.object_key)
+        position = placed.get(piece.draft_id, 0)
+        placed[piece.draft_id] = position + 1
         thumb = piece.object_key if piece.media_type == "image" else piece.poster_key
         try:
             view = issue_view_path(tenant_id, thumb, "image") if thumb else ""
@@ -826,8 +853,11 @@ def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
             {
                 "key": piece.object_key,
                 "media_type": piece.media_type,
+                "kind": piece_kind(piece.media_type, per_piece.get(piece.draft_id, 1)),
                 "label": _piece_label(piece.title, piece.media_type, piece.created_at),
                 "view": view,
+                "piece": str(piece.draft_id),
+                "position": str(position),
             }
         )
     return tuple(rows)
