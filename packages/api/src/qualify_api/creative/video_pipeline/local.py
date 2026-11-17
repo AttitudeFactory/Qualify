@@ -299,7 +299,10 @@ def render_local_part(
     files: dict[str, str] = {}
     lengths: dict[str, float] = {}
     warnings: list[dict[str, Any]] = []
-    size: tuple[int, int] | None = None
+    # m-25041163: every local part comes out 1080×1920 — `prepare` never enlarges (its file
+    # is an intermediate), the photos are held at it, and `render_speed` enlarges a smaller
+    # stretch bicubic in the ONE encode at that size (not a second one in `prepare`)
+    size = TARGET_SIZE
     try:
         for index, segment in enumerate(part.segments):
             if segment.kind != "video":
@@ -326,10 +329,8 @@ def render_local_part(
             files[reference] = prepared.path
             lengths[reference] = prepared.duration_s
             warnings.extend({"segment": index, **w.to_dict()} for w in prepared.warnings)
-            size = size or (prepared.width, prepared.height)
             if beat is not None:
                 beat()
-        size = size or TARGET_SIZE
         photos = False
         for index, segment in enumerate(part.segments):
             if segment.kind != "photo":
@@ -357,7 +358,9 @@ def render_local_part(
             for index, segment in enumerate(part.segments)
         ]
         # a total outside 3-60 s is refused here as today (`speed_duration_out_of_range`)
-        result = render_speed(plan_speed(stretches), root / "local.mp4", resolve=files.__getitem__)
+        result = render_speed(
+            plan_speed(stretches), root / "local.mp4", resolve=files.__getitem__, size=size
+        )
     except VideoSourceError as exc:
         raise LocalVideoFailed(
             FailureReason.INVALID_PARAMETERS.value,

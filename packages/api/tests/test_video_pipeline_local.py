@@ -128,6 +128,24 @@ def queue_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(SWITCH, "queue")
 
 
+#: The one test that assembles at the real 1080×1920 (m-25041163).
+REAL_SIZE_TEST = "test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once"
+
+
+@pytest.fixture(autouse=True)
+def assemble_at_the_sources_size(request: pytest.FixtureRequest, monkeypatch: Any) -> None:
+    """A local part comes out 1080×1920 (m-25041163). Here, where the subject is the
+    pipeline around the size, it is assembled at the sources' own 9:16 `SIZE` instead:
+    encoding 1080×1920 in every test made this file ten times slower (20 s → 220 s). The
+    real size is `REAL_SIZE_TEST`'s, and `speed`'s own tests'."""
+    if request.node.name == REAL_SIZE_TEST:
+        return
+    from qualify_creative.video import prepare
+
+    # `render_local_part` reads it at call time: the size of the photos and of the speed
+    monkeypatch.setattr(prepare, "TARGET_SIZE", SIZE)
+
+
 @pytest.fixture(scope="module")
 def sources() -> dict[str, bytes]:
     return {VIDEO_KEY: _video_bytes(4.0), PHOTO_KEY: _png_bytes()}
@@ -313,11 +331,57 @@ def test_the_asset_records_its_provenance(queue_on: None, sources: dict[str, byt
     meta = write.params["local"]
     assert meta["recipe_contract"] == 2 and meta["recipe_version"] == "local-v1"
     assert meta["effects_pipeline_version"] == 1 and meta["pricing_version"] == "v10"
-    assert meta["effect_version"] == "camara_rapida-v1"
-    assert meta["speed"]["effect_version"] == "camara_rapida-v1"
+    assert meta["effect_version"] == "camara_rapida-v2"
+    assert meta["speed"]["effect_version"] == "camara_rapida-v2"
     assert set(meta["steps"]) == {"prepare", "speed", "photo_hold"}
     assert [s["kind"] for s in meta["segments"]] == ["video", "photo"]
     assert all("tmp" not in str(s["source"]).lower() for s in meta["speed"]["segments"])
+
+
+def test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-25041163: a small 180×320 video and a photo come out one 1080×1920 video, BT.709
+    tagged. `prepare` keeps the video at its own size (an intermediate, never enlarged) and
+    the speed's single encode enlarges it — 1080×1920 is encoded once, not twice — and the
+    provenance names the speed recipe that does it."""
+    from qualify_creative.video import prepare
+    from qualify_creative.video.speed import SPEED_VERSION
+
+    assert prepare.TARGET_SIZE == (1080, 1920)  # not shrunk by the autouse fixture
+    prepared: list[tuple[int, int]] = []
+    real_apply = prepare.apply_prepare
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        made = real_apply(*args, **kwargs)
+        prepared.append((made.width, made.height))
+        return made
+
+    monkeypatch.setattr(prepare, "apply_prepare", spy)
+    store = ReadingStore(sources)
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_stamped(_local_clip(_video(), _photo(1.5))),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert prepared == [SIZE]  # the intermediate: never enlarged by `prepare`
+    steps = write.params["local"]["steps"]
+    assert steps["speed"] == SPEED_VERSION == "camara_rapida-v2"
+    frames = _decoded(store.files[write.object_key])
+    assert {(f.width, f.height) for f in frames} == {(1080, 1920)}
+    with av.open(io.BytesIO(store.files[write.object_key])) as written:
+        context = written.streams.video[0].codec_context
+        assert (context.color_range, context.colorspace) == (1, 1)  # limited, BT.709
+        assert (context.color_primaries, context.color_trc) == (1, 1)
+    first = frames[0].to_ndarray(format="rgb24")[960, 540]
+    last = frames[-1].to_ndarray(format="rgb24")[960, 540]
+    assert first[1] > 150 and first[0] < 90  # green: the video, enlarged
+    assert last[0] > 150 and last[1] < 90  # red: the photo, at the same size
 
 
 def test_a_photo_and_a_video_make_one_video_with_no_gaps(
