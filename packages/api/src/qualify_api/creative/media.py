@@ -966,7 +966,9 @@ class R2ReadingMediaStore:
             logger.info("generated media already kept in R2 (%s): reused", key)
             return KEPT
         if held == "other":
-            logger.warning("R2 key %s already holds another file: never overwritten", key)
+            # what the caller does with it is the caller's (`_Saver._keep` keeps the new
+            # file under a key of its own and says so; a `keep()` caller fails)
+            logger.info("R2 key %s already holds another file: never overwritten", key)
             return OCCUPIED
         for attempt in range(1, _KEEP_ATTEMPTS + 1):
             try:
@@ -1553,10 +1555,13 @@ class _Saver:
                 # draft 9968b10c (2026-11-03): another file of this revision already holds
                 # the name and the bucket never lets it be overwritten — the new file gets
                 # a key of its own, named by its content (the same bytes, the same key)
+                taken = key
                 key = generated_object_key(
                     self._tenant_id, self._draft_id, self._revision, _content_named(name, data)
                 )
                 outcome = outcome_of(self._tenant_id, key, data, content_type)
+                if outcome == KEPT:
+                    logger.info("%s is taken by another file: this one kept as %s", taken, key)
             kept = outcome == KEPT
         else:
             kept = bool(keep(self._tenant_id, key, data, content_type))
