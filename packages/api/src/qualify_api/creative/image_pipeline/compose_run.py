@@ -753,3 +753,24 @@ def _refusal_failure(
         "",  # the screen's text is the code's (FAILURE_INFO)
         raw=f"the compositor refused the layer after its rewrite: {detail}",
     )
+
+
+def require_price_drawn(outcome: LayerOutcome, composed: Mapping[int, ComposedSlide]) -> None:
+    """m-25040499 (review 3): a piece that must carry its price (`price_required`) and whose
+    composed slides do not — the slide meant to carry it got no layer, so it is a Pillow
+    still, and the Pillow composer draws no price — fails with `price_does_not_fit`. Never
+    published without its price (D5); never drawn by Pillow instead. Off, or without a layer
+    stage (`outcome.request` None): nothing to check."""
+    request = outcome.request
+    if request is None or not price_required(request):
+        return
+    if any(slide.layer.spec.get("price_ref") for slide in composed.values()):
+        return
+    raise _MediaFailed(
+        PRICE_FAILURE,
+        "",  # the screen's text is the code's (FAILURE_INFO)
+        raw=(
+            "the piece's price is on no composed slide (the slide meant to carry it has no "
+            f"layer; composed: {sorted(composed)})"
+        ),
+    )

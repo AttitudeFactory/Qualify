@@ -175,15 +175,18 @@ def resolve_piece_price(
     - not found, several candidates with nothing to tell them apart, or no price today: the
       piece shows no price (recorded, logged) — nothing required, nothing accepted.
 
-    The product: the one named exactly like `product_ref`, else the one whose label is the
-    brief's line, else the only match."""
+    The product: the one named exactly like `product_ref` (the one whose label is the
+    brief's line first, when several share the name), else the one whose label is the brief's
+    line, else the only match."""
     line = price_line.strip()
     unpriced = tuple(replace(p, has_price=False) for p in found)
     if not line:
         return unpriced, PiecePrice("hidden")
     ref = (product_ref or "").strip().casefold()
+    named = [p for p in found if p.name.strip().casefold() == ref]
     product = (
-        next((p for p in found if p.name.strip().casefold() == ref), None)
+        next((p for p in named if p.price_text.strip() == line), None)
+        or (named[0] if named else None)
         or next((p for p in found if p.price_text.strip() == line), None)
         or (found[0] if len(found) == 1 else None)
     )

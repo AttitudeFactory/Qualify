@@ -609,19 +609,24 @@ preferencia. «—» = esa combinación no existe.
   de desarrollo, no se repite en la portada ni en el cierre.
 - **Cómo se aplica** (m-25040499, construido): una imagen suelta lleva el precio en esa imagen; un
   carrusel lo lleva en **una sola** diapositiva de desarrollo (2 … N-1), nunca en la portada ni en
-  el cierre; un carrusel sin desarrollo (portada y cierre) lo lleva en la portada, porque la
-  exclusión de arriba es para la portada «con varios productos» y la pieza tiene un solo producto
-  con precio. Un segundo precio del mismo producto en la pieza es un error que Claude corrige; la
+  el cierre. `[H]` Un carrusel sin desarrollo (portada y cierre) lo lleva en la portada: es una
+  lectura de la exclusión de arriba (la portada «con varios productos»; la pieza tiene un solo
+  producto con precio), no una decisión del fundador — pendiente de su confirmación. Un segundo precio del mismo producto en la pieza es un error que Claude corrige; la
   validación de la capa y el compositor usan la misma regla (`piece_price_problems`).
 - **El precio es el del catálogo hoy:** la pieza muestra precio si su encargo lo traía
-  (`price_line`), pero la cifra es la etiqueta **actual** del producto del encargo en el catálogo,
-  aunque haya cambiado desde entonces (queda registrado con las dos cifras). Si el producto ya no
+  (`price_line`), pero la cifra es la etiqueta **actual** del producto del encargo en el catálogo.
+  `[H]` Imprimir la etiqueta nueva cuando cambió desde el encargo (el texto de la publicación
+  puede seguir diciendo la vieja) es una propuesta pendiente del fundador; queda registrado con las
+  dos cifras (`price_status: changed` en los `params` de la imagen compuesta). Si el producto ya no
   está, no tiene precio hoy o no se puede saber cuál es, la pieza sale sin precio (registrado);
   nunca se imprime la cifra vieja del encargo.
 - **Si el precio no cabe, no se quita** `[F]` (decisión del fundador del 2026-11-16, §12): un precio
   más ancho que su caja hace rechazar la capa, y Claude reescribe el texto para que quepa. Una pieza
   con precio nunca se publica sin él. **Construido** (m-25040499, `engine_revision` 4,
-  §1.7): rechazo con `slot: 'price'`, una reescritura y, si no basta, la pieza falla.
+  §1.7): rechazo con `slot: 'price'`, una reescritura y, si no basta, la pieza falla
+  (`price_does_not_fit`). También falla si la imagen que debía llevar el precio no tiene capa
+  (queda con la composición anterior, que no dibuja precios): nunca se publica sin precio ni se
+  dibuja el precio con otro compositor.
 
 ### Logo
 

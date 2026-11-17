@@ -942,7 +942,7 @@ def write_layers(
         priced_now = {p for p, spec in result.specs.items() if spec.price_ref is not None}
         for position, why in piece_price_problems(request, priced_now, set(raw_of)).items():
             result.specs.pop(position, None)
-            broken[position] = why
+            broken[position] = f"{broken[position]}; {why}" if position in broken else why
     if broken:
         result.repairs = 1
         repair = (

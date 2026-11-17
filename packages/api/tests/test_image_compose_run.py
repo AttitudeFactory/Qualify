@@ -702,6 +702,14 @@ def test_review2_the_layer_validation_and_the_compositor_share_one_rule() -> Non
     [
         ((("Shawarma mixto", "$12.000"),), "", "Shawarma mixto", "hidden", ""),
         ((("Shawarma mixto", "$12.000"),), "$12.000", "Shawarma mixto", "matches", "$12.000"),
+        # two products share the brief's name: the one whose label is the brief's line
+        (
+            (("Shawarma mixto", "$18.000"), ("Shawarma mixto", "$12.000")),
+            "$12.000",
+            "Shawarma mixto",
+            "matches",
+            "$12.000",
+        ),
         # the price changed since the brief: today's label, recorded as changed
         ((("Shawarma mixto", "$13.500"),), "$12.000", "Shawarma mixto", "changed", "$13.500"),
         # renamed: the only match is still the brief's product
@@ -809,17 +817,37 @@ def test_review1_a_changed_price_prints_today_s_label_and_records_both() -> None
     }
 
 
-def test_review2_the_pillow_cover_never_prints_the_price_twice_nor_stale() -> None:
-    from qualify_api.creative.image_pipeline.compose import _pillow_price
+def test_review3_a_priced_piece_whose_price_slide_has_no_layer_fails() -> None:
+    """Review 3: the Pillow composer draws no price, so a priced piece whose development
+    slides got no layer (or a single image whose layer failed) fails — never priceless."""
+    from qualify_api.creative.image_pipeline.compose_run import require_price_drawn
 
+    # 3-scene carousel (+ closing), the layers of slides 1 and 2 failed: only the cover
+    carousel = _carousel({0: _layer(0)}, count=4)
+    drawn = _compose(carousel, Composer())  # nothing to refuse: no price slot has a layer
+    with pytest.raises(_MediaFailed) as failed:
+        require_price_drawn(carousel, drawn)
+    assert failed.value.failure == PRICE_FAILURE and failed.value.detail == ""
+    single = _outcome({}, price_line=PRICE)  # the single image's layer failed
+    with pytest.raises(_MediaFailed):
+        require_price_drawn(single, {})
+    # carried by a composed slide, no price shown, or no layer stage: nothing to say
     priced = _carousel({1: _layer(1, price=True)}, count=4)
-    drawn = _compose(priced, Composer())
-    assert _pillow_price("$9.999", priced, drawn) == ""  # a development slide carries it
-    assert _pillow_price("$9.999", priced, {}) == PRICE  # nothing composed: today's label
-    hidden = _carousel({1: _layer(1)}, count=4, price_line="")
-    assert _pillow_price("$9.999", hidden, {}) == ""  # no price today: never the stale line
-    off = LayerOutcome(scenes={}, layers={})
-    assert _pillow_price("$9.999", off, {}) == "$9.999"  # off: as before
+    require_price_drawn(priced, _compose(priced, Composer()))
+    require_price_drawn(_carousel({1: _layer(1)}, count=4, price_line=""), {})
+    require_price_drawn(LayerOutcome(scenes={}, layers={}), {})
+
+
+def test_review3_the_flyer_checks_the_price_before_anything_else_is_drawn() -> None:
+    import inspect
+
+    from qualify_api.creative.image_pipeline import compose
+
+    source = inspect.getsource(compose.ad_image)
+    assert source.index("require_price_drawn(outcome, composed)") < source.index(
+        "render_ad_slides("
+    )
+    assert not hasattr(compose, "_pillow_price")
 
 
 @pytest.mark.parametrize(

@@ -54,8 +54,11 @@ from qualify_api.creative.image_pipeline.base import (
     carousel_slide_scene,
     flyer_scenes,
 )
-from qualify_api.creative.image_pipeline.compose_run import ComposedSlide, compose_slides
-from qualify_api.creative.image_pipeline.layer import price_required
+from qualify_api.creative.image_pipeline.compose_run import (
+    ComposedSlide,
+    compose_slides,
+    require_price_drawn,
+)
 from qualify_api.creative.image_pipeline.layer_run import LayerOutcome, run_layer_stage
 from qualify_api.creative.media import (
     _TASK_RUN,
@@ -191,11 +194,12 @@ def ad_image(
         # only a Reel needs a still's bytes (it pushes in on the first); the rest are keys
         keep_images={0} if brief.format is ContentFormat.REELS_9_16 else (),
     )
+    # a priced piece whose price no composed slide carries (the slide meant to carry it got no
+    # layer) fails: the Pillow composer draws no price, and a priced piece is never priceless
+    require_price_drawn(outcome, composed)
     slides = render_ad_slides(
         scenes=scenes,
-        text=FlyerText(
-            hook=copy.hook, cta=copy.cta, price=_pillow_price(media.price_line, outcome, composed)
-        ),
+        text=FlyerText(hook=copy.hook, cta=copy.cta, price=media.price_line),
         palette=kit.palette_rgb,
         logo=producer._logo(kit, media.brand_logo_key),
         carousel=media.carousel,
@@ -695,21 +699,3 @@ def _composed_write(
         params={**params, **drawn.params},
         layer=drawn.layer,
     )
-
-
-def _pillow_price(
-    price_line: str, outcome: LayerOutcome, composed: Mapping[int, ComposedSlide]
-) -> str:
-    """The price the Pillow composer prints on the cover of a flyer (m-25040499). Off, or
-    when the layer stage did not run: the brief's `price_line`, as before. On: the catalog
-    decided (`layer_run.resolve_piece_price`) — never the stale line; nothing when the piece
-    shows no price, and nothing when a composed slide already carries it (once, §4). It is
-    printed on the Pillow cover only when no composed slide could carry it: never priceless."""
-    request = outcome.request
-    if request is None:
-        return price_line
-    if not price_required(request):
-        return ""
-    if any(slide.layer.spec.get("price_ref") for slide in composed.values()):
-        return ""
-    return request.price_line
