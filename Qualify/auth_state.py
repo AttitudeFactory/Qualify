@@ -329,6 +329,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
+    from .story_mark_state import StoryMarkState
     from .tiktok_state import TikTokConnectionsState, TikTokDraftState
     from .trending_state import TrendingState
     from .variations_state import VariationsState
@@ -465,6 +466,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         PendingState,
         # m-24945889: which piece is this business's «Tu oferta», and the map point
         OfferMarkState,
+        # m-25040496: whether the piece on screen is a historia
+        StoryMarkState,
         WhatsAppLocationState,
         # m-24973458: whether a publication of this tenant is being made
         GenerationState,

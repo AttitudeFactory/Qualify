@@ -871,9 +871,11 @@ def can_schedule_again(post: PostOptionVM) -> bool:
 
 
 def matches_kind(post: PostOptionVM, content_kind: str) -> bool:
-    """«Tipo»: no filter, the generated group, or one kind exactly."""
+    """«Tipo»: no filter, the historias, the generated group, or one kind exactly."""
     if content_kind in ("", GALLERY_FILTER_ALL):
         return True
+    if content_kind == STORIES_FILTER:
+        return post.is_story
     if content_kind == GENERATED_KINDS:
         return not is_own_media(post)
     return post.content_kind == content_kind
@@ -882,7 +884,8 @@ def matches_kind(post: PostOptionVM, content_kind: str) -> bool:
 def approved_kind_choices(posts: Iterable[PostOptionVM]) -> list[CategoryOptionVM]:
     """«Aprobados»' «Tipo» options (the «Todos los tipos» entry is the page's): with
     uploads AND generated pieces, «Subidas por ti» and «Creadas en Qualify» first, then
-    each generated kind; otherwise only the kinds that exist — never an empty choice."""
+    each generated kind; otherwise only the kinds that exist — never an empty choice.
+    «Historias» comes first whenever there is one (founder 2026-11-16)."""
     posts = list(posts)
     own = any(is_own_media(p) for p in posts)
     kinds: dict[str, str] = {}
@@ -891,14 +894,21 @@ def approved_kind_choices(posts: Iterable[PostOptionVM]) -> list[CategoryOptionV
             kinds.setdefault(post.content_kind, post.content_kind_label)
     options = [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
     if own and kinds:
-        return [
+        options = [
             CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION),
             CategoryOptionVM(value=GENERATED_KINDS, label=GENERATED_OPTION),
             *options,
         ]
-    if own:
-        return [CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION)]
-    return options
+    elif own:
+        options = [CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION)]
+    return stories_option(posts) + options
+
+
+def stories_option(posts: Iterable[PostOptionVM]) -> list[CategoryOptionVM]:
+    """The «Historias» entry of «Tipo», only when there is a historia to show."""
+    if any(post.is_story for post in posts):
+        return [CategoryOptionVM(value=STORIES_FILTER, label=STORIES_OPTION)]
+    return []
 
 
 def sort_pending(posts: Iterable[PostOptionVM]) -> list[PostOptionVM]:
@@ -1223,6 +1233,16 @@ class PostOptionVM:
     #: m-25019220: a view-only own upload (`creative_vm.is_view_only_upload`) — no «Por
     #: probar», a plain line saying why (`history_help`), never scheduled again.
     view_only: bool = False
+    #: A historia (Instagram story, 9:16): the card says «Historia» and the «Tipo» filter
+    #: has «Historias» (`is_story_post`).
+    is_story: bool = False
+    #: The one file «Abrir en Instagram» hands to the phone (`story_share_source`): an
+    #: approved historia's own image or video; "" when it is not offered.
+    story_share_url: str = ""
+    #: The gallery card's media line: `media_label`, minus «Historia» on a historia —
+    #: the card already says it in its label («Imagen · 9:16»). Other screens keep
+    #: `media_label`, which names the format.
+    card_media_label: str = ""
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1877,7 +1897,95 @@ def build_post_option(
         approved_at=approved_at or "",
         is_approved=approval == "approved",
         view_only=view_only,
+        is_story=(story := is_story_post(category or "", [chip.port for chip in chips])),
+        card_media_label=(
+            story_card_line(medium, image_size)
+            if story
+            else f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}")
+        ),
+        story_share_url=story_share_source(
+            is_story=story,
+            approved=approval == "approved",
+            # the final file is ready: not a vista previa, not one being remade
+            # (`MEDIA_DRAFT_PENDING` / `MEDIA_FINAL_UNCONFIRMED` leave this False); with
+            # one output, the POST's verdict IS that output's (`draft_post_reader`)
+            publishable=is_publishable,
+            kind=story_share_kind(
+                _kind_fields(media_types, category or "", has_outputs=bool(chips))["kind"],
+                chips,
+                media_types,
+            ),
+            video_url=video_url,
+            thumbnail_url=thumbnail_url or "",
+        ),
     )
+
+
+# -- Historias (founder 2026-11-16): a label, a filter and «Abrir en Instagram» ----------
+
+#: «Tipo» › «Historias»: a filter value, never a creation type.
+STORIES_FILTER = "historias"
+STORIES_OPTION = "Historias"
+STORY_CATEGORY = "story"
+STORY_PORT = "story"
+
+
+def story_card_line(medium: str, image_size: tuple[int, int] | None) -> str:
+    """The gallery card's media line for a historia (its label already says
+    «Historia»): «Imagen · 9:16» only when the picture is KNOWN to be 9:16; otherwise —
+    a 4:5 photo marked a historia, a video (its size is not read here) — «Imagen ·
+    Historia» / «Video · Historia», never a ratio it does not have."""
+    if image_size and image_size[0] > 0 and image_size[1] > 0:
+        if abs(image_size[0] / image_size[1] - 9 / 16) <= 0.02:
+            return f"{medium} · 9:16"
+    return f"{medium} · Historia"
+
+
+def is_story_post(category: str, output_ports: Iterable[str] = ()) -> bool:
+    """A historia: its category is `story` (a template rendered 9:16 for stories, an own
+    upload in 9:16 — `default_category`), or every template output it has is the
+    `story` port. A package with a reel AND a story is not one («Multiformato»)."""
+    if category == STORY_CATEGORY:
+        return True
+    ports = list(output_ports)
+    return bool(ports) and all(port == STORY_PORT for port in ports)
+
+
+def story_share_kind(
+    post_kind_key: str, chips: Sequence[OutputChipVM], media_types: Sequence[str]
+) -> str:
+    """What the shared file is. A template historia comes as ONE `story` output (its
+    kind reads «Multiformato»): when that output is the POST's only file, the POST's own
+    picture (`thumbnail_url`: `preview_key` or the first asset) or R2 video (`video_url`:
+    the first asset) IS that output's file, so it is shared as the output's kind. Any
+    other package, or a POST with more files than that one, keeps its own kind."""
+    if len(chips) == 1 and chips[0].port == STORY_PORT and len(media_types) == 1:
+        return chips[0].kind
+    return post_kind_key
+
+
+def story_share_source(
+    *,
+    is_story: bool,
+    approved: bool,
+    kind: str,
+    video_url: str,
+    thumbnail_url: str,
+    publishable: bool = True,
+) -> str:
+    """The file «Abrir en Instagram» hands to Instagram, or "" when it is not offered:
+    only an approved historia of ONE image or ONE video whose file the browser can
+    fetch (a `/r2media/` path or an http(s) URL). A video without its own file is never
+    shared as its poster."""
+    if not (is_story and approved and publishable):
+        return ""
+    if kind == "video":
+        return video_url
+    if kind != "image":
+        return ""
+    if thumbnail_url.startswith(("/r2media/", "http://", "https://")):
+        return thumbnail_url
+    return ""
 
 
 def filter_posts(

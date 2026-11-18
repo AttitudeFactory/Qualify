@@ -159,3 +159,73 @@ def build_trending_video_vm(
         has_music=bool(music_id),
         has_thumbnail=bool(thumbnail_url),
     )
+
+
+# ---------------------------------------------------------------------------
+# «Abrir en Instagram» from the gallery (founder 2026-11-16): only on Android, where the
+# Web Share API hands the file to Instagram's own story composer. An iPhone keeps only
+# «Descargar», as before; a computer never gets it.
+
+PLATFORM_ANDROID = "android"
+PLATFORM_IOS = "ios"
+PLATFORM_DESKTOP = "desktop"
+
+STORY_SHARE_LABEL = "Abrir en Instagram"
+STORY_SHARE_BUSY = "Preparando tu historia…"
+STORY_SHARE_HELP = "Elige Instagram › Historias, agrégale la música y publícala tú."
+
+
+def device_platform(user_agent: str) -> str:
+    """`android`, `ios` or `desktop` from the browser's user agent. An iPad that says
+    «Macintosh» reads as desktop — it never gets the button either way."""
+    agent = (user_agent or "").lower()
+    if "android" in agent:
+        return PLATFORM_ANDROID
+    if any(word in agent for word in ("iphone", "ipad", "ipod")):
+        return PLATFORM_IOS
+    return PLATFORM_DESKTOP
+
+
+def story_share_offered(platform: str) -> bool:
+    """The gallery's «Abrir en Instagram» is for Android only."""
+    return platform == PLATFORM_ANDROID
+
+
+def story_share_message(result: str) -> tuple[str, str] | None:
+    """`(toast kind, words)` for the gallery handoff's outcome; None when the owner
+    closed the share panel themselves. Every error says what to do next."""
+    if result in ("cancelled", "busy"):
+        return None
+    if result == "shared":
+        return (
+            "success",
+            "Listo. Si elegiste Instagram, agrega la música y publícala.",
+        )
+    if result == "tap_again":
+        return ("info", "Ya está lista. Toca otra vez «Abrir en Instagram».")
+    if result == "not_android":
+        return (
+            "error",
+            "Esta opción es para teléfonos Android. Abre la historia y usa «Descargar».",
+        )
+    if result == "insecure":
+        return (
+            "error",
+            "No pudimos abrir Instagram desde aquí. Abre la historia y usa «Descargar».",
+        )
+    if result == "unsupported":
+        return (
+            "error",
+            "Este navegador no puede abrir Instagram desde aquí. Prueba desde Chrome.",
+        )
+    if result == "fetch_failed":
+        return ("error", "No pudimos traer la historia. Recarga la página y vuelve a intentarlo.")
+    if result == "cannot_share_file":
+        return (
+            "error",
+            "Este teléfono no puede compartir este archivo. Abre la historia y usa «Descargar».",
+        )
+    return (
+        "error",
+        "No se pudo abrir Instagram. Vuelve a intentarlo o abre la historia y usa «Descargar».",
+    )

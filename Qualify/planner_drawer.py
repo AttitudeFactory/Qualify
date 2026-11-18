@@ -53,12 +53,14 @@ from .planner_upload_vm import (
     DROP_HINT,
     EMPTY_HINT,
     NOT_LISTED_TEXT,
+    PHOTO_STORY_NOTE,
     PICK_DESKTOP_HINT,
     PICK_HINT,
     PICK_TITLE,
     PICKER_MAX_BYTES,
     SHOW_AGAIN,
     UPLOAD_ID,
+    UPLOAD_STORY_HELP,
     VIEW_HINT,
     VIEW_TITLE,
     VIEW_TITLE_ID,
@@ -112,6 +114,7 @@ from .promotion_vm import (
     STORY_AD_OPTION,
 )
 from .r2_media import BACKEND_BASE
+from .story_mark_vm import STORY_MARK_LABEL
 from .ui import (
     callout,
     drawer,
@@ -561,6 +564,51 @@ def _own_upload_preview() -> rx.Component:
     )
 
 
+#: The same zone and preview, reused by «Aprobados» › «Subir historia» (m-25040496).
+own_upload_pick = _own_upload_pick
+own_upload_preview = _own_upload_preview
+
+_STORY_SWITCH_ID = "q-own-upload-story"
+_STORY_NOTE_ID = "q-own-upload-story-note"
+
+
+def _own_upload_story_switch() -> rx.Component:
+    """m-25040496: «Es una historia» for the stored video — the piece page's words
+    (`story_mark_vm`); off with its reason when the video lasts over 60 s."""
+    return rx.vstack(
+        rx.el.label(
+            rx.hstack(
+                rx.switch(
+                    id=_STORY_SWITCH_ID,
+                    checked=PlannerState.own_upload_story,
+                    on_change=PlannerState.set_own_upload_story,
+                    disabled=PlannerState.own_upload_saving | ~PlannerState.own_upload_story_can,
+                    size="2",
+                    custom_attrs={"aria-describedby": _STORY_NOTE_ID},
+                ),
+                rx.text(STORY_MARK_LABEL, size="2", weight="medium"),
+                spacing="2",
+                align="center",
+                min_height="44px",
+            ),
+            html_for=_STORY_SWITCH_ID,
+        ),
+        rx.text(
+            rx.cond(
+                PlannerState.own_upload_story_reason != "",
+                PlannerState.own_upload_story_reason,
+                UPLOAD_STORY_HELP,
+            ),
+            id=_STORY_NOTE_ID,
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        spacing="1",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _own_upload_view() -> rx.Component:
     """«Sube tu foto o video» — step 1's body while the owner uploads ONE file: the
     zone (or the stored file's preview and «Cambiar archivo»), the optional text and
@@ -605,6 +653,16 @@ def _own_upload_view() -> rx.Component:
                 spacing="1",
                 width="100%",
             ),
+        ),
+        # m-25040496: a video may be a historia from the start (a 9:16 photo already is)
+        rx.cond(
+            has_file & (PlannerState.own_upload_media == OWN_UPLOAD_VIDEO),
+            _own_upload_story_switch(),
+        ),
+        # …and a vertical photo is saved as one by itself (`own_upload.shape_for`)
+        rx.cond(
+            has_file & PlannerState.own_upload_photo_story,
+            rx.text(PHOTO_STORY_NOTE, size="1", color=T.TEXT_MUTED),
         ),
         rx.cond(
             PlannerState.own_upload_error != "",
