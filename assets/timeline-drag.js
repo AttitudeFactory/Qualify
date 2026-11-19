@@ -352,7 +352,8 @@
 
   // A long press on a block opens no menu and selects no text.
   document.addEventListener("contextmenu", function (e) {
-    if (e.target && e.target.closest && e.target.closest("[data-q-timeline] [data-tl-block]")) {
+    var held = "[data-q-timeline] [data-tl-block], [data-q-timeline] [data-tl-handle]";
+    if (e.target && e.target.closest && e.target.closest(held)) {
       e.preventDefault();
     }
   });
@@ -423,4 +424,282 @@
 
   document.addEventListener("pointerup", release);
   document.addEventListener("pointercancel", release);
+
+  /* ── ED-03 (m-25026623): the trim handles ────────────────────────────────────────────
+     A handle (`[data-tl-handle]`, outside the chosen block) is taken AT ONCE by a finger
+     or a mouse — no long press: it is its own control, never the block's move, and its
+     `touch-action: none` keeps the tracks from scrolling under it. While it moves:
+     its value follows the pointer on the two magnets (`core.trimValue`: ½ s of the video,
+     or ¼ s to the playhead and the other blocks' edges), inside its `aria-valuemin`/
+     `-max`; a bubble says the time; a box over the block shows what is kept; the
+     preview shows that frame (`__qEditPreview.seq.showSource`, or the final video's
+     time for a text or effect). Near the phone's edges the tracks scroll on their own.
+     Released, the screen hears `(id, "start"|"end", value)` and, once the new sequence
+     is in, the preview plays the block from its start. Escape or a cancelled pointer
+     puts it back. */
+  var trim = null;
+
+  function previewOf(root) {
+    var box = root.closest("[data-edit-sync]");
+    return box ? box.querySelector("[data-edit-seq-host]") : null;
+  }
+
+  function seqApi() {
+    var p = window.__qEditPreview;
+    return p && p.seq ? p.seq : null;
+  }
+
+  // The playhead and every other block's edges, in seconds of the track: the ¼ s magnet.
+  function magnetTargets(root, item) {
+    var out = [];
+    var scrub = root.querySelector(".q-tl__scrub");
+    if (scrub) out.push(parseFloat(scrub.value) || 0);
+    var blocks = root.querySelectorAll("[data-tl-block]");
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].closest(".q-tl__item") === item) continue;
+      var start = parseFloat(blocks[i].getAttribute("data-tl-start")) || 0;
+      var len = parseFloat(blocks[i].getAttribute("data-tl-len")) || 0;
+      out.push(start, start + len);
+    }
+    return out;
+  }
+
+  function trimBox(t) {
+    var box = t.item.querySelector(":scope > .q-tl__trim");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "q-tl__trim";
+      box.setAttribute("aria-hidden", "true");
+      t.item.appendChild(box);
+    }
+    return box;
+  }
+
+  // What the handle at `value` keeps of the block, drawn over it (px from its left).
+  function paintTrim(t) {
+    var start = t.edge === "start" ? t.value : t.from;
+    var end = t.edge === "start" ? t.end : t.value;
+    var left = ((start - t.from) / t.speed) * t.px;
+    var width = Math.max(((end - start) / t.speed) * t.px, 0);
+    var box = trimBox(t);
+    box.style.left = left + "px";
+    box.style.width = width + "px";
+    var shift = ((t.value - t.value0) / t.speed) * t.px;
+    t.handle.style.transform = "translateX(" + shift + "px)";
+    // «Desde 0:06» / «Hasta 0:09» (the handle's own word), to the hundredth
+    var word = t.handle.getAttribute("data-tl-word") || "";
+    t.handle.setAttribute("data-tl-time", (word ? word + " " : "") + core().clockExact(t.value));
+  }
+
+  // The preview shows the handle's frame: a video's own second, or a text's or effect's
+  // moment of the final video.
+  function showTrimFrame(t) {
+    var api = seqApi();
+    var host = previewOf(t.root);
+    if (!api || !host) return;
+    if (t.video && api.showSource) {
+      api.showSource(host, t.index, t.value);
+    } else if (api.goTo) {
+      if (api.pause) api.pause(host, true);
+      api.goTo(host, t.value, true);
+    }
+  }
+
+  function trimUpdate() {
+    var t = trim;
+    if (!t) return;
+    var dx = canvasX(t, t.clientX) - t.x0;
+    var next = core().trimValue({
+      value: t.value0,
+      dx: dx,
+      px: t.px,
+      speed: t.speed,
+      at: t.at,
+      from: t.from,
+      targets: t.targets,
+      min: t.min,
+      max: t.max,
+    }).value;
+    if (next === t.value && t.painted) return;
+    t.value = next;
+    t.painted = true;
+    paintTrim(t);
+    showTrimFrame(t);
+  }
+
+  function trimLoop() {
+    var t = trim;
+    if (!t || !t.phone || !t.scroller) return;
+    var box = t.scroller.getBoundingClientRect();
+    var step = core().autoScrollStep({ x: t.clientX, left: box.left, right: box.right });
+    if (step) {
+      var max = t.scroller.scrollWidth - t.scroller.clientWidth;
+      var next = core().clampScroll(t.scroller.scrollLeft, step, max);
+      if (next !== t.scroller.scrollLeft) {
+        t.scroller.scrollLeft = next;
+        trimUpdate();
+      }
+    }
+    t.raf = window.requestAnimationFrame(trimLoop);
+  }
+
+  function trimClear(t) {
+    window.cancelAnimationFrame(t.raf);
+    var box = t.item.querySelector(":scope > .q-tl__trim");
+    if (box) box.remove();
+    t.handle.style.transform = "";
+    t.handle.removeAttribute("data-tl-time");
+    t.item.classList.remove("q-tl__item--trimming");
+    t.root.removeAttribute("data-tl-trimming");
+  }
+
+  // Once the screen's new sequence is in, the preview plays the block from its start.
+  function playWhenReady(host, raw, from, tries) {
+    var api = seqApi();
+    if (!api || !host || !host.isConnected) return;
+    if ((host.getAttribute("data-edit-seq") || "") !== raw) {
+      if (api.playFrom) api.playFrom(host, from);
+      return;
+    }
+    if (tries > 0) {
+      window.requestAnimationFrame(function () {
+        playWhenReady(host, raw, from, tries - 1);
+      });
+    }
+  }
+
+  document.addEventListener(
+    "pointerdown",
+    function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (trim || drag) return;
+      var handle = e.target && e.target.closest ? e.target.closest("[data-tl-handle]") : null;
+      var root = handle ? handle.closest("[data-q-timeline]") : null;
+      if (!root || root.hasAttribute("data-tl-no-drag")) return;
+      var item = handle.closest(".q-tl__item");
+      var block = item ? item.querySelector("[data-tl-block]") : null;
+      if (!item || !block) return;
+      e.preventDefault(); // no text selection, no page scroll: the handle moves
+      handle.focus({ preventScroll: true });
+      var edge = handle.getAttribute("data-tl-handle");
+      var kind = block.getAttribute("data-tl-block");
+      var phone = isPhone(root);
+      var total = parseFloat(getComputedStyle(root).getPropertyValue("--tl-total")) || 0;
+      var lane = item.parentElement;
+      var value0 = parseFloat(handle.getAttribute("aria-valuenow")) || 0;
+      var other = item.querySelector(
+        '[data-tl-handle="' + (edge === "start" ? "end" : "start") + '"]'
+      );
+      var t = {
+        root: root,
+        item: item,
+        handle: handle,
+        edge: edge,
+        id: handle.getAttribute("data-tl-id") || "",
+        video: kind === "video",
+        index: Array.prototype.indexOf.call(lane.querySelectorAll(":scope > .q-tl__item"), item),
+        pointer: e.pointerId,
+        canvas: root.querySelector(".q-tl__canvas"),
+        scroller: root.querySelector(".q-tl__scroller"),
+        phone: phone,
+        px: core().scaleOf({
+          phone: phone,
+          px: parseFloat(getComputedStyle(root).getPropertyValue("--tl-px")),
+          total: total,
+          width: lane.getBoundingClientRect().width,
+        }),
+        speed: parseFloat(handle.getAttribute("data-tl-speed")) || 1,
+        at: parseFloat(handle.getAttribute("data-tl-at")) || 0,
+        from: parseFloat(handle.getAttribute("data-tl-from")) || 0,
+        end:
+          edge === "start" && other
+            ? parseFloat(other.getAttribute("aria-valuenow")) || 0
+            : value0,
+        value0: value0,
+        value: value0,
+        min: parseFloat(handle.getAttribute("aria-valuemin")),
+        max: parseFloat(handle.getAttribute("aria-valuemax")),
+        clientX: e.clientX,
+        painted: false,
+      };
+      if (!isFinite(t.min)) t.min = undefined;
+      if (!isFinite(t.max)) t.max = undefined;
+      t.x0 = canvasX(t, e.clientX);
+      t.targets = magnetTargets(root, item);
+      t.seqRaw = "";
+      var host = previewOf(root);
+      if (host) t.seqRaw = host.getAttribute("data-edit-seq") || "";
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* an old browser: the document still hears it */
+      }
+      trim = t;
+      item.classList.add("q-tl__item--trimming");
+      root.setAttribute("data-tl-trimming", edge);
+      trimUpdate();
+      if (phone) t.raf = window.requestAnimationFrame(trimLoop);
+    },
+    true
+  );
+
+  document.addEventListener(
+    "pointermove",
+    function (e) {
+      var t = trim;
+      if (!t || e.pointerId !== t.pointer) return;
+      e.preventDefault();
+      t.clientX = e.clientX;
+      trimUpdate();
+    },
+    { passive: false }
+  );
+
+  function trimRelease(e) {
+    var t = trim;
+    if (!t || e.pointerId !== t.pointer) return;
+    trim = null;
+    var changed = e.type !== "pointercancel" && Math.abs(t.value - t.value0) >= 0.005;
+    if (!changed) {
+      trimClear(t);
+      return;
+    }
+    // the box and the bubble stay until the block comes back at its new size
+    window.cancelAnimationFrame(t.raf);
+    var done = false;
+    var observer = new MutationObserver(function () {
+      if (done) return;
+      done = true;
+      observer.disconnect();
+      trimClear(t);
+    });
+    observer.observe(t.item, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "aria-valuenow", "data-tl-len"],
+    });
+    window.setTimeout(function () {
+      if (done) return;
+      done = true;
+      observer.disconnect();
+      trimClear(t);
+    }, GIVE_UP_MS);
+    report(t.root, t.id, t.edge, t.value);
+    // «Al soltar, reproduce el bloque»: from where it starts once the screen answered
+    var host = previewOf(t.root);
+    var start = t.video ? t.at : t.edge === "start" ? t.value : t.from;
+    playWhenReady(host, t.seqRaw, start, 150);
+  }
+
+  document.addEventListener("pointerup", trimRelease, true);
+  document.addEventListener("pointercancel", trimRelease, true);
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || !trim) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var t = trim;
+    trim = null;
+    trimClear(t);
+  }, true);
 })();

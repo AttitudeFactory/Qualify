@@ -14,15 +14,17 @@ Top to bottom (the proposal `.claude/epica-efectos-propuesta-linea-de-tiempo.md`
   video · Texto · Efecto · Pedir una idea») with nothing chosen, the chosen block's
   buttons otherwise («Acciones de Video 1»);
 - the chosen block's panel, with «Listo», under the bar — a video's with «Cortar»
-  where the marker is (Deivid 2026-11-17: no «Desde/Hasta»).
+  where the marker is (Deivid 2026-11-17: no «Desde/Hasta»); ED-03: the chosen piece of
+  the own video is trimmed or lengthened inside its video with its two handles on the
+  timeline (finger, mouse, ←/→), free.
 
 What «Agregar» opens goes in ONE side panel with tabs (`ui.drawer`, Deivid 2026-11-16
 and 11-17). On a wide step the preview is centred over the timeline, which takes the
-whole width (a 12 s video fits it). Every change is kept at once, with «Deshacer»
-beside the timeline's live line (D-E6: no «Guardar»). The words are `clip_editor_vm`'s
-and `ui.timeline_vm`'s; the state is `CreativeState`'s «clip editor» block. The first
-tab's body (the Clip's tiles and its media selector) is built by `content_generator`
-from its own helpers and handed in.
+whole width (a 12 s video fits it). Every change is kept at once, said by the
+timeline's live line (D-E6: no «Guardar»; no «Deshacer» since Deivid 2026-11-19). The
+words are `clip_editor_vm`'s and `ui.timeline_vm`'s; the state is `CreativeState`'s
+«clip editor» block. The first tab's body (the Clip's tiles and its media selector) is
+built by `content_generator` from its own helpers and handed in.
 """
 
 from __future__ import annotations
@@ -352,14 +354,20 @@ def _cut() -> rx.Component:
 def _own_video() -> rx.Component:
     """What only the editor's own video has: what EF-03 says of the stretch, «Cortar»,
     «Velocidad» and «Girar» (Deivid 2026-11-17: no «Desde/Hasta», no «Usar el video
-    entero»)."""
+    entero»). ED-03: the piece is trimmed with its handles on the timeline; why a handle
+    stopped, and A9's minute of video, are said here."""
     return rx.vstack(
         rx.text(S.clip_cut_usage_text, size="2", class_name="q-nums"),
-        # the ±½ s refusal first; else what EF-03's `plan_prepare` says of the stretch
+        # why a handle stopped first; else A9's minute (before «Crear»); else what
+        # EF-03's `plan_prepare` says of the stretch
         rx.cond(
             S.clip_cut_error != "",
             callout(S.clip_cut_error, "warn"),
-            rx.cond(S.clip_cut_check[0] != "", callout(S.clip_cut_check[0], "warn")),
+            rx.cond(
+                S.clip_source_too_long_line != "",
+                callout(S.clip_source_too_long_line, "warn"),
+                rx.cond(S.clip_cut_check[0] != "", callout(S.clip_cut_check[0], "warn")),
+            ),
         ),
         rx.cond(S.clip_cut_check[1] != "", callout(S.clip_cut_check[1], "info")),
         rx.flex(
@@ -536,22 +544,22 @@ def _flow_drawer(media_body: rx.Component) -> rx.Component:
     )
 
 
-# -- «Deshacer» (D-E6) ----------------------------------------------------------------------
+# -- the trim handles' hint (ED-03) ---------------------------------------------------------
 
 
-def _undo() -> rx.Component:
-    """«Deshacer» beside the timeline's live line (its `role="status"` says the change
-    once), until the next change or until the owner leaves the step — no timer (WCAG
-    2.2.1)."""
+def _trim_hint() -> rx.Component:
+    """Beside the timeline's live line (Deivid 2026-11-19: «lo de los tiradores no lo
+    entendí»): while a video with handles is chosen and the owner has not trimmed yet,
+    `clip_editor_vm.TRIM_HINT`. No «Deshacer» any more (Deivid 2026-11-19)."""
     return rx.cond(
-        S.clip_edit_notice != "",
-        rx.button(
-            vm.UNDO,
-            variant="soft",
-            size="2",
-            min_height="44px",
-            on_click=S.undo_clip_edit,
-            class_name="q-edit__undo",
+        S.clip_trim_hint != "",
+        rx.hstack(
+            rx.icon("move-horizontal", size=T.ICON_SM, aria_hidden="true"),
+            rx.text(S.clip_trim_hint, size="1"),
+            spacing="1",
+            align="center",
+            color=T.TEXT_MUTED,
+            class_name="q-edit__hint",
         ),
     )
 
@@ -569,7 +577,7 @@ def _timeline() -> rx.Component:
             status=S.clip_edit_notice,
             on_key=S.clip_block_key,
             on_drag=S.drop_clip_block,
-            status_action=_undo(),
+            status_action=_trim_hint(),
         ),
         timeline_actions(
             S.clip_tl_chosen_kind,

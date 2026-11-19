@@ -1,8 +1,8 @@
 """ED-02/03 (m-25026621, m-25026623) and D-E6: the Clip editor's state — the switch
 `QUALIFY_CLIP_EDITOR` (off = the Clip exactly as before), the stretch the browser's
-length proposes, «Cortar», «Girar», «Cámara rápida», «Deshacer» back to the exact state,
-and the recipe the brief carries. A standalone `CreativeState`, handlers called through
-`.fn` (`test_creative_state.py` explains why)."""
+length proposes, «Cortar», «Girar», «Cámara rápida», the live line that says each change
+(no «Deshacer» since Deivid 2026-11-19), and the recipe the brief carries. A standalone
+`CreativeState`, handlers called through `.fn` (`test_creative_state.py` explains why)."""
 
 from __future__ import annotations
 
@@ -95,9 +95,7 @@ def test_the_measured_length_proposes_the_whole_video_up_to_fifteen_seconds(
 
 def test_a_length_off_the_grid_keeps_its_end_reachable(editor_on: None) -> None:
     state = _measured(7.33)
-    assert state.clip_cut_max_units == 15  # 7.5 s: ceil, never lost
-    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 7.5)
-    assert state.clip_cut_units == [0, 15]
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 7.5)  # ceil, never lost
     assert state.clip_cut_check == ["", ""]  # EF-03 cuts 7.5 at 7.33, never refuses it
 
 
@@ -109,20 +107,30 @@ def test_the_length_is_taken_again_after_a_reset(editor_on: None) -> None:
     assert state.clip_cut_ready
 
 
-def test_cut_nudge_and_its_error(editor_on: None) -> None:
+def test_a_handle_trims_and_says_why_it_stops(editor_on: None) -> None:
+    """ED-03 (m-25026623): the Radix slider and its ±½ s are gone — a handle trims the
+    piece; past the least a piece takes it stops and says why."""
     state = _measured(20.0)
-    CreativeState.commit_clip_cut.fn(state, [8, 24])
+    assert not hasattr(CreativeState, "commit_clip_cut")
+    assert not hasattr(CreativeState, "nudge_clip_cut")
+    assert not hasattr(CreativeState, "slide_clip_cut")
+    # review ED-03: dead code gone — the handles reach the screen through the drop
+    for name in ("trim_clip_block", "clip_edit_rate", "clip_edit_slower"):
+        assert not hasattr(CreativeState, name)
+    for name in ("clip_edit_output_seconds", "clip_cut_focus", "clip_cut_play"):
+        assert not hasattr(CreativeState, name)
+    CreativeState.drop_clip_block.fn(state, _KEY, "start", 4.0)
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 12.0)
     assert (state.clip_cut_start, state.clip_cut_end) == (4.0, 12.0)
     assert state.clip_cut_range_text == "Desde 0:04 · Hasta 0:12"
-    assert (state.clip_cut_start_clock, state.clip_cut_end_clock) == ("0:04", "0:12")
-    assert state.clip_edit_notice == "Cambiaste el pedazo de tu video."
-    CreativeState.commit_clip_cut.fn(state, [8, 10])
-    CreativeState.nudge_clip_cut.fn(state, "end", -0.5)
+    assert state.clip_edit_notice == "Recortaste el video 1."
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 4.5)  # under 1 s: stops at 5
     assert state.clip_cut_error == TOO_SHORT
     assert (state.clip_cut_start, state.clip_cut_end) == (4.0, 5.0)
-    CreativeState.nudge_clip_cut.fn(state, "end", 0.5)
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 5.5)
     assert state.clip_cut_error == ""
     assert state.clip_cut_end == 5.5
+    assert state.clip_edit_notice == "Alargaste el video 1."
 
 
 def test_a_video_that_cannot_play_stops_waiting(editor_on: None) -> None:
@@ -244,7 +252,7 @@ def test_low_resolution_warns_with_width_and_height(editor_on: None) -> None:
     )
 
 
-# -- «Cámara rápida» and «Deshacer» ---------------------------------------------------------
+# -- «Cámara rápida» and the live line ---------------------------------------------------------
 
 
 def test_fast_motion_proposes_the_whole_video_and_a_five_second_result(editor_on: None) -> None:
@@ -264,9 +272,13 @@ def test_fast_motion_proposes_the_whole_video_and_a_five_second_result(editor_on
     assert state.clip_speed == 5 and state.clip_speed_note == ""
 
 
-def test_undo_goes_back_to_the_exact_state(editor_on: None) -> None:
+def test_there_is_no_deshacer_and_each_change_says_its_line(editor_on: None) -> None:
+    """Deivid 2026-11-19 («quitemos el botón de deshacer»): no «Deshacer» — its stack and
+    its event are gone; the live line still says each change."""
+    assert not hasattr(CreativeState, "undo_clip_edit")
+    assert not hasattr(clip_editor_vm, "push_undo") and not hasattr(clip_editor_vm, "UNDO")
     state = _measured(20.0)
-    before = (state.clip_cut_start, state.clip_cut_end, state.clip_rotate, state.clip_speed)
+    assert not hasattr(state, "_clip_edit_undo")
     CreativeState.rotate_clip_video.fn(state)
     assert state.clip_rotate == 90
     assert state.clip_edit_notice == "Giraste tu video."
@@ -274,19 +286,9 @@ def test_undo_goes_back_to_the_exact_state(editor_on: None) -> None:
     assert state.clip_speed == 5  # 20 / 5 = 4 s
     CreativeState.set_clip_speed.fn(state, "3")
     assert state.clip_speed == 3
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_speed == 5
-    assert state.clip_edit_notice == ""
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_effect_ids == []
-    assert (state.clip_cut_end, state.clip_speed) == (15.0, 10)
-    CreativeState.undo_clip_edit.fn(state)
-    assert (state.clip_cut_start, state.clip_cut_end, state.clip_rotate, state.clip_speed) == (
-        before
-    )
 
 
-def test_undo_has_no_timer_and_ends_with_the_step(editor_on: None) -> None:
+def test_the_live_line_has_no_timer_and_ends_with_the_step(editor_on: None) -> None:
     state = _measured()
     CreativeState.rotate_clip_video.fn(state)
     assert state.clip_edit_notice == "Giraste tu video."
@@ -306,10 +308,7 @@ def test_text_is_kept_when_the_field_is_left(editor_on: None) -> None:
     CreativeState.set_clip_overlay_text.fn(state, "2×1 mañana")
     CreativeState.set_clip_text_place.fn(state, "top")
     assert state.clip_edit_notice == "Cambiaste el lugar del texto."
-    CreativeState.undo_clip_edit.fn(state)
-    assert (state.clip_text_place, state.clip_overlay_text) == ("bottom", "2×1 hoy")
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_overlay_text == ""
+    assert (state.clip_text_place, state.clip_overlay_text) == ("top", "2×1 mañana")
 
 
 def test_effects_offer_only_what_exists(editor_on: None) -> None:
@@ -342,7 +341,7 @@ def test_photos_only_has_no_cut_nor_fast_motion(editor_on: None) -> None:
 
 def test_the_brief_carries_the_recipe(editor_on: None) -> None:
     state = _measured(20.0)
-    CreativeState.commit_clip_cut.fn(state, [8, 24])
+    state.clip_cut_start, state.clip_cut_end = 4.0, 12.0
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
     recipe = state._clip_edit_media()
     # B6 (m-25048789): EF-06's `local` Clip, in `MediaInputs`' own fields
@@ -363,14 +362,15 @@ def test_the_brief_carries_the_recipe(editor_on: None) -> None:
 
 def test_fast_motion_says_so_and_unmarking_restores_the_stretch(editor_on: None) -> None:
     state = _measured(200.0)
-    CreativeState.commit_clip_cut.fn(state, [8, 24])  # 4–12 s
+    state.clip_cut_start, state.clip_cut_end = 4.0, 12.0
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
-    # it had its own cut (4–12 s): the line says it comes back
+    # it had its own cut (4–12 s): the line says it comes back; a 200 s video gives its
+    # first minute only (A9: a stretch takes at most a minute of its video)
     assert state.clip_edit_notice == (
-        "Pusiste tu video ×20: usamos todo tu video. "
+        "Pusiste tu video ×10: usamos su primer minuto. "
         "Si vuelves a la velocidad normal, recuperas tu pedazo."
     )
-    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 200.0)
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 60.0)
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
     assert state.clip_edit_notice == "Volviste tu video a la velocidad normal."
     assert (state.clip_cut_start, state.clip_cut_end) == (4.0, 12.0)
@@ -385,7 +385,7 @@ def test_unmarking_without_a_kept_stretch_trims_to_fifteen_seconds(editor_on: No
     assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 15.0)
 
 
-def test_the_history_does_not_bring_undo_back(editor_on: None) -> None:
+def test_the_history_does_not_bring_the_line_back(editor_on: None) -> None:
     state = _measured()
     CreativeState.rotate_clip_video.fn(state)
     assert state.clip_edit_notice != ""
@@ -420,16 +420,17 @@ def test_media_inputs_read_the_recipe_and_still_read_an_old_edit_recipe(
     assert "edit_recipe" not in MediaInputs.model_validate(old).model_dump()
 
 
-def test_fast_motion_past_sixty_seconds_says_so(editor_on: None) -> None:
-    """Every speed over 60 s (1300 s even at ×20 = 65 s): cámara rápida is off, and says
-    what the fastest would leave."""
+def test_fast_motion_on_a_long_video_takes_its_first_minute(editor_on: None) -> None:
+    """ED-03 with A9 (m-25042483): a stretch takes at most a minute of its video, so
+    cámara rápida of a 1300 s video takes its first minute (×10 = 6 s), never all of it
+    — the backend would refuse it as `segment_source_too_long`."""
     state = _measured(1300.0)
     row = next(r for r in state.clip_edit_effect_rows if r["id"] == "camara_rapida")
-    assert row["off"] == "true" and row["reason"] == "Con ×20 tu video duraría 65 s."
+    assert row["off"] == ""
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
-    assert state.clip_effect_ids == []
-    assert state.clip_tl_speed_offered  # «Velocidad» still shows, every speed off
-    assert all(state.clip_speed_reasons[v] for v in ("2", "3", "5", "10", "20"))
+    assert (state.clip_cut_start, state.clip_cut_end, state.clip_speed) == (0.0, 60.0, 10)
+    assert state.clip_edit_notice == "Pusiste tu video ×10: usamos su primer minuto."
+    assert state._clip_edit_problem() == ("", "")
 
 
 def test_inspiration_stock_stays_a_reference(editor_on: None) -> None:
@@ -496,13 +497,12 @@ def test_what_the_owner_reads_ends_with_the_video(editor_on: None) -> None:
     """QA 2026-11-14: a 12.04 s video — the slider's end is 12.5 (the grid, rounded up),
     but the card, «Usas», «Hasta» and the preview say 12.04, never past the video."""
     state = _measured(12.04)
-    assert state.clip_cut_end == 12.5 and state.clip_cut_max_units == 25
+    assert state.clip_cut_end == 12.5
     assert state.clip_cut_end_shown == 12.04
     assert state.clip_tl_media_rows[0]["label"] == "Video 1"
     assert state.clip_tl_total == "12"
     assert state.clip_cut_usage_text == "Usas 12 s de tu video."
     assert state.clip_cut_range_text == "Desde 0:00 · Hasta 0:12"
-    assert state.clip_cut_end_clock == "0:12"
     recipe = state._clip_edit_media()
     assert recipe["segments"][0]["end_s"] == 12.04  # type: ignore[index]
 
@@ -619,13 +619,14 @@ def test_each_speed_is_on_only_for_a_three_to_sixty_second_result(editor_on: Non
     CreativeState.set_clip_block_speed.fn(eight, _KEY, "2")
     assert eight.clip_effect_ids == ["camara_rapida"] and eight.clip_speed == 2
     assert eight.clip_speed_note == ""
+    # ED-03 with A9: sped up, a 130 s video takes its first minute (×2 = 30 s)
     long = _measured(130.0)
-    assert long.clip_speed_reasons["2"] == "Con ×2 tu video duraría 65 s."
-    assert long.clip_speed_reasons["3"] == ""
+    assert long.clip_speed_reasons["2"] == "" and long.clip_speed_reasons["20"] == ""
     CreativeState.toggle_clip_effect.fn(long, "camara_rapida")
-    assert long.clip_speed == 20  # 6,5 s: the closest to 5 s of the ones that are on
-    # ×20 is past what the browser plays: the preview says it looks slower
-    assert long.clip_edit_slower == editor_contract.preview_is_slower(20)
+    assert (long.clip_cut_end, long.clip_speed) == (60.0, 10)  # 6 s: the closest to 5 s
+    assert long.clip_speed_reasons["2"] == ""  # 30 s
+    # ×10 is past what the browser plays: the preview says it looks slower
+    assert long._clip_sequence().slower == editor_contract.preview_is_slower(10)
 
 
 def test_fast_motion_that_cannot_reach_three_seconds_stays_out_of_the_recipe(
@@ -704,8 +705,8 @@ def test_on_entering_everything_is_in_its_order(editor_on: None) -> None:
         "Video 3 de 3, usas de 0:00 a 0:08, dura 8 s",
     ]
     assert state.clip_tl_total == "25"
-    # Deivid 2026-11-17: no trim handles on any video (one «Cortar» instead)
-    assert [r["handles"] for r in rows] == ["", "", ""]
+    # ED-03: the own video has its trim handles; a photo and another video none yet
+    assert [r["handles"] for r in rows] == ["", "1", ""]
     assert [r["own"] for r in rows] == ["", "1", ""]
     assert state.clip_tl_text_rows == [] and state.clip_tl_effect_rows == []
     # the preview in sequence plays the same blocks, from the browser's backend
@@ -790,7 +791,7 @@ def test_listo_and_escape_let_the_block_go(editor_on: None) -> None:
     assert state.clip_edit_block == ""
 
 
-def test_dragging_a_block_reorders_the_clip_with_undo(editor_on: None) -> None:
+def test_dragging_a_block_reorders_the_clip(editor_on: None) -> None:
     state = _timeline_state()
     CreativeState.drop_clip_block.fn(state, _PHOTO, "move", 2.0)
     assert [r["id"] for r in state.clip_tl_media_rows] == [_KEY, _SECOND, _PHOTO]
@@ -798,11 +799,9 @@ def test_dragging_a_block_reorders_the_clip_with_undo(editor_on: None) -> None:
     assert state.clip_edit_notice == "Moviste la foto 3."
     # the AI's opening and closing frames follow the order, as the strip did
     assert (state.clip_first_frame_key, state.clip_last_frame_key) == (_KEY, _PHOTO)
-    CreativeState.undo_clip_edit.fn(state)
-    assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, _SECOND]
     # B6: the recipe follows the timeline's order, as the preview plays it
     keys = [s["key"] for s in state._clip_edit_media()["segments"]]  # type: ignore[union-attr]
-    assert keys == [_PHOTO, _KEY, _SECOND]
+    assert keys == [_KEY, _SECOND, _PHOTO]
 
 
 def test_the_keyboard_moves_a_block_one_place(editor_on: None) -> None:
@@ -832,21 +831,17 @@ def test_a_text_slides_in_time_and_the_recipe_carries_it(editor_on: None) -> Non
     assert (layer["start_s"], layer["end_s"]) == (3.5, 23.5)
     CreativeState.clip_block_key.fn(state, "texto-1", "", "ArrowRight")
     assert state.clip_tl_text_rows[0]["start"] == "4"
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_tl_text_rows[0]["start"] == "3.5"
-    # «Quitar» takes it away, with «Deshacer»
+    # «Quitar» takes it away, and the line says so
     CreativeState.select_clip_block.fn(state, "texto-1")
     CreativeState.clip_block_action.fn(state, "Quitar")
     assert state.clip_tl_text_rows == []
     assert state.clip_edit_notice == "Quitaste el texto de tu video."
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_tl_text_rows[0]["label"] == "«2×1 hoy»"
 
 
-def test_quitar_keeps_its_line_and_undo_after_the_address_walks_back(editor_on: None) -> None:
+def test_quitar_keeps_its_line_after_the_address_walks_back(editor_on: None) -> None:
     """Review of ED-10: «Quitar» lets the block go with `history.back()`; the popstate
     reaches `reconcile_reel_editor_route` with the same step and no `?bloque=` — the
-    line and its «Deshacer» stay."""
+    line stays."""
     state = _timeline_state()
     CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
     CreativeState.commit_clip_overlay_text.fn(state, "")
@@ -858,11 +853,10 @@ def test_quitar_keeps_its_line_and_undo_after_the_address_walks_back(editor_on: 
     CreativeState.reconcile_reel_editor_route.fn(state, f"?paso={step}")
     assert state.clip_edit_notice == "Quitaste el texto de tu video."
     assert state.create_step_n == step
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_tl_text_rows[0]["label"] == "«2×1 hoy»"
+    assert state.clip_tl_text_rows == []
 
 
-def test_listo_after_editing_a_text_keeps_its_undo(editor_on: None) -> None:
+def test_listo_after_editing_a_text_keeps_its_line(editor_on: None) -> None:
     state = _timeline_state()
     CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
     CreativeState.commit_clip_overlay_text.fn(state, "")
@@ -908,15 +902,19 @@ def test_the_timeline_script_offers_focus_after() -> None:
     assert "focusAfter: focusAfter" in script
 
 
-def test_the_own_video_has_no_desde_hasta_any_more(editor_on: None) -> None:
-    """Deivid 2026-11-17: no «Desde/Hasta ±½ s» and no trim keys on a video — its
-    stretch changes only with «Cortar»."""
+def test_the_own_video_has_no_desde_hasta_and_its_handles_take_the_arrows(
+    editor_on: None,
+) -> None:
+    """Deivid 2026-11-17: no «Desde/Hasta ±½ s» in the panel. ED-03: ←/→ on a trim handle
+    moves that edge ½ s of the video (with its line); a photo has none."""
     state = _timeline_state()
     CreativeState.select_clip_block.fn(state, _KEY)
     assert CreativeState.nudge_clip_block.fn(state, _KEY, "start", 0.5) is None
     CreativeState.clip_block_key.fn(state, _KEY, "end", "ArrowLeft")
-    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 15.0)
-    assert state.clip_edit_notice == ""
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 14.5)
+    assert state.clip_edit_notice == "Recortaste el video 2."
+    CreativeState.clip_block_key.fn(state, _KEY, "start", "ArrowRight")
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.5, 14.5)
     assert CreativeState.nudge_clip_block.fn(state, _PHOTO, "end", 0.5) is None
 
 
@@ -938,7 +936,7 @@ def test_cortar_in_the_middle_splits_the_video_in_two_blocks(editor_on: None) ->
     assert rows[1]["name"] == "Video 2 de 4, usas de 0:00 a 0:05, dura 5 s"
     assert rows[2]["name"] == "Video 3 de 4, usas de 0:05 a 0:15, dura 10 s"
     assert state.clip_tl_total == "25"  # nothing lost: two blocks, the same seconds
-    assert state.clip_edit_notice == "Cortaste tu video."
+    assert state.clip_edit_notice == "Cortaste el video 2 en dos."
     # the marker rests where the halves meet: the piece that starts there is chosen
     assert state.clip_edit_block == second
     # the recipe: two stretches of the same video, in order (contract v2's segments)
@@ -956,19 +954,18 @@ def test_cortar_in_the_middle_splits_the_video_in_two_blocks(editor_on: None) ->
     CreativeState.clip_block_action.fn(state, "Quitar")
     assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, _SECOND]
     assert (state.clip_cut_start, state.clip_cut_end, state.clip_cut_pieces) == (0.0, 5.0, [])
-    assert state.clip_edit_notice == "Quitaste un pedazo de tu video."
+    assert state.clip_edit_notice == "Quitaste el video 3."
     assert state.clip_videos[0]["key"] == _KEY  # the file itself stays
-    CreativeState.undo_clip_edit.fn(state)
-    assert len(state.clip_tl_media_rows) == 4
 
 
-def test_cortar_respects_the_speed(editor_on: None) -> None:
+def test_cortar_respects_the_speed_and_copies_it_to_both_halves(editor_on: None) -> None:
     state = _measured(20.0)
     CreativeState.set_clip_block_speed.fn(state, _KEY, "5")  # the whole 20 s at ×5 = 4 s
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 20.0)
     CreativeState.select_clip_block.fn(state, _KEY)
     CreativeState.hear_clip_time.fn(state, 1.0, "seek")  # 1 s of the video = 5 s of source
     CreativeState.cut_clip_video.fn(state)
-    assert state.clip_cut_pieces == [[0.0, 5.0], [5.0, 20.0]]
+    assert state.clip_cut_pieces == [[0.0, 5.0, 5.0], [5.0, 20.0, 5.0]]
     segments = state._clip_edit_media()["segments"]
     assert [s["speed"] for s in segments] == [5.0, 5.0]  # type: ignore[index]
 
@@ -989,14 +986,14 @@ def test_cortar_is_off_at_an_edge_or_off_the_video(editor_on: None) -> None:
 
 def test_cortar_works_again_after_a_cut(editor_on: None) -> None:
     """Deivid 2026-11-17: «porque el cortar se desactiva cuando corto una vez?». Two cuts
-    in a row at different points, the second piece cut too, and «Deshacer» for both."""
+    in a row at different points, the second piece cut too, each said by the live line."""
     state = _timeline_state()  # photo 0–2 s, own video 2–17 s (0:00–0:15), second video
     second = clip_editor_vm.piece_id(_KEY, 1)
     third = clip_editor_vm.piece_id(_KEY, 2)
     CreativeState.select_clip_block.fn(state, _KEY)
     CreativeState.hear_clip_time.fn(state, 5.0, "pause")  # 3 s into the own video
     CreativeState.cut_clip_video.fn(state)
-    assert state.clip_cut_pieces == [[0.0, 3.0], [3.0, 15.0]]
+    assert state.clip_cut_pieces == [[0.0, 3.0, 1.0], [3.0, 15.0, 1.0]]
     # right on the new line: off, saying why — not a dead button
     assert state.clip_edit_block == second
     assert state.clip_cut_here_reason == clip_editor_vm.CUT_TOO_CLOSE
@@ -1004,36 +1001,21 @@ def test_cortar_works_again_after_a_cut(editor_on: None) -> None:
     CreativeState.hear_clip_time.fn(state, 11.0, "pause")  # 6 s into the second piece
     assert state.clip_cut_here_reason == ""
     CreativeState.cut_clip_video.fn(state)
-    assert state.clip_cut_pieces == [[0.0, 3.0], [3.0, 9.0], [9.0, 15.0]]
+    assert state.clip_cut_pieces == [[0.0, 3.0, 1.0], [3.0, 9.0, 1.0], [9.0, 15.0, 1.0]]
     assert state.clip_edit_block == third
     assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, second, third, _SECOND]
     # the marker back on the FIRST piece, with the third one chosen: it cuts the first
     CreativeState.hear_clip_time.fn(state, 3.5, "pause")  # 1.5 s into the first piece
     assert state.clip_cut_here_reason == ""
     CreativeState.cut_clip_video.fn(state)
-    assert state.clip_cut_pieces == [[0.0, 1.5], [1.5, 3.0], [3.0, 9.0], [9.0, 15.0]]
+    assert state.clip_cut_pieces == [
+        [0.0, 1.5, 1.0],
+        [1.5, 3.0, 1.0],
+        [3.0, 9.0, 1.0],
+        [9.0, 15.0, 1.0],
+    ]
     assert state.clip_edit_block == second
-    # «Deshacer» walks back every cut
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_cut_pieces == [[0.0, 3.0], [3.0, 9.0], [9.0, 15.0]]
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_cut_pieces == [[0.0, 3.0], [3.0, 15.0]]
-    CreativeState.undo_clip_edit.fn(state)
-    assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, _SECOND]
-
-
-def test_deshacer_puts_the_cut_video_back_in_one_block(editor_on: None) -> None:
-    state = _timeline_state()
-    CreativeState.select_clip_block.fn(state, _KEY)
-    CreativeState.hear_clip_time.fn(state, 10.0, "pause")
-    CreativeState.cut_clip_video.fn(state)
-    assert len(state.clip_tl_media_rows) == 4
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_cut_pieces == []
-    assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY, _SECOND]
-    segments = state._clip_edit_media()["segments"]
-    own = [(s["start_s"], s["end_s"]) for s in segments if s["key"] == _KEY]  # type: ignore[index, union-attr]
-    assert own == [(0.0, 15.0)]
+    assert state.clip_edit_notice == "Cortaste el video 2 en dos."
 
 
 def test_the_pieces_move_together(editor_on: None) -> None:
@@ -1045,39 +1027,48 @@ def test_the_pieces_move_together(editor_on: None) -> None:
     CreativeState.select_clip_block.fn(state, _KEY)  # the first piece chosen
     # the second piece before the first: the recipe follows
     CreativeState.drop_clip_block.fn(state, second, "move", 1.0)
-    assert state.clip_cut_pieces == [[5.0, 15.0], [0.0, 5.0]]
+    assert state.clip_cut_pieces == [[5.0, 15.0, 1.0], [0.0, 5.0, 1.0]]
     assert state.clip_edit_block == second  # the chosen piece is still the chosen one
     # a move that would split the pieces up is not taken
     CreativeState.drop_clip_block.fn(state, _PHOTO, "move", 1.0)
     assert [r["id"] for r in state.clip_tl_media_rows][0] == _PHOTO
 
 
-def test_velocidad_is_the_videos_own(editor_on: None) -> None:
-    state = _timeline_state()
+def test_velocidad_is_the_pieces_own(editor_on: None) -> None:
+    """«Velocidad» of the own video while it is ONE stretch (ED-10, kept with «Por
+    pedazo»): sped up from normal it takes the whole video, back to normal its stretch
+    comes back — with its line; a speed is on only when the WHOLE
+    video lasts 3–60 s with it. Cut in pieces, only the chosen one changes
+    (`test_speed_by_piece_changes_only_that_segment`)."""
+    state = _timeline_state()  # photo 2 s + own 0:00–0:15 + second 8 s = 25 s
     assert state.clip_tl_speed == "1" and state.clip_tl_speed_offered
     CreativeState.set_clip_block_speed.fn(state, _KEY, "3")
     assert state.clip_effect_ids == ["camara_rapida"] and state.clip_speed == 3
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 20.0)  # the whole video
     assert state.clip_tl_speed == "3"
-    assert "×3" in state.clip_edit_notice
-    CreativeState.set_clip_block_speed.fn(state, _KEY, "5")
-    assert state.clip_speed == 5
-    CreativeState.set_clip_block_speed.fn(state, _KEY, "20")  # 1 s: off, says why
-    assert state.clip_speed == 5 and state.clip_speed_note.startswith("Con ×20")
+    assert state.clip_edit_notice == "Pusiste tu video ×3: usamos todo tu video."
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "5")  # only the speed
+    assert (state.clip_cut_end, state.clip_speed) == (20.0, 5)
+    assert state.clip_edit_notice == "Pusiste el video 2 ×5."
+    assert state.clip_tl_total == "14"  # 2 + 4 + 8
     CreativeState.set_clip_block_speed.fn(state, _KEY, "1")
     assert state.clip_effect_ids == [] and state.clip_tl_speed == "1"
-    # one change, one «Deshacer»
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 15.0)  # its stretch back
+    assert state.clip_edit_notice == "Volviste tu video a la velocidad normal."
+    # one change, one line
     CreativeState.set_clip_block_speed.fn(state, _KEY, "2")
-    CreativeState.undo_clip_edit.fn(state)
-    assert state.clip_effect_ids == []
-    # shown on a 9 s video too (×2 and ×3 on), never on another block
+    assert state.clip_edit_notice == "Pusiste tu video ×2: usamos todo tu video."
+    # a video alone of 9 s: ×10 would leave 0,9 s — off, says why; ×3 on (3 s)
     short = _measured(9.0)
-    assert short.clip_tl_speed_offered
     CreativeState.set_clip_block_speed.fn(short, _KEY, "10")
     assert short.clip_effect_ids == []
+    assert short.clip_speed_note == "Con ×10 tu video duraría 0,9 s."
     CreativeState.set_clip_block_speed.fn(short, _KEY, "3")
     assert short.clip_effect_ids == ["camara_rapida"]
+    # never on another block: the other video's speed leaves the own video's as it was
+    before = (list(state.clip_effect_ids), state.clip_speed)
     CreativeState.set_clip_block_speed.fn(state, _SECOND, "10")
-    assert state.clip_effect_ids == []
+    assert (list(state.clip_effect_ids), state.clip_speed) == before
 
 
 def test_agregar_opens_one_flow_at_a_time(editor_on: None) -> None:
@@ -1338,3 +1329,357 @@ def test_with_own_media_on_the_timeline_inspiration_and_music_are_not_offered(
     assert state.clip_source_tab == state.clip_source_tab_shown == "upload"
     assert "sonido" not in state.gen_campaign_hint
     assert "subtítulos" not in state.gen_campaign_hint
+
+
+# -- ED-03 m-25026623: the trim handles, «Cortar»'s limits, speed by piece ---------------------
+
+
+def _cut_at(state: CreativeState, t: float) -> None:
+    CreativeState.hear_clip_time.fn(state, t, "pause")
+    CreativeState.cut_clip_video.fn(state)
+
+
+def test_the_start_handle_dragged_to_three_point_two_leaves_three(editor_on: None) -> None:
+    """The ticket's case: the start handle dragged from 0:00 to 0:03,2 — the browser's
+    ½ s magnet sends 3.0 (`assets/timeline-drag-core.js`); the piece starts at 0:03, the
+    blocks after it move 3 s earlier (no gap), with its line."""
+    state = _timeline_state()  # photo 0–2, own 2–17 (0:00–0:15), second 17–25
+    CreativeState.select_clip_block.fn(state, _KEY)
+    CreativeState.drop_clip_block.fn(state, _KEY, "start", 3.0)
+    assert (state.clip_cut_start, state.clip_cut_end) == (3.0, 15.0)
+    rows = state.clip_tl_media_rows
+    assert rows[1]["name"] == "Video 2 de 3, usas de 0:03 a 0:15, dura 12 s"
+    assert [r["start"] for r in rows] == ["0", "2", "14"]  # the second video moved up 3 s
+    assert state.clip_tl_total == "22"
+    assert state.clip_edit_notice == "Recortaste el video 2."
+    segments = state._clip_edit_media()["segments"]
+    assert [(s["key"], s["start_s"], s["end_s"]) for s in segments] == [  # type: ignore[index]
+        (_PHOTO, 0.0, 2.0),
+        (_KEY, 3.0, 15.0),
+        (_SECOND, 0.0, 8.0),
+    ]
+
+
+def test_the_handles_are_sliders_with_their_names_and_ranges(editor_on: None) -> None:
+    state = _timeline_state()
+    row = state.clip_tl_media_rows[1]
+    assert (row["start_handle"], row["end_handle"]) == ("Inicio de video 2", "Final de video 2")
+    assert (row["start_text"], row["end_text"]) == ("0:00", "0:15")
+    # what a screen reader hears, and the drag's bubble (UX review)
+    assert (row["start_value"], row["end_value"]) == ("Desde 0:00", "Hasta 0:15")
+    # inside its own material (0…20 s), never under 1 s
+    assert (row["start_min"], row["start_max"]) == ("0", "14")
+    assert (row["end_min"], row["end_max"]) == ("1", "20")
+    from .ui import timeline as tl
+
+    html = str(tl._handle(state.clip_tl_media_rows[1], "start").render())  # type: ignore[arg-type]
+    assert '"slider"' in html and "data-tl-from" in html and "data-tl-speed" in html
+    # a plain row renders its values, not their keys: the reader hears «Desde 0:00»
+    assert "data-tl-word" in html and "Desde 0:00" in html
+
+
+def test_a_handle_stays_inside_the_video_and_its_minute(editor_on: None) -> None:
+    """Inside its own material (0 … the file's length — past it is «extend», another
+    ticket) and never over A9's minute of the video, said in A9's words."""
+    state = _measured(200.0)  # 0:00–0:15
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 500.0)
+    assert state.clip_cut_end == 60.0
+    assert state.clip_cut_error == clip_editor_vm.SOURCE_TOO_LONG
+    CreativeState.drop_clip_block.fn(state, _KEY, "start", -4.0)
+    assert state.clip_cut_start == 0.0
+    small = _measured(20.0)
+    CreativeState.drop_clip_block.fn(small, _KEY, "end", 25.0)
+    assert small.clip_cut_end == 20.0 and small.clip_cut_error == ""  # the file's end
+    # sped up, a piece keeps ½ s of the final video (×5: 2,5 s of the video)
+    CreativeState.set_clip_block_speed.fn(small, _KEY, "5")
+    CreativeState.drop_clip_block.fn(small, _KEY, "start", 19.0)
+    assert small.clip_cut_start == 17.5
+    assert small.clip_cut_error == "El pedazo tiene que durar al menos ½ s."
+
+
+def test_a_shorter_video_cuts_a_text_past_its_end_and_says_so(editor_on: None) -> None:
+    state = _measured(20.0)  # 0:00–0:15
+    CreativeState.set_clip_overlay_text.fn(state, "2×1")
+    CreativeState.commit_clip_overlay_text.fn(state, "")
+    state.clip_text_start, state.clip_text_end = 5.0, 14.0
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 8.0)
+    assert (state.clip_text_start, state.clip_text_end) == (5.0, -1.0)  # to the new end
+    assert state.clip_edit_notice == ("Recortaste el video 1. El texto ahora termina con tu video.")
+    # kept so: lengthening the video again does not bring the old end back
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 15.0)
+    assert (state.clip_text_start, state.clip_text_end) == (5.0, -1.0)
+
+
+def test_cortar_is_off_with_eight_blocks(editor_on: None) -> None:
+    """The recipe takes 8 stretches in all — the photo and the other video count."""
+    state = _timeline_state()  # photo, own, second: 3 blocks
+    CreativeState.select_clip_block.fn(state, _KEY)
+    for t in (4.0, 6.0, 8.0, 10.0, 12.0):  # five cuts: 8 blocks
+        _cut_at(state, t)
+    assert len(state.clip_tl_media_rows) == 8
+    CreativeState.hear_clip_time.fn(state, 14.0, "pause")
+    assert state.clip_cut_here_reason == (
+        "Tu video puede tener hasta 8 fotos o videos. Quita uno para cortar de nuevo."
+    )
+    assert CreativeState.cut_clip_video.fn(state) == []
+    assert len(state.clip_tl_media_rows) == 8
+
+
+def test_no_piece_under_one_second(editor_on: None) -> None:
+    state = _timeline_state()
+    CreativeState.select_clip_block.fn(state, _KEY)
+    CreativeState.hear_clip_time.fn(state, 2.8, "pause")  # 0.8 s into the video
+    assert state.clip_cut_here_reason == clip_editor_vm.CUT_TOO_CLOSE
+    _cut_at(state, 5.0)  # 0–3 and 3–15
+    second = clip_editor_vm.piece_id(_KEY, 1)
+    CreativeState.drop_clip_block.fn(state, second, "start", 14.8)
+    assert state.clip_cut_pieces[1] == [14.0, 15.0, 1.0]
+    assert state.clip_cut_error == TOO_SHORT
+
+
+def test_quitar_a_whole_video_or_photo_closes_up_and_says_it(editor_on: None) -> None:
+    state = _timeline_state()
+    CreativeState.select_clip_block.fn(state, _SECOND)
+    CreativeState.clip_block_action.fn(state, "Quitar")
+    assert [r["id"] for r in state.clip_tl_media_rows] == [_PHOTO, _KEY]
+    assert state.clip_tl_total == "17"  # no gap: the track is the sum of its blocks
+    assert state.clip_edit_notice == "Quitaste el video 3."
+    # a photo too: the video after it moves up to 0:00
+    CreativeState.select_clip_block.fn(state, _PHOTO)
+    CreativeState.clip_block_action.fn(state, "Quitar")
+    assert state.clip_edit_notice == "Quitaste la foto 1."
+    assert [(r["id"], r["start"]) for r in state.clip_tl_media_rows] == [(_KEY, "0")]
+
+
+def test_speed_by_piece_changes_only_that_segment(editor_on: None) -> None:
+    """Deivid 2026-11-19 («Por pedazo»): ×10 on piece 2 changes only its
+    `SourceSegment.speed`; back to ×1 it is as before."""
+    state = _measured(60.0)
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 40.0)  # 0:00–0:40
+    CreativeState.select_clip_block.fn(state, _KEY)
+    _cut_at(state, 10.0)  # 0–10 and 10–40; the second piece is the chosen one
+    second = clip_editor_vm.piece_id(_KEY, 1)
+    assert state.clip_edit_block == second and state.clip_tl_speed == "1"
+    CreativeState.set_clip_block_speed.fn(state, second, "10")  # 10 + 3 = 13 s
+    assert state.clip_cut_pieces == [[0.0, 10.0, 1.0], [10.0, 40.0, 10.0]]
+    assert state.clip_effect_ids == []  # each piece says its speed
+    assert state.clip_tl_speed == "10"
+    assert state.clip_edit_notice == "Pusiste el video 2 ×10."
+    segments = state._clip_edit_media()["segments"]
+    assert [(s["start_s"], s["end_s"], s["speed"]) for s in segments] == [  # type: ignore[index]
+        (0.0, 10.0, 1.0),
+        (10.0, 40.0, 10.0),
+    ]
+    assert state.clip_speed_line == "Tu video durará 13 s."
+    rows = state.clip_tl_media_rows
+    assert [r["speed_tag"] for r in rows] == ["", "×10"]
+    # the first piece is still normal: its own «Velocidad»
+    CreativeState.select_clip_block.fn(state, _KEY)
+    assert state.clip_tl_speed == "1"
+    CreativeState.set_clip_block_speed.fn(state, second, "1")
+    assert state.clip_cut_pieces == [[0.0, 10.0, 1.0], [10.0, 40.0, 1.0]]
+    assert state.clip_edit_notice == "Volviste el video 2 a la velocidad normal."
+
+
+def test_a_speed_is_on_for_the_whole_videos_three_to_sixty_seconds(editor_on: None) -> None:
+    """A speed of one piece is on only when the whole video — the other blocks as they
+    are, this piece at that speed — lasts 3–60 s, and the piece keeps its least."""
+    state = _timeline_state()  # photo 2 + own 15 + second 8
+    # one stretch at normal speed: judged as sped up, the whole 20 s video
+    reasons = state.clip_speed_reasons  # of the own video (nothing chosen: its first piece)
+    assert all(reasons[v] == "" for v in ("2", "3", "5", "10", "20"))  # 11 s at ×20
+    alone = _measured(20.0)  # 0:00–0:15 alone; sped up, all 20 s
+    assert alone.clip_speed_reasons["10"] == "Con ×10 tu video duraría 2 s."
+    assert alone.clip_speed_reasons["5"] == ""
+    # a piece of 2 s at ×20 is under ½ s of the final video: off
+    CreativeState.select_clip_block.fn(state, _KEY)
+    _cut_at(state, 4.0)  # 0–2 and 2–15
+    CreativeState.select_clip_block.fn(state, _KEY)  # the first piece, 2 s
+    assert state.clip_speed_reasons["20"] == clip_editor_vm.piece_too_short_line(20, 0.1)
+
+
+def test_cortar_and_handles_keep_each_pieces_speed(editor_on: None) -> None:
+    state = _measured(60.0)
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 40.0)
+    CreativeState.select_clip_block.fn(state, _KEY)
+    _cut_at(state, 10.0)
+    second = clip_editor_vm.piece_id(_KEY, 1)
+    CreativeState.set_clip_block_speed.fn(state, second, "5")  # 10–40 at ×5 = 6 s
+    _cut_at(state, 13.0)  # 3 s into the ×5 piece = 15 s of the video
+    assert state.clip_cut_pieces == [[0.0, 10.0, 1.0], [10.0, 25.0, 5.0], [25.0, 40.0, 5.0]]
+    third = clip_editor_vm.piece_id(_KEY, 2)
+    CreativeState.drop_clip_block.fn(state, third, "end", 35.0)
+    assert state.clip_cut_pieces[2] == [25.0, 35.0, 5.0]
+    # «Quitar» down to one piece: the stretch keeps that piece's speed
+    assert state.clip_edit_block == third
+    CreativeState.clip_block_action.fn(state, "Quitar")
+    CreativeState.select_clip_block.fn(state, second)
+    CreativeState.clip_block_action.fn(state, "Quitar")
+    assert state.clip_cut_pieces == []
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 10.0)
+    assert state.clip_effect_ids == [] and state.clip_tl_speed == "1"
+
+
+def test_a_piece_over_a_minute_says_a9_in_the_panel_and_before_crear(editor_on: None) -> None:
+    """A9 (m-25042483): a piece over a minute of its video — said in the video's panel and
+    before «Crear», in A9's words; «Cortar» stays on (it is the way out)."""
+    state = _measured(100.0)
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 60.0)  # the most a handle gives
+    state.clip_cut_end = 90.0  # e.g. a stretch kept from before A9
+    CreativeState.select_clip_block.fn(state, _KEY)
+    CreativeState.hear_clip_time.fn(state, 30.0, "pause")
+    assert state.clip_source_too_long_line == clip_editor_vm.SOURCE_TOO_LONG
+    assert state.clip_cut_here_reason == ""
+    assert state._clip_edit_problem() == (clip_editor_vm.SOURCE_TOO_LONG, "warn")
+    _cut_at(state, 30.0)  # 0–30 and 30–90: a minute at most each
+    assert state.clip_source_too_long_line == ""
+    assert state._clip_edit_problem()[0] != clip_editor_vm.SOURCE_TOO_LONG
+
+
+# -- ED-03 QA (Deivid 2026-11-19): no gap after a speed goes up and back, the trim hint --------
+
+
+def _gapless(state: CreativeState) -> None:
+    """Every block of «Fotos y videos» starts exactly where the one before ends — on the
+    timeline (its CSS numbers) and in the preview in sequence (`_clip_sequence`)."""
+    rows = state.clip_tl_media_rows
+    for before, after in zip(rows, rows[1:], strict=False):
+        end = float(before["start"]) + float(before["length"])
+        assert end == pytest.approx(float(after["start"]), abs=1e-9), (before, after)
+    blocks = state._clip_sequence().blocks
+    for before, after in zip(blocks, blocks[1:], strict=False):
+        assert before.out_end == after.out_start
+    assert float(rows[-1]["start"]) + float(rows[-1]["length"]) == pytest.approx(
+        blocks[-1].out_end, abs=0.011
+    )
+
+
+def test_a_piece_sped_up_and_back_leaves_no_gap(editor_on: None) -> None:
+    """Deivid 2026-11-19: «aumenté la velocidad de un video y la volví a poner a la
+    original y quedó un espacio» — a piece of 3,7 s, ×2 (1,85 s) and back to ×1: the
+    blocks were placed on the ½ s grid each on its own (0:03,5 + 0:04 = a gap); now they
+    are laid end to end to the hundredth."""
+    state = _timeline_state()  # photo 0–2, own 2–17, second 17–25
+    CreativeState.select_clip_block.fn(state, _KEY)
+    _cut_at(state, 5.7)  # 3,7 s into the own video: 0–3,7 and 3,7–15
+    assert state.clip_cut_pieces == [[0.0, 3.7, 1.0], [3.7, 15.0, 1.0]]
+    _gapless(state)
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "2")
+    assert [r["length"] for r in state.clip_tl_media_rows][:2] == ["2", "1.85"]
+    _gapless(state)
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "1")
+    assert state.clip_cut_pieces == [[0.0, 3.7, 1.0], [3.7, 15.0, 1.0]]
+    rows = state.clip_tl_media_rows
+    assert [(r["start"], r["length"]) for r in rows] == [
+        ("0", "2"),
+        ("2", "3.7"),
+        ("5.7", "11.3"),
+        ("17", "8"),
+    ]
+    _gapless(state)
+
+
+def test_one_stretch_sped_up_and_back_leaves_no_gap(editor_on: None) -> None:
+    """The same with the video not cut, and a length off the ½ s grid (7,33 s: the
+    stretch's end is kept on the grid, 7,5, but the block ends at 7,33)."""
+    state = _measured(7.33)
+    state.clip_images = [{"key": _PHOTO, "name": "foto.jpg", "source": "upload", "role": "product"}]
+    state.clip_sequence = [_KEY, _PHOTO]
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "2")
+    _gapless(state)
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "1")
+    rows = state.clip_tl_media_rows
+    assert [(r["start"], r["length"]) for r in rows] == [("0", "7.33"), ("7.33", "2")]
+    _gapless(state)
+
+
+def test_the_trim_hint_shows_until_the_first_trim(editor_on: None) -> None:
+    """Deivid 2026-11-19 («lo de los tiradores no lo entendí»): with a video that has
+    handles chosen, `TRIM_HINT` (UX review: «Arrastra las barras de color…») — until the
+    first trim; never
+    on a photo, never with nothing chosen."""
+    state = _timeline_state()
+    assert state.clip_trim_hint == ""
+    CreativeState.select_clip_block.fn(state, _PHOTO)
+    assert state.clip_trim_hint == ""
+    CreativeState.select_clip_block.fn(state, _KEY)
+    assert state.clip_trim_hint == (
+        "Arrastra las barras de color: hacia adentro recortas, hacia afuera alargas."
+    )
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 12.0)
+    assert state.clip_trim_hint == "" and state.clip_trim_hint_seen
+
+
+def test_the_editor_has_no_deshacer_button_and_shows_the_hint() -> None:
+    from . import clip_editor_view
+
+    rendered = str(clip_editor_view._timeline().render())
+    assert "undo_clip_edit" not in rendered and "Deshacer" not in rendered
+    assert "clip_trim_hint" in rendered
+
+
+# -- review ED-03 (2026-11-19) ------------------------------------------------------------------
+
+
+def test_an_off_speeds_why_stays_with_its_block(editor_on: None) -> None:
+    """Review ED-03: ×20 refused on video 2 — choosing video 3 does not carry the note."""
+    state = _measured(60.0)
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 40.0)
+    CreativeState.select_clip_block.fn(state, _KEY)
+    _cut_at(state, 35.0)  # 0–35 and 35–40: the second piece (video 2) chosen
+    second = clip_editor_vm.piece_id(_KEY, 1)
+    CreativeState.set_clip_block_speed.fn(state, second, "20")  # 5 s at ×20: too short
+    assert state.clip_speed_note.startswith("Con ×20")
+    CreativeState.select_clip_block.fn(state, _KEY)  # the other piece
+    assert state.clip_speed_refused == "" and state.clip_speed_note == ""
+    # a trim clears it too
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "20")  # 35 s at ×20 = 1,75 s + 5
+    CreativeState.set_clip_block_speed.fn(state, second, "20")
+    assert state.clip_speed_refused != ""
+    CreativeState.drop_clip_block.fn(state, second, "end", 39.0)
+    assert state.clip_speed_refused == ""
+    # and leaving the editor
+    state.clip_speed_refused = "x"
+    state._reset_clip_editor()
+    assert state.clip_speed_refused == ""
+
+
+def test_a_texts_and_an_effects_handles_land_on_the_half_second(editor_on: None) -> None:
+    """Review ED-03: a text's or an effect's handle dragged is put on the ½ s magnet on
+    the server too (as a whole block's «time»): the timeline and the preview agree."""
+    state = _timeline_state()  # 25 s
+    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
+    CreativeState.commit_clip_overlay_text.fn(state, "")
+    CreativeState.drop_clip_block.fn(state, "texto-1", "start", 3.3)
+    CreativeState.drop_clip_block.fn(state, "texto-1", "end", 12.74)
+    assert (state.clip_text_start, state.clip_text_end) == (3.5, 12.5)
+    texts = state._clip_sequence().texts
+    assert (texts[0].start, texts[0].end) == (3.5, 12.5)
+    CreativeState.add_clip_effect.fn(state, "vapor_capa")
+    CreativeState.drop_clip_block.fn(state, "efecto-vapor_capa", "start", 4.2)
+    CreativeState.drop_clip_block.fn(state, "efecto-vapor_capa", "end", 9.8)
+    assert state.clip_effect_times["vapor_capa"] == [4.0, 10.0]
+    effects = state._clip_sequence().effects
+    assert (effects[0].start, effects[0].end) == (4.0, 10.0)
+
+
+def test_a_shorter_video_keeps_a_cut_text_on_the_half_second(editor_on: None) -> None:
+    """`_clip_fit_overlays` puts a text that starts past the new end on the ½ s too."""
+    state = _measured(20.0)  # 0:00–0:15
+    CreativeState.set_clip_overlay_text.fn(state, "2×1")
+    CreativeState.commit_clip_overlay_text.fn(state, "")
+    state.clip_text_start, state.clip_text_end = 12.0, -1.0
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 7.3)  # 7,3 s: the text from 6
+    assert state.clip_text_start == 6.0
+
+
+def test_the_last_trim_wins_over_the_stretch_kept_before_a_speed_up(editor_on: None) -> None:
+    """Review ED-03: the whole video sped up, then trimmed, then back to normal — the trim
+    stays (it was the stretch from before the speed-up that came back)."""
+    state = _measured(20.0)  # 0:00–0:15
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "2")  # the whole 20 s
+    assert state._clip_fast_before == {"start": 0.0, "end": 15.0}
+    CreativeState.drop_clip_block.fn(state, _KEY, "end", 18.0)
+    assert state._clip_fast_before == {}
+    CreativeState.set_clip_block_speed.fn(state, _KEY, "1")
+    assert (state.clip_cut_start, state.clip_cut_end) == (0.0, 18.0)  # the trim stays

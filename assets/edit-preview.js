@@ -316,6 +316,7 @@
        length and size on its `loadedmetadata` (the same report as above).
      - Moving the timeline's playhead (its input, or sliding the tracks on a phone) seeks.
      - API: `window.__qEditPreview.seq.goTo(host, t)`, `.showHandle(host, index, edge)`,
+       `.showSource(host, index, src)` (ED-03: a trim handle's frame),
        `.playFrom(host, t)`, `.pause(host)`, `.time(host)`. */
   var SEQ_HOST = "[data-edit-seq-host]";
   var SEQ_END_SLACK = 0.04; // a frame or so before a block's end, the next one starts
@@ -738,6 +739,40 @@
     seqGoTo(host, edge === "end" ? Math.max(block.out_end - 0.05, block.out_start) : block.out_start);
   }
 
+  /* ED-03 (m-25026623): while a trim handle of video block `index` moves, its frame at
+     second `src` of ITS video — which may lie outside the block's stretch until the
+     handle is released — paused. The playhead goes to the matching moment of the block
+     (kept inside it); the tracks are not scrolled under the finger (`owner`). */
+  function seqShowSource(host, index, src) {
+    var st = seqState(host);
+    seqLoad(host);
+    var block = (st.seq.blocks || [])[index];
+    if (!block) return;
+    seqPause(host, true);
+    var speed = Number(block.speed) > 0 ? Number(block.speed) : 1;
+    var at = block.out_start + (Number(src) - Number(block.src_start || 0)) / speed;
+    st.t = Math.min(Math.max(at, block.out_start), Math.max(block.out_end - 0.001, block.out_start));
+    st.wall = 0;
+    st.owner = true;
+    try {
+      seqShow(host, false);
+    } finally {
+      st.owner = false;
+    }
+    if (st.mode !== "video") return;
+    var video = seqActiveVideo(host);
+    var want = Math.max(Number(src) || 0, 0);
+    if (!video) return;
+    video.__qSeqWant = want;
+    if (video.readyState >= 1) {
+      try {
+        video.currentTime = want;
+      } catch (err) {
+        /* seeks on loadedmetadata */
+      }
+    }
+  }
+
   /* «reproducir desde t». */
   function seqPlayFrom(host, t) {
     seqGoTo(host, t);
@@ -811,6 +846,9 @@
       var root = el.closest("[data-q-timeline]");
       var host = seqSyncedHost(root);
       if (!host || seqPhoneScroller(root) !== el) return;
+      // a trim handle moving (ED-03) scrolls the tracks near the edges: the preview keeps
+      // showing the handle's frame, not the time the tracks rest on
+      if (root.hasAttribute("data-tl-trimming")) return;
       var st = seqState(host);
       if (!st.seq) return;
       var t = core().slideTime({
@@ -943,6 +981,7 @@
     seq: {
       goTo: seqGoTo,
       showHandle: seqShowHandle,
+      showSource: seqShowSource,
       playFrom: seqPlayFrom,
       pause: seqPause,
       time: function (host) {

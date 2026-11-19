@@ -107,6 +107,17 @@ def clock(seconds: float) -> str:
     return f"{minutes}:{secs:02d}{half}"
 
 
+def clock_exact(seconds: float) -> str:
+    """«0:04», «0:03,7», «0:03,25» — a video's handle to the hundredth (ED-03 UX review:
+    never the ½ s `clock`, the handle may rest on the ¼ s magnet)."""
+    seconds = max(round(float(seconds), 2), 0.0)
+    whole = math.floor(seconds + 1e-9)
+    minutes, secs = divmod(whole, 60)
+    rest = round(seconds - whole, 2)
+    tail = f"{rest:.2f}"[2:].rstrip("0") if rest >= 0.005 else ""
+    return f"{minutes}:{secs:02d}" + (f",{tail}" if tail else "")
+
+
 def amount(seconds: float) -> str:
     """«5», «4,5» — a length in seconds, for «dura {s} s»."""
     seconds = snap(seconds)
@@ -118,6 +129,15 @@ def amount(seconds: float) -> str:
 def playhead_text(t: float, total: float) -> str:
     """The playhead's `aria-valuetext`: «0:05 de 0:12»."""
     return f"{clock(t)} de {clock(total)}"
+
+
+def exact(value: float) -> str:
+    """A number for CSS and ARIA attributes, to the hundredth (dot decimal), never on the
+    ½ s grid: where a block of «Fotos y videos» sits and how long it is (ED-03 — two
+    neighbours each rounded on their own to ½ s left a gap or an overlap between them,
+    e.g. after a speed went up and back down)."""
+    value = round(float(value), 2)
+    return str(int(value)) if value == int(value) else f"{value:g}"
 
 
 def num(value: float) -> str:
@@ -221,8 +241,9 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "end_label": "Hasta",
                 "start_text": clock(item["src_start"]),
                 "end_text": clock(item["src_end"]),
-                "start_value": f"Desde {clock(item['src_start'])}",
-                "end_value": f"Hasta {clock(item['src_end'])}",
+                # the handles' `aria-valuetext` and the drag's bubble (ED-03 UX review)
+                "start_value": f"Desde {clock_exact(item['src_start'])}",
+                "end_value": f"Hasta {clock_exact(item['src_end'])}",
                 "start_now": num(item["src_start"]),
                 "start_min": "0",
                 "start_max": num(float(item["src_end"]) - MIN_S),
@@ -244,10 +265,13 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "speed": _speed_value(item),
                 "speed_tag": f"×{_speed_value(item)}" if speed_of(item) > 1 else "",
                 "place": "",
-                "start": num(at),
-                "length": num(length),
-                "start_handle": f"Inicio de {label}",
-                "end_handle": f"Final de {label}",
+                # ED-03: laid end to end to the hundredth, from the same running sum, so
+                # a block always ends exactly where the next one starts (no gap)
+                "start": exact(at),
+                "length": exact(round(at + length, 2) - round(at, 2)),
+                # ED-03: «Inicio de video 2» / «Final de video 2» (the noun in lower case)
+                "start_handle": f"Inicio de {label[:1].lower()}{label[1:]}",
+                "end_handle": f"Final de {label[:1].lower()}{label[1:]}",
                 **handles,
             }
         )

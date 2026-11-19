@@ -1,5 +1,6 @@
 """ED-02/03/05 (m-25026621, m-25026623, m-25026630): «Arma tu video»'s words, exactly as
-the proposal §5 writes them, and «Deshacer» (D-E6)."""
+the proposal §5 writes them, and the live line of each change (D-E6; no «Deshacer» since
+Deivid 2026-11-19)."""
 
 from __future__ import annotations
 
@@ -49,6 +50,9 @@ def test_fixed_words() -> None:
         "un video más largo."
     )
     assert vm.fast_on_line(10, had_cut=False) == ("Pusiste tu video ×10: usamos todo tu video.")
+    assert vm.fast_on_line(10, had_cut=False, capped=True) == (
+        "Pusiste tu video ×10: usamos su primer minuto."
+    )
     assert vm.fast_on_line(5, had_cut=True) == (
         "Pusiste tu video ×5: usamos todo tu video. "
         "Si vuelves a la velocidad normal, recuperas tu pedazo."
@@ -106,8 +110,8 @@ def test_fixed_words() -> None:
     assert vm.ROTATE == "Girar"
     assert vm.ROTATE_LABEL == "Girar el video un cuarto de vuelta"
     assert vm.WHOLE_VIDEO == "Usar el video entero"
-    assert vm.TOO_SHORT == "El pedazo tiene que durar al menos 1 segundo."
-    assert vm.UNDO == "Deshacer"
+    assert vm.TOO_SHORT == "El pedazo tiene que durar al menos 1 s."
+    assert not hasattr(vm, "UNDO")  # Deivid 2026-11-19: no «Deshacer»
 
 
 def test_numbered_words() -> None:
@@ -123,7 +127,7 @@ def test_numbered_words() -> None:
 
 
 def test_refusals_and_low_resolution() -> None:
-    assert vm.refusal_text("too_short") == "El pedazo tiene que durar al menos 1 segundo."
+    assert vm.refusal_text("too_short") == "El pedazo tiene que durar al menos 1 s."
     assert vm.refusal_text("outside_video") == (
         "No pudimos usar ese pedazo de tu video. Prueba con otro."
     )
@@ -169,9 +173,11 @@ def test_cortar_is_judged_by_ef03s_plan_prepare() -> None:
 def test_fast_motion_proposal() -> None:
     assert vm.fast_proposal(40) == (0.0, 40.0, 10)  # 4 s
     assert vm.fast_proposal(20) == (0.0, 20.0, 5)  # 4 s
-    assert vm.fast_proposal(120) == (0.0, 120.0, 20)  # 6 s
+    # ED-03 with A9 (m-25042483): a stretch takes at most a minute of its video
+    assert vm.fast_proposal(120) == (0.0, 60.0, 10)  # 6 s
     assert vm.fast_proposal(7.33) == (0.0, 7.5, 2)  # on the grid; ×3 is off (2,5 s)
-    assert vm.fast_proposal(130) == (0.0, 130.0, 20)  # 6,5 s; ×2 is off (65 s)
+    assert vm.fast_proposal(130) == (0.0, 60.0, 10)  # its first minute: 6 s
+    assert vm.whole_end(1300) == 60.0 and vm.whole_end(7.33) == 7.5
 
 
 def _speeds_on(duration: float) -> list[str]:
@@ -187,9 +193,8 @@ def test_speed_reasons_on_only_for_three_to_sixty_seconds() -> None:
     assert _speeds_on(4.0) == ["1"]
     four = vm.speed_reasons(4.0)
     assert {four[v] for v in ("2", "3", "5", "10", "20")} == {vm.FAST_NEEDS_LONGER}
-    # 130 s: ×2 is off by length (65 s), the others on
-    assert vm.speed_reasons(130.0)["2"] == "Con ×2 tu video duraría 65 s."
-    assert _speeds_on(130.0) == ["1", "3", "5", "10", "20"]
+    # 130 s: its first minute (A9) — ×2 is 30 s, every speed on
+    assert _speeds_on(130.0) == ["1", "2", "3", "5", "10", "20"]
     # not read yet: every speed waits
     assert vm.speed_reasons(20.0, known=False)["5"] == vm.CUT_WAITING
     assert vm.speed_result_line(10, 1.2) == "Con ×10 tu video duraría 1,2 s."
@@ -218,19 +223,11 @@ def test_change_messages() -> None:
     assert vm.change_message(_snap(), _snap()) == ""
 
 
-def test_undo_stack_brings_back_the_exact_state() -> None:
-    first, second = _snap(), _snap(start=2.0, effects=["vapor_capa"])
-    stack = vm.push_undo([], first)
-    stack = vm.push_undo(stack, second)
-    previous, stack = vm.pop_undo(stack)
-    assert previous == second
-    previous, stack = vm.pop_undo(stack)
-    assert previous == first and stack == []
-    assert vm.pop_undo([]) == (None, [])
-    deep: list[dict[str, object]] = []
-    for i in range(15):
-        deep = vm.push_undo(deep, _snap(start=float(i)))
-    assert len(deep) == vm.UNDO_DEPTH and deep[-1]["start"] == 14.0
+def test_there_is_no_undo_stack_any_more() -> None:
+    """Deivid 2026-11-19 («quitemos el botón de deshacer»): the snapshots only find the
+    live line's words; nothing stacks them."""
+    assert not hasattr(vm, "push_undo") and not hasattr(vm, "pop_undo")
+    assert not hasattr(vm, "UNDO_DEPTH")
 
 
 def test_which_screen_and_which_video() -> None:
@@ -650,3 +647,180 @@ def test_the_waiting_and_the_refusals_say_what_to_do() -> None:
     assert vm.NEEDS_MEDIA == (
         "Para poner un texto o un efecto, primero agrega una foto o un video tuyo."
     )
+
+
+# -- ED-03 m-25026623: trim handles, «Cortar»'s words, A9, speed by piece ---------------------
+
+
+def test_ed03_lines() -> None:
+    assert vm.cut_line(2) == "Cortaste el video 2 en dos."
+    assert vm.removed_line("video", 3) == "Quitaste el video 3."
+    assert vm.removed_line("photo", 1) == "Quitaste la foto 1."
+    assert vm.trim_line(2, longer=False) == "Recortaste el video 2."
+    assert vm.trim_line(2, longer=True) == "Alargaste el video 2."
+    assert vm.fitted_line([]) == ""
+    assert vm.fitted_line(["el texto"]) == "El texto ahora termina con tu video."
+    assert vm.fitted_line(["el texto", "Vapor"]) == (
+        "El texto y Vapor ahora terminan con tu video."
+    )
+    assert vm.CUT_FULL == (
+        "Tu video puede tener hasta 8 fotos o videos. Quita uno para cortar de nuevo."
+    )
+    assert vm.TOO_MANY_PIECES == "Tu video puede tener hasta 8 fotos o videos."
+    assert vm.TRIM_HINT == (
+        "Arrastra las barras de color: hacia adentro recortas, hacia afuera alargas."
+    )
+    assert vm.SOURCE_TOO_LONG.endswith("pártelo en dos con «Cortar».")
+    assert vm.SOURCE_TOO_LONG_REFUSED.endswith("y vuelve a crear el video.")
+    assert vm.speed_changed_line(2, 10) == "Pusiste el video 2 ×10."
+    assert vm.speed_changed_line(2, 1) == "Volviste el video 2 a la velocidad normal."
+    assert vm.piece_too_short_line(20, 0.1) == (
+        "Con ×20 este pedazo duraría 0,1 s: es muy poco. Alárgalo o elige una velocidad menor."
+    )
+
+
+def test_trim_bounds_inside_the_material_the_least_and_a9s_minute() -> None:
+    # a 20 s video, piece 0–15 at ×1: the start up to 14, the end from 1 to the file's end
+    assert vm.trim_bounds(edge="start", start=0, end=15, length=20) == (0.0, 14.0)
+    assert vm.trim_bounds(edge="end", start=0, end=15, length=20) == (1.0, 20.0)
+    # a 200 s video: never over a minute of it (A9)
+    assert vm.trim_bounds(edge="end", start=10, end=20, length=200) == (11.0, 70.0)
+    assert vm.trim_bounds(edge="start", start=0, end=100, length=200) == (40.0, 99.0)
+    # sped up: ½ s of the final video at least (×10 = 5 s of the video)
+    assert vm.trim_bounds(edge="start", start=0, end=15, length=20, speed=10) == (0.0, 10.0)
+    assert vm.trim_min_source(1) == 1.0 and vm.trim_min_source(2) == 1.0
+    assert vm.trim_min_source(10) == 5.0
+    assert vm.trim_value(3.204, (0.0, 14.0)) == 3.2
+    assert vm.trim_value(-1, (0.0, 14.0)) == 0.0 and vm.trim_value(99, (0.0, 14.0)) == 14.0
+    assert vm.too_short_text(1) == vm.TOO_SHORT
+    assert vm.too_short_text(10) == "El pedazo tiene que durar al menos ½ s."
+
+
+def test_a9_before_crear_and_as_a_refusal() -> None:
+    long = vm.recipe_of(
+        video_key="v", start=0, end=90, rotate=0, effects=[], speed=1, text="", place="bottom"
+    )
+    assert vm.recipe_problem(long) == (vm.SOURCE_TOO_LONG, "warn")
+    fast = vm.recipe_of(
+        video_key="v",
+        start=0,
+        end=90,
+        rotate=0,
+        effects=[],
+        speed=1,
+        text="",
+        place="bottom",
+        pieces=[[0, 30, 1], [30, 90, 20]],
+    )
+    assert vm.recipe_problem(fast) == ("", "")  # a minute at most each: 30 + 3 = 33 s
+    assert vm.refusal_line(["segment_source_too_long"]) == vm.SOURCE_TOO_LONG_REFUSED
+    assert vm.source_too_long(0, 60.04) and not vm.source_too_long(0, 60.02)
+
+
+def test_each_piece_carries_its_own_speed() -> None:
+    """Deivid 2026-11-19 («Por pedazo»): ×10 on piece 2 changes only its
+    `SourceSegment.speed`; an older `[start, end]` piece takes the stretch's speed."""
+    recipe = vm.recipe_of(
+        video_key="v",
+        start=0,
+        end=40,
+        rotate=0,
+        effects=[],
+        speed=10,
+        text="",
+        place="bottom",
+        pieces=[[0, 10, 1], [10, 40, 10]],
+    )
+    assert [(s.start_s, s.end_s, s.speed) for s in recipe.segments] == [
+        (0.0, 10.0, 1.0),
+        (10.0, 40.0, 10.0),
+    ]
+    media = vm.timeline_media(
+        [{"key": "v", "kind": "video", "source": "upload"}],
+        own_key="v",
+        cut_start=0,
+        cut_end=40,
+        speed=1,
+        rotate=0,
+        lengths={"v": 60},
+        pieces=[[0, 10, 1], [10, 40, 10]],
+    )
+    assert [m["speed"] for m in media] == [1.0, 10.0]
+    assert vm.media_total(media) == 13.0
+    assert [s.speed for s in vm.timeline_segments(media)] == [1.0, 10.0]
+    assert vm.piece_speed([0, 5]) == 1.0 and vm.piece_speed([0, 5], 5) == 5.0
+    assert vm.piece_speed([0, 5, 3], 5) == 3.0
+
+
+def test_piece_speed_reasons_read_the_whole_video() -> None:
+    media = [
+        {"id": "foto", "key": "foto", "kind": "photo", "dur": 2.0},
+        {"id": "v", "key": "v", "kind": "video", "src_start": 0.0, "src_end": 2.0},
+        {"id": "v#parte-2", "key": "v", "kind": "video", "src_start": 2.0, "src_end": 15.0},
+    ]
+    second = vm.piece_speed_reasons(media, "v#parte-2")
+    assert second["1"] == "" and second["20"] == ""  # 2 + 2 + 0,65 s
+    first = vm.piece_speed_reasons(media, "v")
+    assert first["2"] == ""  # 1 s of the final video
+    assert first["20"] == vm.piece_too_short_line(20, 0.1)
+    alone = [{"id": "v", "key": "v", "kind": "video", "src_start": 0.0, "src_end": 15.0}]
+    assert vm.piece_speed_reasons(alone, "v")["10"] == "Con ×10 tu video duraría 1,5 s."
+    over = [{"id": "v", "key": "v", "kind": "video", "src_start": 0.0, "src_end": 90.0}]
+    assert vm.piece_speed_reasons(over, "v")["10"] == vm.SOURCE_TOO_LONG
+    assert vm.piece_speed_reasons(alone, "v", known=False)["5"] == vm.CUT_WAITING
+
+
+def test_the_snapshot_keeps_each_pieces_speed() -> None:
+    without = vm.snapshot(start=0, end=10, rotate=0, effects=[], speed=10, text="", place="b")
+    assert "files" not in without  # no «Deshacer»: the Clip's files are not kept
+    pieces = vm.snapshot(
+        start=0,
+        end=10,
+        rotate=0,
+        effects=[],
+        speed=10,
+        text="",
+        place="bottom",
+        pieces=[[0, 4, 1], [4, 10, 10]],
+    )
+    assert pieces["pieces"] == [[0.0, 4.0, 1.0], [4.0, 10.0, 10.0]]
+    # a speed changed on one piece says so (the screen names it, `speed_changed_line`)
+    faster = {**pieces, "pieces": [[0.0, 4.0, 2.0], [4.0, 10.0, 10.0]]}
+    assert vm.change_message(pieces, faster) != ""
+
+
+def test_exact_lays_blocks_end_to_end() -> None:
+    """ED-03 QA: «Fotos y videos» laid to the hundredth, never on the ½ s grid each on
+    its own (a 3,7 s block then a photo: no gap)."""
+    from .ui import timeline_vm as tl
+
+    media = [
+        {"id": "a", "kind": "video", "src_start": 0.0, "src_end": 3.7, "src_len": 9.0},
+        {"id": "b", "kind": "photo", "dur": 2.0},
+        {"id": "c", "kind": "video", "src_start": 0.0, "src_end": 3.7, "src_len": 9.0, "speed": 2},
+    ]
+    rows = tl.media_blocks(media)
+    assert [(r["start"], r["length"]) for r in rows] == [
+        ("0", "3.7"),
+        ("3.7", "2"),
+        ("5.7", "1.85"),
+    ]
+    assert tl.exact(3.0) == "3" and tl.exact(1.849999) == "1.85"
+
+
+def test_a_videos_handle_reads_to_the_hundredth() -> None:
+    """ED-03 UX review: «Desde 0:03,7» / «Hasta 0:09» — the `aria-valuetext` and the
+    drag's bubble — never the ½ s `clock`."""
+    from .ui import timeline_vm as tl
+
+    assert [tl.clock_exact(v) for v in (4, 3.7, 3.25, 3.05, 61.5, 59.999)] == [
+        "0:04",
+        "0:03,7",
+        "0:03,25",
+        "0:03,05",
+        "1:01,5",
+        "1:00",
+    ]
+    media = [{"id": "v", "kind": "video", "src_start": 3.25, "src_end": 9.0, "src_len": 20.0}]
+    row = tl.media_blocks(media)[0]
+    assert (row["start_value"], row["end_value"]) == ("Desde 0:03,25", "Hasta 0:09")

@@ -29,7 +29,7 @@ server learns from the browser — and a failure the same way (a negative length
 `error`, or no length after ~15 s), so «Cortar» never waits forever.
 
 Under the frame, in the fixed zone: «{t} de {total} · Así va quedando» (the time written
-by the script, in the final video's time), or «Deshacer» while a change is fresh.
+by the script, in the final video's time).
 """
 
 from __future__ import annotations

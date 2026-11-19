@@ -3,11 +3,11 @@ m-25026648; epic «Video automático con efectos, por pasos»): the words and th
 rules of the normal Clip's first step as an editor — the preview in sequence on top,
 the timeline under it (`ui.timeline`: ruler, playhead, three tracks), its action bar
 and the chosen block's panel. One block chosen at a time (`?bloque=video-2`). Nothing
-is generated here; every change is kept at once with «Deshacer» (D-E6, no «Guardar»).
+is generated here; every change is kept at once (D-E6, no «Guardar»).
 
 The state (`CreativeState`, «clip editor» block) holds the owner's choices as plain
-fields; `snapshot` / `change_message` / `push_undo` here decide what «Deshacer» brings
-back and what the live line says, and `recipe_of` turns the fields into the
+fields; `snapshot` / `change_message` here decide what the live line says (Deivid
+2026-11-19: no «Deshacer» any more), and `recipe_of` turns the fields into the
 `editor_preview_contract.PartRecipe` (EF-02's shape) the brief carries.
 """
 
@@ -184,13 +184,21 @@ def speed_result_line(speed: int, seconds: float) -> str:
     return f"Con ×{int(speed)} tu video duraría {contract.seconds_text(seconds)} s."
 
 
+def whole_end(duration: float) -> float:
+    """The stretch «Cámara rápida» takes of a video of `duration` s: all of it, on the
+    ½ s grid — at most its first minute (A9, m-25042483: a stretch never takes more)."""
+    return min(contract.grid_end(duration), SOURCE_MAX_SECONDS)
+
+
 def speed_reasons(duration: float, *, known: bool = True) -> dict[str, str]:
-    """«Velocidad»'s speeds for the whole video of `duration` s: value → why it is off
-    ("" = on). A speed is on only when the video at that speed lasts 3–60 s; under 6 s
-    every one is off with `FAST_NEEDS_LONGER`; while the length is not read yet, with
-    `CUT_WAITING`. «Normal» (`SPEED_NORMAL`) is always on."""
+    """«Cámara rápida»'s speeds for the whole video of `duration` s (its first minute at
+    most, `whole_end`): value → why it is off ("" = on). A speed is on only when the
+    video at that speed lasts 3–60 s; under 6 s every one is off with
+    `FAST_NEEDS_LONGER`; while the length is not read yet, with `CUT_WAITING`. «Normal»
+    (`SPEED_NORMAL`) is always on. The panel's «Velocidad» of ONE piece is
+    `piece_speed_reasons`."""
     reasons = {SPEED_NORMAL: ""}
-    end = contract.grid_end(duration) if known and duration > 0 else 0.0
+    end = whole_end(duration) if known and duration > 0 else 0.0
     for speed in contract.FAST_MOTION_SPEEDS:
         if not known or duration <= 0:
             why = CUT_WAITING
@@ -204,6 +212,65 @@ def speed_reasons(duration: float, *, known: bool = True) -> dict[str, str]:
     return reasons
 
 
+def piece_too_short_line(speed: int, seconds: float) -> str:
+    """Why a speed is off for a piece too short for it: «Con ×20 este pedazo duraría
+    0,3 s: es muy poco.»."""
+    shown = contract.seconds_text(seconds)
+    return (
+        f"Con ×{int(speed)} este pedazo duraría {shown} s: es muy poco. Alárgalo o elige "
+        "una velocidad menor."
+    )
+
+
+def speed_changed_line(n: int, speed: float) -> str:
+    """The live line when «Velocidad» changes a piece: «Pusiste el video 2 ×10.» or
+    «Volviste el video 2 a la velocidad normal.»."""
+    if float(speed) > 1.0 + 1e-6:
+        return f"Pusiste el video {int(n)} ×{int(speed)}."
+    return f"Volviste el video {int(n)} a la velocidad normal."
+
+
+def piece_speed_reasons(
+    media: Sequence[Mapping[str, object]], block_id: str, *, known: bool = True
+) -> dict[str, str]:
+    """«Velocidad» of ONE piece (Deivid 2026-11-19, «Por pedazo»): value → why it is off
+    ("" = on). A speed is on only when (1) the piece takes at most A9's minute of its
+    video (`SOURCE_TOO_LONG` otherwise: no speed fixes it), (2) the WHOLE video — every
+    other block as it is, this piece at that speed — lasts 3–60 s (`speed_result_line`),
+    and (3) the piece still keeps the least a piece takes at that speed
+    (`trim_min_source`: 1 s of its video, ½ s of the final one). «Normal» is always on;
+    while the length is not read yet every speed waits (`CUT_WAITING`)."""
+    reasons = {SPEED_NORMAL: ""}
+    item = next((m for m in media if m.get("id") == block_id and m.get("kind") == "video"), None)
+    if not known or item is None:
+        for speed in contract.FAST_MOTION_SPEEDS:
+            reasons[str(speed)] = CUT_WAITING
+        return reasons
+    start = float(item.get("src_start") or 0.0)  # type: ignore[arg-type]
+    end = float(item.get("src_end") or 0.0)  # type: ignore[arg-type]
+    source = max(end - start, 0.0)
+    others = media_total(media) - _shown_length(item)
+    for speed in contract.FAST_MOTION_SPEEDS:
+        total = others + source / speed
+        if source_too_long(start, end):
+            why = SOURCE_TOO_LONG
+        elif not FAST_MIN_SECONDS - 1e-6 <= total <= FAST_MAX_SECONDS + 1e-6:
+            why = speed_result_line(speed, total)
+        elif source < trim_min_source(speed) - 1e-6:
+            why = piece_too_short_line(speed, source / speed)
+        else:
+            why = ""
+        reasons[str(speed)] = why
+    return reasons
+
+
+def piece_speed(piece: Sequence[float], default: float = 1.0) -> float:
+    """A stored piece's speed: `[start, end, speed]` (ED-03); an older `[start, end]`
+    takes `default` (the one stretch's speed)."""
+    speed = float(piece[2]) if len(piece) > 2 else float(default)
+    return speed if speed > 0 else 1.0
+
+
 def fast_impossible_line(seconds: float) -> str:
     """Even the whole video at the slowest speed lasts under 3 s: no cut can fix it."""
     return (
@@ -212,10 +279,12 @@ def fast_impossible_line(seconds: float) -> str:
     )
 
 
-def fast_on_line(speed: int, *, had_cut: bool) -> str:
+def fast_on_line(speed: int, *, had_cut: bool, capped: bool = False) -> str:
     """The live line when «Cámara rápida» is marked: what it did to the stretch, in the
-    words of the control the owner sees («Velocidad», ED-10 UX review)."""
-    line = f"Pusiste tu video ×{int(speed)}: usamos todo tu video."
+    words of the control the owner sees («Velocidad», ED-10 UX review). `capped`: the
+    video is over a minute, so only its first minute is used (A9)."""
+    used = "su primer minuto" if capped else "todo tu video"
+    line = f"Pusiste tu video ×{int(speed)}: usamos {used}."
     return f"{line} Si vuelves a la velocidad normal, recuperas tu pedazo." if had_cut else line
 
 
@@ -244,10 +313,10 @@ def fast_check(*, key: str, start: float, end: float, speed: float) -> tuple[flo
 
 
 def fast_proposal(duration: float) -> tuple[float, float, int]:
-    """Marking «Cámara rápida»: the whole video (no 15 s cap: it is sped up) and, of
-    the speeds that are on (`speed_reasons`), the one whose result is closest to 5 s —
-    `(start, end, speed)`."""
-    end = contract.grid_end(duration)
+    """Marking «Cámara rápida»: the whole video (no 15 s cap: it is sped up; at most its
+    first minute, A9 — `whole_end`) and, of the speeds that are on (`speed_reasons`), the
+    one whose result is closest to 5 s — `(start, end, speed)`."""
+    end = whole_end(duration)
     reasons = speed_reasons(duration)
     on = [s for s in contract.FAST_MOTION_SPEEDS if not reasons[str(s)]]
     speed = min(
@@ -282,13 +351,123 @@ CUT = "Cortar"
 CUT_LABEL = "Cortar el video donde está el marcador"
 CUT_NOT_HERE = "Mueve el marcador dentro de tu video para cortar."
 CUT_TOO_CLOSE = "Muy cerca del borde: mueve el marcador al menos 1 s."
-CUT_FULL = "Tu video ya tiene todos los cortes que se pueden hacer."
+#: ED-03: «Cortar» adds a block; the recipe takes `contract.SEGMENTS_MAX` stretches in
+#: all (photos, other videos and the own video's pieces): with that many it is off. ONE
+#: sentence for the cap (review ED-03): «Cortar» adds what to do; before «Crear»
+#: (`TOO_MANY_PIECES`) the cap alone.
+FULL_LINE = f"Tu video puede tener hasta {contract.SEGMENTS_MAX} fotos o videos."
+CUT_FULL = f"{FULL_LINE} Quita uno para cortar de nuevo."
+#: Fallback lines of `change_message` (the screen says which block: `cut_line`, …).
 CUT_DONE_LINE = "Cortaste tu video."
 PIECE_REMOVED_LINE = "Quitaste un pedazo de tu video."
+
+
+#: ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): beside the live line
+#: while a video with handles is chosen, until the first trim.
+TRIM_HINT = "Arrastra las barras de color: hacia adentro recortas, hacia afuera alargas."
+
+
+def cut_line(n: int) -> str:
+    """ED-03: «Cortaste el video {n} en dos.» (`n`: its place on the timeline)."""
+    return f"Cortaste el video {int(n)} en dos."
+
+
+def removed_line(kind: str, n: int) -> str:
+    """ED-03: «Quitaste el video {n}.» / «Quitaste la foto {n}.»."""
+    noun = "la foto" if kind == "photo" else "el video"
+    return f"Quitaste {noun} {int(n)}."
+
+
+def trim_line(n: int, *, longer: bool) -> str:
+    """ED-03: a handle released — «Recortaste el video {n}.» or, when the piece now takes
+    more of the video, «Alargaste el video {n}.»."""
+    return f"{'Alargaste' if longer else 'Recortaste'} el video {int(n)}."
+
+
+def fitted_line(names: Sequence[str]) -> str:
+    """ED-03 (§3.5): the texts and effects a shorter video cut to its new end, said in the
+    live line — «El texto ahora termina con tu video.», «El texto y Vapor ahora terminan
+    con tu video.» ("" = none)."""
+    shown = [str(name) for name in names if name]
+    if not shown:
+        return ""
+    joined = shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " y " + shown[-1]
+    verb = "termina" if len(shown) == 1 else "terminan"
+    return f"{joined[0].upper()}{joined[1:]} ahora {verb} con tu video."
+
+
+#: m-25042483 (A9): a video stretch takes at most this much of its source
+#: (`qualify_creative.schemas.SEGMENT_SOURCE_MAX_S`; a test pins they agree), whatever
+#: its speed — the backend refuses it as `segment_source_too_long`.
+SOURCE_MAX_SECONDS = 60.0
+#: …with the float noise the backend allows (`recipe._SOURCE_SLACK_S`).
+SOURCE_SLACK_SECONDS = 0.03
+#: In the video's panel, where a handle stops and before «Crear» (UX review ED-03: the
+#: way out is right there, nothing to create again yet).
+SOURCE_TOO_LONG = (
+    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "pedazo más largo o pártelo en dos con «Cortar»."
+)
+#: A9's own words (`LOCAL_SOURCE_TOO_LONG_TEXT` of `video_pipeline.local`; a test pins
+#: they agree), for the backend's refusal after «Crear».
+SOURCE_TOO_LONG_REFUSED = (
+    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+)
+
+
+def source_too_long(start: float, end: float) -> bool:
+    """A stretch takes more than `SOURCE_MAX_SECONDS` of its video (A9)."""
+    return float(end) - float(start) > SOURCE_MAX_SECONDS + SOURCE_SLACK_SECONDS
+
+
+# -- the trim handles (ED-03 m-25026623) ------------------------------------------------------
+
+
+def trim_min_source(speed: float) -> float:
+    """The least a piece may take of its video: 1 s, and — sped up — at least ½ s of the
+    final video (`CUT_EDGE_SECONDS`), as «Cortar» keeps its pieces (`split_check`)."""
+    speed = float(speed) if float(speed or 0) > 0 else 1.0
+    return max(contract.SEGMENT_MIN_SECONDS, CUT_EDGE_SECONDS * speed)
+
+
+def trim_bounds(
+    *, edge: str, start: float, end: float, length: float, speed: float = 1.0
+) -> tuple[float, float]:
+    """Where a handle of the piece `[start, end)` (seconds of its video, `length` long) may
+    go: `(lowest, highest)` source second. Inside the video's own material (0 … its
+    length: lengthening past it is «extend», m-25049586), never a piece under
+    `trim_min_source`, never one over `SOURCE_MAX_SECONDS` of source (A9). The same rule
+    as `assets/timeline-drag-core.js` `trimBounds`."""
+    least = trim_min_source(speed)
+    start, end, length = float(start), float(end), max(float(length), float(end))
+    if edge == "start":
+        low = max(0.0, end - SOURCE_MAX_SECONDS)
+        return round(low, 2), round(max(end - least, low), 2)
+    high = min(length, start + SOURCE_MAX_SECONDS)
+    return round(min(start + least, high), 2), round(high, 2)
+
+
+def trim_value(value: float, bounds: tuple[float, float]) -> float:
+    """A handle's new source second, to the hundredth, inside `bounds`."""
+    low, high = bounds
+    return round(min(max(float(value), low), high), 2)
+
+
+def too_short_text(speed: float) -> str:
+    """Why a handle stops before the piece gets too short: «El pedazo tiene que durar al
+    menos 1 segundo.», or — sped up — «…al menos ½ s.» (of the final video)."""
+    shown = trim_min_source(speed) / (float(speed) if float(speed or 0) > 0 else 1.0)
+    if shown >= 1.0 - 1e-6:
+        return TOO_SHORT
+    text = "½" if abs(shown - 0.5) < 1e-6 else f"{shown:.1f}".replace(".", ",")
+    return f"El pedazo tiene que durar al menos {text} s."
+
+
 #: How close to a block's edge the marker may be and still cut it (seconds of the final
 #: video); a piece also keeps at least `contract.SEGMENT_MIN_SECONDS` of the source.
 CUT_EDGE_SECONDS = 0.5
-TOO_SHORT = "El pedazo tiene que durar al menos 1 segundo."
+TOO_SHORT = "El pedazo tiene que durar al menos 1 s."
 CUT_WAITING = "Espera unos segundos: estamos leyendo cuánto dura tu video."
 #: Any refusal code (EF-03 «Preparar», PR #679) with no words of its own.
 REFUSAL_GENERIC = "No pudimos usar ese pedazo de tu video. Prueba con otro."
@@ -378,13 +557,7 @@ def time_of_total(t: float, total: float) -> str:
     return f"{contract.clock_text(t)} de {contract.clock_text(total)}"
 
 
-# -- «Deshacer» (D-E6) -----------------------------------------------------------------------
-
-#: «Deshacer» has no timer (WCAG 2.2.1): it stays until the next change or until the
-#: owner leaves the step.
-UNDO = "Deshacer"
-#: How many earlier states «Deshacer» can go back (at least one, D-E6).
-UNDO_DEPTH = 10
+# -- the live line (D-E6; no «Deshacer» since Deivid 2026-11-19) ---------------------------
 
 #: What a snapshot holds, and the line each change says — in this order of precedence
 #: when one change touches several fields (the stretch's handles move together).
@@ -415,12 +588,12 @@ def snapshot(
     effect_times: Mapping[str, Sequence[float]] | None = None,
     pieces: Sequence[Sequence[float]] = (),
 ) -> dict[str, object]:
-    """The editor's choices as one plain value (what «Deshacer» restores exactly).
-    ED-10: the order of «Fotos y videos» (`order`, the files' keys) and when the text
-    and each effect show (`text_end` -1 = to the end; an effect absent from
-    `effect_times` covers the whole video). «Cortar»: the own video's `pieces`
-    (`[start, end]` of the source each, in the video's order; empty = one piece, the
-    stretch `start`-`end`)."""
+    """The editor's choices as one plain value: two of them, before and after a change,
+    give the live line (`change_message`). ED-10: the order of «Fotos y videos»
+    (`order`, the files' keys) and when the text and each effect show (`text_end` -1 = to
+    the end; an effect absent from `effect_times` covers the whole video). «Cortar»: the
+    own video's `pieces` (`[start, end, speed]` of the source each, in the video's order;
+    empty = one piece, the stretch `start`-`end`)."""
     return {
         "start": float(start),
         "end": float(end),
@@ -435,7 +608,8 @@ def snapshot(
         "effect_times": {
             str(k): [float(v) for v in times] for k, times in (effect_times or {}).items()
         },
-        "pieces": [[float(a), float(b)] for a, b in pieces],
+        # `[start, end, speed]` each (ED-03: the speed is the piece's own)
+        "pieces": [[float(x) for x in piece] for piece in pieces],
     }
 
 
@@ -496,22 +670,6 @@ def change_message(before: Mapping[str, object], after: Mapping[str, object]) ->
         if times_before.get(effect_id) != times_after.get(effect_id):
             return effect_time_line(effect_id)
     return ""
-
-
-def push_undo(
-    stack: Sequence[Mapping[str, object]], before: Mapping[str, object]
-) -> list[dict[str, object]]:
-    """The stack with `before` on top, at most `UNDO_DEPTH` deep."""
-    return [*(dict(item) for item in stack), dict(before)][-UNDO_DEPTH:]
-
-
-def pop_undo(
-    stack: Sequence[Mapping[str, object]],
-) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
-    """The state to go back to and the stack without it (None = nothing to undo)."""
-    if not stack:
-        return None, []
-    return dict(stack[-1]), [dict(item) for item in stack[:-1]]
 
 
 # -- which screen and which video ----------------------------------------------------------
@@ -610,8 +768,8 @@ def recipe_of(
 
     «Cortar» (Deivid 2026-11-17): the own video cut in `pieces` is one `SourceSegment`
     per piece, in the video's order — the same `key`, each with its own `start_s`/`end_s`
-    of the source, all at the video's speed and turn (contract v2 takes up to
-    `SEGMENTS_MAX`). Without pieces, the one stretch `start`-`end`.
+    of the source and its own speed (ED-03, «Por pedazo»), at the video's turn (contract v2
+    takes up to `SEGMENTS_MAX`). Without pieces, the one stretch `start`-`end`.
 
     B6 (m-25048789): with `timeline` (`timeline_media`'s blocks, what the preview plays)
     the stretches are EVERY block, in its order — the photos as still stretches of their
@@ -624,16 +782,19 @@ def recipe_of(
     if timeline is not None:
         segments = timeline_segments(timeline)
     elif video_key:
-        stretches = [(float(a), float(b)) for a, b in pieces] or [(float(start), float(end))]
+        default = float(speed) if fast else 1.0
+        stretches = [(float(p[0]), float(p[1]), piece_speed(p, default)) for p in pieces] or [
+            (float(start), float(end), default)
+        ]
         segments = tuple(
             contract.SourceSegment(
                 key=video_key,
                 start_s=a,
                 end_s=b,
-                speed=float(speed) if fast else 1.0,
+                speed=round(v, 2),
                 rotate=int(rotate),
             )
-            for a, b in stretches
+            for a, b, v in stretches
             if b > a
         )
     total = recipe_seconds(segments) if timeline is not None else None
@@ -738,9 +899,7 @@ NEEDS_MEDIA = "Para poner un texto o un efecto, primero agrega una foto o un vid
 LENGTH_UNKNOWN = (
     "No pudimos abrir uno de tus videos y no sabemos cuánto dura. Quítalo o cámbialo por otro."
 )
-TOO_MANY_PIECES = (
-    f"Tu video puede tener hasta {contract.SEGMENTS_MAX} fotos y pedazos de video. Quita alguno."
-)
+TOO_MANY_PIECES = FULL_LINE
 #: What the preview cannot show and the video made here does not take: the AI's
 #: references — «Inspiración» (its banks' photos and videos, `stock` too) and Pinterest —
 #: and the music (`clip_gallery_vm.AUDIO_TAG`). Said where they are taken out: their
@@ -810,6 +969,8 @@ def recipe_problem(
         return (CUT_WAITING, "info") if waiting else (LENGTH_UNKNOWN, "warn")
     if len(recipe.segments) > contract.SEGMENTS_MAX:
         return TOO_MANY_PIECES, "warn"
+    if any(s.kind != "photo" and source_too_long(s.start_s, s.end_s) for s in recipe.segments):
+        return SOURCE_TOO_LONG, "warn"  # A9 (m-25042483): the backend would refuse it
     seconds = recipe_seconds(recipe.segments)
     if not LOCAL_MIN_SECONDS - 1e-6 <= seconds <= LOCAL_MAX_SECONDS + 1e-6:
         fast, video = speed_facts(recipe.segments, speed_offered=speed_offered)
@@ -829,9 +990,12 @@ def refusal_line(
     """The backend's refusal of the editor's video (`RecipeRefused` codes), in the owner's
     words: the length with its seconds (`local_length_out_of_range`, `duration_s`; what
     to change read from the editor's `segments`), the queue off (`local_unavailable`),
+    a stretch over 1 minute of its video (`segment_source_too_long`, A9's words),
     anything else the generic line."""
     if "local_unavailable" in codes:
         return LOCAL_UNAVAILABLE
+    if "segment_source_too_long" in codes:
+        return SOURCE_TOO_LONG_REFUSED
     if "local_length_out_of_range" in codes and duration_s is not None:
         fast, video = speed_facts(segments, speed_offered=speed_offered)
         return length_out_of_range_line(float(duration_s), fast=fast, video=video)
@@ -984,10 +1148,11 @@ def timeline_media(
             continue
         length = float(lengths.get(key) or 0.0)
         if key == own_key and cut_end > cut_start:
-            stretches = [(float(a), float(b)) for a, b in pieces] or [
-                (float(cut_start), float(cut_end))
+            default = float(speed) if speed > 0 else 1.0
+            stretches = [(float(p[0]), float(p[1]), piece_speed(p, default)) for p in pieces] or [
+                (float(cut_start), float(cut_end), default)
             ]
-            for index, (start, end) in enumerate(stretches):
+            for index, (start, end, piece_rate) in enumerate(stretches):
                 media.append(
                     {
                         "id": piece_id(key, index),
@@ -996,7 +1161,7 @@ def timeline_media(
                         "src_start": start,
                         "src_end": end,
                         "src_len": max(length, end),
-                        "speed": float(speed) if speed > 0 else 1.0,
+                        "speed": piece_rate,
                         "rotate": int(rotate),
                     }
                 )
