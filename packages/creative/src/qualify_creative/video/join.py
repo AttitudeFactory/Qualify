@@ -39,16 +39,25 @@ from typing import Any
 
 from qualify_creative.video._source import VideoSourceError, frame_rotation
 from qualify_creative.video.fit import DETAIL_X264, _cover_crop, _layer_frame
+from qualify_creative.video.sound import (
+    AAC_BITRATE,
+    CROSSFADE_S,
+    LAYOUT,
+    SAMPLE_RATE,
+    AacWriter,
+    window_chunks,
+)
 from qualify_creative.video.upright import upright_filters
 
-#: The joined soundtrack: AAC-LC, 48 kHz stereo — what Instagram and Seedance both use.
-JOIN_SAMPLE_RATE = 48_000
-JOIN_AUDIO_LAYOUT = "stereo"
-JOIN_AUDIO_BITRATE = 128_000
+#: The joined soundtrack: AAC-LC, 48 kHz stereo — what Instagram and Seedance both use
+#: (`sound`'s, shared with the local assembly since m-25049580).
+JOIN_SAMPLE_RATE = SAMPLE_RATE
+JOIN_AUDIO_LAYOUT = LAYOUT
+JOIN_AUDIO_BITRATE = AAC_BITRATE
 #: Default output frame rate: Seedance's.
 JOIN_FPS = 24
 #: Default fade at every cut (design §5: «funde el audio 80 ms en cada corte»).
-JOIN_CROSSFADE_S = 0.08
+JOIN_CROSSFADE_S = CROSSFADE_S
 #: Version of this join's recipe — recorded with the joined asset (provenance).
 JOIN_VERSION = "join-v1"
 #: x264 for the join: the published piece keeps its detail (`DETAIL_X264`) with a short
@@ -219,49 +228,19 @@ def _part_audio(
     48 kHz stereo — silence where the part has none, before its sound starts or after it
     ends. Placed by counting decoded samples from the first decoded audio frame (risk N6).
     `fade`: samples of fade-in at its start and of fade-out at its end."""
+    # the window, placed by `sound.window_chunks` (m-25049580: shared with the local
+    # assembly) — mono copied to both sides at its own level, 5.1 downmixed
     sound = np.zeros((2, samples), dtype=np.float32)
-    with av.open(str(clip.path)) as source:
-        if source.streams.audio:
-            stream = source.streams.audio[0]
-            if threads is not None:
-                _bound(stream.codec_context, threads)
-            # a mono track is copied to both sides at its own level (FFmpeg's upmix
-            # would put it 3 dB lower than a stereo part next to it). More than two
-            # channels (5.1) are downmixed by the resampler — intended for phase 1:
-            # Seedance and OmniHuman parts are stereo or mono.
-            mono = stream.codec_context.channels == 1
-            resampler = av.AudioResampler(
-                format="fltp", layout="mono" if mono else JOIN_AUDIO_LAYOUT, rate=JOIN_SAMPLE_RATE
-            )
-            offset = 0  # where the window starts, in decoded samples (set on frame one)
-            cursor = 0  # decoded samples so far
-            started = False
-
-            def place(chunk: Any) -> None:
-                nonlocal cursor
-                values = chunk.to_ndarray()
-                if mono:
-                    values = np.repeat(values, 2, axis=0)
-                count = values.shape[1]
-                low = max(cursor, offset)
-                high = min(cursor + count, offset + samples)
-                if high > low:
-                    sound[:, low - offset : high - offset] = values[:, low - cursor : high - cursor]
-                cursor += count
-
-            for frame in source.decode(stream):
-                if not started:
-                    started = True
-                    first = frame.time if frame.time is not None else span.origin
-                    offset = round((span.origin + clip.start_s - first) * JOIN_SAMPLE_RATE)
-                for chunk in resampler.resample(frame):
-                    place(chunk)
-                if cursor >= offset + samples:
-                    break
-            else:
-                if started:
-                    for chunk in resampler.resample(None):
-                        place(chunk)
+    position = 0
+    for chunk in window_chunks(
+        clip.path,
+        at_s=span.origin + clip.start_s,
+        samples=samples,
+        fallback_first_s=span.origin,
+        threads=threads,
+    ):
+        sound[:, position : position + chunk.shape[1]] = chunk
+        position += chunk.shape[1]
     fade_in, fade_out = fade
     if fade_in:
         sound[:, :fade_in] *= np.linspace(0.0, 1.0, fade_in, dtype=np.float32)
@@ -295,32 +274,7 @@ def _join(
             video_out.options = {**video_out.options, "threads": str(threads)}
             _bound(video_out.codec_context, threads)
         video_out.codec_context.time_base = tick
-        audio_out = sink.add_stream("aac", rate=JOIN_SAMPLE_RATE)
-        audio_out.layout = JOIN_AUDIO_LAYOUT
-        audio_out.format = "fltp"
-        audio_out.bit_rate = JOIN_AUDIO_BITRATE
-        audio_out.codec_context.time_base = Fraction(1, JOIN_SAMPLE_RATE)
-        chunk_size = audio_out.codec_context.frame_size or 1024
-
-        pending = np.zeros((2, 0), dtype=np.float32)  # sound not yet handed to AAC
-        sound_pts = 0
-
-        def encode_sound(final: bool) -> None:
-            nonlocal pending, sound_pts
-            while pending.shape[1] >= chunk_size or (final and pending.shape[1]):
-                take = min(chunk_size, pending.shape[1])
-                frame = av.AudioFrame.from_ndarray(
-                    np.ascontiguousarray(pending[:, :take]),
-                    format="fltp",
-                    layout=JOIN_AUDIO_LAYOUT,
-                )
-                frame.sample_rate = JOIN_SAMPLE_RATE
-                frame.pts = sound_pts
-                frame.time_base = Fraction(1, JOIN_SAMPLE_RATE)
-                sound_pts += take
-                pending = pending[:, take:]
-                for packet in audio_out.encode(frame):
-                    sink.mux(packet)
+        sound_out = AacWriter(av, sink)  # the sound not yet handed to AAC waits there
 
         def emit(frame: Any) -> None:
             nonlocal total
@@ -347,10 +301,7 @@ def _join(
                     min(half_fade, samples) if index > 0 else 0,
                     min(half_fade, samples) if index < len(clips) - 1 else 0,
                 )
-                sound = _part_audio(av, np, clip, span, samples, fade, threads)
-                pending = np.concatenate([pending, sound], axis=1)
-                del sound
-                encode_sound(final=False)
+                sound_out.add(_part_audio(av, np, clip, span, samples, fade, threads))
                 _part_video(av, clip, span, frames, size, rate, overlay, emit, threads)
                 if threads is not None:
                     gc.collect()  # this part's decoder, graph and frames, before the next
@@ -362,9 +313,7 @@ def _join(
                     f"part {index + 1} ({clip.path.name}) could not be joined: {error}"
                 ) from error
 
-        encode_sound(final=True)
-        for packet in audio_out.encode():
-            sink.mux(packet)
+        sound_out.finish()
         for packet in video_out.encode():
             sink.mux(packet)
     return total, (poster[0] if poster else None)
@@ -690,39 +639,14 @@ def concat_segments(
                 base = template.time_base
                 width, height = template.width, template.height
                 video_out = sink.add_stream_from_template(template)
-            audio_out = sink.add_stream("aac", rate=JOIN_SAMPLE_RATE)
-            audio_out.layout = JOIN_AUDIO_LAYOUT
-            audio_out.format = "fltp"
-            audio_out.bit_rate = JOIN_AUDIO_BITRATE
-            audio_out.codec_context.time_base = Fraction(1, JOIN_SAMPLE_RATE)
-            chunk = audio_out.codec_context.frame_size or 1024
-            pending = np.zeros((2, 0), dtype=np.float32)
-            sound_pts = 0
-
-            def encode_sound(final: bool) -> None:
-                nonlocal pending, sound_pts
-                while pending.shape[1] >= chunk or (final and pending.shape[1]):
-                    take = min(chunk, pending.shape[1])
-                    frame = av.AudioFrame.from_ndarray(
-                        np.ascontiguousarray(pending[:, :take]),
-                        format="fltp",
-                        layout=JOIN_AUDIO_LAYOUT,
-                    )
-                    frame.sample_rate = JOIN_SAMPLE_RATE
-                    frame.pts = sound_pts
-                    frame.time_base = Fraction(1, JOIN_SAMPLE_RATE)
-                    sound_pts += take
-                    pending = pending[:, take:]
-                    for packet in audio_out.encode(frame):
-                        sink.mux(packet)
+            sound_out = AacWriter(av, sink)
 
             for index, segment in enumerate(segments):
                 sound = np.fromfile(segment.pcm, dtype="<f4")
                 if sound.size != segment.samples * 2:
                     raise JoinError(f"segment {index + 1}: its sound is not its length")
-                pending = np.concatenate([pending, sound.reshape(-1, 2).T], axis=1)
+                sound_out.add(sound.reshape(-1, 2).T)
                 del sound
-                encode_sound(final=False)
                 offset = round(Fraction(total) / rate / base)
                 with av.open(str(segment.path)) as source:
                     stream = source.streams.video[0]
@@ -737,9 +661,7 @@ def concat_segments(
                         packet.stream = video_out
                         sink.mux(packet)
                 total += segment.frames
-            encode_sound(final=True)
-            for packet in audio_out.encode():
-                sink.mux(packet)
+            sound_out.finish()
         os.replace(partial, out)
     except (OSError, av.error.FFmpegError) as error:
         raise JoinError(f"the segments could not be laid end to end: {error}") from error

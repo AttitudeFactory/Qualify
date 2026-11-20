@@ -138,8 +138,13 @@ def test_the_command_fits_4k_8_bits_and_keeps_the_whole_timing() -> None:
     assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
     assert cmd[cmd.index("-colorspace") + 1] == "bt709"
     assert cmd[cmd.index("-c:v") + 1] == "libx264" and cmd[cmd.index("-crf") + 1] == "18"
-    # silent, one video stream, threads bounded
-    assert "-an" in cmd and cmd[cmd.index("-map") + 1] == "0:v:0"
+    # m-25049580: the video stream and its sound when it has one (optional map: a silent
+    # file is copied silent), AAC 48 kHz, its channels kept; threads bounded
+    maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+    assert maps == ["0:v:0", "0:a:0?"] and "-an" not in cmd
+    assert cmd[cmd.index("-c:a") + 1] == "aac" and cmd[cmd.index("-ar") + 1] == "48000"
+    assert cmd[cmd.index("-b:a") + 1] == f"{local_normalize.AUDIO_BITRATE_KBPS}k"
+    assert "-ac" not in cmd  # a mono track stays mono: the assembly copies it at its level
     assert cmd.count("-threads") == 2 and "-noautorotate" not in joined
     # m-25042483: one thread each, x264 without lookahead/B-frames/mbtree — the measured
     # memory that fits the media-worker's 768m (985 → 414 MiB on a 4K 10-bit HEVC)
@@ -159,12 +164,15 @@ def test_nice_wraps_the_command_when_available(monkeypatch: Any) -> None:
 def test_rate_and_time_scale_with_the_length() -> None:
     # a long source still fits the single-PUT ceiling; a short one is capped high
     assert max_rate_kbps(600) * 600 * 1000 / 8 < local_normalize.MAX_OUTPUT_BYTES
+    # m-25049580: with its sound too
+    audio = local_normalize.AUDIO_BITRATE_KBPS
+    assert (max_rate_kbps(600) + audio) * 600 * 1000 / 8 < local_normalize.MAX_OUTPUT_BYTES
     assert max_rate_kbps(10) == local_normalize.MAX_RATE_KBPS
     assert timeout_for(60) == 300 + 30 * 60
     assert timeout_for(None) == local_normalize.TIMEOUT_MAX_SECONDS
     assert timeout_for(10_000) == local_normalize.TIMEOUT_MAX_SECONDS
     normalizer = FfmpegLocalSourceNormalizer(use_nice=False)
-    assert normalizer.version == NORMALIZE_LOCAL_VERSION == "local-source-v1"
+    assert normalizer.version == NORMALIZE_LOCAL_VERSION == "local-source-v2"
     assert normalizer.allowance(60).total_seconds() > timeout_for(60)
 
 

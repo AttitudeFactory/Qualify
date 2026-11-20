@@ -18,10 +18,17 @@ The steps, per stretch in the recipe's order:
    (`R2ReadingMediaStore.copy_to_file` → `qualify_shared.objects.ObjectGate`), after
    `validate_recipe(…, tenant_id=…)` and `owned_by` refused any key that is not this
    business's — another business's stretch is never read;
-2. a video is «Preparado» (EF-03: upright, 9:16, its `[start_s, end_s)`); a photo is held
-   still for its `end_s` seconds (`video.photo_hold`, D-T1) at the prepared size;
+2. a video is «Preparado» (EF-03: upright, 9:16, its `[start_s, end_s)`) and its SOUND
+   kept beside it, cut to the same instants (m-25049580, `prepare(keep_audio=True)`: a
+   16-bit WAV sidecar, none when the file has no sound); a photo is held still for its
+   `end_s` seconds (`video.photo_hold`, D-T1) at the prepared size;
 3. «Cámara rápida» (EF-04) lays every stretch end to end at its `speed` (a photo at 1), 30
-   fps, hard cuts, no gaps: the video lasts the sum of the stretches at their speed;
+   fps, hard cuts, no gaps: the video lasts the sum of the stretches at their speed. Its
+   sound (m-25049580, `render_speed(resolve_audio=…)`) is ONE AAC-LC 48 kHz stereo 128
+   kbps track for the whole video — `join`'s format: a ×1 stretch keeps its original sound,
+   trimmed to its picture; a sped-up stretch, a photo or a file without sound is silence of
+   its length; 80 ms fades at the cuts. The layers and the texts (4, 5) copy that track as
+   it is;
 4. «Humo», «Brasas», «Vapor» (EF-08, `qualify_creative.video.layer_overlay`): each use of
    a library layer in the part's `effects` (its entry at its version, through
    `TimedEffectLayer.from_entry` and the read-only `effects.layer_loop_file`; its params, or
@@ -38,7 +45,9 @@ The steps, per stretch in the recipe's order:
 
 Provenance (rule 6) in the asset's `params.local`: the recipe contract, the effects
 pipeline version, the pricing table (`LOCAL_PRICING_VERSION`, where `local_video` costs
-0.00 a second), the steps' versions, the speed step's own `SpeedResult.params()` and, when
+0.00 a second), the steps' versions, the speed step's own `SpeedResult.params()` (its
+`sound`: format and stretches with their own sound), `sound` (per stretch of the recipe,
+whether it carries its original sound and why not), and, when
 there are texts, the compose step's own `params["text_layers"]`, and, when there are
 layers, `effect_layers` (each use's `TimedEffectLayer.params()`: effect, version,
 intensity, zone, span, the loop's sha256, cost 0) with `steps["layer_compose"]`. The
@@ -93,8 +102,9 @@ LOCAL_PRICING_VERSION = "v10"
 LOCAL_MODEL_ID = "local_video"
 LOCAL_PROVIDER = "local"
 LOCAL_UNIT = "per_second"
-#: Version of this module's recipe (the order of the steps) — provenance.
-LOCAL_RECIPE_VERSION = "local-v1"
+#: Version of this module's recipe (the order of the steps) — provenance. v2
+#: (m-25049580): the ×1 stretches keep their original sound.
+LOCAL_RECIPE_VERSION = "local-v2"
 #: The recipe contract the stretches were read with (ED-15, m-25029105: v2).
 RECIPE_CONTRACT_VERSION = 2
 #: The temporary folder's prefix (one per run, removed when it ends).
@@ -235,6 +245,8 @@ class LocalRender:
     #: m-25042483: the video stretches' files as read (`local_sources.LocalSources`): each
     #: one's original key, normalized copy and normalizer version for the provenance.
     sources: Any = None
+    #: m-25049580: the sound's provenance (`_sound_provenance`), None for a silent render.
+    sound: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -316,10 +328,13 @@ def render_local_part(
         plan_prepare,
         read_source,
     )
+    from qualify_creative.video.sound import SOUND_VERSION  # noqa: PLC0415
     from qualify_creative.video.speed import SpeedSegment, plan_speed, render_speed  # noqa: PLC0415
 
     files: dict[str, str] = {}
     lengths: dict[str, float] = {}
+    # m-25049580: each video stretch's sound sidecar (None: the file has no sound)
+    sounds: dict[str, str | None] = {}
     warnings: list[dict[str, Any]] = []
     # m-25041163: every local part comes out 1080×1920 — `prepare` never enlarges (its file
     # is an intermediate), the photos are held at it, and `render_speed` enlarges a smaller
@@ -356,10 +371,11 @@ def render_local_part(
                 info.duration_s,
                 index=index,
             )
-            prepared = apply_prepare(source, plan, root / f"prepared-{index}.mp4")
+            prepared = apply_prepare(source, plan, root / f"prepared-{index}.mp4", keep_audio=True)
             source.unlink(missing_ok=True)  # the original is not needed any more
             reference = _reference(index, segment)
             files[reference] = prepared.path
+            sounds[reference] = prepared.audio_path
             lengths[reference] = prepared.duration_s
             warnings.extend({"segment": index, **w.to_dict()} for w in prepared.warnings)
             if beat is not None:
@@ -393,9 +409,17 @@ def render_local_part(
             for index, segment in enumerate(part.segments)
         ]
         # a total outside 3-60 s is refused here as today (`speed_duration_out_of_range`)
+        # m-25049580: always one sound track — a ×1 stretch's own sound, silence elsewhere
         result = render_speed(
-            plan_speed(stretches), root / "local.mp4", resolve=files.__getitem__, size=size
+            plan_speed(stretches),
+            root / "local.mp4",
+            resolve=files.__getitem__,
+            size=size,
+            resolve_audio=sounds.get,
         )
+        for sidecar in sounds.values():  # read into the AAC track: not needed any more
+            if sidecar is not None:
+                Path(sidecar).unlink(missing_ok=True)
     except VideoSourceError as exc:
         raise LocalVideoFailed(
             FailureReason.INVALID_PARAMETERS.value,
@@ -441,7 +465,11 @@ def render_local_part(
         if beat is not None:
             # the render and the second encode can take minutes: mark the draft alive again
             beat()
-    steps: dict[str, Any] = {"prepare": PREPARE_VERSION, "speed": result.version}
+    steps: dict[str, Any] = {
+        "prepare": PREPARE_VERSION,
+        "speed": result.version,
+        "sound": SOUND_VERSION,
+    }
     if photos:
         steps["photo_hold"] = HOLD_VERSION
     if layered is not None:
@@ -463,7 +491,37 @@ def render_local_part(
         text_layers=text_params,
         effect_layers=layered[1] if layered is not None else None,
         sources=sources,
+        sound=_sound_provenance(part, result.sound),
     )
+
+
+def _sound_provenance(
+    part: PartRecipe, speed_sound: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """m-25049580: the track's format and, per stretch of the recipe (its index), whether it
+    carries its original sound — `kept` — or is silence and why: `sped_up` (faster than ×1, no
+    time-stretching), `photo`, `no_audio` (the file has no sound track or it could not be
+    decoded). None when the render had no sound track."""
+    if speed_sound is None:
+        return None
+    kept = set(speed_sound.get("original_sound", ()))
+    stretches = []
+    for index, segment in enumerate(part.segments):
+        if index in kept:
+            why = "kept"
+        elif segment.kind != "video":
+            why = "photo"
+        elif segment.speed != 1.0:
+            why = "sped_up"
+        else:
+            why = "no_audio"
+        stretches.append({"segment": index, "original_sound": why == "kept", "why": why})
+    return {
+        "version": speed_sound["version"],
+        "format": {key: speed_sound[key] for key in ("codec", "sample_rate", "layout", "bit_rate")},
+        "crossfade_s": speed_sound["crossfade_s"],
+        "segments": stretches,
+    }
 
 
 def _layer_failed(exc: BaseException) -> LocalVideoFailed:
@@ -786,6 +844,8 @@ def produce_local(
             # m-25042483: each video stretch with its file's provenance (original key,
             # normalized copy, normalizer version)
             "segments": with_provenance(part.segments, made.sources),
+            # m-25049580: which stretches keep their original sound, and the track's format
+            "sound": made.sound,
             "frames": made.frames,
             "warnings": list(made.warnings),
         },

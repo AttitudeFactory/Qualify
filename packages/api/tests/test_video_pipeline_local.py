@@ -235,7 +235,7 @@ def _stamped(brief: ContentBrief) -> ContentBrief:
 def _decoded(data: bytes) -> list[Any]:
     with av.open(io.BytesIO(data)) as container:
         stream = container.streams.video[0]
-        assert not container.streams.audio
+        assert len(container.streams.audio) == 1  # m-25049580: always one sound track
         return list(container.decode(stream))
 
 
@@ -340,11 +340,11 @@ def test_the_asset_records_its_provenance(queue_on: None, sources: dict[str, byt
     (write,) = outcome.media
     assert write.ai_generated is False and write.provider == "local"
     meta = write.params["local"]
-    assert meta["recipe_contract"] == 2 and meta["recipe_version"] == "local-v1"
+    assert meta["recipe_contract"] == 2 and meta["recipe_version"] == "local-v2"
     assert meta["effects_pipeline_version"] == 1 and meta["pricing_version"] == "v10"
-    assert meta["effect_version"] == "camara_rapida-v2"
-    assert meta["speed"]["effect_version"] == "camara_rapida-v2"
-    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold"}
+    assert meta["effect_version"] == "camara_rapida-v3"
+    assert meta["speed"]["effect_version"] == "camara_rapida-v3"
+    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold", "sound"}
     assert [s["kind"] for s in meta["segments"]] == ["video", "photo"]
     assert all("tmp" not in str(s["source"]).lower() for s in meta["speed"]["segments"])
 
@@ -382,7 +382,7 @@ def test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once(
     (write,) = outcome.media
     assert prepared == [SIZE]  # the intermediate: never enlarged by `prepare`
     steps = write.params["local"]["steps"]
-    assert steps["speed"] == SPEED_VERSION == "camara_rapida-v2"
+    assert steps["speed"] == SPEED_VERSION == "camara_rapida-v3"
     frames = _decoded(store.files[write.object_key])
     assert {(f.width, f.height) for f in frames} == {(1080, 1920)}
     with av.open(io.BytesIO(store.files[write.object_key])) as written:
@@ -1284,7 +1284,7 @@ def test_without_layers_nothing_is_encoded_again(
     second = _kept(outcome, store)
     meta = outcome.media[0].params["local"]
     assert "effect_layers" not in meta
-    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold"}
+    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold", "sound"}
     assert _frame_hashes(first) == _frame_hashes(second)
 
 
@@ -1384,3 +1384,142 @@ def test_v3_lets_a_local_part_use_the_three_layers_up_to_three_times_each() -> N
     assert codes == ["too_many_of_effect"]
     # and nothing of it is left unbuilt
     assert unbuilt_recipe_problems(_local_clip(_video(0.0, 4.0, 1.0), effects=uses)) == ()
+
+
+# ---------------------------------------------------------------------------
+# m-25049580: the ×1 stretches keep their original sound
+
+SOUND_KEY = f"uploads/{TENANT_ID}/con-sonido.mp4"
+
+
+def _video_with_sound_bytes(seconds: float, click_s: float) -> bytes:
+    """A 30 fps H.264 of `seconds` at `SIZE` with a mono 48 kHz AAC track: a quiet 440 Hz
+    tone and a 20 ms 2 kHz burst at `click_s`."""
+    import numpy as np
+
+    out = io.BytesIO()
+    with av.open(out, mode="w", format="mp4") as sink:
+        stream = sink.add_stream("libx264", rate=30)
+        stream.width, stream.height = SIZE
+        stream.pix_fmt = "yuv420p"
+        stream.codec_context.time_base = Fraction(1, 30)
+        track = sink.add_stream("aac", rate=48_000)
+        track.layout = "mono"
+        picture = Image.new("RGB", SIZE, GREEN)
+        for index in range(round(seconds * 30)):
+            frame = av.VideoFrame.from_image(picture).reformat(format="yuv420p")
+            frame.pts = index
+            frame.time_base = Fraction(1, 30)
+            for packet in stream.encode(frame):
+                sink.mux(packet)
+        t = np.arange(round(seconds * 48_000)) / 48_000
+        wave = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        burst = (t >= click_s) & (t < click_s + 0.02)
+        wave[burst] = (0.8 * np.sin(2 * np.pi * 2000 * (t[burst] - click_s))).astype(np.float32)
+        for start in range(0, len(wave), 1024):
+            chunk = av.AudioFrame.from_ndarray(
+                wave[start : start + 1024].reshape(1, -1), format="fltp", layout="mono"
+            )
+            chunk.sample_rate = 48_000
+            chunk.pts = start
+            chunk.time_base = Fraction(1, 48_000)
+            for packet in track.encode(chunk):
+                sink.mux(packet)
+        for packet in track.encode():
+            sink.mux(packet)
+        for packet in stream.encode():
+            sink.mux(packet)
+    return out.getvalue()
+
+
+def _sound_of(data: bytes) -> tuple[Any, Any]:
+    """The kept video's one audio track (its codec context) and its samples."""
+    import numpy as np
+
+    with av.open(io.BytesIO(data)) as container:
+        (track,) = container.streams.audio
+        context = track.codec_context
+        chunks = [frame.to_ndarray() for frame in container.decode(track)]
+    return context, np.concatenate(chunks, axis=1)
+
+
+def _rms(samples: Any, start_s: float, end_s: float) -> float:
+    import numpy as np
+
+    window = samples[:, int(start_s * 48_000) : int(end_s * 48_000)]
+    return float(np.sqrt(np.mean(window.astype(np.float64) ** 2)))
+
+
+def _click_s(samples: Any) -> float:
+    import numpy as np
+
+    return float(np.flatnonzero(np.abs(samples).max(axis=0) > 0.5)[0] / 48_000)
+
+
+@pytest.fixture(scope="module")
+def sound_sources() -> dict[str, bytes]:
+    return {SOUND_KEY: _video_with_sound_bytes(4.0, 1.5), PHOTO_KEY: _png_bytes()}
+
+
+def _sound_clip(**media: Any) -> ContentBrief:
+    """×1 of [0.5, 3.5) — the click at 1.5 s of the file lands at 1.0 s —, ×2 of the whole
+    file (2 s, silent), a photo of 1.5 s (silent): 6.5 s."""
+    return _stamped(
+        _local_clip(
+            SourceSegment(key=SOUND_KEY, start_s=0.5, end_s=3.5, speed=1.0),
+            SourceSegment(key=SOUND_KEY, start_s=0.0, end_s=4.0, speed=2.0),
+            _photo(1.5),
+            **media,
+        )
+    )
+
+
+def test_a_x1_stretch_keeps_its_sound_and_the_rest_is_silence(
+    queue_on: None, sound_sources: dict[str, bytes]
+) -> None:
+    """Criteria 1-4, 6, 7 through the whole assembly: one AAC 48 kHz stereo track, the ×1
+    stretch's own sound trimmed to its picture (the click within a frame of 1.0 s), the
+    sped-up stretch and the photo silent; the provenance says which and why."""
+    from qualify_creative.video.sound import SOUND_VERSION
+
+    store = ReadingStore(sound_sources)
+    outcome = _produce(_sound_clip(), store, None)
+    data = _kept(outcome, store)
+    meta = outcome.media[0].params["local"]
+    assert meta["recipe_version"] == local.LOCAL_RECIPE_VERSION == "local-v2"
+    assert meta["steps"]["sound"] == SOUND_VERSION and meta["steps"]["prepare"] == "prepare-v2"
+    sound = meta["sound"]
+    assert [(s["segment"], s["original_sound"], s["why"]) for s in sound["segments"]] == [
+        (0, True, "kept"),
+        (1, False, "sped_up"),
+        (2, False, "photo"),
+    ]
+    assert sound["format"] == {
+        "codec": "aac",
+        "sample_rate": 48_000,
+        "layout": "stereo",
+        "bit_rate": 128_000,
+    }
+    assert sound["crossfade_s"] == 0.08
+    assert meta["speed"]["audio"] is True and meta["speed"]["sound"]["original_sound"] == [0]
+    context, samples = _sound_of(data)
+    assert (context.name, context.sample_rate, context.channels) == ("aac", 48_000, 2)
+    assert abs(samples.shape[1] - 6.5 * 48_000) <= 1024
+    assert abs(_click_s(samples) - 1.0) <= 1 / 30
+    assert _rms(samples, 0.1, 0.4) > 0.1  # the tone, from the stretch's first instant
+    assert _rms(samples, 3.1, 6.4) < 0.005  # sped up, then the photo: silence
+    assert len(_decoded(data)) == 195
+
+
+def test_the_sound_stays_in_sync_under_the_texts(
+    queue_on: None, sound_sources: dict[str, bytes]
+) -> None:
+    """EF-05 copies the built video's sound: with a text over it, the click is still within
+    a frame of 1.0 s and the track as long as the picture."""
+    store = ReadingStore(sound_sources)
+    outcome = _produce(_sound_clip(text_layers=(_words(),)), store, _render_service())
+    data = _kept(outcome, store)
+    assert outcome.media[0].params["local"]["steps"]["compose"]
+    _, samples = _sound_of(data)
+    assert abs(_click_s(samples) - 1.0) <= 1 / 30
+    assert abs(samples.shape[1] - 6.5 * 48_000) <= 2048

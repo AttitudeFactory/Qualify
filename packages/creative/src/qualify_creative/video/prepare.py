@@ -14,8 +14,13 @@ Three layers, so the editor's live preview (ED-01/ED-03) can reuse the same arit
 - `apply_prepare` — applies one plan to its source and encodes it: streamed frame by frame
   (one decoded frame held at a time), decoder, encoder and scaler bounded to
   `PREPARE_THREADS` threads, H.264 `yuv420p` limited range with BT.709 tagged on the stream
-  (range, matrix, primaries, transfer), no audio, `+faststart`; written next to `out` and
-  renamed on success, so a failure leaves no `out` behind and never touches an older one.
+  (range, matrix, primaries, transfer), no audio track, `+faststart`; written next to `out`
+  and renamed on success, so a failure leaves no `out` behind and never touches an older one.
+  With `keep_audio` (m-25049580, the local assembly) the stretch's SOUND goes beside it as a
+  lossless sidecar (`sound.write_wav_window`: 16-bit PCM WAV, 48 kHz stereo) cut to exactly
+  the picture's `[start_s, end_s)` on the same clock — the first video frame — and exactly
+  as long as the prepared video (`frames × 48000 / rate` samples): silence where the source's
+  sound starts late or ends early; no sidecar (`audio_path=None`) when it has no sound.
 - `prepared_frame` — one frame of the same plan at a given second, as an RGB array, for a
   thumbnail.
 
@@ -45,6 +50,8 @@ are imported lazily like the rest of this package.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import math
 import os
 import secrets
@@ -63,6 +70,8 @@ from qualify_creative.video._source import (
 )
 from qualify_creative.video.cut import WINDOW_X264, _decode_from
 from qualify_creative.video.upright import turn_pixels
+
+logger = logging.getLogger(__name__)
 
 #: The vertical frame every prepared video fits into, never grown past it.
 TARGET_SIZE: tuple[int, int] = (1080, 1920)
@@ -89,8 +98,9 @@ PREPARE_THREADS = 2
 #: x264 for the prepared stretch: it is re-encoded once more downstream at most; a short
 #: lookahead, since x264 keeps that many whole frames queued (`join.JOIN_X264`).
 PREPARE_X264 = {**WINDOW_X264, "rc-lookahead": "10"}
-#: Version of this recipe — recorded with what is made from it (provenance).
-PREPARE_VERSION = "prepare-v1"
+#: Version of this recipe — recorded with what is made from it (provenance). v2
+#: (m-25049580): the stretch's sound kept as a sidecar on request (`keep_audio`).
+PREPARE_VERSION = "prepare-v2"
 #: Slack for float noise when comparing a stretch with the source's length.
 _EPSILON = 1e-3
 
@@ -304,7 +314,8 @@ class PreparePlan:
 
 @dataclass(frozen=True)
 class PreparedVideo:
-    """The prepared stretch written at `path`."""
+    """The prepared stretch written at `path`; `audio_path`: its sound's sidecar (asked with
+    `keep_audio`; None when not asked or the source has no sound)."""
 
     path: str
     width: int
@@ -313,6 +324,7 @@ class PreparedVideo:
     frames: int
     warnings: tuple[PrepareWarning, ...] = ()
     content_type: str = "video/mp4"
+    audio_path: str | None = None
 
 
 def plan_prepare(
@@ -416,17 +428,24 @@ def apply_prepare(
     out: str | os.PathLike[str],
     *,
     threads: int = PREPARE_THREADS,
+    keep_audio: bool = False,
 ) -> PreparedVideo:
     """Write `plan` applied to `source` into `out` (MP4, H.264 `yuv420p`, limited range,
-    BT.709 tagged, no audio) at the source's (average) frame rate, constant, stamped from
-    0: `[plan.start_s, plan.end_s)` at its real pace — each frame once on a constant-rate
-    source, repeated or thinned where a variable-rate one is slower or faster (`_encode`).
-    `speed` is EF-04's, not applied here. Raises `PrepareRejected` / `VideoSourceError`."""
+    BT.709 tagged, no audio track) at the source's (average) frame rate, constant, stamped
+    from 0: `[plan.start_s, plan.end_s)` at its real pace — each frame once on a
+    constant-rate source, repeated or thinned where a variable-rate one is slower or faster
+    (`_encode`). `speed` is EF-04's, not applied here. Raises `PrepareRejected` /
+    `VideoSourceError`.
+
+    `keep_audio` (m-25049580): when the source has sound, it is also written beside `out`
+    (same name, `.wav`; `PreparedVideo.audio_path`) — the module's sidecar, sample 0 at the
+    prepared video's first frame. Without it nothing changes for other callers."""
     import av  # noqa: PLC0415 — lazy, like every PyAV use in this package
 
     out_path = os.fspath(out)
     folder, name = os.path.split(out_path)
     partial = os.path.join(folder, f".{name}.{secrets.token_hex(6)}.part")
+    audio_path: str | None = None
     try:
         with open_video(source) as (container, stream):
             _bound(stream.codec_context, threads)  # before the first decode (`read_source`)
@@ -454,10 +473,14 @@ def apply_prepare(
                 f"the source gave {coverage:.2f} s of the {planned:.2f} s stretch "
                 f"at {plan.start_s} s",
             )
+        if keep_audio:
+            audio_path = _keep_sound(source, out_path, timeline, plan, frames, threads)
         os.replace(partial, out_path)
     except BaseException:
         if os.path.exists(partial):
             os.remove(partial)
+        if audio_path is not None and os.path.exists(audio_path):
+            os.remove(audio_path)
         raise
     return PreparedVideo(
         path=out_path,
@@ -466,7 +489,50 @@ def apply_prepare(
         duration_s=round(duration, 4),
         frames=frames,
         warnings=plan.warnings,
+        audio_path=audio_path,
     )
+
+
+def _keep_sound(
+    source: str | os.PathLike[str],
+    out_path: str,
+    timeline: Timeline,
+    plan: PreparePlan,
+    frames: int,
+    threads: int,
+) -> str | None:
+    """The stretch's sound as the sidecar beside `out_path` (see `apply_prepare`), or None
+    when the source has no sound. A sound track FFmpeg cannot decode is not the picture's
+    problem: the stretch goes on silent (logged), never refused for it."""
+    import av  # noqa: PLC0415
+
+    from qualify_creative.video import sound  # noqa: PLC0415
+
+    wav_path = os.path.splitext(out_path)[0] + ".wav"
+    # exactly the prepared video's length: frames at the source's average rate
+    samples = round(Fraction(frames) * sound.SAMPLE_RATE / timeline.rate)
+    try:
+        if not sound.has_audio(source):
+            return None
+        sound.write_wav_window(
+            source,
+            wav_path,
+            # the picture's clock: the stretch's start from the first decoded video frame
+            at_s=timeline.origin_s + plan.start_s,
+            samples=samples,
+            fallback_first_s=timeline.origin_s,
+            threads=threads,
+        )
+    except (av.error.FFmpegError, ValueError, AttributeError):
+        # FFmpeg's decode errors, a codec PyAV has no decoder for (`UnknownCodecError` is a
+        # `ValueError`, a stream without a codec context an `AttributeError`) or a layout
+        # changing mid-stream (the resampler's `ValueError`): the picture is fine, so the
+        # stretch goes on silent — and no half-written sidecar is left behind
+        logger.warning("the stretch's sound cannot be decoded: kept silent", exc_info=True)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(wav_path)
+        return None
+    return wav_path
 
 
 def prepared_frame(source: str | os.PathLike[str], plan: PreparePlan, at_s: float) -> Any:

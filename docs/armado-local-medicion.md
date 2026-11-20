@@ -121,10 +121,11 @@ Decisión de Deivid (2026-11-17), textual: «Bajarlos a 4K 8 bits (Recomendado)�
 - **Fuente de máximo 3840×2160 a 8 bits.** Si el armado local lee un video más grande o de 10
   bits, no lo decodifica. Encola un trabajo `normalize_local` para el media-worker (ADR 47) y
   la pieza espera sin aviso al dueño. El media-worker lo convierte a H.264 de 8 bits que entra en
-  4K, sin agrandar, sin audio, con la rotación aplicada y sin recortar el tiempo. Se normaliza el
+  4K, sin agrandar, con la rotación aplicada y sin recortar el tiempo (sin audio hasta
+  `local-source-v1`; con su sonido desde `local-source-v2`, m-25049580). Se normaliza el
   archivo entero una sola vez, y la copia queda en `t/{negocio}/normalized/…` para cualquier
   pieza que use ese video. Las fotos y videos de la Galería ya llegan en 1080×1920 y no pasan
-  por aquí. Versión: `local-source-v1`. Queda en la procedencia de cada tramo.
+  por aquí. Versión: `local-source-v2`. Queda en la procedencia de cada tramo.
 - **60 s de video por tramo** (`SEGMENT_SOURCE_MAX_S`), a cualquier velocidad: se rechaza antes
   de crear la pieza (`segment_source_too_long`). El worker lo vuelve a revisar y muestra el
   aviso revisado por ux-designer: «Cada pedazo puede tomar hasta 1 minuto de tu video, aunque
@@ -168,6 +169,62 @@ Si la normalización no termina, la pieza espera hasta 11 h 15 min: 3 intentos d
 min cada uno, más 2 h en cola. Después falla sin cobro y con el texto de siempre. Si la
 máquina falla una vez por algo pasajero, se encola un trabajo nuevo; al segundo fallo de ese
 tipo, la pieza falla. Un archivo ilegible falla de una vez.
+
+## Sonido original en los tramos a velocidad normal (m-25049580)
+
+Desde `local-v2` el video armado siempre lleva una sola pista de sonido, en el formato de la
+unión de partes: AAC estéreo, 48 kHz, 128 kbps. Un tramo a ×1 conserva su sonido, recortado
+al mismo inicio y fin que su imagen. Un tramo acelerado, una foto o un video sin sonido dan
+silencio de su duración exacta. En cada corte el sonido se funde 80 ms, como en la unión.
+
+- **Preparar** (`prepare-v2`) deja el sonido del tramo junto al MP4 en un WAV de 16 bits a
+  48 kHz estéreo, contado desde el primer cuadro de video. Así no se codifica AAC dos veces.
+- **Cámara rápida** (`camara_rapida-v3`) arma la pista única y codifica AAC una vez, contando
+  muestras desde 0: no hay deriva entre cortes.
+- **La copia normalizada** (`local-source-v2`) ya conserva el sonido (AAC 192 kbps, 48 kHz). Las
+  copias `local-source-v1` eran mudas y no se vuelven a leer: la versión nueva es otra clave y
+  otro trabajo.
+- Los textos y las capas copian la pista tal cual.
+- La procedencia queda en `params.local.sound`: qué tramos llevan su sonido y por qué los demás
+  no (`sped_up`, `photo`, `no_audio`).
+
+### Costo medido (2026-11-19)
+
+Medí con el harness de EF-15 (amd64 con 8 núcleos, límite de 768m, imagen
+`qualify-memtest:deps`). «Antes» es main en c35606a1, sin sonido; «después» es esta rama. Las
+fuentes sintéticas del harness traen AAC estéreo, así que los tramos a ×1 recorren el camino con
+sonido. Agregué tres casos a ×1: `k4_60_x1`, `k4_60_x1_3texts` y `mixed_x1_x5_x1`. Cada
+caso corrió con la máquina libre y en un contenedor nuevo.
+
+| Caso | Antes: RSS / anon MiB · CPU s | Después: RSS / anon MiB · CPU s | OOM |
+|---|---|---|---|
+| hd15_x1 (1080p, 15 s a ×1) | 284 / 241 · 113 | 284 / 240 · 103 | no |
+| k4_60_x1 (4K, 60 s a ×1) | 358 / 314 · 558 | 354 / 311 · 563 | no |
+| mixed_x1_x5_x1 (4K ×1, 4K ×5, 1080p ×1) | 377 / 334 · 432 | 387 / 344 · 374 | no |
+| mixed_3x4k_2photos (el peor de m-25042483) | 391 / 348 · 410 | 371 / 328 · 386 | no |
+
+En otra corrida, con dos mediciones a la vez (la CPU no sirve para comparar, la memoria sí),
+también salieron por debajo de 450 MiB de RSS y sin OOM:
+
+| Caso | Después: RSS / anon MiB |
+|---|---|
+| small_x1 | 281 / 237 |
+| k4_60_x2 | 358 / 315 |
+| k4_60_x2_3texts | 347 / 302 |
+| k4_60_x1_3texts | 353 / 310 |
+| mixed_3x4k_2photos | 399 / 356 (el máximo visto) |
+
+Lectura:
+- **Memoria: igual que antes.** La diferencia es de ±20 MiB, el ruido normal entre corridas. El
+  sonido se lee y se escribe por bloques de un segundo, y el codificador AAC retiene menos de
+  1024 muestras. El máximo visto en cualquier corrida fue **399 MiB de RSS** y sigue por debajo
+  de 450 MiB (m-25042483).
+- **CPU: igual que antes, dentro del ruido** (±10 %). Decodificar y codificar el sonido cuesta
+  segundos frente a los minutos del video. El tope de 10 armados al día (m-25026575) no
+  cambia.
+- **Disco:** el WAV de un tramo de 60 s ocupa 11 MiB en la carpeta temporal y se borra al
+  terminar.
+- **Costo:** US$0. No se llama a ningún proveedor.
 
 ## Pendiente
 
