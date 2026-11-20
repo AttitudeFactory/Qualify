@@ -1,6 +1,6 @@
 # ADR 50 — Video con efectos, por pasos: un motor sobre el Clip, efectos locales a costo 0 y un editor guiado con línea de tiempo
 
-**Estado:** `[PROPUESTO — pendiente de la firma de Deivid Vargas]` · redactado por principal-architect el 2026-11-20 (m-25026568, EF-00). Deivid firmó las decisiones D1–D8 y D-E1…D-E6 el **2026-11-13**. Al revisar este ADR pidió **reflejar lo construido** (2026-11-20, por medio de «creacion de tickets»). Por eso §2 dice cada decisión **como quedó en `main`**. Donde la decisión cambió, una nota guarda el texto firmado el 2026-11-13, con la fecha y el PR del cambio. El mismo día respondió las preguntas abiertas; sus respuestas están en §2 y §2.3 y se resumen en §6.3. Firma este ADR solo Deivid. Lo que sigue abierto, con su ticket, está en §6 («Pendiente»). Los umbrales que reabren decisiones (§4 y §8: ~600 MiB, ~200 entradas, el 10 % de los negocios activos) son **propuesta del arquitecto**, no decisiones firmadas: entran en vigor solo si Deivid firma este ADR.
+**Estado:** `[APROBADO — firmado por el fundador, Deivid Vargas, el 2026-11-20]` · redactado por principal-architect el 2026-11-20 (m-25026568, EF-00). Deivid firmó las decisiones D1–D8 y D-E1…D-E6 el **2026-11-13**. Al revisar este ADR pidió **reflejar lo construido** (2026-11-20, por medio de «creacion de tickets»). Por eso §2 dice cada decisión **como quedó en `main`**. Donde la decisión cambió, una nota guarda el texto firmado el 2026-11-13, con la fecha y el PR del cambio. El mismo día respondió las preguntas abiertas; sus respuestas están en §2 y §2.3 y se resumen en §6.3. Lo firmó solo Deivid, el 2026-11-20 («Firmar y mergear»). Lo que sigue abierto, con su ticket, está en §6 («Pendiente»). Los umbrales que reabren decisiones (§4 y §8: ~600 MiB, ~200 entradas, el 10 % de los negocios activos) los propuso el arquitecto y quedaron firmados con este ADR el 2026-11-20.
 **Épica:** m-25026566 «Video automático con efectos, por pasos» · **Ticket:** m-25026568 (EF-00).
 **Evidencia:** la descripción de la épica y de EF-00 en Meegle (leídas el 2026-11-20), `main` en `ab39151a` (2026-11-20), `docs/design-system.md` §5.10 y `docs/armado-local-medicion.md`.
 **Numeración:** el 49 es `docs/adr-49-pipeline-imagen-carrusel.md`. Esta decisión es la **50**. El código ya la cita como «ADR 50» y por sección (§1.2 receta, §1.3 regla de modo, §1.4 biblioteca, §1.6 compatibilidad); esa numeración se respeta abajo.
@@ -242,7 +242,7 @@ Los umbrales numéricos de la última columna son propuesta del arquitecto (ver 
 | 15 | `qualify-context` no menciona el armado local a costo 0, el tope de 10 al día ni el editor «Arma tu video», y nombra a cinco personas en el equipo, cuando son 3. Va en el mismo **PR aparte de documentación, decidido el 2026-11-20**. | `.claude/skills/qualify-context/SKILL.md` §1–§2 |
 | 16 | **Normalizador local sin ADR propio.** ADR 47 es la Galería y su `media-worker`. El normalizador local (m-25042483) corre en ese worker, pero no tiene ADR propio. | `docs/arquitectura.md` §6 |
 
-### 6.3 Preguntas para Deivid — todas respondidas el 2026-11-20
+### 6.3 Preguntas para Deivid — respondidas y firmadas el 2026-11-20
 
 - **P1 · ¿Texto firmado o lo construido?** → «Reflejar lo construido». Es la razón de esta versión.
 - **P2 · Licencia de Remotion** → «Somos 3». Se queda la licencia gratis y D1 queda cerrada.
