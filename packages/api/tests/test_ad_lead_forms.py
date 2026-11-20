@@ -11,7 +11,12 @@ import httpx
 import pytest
 
 from qualify_api.ads import lead_forms_service as service
-from qualify_api.ads.lead_forms import LeadFormDraft, LeadFormQuestion, LeadFormUnavailable
+from qualify_api.ads.lead_forms import (
+    LeadFormDraft,
+    LeadFormQuestion,
+    LeadFormUnavailable,
+    LeadNotVerifiable,
+)
 from qualify_api.ads.lead_forms_client import LeadFormsClient
 from qualify_api.ads.lead_forms_webhook import leadgen_handler
 from qualify_api.webhooks.repository import ClaimedEvent
@@ -78,7 +83,6 @@ def test_invalid_editor_values_fail_before_remote_write(changes: dict) -> None:
         {"field_data": [{"name": "email", "values": "one"}]},
         {"field_data": [{"name": "email", "values": ["a"]}, {"name": "email", "values": ["b"]}]},
         {"field_data": [{"name": "email", "values": [True]}]},
-        {"ad_id": "https://evil.invalid"},
     ],
 )
 def test_off_contract_lead_does_not_enter_crm(changes: dict) -> None:
@@ -266,3 +270,62 @@ async def test_webhook_entry_page_mismatch_is_dead() -> None:
     )
     result = await leadgen_handler(event)
     assert result.status == "dead" and result.error == "leadgen_page_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "definite"),
+    [
+        (400, {"error": {"code": 100, "error_subcode": 33}}, True),
+        (400, {"error": {"code": 100}}, False),
+        (400, {"error": {"code": 17}}, False),
+        (429, {"error": {"code": 4}}, False),
+        (500, {"error": {"code": 1}}, False),
+        (200, {"error": {"code": 100, "error_subcode": 33}}, True),
+    ],
+)
+async def test_only_a_missing_ad_is_definite_when_verifying_a_lead(
+    status: int, body: dict, definite: bool
+) -> None:
+    """m-25072672: rate limits and outages must not make a backup skip a lead forever."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+    client = LeadFormsClient(AsyncMock(), ad_client=httpx.AsyncClient(transport=transport))
+    with pytest.raises(LeadFormUnavailable) as raised:
+        await client.read_ad("5", fields="id")
+    assert isinstance(raised.value, LeadNotVerifiable) is definite
+
+
+def test_genuine_lead_text_is_normalized_not_refused() -> None:
+    """m-25072672: CR line breaks, long answers, clock skew and odd ad ids keep the contact."""
+    from datetime import UTC, datetime, timedelta
+
+    soon = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    parsed = service.parse_lead(
+        raw_lead(
+            created_time=soon,
+            ad_id="https://evil.invalid",
+            field_data=[
+                {"name": "email", "values": ["synthetic@example.invalid"]},
+                {"name": "notes", "values": ["a\r\nb\rc", "x" * 600]},
+                {"name": "empty", "values": []},
+                {"name": "q" * 120 + "a", "values": ["first"]},
+                {"name": "q" * 120 + "b", "values": ["second"]},
+            ],
+        ),
+        form_id="800",
+    )
+    first, long = parsed["answers"]["notes"].split("; ")
+    assert first == "a\nb\nc" and len(long) == 500 and long.endswith("…")
+    assert parsed["answers"]["empty"] == "" and parsed["meta_ad_id"] is None
+    # The ad id was there but unusable: the contact is kept and marked unverified.
+    assert parsed["pipeline"] == service.UNATTRIBUTED_PIPELINE
+    # Two long names cut to the same prefix both keep their answers.
+    assert parsed["answers"]["q" * 99 + "…"] == "first"
+    assert parsed["answers"]["q" * 96 + " (2)"] == "second"
+    assert "pipeline" not in service.parse_lead(raw_lead(), form_id="800")
+    assert parsed["created"] <= datetime.now(UTC)
+    too_far = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
+    with pytest.raises(LeadFormUnavailable):
+        service.parse_lead(raw_lead(created_time=too_far), form_id="800")
+    with pytest.raises(LeadFormUnavailable):
+        service.parse_lead(["not", "an", "object"], form_id="800")  # type: ignore[arg-type]

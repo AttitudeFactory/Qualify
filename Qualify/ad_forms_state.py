@@ -22,6 +22,7 @@ from .ad_forms_vm import (
     form_problem,
     form_step_problem,
     question_summary,
+    sync_notice,
 )
 from .auth_state import AuthState
 from .tenant import tenant_uuid
@@ -43,6 +44,7 @@ class AdFormsState(rx.State):
     busy: bool = False
     error: str = ""
     notice: str = ""
+    skipped_leads: int = 0
     publish_consent: bool = False
     receive_consent: bool = False
     discard_open: bool = False
@@ -53,6 +55,11 @@ class AdFormsState(rx.State):
     @rx.var
     def title(self) -> str:
         return FORM_STEPS[max(0, min(self.step - 1, len(FORM_STEPS) - 1))]
+
+    @rx.var
+    def notice_skipped(self) -> bool:
+        # The count only belongs to the refresh notice; any other notice hides it.
+        return self.skipped_leads > 0 and self.notice == sync_notice(self.skipped_leads)
 
     @rx.var
     def has_available_page(self) -> bool:
@@ -381,7 +388,7 @@ class AdFormsState(rx.State):
             self.busy, self.error, self.notice = True, "", ""
         try:
             with acting_login(UUID(context[1])):
-                await asyncio.to_thread(sync_form, UUID(context[0]), UUID(form_id))
+                _, skipped = await asyncio.to_thread(sync_form, UUID(context[0]), UUID(form_id))
         except Exception as exc:
             logger.warning("lead form answers refresh failed: %s", type(exc).__name__)
             message = (
@@ -396,9 +403,8 @@ class AdFormsState(rx.State):
         async with self:
             if await self._current(context, operation):
                 self.busy = False
-                self.notice = (
-                    "Consulta terminada. Revisa los clientes interesados en Por responder."
-                )
+                self.skipped_leads = skipped
+                self.notice = sync_notice(skipped)
 
     @rx.event(background=True)
     async def receive_answers(self) -> None:

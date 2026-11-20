@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -15,9 +17,9 @@ from qualify_api.ads.lead_forms import (
     LeadFormDraft,
     LeadFormSummary,
     LeadFormUnavailable,
+    LeadNotVerifiable,
     MetaLeadSummary,
     draft_from_json,
-    safe_text,
 )
 from qualify_api.ads.lead_forms_client import LeadFormsClient, meta_id
 from qualify_api.connections.ad_accounts import (
@@ -26,6 +28,10 @@ from qualify_api.connections.ad_accounts import (
     _permission_reason,
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
+
+logger = logging.getLogger(__name__)
+PIPELINE = "meta-lead-v1"
+UNATTRIBUTED_PIPELINE = "meta-lead-v1:ad-unverified"
 
 
 def _member(tenant_id: UUID) -> None:
@@ -245,32 +251,55 @@ def set_meta_lead_contacted(
     return repository.mark_inquiry(tenant_id, lead_id, contacted)
 
 
+def _lead_text(value: object, *, maximum: int) -> str:
+    """Lenient on genuine answers: CR normalized, control chars dropped, long text cut with «…»."""
+    if not isinstance(value, str):
+        raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
+    result = value.replace("\r\n", "\n").replace("\r", "\n")
+    result = "".join(char for char in result if ord(char) >= 32 or char in "\n\t").strip()
+    return result if len(result) <= maximum else result[: maximum - 1].rstrip() + "…"
+
+
 def parse_lead(raw: dict, *, form_id: str, leadgen_id: str | None = None) -> dict:
+    """Skips only malformed payloads; real answers are normalized, never refused for style."""
+    if not isinstance(raw, dict):
+        raise LeadFormUnavailable("El dato recibido no corresponde a este formulario.")
     identity = meta_id(raw.get("id"))
     if (leadgen_id is not None and identity != leadgen_id) or raw.get("form_id") != form_id:
         raise LeadFormUnavailable("El dato recibido no corresponde a este formulario.")
     try:
         created = datetime.fromisoformat(raw["created_time"].replace("Z", "+00:00"))
-        if created.tzinfo is None or created > datetime.now(UTC) + timedelta(minutes=5):
+        if created.tzinfo is None or created > datetime.now(UTC) + timedelta(minutes=10):
             raise ValueError
     except (KeyError, TypeError, AttributeError, ValueError):
         raise LeadFormUnavailable("Meta no devolvió una fecha válida para estos datos.") from None
+    created = min(created, datetime.now(UTC))  # Meta's clock may run a few minutes ahead.
     fields = raw.get("field_data")
     if not isinstance(fields, list) or len(fields) > 20:
         raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
-    answers = {}
+    answers: dict[str, str] = {}
+    names = set()
     for item in fields:
         if not isinstance(item, dict):
             raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
-        key = safe_text(item.get("name"), maximum=100)
+        name = item.get("name")
+        key = _lead_text(name, maximum=100)
         values = item.get("values")
-        if key in answers or not isinstance(values, list) or not 1 <= len(values) <= 10:
+        if not key or name in names or not isinstance(values, list) or len(values) > 10:
             raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
-        answers[key] = "; ".join(safe_text(value, maximum=500, required=False) for value in values)
+        names.add(name)
+        base, number = key, 2
+        while key in answers:  # Two long names cut to the same prefix: keep both answers.
+            suffix = f" ({number})"
+            key, number = base[: 100 - len(suffix)] + suffix, number + 1
+        answers[key] = "; ".join(_lead_text(value, maximum=500) for value in values)
     ad_id = raw.get("ad_id")
-    if ad_id is not None:
-        meta_id(ad_id)
-    return {
+    dropped = False
+    try:
+        ad_id = None if ad_id is None else meta_id(ad_id)
+    except LeadFormUnavailable:
+        ad_id, dropped = None, True  # An odd ad id only costs the attribution, never the contact.
+    data = {
         "leadgen_id": identity,
         "meta_ad_id": ad_id,
         "created": created,
@@ -279,6 +308,7 @@ def parse_lead(raw: dict, *, form_id: str, leadgen_id: str | None = None) -> dic
         "email": answers.get("email") or None,
         "answers": answers,
     }
+    return _unattributed(data) if dropped else data
 
 
 async def _remote_form(client: LeadFormsClient, form: dict) -> None:
@@ -314,7 +344,25 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
         or not isinstance(value, dict)
         or value.get("lead_gen_form_id") != form["meta_form_id"]
     ):
-        raise LeadFormUnavailable("No pudimos comprobar el anuncio de este formulario.")
+        raise LeadNotVerifiable("No pudimos comprobar el anuncio de este formulario.")
+
+
+async def _attribution(client: LeadFormsClient, form: dict, data: dict) -> dict:
+    """The lead is the owner's either way; only a verified ad may attribute it.
+
+    Transient Meta errors still raise (retry later); a definite "cannot verify" saves the
+    contact without ad or promotion, marked in `pipeline_version`.
+    """
+    try:
+        await _verify_ad(client, form, data)
+        return data
+    except LeadNotVerifiable:
+        return _unattributed(data)
+
+
+def _unattributed(data: dict) -> dict:
+    logger.info("lead %s saved without ad attribution (ad_not_verifiable)", data["leadgen_id"])
+    return {**data, "meta_ad_id": None, "pipeline": UNATTRIBUTED_PIPELINE}
 
 
 def _persist(
@@ -341,18 +389,27 @@ def _persist(
         if connection is None:
             raise LeadFormUnavailable("El acceso con Meta cambió. Comprueba de nuevo los datos.")
         # Only a proven local exclusive ad mapping may attribute a promotion.
-        promotion = session.scalar(
-            text("""SELECT id FROM ad_promotions
+        promotion = (
+            None
+            if data["meta_ad_id"] is None
+            else session.scalar(
+                text("""SELECT id FROM ad_promotions
             WHERE meta_ad_id=:ad AND brand_id=:brand AND objective='OUTCOME_LEADS'
             AND request_snapshot->'lead_form_snapshot'->>'meta_form_id'=:remote"""),
-            {"ad": data["meta_ad_id"], "brand": form["brand_id"], "remote": form["meta_form_id"]},
+                {
+                    "ad": data["meta_ad_id"],
+                    "brand": form["brand_id"],
+                    "remote": form["meta_form_id"],
+                },
+            )
         )
         inserted = session.execute(
             text("""INSERT INTO meta_lead_submissions
             (tenant_id,form_id,leadgen_id,meta_ad_id,promotion_id,full_name,phone,email,answers,
-             source_created_at,credential_version,received_via)
+             source_created_at,credential_version,received_via,pipeline_version)
             VALUES (:tid,:form,:lead,:ad,:promotion,:name,:phone,:email,CAST(:answers AS jsonb),
-                    :created,:version,:via) ON CONFLICT (tenant_id,leadgen_id) DO NOTHING"""),
+                    :created,:version,:via,:pipeline)
+            ON CONFLICT (tenant_id,leadgen_id) DO NOTHING"""),
             {
                 "tid": tenant_id,
                 "form": form["id"],
@@ -366,12 +423,14 @@ def _persist(
                 "created": data["created"],
                 "version": version,
                 "via": received_via,
+                "pipeline": data.get("pipeline", PIPELINE),
             },
         )
         return inserted.rowcount == 1
 
 
-async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
+async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> tuple[int, int]:
+    """Returns (saved, skipped). One unreadable lead is skipped so it cannot block the rest."""
     _member(tenant_id)
     form = repository.get_form(tenant_id, form_id)
     if form["status"] != "published":
@@ -379,6 +438,7 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
     context = _form_guard(tenant_id, form)
     client = await _client(tenant_id, context)
     count = 0
+    skipped: set[str] = set()
     try:
         await _page_access(client, form["page_id"])
         await _remote_form(client, form)
@@ -396,8 +456,21 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
                 form["meta_form_id"], since=max(0, int(lower.timestamp())), after=after
             )
             for raw in page.rows:
-                data = parse_lead(raw, form_id=form["meta_form_id"])
-                await _verify_ad(client, form, data)
+                try:
+                    data = parse_lead(raw, form_id=form["meta_form_id"])
+                except LeadFormUnavailable:
+                    lead_id = raw.get("id") if isinstance(raw, dict) else None
+                    if not (isinstance(lead_id, str) and re.fullmatch(r"[0-9]{1,40}", lead_id)):
+                        lead_id = None
+                    # Dedupe so the window overlap never counts one contact twice.
+                    key = lead_id or json.dumps(raw, sort_keys=True, default=str)
+                    if key not in skipped:
+                        skipped.add(key)
+                        logger.warning(
+                            "lead form %s: skipped lead %s (unparseable)", form_id, lead_id or "-"
+                        )
+                    continue
+                data = await _attribution(client, form, data)
                 _member(tenant_id)
                 count += int(
                     _persist(
@@ -429,7 +502,7 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
                         raise LeadFormUnavailable(
                             "Otra consulta actualizó el formulario. Vuelve a revisarlo."
                         )
-                return count
+                return count, len(skipped)
             if page.after in seen:
                 raise LeadFormUnavailable("Meta repitió una página. Vuelve a comprobar los datos.")
             seen.add(page.after)
