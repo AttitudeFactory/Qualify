@@ -896,59 +896,7 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 
 
-/* «Cortar»: Radix's two-handle slider, each handle a 44 px target around a 22 px dot. */
-/* Radix's PRIMITIVE slider ships no styles at all (Reflex's `add_style` does not reach
-   it here): the root, the track and the range get the layout Radix expects — a relative
-   flex row, a growing relative track, an absolute full-height range. Provisional: ED-03
-   retires it. */
-.q-edit-cut.q-edit-cut {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 44px;
-  user-select: none;
-  touch-action: none;
-}
-.q-edit-cut .q-edit-cut__track {
-  position: relative;
-  flex-grow: 1;
-  height: 6px;
-  overflow: hidden;
-  border-radius: 9999px;
-  background-color: var(--gray-a6);
-}
-.q-edit-cut .q-edit-cut__range {
-  position: absolute;
-  height: 100%;
-  border-radius: 9999px;
-  background-color: var(--accent-9);
-}
-.q-edit-cut .q-edit-cut__thumb,
-.q-edit-cut .q-edit-cut__thumb:hover,
-.q-edit-cut .q-edit-cut__thumb:focus {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
-  background-color: transparent;
-  box-shadow: none;
-  cursor: grab;
-}
-.q-edit-cut .q-edit-cut__thumb::after {
-  content: "";
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  background: var(--accent-9);
-  box-shadow: 0 0 0 3px var(--color-panel-solid), 0 1px 4px var(--black-a6);
-}
-.q-edit-cut .q-edit-cut__thumb:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
-
-/* The live line of «Deshacer» (D-E6). */
-.q-edit-undo { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%; min-height: 44px; }
+/* The editor's panel (D-E6). */
 .q-edit__panel { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 
 /* ── The live edit preview (ED-01, m-25026605): the video's stretch, turned and cropped to
@@ -1210,13 +1158,35 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-tl__handle--start { right: 100%; justify-content: flex-end; }
 .q-tl__handle--end { left: 100%; justify-content: flex-start; }
+/* ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): a thick accent bar the
+   whole height of the track, hugging the block's edge, with a notch (two short lines) that
+   reads «grab me» — always shown while the block is chosen. */
 .q-tl__grip {
-  width: 12px;
-  height: 70%;
-  border-radius: 4px;
+  position: relative;
+  width: 16px;
+  height: 100%;
+  border-radius: var(--q-radius-control);
   background: var(--accent-9);
-  box-shadow: 0 0 0 2px var(--color-panel-solid);
+  box-shadow: 0 0 0 2px var(--color-panel-solid), 0 2px 6px var(--black-a5);
 }
+.q-tl__handle--start .q-tl__grip { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
+.q-tl__handle--end .q-tl__grip { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
+.q-tl__grip::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border-inline: 2px solid var(--accent-contrast);
+  box-sizing: border-box;
+  opacity: 0.9;
+}
+.q-tl__handle:hover .q-tl__grip,
+.q-tl__handle:focus-visible .q-tl__grip,
+.q-tl__handle[data-tl-time] .q-tl__grip { background: var(--accent-10); }
+.q-edit__hint { min-width: 0; }
 .q-tl__handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; border-radius: var(--q-radius-control); }
 .q-tl__head {
   position: absolute;
@@ -1438,7 +1408,7 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl-stack--bar-below .q-tl-stack__actions { order: 2; }
 .q-tl-stack--bar-below .q-tl-stack__panel { order: 3; }
 
-/* The live line and «Deshacer» beside it (the line is the `role="status"`). */
+/* The live line and the editor's hint beside it (the line is the `role="status"`). */
 .q-tl__live { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 1.25rem; }
 .q-tl__live .q-tl__status { flex: 1 1 auto; min-width: 0; }
 .q-tl__live .rt-Button { flex: none; }
@@ -1472,6 +1442,41 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   pointer-events: none;
 }
 [data-q-timeline][data-tl-dragging] { -webkit-user-select: none; user-select: none; }
+/* ED-03 (m-25026623): a trim handle moving — what is kept is drawn over the block (the
+   rest dims), the handle follows the finger with a bubble of its time, nothing selects. */
+[data-q-timeline][data-tl-trimming] { -webkit-user-select: none; user-select: none; }
+.q-tl__handle { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.q-tl__item--trimming .q-tl__block { opacity: 0.45; }
+.q-tl__trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 2px solid var(--accent-9);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a5);
+  pointer-events: none;
+}
+/* «Desde 0:06» over the handle: the panel's colour, accent text and border (UX review). */
+.q-tl__handle[data-tl-time]::after {
+  content: attr(data-tl-time);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--accent-9);
+  border-radius: var(--q-radius-control);
+  background: var(--color-panel-solid);
+  color: var(--accent-12);
+  font-size: var(--font-size-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
 .q-tl__lift { margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
 .q-tl__lift:empty { display: none; }
 @media (prefers-reduced-motion: reduce) {

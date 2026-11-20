@@ -59,8 +59,8 @@ def test_media_track_has_no_gaps_and_full_names() -> None:
     assert rows[1]["panel"] == "Video 2 · usas 0:04 a 0:09 · 5 s"
     assert rows[2]["name"] == "Foto 3 de 3, se ve 2 s"
     assert rows[2]["panel"] == "Foto 3 · 2 s"
-    assert rows[1]["start_handle"] == "Inicio de Video 2"
-    assert rows[1]["end_handle"] == "Final de Video 2"
+    assert rows[1]["start_handle"] == "Inicio de video 2"
+    assert rows[1]["end_handle"] == "Final de video 2"
     assert rows[1]["help"] == "Usa las flechas para cambiarlo de lugar."
     assert rows[1]["help_id"] == "q-tl-help-move"
     # A photo has only its end handle («Duración», 1–5 s).

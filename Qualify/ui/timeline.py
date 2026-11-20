@@ -83,7 +83,8 @@ DROP_GLOBAL = "window.__qTimelineDrop"
 def _drag_trigger(on_drag: Callable[[str, str, float], Any]) -> rx.Component:
     """The hidden button `assets/timeline-drag.js` presses when a block is dropped: the
     handler receives `(id, what, value)` — «move» and the new index of a video or photo,
-    or «time» and the new start (seconds) of a text or effect."""
+    «time» and the new start (seconds) of a text or effect, or (ED-03) «start»/«end» and
+    where a handle was released."""
     block_id = rx.Var(f"String(({DROP_GLOBAL} || {{}}).id || '')", _var_type=str)
     what = rx.Var(f"String(({DROP_GLOBAL} || {{}}).what || '')", _var_type=str)
     value = rx.Var(f"Number(({DROP_GLOBAL} || {{}}).value || 0)", _var_type=float)
@@ -98,7 +99,13 @@ def _drag_trigger(on_drag: Callable[[str, str, float], Any]) -> rx.Component:
 
 
 def _handle(row: Any, edge: str) -> rx.Component:
-    """One handle of the chosen block: a slider the keyboard moves ½ s with ←/→."""
+    """One handle of the chosen block: a slider the keyboard moves ½ s with ←/→, and —
+    ED-03 m-25026623 — a finger or a mouse drags at once (`assets/timeline-drag.js`; no
+    long press: it is not the block's move). Its value is in the handle's own unit —
+    seconds of the video for a video's piece, of the final video for a text or effect —
+    within `aria-valuemin`/`-max`; ``data-tl-at`` (where the block starts on the track),
+    ``data-tl-from`` (the value its start handle has) and ``data-tl-speed`` place it on
+    the track."""
     return rx.el.div(
         rx.el.span(class_name="q-tl__grip", aria_hidden="true"),
         tab_index=0,
@@ -106,13 +113,19 @@ def _handle(row: Any, edge: str) -> rx.Component:
         custom_attrs={
             "role": "slider",
             "aria-label": row[f"{edge}_handle"],
-            "aria-valuetext": row[f"{edge}_text"],
+            # «Desde 0:04» / «Hasta 0:09» (ED-03 UX review)
+            "aria-valuetext": row[f"{edge}_value"],
             "aria-valuenow": row[f"{edge}_now"],
             "aria-valuemin": row[f"{edge}_min"],
             "aria-valuemax": row[f"{edge}_max"],
             "aria-orientation": "horizontal",
             "data-tl-handle": edge,
             "data-tl-id": row["id"],
+            "data-tl-at": row["start"],
+            "data-tl-from": row["start_now"],
+            "data-tl-speed": row["speed"],
+            # the bubble's word while it is dragged («Desde», «Hasta», «Empieza»…)
+            "data-tl-word": row[f"{edge}_label"],
         },
     )
 
@@ -217,11 +230,11 @@ def timeline(
     ←/→ move it, Escape lets it go — §3.7) or on a handle (``edge`` "start"/"end": ←/→ =
     ½ s).
     ``status``: the live line («Moviste el video 2.»), a polite `role="status"`;
-    ``status_action`` sits beside it (the screen's «Deshacer»). ``on_drag(id, what,
+    ``status_action`` sits beside it (the editor's hint). ``on_drag(id, what,
     value)``: a block dropped (ED-10, `assets/timeline-drag.js`) — «move» with the new
-    index of a video or photo, «time» with the new start of a text or effect; without
-    it nothing drags. The playhead is the browser's (`timeline_script`, mounted by the
-    screen)."""
+    index of a video or photo, «time» with the new start of a text or effect, and
+    (ED-03) «start»/«end» with a handle's new value in its own unit; without it nothing
+    drags. The playhead is the browser's (`timeline_script`, mounted by the screen)."""
     block_props = {"selected": selected, "on_select": on_select}
     names = rx.el.div(
         rx.el.span(class_name="q-tl__name q-tl__name--ruler"),

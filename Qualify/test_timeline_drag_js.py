@@ -283,3 +283,100 @@ def test_the_drag_puts_a_block_dropped_outside_back() -> None:
     update = drag[drag.index("function update()") : drag.index("function loop()")]
     assert "core().clampShift(" in update
     assert "translateY" not in drag  # only X ever moves
+
+
+# -- ED-03 (m-25026623): the trim handles -------------------------------------------------
+
+
+def test_the_start_handle_from_zero_to_three_point_two_lands_on_three() -> None:
+    """The ticket's case: dragged 3.2 s (at 44 px per second) it lands on 0:03 — the ½ s
+    magnet of the video."""
+    got = _run(
+        "return core.trimValue({value: 0, dx: 3.2 * 44, px: 44, speed: 1, at: 2, from: 0,"
+        " targets: [], min: 0, max: 14});"
+    )
+    assert got == {"value": 3, "at": 5}
+
+
+def test_the_quarter_second_magnet_pulls_to_the_playhead_and_near_edges() -> None:
+    # the handle would sit at 2 + 3.2 = 5.2 s of the track; the playhead at 5.4 pulls it
+    got = _run(
+        "return core.trimValue({value: 0, dx: 3.2 * 44, px: 44, speed: 1, at: 2, from: 0,"
+        " targets: [5.4, 9], min: 0, max: 14}).value;"
+    )
+    assert got == 3.4
+    # nothing within ¼ s: the ½ s grid
+    got = _run(
+        "return core.trimValue({value: 0, dx: 3.2 * 44, px: 44, speed: 1, at: 2, from: 0,"
+        " targets: [5.6], min: 0, max: 14}).value;"
+    )
+    assert got == 3
+    # at ×5 a second of the track is five of the video: the playhead at 3 s of the track
+    got = _run(
+        "return core.trimValue({value: 15, dx: -0.9 * 44, px: 44, speed: 5, at: 0, from: 0,"
+        " targets: [2], min: 2.5, max: 20}).value;"
+    )
+    assert got == 10
+
+
+def test_a_handle_never_leaves_its_bounds() -> None:
+    got = _run(
+        "return [-500, 500].map(dx => core.trimValue({value: 4, dx: dx, px: 44, speed: 1,"
+        " at: 0, from: 4, targets: [], min: 0, max: 14}).value);"
+    )
+    assert got == [0, 14]
+
+
+def test_trim_bounds_keep_the_least_and_a9s_minute() -> None:
+    got = _run(
+        "return ["
+        " core.trimBounds({edge: 'end', start: 10, end: 20, length: 200, speed: 1}),"
+        " core.trimBounds({edge: 'start', start: 0, end: 100, length: 200, speed: 1}),"
+        " core.trimBounds({edge: 'start', start: 0, end: 15, length: 20, speed: 10}),"
+        " core.trimBounds({edge: 'end', start: 0, end: 15, length: 20, speed: 1}),"
+        "];"
+    )
+    assert got == [
+        {"min": 11, "max": 70},  # never over a minute of the video (A9)
+        {"min": 40, "max": 99},
+        {"min": 0, "max": 10},  # ×10: ½ s of the final video = 5 s of the video
+        {"min": 1, "max": 20},  # the file's own end: no «extend» here
+    ]
+    assert _run("return [core.SOURCE_MAX_S, core.NEAR_S];") == [60, 0.25]
+
+
+def test_the_script_and_the_screen_bound_a_handle_alike() -> None:
+    """`trimBounds` (the browser) and `clip_editor_vm.trim_bounds` (the screen) agree."""
+    from . import clip_editor_vm
+
+    cases = [
+        ("start", 0, 15, 20, 1),
+        ("end", 0, 15, 20, 1),
+        ("end", 10, 20, 200, 1),
+        ("start", 0, 100, 200, 1),
+        ("start", 0, 15, 20, 10),
+        ("end", 3, 9, 9.33, 3),
+    ]
+    script = ", ".join(
+        f"core.trimBounds({{edge: '{e}', start: {a}, end: {b}, length: {n}, speed: {v}}})"
+        for e, a, b, n, v in cases
+    )
+    got = _run(f"return [{script}];")
+    want = [
+        dict(
+            zip(
+                ("min", "max"),
+                clip_editor_vm.trim_bounds(edge=e, start=a, end=b, length=n, speed=v),
+            )
+        )
+        for e, a, b, n, v in cases
+    ]
+    assert got == want
+
+
+def test_the_bubble_reads_the_handle_to_the_hundredth_as_the_screen() -> None:
+    """ED-03 UX review: the drag's bubble says «Desde 0:03,7» — `clockExact` agrees with
+    `timeline_vm.clock_exact` (the handle's `aria-valuetext`)."""
+    values = [4, 3.7, 3.25, 3.05, 61.5, 59.999, 0]
+    got = _run(f"return {values}.map(core.clockExact);")
+    assert got == [vm.clock_exact(v) for v in values]

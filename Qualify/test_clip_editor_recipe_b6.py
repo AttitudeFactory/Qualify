@@ -16,7 +16,11 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_api.creative.local_cap import LocalDailyCapReached
-from qualify_api.creative.video_pipeline.local import effects_version_for, is_local_recipe
+from qualify_api.creative.video_pipeline.local import (
+    LOCAL_SOURCE_TOO_LONG_TEXT,
+    effects_version_for,
+    is_local_recipe,
+)
 from qualify_api.creative.video_pipeline.recipe import (
     RecipeRefused,
     clip_seconds,
@@ -28,6 +32,7 @@ from qualify_creative.effects import RecipeProblem, load_effects
 from qualify_creative.schemas import (
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
+    SEGMENT_SOURCE_MAX_S,
     VIDEO_TEXT_FADE_DEFAULT_S,
     ContentBrief,
     EffectUse,
@@ -355,6 +360,23 @@ async def test_the_queue_off_and_any_other_refusal(
     assert (await _refused(monkeypatch, off)).create_error == clip_editor_vm.LOCAL_UNAVAILABLE
     other = RecipeRefused([RecipeProblem(code="recipe_unavailable", part=None, field="effects")])
     assert (await _refused(monkeypatch, other)).create_error == clip_editor_vm.RECIPE_REFUSED
+
+
+async def test_a9s_refusal_is_said_in_a9s_words(
+    editor_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ED-03: the backend's `segment_source_too_long` (A9, m-25042483) reaches «Crear» in
+    the same words the editor says before it."""
+    problem = RecipeProblem(
+        code="segment_source_too_long", part=None, field="segments", duration_s=90.0
+    )
+    state = await _refused(monkeypatch, RecipeRefused([problem]))
+    assert state.create_error == clip_editor_vm.SOURCE_TOO_LONG_REFUSED
+
+
+def test_the_editors_a9_words_and_minute_are_the_backends() -> None:
+    assert clip_editor_vm.SOURCE_TOO_LONG_REFUSED == LOCAL_SOURCE_TOO_LONG_TEXT
+    assert clip_editor_vm.SOURCE_MAX_SECONDS == SEGMENT_SOURCE_MAX_S
 
 
 async def test_the_daily_cap_is_said_on_the_editors_crear(

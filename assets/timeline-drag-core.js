@@ -12,6 +12,10 @@
    - **time** — a text or an effect slides along its track: px → seconds at the track's
      scale (`scaleOf`), snapped to ½ s, kept inside the video (`shiftedStart`).
 
+   - **trim** (ED-03 m-25026623) — a handle of the chosen block: `trimBounds` (inside
+     the video, ≥ the least a piece takes, ≤ A9's minute) and `trimValue` (½ s magnet,
+     ¼ s to the playhead and the other blocks' edges).
+
    Near the scroller's edges the tracks scroll on their own (`autoScrollStep`). A held
    block never leaves its track (`clampShift`), and one dropped outside the tracks
    (`insideTracks`) goes back to its place with nothing changed (`dropVerdict`). */
@@ -191,6 +195,82 @@
     return m + ":" + (sec < 10 ? "0" : "") + sec + (s - whole >= STEP ? ",5" : "");
   }
 
+  /* ED-03 (m-25026623): the trim handles of a video's piece. Values are seconds of the
+     piece's VIDEO (its source); on the track a second of video is 1/`speed` s.
+
+     `trimBounds({edge, start, end, length, speed})`: where a handle of the piece
+     [start, end) may go — inside the video's own material (0…`length`: past it is
+     «extend», another ticket), never a piece under `trimMinSource(speed)`, never one
+     over `SOURCE_MAX_S` of video (A9, `segment_source_too_long`). The same rule as
+     `clip_editor_vm.trim_bounds` (a test runs both). */
+  var SOURCE_MAX_S = 60; // A9: a stretch takes at most a minute of its video
+  var SEGMENT_MIN_S = 1; // a piece takes at least 1 s of its video…
+  var CUT_EDGE_S = 0.5; // …and, sped up, at least ½ s of the final video («Cortar»'s)
+  var NEAR_S = 0.25; // the second magnet: the playhead and the edges near the handle
+
+  function round2(value) {
+    return Math.round(num(value) * 100) / 100;
+  }
+
+  function trimMinSource(speed) {
+    var s = num(speed) > 0 ? num(speed) : 1;
+    return Math.max(SEGMENT_MIN_S, CUT_EDGE_S * s);
+  }
+
+  function trimBounds(opts) {
+    var least = trimMinSource(opts && opts.speed);
+    var start = num(opts && opts.start);
+    var end = num(opts && opts.end);
+    var length = Math.max(num(opts && opts.length), end);
+    if (opts && opts.edge === "start") {
+      var low = Math.max(0, end - SOURCE_MAX_S);
+      return { min: round2(low), max: round2(Math.max(end - least, low)) };
+    }
+    var high = Math.min(length, start + SOURCE_MAX_S);
+    return { min: round2(Math.min(start + least, high)), max: round2(high) };
+  }
+
+  /* A handle dragged `dx` px (`px` px per second of the track): its new value. It starts
+     at `value`; the block starts at `at` on the track (seconds of the final video) and
+     its start handle's value is `from`, so the handle sits at `at + (v − from) / speed`.
+     Two magnets: within `NEAR_S` of one of `targets` (the playhead, the other blocks'
+     edges — track seconds) it lands exactly there; else on the ½ s of the video. Kept
+     inside `min`…`max` (`trimBounds`, or the handle's `aria-valuemin`/`-max`). Returns
+     `{value, at}`: the value (to the hundredth) and where the handle now sits. */
+  function trimValue(opts) {
+    var speed = num(opts.speed) > 0 ? num(opts.speed) : 1;
+    var at = num(opts.at);
+    var from = num(opts.from);
+    var raw = num(opts.value) + pxToSeconds(opts.dx, opts.px) * speed;
+    var here = at + (raw - from) / speed;
+    var best = null;
+    var bestDist = NEAR_S + 1e-9;
+    (opts.targets || []).forEach(function (target) {
+      var dist = Math.abs(num(target) - here);
+      if (dist <= bestDist) {
+        bestDist = dist;
+        best = num(target);
+      }
+    });
+    var value = best === null ? snap(raw) : from + (best - at) * speed;
+    var low = opts.min === undefined ? -Infinity : num(opts.min);
+    var high = opts.max === undefined ? Infinity : num(opts.max);
+    value = round2(Math.min(Math.max(value, low), Math.max(high, low)));
+    return { value: value, at: at + (value - from) / speed };
+  }
+
+  /* «0:04», «0:03,7», «0:03,25»: a video's handle to the hundredth, as
+     `timeline_vm.clock_exact` (the bubble says «Desde 0:03,7» — ED-03 UX review). */
+  function clockExact(seconds) {
+    var s = Math.max(Math.round(num(seconds) * 100) / 100, 0);
+    var whole = Math.floor(s + 1e-9);
+    var m = Math.floor(whole / 60);
+    var sec = whole % 60;
+    var rest = Math.round((s - whole) * 100);
+    var tail = rest > 0 ? String(rest < 10 ? "0" + rest : rest).replace(/0+$/, "") : "";
+    return m + ":" + (sec < 10 ? "0" : "") + sec + (tail ? "," + tail : "");
+  }
+
   /* The px a block is moved by right now: its inline `translateX(…px)` (written by
      `timeline-drag.js`) or its computed `matrix(…)` / `matrix3d(…)` (mid-transition);
      "", "none" or anything else is 0. The lens under the chosen block takes it off to
@@ -228,6 +308,12 @@
     liftDecision: liftDecision,
     clock: clock,
     shiftOf: shiftOf,
+    SOURCE_MAX_S: SOURCE_MAX_S,
+    NEAR_S: NEAR_S,
+    trimMinSource: trimMinSource,
+    trimBounds: trimBounds,
+    trimValue: trimValue,
+    clockExact: clockExact,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) root.__qTimelineDragCore = api;
