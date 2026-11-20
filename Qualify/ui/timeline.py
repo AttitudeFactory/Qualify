@@ -206,6 +206,19 @@ def _lane(
     )
 
 
+def _effect_lane(rows: Any, names: Any, **block_props: Any) -> rx.Component:
+    """ED-04 (m-25026627): one row of «Efectos»: its blocks, named «Efectos
+    2» (``names["name"]``) or, empty, «Pista de efectos 2 vacía» (``names["empty"]``)."""
+    return rx.el.div(
+        rx.foreach(rows, lambda row: _block(row, **block_props)),
+        role="list",
+        aria_label=rx.cond(rows.length() > 0, names["name"], names["empty"]),
+        class_name=f"q-tl__lane q-tl__lane--{vm.TRACK_EFFECT}",
+        # the row a block dragged up or down lands on (`assets/timeline-drag.js`)
+        custom_attrs={"data-tl-lane": names["index"]},
+    )
+
+
 def timeline(
     *,
     media: Rows,
@@ -219,6 +232,8 @@ def timeline(
     on_key: Callable[[str, str, str], Any] | None = None,
     on_drag: Callable[[str, str, float], Any] | None = None,
     status_action: rx.Component | None = None,
+    effect_lanes: rx.Var[list[list[dict[str, str]]]] | None = None,
+    effect_lane_names: rx.Var[list[dict[str, str]]] | None = None,
 ) -> rx.Component:
     """The timeline of one video.
 
@@ -234,16 +249,43 @@ def timeline(
     value)``: a block dropped (ED-10, `assets/timeline-drag.js`) — «move» with the new
     index of a video or photo, «time» with the new start of a text or effect, and
     (ED-03) «start»/«end» with a handle's new value in its own unit; without it nothing
-    drags. The playhead is the browser's (`timeline_script`, mounted by the screen)."""
+    drags. The playhead is the browser's (`timeline_script`, mounted by the screen).
+
+    ED-04 (m-25026627): with ``effect_lanes`` (its rows' blocks, row by row) and
+    ``effect_lane_names`` (``{"name", "empty"}`` each) «Efectos» is several rows — the
+    owner's effects never overlapping on a row; an effect dragged up or down changes
+    row (`assets/timeline-drag.js`)."""
     block_props = {"selected": selected, "on_select": on_select}
+    lanes = effect_lanes is not None and effect_lane_names is not None
+    effect_names: list[rx.Component] = [
+        rx.foreach(
+            effect_lane_names,  # type: ignore[arg-type]
+            lambda names: rx.el.span(
+                names["name"], class_name=f"q-tl__name q-tl__name--{vm.TRACK_EFFECT}"
+            ),
+        )
+        if lanes
+        else rx.el.span(
+            vm.TRACK_LABELS[vm.TRACK_EFFECT], class_name=f"q-tl__name q-tl__name--{vm.TRACK_EFFECT}"
+        )
+    ]
     names = rx.el.div(
         rx.el.span(class_name="q-tl__name q-tl__name--ruler"),
         *(
             rx.el.span(vm.TRACK_LABELS[track], class_name=f"q-tl__name q-tl__name--{track}")
-            for track in (vm.TRACK_MEDIA, vm.TRACK_TEXT, vm.TRACK_EFFECT)
+            for track in (vm.TRACK_MEDIA, vm.TRACK_TEXT)
         ),
+        *effect_names,
         class_name="q-tl__names",
         aria_hidden="true",
+    )
+    effect_rows = (
+        rx.foreach(
+            effect_lanes,  # type: ignore[arg-type]
+            lambda rows, i: _effect_lane(rows, effect_lane_names[i], **block_props),  # type: ignore[index]
+        )
+        if lanes
+        else _lane(vm.TRACK_EFFECT, effects, **block_props)
     )
     ruler = rx.el.div(
         rx.foreach(
@@ -269,7 +311,7 @@ def timeline(
         scrub,
         _lane(vm.TRACK_MEDIA, media, **block_props),
         _lane(vm.TRACK_TEXT, texts, **block_props),
-        _lane(vm.TRACK_EFFECT, effects, **block_props),
+        effect_rows,
         rx.el.div(class_name="q-tl__head q-tl__head--move", aria_hidden="true"),
         class_name="q-tl__canvas",
     )

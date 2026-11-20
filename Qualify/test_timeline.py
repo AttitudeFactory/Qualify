@@ -74,10 +74,15 @@ def test_overlay_names() -> None:
     assert texts[0]["name"] == "Texto «2×1 hoy», de 0:00 a 0:06"
     assert effects[0]["name"] == "Vapor, de 0:02 a 0:09"
     assert effects[0]["panel"] == "Vapor · de 0:02 a 0:09"
-    # ED-10 UX review: a text or an effect says what its arrows do
-    for row in (texts[0], effects[0]):
-        assert row["help"] == "Usa las flechas para cambiar cuándo sale."
-        assert row["help_id"] == "q-tl-help-time"
+    # ED-10 UX review: a text or an effect says what its arrows do; ED-04: an effect's
+    # ↑/↓ change its row
+    assert texts[0]["help"] == "Usa las flechas para cambiar cuándo sale."
+    assert texts[0]["help_id"] == "q-tl-help-time"
+    assert effects[0]["help"] == (
+        "Usa las flechas izquierda y derecha para cambiar cuándo sale, y arriba y abajo "
+        "para pasarlo a otra pista."
+    )
+    assert effects[0]["help_id"] == "q-tl-help-effect"
     assert effects[0]["start_label"] == "Empieza" and effects[0]["end_label"] == "Termina"
 
 

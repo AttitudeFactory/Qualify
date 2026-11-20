@@ -427,6 +427,24 @@
     return parseFloat(getComputedStyle(root).getPropertyValue("--tl-px")) || 44;
   }
 
+  /* ED-04 (m-25026627): `prefers-reduced-motion` stops the effect loops. */
+  function reducedMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  /* A paused loop shows one frame of it, not its black first frame (once per layer). */
+  function stillFrame(el) {
+    // once per loop: another loop in the same layer (`currentSrc` changed) gets its own
+    var src = el.currentSrc || el.getAttribute("src") || "";
+    if (el.__qStill === src || !el.duration || !isFinite(el.duration)) return;
+    el.__qStill = src;
+    try {
+      el.currentTime = Math.min(1, el.duration / 2);
+    } catch (e) {
+      el.__qStill = "";
+    }
+  }
+
   function seqPaint(host) {
     var st = seqState(host);
     var c = core();
@@ -440,13 +458,18 @@
       var on = texts.indexOf(parseInt(el.getAttribute("data-seq-text"), 10)) >= 0;
       if (on !== el.hasAttribute("data-on")) el.toggleAttribute("data-on", on);
     });
+    var still = reducedMotion();
     Array.prototype.forEach.call(host.querySelectorAll("[data-seq-effect]"), function (el) {
       var on = effects.indexOf(parseInt(el.getAttribute("data-seq-effect"), 10)) >= 0;
       if (on !== el.hasAttribute("data-on")) el.toggleAttribute("data-on", on);
-      // an effect loops only while it shows AND the sequence plays
-      if (on && st.playing) {
+      // an effect loops only while it shows AND the sequence plays — never with
+      // `prefers-reduced-motion`: then it rests on a still frame (ED-04)
+      if (on && st.playing && !still) {
         if (el.paused && el.play) el.play().catch(function () {});
-      } else if (!el.paused) el.pause();
+      } else {
+        if (!el.paused) el.pause();
+        if (on && still) stillFrame(el);
+      }
     });
     seqPaintTimeline(host, st.t);
   }
@@ -1056,7 +1079,14 @@
     function (e) {
       var video = e.target;
       if (!video || video.tagName !== "VIDEO") return;
-      if (video.hasAttribute("data-edit-effect")) return;
+      if (video.hasAttribute("data-edit-effect")) {
+        // ED-04: with `prefers-reduced-motion` a layer never loops (a still frame)
+        if (reducedMotion()) {
+          video.pause();
+          stillFrame(video);
+        }
+        return;
+      }
       var mine = video.hasAttribute("data-edit-video");
       Array.prototype.forEach.call(document.querySelectorAll("video"), function (other) {
         if (other === video || other.paused || other.hasAttribute("data-edit-effect")) return;

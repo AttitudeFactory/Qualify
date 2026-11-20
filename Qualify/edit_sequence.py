@@ -75,8 +75,10 @@ class PreviewBlock:
 @dataclass(frozen=True)
 class PreviewOverlay:
     """A text or an effect on the final video's clock: shown while
-    `start <= t < end`. A text has `text`/`place`; an effect its `effect_id` and its
-    loop (`url` "" = not drawn: the file does not exist yet)."""
+    `start <= t < end`. A text has `text`/`place`; an effect its `effect_id`, its
+    loop (`url` "" = not drawn: the file does not exist yet) and its `opacity` — ED-04
+    (m-25026627): the library's default intensity, which with the «screen» blend is
+    what the final video's compose does (humo 0,6, brasas 0,5, vapor 0,5)."""
 
     kind: str  # "text" | "effect"
     start: float
@@ -87,6 +89,7 @@ class PreviewOverlay:
     label: str = ""
     url: str = ""
     blend: str = "screen"
+    opacity: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -183,7 +186,12 @@ def _lay_out(raw: Sequence[dict[str, Any]]) -> tuple[PreviewBlock, ...]:
 
 
 def _effect_overlay(
-    effect_id: str, start: float | None, end: float | None, total: float, assets: Any
+    effect_id: str,
+    start: float | None,
+    end: float | None,
+    total: float,
+    assets: Any,
+    opacity: float = 1.0,
 ) -> PreviewOverlay | None:
     effect = contract.effect_of(effect_id)
     if effect is None or not effect.preview_asset:
@@ -199,7 +207,17 @@ def _effect_overlay(
         label=effect.label,
         url=url,
         blend=effect.blend or "screen",
+        opacity=_opacity(opacity),
     )
+
+
+def _opacity(value: object) -> float:
+    """An effect layer's opacity, 0–1 (1 when not known)."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1.0
+    return round(min(max(number, 0.0), 1.0), 3) if number > 0 else 1.0
 
 
 def _recipe_block(seg: contract.SourceSegment, sources: Mapping[str, Any]) -> dict[str, Any]:
@@ -223,10 +241,12 @@ def from_recipe(
     sources: Mapping[str, Any],
     *,
     assets_root: Any = None,
+    effect_opacity: Mapping[str, float] | None = None,
 ) -> PreviewSequence:
     """The sequence of one part's recipe: its videos and photos in order, its texts
     (`text_layers`, an empty one is not shown) and its effects. `sources` maps a block's
-    `key` to its playable address."""
+    `key` to its playable address; `effect_opacity` an effect's id to its layer's
+    opacity (`clip_editor_vm.effect_opacity`; 1 when absent)."""
     blocks = _lay_out([_recipe_block(seg, sources) for seg in recipe.segments])
     total = blocks[-1].out_end if blocks else 0.0
     texts = tuple(
@@ -243,7 +263,14 @@ def from_recipe(
     effects = tuple(
         o
         for o in (
-            _effect_overlay(u.effect_id, u.start_s, u.end_s, total, assets_root)
+            _effect_overlay(
+                u.effect_id,
+                u.start_s,
+                u.end_s,
+                total,
+                assets_root,
+                (effect_opacity or {}).get(u.effect_id, 1.0),
+            )
             for u in recipe.effects
         )
         if o is not None
@@ -261,7 +288,9 @@ def from_timeline(
     """The sequence of the timeline's raw lists (`ui.timeline_vm`: «Fotos y videos» in
     the video's order, «Textos» and «Efectos» by time). A row's `key` (else its `id`)
     finds its address in `sources`; a photo row is timed by its `dur`. An
-    effect's loop comes from `effect_urls` by label or id ("" = not drawn)."""
+    effect's loop comes from `effect_urls` by label or id ("" = not drawn), by its
+    `effect_id` too (ED-04: several blocks of one effect); its row's `opacity` is the
+    layer's (1 when absent)."""
     raw: list[dict[str, Any]] = []
     for n, item in enumerate(media, start=1):
         key = str(item.get("key") or item["id"])
@@ -309,7 +338,13 @@ def from_timeline(
                     end=end,
                     effect_id=str(item.get("effect_id") or item["id"]),
                     label=label,
-                    url=str(urls.get(label) or urls.get(str(item["id"])) or ""),
+                    url=str(
+                        urls.get(label)
+                        or urls.get(str(item["id"]))
+                        or urls.get(str(item.get("effect_id") or ""))
+                        or ""
+                    ),
+                    opacity=_opacity(item.get("opacity", 1.0)),
                 )
             )
     return PreviewSequence(blocks=blocks, texts=tuple(texts), effects=tuple(effects))

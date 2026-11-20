@@ -90,8 +90,10 @@ def _editor() -> CreativeState:
     CreativeState.commit_clip_overlay_text.fn(state, "")
     CreativeState.set_clip_text_place.fn(state, "top")
     state.clip_text_start, state.clip_text_end = 3.0, 15.0
-    CreativeState.toggle_clip_effect.fn(state, "vapor_capa")
-    state.clip_effect_times = {"vapor_capa": [4.0, 9.0]}
+    # ED-04: Vapor is a block with its own seconds (dragged there)
+    state.clip_effect_uses = [
+        {"uid": "u1", "effect_id": "vapor_capa", "start": 4.0, "end": 9.0, "lane": 0, "blocks": []}
+    ]
     return state
 
 
@@ -173,7 +175,9 @@ async def test_an_untouched_text_and_effect_cover_the_whole_video(
     monkeypatch.setattr(module, "submit_brief", _backend_create(seen))
     state = _editor()
     state.clip_text_start, state.clip_text_end = 0.0, -1.0
-    state.clip_effect_times = {}
+    # untouched: on every block of the video (as «+ Efecto» puts it with nothing chosen)
+    state.clip_effect_uses = []
+    CreativeState.add_clip_effect.fn(state, "vapor_capa")
     await _crear(state)
     (part,) = recipe_of(seen[0])
     assert (part.text_layers[0].start_s, part.text_layers[0].end_s) == (0.0, None)

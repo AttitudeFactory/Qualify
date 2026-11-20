@@ -18,7 +18,9 @@
 
    Near the scroller's edges the tracks scroll on their own (`autoScrollStep`). A held
    block never leaves its track (`clampShift`), and one dropped outside the tracks
-   (`insideTracks`) goes back to its place with nothing changed (`dropVerdict`). */
+   (`insideTracks`) goes back to its place with nothing changed (`dropVerdict`). An
+   effect may also go up or down to another row of «Efectos» (`laneAt`, `laneShift`;
+   ED-04), never out of them. */
 (function (root) {
   "use strict";
 
@@ -164,6 +166,50 @@
     return Math.min(Math.max(num(opts.dx), lo), hi);
   }
 
+  /* ED-04 (m-25026627, Deivid 2026-11-20: «moverlos entre pistas»): an effect held
+     over the rows of «Efectos» lands on the row under the pointer — `laneAt({y, tops,
+     bottoms, from})`: the row whose box (client px) holds `y`, else the nearest one, so
+     an effect never leaves the effects' rows (above them it is the first, below the
+     last). No rows: it stays on `from`. */
+  function laneAt(opts) {
+    var tops = (opts && opts.tops) || [];
+    var bottoms = (opts && opts.bottoms) || [];
+    var n = Math.min(tops.length, bottoms.length);
+    if (!n) return num(opts && opts.from);
+    var y = num(opts.y);
+    var best = 0;
+    var bestDist = Infinity;
+    for (var i = 0; i < n; i++) {
+      var top = num(tops[i]);
+      var bottom = num(bottoms[i]);
+      if (y >= top && y <= bottom) return i;
+      var dist = y < top ? top - y : y - bottom;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  /* The `dy` that shows a held effect on row `to` instead of its own row `from`: the
+     rows' tops apart (it moves a whole row at a time, never between two). */
+  function laneShift(opts) {
+    var tops = (opts && opts.tops) || [];
+    var from = num(opts && opts.from);
+    var to = num(opts && opts.to);
+    if (from < 0 || to < 0 || from >= tops.length || to >= tops.length) return 0;
+    return num(tops[to]) - num(tops[from]);
+  }
+
+  /* What the screen hears at the drop of a text or an effect: «time», or — an effect
+     put on another row — «time@N» (N its row, 0-based). */
+  function timeWhat(opts) {
+    var from = num(opts && opts.from);
+    var to = opts && opts.to !== undefined && opts.to !== null ? num(opts.to) : from;
+    return to !== from ? "time@" + to : "time";
+  }
+
   /* What a release does: «back» (a cancelled pointer, a drop outside the tracks or on
      its own place: nothing changes) or «apply». */
   function dropVerdict(opts) {
@@ -279,12 +325,32 @@
   function shiftOf(transform) {
     var text = String(transform || "");
     var m = /translateX\(\s*(-?[\d.]+)px\s*\)/.exec(text);
+    var two = /translate\(\s*(-?[\d.]+)px\s*,/.exec(text); // ED-04: an effect's row move
+    var v = 0;
+    if (m) {
+      v = parseFloat(m[1]);
+    } else if (two) {
+      v = parseFloat(two[1]);
+    } else if ((m = /^matrix(3d)?\(([^)]*)\)$/.exec(text.trim()))) {
+      var parts = m[2].split(",");
+      v = parseFloat(parts[m[1] ? 12 : 4]);
+    }
+    return isFinite(v) ? v : 0;
+  }
+
+  /* ED-04 (Deivid 2026-11-20: «su efecto cristal se separa»): the px a block is moved
+     DOWN by right now — an effect held over another row (`translate(x, y)`) or settling
+     there (`matrix(…)` / `matrix3d(…)`); a `translateX` or nothing is 0. The lens takes
+     it off too, so it rests on the block's own row and then wears its transform. */
+  function shiftYOf(transform) {
+    var text = String(transform || "");
+    var m = /translate\(\s*-?[\d.]+px\s*,\s*(-?[\d.]+)px\s*\)/.exec(text);
     var v = 0;
     if (m) {
       v = parseFloat(m[1]);
     } else if ((m = /^matrix(3d)?\(([^)]*)\)$/.exec(text.trim()))) {
       var parts = m[2].split(",");
-      v = parseFloat(parts[m[1] ? 12 : 4]);
+      v = parseFloat(parts[m[1] ? 13 : 5]);
     }
     return isFinite(v) ? v : 0;
   }
@@ -303,11 +369,15 @@
     autoScrollStep: autoScrollStep,
     insideTracks: insideTracks,
     clampShift: clampShift,
+    laneAt: laneAt,
+    laneShift: laneShift,
+    timeWhat: timeWhat,
     dropVerdict: dropVerdict,
     clampScroll: clampScroll,
     liftDecision: liftDecision,
     clock: clock,
     shiftOf: shiftOf,
+    shiftYOf: shiftYOf,
     SOURCE_MAX_S: SOURCE_MAX_S,
     NEAR_S: NEAR_S,
     trimMinSource: trimMinSource,

@@ -13,8 +13,10 @@ fields; `snapshot` / `change_message` here decide what the live line says (Deivi
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import unicodedata
 from collections.abc import Mapping, Sequence
 
 from . import editor_preview_contract as contract
@@ -585,13 +587,12 @@ def snapshot(
     order: Sequence[str] = (),
     text_start: float = 0.0,
     text_end: float = -1.0,
-    effect_times: Mapping[str, Sequence[float]] | None = None,
     pieces: Sequence[Sequence[float]] = (),
 ) -> dict[str, object]:
     """The editor's choices as one plain value: two of them, before and after a change,
     give the live line (`change_message`). ED-10: the order of «Fotos y videos»
-    (`order`, the files' keys) and when the text and each effect show (`text_end` -1 = to
-    the end; an effect absent from `effect_times` covers the whole video). «Cortar»: the
+    (`order`, the files' keys) and when the text shows (`text_end` -1 = to the end; the
+    effects' own lines are said where they change, ED-04). «Cortar»: the
     own video's `pieces` (`[start, end, speed]` of the source each, in the video's order;
     empty = one piece, the stretch `start`-`end`)."""
     return {
@@ -605,9 +606,6 @@ def snapshot(
         "order": [str(key) for key in order],
         "text_start": float(text_start),
         "text_end": float(text_end),
-        "effect_times": {
-            str(k): [float(v) for v in times] for k, times in (effect_times or {}).items()
-        },
         # `[start, end, speed]` each (ED-03: the speed is the piece's own)
         "pieces": [[float(x) for x in piece] for piece in pieces],
     }
@@ -624,6 +622,11 @@ TEXT_REMOVED_LINE = "Quitaste el texto de tu video."
 def _effect_label(effect_id: str) -> str:
     effect = contract.effect_of(effect_id)
     return effect.label if effect is not None else effect_id
+
+
+def effect_label(effect_id: str) -> str:
+    """An effect's name as the owner reads it («Vapor»; its id when unknown)."""
+    return _effect_label(effect_id)
 
 
 def effect_time_line(effect_id: str) -> str:
@@ -664,11 +667,6 @@ def change_message(before: Mapping[str, object], after: Mapping[str, object]) ->
         after.get("text_end", -1.0),
     ):
         return TEXT_TIME_LINE
-    times_before = dict(before.get("effect_times") or {})  # type: ignore[call-overload]
-    times_after = dict(after.get("effect_times") or {})  # type: ignore[call-overload]
-    for effect_id in sorted(set(times_before) | set(times_after)):
-        if times_before.get(effect_id) != times_after.get(effect_id):
-            return effect_time_line(effect_id)
     return ""
 
 
@@ -752,19 +750,18 @@ def recipe_of(
     place: str,
     text_start: float = 0.0,
     text_end: float | None = None,
-    effect_times: Mapping[str, Sequence[float]] | None = None,
     pieces: Sequence[Sequence[float]] = (),
     timeline: Sequence[Mapping[str, object]] | None = None,
+    effect_uses: Sequence[Mapping[str, object]] = (),
 ) -> contract.PartRecipe:
     """The Clip's recipe of one part, in EF-02's shape. «Cámara rápida»'s speed goes in
     the stretch only (`segments[].speed`): the `camara_rapida` effect never travels — the
     backend makes no such effect (B6 m-25048789: it would refuse the Clip as
     `recipe_unavailable`). An unset stretch is left out.
 
-    ED-10: when the owner moved the text or an effect on the timeline, its seconds of
-    the final video (`text_start`/`text_end`, `effect_times[id]` = `[start, end]`);
-    untouched, the recipe is exactly ED-02's (the text from 0 with no end, effects with
-    no span).
+    ED-10: when the owner moved the text on the timeline, its seconds of the final video
+    (`text_start`/`text_end`); untouched, the recipe is exactly ED-02's (the text from 0
+    with no end).
 
     «Cortar» (Deivid 2026-11-17): the own video cut in `pieces` is one `SourceSegment`
     per piece, in the video's order — the same `key`, each with its own `start_s`/`end_s`
@@ -776,7 +773,12 @@ def recipe_of(
     seconds (`kind` photo), the own video's pieces at its speed and turn, any other video
     from 0:00 — so the video that comes out is the one the preview shows. The texts' and
     effects' seconds are then kept inside that video's length (as the backend reads it:
-    the stretches at their speed, to the hundredth), an end at the end left open."""
+    the stretches at their speed, to the hundredth), an end at the end left open.
+
+    ED-04 (m-25026627): `effect_uses` (`resolve_effect_uses`) are one `EffectUse` each,
+    at their seconds, in time order — the same effect as many times as the owner put it.
+    Their row on the screen never travels: the local build lays every use over the video
+    whatever row it sat on."""
     fast = contract.FAST_MOTION in effects and bool(video_key)
     segments: tuple[contract.SourceSegment, ...] = ()
     if timeline is not None:
@@ -799,18 +801,25 @@ def recipe_of(
         )
     total = recipe_seconds(segments) if timeline is not None else None
     uses: list[contract.EffectUse] = []
-    for effect_id in effects:
-        effect = contract.effect_of(effect_id)
-        if effect is None or effect_id == contract.FAST_MOTION:
+    for use in sorted(
+        effect_uses,
+        key=lambda u: (float(u.get("start") or 0.0), int(u.get("lane") or 0)),  # type: ignore[arg-type, call-overload]
+    ):
+        effect = contract.effect_of(str(use.get("effect_id") or ""))
+        if effect is None or not effect.preview_asset:
             continue
-        span = (effect_times or {}).get(effect_id)
-        bounds = _inside(span, total) if span and len(span) == 2 else None
-        if bounds is not None:
-            uses.append(
-                contract.EffectUse(effect_id, effect.version, start_s=bounds[0], end_s=bounds[1])
-            )
-        else:
-            uses.append(contract.EffectUse(effect_id, effect.version))
+        start = max(round(float(use.get("start") or 0.0), 2), 0.0)  # type: ignore[arg-type]
+        end = round(float(use.get("end") or 0.0), 2)  # type: ignore[arg-type]
+        if total is not None:
+            end = min(end, _floor2(total))
+        if end <= start:
+            continue  # nothing of it is left inside the video
+        bounds = _inside((start, end), total)
+        uses.append(
+            contract.EffectUse(effect.effect_id, effect.version, start_s=bounds[0], end_s=bounds[1])
+            if bounds is not None
+            else contract.EffectUse(effect.effect_id, effect.version)
+        )
     begin = round(max(float(text_start), 0.0), 2)
     finish = None if text_end is None else round(float(text_end), 2)
     if total is not None:
@@ -975,9 +984,33 @@ def recipe_problem(
     if not LOCAL_MIN_SECONDS - 1e-6 <= seconds <= LOCAL_MAX_SECONDS + 1e-6:
         fast, video = speed_facts(recipe.segments, speed_offered=speed_offered)
         return length_out_of_range_line(round(seconds, 1), fast=fast, video=video), "warn"
+    effects_line = effects_problem(recipe.effects)
+    if effects_line:
+        return effects_line, "warn"
     if not_in_video:
         return NOT_IN_VIDEO, "warn"
     return "", ""
+
+
+def effects_problem(uses: Sequence[contract.EffectUse]) -> str:
+    """ED-04: what the backend would refuse in the effects ("" = nothing) — more than
+    `EFFECTS_MAX`, one effect more times than the library lets it repeat, or one effect
+    twice at the same time. The screen never puts them so; a block moved under an effect
+    that is stuck to it can leave them so (`follow_media`)."""
+    problems = contract.recipe_problems(contract.PartRecipe(effects=tuple(uses)))
+    if "too_many_effects" in problems:
+        return too_many_effects_line(len(uses))
+    counts: dict[str, int] = {}
+    for use in uses:
+        counts[use.effect_id] = counts.get(use.effect_id, 0) + 1
+    for effect_id, count in counts.items():
+        if count > effect_max_uses(effect_id):
+            return effect_repeat_over_line(
+                _effect_label(effect_id), count, effect_max_uses(effect_id)
+            )
+    if "effect_uses_overlap" in problems:
+        return EFFECT_TWICE_LINE
+    return ""
 
 
 def refusal_line(
@@ -1209,13 +1242,14 @@ def timeline_overlays(
     place: str,
     text_start: float,
     text_end: float,
-    effects: Sequence[str],
-    effect_times: Mapping[str, Sequence[float]],
     total: float,
+    effect_uses: Sequence[Mapping[str, object]] = (),
 ) -> list[dict[str, object]]:
     """«Textos» and «Efectos» on the timeline (`ui.timeline_vm`'s raw overlays): the
-    text (from 0:00 to the end unless the owner moved it) and each layer effect chosen
-    («Cámara rápida» is the video's «Velocidad», never a block — D-T3)."""
+    text (from 0:00 to the end unless the owner moved it) and, ED-04 (m-25026627), the
+    effects as blocks (`resolve_effect_uses`: already at their seconds), one block each —
+    the same effect may be there several times — on its row (`lane`), with its preview
+    opacity. «Cámara rápida» is the video's «Velocidad», never a block (D-T3)."""
     rows: list[dict[str, object]] = []
     if text.strip():
         start, end = _span(text_start, None if text_end < 0 else text_end, total)
@@ -1229,22 +1263,26 @@ def timeline_overlays(
                 "place": place,
             }
         )
-    for effect_id in effects:
+    ordered = sorted(
+        effect_uses,
+        key=lambda u: (int(u.get("lane") or 0), float(u.get("start") or 0)),  # type: ignore[call-overload, arg-type]
+    )
+    for use in ordered:
+        effect_id = str(use.get("effect_id") or "")
         effect = contract.effect_of(effect_id)
         if effect is None or not effect.preview_asset:
             continue
-        times = list(effect_times.get(effect_id) or [])
-        begin, finish = (
-            _span(times[0], times[1], total) if len(times) == 2 else _span(0.0, None, total)
-        )
         rows.append(
             {
-                "id": EFFECT_ID_PREFIX + effect_id,
+                "id": effect_block_id(str(use.get("uid") or "")),
                 "kind": "effect",
                 "effect_id": effect_id,
+                "uid": str(use.get("uid") or ""),
                 "label": effect.label,
-                "start": begin,
-                "end": finish,
+                "start": float(use.get("start") or 0.0),  # type: ignore[arg-type]
+                "end": float(use.get("end") or 0.0),  # type: ignore[arg-type]
+                "lane": int(use.get("lane") or 0),  # type: ignore[call-overload]
+                "opacity": effect_opacity(effect_id),
             }
         )
     return rows
@@ -1295,3 +1333,708 @@ def reorder_keys(keys: Sequence[str], shown: Sequence[str]) -> list[str]:
 def speed_value(*, fast: bool, speed: int) -> str:
     """«Velocidad»'s value: «1» (normal) or the speed of «Cámara rápida»."""
     return str(int(speed)) if fast else SPEED_NORMAL
+
+
+# -- ED-04 (m-25026627): the effects as blocks, on rows ----------------------------------------
+#
+# A layer effect the owner put is a USE: `{uid, effect_id, start, end, lane, blocks}` —
+# seconds of the final video, the row of «Efectos» it sits on (screen only: the recipe
+# never carries it; Deivid 2026-11-17, «+ Pista») and the «Fotos y videos» blocks it is
+# stuck to («¿En qué partes va?», Deivid 2026-11-17). Stuck, its seconds are always its
+# blocks' own (they move, are cut or trimmed: it follows); [] = its own seconds, after a
+# drag or ±½ s. The same effect may be put several times (ED-15), never twice at the
+# same time, and at most `max_per_part` times (the library); at most `EFFECTS_MAX` in all.
+
+#: The recipe takes at most this many effects in a part (contract v2).
+EFFECTS_MAX = contract.EFFECTS_MAX
+EFFECTS_FULL = f"Ya usas {EFFECTS_MAX} efectos. Quita uno para poner otro."
+PARTS_TITLE = "¿En qué partes va?"
+PARTS_NONE = "Marca al menos una parte de tu video para poner un efecto."
+EFFECT_TWICE_LINE = (
+    "Un mismo efecto quedó dos veces al mismo tiempo. Muévelo o quita uno de los dos."
+)
+#: The filter of «+ Efecto» (Deivid 2026-11-16: by rubro, never hiding an effect).
+FILTER_LABEL = "Ver efectos por rubro"
+FILTER_ALL = "todos"
+FILTER_ALL_TEXT = "Todos"
+#: The library's categories (`qualify_creative.effects.EFFECT_CATEGORIES`) as the owner
+#: reads them.
+CATEGORY_LABELS: dict[str, str] = {
+    "comida": "Comida",
+    "texto": "Texto",
+    "transicion": "Transiciones",
+    "movimiento": "Movimiento",
+    "general": "Para todo",
+}
+#: The tag of an effect of the business's own rubro (why it is listed first).
+YOUR_RUBRO = "De tu rubro"
+#: Deivid 2026-11-20 («nunca se solape encima del otro»): an effect dropped, stretched or
+#: moved onto a row where another is takes only the free room there; under 1 s of room it
+#: goes back to its place and the live line says why.
+EFFECT_NO_ROOM_LINE = (
+    "Ahí ya hay otro efecto y no queda espacio libre. Llévalo a un hueco libre de la pista."
+)
+#: UX review of ED-04: beside the live line while an effect is chosen, until it first
+#: changes row (as `TRIM_HINT` for a video's handles).
+LANE_HINT = "Arrástralo arriba o abajo para pasarlo a otra pista."
+EFFECT_TRIMMED_TAIL = "Lo acortamos al espacio libre."
+
+
+def too_many_effects_line(count: int) -> str:
+    """Before «Crear»: more effects than the recipe takes."""
+    return f"Tu video tiene {int(count)} efectos y puede tener hasta {EFFECTS_MAX}. Quita alguno."
+
+
+def effects_room_line(groups: int, room: int) -> str:
+    """The parts marked would be more effects than still fit (one per group of parts
+    side by side)."""
+    fit = "solo cabe 1 más" if room == 1 else f"solo caben {int(room)} más"
+    return f"Así serían {int(groups)} efectos y {fit}. Marca partes seguidas o quita un efecto."
+
+
+def _times(n: int) -> str:
+    return "1 vez" if int(n) == 1 else f"{int(n)} veces"
+
+
+def effect_repeat_full_line(label: str, most: int) -> str:
+    """One effect more times than the library lets it repeat (`max_per_part`)."""
+    return f"Ya pusiste {label} {_times(most)}. Quítalo de una parte para ponerlo en otra."
+
+
+def effect_repeat_over_line(label: str, count: int, most: int) -> str:
+    """Before «Crear»: the effect is on more times than it may be (a block moved under it
+    split it) — how many, and how many fit."""
+    fit = "solo cabe 1" if int(most) == 1 else f"solo caben {int(most)}"
+    return f"Pusiste {label} {_times(count)} y {fit}. Quítalo de una parte."
+
+
+def effect_same_time_line(label: str) -> str:
+    """The same effect twice at the same time: the recipe refuses it."""
+    return f"{label} ya está en esa parte. Un mismo efecto no puede ir dos veces a la vez."
+
+
+def effect_put_line(label: str, groups: int = 1) -> str:
+    """«Pusiste Vapor.» / «Pusiste Vapor en 2 partes.»."""
+    return f"Pusiste {label}." if groups <= 1 else f"Pusiste {label} en {int(groups)} partes."
+
+
+def lane_name(n: int, lanes: int) -> str:
+    """A row's name: «Efectos» while there is one, else «Efectos 1», «Efectos 2»…"""
+    return "Efectos" if lanes <= 1 else f"Efectos {int(n)}"
+
+
+def lane_empty_name(n: int, lanes: int) -> str:
+    """An empty row's accessible name (never read as a list)."""
+    return "Pista de efectos vacía" if lanes <= 1 else f"Pista de efectos {int(n)} vacía"
+
+
+def lane_moved_line(label: str, lane_title: str) -> str:
+    """Dragged onto another row, named as the row shows it: «Pasaste Vapor a Efectos 2.»."""
+    return f"Pasaste {label} a {lane_title}."
+
+
+def lane_stepped_line(label: str, *, up: bool) -> str:
+    """↑/↓ on the block: «Subiste Vapor una pista.» / «Bajaste Vapor una pista.»."""
+    return f"{'Subiste' if up else 'Bajaste'} {label} una pista."
+
+
+def lane_busy_line(lane_title: str) -> str:
+    return (
+        f"En {lane_title} no queda espacio libre en ese momento. Llévalo a otra pista o a "
+        "un hueco libre."
+    )
+
+
+def lane_top_line(label: str) -> str:
+    """↑ on the first row."""
+    return f"{label} ya está en la primera pista."
+
+
+def lane_bottom_line(label: str) -> str:
+    """↓ on the only effect of the last row."""
+    return f"{label} ya está solo en la última pista."
+
+
+def effects_gone_line(labels: Sequence[str]) -> str:
+    """After a block left: the effects that went only on it left too ("" = none)."""
+    shown = list(dict.fromkeys(str(label) for label in labels if label))
+    if not shown:
+        return ""
+    joined = shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " y " + shown[-1]
+    verb = "iba" if len(shown) == 1 else "iban"
+    return f"También quitamos {joined}, que {verb} solo en esa parte."
+
+
+# -- the library's facts (EF-08 `effects_data/v3.json`) -------------------------------------
+
+
+def _library_facts() -> dict[str, tuple[float, tuple[str, ...], int]]:
+    """`{effect_id: (intensity, categories, max_per_part)}` of the effects the Clip
+    offers, read from the effects library the backend checks against (v3, read-only and
+    cached by `load_effects`). {} when it cannot be read: the preview then draws a layer
+    at full strength and lists it under «Todos»."""
+    try:
+        from qualify_creative.effects import (  # noqa: PLC0415 — pure, cached read
+            load_effects,
+        )
+
+        library = load_effects()
+    except Exception:  # noqa: BLE001 — the screen keeps working without the filter
+        return {}
+    out: dict[str, tuple[float, tuple[str, ...], int]] = {}
+    for effect in contract.CLIP_EFFECTS:
+        entry = library.get(effect.effect_id, effect.version)
+        if entry is None:
+            continue
+        spec = entry.params.get("intensity")
+        intensity = 1.0
+        if spec is not None and not isinstance(spec.default, bool | str):
+            intensity = float(spec.default)
+        out[effect.effect_id] = (intensity, tuple(entry.categories), int(entry.max_per_part))
+    return out
+
+
+_FACTS: dict[str, tuple[float, tuple[str, ...], int]] = {}
+
+
+def _facts() -> dict[str, tuple[float, tuple[str, ...], int]]:
+    """`_library_facts`, read once per process (like `load_effects` itself)."""
+    if not _FACTS:
+        _FACTS.update(_library_facts())
+    return _FACTS
+
+
+def effect_opacity(effect_id: str) -> float:
+    """The preview layer's CSS `opacity`: the library's default `intensity` (humo 0,6,
+    brasas 0,5, vapor 0,5). With a «screen» blend it is what PyAV's intensity does to the
+    final video, so the preview is as strong as the video (UX review of EF-08)."""
+    facts = _facts().get(effect_id)
+    return facts[0] if facts is not None else 1.0
+
+
+def effect_categories(effect_id: str) -> tuple[str, ...]:
+    facts = _facts().get(effect_id)
+    return facts[1] if facts is not None else ()
+
+
+def effect_max_uses(effect_id: str) -> int:
+    """How many times one part may use the effect (`max_per_part`; 1 if unknown)."""
+    facts = _facts().get(effect_id)
+    return facts[2] if facts is not None else 1
+
+
+def effect_opacity_by_url(urls: Mapping[str, str]) -> dict[str, float]:
+    """`{loop url: opacity}` from `{effect_id: loop url}`, for the single-stretch preview
+    (`ui.edit_preview.edit_preview`), whose layers only know their address."""
+    return {url: effect_opacity(effect_id) for effect_id, url in urls.items() if url}
+
+
+# -- the business's rubro and the filter (Deivid 2026-11-16) --------------------------------
+
+#: The niches (`discovery_seed.NICHE_LABELS` keys, Brand Kit `connect.sector`) with a
+#: category of their own in the library.
+SECTOR_CATEGORIES: dict[str, str] = {"food_drink": "comida"}
+#: Words of the rubro as the owner wrote it (`connect.rubro_text`) that make it food.
+_FOOD_WORDS: tuple[str, ...] = (
+    "comida",
+    "restaurant",
+    "cafe",
+    "panader",
+    "pasteler",
+    "reposter",
+    "helad",
+    "yogur",
+    "pizz",
+    "hamburgues",
+    "shawarma",
+    "arepa",
+    "empanad",
+    "bebida",
+    "cocina",
+    "parrill",
+    "asado",
+    "sushi",
+    "postre",
+    "gastronom",
+    "ensalad",
+    "jugo",
+    "batido",
+    "cervece",
+    "licor",
+    "food",
+)
+
+
+def _plain(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", str(text).lower())
+    return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+
+def business_category(*, sector: str, rubro: str) -> str:
+    """The library category of the business ("" = none of its own): by the words of
+    its rubro first, then by its niche."""
+    plain = _plain(rubro)
+    if any(word in plain for word in _FOOD_WORDS):
+        return "comida"
+    return SECTOR_CATEGORIES.get(str(sector or "").strip(), "")
+
+
+def effect_filters(
+    effect_ids: Sequence[str], categories: Mapping[str, Sequence[str]], business: str
+) -> list[tuple[str, str]]:
+    """«Todos» and every category the offered effects have — the business's first —
+    as `(value, text)`."""
+    found: list[str] = []
+    for effect_id in effect_ids:
+        for category in categories.get(effect_id, ()):
+            if category not in found:
+                found.append(category)
+    found.sort(key=lambda category: category != business)
+    return [
+        (FILTER_ALL, FILTER_ALL_TEXT),
+        *((c, CATEGORY_LABELS.get(c, c.capitalize())) for c in found),
+    ]
+
+
+def default_filter(
+    effect_ids: Sequence[str], categories: Mapping[str, Sequence[str]], business: str
+) -> str:
+    """The filter «+ Efecto» opens on: the business's category when some effect has it,
+    else «Todos»."""
+    if business and any(business in categories.get(e, ()) for e in effect_ids):
+        return business
+    return FILTER_ALL
+
+
+def filter_effects(
+    effect_ids: Sequence[str],
+    categories: Mapping[str, Sequence[str]],
+    *,
+    business: str,
+    chosen: str,
+) -> list[str]:
+    """The effects listed under the filter `chosen` — every one under «Todos» (none is
+    ever hidden from a business: smoke in a technology video is fine) — the business's
+    own first, then the library's order."""
+    shown = [e for e in effect_ids if chosen in ("", FILTER_ALL) or chosen in categories.get(e, ())]
+    return sorted(shown, key=lambda e: not business or business not in categories.get(e, ()))
+
+
+# -- uses: their seconds, their blocks, their rows -------------------------------------------
+
+
+def effect_block_id(uid: str) -> str:
+    """The timeline block of a use: `efecto-u3`."""
+    return EFFECT_ID_PREFIX + str(uid)
+
+
+def use_uid(block_id: str) -> str:
+    """The use a block id names ("" = not an effect block)."""
+    return block_id[len(EFFECT_ID_PREFIX) :] if block_id.startswith(EFFECT_ID_PREFIX) else ""
+
+
+def new_effect_uid(uses: Sequence[Mapping[str, object]], taken: Sequence[str] = ()) -> str:
+    """The next free use id (`u1`, `u2`…)."""
+    used = {str(u.get("uid") or "") for u in uses} | set(taken)
+    n = 1
+    while f"u{n}" in used:
+        n += 1
+    return f"u{n}"
+
+
+def block_spans(media: Sequence[Mapping[str, object]]) -> dict[str, tuple[float, float]]:
+    """Each «Fotos y videos» block's seconds of the final video, end to end."""
+    out: dict[str, tuple[float, float]] = {}
+    at = 0.0
+    for item in media:
+        length = _shown_length(item)
+        out[str(item.get("id") or "")] = (round(at, 2), round(at + length, 2))
+        at += length
+    return out
+
+
+def part_groups(media: Sequence[Mapping[str, object]], chosen: Sequence[str]) -> list[list[str]]:
+    """The blocks `chosen`, in the video's order, as groups of blocks side by side: each
+    group is one effect («¿En qué partes va?»: blocks 1 and 3 are two)."""
+    on = set(chosen)
+    groups: list[list[str]] = []
+    run: list[str] = []
+    for item in media:
+        block_id = str(item.get("id") or "")
+        if block_id in on:
+            run.append(block_id)
+        elif run:
+            groups.append(run)
+            run = []
+    if run:
+        groups.append(run)
+    return groups
+
+
+def group_span(
+    spans: Mapping[str, tuple[float, float]], group: Sequence[str]
+) -> tuple[float, float]:
+    """A group's seconds: from its first block's start to its last block's end."""
+    return (min(spans[b][0] for b in group), max(spans[b][1] for b in group))
+
+
+def _stuck(use: Mapping[str, object]) -> list[str]:
+    return [str(b) for b in list(use.get("blocks") or [])]  # type: ignore[call-overload]
+
+
+def resolve_effect_uses(
+    uses: Sequence[Mapping[str, object]], media: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """Each use at its seconds NOW: a stuck one from its blocks' places (a block moved,
+    cut or trimmed moves it), one with its own seconds kept inside the video (an end the
+    video no longer reaches is cut to it, never under 1 s). A stuck use whose blocks
+    all left the timeline is gone. Only layer effects with a loop."""
+    spans = block_spans(media)
+    total = media_total(media)
+    out: list[dict[str, object]] = []
+    for use in uses:
+        effect = contract.effect_of(str(use.get("effect_id") or ""))
+        if effect is None or not effect.preview_asset:
+            continue
+        stuck = _stuck(use)
+        present = [b for b in stuck if b in spans]
+        if stuck and not present:
+            continue
+        if present:
+            start, end = group_span(spans, present)
+        else:
+            start, end = _span(
+                float(use.get("start") or 0.0),  # type: ignore[arg-type]
+                float(use.get("end") or 0.0),  # type: ignore[arg-type]
+                total,
+            )
+        out.append(
+            {
+                "uid": str(use.get("uid") or ""),
+                "effect_id": effect.effect_id,
+                "start": round(start, 2),
+                "end": round(end, 2),
+                "lane": int(use.get("lane") or 0),  # type: ignore[call-overload]
+                "blocks": present,
+            }
+        )
+    return compact_lanes(out)
+
+
+def follow_media(
+    uses: Sequence[Mapping[str, object]], media: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """The uses after the blocks changed (moved, cut, trimmed, removed): a stuck use
+    whose blocks are no longer side by side becomes one use per group (the first keeps
+    its id and row); one whose blocks all left is gone; every stuck use's kept seconds
+    are its blocks' again."""
+    spans = block_spans(media)
+    out: list[dict[str, object]] = []
+    taken: list[str] = [str(u.get("uid") or "") for u in uses]
+    for use in uses:
+        stuck = _stuck(use)
+        if not stuck:
+            out.append(dict(use))
+            continue
+        for n, group in enumerate(part_groups(media, stuck)):
+            uid = str(use.get("uid") or "")
+            if n:
+                uid = new_effect_uid(out, taken)
+                taken.append(uid)
+            start, end = group_span(spans, group)
+            out.append({**use, "uid": uid, "blocks": group, "start": start, "end": end})
+    return out
+
+
+def remap_effect_blocks(
+    uses: Sequence[Mapping[str, object]], mapping: Mapping[str, Sequence[str]]
+) -> list[dict[str, object]]:
+    """The uses with their blocks renamed (`old id → new ids`): the own video's pieces
+    are named by their place (`piece_id`), so a cut, a piece taken out or a move renames
+    them — an effect stuck to a piece stays on the same stretch of video."""
+    out: list[dict[str, object]] = []
+    for use in uses:
+        renamed: list[str] = []
+        for block_id in _stuck(use):
+            for new in mapping.get(block_id, [block_id]):
+                if new not in renamed:
+                    renamed.append(new)
+        out.append({**use, "blocks": renamed})
+    return out
+
+
+def _clash(a: Sequence[float], b: Sequence[float]) -> bool:
+    """Two spans cover the same seconds (meeting at a second is fine)."""
+    return float(a[0]) < float(b[1]) - 1e-6 and float(b[0]) < float(a[1]) - 1e-6
+
+
+def _use_span(use: Mapping[str, object]) -> tuple[float, float]:
+    return float(use.get("start") or 0.0), float(use.get("end") or 0.0)  # type: ignore[arg-type]
+
+
+def lane_fits(
+    uses: Sequence[Mapping[str, object]], span: Sequence[float], lane: int, uid: str = ""
+) -> bool:
+    """`span` fits on row `lane`: no other use there at the same time."""
+    return not any(
+        int(u.get("lane") or 0) == lane  # type: ignore[call-overload]
+        and str(u.get("uid") or "") != uid
+        and _clash(span, _use_span(u))
+        for u in uses
+    )
+
+
+def same_effect_clash(
+    uses: Sequence[Mapping[str, object]], effect_id: str, span: Sequence[float], uid: str = ""
+) -> bool:
+    """`effect_id` is already on at some second of `span` (the recipe refuses it)."""
+    return any(
+        str(u.get("effect_id")) == effect_id
+        and str(u.get("uid") or "") != uid
+        and _clash(span, _use_span(u))
+        for u in uses
+    )
+
+
+def pick_lane(
+    uses: Sequence[Mapping[str, object]], span: Sequence[float], *, lanes: int, prefer: int = 0
+) -> int:
+    """The row a new use of `span` goes on: `prefer` when it fits there, else the first
+    one where it fits, else a new row (`lanes`) — two effects at the same time never
+    share a row."""
+    order = [prefer] if 0 <= prefer < lanes else []
+    order += [lane for lane in range(lanes) if lane not in order]
+    for lane in order:
+        if lane_fits(uses, span, lane):
+            return lane
+    return max(lanes, 0)
+
+
+def effect_obstacles(
+    uses: Sequence[Mapping[str, object]], *, uid: str, effect_id: str, lane: int
+) -> list[tuple[float, float]]:
+    """What a use may not overlap when it moves: the other uses on its row, and the
+    other uses of the same effect on any row."""
+    return [
+        _use_span(u)
+        for u in uses
+        if str(u.get("uid") or "") != uid
+        and (
+            int(u.get("lane") or 0) == lane  # type: ignore[call-overload]
+            or str(u.get("effect_id")) == effect_id
+        )
+    ]
+
+
+def free_gaps(obstacles: Sequence[Sequence[float]], total: float) -> list[tuple[float, float]]:
+    """The free stretches of a row of a video of `total` s, around `obstacles`."""
+    gaps: list[tuple[float, float]] = []
+    at = 0.0
+    for a, b in sorted((float(a), float(b)) for a, b in obstacles):
+        if a > at + 1e-6:
+            gaps.append((at, min(a, float(total))))
+        at = max(at, b)
+    if float(total) > at + 1e-6:
+        gaps.append((at, float(total)))
+    return [(round(a, 2), round(b, 2)) for a, b in gaps if b - a > 1e-6]
+
+
+def fit_in_gap(
+    span: Sequence[float],
+    obstacles: Sequence[Sequence[float]],
+    total: float,
+    least: float = contract.SEGMENT_MIN_SECONDS,
+) -> tuple[float, float] | None:
+    """Deivid 2026-11-20 («quiero que se acorte al tamaño que sobre en la pista, que nunca
+    se solape encima del otro»): an effect put at `span` on a row takes the free room of
+    that row it overlaps most (the nearest one on a tie) — trimmed to it, never over
+    another effect. None when that room is under `least` (1 s): it goes back."""
+    start, end = float(span[0]), float(span[1])
+    best: tuple[float, float] | None = None
+    best_key: tuple[float, float] | None = None
+    for a, b in free_gaps(obstacles, total):
+        piece = (max(a, start), min(b, end))
+        overlap = piece[1] - piece[0]
+        if overlap <= 1e-6:
+            continue
+        key = (-overlap, abs(piece[0] - start))
+        if best_key is None or key < best_key:
+            best, best_key = piece, key
+    if best is None or best[1] - best[0] < float(least) - 1e-6:
+        return None
+    return round(best[0], 2), round(best[1], 2)
+
+
+def clamp_edge(
+    edge: str, value: float, span: Sequence[float], obstacles: Sequence[Sequence[float]]
+) -> float:
+    """A handle stops at the edge of what is in its way (the ticket: «el tirador se
+    detiene en el borde del otro uso»)."""
+    start, end = float(span[0]), float(span[1])
+    if edge == "start":
+        walls = [float(b) for a, b in obstacles if float(b) <= start + 1e-6]
+        return max(float(value), max(walls, default=-math.inf))
+    walls = [float(a) for a, b in obstacles if float(a) >= end - 1e-6]
+    return min(float(value), min(walls, default=math.inf))
+
+
+# -- the own video's pieces renamed (they are named by their place, `piece_id`) -------------
+
+
+def cut_mapping(key: str, count: int, index: int) -> dict[str, list[str]]:
+    """«Cortar» split piece `index` of `count`: it is now two, the later ones move up."""
+    out: dict[str, list[str]] = {}
+    for n in range(max(int(count), 1)):
+        if n < index:
+            out[piece_id(key, n)] = [piece_id(key, n)]
+        elif n == index:
+            out[piece_id(key, n)] = [piece_id(key, n), piece_id(key, n + 1)]
+        else:
+            out[piece_id(key, n)] = [piece_id(key, n + 1)]
+    return out
+
+
+def removed_mapping(key: str, count: int, index: int) -> dict[str, list[str]]:
+    """Piece `index` of `count` left: it is nothing now, the later ones move down."""
+    out: dict[str, list[str]] = {}
+    for n in range(max(int(count), 1)):
+        if n == index:
+            out[piece_id(key, n)] = []
+        else:
+            out[piece_id(key, n)] = [piece_id(key, n if n < index else n - 1)]
+    return out
+
+
+def order_mapping(key: str, order: Sequence[int]) -> dict[str, list[str]]:
+    """The pieces moved: place `p` now holds the piece that was at `order[p]`."""
+    return {piece_id(key, int(old)): [piece_id(key, place)] for place, old in enumerate(order)}
+
+
+def collapse_mapping(key: str, count: int) -> dict[str, list[str]]:
+    """The pieces became the one stretch again (sped up whole, or a new length)."""
+    return {piece_id(key, n): [piece_id(key, 0)] for n in range(max(int(count), 1))}
+
+
+# -- rows: several effects one after another, and a move from row to row ---------------------
+
+
+def _place_free(
+    placed: list[dict[str, object]], use: Mapping[str, object], *, count: int, total: float
+) -> tuple[dict[str, object], int]:
+    """A use with its own seconds, among the ones already `placed`: where it is when
+    nothing is in its way; else trimmed to the free room of its row (`fit_in_gap`); else
+    whole on the first row where it fits, or a new one. The use as placed, and the rows."""
+    least = contract.SEGMENT_MIN_SECONDS
+    effect_id = str(use.get("effect_id") or "")
+    start, end = _use_span(use)
+    end = min(end, total)
+    start = min(start, max(end - least, 0.0))
+    lane = int(use.get("lane") or 0)  # type: ignore[call-overload]
+
+    def walls(row: int) -> list[tuple[float, float]]:
+        return [
+            _use_span(u)
+            for u in placed
+            if int(u.get("lane") or 0) == row  # type: ignore[call-overload]
+            or str(u.get("effect_id")) == effect_id
+        ]
+
+    span = (round(start, 2), round(end, 2))
+    if not any(_clash(span, w) for w in walls(lane)):
+        return {**use, "start": span[0], "end": span[1], "lane": lane}, count
+    fit = fit_in_gap(span, walls(lane), total, least)
+    if fit is not None:
+        return {**use, "start": fit[0], "end": fit[1], "lane": lane}, count
+    for row in range(count + 1):
+        if not any(_clash(span, w) for w in walls(row)):
+            return {**use, "start": span[0], "end": span[1], "lane": row}, max(count, row + 1)
+    # the same effect is on then on every row: the most room on a new row (`effects_problem`
+    # says so before «Crear» if even that overlaps)
+    fit = fit_in_gap(span, walls(count), total, least) or span
+    return {**use, "start": fit[0], "end": fit[1], "lane": count}, count + 1
+
+
+def settle_lanes(
+    uses: Sequence[Mapping[str, object]], *, lanes: int, total: float | None = None
+) -> tuple[list[dict[str, object]], int]:
+    """After «Fotos y videos» changed (a move, a cut, a trim, a block taken out, a speed):
+    on a row nothing ever overlaps. A use with its own seconds keeps its row and its
+    seconds when it can — kept inside the video (`total`), and trimmed to the free room of
+    its row or moved to another when the shorter video squeezed it onto a neighbour
+    (`_place_free`); a use stuck to its blocks — it moved with them — that now overlaps
+    another on its row goes to the first row where it fits, else a new one. The uses in
+    their order, and how many rows."""
+    count = max(int(lanes), 1)
+    top = float(total) if total is not None else max((_use_span(u)[1] for u in uses), default=0.0)
+    placed: list[dict[str, object]] = []
+    for use in uses:
+        if _stuck(use):
+            continue
+        settled, count = _place_free(placed, use, count=count, total=top)
+        placed.append(settled)
+    for use in uses:
+        if not _stuck(use):
+            continue
+        span = _use_span(use)
+        lane = int(use.get("lane") or 0)  # type: ignore[call-overload]
+        if not lane_fits(placed, span, lane):
+            lane = pick_lane(placed, span, lanes=count, prefer=lane)
+            count = max(count, lane + 1)
+        placed.append({**use, "lane": lane})
+    by_uid = {str(u.get("uid") or ""): u for u in placed}
+    return [by_uid[str(u.get("uid") or "")] for u in uses], count
+
+
+def compact_lanes(uses: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Deivid 2026-11-20 («el botón de añadir pista no le veo sentido»): the rows come and
+    go on their own — an empty row disappears and the ones under it move up."""
+    used = sorted({int(u.get("lane") or 0) for u in uses})  # type: ignore[call-overload]
+    place = {lane: n for n, lane in enumerate(used)}
+    return [{**u, "lane": place[int(u.get("lane") or 0)]} for u in uses]  # type: ignore[call-overload]
+
+
+def block_url_script(param: str, slug: str, *, flow: bool) -> str:
+    """The address says which block is chosen (`?bloque=video-2`, N3). Choosing the first
+    one adds a history entry, so the phone's «atrás» lets it go before it leaves the step
+    (N5); choosing another replaces it; letting go walks back through that entry.
+
+    The entry this page pushed carries `qBloque` = this page load's own mark
+    (`window.__qBloqueDoc`): after a reload the browser keeps the entry and its state,
+    but walking back from it would leave the reloaded page — a whole page load (the
+    «recarga» Deivid saw, 2026-11-20). So letting go walks back only through an entry
+    THIS page load pushed; any other one just drops the word (`replaceState`)."""
+    key = json.dumps(param)
+    doc = (
+        "(window.__qBloqueDoc = window.__qBloqueDoc ||"
+        " ('d' + Date.now().toString(36) + Math.random().toString(36).slice(2)))"
+    )
+    mine = f"(!!window.history.state && window.history.state.qBloque === {doc})"
+    if slug or flow:
+        write = (
+            f" u.searchParams.set({key}, {json.dumps(slug)});"
+            if slug
+            else (f" u.searchParams.delete({key});")
+        )
+        return (
+            "(() => { const u = new URL(window.location.href);"
+            f" const had = u.searchParams.has({key}) || {mine};"
+            f"{write}"
+            " const url = u.pathname + u.search + u.hash;"
+            " if (had) window.history.replaceState(window.history.state, '', url);"
+            " else window.history.pushState({ ...(window.history.state || {}),"
+            f" qBloque: {doc} }}, '', url); }})()"
+        )
+    return (
+        "(() => { const u = new URL(window.location.href);"
+        f" if ({mine}) {{ window.history.back(); return; }}"
+        f" const state = {{ ...(window.history.state || {{}}) }}; delete state.qBloque;"
+        f" if (!u.searchParams.has({key}) && !window.history.state?.qBloque) return;"
+        f" u.searchParams.delete({key});"
+        " window.history.replaceState(state, '', u.pathname + u.search + u.hash); })()"
+    )
+
+
+def put_label(label: str, *, mine: bool = False) -> str:
+    """An effect's button name in «+ Efecto» (UX review): «Poner Vapor, gratis», and
+    «, de tu rubro» when it is the business's."""
+    return f"Poner {label}, gratis" + (", de tu rubro" if mine else "")

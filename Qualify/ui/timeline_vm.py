@@ -53,7 +53,16 @@ MOVE_HELP = "Usa las flechas para cambiarlo de lugar."
 TIME_HELP = "Usa las flechas para cambiar cuándo sale."
 #: Each help lives once, in a hidden span of the timeline; a block points at it with
 #: `aria-describedby` (as «Velocidad»'s reasons do), never `aria-description`.
-HELP_IDS = {MOVE_HELP: "q-tl-help-move", TIME_HELP: "q-tl-help-time"}
+#: ED-04: an effect also changes row with ↑/↓ (Deivid 2026-11-20: «moverlos entre pistas»).
+EFFECT_HELP = (
+    "Usa las flechas izquierda y derecha para cambiar cuándo sale, y arriba y abajo para "
+    "pasarlo a otra pista."
+)
+HELP_IDS = {
+    MOVE_HELP: "q-tl-help-move",
+    TIME_HELP: "q-tl-help-time",
+    EFFECT_HELP: "q-tl-help-effect",
+}
 DONE_LABEL = "Listo"
 MINUS_HALF = "− ½ s"
 PLUS_HALF = "+ ½ s"
@@ -289,7 +298,8 @@ def _overlay_names(item: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> list[dict[str, str]]:
-    """The «Textos» (``kind="text"``) or «Efectos» (``"effect"``) track as rendered rows."""
+    """The «Textos» (``kind="text"``) or «Efectos» (``"effect"``) track as rendered rows.
+    ED-04: ``lane`` is the row of «Efectos» an effect sits on ("0" for the first)."""
     rows: list[dict[str, str]] = []
     for item in overlays:
         if item["kind"] != kind:
@@ -304,14 +314,18 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "label": label,
                 "name": name,
                 "panel": panel,
-                "help": TIME_HELP,
-                "help_id": HELP_IDS[TIME_HELP],
+                "help": EFFECT_HELP if kind == "effect" else TIME_HELP,
+                "help_id": HELP_IDS[EFFECT_HELP if kind == "effect" else TIME_HELP],
                 "thumb": "",
                 "speed": "1",
                 "speed_tag": "",
                 "place": str(item.get("place", "")),
-                "start": num(start),
-                "length": num(end - start),
+                # ED-04: an effect stuck to its blocks starts and ends where they do (to
+                # the hundredth, as «Fotos y videos» lays them), never ½ s off
+                "start": exact(start),
+                "length": exact(round(end, 2) - round(start, 2)),
+                # ED-04: the row of «Efectos» it sits on (0 for a text)
+                "lane": str(int(item.get("lane") or 0)),
                 "start_handle": f"Inicio de {label}",
                 "end_handle": f"Final de {label}",
                 "has_start": "1",
