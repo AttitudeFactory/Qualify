@@ -146,12 +146,13 @@ def test_the_command_fits_4k_8_bits_and_keeps_the_whole_timing() -> None:
     assert cmd[cmd.index("-b:a") + 1] == f"{local_normalize.AUDIO_BITRATE_KBPS}k"
     assert "-ac" not in cmd  # a mono track stays mono: the assembly copies it at its level
     assert cmd.count("-threads") == 2 and "-noautorotate" not in joined
-    # m-25042483: one thread each, x264 without lookahead/B-frames/mbtree — the measured
+    # m-25042483: one thread each, x264 without lookahead/mbtree — the measured
     # memory that fits the media-worker's 768m (985 → 414 MiB on a 4K 10-bit HEVC)
     assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "-threads"] == ["1", "1"]
     assert cmd.index("-threads") < cmd.index("-i")  # the first one bounds the decoder
     params = cmd[cmd.index("-x264-params") + 1].split(":")
-    assert {"rc-lookahead=0", "bframes=0", "mbtree=0"} <= set(params)
+    assert {"rc-lookahead=0", "sync-lookahead=0", "mbtree=0"} <= set(params)
+    assert "bframes=1" in params  # m-25071265: one B-frame back, measured within the cap
     assert f"{max_rate_kbps(60.0)}k" in cmd
 
 
@@ -172,7 +173,7 @@ def test_rate_and_time_scale_with_the_length() -> None:
     assert timeout_for(None) == local_normalize.TIMEOUT_MAX_SECONDS
     assert timeout_for(10_000) == local_normalize.TIMEOUT_MAX_SECONDS
     normalizer = FfmpegLocalSourceNormalizer(use_nice=False)
-    assert normalizer.version == NORMALIZE_LOCAL_VERSION == "local-source-v2"
+    assert normalizer.version == NORMALIZE_LOCAL_VERSION == "local-source-v3"
     assert normalizer.allowance(60).total_seconds() > timeout_for(60)
 
 

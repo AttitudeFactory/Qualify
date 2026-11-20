@@ -174,7 +174,7 @@ def test_a_normalized_copy_is_what_the_assembly_reads_and_records(
     assert video["source"] == {
         "source_key": BIG_KEY,
         "normalized_key": copy_key,
-        "normalizer_version": "local-source-v2",
+        "normalizer_version": "local-source-v3",
         "limits_version": "local-source-limits-v1",
     }
     assert "source" not in photo
@@ -240,7 +240,7 @@ def test_a_galeria_video_is_neither_looked_up_nor_checked(
 
 
 def test_the_job_key_and_the_copy_key_are_per_file_and_version() -> None:
-    assert normalize_job_key(BIG_KEY) == f"normalize_local:local-source-v2:{BIG_KEY}"
+    assert normalize_job_key(BIG_KEY) == f"normalize_local:local-source-v3:{BIG_KEY}"
     first = normalized_key(TENANT_ID, BIG_KEY)
     assert first == normalized_key(TENANT_ID, BIG_KEY)  # deterministic
     assert first.startswith(f"t/{TENANT_ID}/normalized/") and first.endswith("/video.mp4")
@@ -248,6 +248,9 @@ def test_the_job_key_and_the_copy_key_are_per_file_and_version() -> None:
     assert first != normalized_key(
         TENANT_ID, BIG_KEY, version="local-source-v1"
     )  # v1 copies were silent: never reused
+    assert first != normalized_key(
+        TENANT_ID, BIG_KEY, version="local-source-v2"
+    )  # m-25071265: v2 copies (no B-frames) are another encode: a new copy
     assert local.owned_by(TENANT_ID, first)
 
 

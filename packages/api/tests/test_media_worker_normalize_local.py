@@ -149,7 +149,7 @@ def test_a_source_is_normalized_to_its_key_and_the_job_is_done(
     assert normalizer.calls == [42.0]  # the length from the header scales time and rate
     assert row.status == STATUS_DONE and row.lease_until is None
     assert row.result["normalized_key"] == TARGET_KEY
-    assert row.result["version"] == "local-source-v2"
+    assert row.result["version"] == "local-source-v3"
     assert row.result["source_key"] == SOURCE_KEY and row.result["cost_usd"] == "0.00"
     assert row.result["source"]["bits"] == 10 and row.result["normalized"]["bits"] == 8
 

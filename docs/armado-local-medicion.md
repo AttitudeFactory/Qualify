@@ -125,7 +125,8 @@ Decisión de Deivid (2026-11-17), textual: «Bajarlos a 4K 8 bits (Recomendado)�
   `local-source-v1`; con su sonido desde `local-source-v2`, m-25049580). Se normaliza el
   archivo entero una sola vez, y la copia queda en `t/{negocio}/normalized/…` para cualquier
   pieza que use ese video. Las fotos y videos de la Galería ya llegan en 1080×1920 y no pasan
-  por aquí. Versión: `local-source-v2`. Queda en la procedencia de cada tramo.
+  por aquí. Versión: `local-source-v2` (`local-source-v3` desde m-25071265, con 1 B-frame).
+  Queda en la procedencia de cada tramo.
 - **60 s de video por tramo** (`SEGMENT_SOURCE_MAX_S`), a cualquier velocidad: se rechaza antes
   de crear la pieza (`segment_source_too_long`). El worker lo vuelve a revisar y muestra el
   aviso revisado por ux-designer: «Cada pedazo puede tomar hasta 1 minuto de tu video, aunque
@@ -157,7 +158,7 @@ fuente, memoria anónima de ffmpeg):
 |---|---|---|
 | veryfast por defecto, 2 hilos | 985 MiB: el kernel lo mata por memoria con 768m | 1023 MiB |
 | lookahead 5, 1 hilo | 672 | 705 |
-| **sin lookahead, sin B-frames ni mbtree, 1 hilo (en el código)** | **414** | **443** |
+| **sin lookahead, sin B-frames ni mbtree, 1 hilo (hasta `local-source-v2`; desde v3, 1 B-frame: ver m-25071265)** | **414** | **443** |
 | ultrafast | 359 | 387 |
 
 Con la configuración del código, el normalizador real lleva un 4K HEVC de 10 bits de 60 s a 4K
@@ -226,8 +227,134 @@ Lectura:
   terminar.
 - **Costo:** US$0. No se llama a ningún proveedor.
 
+## B-frames en el normalizador (m-25071265, medido 2026-11-20)
+
+Pregunta: ¿se le pueden devolver los B-frames (`bframes=3`) al normalizador sin pasar de
+~550 MiB anon en el media-worker y sin perder calidad? `rc-lookahead=0`, `mbtree=0` y 1 hilo no
+cambian.
+
+**Respuesta: `bframes=3` no cabe** (661 MiB anon en el 4K de 10 bits, 679 en el 5K). Tampoco
+`bframes=2` (629 / 652). **`bframes=1` sí cabe** (524 / 542 MiB, sin OOM) y da casi toda la
+mejora de calidad de 3. Deivid eligió `bframes=1` el 2026-11-20; queda en el código con la
+versión `local-source-v3`.
+
+### Cómo se midió
+
+- Harness nuevo: `deploy/measure/local-normalize-memory.sh` y `local_normalize_memory.py`.
+  Reusa el muestreo y las fuentes sintéticas de EF-15. Llama al normalizador real
+  (`FfmpegLocalSourceNormalizer.normalize_file`) y solo cambia `X264_PARAMS` según la variante:
+  `b0` (`local-source-v2`), `b1`, `b2` y `b3`.
+- Imagen `qualify-memtest:ffmpeg` = `qualify-memtest:deps` + el ffmpeg de Debian bookworm
+  (5.1.9), el mismo que instala la imagen de la app.
+- Cada codificación corre en un contenedor nuevo con el límite del media-worker leído de
+  `docker-compose.prod.yml`: `--memory 768m --memory-swap 768m --cpus 1.0`, sin red. amd64, 8
+  núcleos, hasta 4 contenedores a la vez (cada uno con 1 CPU).
+- Memoria: el pico de `anon` del cgroup cada 50 ms (ffmpeg más el proceso de Python, que parte de
+  23 MiB) y el RSS máximo de ffmpeg. CPU: segundos de usuario + sistema de ffmpeg.
+- Fuentes sintéticas (ningún archivo personal, ningún proveedor):
+  - `k4_hevc10_60`: el peor caso de m-25042483. Es el clip de EF-15: 4K HEVC de 10 bits, 60 s,
+    ruido en bloques que se desplaza más grano por cuadro, 40 Mb/s. La copia queda al tope de
+    tasa (~35 Mb/s).
+  - `testsrc2_k4_hevc10_60`: 4K HEVC de 10 bits hecho con ffmpeg (`testsrc2` con grano leve,
+    `-pix_fmt yuv420p10le -c:v libx265`, 40 Mb/s, tono de 440 Hz), 60 s.
+  - `k5_hevc_10`: 5K HEVC de 8 bits, 10 s, el mismo ruido. Fue el peor caso de memoria en
+    m-25042483.
+- Calidad (`quality`): SSIM (`All`) y PSNR (`average`) de ffmpeg, de la copia contra su fuente.
+  La fuente pasa por el mismo `scale_filter` del normalizador, así que solo cuenta la
+  codificación. Se mide a resolución de publicación (el recorte 9:16 centrado de «preparar»,
+  llevado a 1080×1920 con bicubic) y a 4K.
+- Video publicado (`publish` + `compare`): `render_local_part` con un tramo de 10 s a ×1 sobre la
+  copia, contra el mismo armado sobre la fuente original. Para eso, en la medición se levanta el
+  límite de 4K 8 bits, como antes de m-25042483.
+
+### Memoria (768m, 1 CPU)
+
+Pico de `anon` del cgroup en MiB. Entre paréntesis, las veces que el cgroup tocó el límite
+(`memory.events max`): es la caché de páginas del archivo que se lee y se escribe, que el kernel
+recupera. Ninguna corrida tuvo OOM (`oom_kill` = 0).
+
+| Fuente | b0 (`local-source-v2`) | **b1 (elegida)** | b2 | b3 (lo que pedía el ticket) |
+|---|---|---|---|---|
+| k4_hevc10_60 (peor caso de calidad) | 449 (0) | **524** (159) | 629 (925) | 661 (1385) |
+| testsrc2_k4_hevc10_60 | 432 (0) | **507** (516) | 618 (1000) | 643 (1237) |
+| k5_hevc_10 (peor caso de memoria) | 466 (0) | **542** (0) | 652 (0) | 679 (0) |
+
+El primer B-frame cuesta ~75 MiB, el segundo ~105–110 y el tercero ~30: x264 retiene más
+cuadros 4K. Una segunda corrida de b0 y b1
+sobre `k4_hevc10_60` repitió las mismas cifras (449 y 524).
+
+**Ojo con el margen:** el proceso de Python de esta medición ocupa 23 MiB. El media-worker real
+carga más (SQLAlchemy, boto3), y eso se suma a ffmpeg en el mismo cgroup. Con b1 quedan ~225 MiB
+hasta 768m en el peor caso medido; con b0 quedaban ~300. El `anon` en reposo del media-worker
+real no está medido: queda pendiente junto con la medición del iPhone. Los toques al límite con
+4K son caché de páginas, que el kernel recupera (sin OOM en ninguna corrida).
+
+### Tiempo (60 s de 4K HEVC de 10 bits, 1 CPU, amd64)
+
+| Variante | CPU s | Pared s |
+|---|---|---|
+| b0 | 424 | 429 |
+| b1 | 454 (+7 %) | 460 |
+
+Medido con solo esas dos codificaciones en la máquina. En la primera tanda corrían 4 a la vez
+y además el cálculo de SSIM: ahí b0 tardó 707–732 s, b1 1075–1081 s, b2 1149–1184 s y b3
+832–846 s. Esas cifras no sirven para comparar. En arm64 (producción) será más lento.
+
+### Calidad de la copia (60 s completos)
+
+SSIM `All` / PSNR `average` en dB, de la copia contra su fuente.
+
+| Fuente | Dónde | b0 (`local-source-v2`) | **b1** | b2 | b3 |
+|---|---|---|---|---|---|
+| k4_hevc10_60 (ruido al tope de tasa) | publicación 1080×1920 | 0,9402 / 32,14 | **0,9454 / 32,56** | 0,9462 / 32,64 | 0,9463 / 32,64 |
+| k4_hevc10_60 | copia 4K | 0,8854 / 30,22 | **0,8941 / 30,62** | 0,8958 / 30,67 | 0,8959 / 30,67 |
+| testsrc2_k4_hevc10_60 | publicación 1080×1920 | 0,9936 / 48,28 | **0,9937 / 48,33** | 0,9938 / 48,46 | 0,9940 / 48,64 |
+| testsrc2_k4_hevc10_60 | copia 4K | 0,9919 / 44,93 | **0,9920 / 44,85** | 0,9921 / 45,06 | 0,9924 / 45,24 |
+
+Con el mismo tope de tasa, los B-frames reparten mejor los bits. En el peor caso, a 1080×1920,
+b1 se queda con el 85 % de la mejora de b3 (+0,0052 de +0,0061 SSIM). m-25042483 midió con otro
+método (0,944 con veryfast por defecto y 0,929 sin B-frames); esas cifras no se comparan con
+estas. La única cifra que baja es el PSNR de la copia 4K de
+`testsrc2` con b1 (−0,08 dB); su SSIM sube. Es ruido de la codificación y no llega a la
+publicación (fila de arriba).
+
+### Video publicado (10 s a ×1, `render_local_part`)
+
+Cada video armado desde la copia, contra el mismo armado desde la fuente original. SSIM `All` /
+PSNR `average` en dB.
+
+| Fuente | b0 | **b1** | b2 | b3 |
+|---|---|---|---|---|
+| k4_hevc10_60 | 0,9149 / 28,71 | **0,9179 / 28,80** | 0,9180 / 28,81 | 0,9180 / 28,81 |
+| testsrc2_k4_hevc10_60 | 0,9822 / 31,04 | **0,9821 / 31,05** | 0,9822 / 31,04 | 0,9821 / 31,06 |
+
+- En el peor caso, b1 mejora el video publicado (+0,003 SSIM, +0,1 dB). Con `testsrc2`, todas las
+  variantes quedan iguales dentro de ±0,0001 SSIM y ±0,02 dB.
+- El nivel absoluto es más bajo que en m-25042483 (49 dB). Aquí la referencia es el armado desde
+  la fuente de 10 bits, y ese camino convierte el color distinto que el normalizador. Esa
+  diferencia es la misma en todas las variantes. No la investigué: solo comparo variantes entre
+  sí.
+
+### Decisión (Deivid, 2026-11-20: b1)
+
+| Opción | Anon peor caso | SSIM publicación, peor caso | CPU | Nota |
+|---|---|---|---|---|
+| Dejar b0 (`local-source-v2`) | 466 MiB | 0,9402 | base | Sin cambio ni copias nuevas |
+| **b1 (`local-source-v3`, elegida y en el código)** | **542 MiB** | **0,9454** | +7 % | Cabe por poco; el worker real suma su propio Python |
+| b2 | 652 MiB | 0,9462 | — | Pasa de ~550 |
+| b3 (pedido original) | 679 MiB | 0,9463 | — | Pasa de ~550 |
+
+Con la versión nueva, una fuente que ya tenía copia `local-source-v2` se vuelve a normalizar la
+próxima vez que se arme (otra clave, otro trabajo). Hoy el editor está apagado en producción
+(`QUALIFY_CLIP_EDITOR=off`), así que casi no hay copias v2.
+
+- **Costo:** US$0. Fuentes sintéticas, ningún proveedor.
+
 ## Pendiente
 
+- **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el
+  teléfono de Deivid. Mismo harness: copiar el archivo al volumen `norm-clips` (carpeta `src/`),
+  y correr `run`, `quality`, `publish` y `compare` (m-25071265).
 - Medir en arm64 cuando haya una imagen arm64 construida.
 - Encolar la normalización al subir el video, no al armar (ticket aparte).
 - `QUALIFY_CREATIVE_DISPATCHER=queue` en producción: confirmado el 2026-11-16 (`/opt/qualify/.env.prod`,

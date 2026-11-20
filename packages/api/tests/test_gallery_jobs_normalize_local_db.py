@@ -85,7 +85,7 @@ def test_one_job_per_file_even_when_asked_twice(brands: dict[UUID, UUID]) -> Non
     assert row.payload == {
         "source_key": key,
         "normalized_key": normalized_key(TENANT_A, key),
-        "version": "local-source-v2",
+        "version": "local-source-v3",
         "draft_id": None,
     }
     found = jobs.lookup(TENANT_A, [key])
@@ -164,7 +164,7 @@ def test_a_normalize_local_job_needs_its_payload(brands: dict[UUID, UUID]) -> No
                 brand_id=brands[TENANT_A],
                 kind=JOB_NORMALIZE_LOCAL,
                 idempotency_key=normalize_job_key(_source(TENANT_A)),
-                pipeline_version="local-source-v2",
+                pipeline_version="local-source-v3",
                 payload={"source_key": "x"},
             )
         )
