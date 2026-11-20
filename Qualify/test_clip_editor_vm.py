@@ -267,10 +267,14 @@ def test_recipe_of_a_clip() -> None:
         speed=10,
         text=" Hola ",
         place="top",
+        effect_uses=[
+            {"uid": "u1", "effect_id": "vapor_capa", "start": 0.0, "end": 12.0, "lane": 0}
+        ],
     )
     assert recipe.segments[0].speed == 10 and recipe.segments[0].rotate == 90
     # B6: the speed is the stretch's only — `camara_rapida` never travels as an effect
-    # (the backend makes no such effect and would refuse the Clip)
+    # (the backend makes no such effect and would refuse the Clip); ED-04: a layer
+    # travels only as a use, never as an id in `effects`
     assert [u.effect_id for u in recipe.effects] == ["vapor_capa"]
     assert recipe.text_layer is not None and recipe.text_layer.text == "Hola"
     photos = vm.recipe_of(
@@ -283,7 +287,7 @@ def test_recipe_of_a_clip() -> None:
         text="",
         place="bottom",
     )
-    assert photos.segments == () and [u.effect_id for u in photos.effects] == ["humo_capa"]
+    assert photos.segments == () and photos.effects == ()
     assert photos.text_layer is None
 
 
@@ -370,21 +374,17 @@ def test_texts_and_effects_on_the_timeline() -> None:
         place="top",
         text_start=0.0,
         text_end=-1.0,
-        effects=["camara_rapida", "vapor_capa"],
-        effect_times={"vapor_capa": [3.0, 20.0]},
         total=12.0,
+        effect_uses=[
+            {"uid": "u1", "effect_id": "vapor_capa", "start": 3.0, "end": 12.0, "lane": 0},
+            {"uid": "u2", "effect_id": "camara_rapida", "start": 0.0, "end": 12.0, "lane": 0},
+        ],
     )
     text, vapor = rows
     assert (text["id"], text["label"], text["start"], text["end"]) == ("texto-1", "2×1 hoy", 0, 12)
-    # «Cámara rápida» is the video's «Velocidad», never a block (D-T3); an effect past
-    # the new end is cut to it
-    assert (vapor["id"], vapor["start"], vapor["end"]) == ("efecto-vapor_capa", 3.0, 12.0)
-    assert (
-        vm.timeline_overlays(
-            text="", place="top", text_start=0, text_end=-1, effects=[], effect_times={}, total=5
-        )
-        == []
-    )
+    # «Cámara rápida» is the video's «Velocidad», never a block (D-T3)
+    assert (vapor["id"], vapor["start"], vapor["end"]) == ("efecto-u1", 3.0, 12.0)
+    assert vm.timeline_overlays(text="", place="top", text_start=0, text_end=-1, total=5) == []
 
 
 def test_the_address_names_a_block_by_its_place() -> None:
@@ -394,16 +394,15 @@ def test_the_address_names_a_block_by_its_place() -> None:
         place="bottom",
         text_start=0,
         text_end=-1,
-        effects=["vapor_capa"],
-        effect_times={},
         total=24,
+        effect_uses=[{"uid": "u1", "effect_id": "vapor_capa", "start": 0.0, "end": 24.0}],
     )
     assert vm.block_slug(media, overlays, "v1.mp4") == "video-2"
     assert vm.block_slug(media, overlays, "f1.jpg") == "foto-1"
     assert vm.block_slug(media, overlays, "texto-1") == "texto-1"
-    assert vm.block_slug(media, overlays, "efecto-vapor_capa") == "efecto-1"
+    assert vm.block_slug(media, overlays, "efecto-u1") == "efecto-1"
     assert vm.block_from_slug(media, overlays, "video-2") == "v1.mp4"
-    assert vm.block_from_slug(media, overlays, "efecto-1") == "efecto-vapor_capa"
+    assert vm.block_from_slug(media, overlays, "efecto-1") == "efecto-u1"
     assert vm.block_from_slug(media, overlays, "video-9") == ""
     assert vm.block_from_slug(media, overlays, "foto-2") == ""  # place 2 is a video
     assert vm.block_from_slug(media, overlays, "") == ""
@@ -443,11 +442,10 @@ def test_untouched_the_recipe_is_ed02s() -> None:
         "place": "bottom",
     }
     before = vm.recipe_of(**kwargs)  # type: ignore[arg-type]
-    after = vm.recipe_of(**kwargs, text_start=0.0, text_end=None, effect_times={})  # type: ignore[arg-type]
+    after = vm.recipe_of(**kwargs, text_start=0.0, text_end=None)  # type: ignore[arg-type]
     assert after == before
     assert before.text_layer is not None
     assert (before.text_layer.start_s, before.text_layer.end_s) == (0.0, None)
-    assert (before.effects[0].start_s, before.effects[0].end_s) == (None, None)
 
 
 def test_moved_text_and_effects_carry_their_seconds() -> None:
@@ -462,7 +460,7 @@ def test_moved_text_and_effects_carry_their_seconds() -> None:
         place="top",
         text_start=2.5,
         text_end=6.0,
-        effect_times={"vapor_capa": [1.0, 4.5]},
+        effect_uses=[{"uid": "u1", "effect_id": "vapor_capa", "start": 1.0, "end": 4.5}],
     )
     assert recipe.text_layer is not None
     assert (recipe.text_layer.start_s, recipe.text_layer.end_s) == (2.5, 6.0)
@@ -473,13 +471,12 @@ def test_timeline_changes_say_what_changed() -> None:
     base = vm.snapshot(
         start=0, end=10, rotate=0, effects=["vapor_capa"], speed=10, text="a", place="top"
     )
-    assert base["order"] == [] and base["text_end"] == -1.0 and base["effect_times"] == {}
+    assert base["order"] == [] and base["text_end"] == -1.0 and "effect_times" not in base
     moved = {**base, "order": ["b", "a"]}
     assert vm.change_message(base, moved) == "Cambiaste el orden de tu video."
     timed = {**base, "text_start": 2.0}
     assert vm.change_message(base, timed) == "Cambiaste cuándo sale el texto."
-    effect = {**base, "effect_times": {"vapor_capa": [2.0, 9.0]}}
-    assert vm.change_message(base, effect) == "Cambiaste cuándo sale Vapor."
+    assert vm.effect_time_line("vapor_capa") == "Cambiaste cuándo sale Vapor."
     assert vm.effect_removed_line("vapor_capa") == "Quitaste Vapor."
     assert vm.TEXT_REMOVED_LINE == "Quitaste el texto de tu video."
 

@@ -143,6 +143,7 @@ from .creative_provider import (
     brand_media,
     brand_pieces,
     brand_readiness,
+    business_kind,
     cancel_draft_queue,
     catalog_products,
     configured_video_engine,
@@ -1831,6 +1832,9 @@ class CreativeState(rx.State):
     #: the whole video): seconds of the final video, set by dragging or ±½ s (ED-10).
     clip_text_start: float = 0.0
     clip_text_end: float = -1.0
+    #: ED-10's seconds of a layer effect kept by its id. ED-04 keeps every layer in
+    #: `clip_effect_uses`: this is only read once, to move a session saved before it
+    #: there (`_clip_migrate_layers`), then left empty.
     clip_effect_times: dict[str, list[float]] = {}
     #: Each video's length as the browser measured it (the timeline places the videos
     #: that are not the editor's own one from these).
@@ -1847,6 +1851,24 @@ class CreativeState(rx.State):
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
     clip_effect_ids: list[str] = []
+    #: ED-04 m-25026627: the layer effects put on the video, each a block of the «Efectos»
+    #: rows — `{uid, effect_id, start, end, lane, blocks}` (`clip_editor_vm`, «uses»):
+    #: seconds of the final video, the row it sits on and the «Fotos y videos» blocks it
+    #: is stuck to ([] = its own seconds, after a drag or ±½ s). The row is the screen's
+    #: alone (the recipe never carries it): it lives here, in the session's state, like
+    #: every choice of the editor — a reload of the step finds the rows as they were.
+    #: «Cámara rápida» stays a flag in `clip_effect_ids`.
+    clip_effect_uses: list[dict[str, Any]] = []
+    #: «¿En qué partes va?» of «+ Efecto»: the «Fotos y videos» blocks marked.
+    clip_effect_parts: list[str] = []
+    #: «+ Efecto»'s filter by rubro ("" = the business's own, else «Todos»).
+    clip_effect_filter: str = ""
+    #: The business's library category, from its Brand Kit rubro ("" = none of its own),
+    #: read once when «+ Efecto» first opens.
+    clip_effect_category: str = ""
+    clip_effect_category_read: bool = False
+    #: Why the last effect change was not made, in the effect panel ("" = nothing).
+    clip_effect_error: str = ""
     clip_speed: int = editor_contract.FAST_MOTION_DEFAULT
     clip_source_seconds: float = 0.0
     clip_source_key: str = ""
@@ -1870,6 +1892,9 @@ class CreativeState(rx.State):
     #: trimmed a piece with its handles — the hint «Arrastra los bordes para recortar.»
     #: is not shown again in this session.
     clip_trim_hint_seen: bool = False
+    #: ED-04 (UX review): the owner already moved an effect to another row — the hint
+    #: «Arrástralo arriba o abajo…» is not shown again in this session.
+    clip_lane_hint_seen: bool = False
     #: Why the «Velocidad» just tapped is off («Con ×10 tu video duraría 1,2 s.»), "" =
     #: none (Deivid 2026-11-17: an off speed says why, it never looks broken).
     clip_speed_refused: str = ""
@@ -3865,16 +3890,28 @@ class CreativeState(rx.State):
             if self._reel_editor_load_context:
                 auth = await self.get_state(AuthState)
                 warm_close = self._consume_editor_close_load(auth.session_tenant_id)
+            # ED-04 (Deivid 2026-11-20: «cuando selecciono las fotos la página se
+            # recarga»): a step of «Arma tu video»'s own history — choosing or letting go
+            # a block (`?bloque=`), a side panel opened or closed («Listo» walks back) —
+            # is a `popstate`, and every route change runs this `on_load` again. It must
+            # not swap the whole workspace for «Cargando el generador»: that remount was
+            # the «recarga» (every picture asked for again)
+            warm_editor = not warm_close and self._clip_editor_history_warm()
             # a reload or a reconnect: «Mejorando…» of a run that died gives the button back
-            self._settle_stuck_enhance()
+            if not warm_editor:
+                self._settle_stuck_enhance()
             # A part-sheet Back must keep the row mounted for Radix's return focus.
             # All authentication and data reads below still run for this navigation.
-            self.create_loading = not warm_close
+            self.create_loading = not (warm_close or warm_editor)
             self.create_error = ""
-            # m-25017273: a photo upload the network cut (or a reload) never reached
-            # its handler: the zone must not keep saying «Subiendo…»
-            self._end_photo_upload()
-            self.upload_error = ""
+            if not warm_editor:
+                # m-25017273: a photo upload the network cut (or a reload) never reached
+                # its handler: the zone must not keep saying «Subiendo…» (a history step
+                # of the editor is neither: an upload running keeps going)
+                self._end_photo_upload()
+                self.upload_error = ""
+            # ED-04: a session saved before it may hold its layers the old way
+            self._clip_migrate_layers()
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -4486,6 +4523,20 @@ class CreativeState(rx.State):
             self.reel_analysis_id,
             self.gen_draft_id,
             self.brief_content_type,
+        )
+
+    def _clip_editor_history_warm(self) -> bool:
+        """ED-04: this `load_create` is a step of «Arma tu video»'s own history on the
+        page already loaded — the same business, the same socket (a reload or a reconnect
+        has another one), the editor on screen and not loading: the workspace stays."""
+        identity = self._create_loaded_identity
+        return bool(
+            len(identity) == 3
+            and all(identity)
+            and self.create_entered
+            and not self.create_loading
+            and self.clip_editor_on_screen
+            and identity[1:] == (self._brand_id, self._create_session_id())
         )
 
     def _arm_editor_close_load(self) -> None:
@@ -6542,21 +6593,30 @@ class CreativeState(rx.State):
             pieces=self.clip_cut_pieces if known else [],
         )
 
-    def _clip_tl_overlays(self, total: float) -> list[dict[str, object]]:
+    def _clip_effect_resolved(
+        self, media: list[dict[str, object]] | None = None
+    ) -> list[dict[str, object]]:
+        """ED-04: the effects put, at their seconds now (`resolve_effect_uses`: one stuck
+        to its blocks follows them)."""
+        media = self._clip_tl_media() if media is None else media
+        return clip_editor_vm.resolve_effect_uses(self.clip_effect_uses, media)
+
+    def _clip_tl_overlays(
+        self, total: float, media: list[dict[str, object]] | None = None
+    ) -> list[dict[str, object]]:
         return clip_editor_vm.timeline_overlays(
             text=self.clip_overlay_text,
             place=self.clip_text_place,
             text_start=self.clip_text_start,
             text_end=self.clip_text_end,
-            effects=self.clip_effect_ids,
-            effect_times=self.clip_effect_times,
             total=total,
+            effect_uses=self._clip_effect_resolved(media),
         )
 
     def _clip_tl(self) -> tuple[list[dict[str, object]], list[dict[str, object]], float]:
         media = self._clip_tl_media()
         total = clip_editor_vm.media_total(media)
-        return media, self._clip_tl_overlays(total), total
+        return media, self._clip_tl_overlays(total, media), total
 
     def _clip_tl_rows(self) -> list[dict[str, str]]:
         """Every block's row (media, texts, effects), for the chosen one and the panel.
@@ -6609,6 +6669,36 @@ class CreativeState(rx.State):
     @rx.var
     def clip_tl_effect_rows(self) -> list[dict[str, str]]:
         return [row for row in self._clip_tl_rows() if row["track"] == timeline_vm.TRACK_EFFECT]
+
+    def _clip_lane_count(self) -> int:
+        """ED-04: how many rows «Efectos» shows — the ones in use (always compact, one
+        when there is no effect: Deivid 2026-11-20, no «+ Pista»)."""
+        used = [int(u["lane"]) for u in self._clip_effect_resolved()]  # type: ignore[call-overload]
+        return max(used, default=0) + 1
+
+    @rx.var
+    def clip_tl_effect_lanes(self) -> list[list[dict[str, str]]]:
+        """ED-04: the effect blocks, row by row — rows that come and go on their own
+        (Deivid 2026-11-20)."""
+        lanes: list[list[dict[str, str]]] = [[] for _ in range(self._clip_lane_count())]
+        for row in self._clip_tl_rows():
+            if row["track"] == timeline_vm.TRACK_EFFECT:
+                lane = min(max(int(row.get("lane") or 0), 0), len(lanes) - 1)
+                lanes[lane].append(row)
+        return lanes
+
+    @rx.var
+    def clip_tl_effect_lane_names(self) -> list[dict[str, str]]:
+        """Each row's name and its empty name."""
+        count = self._clip_lane_count()
+        return [
+            {
+                "index": str(lane),
+                "name": clip_editor_vm.lane_name(lane + 1, count),
+                "empty": clip_editor_vm.lane_empty_name(lane + 1, count),
+            }
+            for lane in range(count)
+        ]
 
     @rx.var
     def clip_tl_total(self) -> str:
@@ -6733,12 +6823,96 @@ class CreativeState(rx.State):
             return clip_editor_vm.FAST_NEEDS_LONGER
         return ""
 
+    def _clip_layer_ids(self) -> list[str]:
+        """The layer effects «+ Efecto» offers (their loop exists: Vapor, Humo, Brasas)."""
+        return [
+            row["id"]
+            for row in self.clip_edit_effect_rows
+            if row["id"] != editor_contract.FAST_MOTION
+        ]
+
+    def _clip_effect_categories(self) -> dict[str, tuple[str, ...]]:
+        return {
+            effect_id: clip_editor_vm.effect_categories(effect_id)
+            for effect_id in self._clip_layer_ids()
+        }
+
+    @rx.var
+    def clip_effect_filters(self) -> list[dict[str, str]]:
+        """ED-04 (Deivid 2026-11-16): «Todos» and the library's categories — the
+        business's first — to filter «+ Efecto» by rubro."""
+        return [
+            {"value": value, "text": text}
+            for value, text in clip_editor_vm.effect_filters(
+                self._clip_layer_ids(), self._clip_effect_categories(), self.clip_effect_category
+            )
+        ]
+
+    def _clip_effect_filter_shown(self) -> str:
+        ids = self._clip_layer_ids()
+        categories = self._clip_effect_categories()
+        values = [
+            value
+            for value, _text in clip_editor_vm.effect_filters(
+                ids, categories, self.clip_effect_category
+            )
+        ]
+        # the filter hidden (one category or none): every effect stays in view
+        if len(values) <= 2:
+            return clip_editor_vm.FILTER_ALL
+        if self.clip_effect_filter in values:
+            return self.clip_effect_filter
+        return clip_editor_vm.default_filter(ids, categories, self.clip_effect_category)
+
+    @rx.var
+    def clip_effect_filter_shown(self) -> str:
+        """The filter on screen: the one chosen, else the business's own category when
+        an effect has it, else «Todos»."""
+        return self._clip_effect_filter_shown()
+
     @rx.var
     def clip_tl_effect_choices(self) -> list[dict[str, str]]:
-        """«+ Efecto»'s list: the layer effects whose loop exists (Vapor, Humo, Brasas: EF-08)."""
-        return [
-            row for row in self.clip_edit_effect_rows if row["id"] != editor_contract.FAST_MOTION
-        ]
+        """«+ Efecto»'s list: the layer effects whose loop exists (Vapor, Humo, Brasas:
+        EF-08) under the filter — the business's rubro first; «Todos» lists every one —
+        each with its category's name and whether it is of the business's rubro."""
+        rows = {
+            row["id"]: row
+            for row in self.clip_edit_effect_rows
+            if row["id"] != editor_contract.FAST_MOTION
+        }
+        categories = self._clip_effect_categories()
+        business = self.clip_effect_category
+        shown = clip_editor_vm.filter_effects(
+            list(rows),
+            categories,
+            business=business,
+            chosen=self._clip_effect_filter_shown(),
+        )
+        chosen = self._clip_effect_filter_shown()
+        out: list[dict[str, str]] = []
+        for effect_id in shown:
+            cats = categories.get(effect_id, ())
+            mine = bool(business and business in cats)
+            # UX review: no second tag saying what «De tu rubro» or the filter already says
+            category = (
+                ""
+                if mine or chosen in cats
+                else ", ".join(clip_editor_vm.CATEGORY_LABELS.get(c, c) for c in cats)
+            )
+            out.append(
+                {
+                    **rows[effect_id],
+                    "category": category,
+                    "mine": "1" if mine else "",
+                    "put_label": clip_editor_vm.put_label(rows[effect_id]["label"], mine=mine),
+                }
+            )
+        return out
+
+    @rx.var
+    def clip_effect_filter_offered(self) -> bool:
+        """«Ver efectos por rubro» only with more than one category to choose from."""
+        return len(self.clip_effect_filters) > 2
 
     # -- ED-10: the preview in sequence (ED-01b) of the timeline -------------------------
 
@@ -6774,7 +6948,7 @@ class CreativeState(rx.State):
             if item["kind"] == "video" and thumbs.get(str(item["key"])):
                 item["thumb"] = clip_editor_vm.SEQ_BASE + thumbs[str(item["key"])]
         urls = {}
-        for effect_id in self.clip_effect_ids:
+        for effect_id in self._clip_used_effect_ids():
             effect = editor_contract.effect_of(effect_id)
             if effect is not None and effect.preview_asset:
                 urls[effect_id] = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
@@ -6797,8 +6971,10 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_seq_effects(self) -> list[dict[str, str]]:
+        # ED-04: each layer at the library's default intensity (the final video's)
         return [
-            {"url": o.url, "index": str(i)} for i, o in enumerate(self._clip_sequence().effects)
+            {"url": o.url, "index": str(i), "opacity": f"{o.opacity:g}"}
+            for i, o in enumerate(self._clip_sequence().effects)
         ]
 
     @rx.var
@@ -6830,13 +7006,19 @@ class CreativeState(rx.State):
         """The loops of the chosen layer effects whose file exists under `assets/effects/`
         (EF-08 made Vapor, Humo and Brasas): one missing is not drawn, so nothing 404s."""
         srcs: list[str] = []
-        for effect_id in self.clip_effect_ids:
+        for effect_id in self._clip_used_effect_ids():
             effect = editor_contract.effect_of(effect_id)
             if effect is not None and effect.preview_asset:
                 url = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
-                if url:
+                if url and url not in srcs:
                     srcs.append(url)
         return srcs
+
+    def _clip_used_effect_ids(self) -> list[str]:
+        """Every effect on the video: «Cámara rápida»'s flag and each layer put (ED-04:
+        `clip_effect_uses`), once each, in the order they were put."""
+        used = [*self.clip_effect_ids, *(str(u.get("effect_id")) for u in self.clip_effect_uses)]
+        return list(dict.fromkeys(used))
 
     @rx.var
     def clip_edit_effect_rows(self) -> list[dict[str, str]]:
@@ -6848,7 +7030,7 @@ class CreativeState(rx.State):
         for effect in editor_contract.effects_offered(has_own_video=own):
             if not editor_contract.effect_available(effect, _ASSETS_ROOT):
                 continue
-            on = effect.effect_id in self.clip_effect_ids
+            on = effect.effect_id in self._clip_used_effect_ids()
             # «Cámara rápida» needs a video of 15 s or more (measured); a marked one can
             # always be unmarked
             off = (
@@ -7074,7 +7256,6 @@ class CreativeState(rx.State):
             order=[item["key"] for item in self._clip_strip()],
             text_start=self.clip_text_start,
             text_end=self.clip_text_end,
-            effect_times=self.clip_effect_times,
             pieces=self.clip_cut_pieces,
         )
 
@@ -7104,6 +7285,10 @@ class CreativeState(rx.State):
         self._clip_text_committed = ""
         self.clip_text_place = "bottom"
         self.clip_effect_ids = []
+        self.clip_effect_uses = []
+        self.clip_effect_parts = []
+        self.clip_effect_filter = ""
+        self.clip_effect_error = ""
         self.clip_speed = editor_contract.FAST_MOTION_DEFAULT
         self.clip_source_seconds = 0.0
         self.clip_source_key = ""
@@ -7133,6 +7318,7 @@ class CreativeState(rx.State):
             text=self._clip_text_committed,
             place=self.clip_text_place,
             timeline=media,
+            effect_uses=self._clip_effect_resolved(media),
             **self._clip_recipe_times(),
         )
 
@@ -7232,9 +7418,9 @@ class CreativeState(rx.State):
         }
 
     def _clip_recipe_times(self) -> dict[str, object]:
-        """When the text and the effects show, for the recipe — only what the owner
-        moved: untouched, the recipe is exactly ED-02's (the text from 0 with no end,
-        effects with no span). An end at the video's end stays open."""
+        """When the text shows, for the recipe — only what the owner moved: untouched, the
+        recipe is exactly ED-02's (the text from 0 with no end). An end at the video's end
+        stays open. The effects go as their uses (`effect_uses`, ED-04)."""
         _media, overlays, total = self._clip_tl()
         times: dict[str, object] = {}
         for row in overlays:
@@ -7243,10 +7429,6 @@ class CreativeState(rx.State):
             if row["kind"] == "text":
                 times["text_start"] = start
                 times["text_end"] = None if open_end else end
-            elif start > 0 or not open_end:
-                spans = dict(times.get("effect_times") or {})  # type: ignore[call-overload]
-                spans[str(row["effect_id"])] = [start, end]
-                times["effect_times"] = spans
         return times
 
     async def _clip_preview_tenant(self) -> UUID | None:
@@ -7350,7 +7532,10 @@ class CreativeState(rx.State):
         if fresh:
             whole = editor_contract.whole_video(key, seconds)
             self.clip_cut_start, self.clip_cut_end = whole.start_s, whole.end_s
+            count = len(self.clip_cut_pieces)
             self.clip_cut_pieces = []
+            if count > 1:
+                self._clip_effects_follow(clip_editor_vm.collapse_mapping(key, count))
             self.clip_rotate = 0
             self.clip_edit_notice = ""
             # a stretch kept from another video never comes back on this one
@@ -7412,6 +7597,8 @@ class CreativeState(rx.State):
             return None
         if not editor_contract.effect_available(effect, _ASSETS_ROOT):
             return None  # a layer whose loop does not exist yet is never offered
+        if effect.preview_asset:
+            return None  # ED-04: a layer is put with «+ Efecto» (`add_clip_effect`)
         marking = effect_id not in self.clip_effect_ids
         if marking and effect_id == editor_contract.FAST_MOTION and not self._clip_fast_allowed():
             return None  # shown off, with its reason: a video under 15 s
@@ -7436,8 +7623,13 @@ class CreativeState(rx.State):
                 else:
                     start, end = self.clip_cut_start, self.clip_cut_end
                 self.clip_cut_start, self.clip_cut_end = start, end
+                count = len(self.clip_cut_pieces)
                 self.clip_cut_pieces = []
                 self._clip_fast_before = {}
+                if count > 1:
+                    self._clip_effects_follow(
+                        clip_editor_vm.collapse_mapping(self._clip_edit_key(), count)
+                    )
         else:
             self.clip_effect_ids = [*self.clip_effect_ids, effect_id]
             if effect_id == editor_contract.FAST_MOTION and self._clip_cut_known():
@@ -7454,7 +7646,12 @@ class CreativeState(rx.State):
                 )
                 start, end, speed = clip_editor_vm.fast_proposal(self.clip_source_seconds)
                 self.clip_cut_start, self.clip_cut_end, self.clip_speed = start, end, speed
+                count = len(self.clip_cut_pieces)
                 self.clip_cut_pieces = []  # sped up, the whole video is one piece again
+                if count > 1:
+                    self._clip_effects_follow(
+                        clip_editor_vm.collapse_mapping(self._clip_edit_key(), count)
+                    )
                 self._clip_edit_changed(before)
                 # the live line says what it did to the stretch
                 self.clip_edit_notice = clip_editor_vm.fast_on_line(
@@ -7481,40 +7678,16 @@ class CreativeState(rx.State):
     # -- ED-10 m-25026648: the timeline's events ------------------------------------------
 
     def _clip_block_url(self, block: str) -> rx.event.EventSpec:
-        """The address says which block is chosen (`?bloque=video-2`, N3). Choosing the
-        first one adds a history entry, so the phone's «atrás» lets it go before it leaves
-        the step (N5); choosing another replaces it; letting go walks back through that
-        entry (or, on an entry this screen did not add, drops the word). A flow
-        «Agregar» opened (its side panel, Deivid 2026-11-16) adds the same kind of entry
-        without a word: «atrás» closes the panel first."""
+        """The address says which block is chosen (`?bloque=video-2`, N3): pushed for the
+        first one, replaced for the next, walked back when let go — only through an entry
+        this page load pushed (`clip_editor_vm.block_url_script`: after a reload, walking
+        back reloaded the whole page, Deivid 2026-11-20). A flow «Agregar» opened (its side
+        panel) adds the same kind of entry without a word: «atrás» closes the panel first."""
         media, overlays, _total = self._clip_tl()
         flow = clip_editor_vm.is_flow(block)
         slug = clip_editor_vm.block_slug(media, overlays, block) if block and not flow else ""
-        param = json.dumps(clip_editor_vm.BLOCK_PARAM)
-        # `qBloque`: the entry this screen pushed (a block or a flow) — reused, never stacked
-        mine = "(window.history.state && window.history.state.qBloque)"
-        if slug or flow:
-            write = (
-                f" u.searchParams.set({param}, {json.dumps(slug)});"
-                if slug
-                else f" u.searchParams.delete({param});"
-            )
-            return rx.call_script(
-                "(() => { const u = new URL(window.location.href);"
-                f" const had = u.searchParams.has({param}) || {mine};"
-                f"{write}"
-                " const url = u.pathname + u.search + u.hash;"
-                " if (had) window.history.replaceState(window.history.state, '', url);"
-                " else window.history.pushState({ ...(window.history.state || {}),"
-                " qBloque: true }, '', url); })()"
-            )
         return rx.call_script(
-            "(() => { const u = new URL(window.location.href);"
-            f" if ({mine}) {{ window.history.back(); return; }}"
-            f" if (!u.searchParams.has({param})) return;"
-            f" u.searchParams.delete({param});"
-            " window.history.replaceState(window.history.state, '',"
-            " u.pathname + u.search + u.hash); })()"
+            clip_editor_vm.block_url_script(clip_editor_vm.BLOCK_PARAM, slug, flow=flow)
         )
 
     def _clip_choose(self, block: str) -> list[rx.event.EventSpec]:
@@ -7523,6 +7696,7 @@ class CreativeState(rx.State):
             # a handle's «hasta aquí» and an off speed's «why» belong to their block
             self.clip_cut_error = ""
             self.clip_speed_refused = ""
+            self.clip_effect_error = ""
         self.clip_edit_block = block
         events = [self._clip_block_url(block)]
         if block:
@@ -7618,8 +7792,16 @@ class CreativeState(rx.State):
         if flow not in clip_editor_vm.FLOWS:
             return []
         already = clip_editor_vm.flow_of(self.clip_edit_block) == flow
+        before = self.clip_edit_block
         self.clip_flow_opener = opener
         events: list[Any] = list(self._clip_choose(clip_editor_vm.FLOW_MARK + flow))
+        if flow == clip_editor_vm.FLOW_EFFECT and not already:
+            # ED-04: «¿En qué partes va?» opens on the block that was chosen, else on all
+            ids = self._clip_media_ids()
+            self.clip_effect_parts = [before] if before in ids else ids
+            self.clip_effect_error = ""
+            if not self.clip_effect_category_read:
+                events.append(CreativeState.load_clip_effect_rubro)
         if flow == clip_editor_vm.FLOW_MEDIA and not (already and not tab):
             events += self._clip_media_flow(tab)
         return events
@@ -7670,13 +7852,18 @@ class CreativeState(rx.State):
         if at and at[-1] - at[0] + 1 != len(at):
             return
         before = self._clip_edit_snapshot()
+        mapping: dict[str, list[str]] = {}
         if len(self.clip_cut_pieces) > 1:
             order = [clip_editor_vm.piece_of(str(moved[i]["id"]))[1] for i in at]
             self.clip_cut_pieces = [list(self.clip_cut_pieces[n]) for n in order]
+            mapping = clip_editor_vm.order_mapping(own, order)
         shown = list(dict.fromkeys(str(m["key"]) for m in moved))
         keys = [item["key"] for item in self._clip_strip()]
         self.clip_sequence = clip_editor_vm.reorder_keys(keys, shown)
         self._sync_clip_frames()
+        # ED-04: an effect stuck to a block moves with it (one whose blocks are no longer
+        # side by side becomes one per group)
+        self._clip_effects_follow(mapping)
         self._clip_edit_changed(before)
         if self.clip_edit_notice:
             self.clip_edit_notice = timeline_vm.moved_text(moved, block_id)  # type: ignore[arg-type]
@@ -7696,6 +7883,9 @@ class CreativeState(rx.State):
         if not row:
             return
         _media, _overlays, total = self._clip_tl()
+        if row["kind"] == "effect" and row.get("uid"):
+            self._clip_set_use_time(str(row["uid"]), start, end, total)
+            return
         before = self._clip_edit_snapshot()
         end = min(end, total)
         start = min(max(start, 0.0), max(end - editor_contract.SEGMENT_MIN_SECONDS, 0.0))
@@ -7703,14 +7893,6 @@ class CreativeState(rx.State):
         if row["kind"] == "text":
             self.clip_text_start = start
             self.clip_text_end = -1.0 if open_end else end
-        else:
-            effect_id = str(row["effect_id"])
-            times = dict(self.clip_effect_times)
-            if start <= 0 and open_end:
-                times.pop(effect_id, None)
-            else:
-                times[effect_id] = [start, end]
-            self.clip_effect_times = times
         self._clip_edit_changed(before)
 
     def _clip_shift(self, block_id: str, delta: float) -> None:
@@ -7751,6 +7933,23 @@ class CreativeState(rx.State):
         handle that edge ½ s."""
         if key == "Escape":
             return self._clip_choose("") if self.clip_edit_block else []
+        if key in ("ArrowUp", "ArrowDown") and not edge:
+            # ED-04: ↑/↓ on an effect moves it to the row above or below
+            uid = clip_editor_vm.use_uid(block_id)
+            use = next((u for u in self._clip_effect_resolved() if u["uid"] == uid), None)
+            if uid and use is not None:
+                label = clip_editor_vm.effect_label(str(use["effect_id"]))
+                here = int(use["lane"])  # type: ignore[call-overload]
+                count = self._clip_lane_count()
+                alone = sum(1 for u in self._clip_effect_resolved() if u["lane"] == here) == 1
+                if key == "ArrowUp" and here == 0:
+                    self.clip_edit_notice = clip_editor_vm.lane_top_line(label)
+                elif key == "ArrowDown" and here == count - 1 and alone:
+                    self.clip_edit_notice = clip_editor_vm.lane_bottom_line(label)
+                else:
+                    lane = here + (-1 if key == "ArrowUp" else 1)
+                    self._clip_move_use(uid, lane, stepped=True)
+            return []
         if key not in ("ArrowLeft", "ArrowRight") or not block_id:
             return []
         step = -1 if key == "ArrowLeft" else 1
@@ -7798,13 +7997,19 @@ class CreativeState(rx.State):
                 self._clip_set_overlay_time(block_id, min(number, end - least), end)
             else:
                 self._clip_set_overlay_time(block_id, start, max(number, start + least))
-        elif what == "time":
+        elif what == "time" or what.startswith("time@"):
             row = self._clip_overlay(block_id)
             if not row:
                 return []
             length = float(row["end"]) - float(row["start"])  # type: ignore[arg-type]
             start = timeline_vm.snap(number)
-            self._clip_set_overlay_time(block_id, start, start + length)
+            lane_text = what.partition("@")[2]
+            uid = str(row.get("uid") or "")
+            # ED-04: an effect dragged up or down onto another row of «Efectos»
+            if uid and lane_text.isdigit() and int(lane_text) != int(row.get("lane") or 0):  # type: ignore[call-overload]
+                self._clip_move_use(uid, int(lane_text), start)
+            else:
+                self._clip_set_overlay_time(block_id, start, start + length)
         else:
             return []
         return [self._clip_block_url(self.clip_edit_block)] if self.clip_edit_block else []
@@ -7849,6 +8054,8 @@ class CreativeState(rx.State):
                 self._clip_fast_before = {"start": self.clip_cut_start, "end": self.clip_cut_end}
                 end = clip_editor_vm.whole_end(self.clip_source_seconds)
                 self._clip_store_pieces([[0.0, end, float(speed)]])
+                self._clip_fit_overlays()  # ED-04: a shorter or longer video: texts and
+                self._clip_effects_follow()  # effects inside it, none over another
                 self._clip_edit_changed(before)
                 self.clip_edit_notice = clip_editor_vm.fast_on_line(
                     speed,
@@ -7866,12 +8073,16 @@ class CreativeState(rx.State):
                         kept["start"], kept["end"], self.clip_source_seconds
                     )
                 self._clip_store_pieces([[start, end, 1.0]])
+                self._clip_fit_overlays()  # ED-04: a shorter or longer video: texts and
+                self._clip_effects_follow()  # effects inside it, none over another
                 self._clip_fast_before = {}
                 self._clip_edit_changed(before)
                 self.clip_edit_notice = clip_editor_vm.FAST_OFF_LINE
                 return
         pieces[index][2] = float(speed)
         self._clip_store_pieces(pieces)
+        self._clip_fit_overlays()  # ED-04: a shorter or longer video: texts and effects
+        self._clip_effects_follow()  # inside it, none over another on a row
         self._clip_edit_changed(before)
         self.clip_edit_notice = clip_editor_vm.speed_changed_line(number, speed)
 
@@ -7895,11 +8106,16 @@ class CreativeState(rx.State):
         ):
             # after «Cortar»: only that piece leaves; the last one left is the stretch
             before = self._clip_edit_snapshot()
+            count = len(self._clip_pieces())
             pieces = [list(p) for n, p in enumerate(self._clip_pieces()) if n != index]
             # the last one left is the stretch again, at its own speed
             self._clip_store_pieces(pieces)
+            self._clip_fit_overlays()  # a shorter video: what went past its end comes in
+            gone = self._clip_effects_follow(clip_editor_vm.removed_mapping(key, count, index))
             self._clip_edit_changed(before)
-            self.clip_edit_notice = clip_editor_vm.removed_line("video", number)
+            self.clip_edit_notice = self._clip_with_gone(
+                clip_editor_vm.removed_line("video", number), gone
+            )
             return self._clip_removed(track, place)
         if block in self._clip_media_ids():
             # ED-03: the blocks after it close up (the track has no gaps) and the line
@@ -7908,7 +8124,11 @@ class CreativeState(rx.State):
                 CreativeState.remove_clip_video.fn(self, block)
             else:
                 CreativeState.remove_clip_image.fn(self, block)
-            self.clip_edit_notice = clip_editor_vm.removed_line(kind, number)
+            self._clip_fit_overlays()  # a shorter video: what went past its end comes in
+            gone = self._clip_effects_follow()
+            self.clip_edit_notice = self._clip_with_gone(
+                clip_editor_vm.removed_line(kind, number), gone
+            )
             return self._clip_removed(track, place)
         row = self._clip_overlay(block)
         if not row:
@@ -7920,11 +8140,12 @@ class CreativeState(rx.State):
             self.clip_text_start, self.clip_text_end = 0.0, -1.0
             line = clip_editor_vm.TEXT_REMOVED_LINE
         else:
+            # ED-04: only that block of the effect leaves (its other uses stay)
             effect_id = str(row["effect_id"])
-            self.clip_effect_ids = [e for e in self.clip_effect_ids if e != effect_id]
-            times = dict(self.clip_effect_times)
-            times.pop(effect_id, None)
-            self.clip_effect_times = times
+            self.clip_effect_uses = [
+                u for u in self._clip_effect_resolved() if u["uid"] != str(row.get("uid"))
+            ]
+            self.clip_effect_error = ""
             line = clip_editor_vm.effect_removed_line(effect_id)
         self._clip_edit_changed(before)
         self.clip_edit_notice = line
@@ -7979,24 +8200,20 @@ class CreativeState(rx.State):
                 moved = True
             if moved:
                 names.append("el texto")
-        times = dict(self.clip_effect_times)
-        for effect_id in self.clip_effect_ids:
-            span = list(times.get(effect_id) or [])
-            if len(span) != 2:
-                continue  # it covers the whole video: it follows its end
-            start, end = float(span[0]), float(span[1])
-            if end <= total + 0.005 and start <= latest + 0.005:
+        # ED-04: a use with its own seconds past the new end is cut to it (one stuck to
+        # its blocks follows them by itself); `_clip_effects_follow`, which every change
+        # of «Fotos y videos» runs after this, then keeps a row free of overlaps
+        uses: list[dict[str, Any]] = []
+        for use in self.clip_effect_uses:
+            start, end = float(use.get("start") or 0.0), float(use.get("end") or 0.0)
+            if use.get("blocks") or (end <= total + 0.005 and start <= latest + 0.005):
+                uses.append(use)
                 continue
-            end = min(end, total)
-            start = min(start, latest)
-            if start <= 0.005 and abs(end - total) < 0.01:
-                times.pop(effect_id, None)
-            else:
-                times[effect_id] = [start, end]
-            effect = editor_contract.effect_of(effect_id)
-            names.append(effect.label if effect is not None else effect_id)
-        if times != self.clip_effect_times:
-            self.clip_effect_times = times
+            uses.append({**use, "start": min(start, latest), "end": min(end, total)})
+            effect = editor_contract.effect_of(str(use.get("effect_id")))
+            names.append(effect.label if effect is not None else str(use.get("effect_id")))
+        if uses != self.clip_effect_uses:
+            self.clip_effect_uses = uses
         return names
 
     def _clip_trim(self, block_id: str, edge: str, value: float) -> bool:
@@ -8029,6 +8246,7 @@ class CreativeState(rx.State):
         pieces[index] = [new, end, speed] if edge == "start" else [start, new, speed]
         self._clip_store_pieces(pieces)
         fitted = self._clip_fit_overlays()
+        self._clip_effects_follow()  # ED-04: nothing overlaps on a row afterwards
         self.clip_trim_hint_seen = True  # it was understood: the hint goes
         self.clip_speed_refused = ""
         # the last trim wins: back to normal speed keeps it, never the stretch from
@@ -8056,10 +8274,16 @@ class CreativeState(rx.State):
     @rx.var
     def clip_trim_hint(self) -> str:
         """«Arrastra los bordes para recortar.» while a video with trim handles is chosen,
-        until the owner trims for the first time ("" = nothing to say)."""
-        if self.clip_trim_hint_seen or not self.clip_edit_block:
+        until the owner trims for the first time; ED-04 (UX review): «Arrástralo arriba o
+        abajo para pasarlo a otra pista.» while an effect is chosen, until it first changes
+        row ("" = nothing to say)."""
+        if not self.clip_edit_block:
             return ""
         row = timeline_vm.find_block(self._clip_tl_rows(), self.clip_edit_block)
+        if row.get("kind") == "effect":
+            return "" if self.clip_lane_hint_seen else clip_editor_vm.LANE_HINT
+        if self.clip_trim_hint_seen:
+            return ""
         if row.get("kind") == "video" and row.get("handles") == "1":
             return clip_editor_vm.TRIM_HINT
         return ""
@@ -8123,10 +8347,13 @@ class CreativeState(rx.State):
         cut_id = clip_editor_vm.piece_id(self._clip_edit_key(), index)
         number = ids.index(cut_id) + 1 if cut_id in ids else 0
         pieces = [list(p) for p in self._clip_pieces()]
+        count = len(pieces)
         start, end, speed = pieces[index]
         # both halves keep the piece's speed (ED-03, «Por pedazo»)
         pieces[index : index + 1] = [[start, point, speed], [point, end, speed]]
         self._clip_store_pieces(pieces)
+        # ED-04: an effect stuck to the piece goes on both halves
+        self._clip_effects_follow(clip_editor_vm.cut_mapping(self._clip_edit_key(), count, index))
         self._clip_edit_changed(before)
         if self.clip_edit_notice and number:
             self.clip_edit_notice = clip_editor_vm.cut_line(number)
@@ -8135,20 +8362,384 @@ class CreativeState(rx.State):
         return self._clip_choose(clip_editor_vm.piece_id(self._clip_edit_key(), index + 1))
 
     @rx.event
-    def add_clip_effect(self, effect_id: str) -> None:
-        """«+ Efecto» → one of the list: it starts where the playhead rests and lasts to
-        the end (§1.1); with the playhead at 0:00 it covers the whole video, as before."""
-        if effect_id in self.clip_effect_ids:
-            CreativeState.toggle_clip_effect.fn(self, effect_id)
+    def add_clip_effect(self, effect_id: str) -> list[rx.event.EventSpec]:
+        """«+ Efecto» → one of the list (ED-04 m-25026627): it goes on the parts marked in
+        «¿En qué partes va?» — one effect per group of parts side by side, stuck to them —
+        on the first row where nothing else is at that time (a new row when none). The
+        first one put is chosen (its title, Empieza/Termina and «Listo» show). Out of the
+        side panel (no parts marked yet) it goes on the whole video."""
+        media = self._clip_tl_media()
+        ids = [str(item["id"]) for item in media]
+        flow = clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_EFFECT
+        parts = [b for b in self.clip_effect_parts if b in ids] if flow else ids
+        block = self._clip_put_effect(effect_id, parts)
+        if not block:
+            return []
+        return self._clip_choose(block)
+
+    # -- ED-04 m-25026627: the effects as blocks -------------------------------------------
+
+    def _clip_migrate_layers(self) -> None:
+        """A session saved before ED-04 keeps its layer effects as ids in
+        `clip_effect_ids` (and their seconds in `clip_effect_times`): each becomes a use —
+        its seconds, else the whole video stuck to every block — so it is never on the
+        video twice. «Cámara rápida» stays a flag in `clip_effect_ids`."""
+        layers = [
+            e
+            for e in self.clip_effect_ids
+            if (effect := editor_contract.effect_of(e)) is not None and effect.preview_asset
+        ]
+        if not layers and not self.clip_effect_times:
             return
-        CreativeState.toggle_clip_effect.fn(self, effect_id)
-        if effect_id not in self.clip_effect_ids:
+        media = self._clip_tl_media()
+        ids = [str(item["id"]) for item in media]
+        total = clip_editor_vm.media_total(media)
+        uses = [dict(u) for u in self.clip_effect_uses]
+        lanes = max(self._clip_lane_count(), 1)
+        for effect_id in layers:
+            if any(u.get("effect_id") == effect_id for u in uses):
+                continue
+            span = list(self.clip_effect_times.get(effect_id) or [])
+            start, end = (float(span[0]), float(span[1])) if len(span) == 2 else (0.0, total)
+            lane = clip_editor_vm.pick_lane(uses, (start, end), lanes=lanes)
+            lanes = max(lanes, lane + 1)
+            uses.append(
+                {
+                    "uid": clip_editor_vm.new_effect_uid(uses),
+                    "effect_id": effect_id,
+                    "start": start,
+                    "end": end,
+                    "lane": lane,
+                    "blocks": [] if len(span) == 2 else ids,
+                }
+            )
+        self.clip_effect_uses = uses
+        self.clip_effect_ids = [e for e in self.clip_effect_ids if e not in layers]
+        self.clip_effect_times = {}
+
+    def _clip_effects_follow(self, mapping: dict[str, list[str]] | None = None) -> list[str]:
+        """After «Fotos y videos» changed: the own video's pieces renamed (`mapping`), the
+        uses follow their blocks (`follow_media`: split per group, gone with their blocks).
+        The names of the effects that went (for the live line)."""
+        uses = [dict(u) for u in self.clip_effect_uses]
+        if mapping:
+            uses = clip_editor_vm.remap_effect_blocks(uses, mapping)
+        media = self._clip_tl_media()
+        followed = clip_editor_vm.follow_media(uses, media)
+        # never two on one row at once (Deivid 2026-11-20): an effect that moved with its
+        # blocks onto another of its row goes to the first row where it fits; one with
+        # its own seconds that the shorter video squeezed onto a neighbour takes the free
+        # room of its row, or another row (`settle_lanes`)
+        followed, _lanes = clip_editor_vm.settle_lanes(
+            followed,
+            lanes=self._clip_lane_count(),
+            total=clip_editor_vm.media_total(media),
+        )
+        followed = clip_editor_vm.compact_lanes(followed)
+        kept = {str(u.get("uid")) for u in followed}
+        gone = [
+            clip_editor_vm.effect_label(str(u.get("effect_id")))
+            for u in uses
+            if str(u.get("uid")) not in kept
+        ]
+        if followed != self.clip_effect_uses:
+            self.clip_effect_uses = followed
+        return gone
+
+    @staticmethod
+    def _clip_with_gone(line: str, gone: list[str]) -> str:
+        extra = clip_editor_vm.effects_gone_line(gone)
+        return f"{line} {extra}" if extra else line
+
+    def _clip_effect_room(
+        self, others: list[dict[str, object]], effect_id: str, groups: int
+    ) -> str:
+        """Why `groups` more uses of `effect_id` do not fit ("" = they do): 8 effects in
+        all, and the library's `max_per_part` of each."""
+        room = clip_editor_vm.EFFECTS_MAX - len(others)
+        if room <= 0:
+            return clip_editor_vm.EFFECTS_FULL
+        if groups > room:
+            return clip_editor_vm.effects_room_line(groups, room)
+        most = clip_editor_vm.effect_max_uses(effect_id)
+        if sum(1 for u in others if u.get("effect_id") == effect_id) + groups > most:
+            return clip_editor_vm.effect_repeat_full_line(
+                clip_editor_vm.effect_label(effect_id), most
+            )
+        return ""
+
+    def _clip_place_groups(
+        self,
+        others: list[dict[str, object]],
+        effect_id: str,
+        groups: list[list[str]],
+        media: list[dict[str, object]],
+        *,
+        uid: str = "",
+        prefer: int = 0,
+    ) -> list[dict[str, Any]] | None:
+        """The uses of `effect_id` on `groups` (the first keeps `uid`), each on a row
+        where nothing else is at that time — `prefer` first, else a new row — or None
+        when the effect is already on at that time (`clip_effect_error` says so)."""
+        spans = clip_editor_vm.block_spans(media)
+        lanes = self._clip_lane_count()
+        new: list[dict[str, Any]] = []
+        for n, group in enumerate(groups):
+            span = clip_editor_vm.group_span(spans, group)
+            if clip_editor_vm.same_effect_clash([*others, *new], effect_id, span):
+                self.clip_effect_error = clip_editor_vm.effect_same_time_line(
+                    clip_editor_vm.effect_label(effect_id)
+                )
+                return None
+            lane = clip_editor_vm.pick_lane([*others, *new], span, lanes=lanes, prefer=prefer)
+            lanes = max(lanes, lane + 1)
+            new_uid = (
+                uid
+                if n == 0 and uid
+                else clip_editor_vm.new_effect_uid([*others, *new, *self.clip_effect_uses])
+            )
+            new.append(
+                {
+                    "uid": new_uid,
+                    "effect_id": effect_id,
+                    "start": span[0],
+                    "end": span[1],
+                    "lane": lane,
+                    "blocks": list(group),
+                }
+            )
+        return new
+
+    def _clip_put_effect(self, effect_id: str, parts: list[str]) -> str:
+        """ED-04: `effect_id` put on `parts` (one use per group side by side). The block
+        of the first one put, or "" with why not in `clip_effect_error`."""
+        effect = editor_contract.effect_of(effect_id)
+        if (
+            effect is None
+            or not effect.preview_asset
+            or not editor_contract.effect_available(effect, _ASSETS_ROOT)
+        ):
+            return ""
+        media = self._clip_tl_media()
+        groups = clip_editor_vm.part_groups(media, parts)
+        if not groups:
+            self.clip_effect_error = (
+                clip_editor_vm.PARTS_NONE if media else clip_editor_vm.NEEDS_MEDIA
+            )
+            return ""
+        uses = self._clip_effect_resolved(media)
+        why = self._clip_effect_room(uses, effect_id, len(groups))
+        if why:
+            self.clip_effect_error = why
+            return ""
+        # Deivid 2026-11-20 (round 6): no «¿En qué pista va?» — the first row where it
+        # fits, else a new one; it changes row by dragging (↑/↓ with the keyboard)
+        new = self._clip_place_groups(uses, effect_id, groups, media)
+        if not new:
+            return ""
+        self.clip_effect_uses = [*uses, *new]
+        self.clip_effect_error = ""
+        self.clip_edit_notice = clip_editor_vm.effect_put_line(effect.label, len(new))
+        return clip_editor_vm.effect_block_id(str(new[0]["uid"]))
+
+    def _clip_set_use_time(self, uid: str, start: float, end: float, total: float) -> None:
+        """A use dragged, its handle moved or ±½ s: it gets its own seconds (no longer
+        stuck to its blocks), never over another effect on its row nor over another use of
+        the same effect (Deivid 2026-11-20: «que nunca se solape encima del otro») — a
+        handle stops at its edge; a whole block dropped where another is takes only the
+        free room there (`fit_in_gap`), and under 1 s of room it goes back, saying why."""
+        uses = self._clip_effect_resolved()
+        use = next((u for u in uses if u["uid"] == uid), None)
+        if use is None:
             return
-        _media, _overlays, total = self._clip_tl()
-        start = timeline_vm.snap(min(self.clip_edit_playhead, total))
-        if 0 < start <= total - editor_contract.SEGMENT_MIN_SECONDS:
-            self.clip_effect_times = {**self.clip_effect_times, effect_id: [start, total]}
-            self.clip_edit_block = clip_editor_vm.EFFECT_ID_PREFIX + effect_id
+        effect_id = str(use["effect_id"])
+        old = (float(use["start"]), float(use["end"]))  # type: ignore[arg-type]
+        least = editor_contract.SEGMENT_MIN_SECONDS
+        obstacles = clip_editor_vm.effect_obstacles(
+            uses,
+            uid=uid,
+            effect_id=effect_id,
+            lane=int(use["lane"]),  # type: ignore[call-overload]
+        )
+        moved_start, moved_end = abs(start - old[0]) > 0.005, abs(end - old[1]) > 0.005
+        trimmed = False
+        if moved_start and moved_end:
+            length = old[1] - old[0]
+            begin = min(max(start, 0.0), max(total - length, 0.0))
+            fit = clip_editor_vm.fit_in_gap((begin, begin + length), obstacles, total, least)
+            if fit is None:
+                self.clip_effect_error = self.clip_edit_notice = clip_editor_vm.EFFECT_NO_ROOM_LINE
+                return
+            trimmed = fit[1] - fit[0] < length - 0.005
+            start, end = fit
+        elif moved_start:
+            start = min(clip_editor_vm.clamp_edge("start", start, old, obstacles), end - least)
+        elif moved_end:
+            end = max(clip_editor_vm.clamp_edge("end", end, old, obstacles), start + least)
+        else:
+            return
+        start, end = round(max(start, 0.0), 2), round(min(end, total), 2)
+        if end - start < least - 1e-6 or (
+            abs(start - old[0]) < 0.005 and abs(end - old[1]) < 0.005
+        ):
+            return
+        self.clip_effect_uses = [
+            {**u, "start": start, "end": end, "blocks": []} if u["uid"] == uid else u for u in uses
+        ]
+        self.clip_effect_error = ""
+        line = clip_editor_vm.effect_time_line(effect_id)
+        self.clip_edit_notice = f"{line} {clip_editor_vm.EFFECT_TRIMMED_TAIL}" if trimmed else line
+
+    def _clip_effect_marked(self, media: list[dict[str, object]]) -> list[str]:
+        """«¿En qué partes va?»'s marks in «+ Efecto» (round 6: a chosen effect's panel
+        no longer asks — it stays stuck to its blocks)."""
+        ids = [str(item["id"]) for item in media]
+        if clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_EFFECT:
+            return [b for b in self.clip_effect_parts if b in ids]
+        return []
+
+    @rx.var
+    def clip_effect_part_rows(self) -> list[dict[str, str]]:
+        """«¿En qué partes va?» of «+ Efecto»: the «Fotos y videos» blocks as boxes —
+        «Video 1» and when it plays —, marked as they are for the next effect."""
+        media = self._clip_tl_media()
+        marked = set(self._clip_effect_marked(media))
+        spans = clip_editor_vm.block_spans(media)
+        rows: list[dict[str, str]] = []
+        for row in timeline_vm.media_blocks(media):  # type: ignore[arg-type]
+            start, end = spans.get(row["id"], (0.0, 0.0))
+            time = f"de {timeline_vm.clock(start)} a {timeline_vm.clock(end)}"
+            rows.append(
+                {
+                    "id": row["id"],
+                    "label": row["label"],
+                    "time": time,
+                    "name": f"{row['label']}, {time}",
+                    "on": "1" if row["id"] in marked else "",
+                }
+            )
+        return rows
+
+    @rx.var
+    def clip_effect_add_reason(self) -> str:
+        """Why «+ Efecto» puts nothing now ("" = it does): nothing to put it on, 8
+        effects already (the ticket's words), or no part marked."""
+        media = self._clip_tl_media()
+        if not media:
+            return clip_editor_vm.NEEDS_MEDIA
+        if len(self._clip_effect_resolved(media)) >= clip_editor_vm.EFFECTS_MAX:
+            return clip_editor_vm.EFFECTS_FULL
+        if not self._clip_effect_marked(media):
+            return clip_editor_vm.PARTS_NONE
+        return ""
+
+    def _clip_lane_title(self, lane: int, count: int | None = None) -> str:
+        """A row as the timeline names it: «Efectos», «Efectos 2»."""
+        rows = self._clip_lane_count() if count is None else count
+        return clip_editor_vm.lane_name(lane + 1, max(rows, lane + 1))
+
+    def _clip_move_use(
+        self, uid: str, lane: int, start: float | None = None, *, stepped: bool = False
+    ) -> bool:
+        """ED-04: use `uid` onto row `lane` — dragged up or down (`start`: where it was
+        dropped in time too) or ↑/↓ on its block; `lane` one past the last row is a
+        new row (dragged under the last one). There it takes only the free room of that
+        row (Deivid 2026-11-20: «que se acorte al tamaño que sobre en la pista»): trimmed,
+        it gets its own seconds; under 1 s of room it stays and the line says why. The row
+        it leaves disappears when empty. Whether it moved."""
+        uses = self._clip_effect_resolved()
+        use = next((u for u in uses if u["uid"] == uid), None)
+        count = self._clip_lane_count()
+        if use is None or not 0 <= lane <= count:
+            return False
+        alone = sum(1 for u in uses if int(u["lane"]) == int(use["lane"])) == 1  # type: ignore[call-overload]
+        if lane == count and alone:
+            return False  # a new row under it would be the same row again
+        old = (float(use["start"]), float(use["end"]))  # type: ignore[arg-type]
+        length = old[1] - old[0]
+        total = clip_editor_vm.media_total(self._clip_tl_media())
+        begin = old[0] if start is None else round(min(max(float(start), 0.0), total - length), 2)
+        timed = abs(begin - old[0]) > 0.005
+        span = (begin, round(begin + length, 2))
+        if lane == int(use["lane"]) and not timed:  # type: ignore[call-overload]
+            return False
+        if lane == int(use["lane"]):  # type: ignore[call-overload]
+            self._clip_set_use_time(uid, span[0], span[1], total)
+            return True
+        obstacles = clip_editor_vm.effect_obstacles(
+            uses, uid=uid, effect_id=str(use["effect_id"]), lane=lane
+        )
+        fit = clip_editor_vm.fit_in_gap(span, obstacles, total, editor_contract.SEGMENT_MIN_SECONDS)
+        if fit is None:
+            why = clip_editor_vm.lane_busy_line(self._clip_lane_title(lane, max(count, lane + 1)))
+            self.clip_effect_error = self.clip_edit_notice = why
+            return False
+        trimmed = fit[1] - fit[0] < length - 0.005
+        moved: dict[str, Any] = {**use, "lane": lane}
+        if timed or trimmed:
+            moved.update(start=fit[0], end=fit[1], blocks=[])
+        new = clip_editor_vm.compact_lanes([moved if u["uid"] == uid else u for u in uses])
+        self.clip_effect_uses = new
+        self.clip_effect_error = ""
+        landed = next(int(u["lane"]) for u in new if u["uid"] == uid)  # type: ignore[call-overload]
+        label = clip_editor_vm.effect_label(str(use["effect_id"]))
+        rows = max(int(u["lane"]) for u in new) + 1  # type: ignore[call-overload]
+        line = (
+            clip_editor_vm.lane_stepped_line(label, up=lane < int(use["lane"]))  # type: ignore[call-overload]
+            if stepped
+            else clip_editor_vm.lane_moved_line(label, self._clip_lane_title(landed, rows))
+        )
+        self.clip_edit_notice = f"{line} {clip_editor_vm.EFFECT_TRIMMED_TAIL}" if trimmed else line
+        self.clip_lane_hint_seen = True  # it was understood: the hint goes
+        return True
+
+    @rx.event
+    def toggle_clip_effect_part(self, block_id: str) -> None:
+        """A box of «¿En qué partes va?» in «+ Efecto»: the parts the next effect goes on
+        — each group of parts side by side is one effect, stuck to its blocks (Deivid
+        2026-11-17)."""
+        media = self._clip_tl_media()
+        ids = [str(item["id"]) for item in media]
+        if block_id not in ids:
+            return
+        if clip_editor_vm.flow_of(self.clip_edit_block) != clip_editor_vm.FLOW_EFFECT:
+            return
+        parts = [b for b in self.clip_effect_parts if b in ids]
+        parts = [b for b in parts if b != block_id] if block_id in parts else [*parts, block_id]
+        self.clip_effect_parts = [b for b in ids if b in parts]
+        self.clip_effect_error = ""
+
+    @rx.event
+    def set_clip_effect_filter(self, value: str | list[str]) -> None:
+        """«+ Efecto»'s filter: «Todos» or a category (Deivid 2026-11-16)."""
+        chosen = value[0] if isinstance(value, list) and value else value
+        if isinstance(chosen, str) and chosen in [row["value"] for row in self.clip_effect_filters]:
+            self.clip_effect_filter = chosen
+
+    @rx.event
+    async def load_clip_effect_rubro(self) -> None:
+        """The business's rubro (Brand Kit `connect.sector` / `rubro_text`), read once,
+        server-side with the session's own business: «+ Efecto» lists its effects first
+        (Deivid 2026-11-16). Whatever fails, the list still shows every effect."""
+        if self.clip_effect_category_read:
+            return
+        self.clip_effect_category_read = True
+        try:
+            tenant_id = await self._clip_preview_tenant()
+            if tenant_id is None:
+                return
+            brand_id = (
+                UUID(self._brand_id)
+                if self._brand_id
+                else await asyncio.to_thread(default_brand_id, tenant_id)
+            )
+            if brand_id is None:
+                return
+            sector, rubro = await asyncio.to_thread(business_kind, tenant_id, brand_id)
+        except Exception as exc:  # noqa: BLE001 — a filter is not worth failing the panel
+            logger.warning("business rubro not read: %s", type(exc).__name__)
+            return
+        self.clip_effect_category = clip_editor_vm.business_category(sector=sector, rubro=rubro)
 
     def _sync_clip_frames(self) -> None:
         """The frames follow the strip's order (§ requests 2026-10-14/19: «según el

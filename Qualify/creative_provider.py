@@ -34,6 +34,7 @@ from uuid import UUID
 from pydantic import ValidationError
 from qualify_api.claude_tools import Attribution
 from qualify_api.creative import models as orm
+from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import media_root, production_content_service
 from qualify_api.creative.context_ai import FEATURE as CONTEXT_FEATURE
@@ -185,6 +186,16 @@ def default_brand_id(tenant_id: UUID) -> UUID | None:
     tenant was provisioned with, not an arbitrary one."""
     with tenant_session(tenant_id) as session:
         return session.scalar(select(Brand.id).order_by(Brand.created_at))
+
+
+def business_kind(tenant_id: UUID, brand_id: UUID) -> tuple[str, str]:
+    """ED-04 (m-25026627): the business's niche and rubro as its Brand Kit keeps them
+    (`connect.sector`, a `discovery_seed.NICHE_LABELS` key, and `connect.rubro_text`, the
+    owner's own words) — ("", "") when there is no kit yet. Read through the store's
+    `tenant_session`: the session's own business only."""
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
+    data = connect if isinstance(connect, dict) else {}
+    return str(data.get("sector") or ""), str(data.get("rubro_text") or "")
 
 
 # ---------------------------------------------------------------------------

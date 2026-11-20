@@ -136,12 +136,15 @@
     // where the block rests: its box minus where its transform has it RIGHT NOW (the
     // computed value, mid-transition too)
     var now = item ? shiftOf(getComputedStyle(item).transform) : 0;
+    // ED-04: an effect held over (or settling onto) another row is moved in Y too: the
+    // lens rests on the block's own row and wears the same transform, never a row off
+    var nowY = item ? shiftYOf(getComputedStyle(item).transform) : 0;
     var b = block.getBoundingClientRect();
     var c = canvas.getBoundingClientRect();
     var pad = 3; // the lens peeks out around the block
     var box = {
       left: b.left - c.left - canvas.clientLeft - pad - now,
-      top: b.top - c.top - canvas.clientTop - pad,
+      top: b.top - c.top - canvas.clientTop - pad - nowY,
       width: b.width + pad * 2,
       height: b.height + pad * 2,
     };
@@ -174,6 +177,11 @@
   function shiftOf(transform) {
     var core = window.__qTimelineDragCore;
     return core && core.shiftOf ? core.shiftOf(transform) : 0;
+  }
+
+  function shiftYOf(transform) {
+    var core = window.__qTimelineDragCore;
+    return core && core.shiftYOf ? core.shiftYOf(transform) : 0;
   }
 
   function modeOf(p) {
@@ -374,7 +382,11 @@
     var root = rootOf(el);
     if (!root) return;
     var arrow = e.key === "ArrowLeft" || e.key === "ArrowRight";
-    if (!arrow && e.key !== "Escape") return;
+    // ED-04: ↑/↓ on an effect block moves it to the row above or below
+    var vertical =
+      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      el.getAttribute("data-tl-block") === "effect";
+    if (!arrow && !vertical && e.key !== "Escape") return;
     var id = el.getAttribute("data-tl-id");
     if (el.hasAttribute("data-tl-handle")) {
       if (arrow) e.preventDefault();
@@ -387,9 +399,9 @@
       return;
     }
     if (el.hasAttribute("data-tl-block")) {
-      if (arrow) e.preventDefault();
+      if (arrow || vertical) e.preventDefault();
       var kind = el.getAttribute("data-tl-block");
-      if (arrow && (kind === "video" || kind === "photo")) {
+      if ((arrow && (kind === "video" || kind === "photo")) || vertical) {
         refocusId = id;
         refocusFrom = el;
         refocusUntil = Date.now() + 800;

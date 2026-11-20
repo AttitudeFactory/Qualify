@@ -128,6 +128,21 @@
       });
       d.newStart = d.start;
       d.item.setAttribute("data-tl-time", core().clock(d.start));
+      // ED-04: an effect may go up or down to another row of «Efectos» (never out of
+      // them); a text, a photo or a video only ever moves in X
+      if (d.block.getAttribute("data-tl-block") === "effect") {
+        d.lanes = Array.prototype.slice.call(
+          d.root.querySelectorAll(".q-tl__lane--effect")
+        );
+        d.laneFrom = d.laneTo = d.lanes.indexOf(d.lane);
+        if (d.laneFrom < 0) d.lanes = null;
+        // Deivid 2026-11-20: no «+ Pista» — one more row shows under the last one while
+        // an effect is held; dropped there it opens a new row (not for the only effect
+        // of the last row: that would be its own row again)
+        var last = d.lanes ? d.lanes.length - 1 : -1;
+        d.newLane = !!d.lanes && !(d.laneFrom === last && itemsOf(d.lane).length < 2);
+        if (d.newLane) d.root.setAttribute("data-tl-new-lane", "");
+      }
       // the block stays inside the video (unknown length: no bound to keep)
       d.bound =
         total > 0
@@ -159,7 +174,8 @@
     d.outside = outsideTracks(d, d.clientX, d.clientY);
     if (d.outside) d.root.setAttribute("data-tl-outside", "");
     else d.root.removeAttribute("data-tl-outside");
-    d.item.style.transform = "translateX(" + dx + "px)";
+    d.dy = laneDy(d);
+    d.item.style.transform = moveOf(dx, d.dy);
     if (d.mode === "move") {
       // held outside the tracks: the others are back in place — that is the drop
       var to = d.outside ? d.from : core().dropIndex(d.widths, d.from, d.left0 + dx);
@@ -186,6 +202,34 @@
     syncLens(d.root);
   }
 
+  // ED-04: the row of «Efectos» an effect is held over, and how far down or up it shows.
+  function laneDy(d) {
+    if (!d.lanes) return 0;
+    var tops = [];
+    var bottoms = [];
+    d.lanes.forEach(function (lane) {
+      // a transform never moves a row's box: these are where the rows rest
+      var box = lane.getBoundingClientRect();
+      tops.push(box.top);
+      bottoms.push(box.bottom);
+    });
+    if (d.newLane && tops.length) {
+      // the new row under the last one: the same height, the same gap
+      var gap = tops.length > 1 ? tops[1] - bottoms[0] : 4;
+      var height = bottoms[0] - tops[0];
+      var top = bottoms[bottoms.length - 1] + gap;
+      tops.push(top);
+      bottoms.push(top + height);
+    }
+    d.laneTo = core().laneAt({ y: d.clientY, tops: tops, bottoms: bottoms, from: d.laneFrom });
+    return core().laneShift({ tops: tops, from: d.laneFrom, to: d.laneTo });
+  }
+
+  // X alone for everything; an effect on another row also moves in Y.
+  function moveOf(dx, dy) {
+    return dy ? "translate(" + dx + "px, " + dy + "px)" : "translateX(" + dx + "px)";
+  }
+
   // Near an edge of the phone's scroller the tracks scroll under the held block.
   function loop() {
     var d = drag;
@@ -209,8 +253,32 @@
     d.raf = window.requestAnimationFrame(loop);
   }
 
+  // ED-04: what a drag leaves on the page goes with it — the blocks it lifted wherever
+  // they are now (React may have reused or moved them: a «0:01,5» bubble was left on a
+  // row after a drop, Deivid 2026-11-20) and the new row's room.
+  function strays(d) {
+    // a drag that began since (`drag`, not this one) keeps its own blocks and its row
+    var active = drag && drag !== d ? drag : null;
+    function held(it) {
+      return !!active && (it === active.item || (active.items || []).indexOf(it) >= 0);
+    }
+    var all = (d.items || [d.item]).filter(function (it) {
+      return !held(it);
+    });
+    Array.prototype.forEach.call(
+      d.root.querySelectorAll(
+        ".q-tl__item[data-tl-time], .q-tl__item--lifted, .q-tl__item--settle"
+      ),
+      function (it) {
+        if (all.indexOf(it) < 0 && !held(it)) all.push(it);
+      }
+    );
+    if (!active) d.root.removeAttribute("data-tl-new-lane");
+    return all;
+  }
+
   function clearTransforms(d) {
-    (d.items || [d.item]).forEach(function (it) {
+    strays(d).forEach(function (it) {
       it.classList.remove(
         "q-tl__item--lifted",
         "q-tl__item--shifting",
@@ -220,22 +288,28 @@
       it.style.transform = "";
       it.removeAttribute("data-tl-time");
     });
-    d.root.removeAttribute("data-tl-dragging");
-    d.root.removeAttribute("data-tl-outside");
-    liftHint(d.root, false);
+    if (!drag || drag === d) {
+      // an older drag cleaning up late never strips a newer one's root state
+      d.root.removeAttribute("data-tl-dragging");
+      d.root.removeAttribute("data-tl-outside");
+      liftHint(d.root, false);
+    }
     syncLens(d.root, true);
   }
 
   function putBack(d) {
-    var all = d.items || [d.item];
+    var all = strays(d);
     all.forEach(function (it) {
       it.classList.add("q-tl__item--return");
       it.style.transform = "";
     });
     d.item.removeAttribute("data-tl-time");
-    d.root.removeAttribute("data-tl-dragging");
-    d.root.removeAttribute("data-tl-outside");
-    liftHint(d.root, false);
+    if (!drag || drag === d) {
+      // an older drag cleaning up late never strips a newer one's root state
+      d.root.removeAttribute("data-tl-dragging");
+      d.root.removeAttribute("data-tl-outside");
+      liftHint(d.root, false);
+    }
     syncLens(d.root);
     window.setTimeout(function () {
       all.forEach(function (it) {
@@ -253,18 +327,31 @@
   // before that frame is painted (a MutationObserver runs before the paint).
   function clearOnRender(d) {
     var done = false;
-    var observer = new MutationObserver(function () {
+    var observer = new MutationObserver(function (records) {
       if (done) return;
+      // the lens's own moves are not the screen's answer
+      var answer = records.some(function (r) {
+        var t = r.target && r.target.nodeType === 1 ? r.target : r.target.parentElement;
+        return !(t && t.closest && t.closest(".q-glass-blob"));
+      });
+      if (!answer) return;
       done = true;
       observer.disconnect();
       clearTransforms(d);
     });
-    observer.observe(d.lane, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ["style", "data-tl-id", "data-tl-start"],
+    // ED-04: an effect may land on another row, or be refused (the live line says
+    // why): every row of «Efectos» and the live line are the screen's answer too
+    var watched = [d.lane].concat(d.lanes || []);
+    watched.forEach(function (lane) {
+      observer.observe(lane, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["style", "data-tl-id", "data-tl-start"],
+      });
     });
+    var status = d.mode === "move" ? null : d.root.querySelector(".q-tl__status");
+    if (status) observer.observe(status, { childList: true, characterData: true, subtree: true });
     window.setTimeout(function () {
       if (done) return;
       done = true;
@@ -394,7 +481,9 @@
       swallowClick = false;
     }, 0);
     var same =
-      d.mode === "move" ? d.to === d.from : Math.abs(d.newStart - d.start) < core().STEP / 2;
+      d.mode === "move"
+        ? d.to === d.from
+        : Math.abs(d.newStart - d.start) < core().STEP / 2 && d.laneTo === d.laneFrom;
     // dropped off the tracks: it goes back to its place and nothing changes
     var verdict = core().dropVerdict({
       cancelled: e.type === "pointercancel",
@@ -411,14 +500,16 @@
       var shifts = core().layoutShifts(d.widths, d.from, d.to);
       d.item.style.transform = "translateX(" + shifts[d.from] + "px)";
     } else {
-      d.item.style.transform = "translateX(" + (d.newStart - d.start) * d.px + "px)";
+      d.item.style.transform = moveOf((d.newStart - d.start) * d.px, d.dy || 0);
     }
     syncLens(d.root);
     window.setTimeout(function () {
       drag = null;
       clearOnRender(d);
       if (d.mode === "move") report(d.root, d.id, "move", d.to);
-      else report(d.root, d.id, "time", d.newStart);
+      // «time@N»: an effect dropped on another row (the screen keeps it there only if
+      // it fits in time; else it comes back and the panel says why)
+      else report(d.root, d.id, core().timeWhat({ from: d.laneFrom, to: d.laneTo }), d.newStart);
     }, SETTLE_MS);
   }
 

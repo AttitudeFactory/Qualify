@@ -18,8 +18,10 @@ What it shows, all in one 9:16 frame:
   inside the catalog's 9:16 safe zone (x 64–1016, y 270–1536 of 1080×1920)
   — to scale;
 - **the effects**: each a looping, muted `<video>` with `mix-blend-mode: screen` (their
-  `preview_asset`). A missing file is never rendered (the screen passes only addresses
-  that exist), so nothing 404s.
+  `preview_asset`) at the library's default intensity as its `opacity` (ED-04
+  m-25026627: the strength of the final video). A missing file is never rendered (the
+  screen passes only addresses that exist), so nothing 404s. With
+  `prefers-reduced-motion` the loops stay on a still frame (`assets/edit-preview.js`).
 
 ONE sound: the main video (muted until the owner turns the sound on); the layers are
 always muted. When the video cannot be played, the frame keeps its picture and
@@ -80,9 +82,27 @@ def _resolve_trigger(on_resolve: object) -> rx.Component:
     )
 
 
+def _effect_opacities() -> dict[str, str]:
+    """`{loop address: opacity}` of the Clip's layer effects (ED-04 m-25026627): the
+    library's default intensity, which with the «screen» blend is what the final video
+    lays (`clip_editor_vm.effect_opacity`). Read when the page is built, never at import
+    (the view model imports `ui`)."""
+    from .. import clip_editor_vm  # noqa: PLC0415 — `clip_editor_vm` imports `ui`
+    from .. import editor_preview_contract as contract  # noqa: PLC0415
+
+    urls = {
+        effect.effect_id: "/" + effect.preview_asset
+        for effect in contract.CLIP_EFFECTS
+        if effect.preview_asset
+    }
+    return {url: f"{op:g}" for url, op in clip_editor_vm.effect_opacity_by_url(urls).items()}
+
+
 def _effect_layer(src: rx.Var) -> rx.Component:
+    opacity = rx.match(src, *_effect_opacities().items(), "1")
     return rx.el.video(
         src=src,
+        style={"opacity": opacity},
         muted=True,
         loop=True,
         auto_play=True,
@@ -328,6 +348,8 @@ def _seq_effect(row: rx.Var) -> rx.Component:
             aria_hidden="true",
             custom_attrs={"data-edit-effect": "", "data-seq-effect": row["index"]},
             class_name="q-edit-preview__effect q-edit-seq__overlay",
+            # ED-04: as strong as the final video (the library's default intensity)
+            style={"opacity": row["opacity"]},
         ),
     )
 

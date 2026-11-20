@@ -18,6 +18,13 @@ Top to bottom (the proposal `.claude/epica-efectos-propuesta-linea-de-tiempo.md`
   the own video is trimmed or lengthened inside its video with its two handles on the
   timeline (finger, mouse, ←/→), free.
 
+ED-04 (m-25026627): every effect put is a block of «Efectos», moved and trimmed like a
+text; «Efectos» has rows that come and go on their own (Deivid 2026-11-20), and an effect
+goes from one to another by dragging it up or down (↑/↓ on it with the keyboard).
+«+ Efecto» asks «¿En qué partes va?» with the blocks of «Fotos y videos» as boxes and
+lists the effects by the business's rubro first («Todos» lists every one); a chosen
+effect's panel is its title, Empieza/Termina and «Listo».
+
 What «Agregar» opens goes in ONE side panel with tabs (`ui.drawer`, Deivid 2026-11-16
 and 11-17). On a wide step the preview is centred over the timeline, which takes the
 whole width (a 12 s video fits it). Every change is kept at once, said by the
@@ -183,41 +190,130 @@ def _text_block() -> rx.Component:
     )
 
 
-# -- «+ Efecto» ------------------------------------------------------------------------------
+# -- «+ Efecto» (ED-04 m-25026627) ------------------------------------------------------------
+
+#: The id of «¿En qué partes va?»'s title (its group's `aria-labelledby`).
+PARTS_TITLE_ID = "clip-effect-parts-title"
 
 
-def _effect_row(row: rx.Var) -> rx.Component:
-    on = row["on"] == "true"
+def _part_box(row: rx.Var) -> rx.Component:
+    """One block of «Fotos y videos» as a box: «Video 1 · de 0:00 a 0:05»."""
+    on = row["on"] == "1"
     return choice_card(
         rx.hstack(
             rx.cond(on, choice_card_check(), rx.box(width="1.15rem", min_width="1.15rem")),
-            rx.text(row["label"], size="2", weight="medium", flex="1"),
-            tone_badge(vm.FREE, "ok"),
+            rx.text(row["label"], size="2", weight="medium"),
+            rx.text(row["time"], size="1", color=T.TEXT_MUTED, class_name="q-nums"),
             spacing="3",
             align="center",
             width="100%",
         ),
         selected=on,
         role="checkbox",
-        on_select=S.add_clip_effect(row["id"]),
+        on_select=S.toggle_clip_effect_part(row["id"]),
         padding="0.6rem 0.9rem",
         width="100%",
         min_height="44px",
-        aria_label=row["label"],
+        aria_label=row["name"],
+    )
+
+
+def _effect_parts() -> rx.Component:
+    """«¿En qué partes va?» (Deivid 2026-11-17: «solo en los recuadros que yo elija»):
+    the blocks of «Fotos y videos» as boxes. Each group of parts side by side is one
+    effect, stuck to them: it follows them when they move, are cut or trimmed."""
+    return rx.vstack(
+        rx.text(vm.PARTS_TITLE, size="2", weight="medium", id=PARTS_TITLE_ID),
+        rx.vstack(
+            rx.foreach(S.clip_effect_part_rows, _part_box),
+            spacing="2",
+            width="100%",
+            role="group",
+            custom_attrs={"aria-labelledby": PARTS_TITLE_ID},
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _effect_filter() -> rx.Component:
+    """«Todos · Comida · …» (Deivid 2026-11-16): the effects by rubro, the business's
+    first; «Todos» lists every effect, for any business."""
+    return rx.box(
+        rx.segmented_control.root(
+            rx.foreach(
+                S.clip_effect_filters,
+                lambda option: rx.segmented_control.item(
+                    option["text"], value=option["value"], min_height="44px"
+                ),
+            ),
+            value=S.clip_effect_filter_shown,
+            on_change=S.set_clip_effect_filter,
+            size="2",
+            aria_label=vm.FILTER_LABEL,
+            class_name="q-tl-seg q-seg-fill",
+        ),
+        width="100%",
+        min_width="0",
+    )
+
+
+def _effect_choice(row: rx.Var) -> rx.Component:
+    """One effect to put: its name, its category (always shown: smoke may go in any
+    business's video), «De tu rubro» when it is the business's, «Gratis». Off, with the
+    reason above the list, at 8 effects or with no part marked."""
+    return rx.button(
+        rx.icon("sparkles", size=T.ICON_SM, aria_hidden="true"),
+        rx.text(row["label"], size="2", weight="medium", flex="1", text_align="left"),
+        rx.cond(row["mine"] == "1", tone_badge(vm.YOUR_RUBRO, "info")),
+        rx.cond(row["category"] != "", tone_badge(row["category"], "neutral")),
+        tone_badge(vm.FREE, "ok"),
+        type="button",
+        variant="surface",
+        size="3",
+        width="100%",
+        min_height="44px",
+        disabled=S.clip_effect_add_reason != "",
+        aria_label=row["put_label"],
+        on_click=S.add_clip_effect(row["id"]),
+        class_name="q-edit-effect-choice",
+    )
+
+
+def _effect_status() -> rx.Component:
+    """Why the last change was not made, else why «+ Efecto» puts nothing now."""
+    return rx.cond(
+        S.clip_effect_error != "",
+        callout(S.clip_effect_error, "warn"),
+        rx.cond(
+            S.clip_effect_add_reason != "",
+            rx.text(S.clip_effect_add_reason, size="2", color=T.TEXT_MUTED, role="status"),
+        ),
     )
 
 
 def _effects() -> rx.Component:
-    """The layer effects whose loop exists (none until EF-05 makes them: it says so).
+    """«+ Efecto»: where it goes («¿En qué partes va?»), the filter by rubro and the
+    layer effects whose loop exists (none until EF-05 makes them: it says so).
     «Cámara rápida» is the video's «Velocidad» now (D-T3)."""
     return rx.cond(
         S.clip_tl_effect_choices.length() > 0,
         rx.vstack(
-            rx.foreach(S.clip_tl_effect_choices, _effect_row),
-            spacing="2",
+            _effect_parts(),
+            # «Ver efectos por rubro» only with more than one category (UX review)
+            rx.cond(S.clip_effect_filter_offered, _effect_filter()),
+            _effect_status(),
+            rx.vstack(
+                rx.foreach(S.clip_tl_effect_choices, _effect_choice),
+                spacing="2",
+                width="100%",
+                role="group",
+                aria_label=vm.EFFECTS_LIST_LABEL,
+            ),
+            spacing="3",
             width="100%",
-            role="group",
-            aria_label=vm.EFFECTS_LIST_LABEL,
+            align_items="start",
         ),
         # nothing to pick yet: say so, and offer the «Texto» tab instead (UX review)
         rx.vstack(
@@ -578,6 +674,9 @@ def _timeline() -> rx.Component:
             on_key=S.clip_block_key,
             on_drag=S.drop_clip_block,
             status_action=_trim_hint(),
+            # ED-04: «Efectos» in rows that come and go on their own
+            effect_lanes=S.clip_tl_effect_lanes,
+            effect_lane_names=S.clip_tl_effect_lane_names,
         ),
         timeline_actions(
             S.clip_tl_chosen_kind,

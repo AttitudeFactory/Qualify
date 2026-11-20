@@ -320,8 +320,13 @@ def test_effects_offer_only_what_exists(editor_on: None) -> None:
         "brasas_capa",
         "camara_rapida",
     ]
-    CreativeState.toggle_clip_effect.fn(state, "humo_capa")
-    assert state.clip_effect_ids == ["humo_capa"]
+    CreativeState.toggle_clip_effect.fn(state, "humo_capa")  # ED-04: a layer is not a flag
+    assert state.clip_effect_uses == []
+    CreativeState.add_clip_effect.fn(state, "humo_capa")
+    # ED-04: a layer is a use on the whole video (stuck to its block), not a flag
+    assert state.clip_effect_ids == []
+    assert [u["effect_id"] for u in state.clip_effect_uses] == ["humo_capa"]
+    assert state.clip_effect_uses[0]["blocks"] == [_KEY]
     assert state.clip_edit_effect_srcs == ["/effects/humo_capa/v1/preview.webm"]
 
 
@@ -1193,7 +1198,8 @@ def test_the_effect_panel_offers_the_layers_whose_loop_exists(editor_on: None) -
     ids = [row["id"] for row in state.clip_tl_effect_choices]
     assert sorted(ids) == ["brasas_capa", "humo_capa", "vapor_capa"]
     CreativeState.add_clip_effect.fn(state, "vapor_capa")
-    assert state.clip_effect_ids == ["vapor_capa"]
+    assert [u["effect_id"] for u in state.clip_effect_uses] == ["vapor_capa"]
+    assert state.clip_effect_ids == []  # ED-04: a use, not «Cámara rápida»'s flag
 
 
 def test_the_quitar_of_a_photo_removes_it_from_the_clip(editor_on: None) -> None:
@@ -1656,9 +1662,12 @@ def test_a_texts_and_an_effects_handles_land_on_the_half_second(editor_on: None)
     texts = state._clip_sequence().texts
     assert (texts[0].start, texts[0].end) == (3.5, 12.5)
     CreativeState.add_clip_effect.fn(state, "vapor_capa")
-    CreativeState.drop_clip_block.fn(state, "efecto-vapor_capa", "start", 4.2)
-    CreativeState.drop_clip_block.fn(state, "efecto-vapor_capa", "end", 9.8)
-    assert state.clip_effect_times["vapor_capa"] == [4.0, 10.0]
+    (use,) = state.clip_effect_uses
+    block = clip_editor_vm.effect_block_id(use["uid"])  # ED-04: «efecto-u1»
+    CreativeState.drop_clip_block.fn(state, block, "start", 4.2)
+    CreativeState.drop_clip_block.fn(state, block, "end", 9.8)
+    (use,) = state.clip_effect_uses
+    assert (use["start"], use["end"], use["blocks"]) == (4.0, 10.0, [])
     effects = state._clip_sequence().effects
     assert (effects[0].start, effects[0].end) == (4.0, 10.0)
 

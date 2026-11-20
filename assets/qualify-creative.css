@@ -1214,6 +1214,22 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl:has(.q-tl__scrub:focus-visible) .q-tl__head { outline: 2px solid var(--accent-8); outline-offset: 2px; }
 .q-tl:has(.q-tl__scrub:focus-visible) .q-tl__clock { text-decoration: underline; }
 .q-tl__status { min-height: 1.25rem; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
+/* ED-04 (m-25026627): the effects of «+ Efecto» as full-width rows; while an effect is
+   held (Deivid 2026-11-20) the canvas shows one more row under the last one — dropped
+   there, it opens a new row of «Efectos». */
+.q-tl[data-tl-new-lane] .q-tl__canvas { padding-bottom: 48px; }
+.q-tl[data-tl-new-lane] .q-tl__canvas::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 44px;
+  border: 1px dashed var(--accent-a7);
+  border-radius: var(--q-radius-control);
+  pointer-events: none;
+}
+.q-edit-effect-choice.rt-Button { justify-content: flex-start; height: auto; white-space: normal; }
 
 @container q-tl (min-width: 52rem) {
   .q-tl__top { justify-content: flex-end; }
