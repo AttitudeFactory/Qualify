@@ -1515,14 +1515,14 @@ def effects_gone_line(labels: Sequence[str]) -> str:
     return f"También quitamos {joined}, que {verb} solo en esa parte."
 
 
-# -- the library's facts (EF-08 `effects_data/v3.json`) -------------------------------------
+# -- the library's facts (EF-08, the default `effects_data/vN.json`) ------------------------
 
 
 def _library_facts() -> dict[str, tuple[float, tuple[str, ...], int]]:
     """`{effect_id: (intensity, categories, max_per_part)}` of the effects the Clip
-    offers, read from the effects library the backend checks against (v3, read-only and
-    cached by `load_effects`). {} when it cannot be read: the preview then draws a layer
-    at full strength and lists it under «Todos»."""
+    offers, read from the effects library the backend checks against (the default
+    library, read-only and cached by `load_effects`). {} when it cannot be read: the
+    preview then draws a layer at full strength and lists it under «Todos»."""
     try:
         from qualify_creative.effects import (  # noqa: PLC0415 — pure, cached read
             load_effects,

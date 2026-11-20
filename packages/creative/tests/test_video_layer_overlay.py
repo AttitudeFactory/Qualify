@@ -185,7 +185,8 @@ def test_smoke_and_steam_are_neutral_grey(effect: str) -> None:
 
 def test_v3_offers_the_three_layers_free_with_their_preview() -> None:
     library = load_effects("v3")  # loads: every preview file exists (no MissingPreviewAsset)
-    assert load_effects() is library
+    # ADR 50 D9: new requests use v4, which offers the same layers, unchanged
+    assert all(load_effects().get(name, 1) == library.get(name, 1) for name in LAYERS)
     labels = {"humo_capa": "Humo", "brasas_capa": "Brasas", "vapor_capa": "Vapor"}
     for effect, label in labels.items():
         entry = library.get(effect, 1)
