@@ -39,7 +39,9 @@ def _context(tenant_id: UUID, connection_id: UUID, *, version: int | None = None
         try:
             grant = _connection(session, connection_id)
         except ValueError:
-            raise LeadFormUnavailable("Esta conexión ya no está disponible.") from None
+            raise LeadFormUnavailable(
+                "Esta conexión ya no está disponible. Conéctala de nuevo en «Tus redes»."
+            ) from None
         reason = _permission_reason(grant)
         if reason:
             raise LeadFormUnavailable(reason)
@@ -59,7 +61,11 @@ def _context(tenant_id: UUID, connection_id: UUID, *, version: int | None = None
             AND purge_started_at IS NULL AND purged_at IS NULL"""),
             {"id": connection_id},
         ).first()
-        if row is None or (version is not None and row.current_credential_version != version):
+        if row is None:
+            raise LeadFormUnavailable(
+                "Tu cuenta de Meta ya no está conectada. Conéctala de nuevo en «Tus redes»."
+            )
+        if version is not None and row.current_credential_version != version:
             raise LeadFormUnavailable("El acceso con Meta cambió. Vuelve a revisar el formulario.")
         meta_id(row.linked_page_id)
         return dict(row._mapping)
@@ -142,7 +148,11 @@ async def _page_access(client: LeadFormsClient, page_id: str) -> None:
 
 
 def _form_guard(tenant_id: UUID, form: dict) -> dict:
-    context = _context(tenant_id, form["connection_id"], version=form["credential_version"])
+    # A draft/claim is pinned to the access it was reviewed with. A published form keeps
+    # receiving across a token renewal of the same active connection, Page and brand;
+    # its frozen credential_version stays as provenance (m-25072004).
+    pinned = None if form["status"] == "published" else form["credential_version"]
+    context = _context(tenant_id, form["connection_id"], version=pinned)
     if context["linked_page_id"] != form["page_id"] or context["brand_id"] != form["brand_id"]:
         raise LeadFormUnavailable("La Página o la marca cambió. Revisa de nuevo el formulario.")
     return context
@@ -307,17 +317,23 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
         raise LeadFormUnavailable("No pudimos comprobar el anuncio de este formulario.")
 
 
-def _persist(tenant_id: UUID, form: dict, data: dict, *, received_via: str) -> bool:
+def _persist(
+    tenant_id: UUID, form: dict, data: dict, *, received_via: str, credential_version: int
+) -> bool:
+    """`credential_version` is the one the lead was fetched with; a rotation since rejects."""
+    if form["status"] != "published":
+        raise LeadFormUnavailable("Primero comprueba que el formulario esté publicado en Meta.")
     _form_guard(tenant_id, form)
+    version = credential_version
     with tenant_session(tenant_id) as session:
-        # Serialize against revocation/purge/reconnect before retaining any PII.
+        # Serialize against revocation/purge/re-link/rotation before retaining any PII.
         connection = session.execute(
             text("""SELECT id FROM social_connections WHERE id=:cid
             AND status='active' AND current_credential_version=:version AND linked_page_id=:page
             AND brand_id=:brand AND purge_started_at IS NULL AND purged_at IS NULL FOR SHARE"""),
             {
                 "cid": form["connection_id"],
-                "version": form["credential_version"],
+                "version": version,
                 "page": form["page_id"],
                 "brand": form["brand_id"],
             },
@@ -348,7 +364,7 @@ def _persist(tenant_id: UUID, form: dict, data: dict, *, received_via: str) -> b
                 "email": data["email"],
                 "answers": json.dumps(data["answers"]),
                 "created": data["created"],
-                "version": form["credential_version"],
+                "version": version,
                 "via": received_via,
             },
         )
@@ -383,7 +399,15 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
                 data = parse_lead(raw, form_id=form["meta_form_id"])
                 await _verify_ad(client, form, data)
                 _member(tenant_id)
-                count += int(_persist(tenant_id, form, data, received_via="backup"))
+                count += int(
+                    _persist(
+                        tenant_id,
+                        form,
+                        data,
+                        received_via="backup",
+                        credential_version=context["current_credential_version"],
+                    )
+                )
             if page.after is None:
                 _member(tenant_id)
                 _form_guard(tenant_id, form)

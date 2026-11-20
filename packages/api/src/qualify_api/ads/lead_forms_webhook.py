@@ -78,7 +78,13 @@ async def leadgen_handler(event: ClaimedEvent) -> Outcome:
         if claimed_ad is not None and claimed_ad != data["meta_ad_id"]:
             return Outcome(STATUS_DEAD, "leadgen_ad_mismatch")
         await _verify_ad(client, form, data)
-        _persist(tenant_id, form, data, received_via="webhook")
+        _persist(
+            tenant_id,
+            form,
+            data,
+            received_via="webhook",
+            credential_version=context["current_credential_version"],
+        )
         return Outcome(STATUS_PROCESSED)
     finally:
         await client.aclose()
