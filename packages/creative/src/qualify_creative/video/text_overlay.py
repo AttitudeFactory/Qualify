@@ -12,10 +12,13 @@ canvas is transparent) and fed to its own `buffer` once per video frame, with th
 timestamp, so FFmpeg's `fade` (on the alpha) and the `overlay`'s `enable` read the same clock
 as the picture. Nothing is drawn in Python.
 
-Deterministic: same input file, same layers → the same decoded frames (and, with x264 on one
-thread, the same bytes). libx264 with several threads can pick different decisions run to
-run (m-25029128), so the encoder runs on one thread here; `decoded_frame_hashes` is how the
-determinism is checked — over the decoded pictures, not the container's bytes.
+Same input file, same layers → the same picture going INTO the encoder. What comes out
+is NOT guaranteed identical, neither the bytes nor the decoded frames, even on one x264
+thread (m-25029128): x264's SIMD macroblock-tree propagation depends on the state of the
+process's memory, so the rate control can pick slightly different quantizers for the same
+frames as the process ages (a few levels on a handful of pixels). The tests that compare
+two encodes exactly use the `reproducible_x264` fixture (`cpu-independent=1`,
+`packages/creative/tests/conftest.py`); `decoded_frame_hashes` compares decoded pictures.
 """
 
 from __future__ import annotations
@@ -34,7 +37,8 @@ from qualify_creative.video._source import frame_rotation
 from qualify_creative.video.upright import upright_filters, upright_size
 
 #: The x264 settings: the composed video is the piece the owner publishes, so it keeps its
-#: detail (fit.py's `DETAIL_X264`), on ONE thread so two runs give the same bytes. A short
+#: detail (fit.py's `DETAIL_X264`), on ONE thread (one thread alone does NOT make the bytes
+#: reproducible — m-25029128, see the module docstring). A short
 #: `rc-lookahead` (m-25042483): x264 keeps that many whole 1080×1920 frames queued — the
 #: preset's 30 were most of the compose's memory (`join.JOIN_X264` does the same).
 OVERLAY_X264: Mapping[str, str] = {

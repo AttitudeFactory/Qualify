@@ -4,6 +4,7 @@ synthetic 9:16 videos; layers are full-canvas transparent PNGs like the render's
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 from PIL import Image
 
 from qualify_creative.video.text_overlay import (
+    OVERLAY_X264,
     TextOverlayError,
     TimedLayer,
     decoded_frame_hashes,
@@ -118,7 +120,11 @@ def test_three_texts_at_their_own_places_and_times(tmp_path: Path) -> None:
     assert late[bottom, 30:190].mean() < 80
 
 
-def test_the_same_video_and_layers_compose_to_the_same_frames_and_bytes(tmp_path: Path) -> None:
+def test_the_same_video_and_layers_compose_to_the_same_frames_and_bytes(
+    tmp_path: Path, reproducible_x264: Callable[..., None]
+) -> None:
+    # byte-equal needs the reproducible x264 options (conftest.py, m-25029128)
+    reproducible_x264(OVERLAY_X264)
     src = make_video(tmp_path / "in.mp4", seconds=1.5)
     layers = [TimedLayer(png=layer_png(TOP_BLOCK), start_s=0.2, end_s=1.2, fade_in_s=0.5)]
     a = overlay_text_layers(src, tmp_path / "a.mp4", layers).path
@@ -206,13 +212,17 @@ def _two_texts() -> list[TimedLayer]:
     ]
 
 
-def test_texts_alone_are_the_same_through_the_layers_single_pass(tmp_path: Path) -> None:
+def test_texts_alone_are_the_same_through_the_layers_single_pass(
+    tmp_path: Path, reproducible_x264: Callable[..., None]
+) -> None:
     """EF-08 shares the texts' graph section (`_link_texts`) with the layers' single pass:
     with no layer, `overlay_layers_and_texts` gives exactly `overlay_text_layers`' decoded
-    frames, and two runs in a row give the same frames — byte for byte (the text-only
-    path measured identical 24/24 on a 2-core Linux runner; checked within the run, no
+    frames, and two runs in a row give the same frames (exact comparison needs the
+    reproducible x264 options, conftest.py, m-25029128; checked within the run, no
     platform-dependent hash is pinned)."""
     from qualify_creative.video.layer_overlay import overlay_layers_and_texts
+
+    reproducible_x264(OVERLAY_X264)
 
     src = make_video(tmp_path / "src.mp4", seconds=1.0)
     first = overlay_text_layers(src, tmp_path / "a.mp4", _two_texts())
