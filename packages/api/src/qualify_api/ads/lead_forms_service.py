@@ -56,7 +56,10 @@ def lead_access_reason(session: Session, connection_id: UUID) -> str:
     if reason:
         return reason
     if not LEAD_FORM_SCOPES <= set(grant.scopes):
-        return "Actualiza el acceso con Meta para administrar formularios y recibir sus datos."
+        return (
+            "Para recibir los datos de tus clientes interesados, "
+            "actualiza el acceso con Meta en «Tus redes»."
+        )
     return ""
 
 

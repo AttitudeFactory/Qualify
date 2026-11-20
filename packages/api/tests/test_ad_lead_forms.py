@@ -345,4 +345,4 @@ def test_lead_access_reason_requires_the_current_grant_to_keep_lead_scopes(
     monkeypatch.setattr(service, "_connection", lambda session, cid: grant)
     reason = service.lead_access_reason(None, grant.connection_id)
     assert (reason == "") is ok
-    assert ok or reason.startswith("Actualiza el acceso con Meta")
+    assert ok or "actualiza el acceso con Meta" in reason
