@@ -17,6 +17,7 @@ from qualify_api.ads.audience import CITY_RADIUS_KM, InterestOption, interest_st
 from qualify_api.ads.client import MarketingClient, Resource
 from qualify_api.ads.enhancements import FEATURES
 from qualify_api.ads.errors import MarketingError
+from qualify_api.ads.health_models import minor_integer
 from qualify_api.ads.promotions import Promotion, step_payload
 from qualify_api.ads.validation import payloads_for_validation, receipt, valid_receipt
 from qualify_api.ads.wizard import (
@@ -45,6 +46,29 @@ def production_currency_offset(currency: str) -> int | None:
     # https://developers.facebook.com/docs/marketing-api/currencies/
     # ISO decimals are NOT Meta offsets. Other currencies remain unsupported.
     return 1 if currency == "COP" else None
+
+
+def spend_cap_room(account: dict[str, Any]) -> int | None:
+    """What the ad account's spending cap still allows, in Meta's money unit (the one budgets
+    use: whole pesos for COP, offset 1). None = no cap or no reading: nothing is blocked.
+
+    AdAccount reference: `spend_cap` 0 (or absent) means no cap; `spend_cap` and
+    `amount_spent` are in the currency's basic unit, the same unit as `lifetime_budget`.
+    """
+    cap = minor_integer(account.get("spend_cap"))
+    spent = minor_integer(account.get("amount_spent"))
+    if not cap or spent is None:
+        return None
+    return max(0, cap - spent)
+
+
+def spend_cap_exceeded(room: int, offset: int, currency: str) -> str:
+    amount = f"{room * 100 // offset // 100:,}".replace(",", ".")
+    return (
+        "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
+        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta, "
+        "en Facturación y pagos."
+    )
 
 
 class LiveWizardGateway:
@@ -125,7 +149,9 @@ class LiveWizardGateway:
         if any(getattr(current, key) != getattr(source, key) for key in keys):
             self.fail("account", "La publicación o la cuenta cambió. Vuelve a comprobarla.")
 
-    async def observations(self, source: PromotionSource, client: MarketingClient) -> None:
+    async def observations(
+        self, source: PromotionSource, client: MarketingClient
+    ) -> dict[str, Any]:
         self.local_guard(source)
         try:
             accounts = await GraphAdAccountReader(client._client).list_accounts(
@@ -155,7 +181,7 @@ class LiveWizardGateway:
                 "payment", "Meta no confirmó un método de pago. Revísalo en Meta.", unavailable=True
             )
         account_data = await client.read_account(
-            fields="account_id,currency,failed_delivery_checks"
+            fields="account_id,currency,failed_delivery_checks,spend_cap,amount_spent"
         )
         if (
             account_data.get("account_id") != source.meta_ad_account_id
@@ -190,6 +216,7 @@ class LiveWizardGateway:
             self.fail("media", "Esta comprobación admite fotos y vídeos publicados en Instagram.")
         self.check("media", "La publicación pertenece al Instagram de esta marca.")
         self.local_guard(source)
+        return account_data
 
     def supported(self, source: PromotionSource, form: WizardForm) -> None:
         form.validate(for_execution=True)
@@ -280,6 +307,13 @@ class LiveWizardGateway:
         if current != form.messaging:
             self.fail("validation", "El chat del anuncio cambió. Vuelve a elegirlo.")
 
+    def spend_cap_guard(
+        self, account: dict[str, Any], form: WizardForm, offset: int | None
+    ) -> None:
+        room = spend_cap_room(account)
+        if offset and room is not None and form.budget_minor * offset // 100 > room:
+            self.fail("currency", spend_cap_exceeded(room, offset, form.currency))
+
     async def preflight(self, source: PromotionSource, form: WizardForm) -> VerifiedChecks:
         self.diagnostics = []
         self.goal = "chat" if form.messaging else "lead" if form.lead_form else "website"
@@ -288,7 +322,7 @@ class LiveWizardGateway:
             await self.messaging_destination(source, form)
         try:
             async with self.client(source) as client:
-                await self.observations(source, client)
+                account = await self.observations(source, client)
                 await self.interest_guard(client, form)
                 offset = self.currency_offset
                 if offset is None:
@@ -298,6 +332,9 @@ class LiveWizardGateway:
                         "currency",
                         "Meta no admite ese importe exacto. Revisa los decimales del presupuesto.",
                     )
+                # Read live with the account checks above: a typed extra zero stops here,
+                # before any validate or create reaches Meta (m-25077975).
+                self.spend_cap_guard(account, form, offset)
                 requested = self.clock()
                 payloads = payloads_for_validation(source, form, self.actor, requested, offset)
                 for resource in ("campaigns", "adcreatives"):
@@ -387,7 +424,10 @@ class LiveWizardGateway:
         if not valid_receipt(checks.exact_validation, source, form, self.clock(), self.actor):
             self.fail("validation", "La comprobación venció. Vuelve a revisar la promoción.")
         async with self.client(source) as client:
-            await self.observations(source, client)
+            account = await self.observations(source, client)
+            # Spend against the cap may have grown since preflight: check it right before
+            # the real create, with the offset the receipt was validated at.
+            self.spend_cap_guard(account, form, checks.currency_offset)
             await self.interest_guard(client, form)
         if not valid_receipt(checks.exact_validation, source, form, self.clock(), self.actor):
             self.fail(

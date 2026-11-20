@@ -33,6 +33,8 @@ from qualify_api.ads.live_wizard import (
     PersistedWizardSources,
     authorize_actor,
     request_goal,
+    spend_cap_exceeded,
+    spend_cap_room,
 )
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import Promotion, fingerprint
@@ -219,6 +221,34 @@ def _decrease(action: str, before: Promotion, after: Promotion) -> bool:
     return action == "budget" and after.request["budget_minor"] < before.request["budget_minor"]
 
 
+def _increase(action: str, before: Promotion, after: Promotion) -> bool:
+    return action == "budget" and after.request["budget_minor"] > before.request["budget_minor"]
+
+
+async def _spend_cap_guard(
+    gateway: LiveWizardGateway, source: Any, promotion: Promotion, new_minor: int
+) -> None:
+    """Refuse a raise the account's spending cap cannot cover (m-25077975), read live.
+
+    What this ad can still spend after the change (its unspent budget plus the raise) is
+    compared with what the cap still allows (`spend_cap - amount_spent`, which already
+    counts this ad's spend). No cap blocks nothing; a failed read refuses the raise.
+    """
+    raise_meta = (new_minor - promotion.request["budget_minor"]) // 100
+    # A failed read (MarketingError) refuses the raise: results_service maps it to its retry
+    # message. Money safety: a raise is never sent without reading the cap first.
+    async with gateway.client(source) as client:
+        room = spend_cap_room(await client.read_account(fields="spend_cap,amount_spent"))
+        if room is None:
+            return
+        adset = await client.read_object(promotion.ids["adsets"], fields="id,budget_remaining")
+    unspent = _whole(adset.get("budget_remaining"))
+    if adset.get("id") != promotion.ids["adsets"] or unspent is None:
+        unspent = 0  # Unknown unspent budget: the raise alone still has to fit.
+    if unspent + raise_meta > room:
+        raise ResultsUnavailable(spend_cap_exceeded(room, 1, "COP"))
+
+
 FLOOR_UNAVAILABLE = "No pudimos comprobar lo gastado y el mínimo de Meta. Inténtalo de nuevo."
 
 
@@ -332,6 +362,8 @@ async def prepare_promotion_edit(
         if _decrease(action, promotion, changed)
         else None
     )
+    if _increase(action, promotion, changed):
+        await _spend_cap_guard(gateway, source, promotion, changed.request["budget_minor"])
     async with gateway.client(source) as client:
         for resource in targets:
             await client.validate_update(promotion.ids[resource], params=payload)
@@ -455,6 +487,9 @@ async def confirm_promotion_edit(
     if _decrease(body["action"], promotion, changed):
         # Spending went on while the owner read the review: floor it again before the claim.
         await _decrease_floor(gateway, source, promotion, changed.request["budget_minor"])
+    if _increase(body["action"], promotion, changed):
+        # Other ads may have spent against the cap while the owner read the review.
+        await _spend_cap_guard(gateway, source, promotion, changed.request["budget_minor"])
     _local(scope, gateway, source, promotion, ledger, expires)
     operation, state = _claim_pause(
         scope,
