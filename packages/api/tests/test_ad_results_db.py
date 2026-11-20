@@ -1259,3 +1259,44 @@ async def test_pause_right_after_a_finished_pause_still_writes_to_meta(result_wo
         api.objects["3"]["status"] = api.objects["3"]["effective_status"] = "ACTIVE"
         await service._pause(ids["tenant_id"], promotion.id, "brake-again", api=api)
     assert _posts(api) == [("3", {"status": "PAUSED"})] * 2
+
+
+@pytest.mark.asyncio
+async def test_poller_skips_abandoned_promotions_but_reads_activated_ones(
+    result_world, monkeypatch
+):
+    """m-25077974: a paused promotion whose preview expired unconfirmed is never read again."""
+    ids, _, user, _, promotion, _ = result_world
+    read: list = []
+
+    async def refresh(tenant_id, promotion_id, *, system=False):
+        read.append(promotion_id)
+
+    monkeypatch.setattr(service, "_refresh", refresh)
+    # Created in Meta, but no preview was ever saved: nothing the owner could activate.
+    await service.poll_promotion_results(tenant_id=ids["tenant_id"])
+    assert read == []
+    with tenant_session(ids["tenant_id"]) as s:
+        s.execute(
+            text("""INSERT INTO ad_promotion_activations
+            (tenant_id,promotion_id,request_hash,preview_html,preview_hash,checks_snapshot,
+             pipeline_version,expires_at,prepared_by)
+            VALUES (:tenant,:promotion,'h','<p></p>','p','{}','promotion-wizard-v1',
+                    :expires,:actor)"""),
+            {
+                "tenant": ids["tenant_id"],
+                "promotion": promotion.id,
+                "expires": datetime.now(UTC) - timedelta(minutes=1),
+                "actor": user,
+            },
+        )
+    await service.poll_promotion_results(tenant_id=ids["tenant_id"])
+    assert read == []  # The preview expired without confirmation: abandoned.
+    with tenant_session(ids["tenant_id"]) as s:
+        s.execute(
+            text("""UPDATE ad_promotion_activations SET state='in_flight',confirmed_by=:actor,
+            confirmed_at=now(),claim_token=gen_random_uuid() WHERE promotion_id=:promotion"""),
+            {"promotion": promotion.id, "actor": user},
+        )
+    await service.poll_promotion_results(tenant_id=ids["tenant_id"])
+    assert read == [promotion.id]  # Activated once: read even after the preview expired.
