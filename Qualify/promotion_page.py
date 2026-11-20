@@ -93,10 +93,10 @@ def _check_result(check: PromotionCheckVM) -> rx.Component:
         rx.cond(
             check.billing_url != "",
             rx.link(
-                "Abrir facturación en Meta",
+                "Revisar pagos en Meta",
                 href=check.billing_url,
                 is_external=True,
-                aria_label="Abrir facturación en Meta (se abre en una pestaña nueva)",
+                aria_label="Revisar pagos en Meta (se abre en una pestaña nueva)",
                 min_height="44px",
                 display="inline-flex",
                 align_items="center",

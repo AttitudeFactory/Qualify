@@ -66,8 +66,7 @@ def spend_cap_exceeded(room: int, offset: int, currency: str) -> str:
     amount = f"{room * 100 // offset // 100:,}".replace(",", ".")
     return (
         "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
-        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta, "
-        "en Facturación y pagos."
+        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta."
     )
 
 

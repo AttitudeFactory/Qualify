@@ -601,7 +601,7 @@ async def test_budget_over_the_account_spend_cap_is_refused_before_any_meta_post
     remaining = "9.999" if cap == 60_000 else "0"
     assert str(error.value) == (
         "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
-        f"(quedan ${remaining} COP). Bájalo o sube el límite en Meta, en Facturación y pagos."
+        f"(quedan ${remaining} COP). Bájalo o sube el límite en Meta."
     )
     failed = error.value.diagnostics[-1]
     assert failed["key"] == "currency"
