@@ -29,7 +29,8 @@ from qualify_creative.video.prepare import (  # noqa: E402
 )
 from qualify_creative.video.speed import (  # noqa: E402
     CODE_AUDIO,
-    SPEED_VERSION,
+    SPEED_EFFECT_VERSION,
+    SPEED_RECIPE_VERSION,
     SpeedError,
     SpeedSegment,
     plan_speed,
@@ -339,7 +340,8 @@ def test_x1_x5_x1_is_one_track_in_sync_with_no_drift(
     assert abs(second - (150 + info["barcodes"][150:].index(120)) / FPS) <= ONE_FRAME
     assert _rms(samples, 3.1, 4.9) < 0.005  # the ×5 stretch: silence, not the loud tone
     params = result.params()
-    assert params["effect_version"] == SPEED_VERSION == "camara_rapida-v3"
+    assert params["effect_version"] == SPEED_EFFECT_VERSION == 1
+    assert params["recipe_version"] == SPEED_RECIPE_VERSION == "camara_rapida-v3"
     assert params["audio"] is True
     assert params["sound"]["original_sound"] == [0, 2]
     assert params["sound"]["sample_rate"] == 48_000 and params["sound"]["layout"] == "stereo"
