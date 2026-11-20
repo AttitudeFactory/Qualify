@@ -70,8 +70,7 @@ def attribute_inbound_message(
         binding = (
             session.execute(
                 text("""
-                SELECT source.current_credential_version AS source_version,
-                       destination.current_credential_version AS target_version,
+                SELECT destination.current_credential_version AS target_version,
                        source.linked_page_id,
                        source.external_account_id AS instagram_id,
                        phone.phone_number_id,phone.display_phone_number
@@ -107,10 +106,11 @@ def attribute_inbound_message(
             .mappings()
             .one_or_none()
         )
+        # The snapshot's credential versions are provenance of the approval, not a
+        # condition: a token renewal of the same active connections keeps attribution.
+        # The event must still belong to the destination's current credential (m-25072004).
         if (
             binding is None
-            or binding["source_version"] != target.source_credential_version
-            or binding["target_version"] != target.target_credential_version
             or binding["target_version"] != proof["credential_version"]
             or binding["linked_page_id"] != target.page_id
             or binding["instagram_id"] != snapshot["creative"]["instagram_user_id"]

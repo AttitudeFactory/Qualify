@@ -331,6 +331,20 @@ def test_legacy_promotion_never_gains_a_destination_from_current_brand(messaging
 
 
 @pytest.mark.parametrize("channel", ["whatsapp", "dm"])
+def test_token_renewal_keeps_attributing_new_events_to_the_approved_ad(messaging_world, channel):
+    """m-25072004: snapshot credential versions are provenance, not a condition."""
+    w = messaging_world
+    _promotion(w, channel)
+    with tenant_session(w["tenant"]) as s:
+        s.execute(
+            text("""UPDATE social_connections SET current_credential_version=2
+            WHERE id IN (:source,:target)"""),
+            {"source": w["source"], "target": w["target"]},
+        )
+    assert attribute_inbound_message(event=_record(w, channel), **_message(w, channel))
+
+
+@pytest.mark.parametrize("channel", ["whatsapp", "dm"])
 def test_reconnect_invalidates_frozen_event_custody(messaging_world, channel):
     w = messaging_world
     _promotion(w, channel)

@@ -142,7 +142,11 @@ async def _page_access(client: LeadFormsClient, page_id: str) -> None:
 
 
 def _form_guard(tenant_id: UUID, form: dict) -> dict:
-    context = _context(tenant_id, form["connection_id"], version=form["credential_version"])
+    # A draft/claim is pinned to the access it was reviewed with. A published form keeps
+    # receiving across a token renewal of the same active connection, Page and brand;
+    # its frozen credential_version stays as provenance (m-25072004).
+    pinned = None if form["status"] == "published" else form["credential_version"]
+    context = _context(tenant_id, form["connection_id"], version=pinned)
     if context["linked_page_id"] != form["page_id"] or context["brand_id"] != form["brand_id"]:
         raise LeadFormUnavailable("La Página o la marca cambió. Revisa de nuevo el formulario.")
     return context
@@ -308,16 +312,18 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
 
 
 def _persist(tenant_id: UUID, form: dict, data: dict, *, received_via: str) -> bool:
-    _form_guard(tenant_id, form)
+    if form["status"] != "published":
+        raise LeadFormUnavailable("Primero comprueba que el formulario esté publicado en Meta.")
+    version = _form_guard(tenant_id, form)["current_credential_version"]
     with tenant_session(tenant_id) as session:
-        # Serialize against revocation/purge/reconnect before retaining any PII.
+        # Serialize against revocation/purge/re-link/rotation before retaining any PII.
         connection = session.execute(
             text("""SELECT id FROM social_connections WHERE id=:cid
             AND status='active' AND current_credential_version=:version AND linked_page_id=:page
             AND brand_id=:brand AND purge_started_at IS NULL AND purged_at IS NULL FOR SHARE"""),
             {
                 "cid": form["connection_id"],
-                "version": form["credential_version"],
+                "version": version,
                 "page": form["page_id"],
                 "brand": form["brand_id"],
             },
@@ -348,7 +354,7 @@ def _persist(tenant_id: UUID, form: dict, data: dict, *, received_via: str) -> b
                 "email": data["email"],
                 "answers": json.dumps(data["answers"]),
                 "created": data["created"],
-                "version": form["credential_version"],
+                "version": version,
                 "via": received_via,
             },
         )
