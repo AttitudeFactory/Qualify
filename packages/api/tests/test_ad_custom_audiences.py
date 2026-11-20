@@ -260,7 +260,7 @@ def test_exact_terms_identity_and_payload_contract():
     assert rule["event_sources"] == [{"id": "42", "type": "ig_business"}]
     assert rule["retention_seconds"] == 30 * 86400
     assert CustomAudienceRequest("Mensajes", "messages", 365).payload("42")
-    with pytest.raises(AudienceUnavailable):  # Meta's engagement retention cap
+    with pytest.raises(AudienceUnavailable, match="de 1 a 365 días"):
         CustomAudienceRequest("Mensajes", "messages", 366).payload("42")
     assert rule["filter"]["filters"][0]["value"] == "ig_user_messaged_business"
     assert not ready_audience({}, remote_id="1", account_id="12")

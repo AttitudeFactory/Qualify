@@ -52,5 +52,5 @@ def creation_problem(
         if len(country) != 2 or not country.isascii() or not country.isalpha():
             return "Elige el país donde quieres encontrar personas parecidas."
     elif not retention.isascii() or not retention.isdigit() or not 1 <= int(retention) <= 365:
-        return "Elige entre uno y 365 días de interacción."
+        return "Elige un periodo de 1 a 365 días."
     return ""

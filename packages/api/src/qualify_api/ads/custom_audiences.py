@@ -66,9 +66,7 @@ class CustomAudienceRequest:
             raise AudienceUnavailable("Elige personas que interactuaron, escribieron o similares.")
         # Meta caps Instagram/Page engagement audiences at 365 days of retention.
         if type(self.retention_days) is not int or not 1 <= self.retention_days <= 365:
-            raise AudienceUnavailable(
-                "Elige un periodo entre uno y trescientos sesenta y cinco días."
-            )
+            raise AudienceUnavailable("Elige un periodo de 1 a 365 días.")
         if self.kind == "lookalike":
             try:
                 UUID(self.seed_id)
