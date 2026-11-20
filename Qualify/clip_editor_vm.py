@@ -17,7 +17,8 @@ import json
 import math
 import os
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from urllib.parse import quote
 
 from . import editor_preview_contract as contract
 from .ui import timeline_vm
@@ -1212,6 +1213,55 @@ def timeline_media(
             }
         )
     return media
+
+
+#: Where the backend serves an owner's upload (the strip's `rx.get_upload_url`).
+UPLOAD_ROUTE = "/_upload/"
+
+
+def upload_path(key: str) -> str:
+    """The upload route's path for `key`, encoded (`/_upload/<key>`): the same address for
+    a block's picture (`block_thumbs`) and the preview in sequence (`_clip_seq_sources`)."""
+    return UPLOAD_ROUTE + quote(key, safe="/")
+
+
+def block_thumbs(
+    strip: Sequence[Mapping[str, str]],
+    *,
+    views: Mapping[str, str],
+    posters: Mapping[str, str],
+    is_served: Callable[[str], bool],
+) -> dict[str, str]:
+    """ED-11 (m-25026650): the picture each file's blocks show on «Fotos y videos» — a
+    backend path (`clip_editor_view` puts the browser's backend origin before it), "" =
+    none: the block shows the film / photo icon and its name. Only pictures the screen
+    already holds (D-T4: no new frame from the server, none drawn in the browser):
+
+    - a publication or a stock file: its `/r2media` view (`views`, `piece_views`) — a
+      video's is its poster, the one the preview shows;
+    - a Galería video: the poster its tile showed when it was added (`posters`);
+    - any other photo: the file itself through the upload route when it serves the key
+      (`is_served`: a local key, an owner upload `t/{tenant}/uploads/…` — every upload
+      since CM-9 and every photo the Galería copied — or an old catalog key
+      `uploads/{tenant}/catalog/…`) — never another R2 key without a view, which cannot
+      be read;
+    - an uploaded or catalog video has no picture yet (ED-11b brings its frames).
+
+    Every block of a file shares its picture: the own video's pieces after «Cortar»,
+    trimmed or sped up, show the same one."""
+    out: dict[str, str] = {}
+    for item in strip:
+        key = str(item.get("key") or "")
+        if not key:
+            continue
+        view = str(views.get(key) or posters.get(key) or "")
+        if view:
+            out[key] = view
+        elif item.get("kind") == "image" and is_served(key):
+            out[key] = upload_path(key)
+        else:
+            out[key] = ""
+    return out
 
 
 def media_total(media: Sequence[Mapping[str, object]]) -> float:

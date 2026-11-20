@@ -1158,6 +1158,13 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-tl__handle--start { right: 100%; justify-content: flex-end; }
 .q-tl__handle--end { left: 100%; justify-content: flex-start; }
+/* ED-11 review (Deivid): with a mouse the zone that grabs is the bar itself, so the
+   `ew-resize` cursor, the hover and the time bubble sit on what the owner sees; a finger
+   (`pointer: coarse`) keeps the 44 px target of §3.8 — and so does a touch laptop, whose
+   primary pointer is fine but which also has a finger (`any-pointer: coarse`). */
+@media (pointer: fine) and (not (any-pointer: coarse)) {
+  .q-tl__handle { width: 16px; }
+}
 /* ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): a thick accent bar the
    whole height of the track, hugging the block's edge, with a notch (two short lines) that
    reads «grab me» — always shown while the block is chosen. */
@@ -1285,6 +1292,89 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-tl__canvas > .q-glass-blob .q-glass-blob__surface { transition: none; animation: none; }
 }
 .q-tl__block .q-thumb { flex: none; }
+/* ED-11 (m-25026650): a video or photo block with a picture shows it — one <img alt="">
+   at its start, the same picture repeated along the rest (never a frame drawn here) —
+   with its name and seconds over it on a dark chip. The block is its own container: a
+   narrow one shows only the picture, a medium one drops the seconds first. Trimmed, cut
+   or sped up, the picture just repeats over the new width. */
+.q-tl__block { position: relative; isolation: isolate; container: q-tl-block / inline-size; }
+.q-tl__pic {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: block;
+  overflow: hidden;
+  background-color: var(--gray-a4);
+  background-repeat: repeat-x;
+  background-position: left center;
+  background-size: auto 100%;
+  pointer-events: none;
+}
+.q-tl__pic-img { display: block; width: auto; max-width: none; height: 100%; }
+/* ED-11 review: the film / photo icon under the picture (z -2, below `.q-tl__pic`): it
+   shows through only when the picture is missing or hidden. */
+.q-tl__pic-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gray-a11);
+  pointer-events: none;
+}
+/* Two similar pictures side by side: a stronger edge between them. It ties with
+   `[aria-pressed="true"]` (0,2,0) and comes later, so the chosen block's accent colour is
+   restored right after with one attribute more (0,3,0): it keeps its 2 px accent border. */
+.q-tl__block[data-tl-pic="1"] { border-color: var(--gray-a8); }
+.q-tl__block[aria-pressed="true"][data-tl-pic="1"] { border-color: var(--accent-9); }
+/* High contrast: no picture under the name (it would sit on a photo); the icon shows. */
+@media (forced-colors: active) {
+  .q-tl__pic { display: none; }
+  .q-tl__pic-fallback { color: CanvasText; }
+}
+.q-tl__block[data-tl-pic="1"] .q-tl__label,
+.q-tl__block[data-tl-pic="1"] .q-tl__secs {
+  flex: none;
+  max-width: 100%;
+  padding: 0 var(--space-1);
+  border-radius: var(--q-radius-control);
+  background: var(--black-a9);
+  color: var(--white-a12);
+  line-height: 1.5;
+}
+.q-tl__block[data-tl-pic="1"] .q-tl__label { flex: 0 1 auto; }
+.q-tl__secs { font-variant-numeric: tabular-nums; font-weight: 500; }
+.q-tl__block[data-tl-pic="1"] .q-tl__speed { background: var(--accent-9); color: var(--accent-contrast); }
+/* ED-11 review (Deivid: «el efecto de vidrio lo veo pero muy poco»): the liquid lens
+   (`.q-tl__canvas > .q-glass-blob`, z 1) rests under the chosen block, and a block with a
+   picture covers it whole. So the chosen one wears the lens's own material ON its
+   picture: the island's sheen and top highlight, the glass edge just inside the 2 px
+   accent border, a soft accent glow along the rim (the blob's accent tint) and a light
+   veil — no blur, no fill, so the frames stay sharp. `z-index: -1` after `.q-tl__pic`
+   in tree order paints it over the picture and under the name, seconds and «×10»
+   (in-flow, inside the block's own stacking context). Static: nothing to animate. */
+.q-tl__block[aria-pressed="true"][data-tl-pic="1"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--q-glass-sheen), var(--white-a3);
+  box-shadow:
+    inset 0 1px 0 var(--q-glass-hi),
+    inset 0 0 0 1px var(--q-glass-edge),
+    inset 0 -1px 0 var(--q-glass-lo),
+    inset 0 0 10px var(--accent-a7);
+  pointer-events: none;
+}
+@container q-tl-block (max-width: 7.5rem) {
+  .q-tl__block[data-tl-pic="1"] .q-tl__secs { display: none; }
+}
+@container q-tl-block (max-width: 4.5rem) {
+  .q-tl__block[data-tl-pic="1"] .q-tl__label,
+  .q-tl__block[data-tl-pic="1"] .q-tl__speed { display: none; }
+}
 .q-tl__speed {
   flex: none;
   margin-left: auto;
