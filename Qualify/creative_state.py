@@ -26,7 +26,7 @@ import os
 import re
 import time
 import urllib.parse
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -45,6 +45,7 @@ from qualify_api.creative.context_ai import (
 )
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
+from qualify_api.creative.owner_uploads import served_upload_tenant
 from qualify_api.creative.parts import (
     ParentTextCapReached,
     ParentTextMissing,
@@ -1231,6 +1232,17 @@ _MEDIA_DRAWER_TITLES = {
 #: How long a read of the brand's pieces is shown before it is read again: before
 #: `issue_view_path` would stop reusing its tokens (15 min left of `VIEW_TTL_SECONDS`).
 PIECE_VIEWS_FRESH_SECONDS = VIEW_TTL_SECONDS - 15 * 60
+
+
+def upload_served(key: str) -> bool:
+    """The upload route (`/_upload/<key>`, `upload_route.py`) serves this key: a local key
+    (an old upload, the catalog's `uploads/{tenant}/catalog/…`) or an owner upload in R2
+    (`t/{tenant}/uploads/…` — every upload since CM-9 and every file the Galería copied —
+    or a copied old piece `t/{tenant}/generated-local/…`;
+    `owner_uploads.served_upload_tenant`). Any other R2 key needs a `/r2media` path."""
+    return bool(key) and (not is_r2_key(key) or served_upload_tenant(key) is not None)
+
+
 #: The slots of several files and how many each holds: their «Inspiración» search stays
 #: open until they are full (live test 2026-11-03: «Hasta 3» closed after the first).
 INSPIRATION_SLOT_LIMITS = {
@@ -1719,6 +1731,11 @@ class CreativeState(rx.State):
     #: m-24985141: what «Elegir de tu Galería» added, by key — {name, media} (the
     #: server resolved each one under RLS and copied a business medium first).
     _gallery_files: dict[str, dict[str, str]] = {}
+    #: ED-11 (m-25026650): a Galería video's poster, by the key it was added as — the
+    #: `/r2media` picture its tile already showed, so its timeline block shows it too.
+    #: That `/r2media` token lives 1 h and is NOT renewed: past it, the block stays grey
+    #: with its icon and name. The real fix is ED-11b (posters of their own).
+    _clip_posters: dict[str, str] = {}
     #: What «Elegir de tu Galería» could not add, under the reference grid.
     gallery_pick_note: str = ""
     #: Live-test 2026-11-03: each slot's «Inspiración» box has its own words (the
@@ -1885,6 +1902,16 @@ class CreativeState(rx.State):
     clip_preview_for: str = ""
     #: The R2 video whose dead path was renewed once already (a second failure breaks it).
     _clip_preview_renewed: str = ""
+    #: ED-11 review: the `/r2media/<token>` path of each OTHER R2 video of the Clip (not
+    #: the editor's own, not an upload `/_upload` serves), by key, minted server-side by
+    #: `resolve_clip_preview` so the preview in sequence plays and measures it ("" = asked
+    #: and not minted: never asked again in a loop).
+    _clip_media_urls: dict[str, str] = {}
+    #: The other R2 videos whose dead path was renewed once already.
+    _clip_media_renewed: list[str] = []
+    #: The dead path each of those had, by key: a renewal that gives it back (its token
+    #: was still alive: the file itself does not play here) leaves the video broken.
+    _clip_media_dead: dict[str, str] = {}
     #: Why a trim handle stopped short («El pedazo tiene que durar al menos 1 s.»), "" =
     #: nothing to say.
     clip_cut_error: str = ""
@@ -5962,12 +5989,18 @@ class CreativeState(rx.State):
             key: {"name": f"{_INSPIRATION} · {author}", "media": media},
         }
 
-    def add_gallery_picks(self, picks: Sequence[Any], target: str = MEDIA_DRAWER_CLIP) -> int:
+    def add_gallery_picks(
+        self,
+        picks: Sequence[Any],
+        target: str = MEDIA_DRAWER_CLIP,
+        posters: Mapping[str, str] | None = None,
+    ) -> int:
         """m-24985141: what «Tu Galería» resolved (`GalleryPick`s) into `target`. The
         Clip: a photo with its category (a product's «Producto», the business's «Fondo»;
         the role select changes it), a video as a reference video, within its room. A
         slot: each file of its type, as if picked in its other tabs. Returns how many went
-        in (one already there counts)."""
+        in (one already there counts). ED-11: ``posters`` — a video's key → the picture
+        its tile showed (the timeline block shows it)."""
         self.gallery_pick_note = ""
         added = 0
         for pick in picks:
@@ -5976,6 +6009,9 @@ class CreativeState(rx.State):
                 **self._gallery_files,
                 pick.key: {"name": pick.name, "media": pick.media_type},
             }
+            poster = (posters or {}).get(pick.key, "")
+            if poster and not image:
+                self._clip_posters = {**self._clip_posters, pick.key: poster}
             if target == MEDIA_DRAWER_CLIP:
                 slot = "clip_images" if image else "clip_videos"
             else:
@@ -6618,6 +6654,17 @@ class CreativeState(rx.State):
         total = clip_editor_vm.media_total(media)
         return media, self._clip_tl_overlays(total, media), total
 
+    def _clip_block_thumbs(self) -> dict[str, str]:
+        """ED-11 (m-25026650): each file's picture on the timeline, a backend path ("" =
+        the icon and the name) — only what the screen already holds
+        (`clip_editor_vm.block_thumbs`)."""
+        return clip_editor_vm.block_thumbs(
+            self._clip_strip(),
+            views=self.piece_views,
+            posters=self._clip_posters,
+            is_served=upload_served,
+        )
+
     def _clip_tl_rows(self) -> list[dict[str, str]]:
         """Every block's row (media, texts, effects), for the chosen one and the panel.
         The own video's pieces and the texts and effects have handles the screen moves
@@ -6628,7 +6675,10 @@ class CreativeState(rx.State):
         own = mine if self._clip_can_cut() else ""
         pieces = self._clip_pieces() if own else []
         rows = timeline_vm.media_blocks(media)  # type: ignore[arg-type]
-        for row in rows:
+        thumbs = self._clip_block_thumbs()
+        for row, item in zip(rows, media, strict=True):
+            # ED-11: the file's picture (every piece of a file shows the same one)
+            row["thumb"] = thumbs.get(str(item["key"]), "")
             # `mine`: a piece of the editor's own video; `own`: …and it can be cut now
             key, index = clip_editor_vm.piece_of(row["id"])
             row["mine"] = "1" if mine and key == mine else ""
@@ -6918,10 +6968,13 @@ class CreativeState(rx.State):
 
     def _clip_seq_sources(self) -> dict[str, str]:
         """Each file's playable address (photos and videos the browser can load): the
-        upload store, a publication's `/r2media` picture, the editor's own R2 video's
-        minted path; "" for what it cannot load here (the block is a card)."""
+        upload route for what it serves (`upload_served`: a local key, an owner upload
+        `t/{tenant}/uploads/…`), a publication's `/r2media` picture, the editor's own R2
+        video's minted path, any other R2 video's minted path (`_clip_media_urls`); ""
+        for what it cannot load here (the block is a card)."""
         own = self._clip_edit_key()
         views = self.piece_views
+        minted = self._clip_media_urls
         out: dict[str, str] = {}
         for item in self._clip_strip():
             key = str(item.get("key") or "")
@@ -6931,19 +6984,45 @@ class CreativeState(rx.State):
                 view = views.get(key, "")
                 if view:
                     out[key] = clip_editor_vm.SEQ_BASE + view
-                elif not is_r2_key(key):
-                    out[key] = f"{clip_editor_vm.SEQ_BASE}/_upload/{key}"
+                elif upload_served(key):
+                    out[key] = clip_editor_vm.SEQ_BASE + clip_editor_vm.upload_path(key)
                 continue
             if key == own and is_r2_key(key):
                 if self._clip_playable():
                     out[key] = clip_editor_vm.SEQ_BASE + self.clip_preview_url
-            elif not is_r2_key(key):
-                out[key] = f"{clip_editor_vm.SEQ_BASE}/_upload/{key}"
+            elif upload_served(key):
+                out[key] = clip_editor_vm.SEQ_BASE + clip_editor_vm.upload_path(key)
+            elif minted.get(key):
+                out[key] = clip_editor_vm.SEQ_BASE + minted[key]
         return out
+
+    def _clip_media_unresolved(self) -> list[str]:
+        """ED-11 review: the Clip's other R2 videos (not the editor's own, not an upload
+        `/_upload` serves) with no path asked for yet — `resolve_clip_preview` mints each
+        once, so the preview in sequence plays and measures every video."""
+        if not self.clip_editor_shown:
+            return []
+        own = self._clip_edit_key()
+        minted = self._clip_media_urls
+        keys: list[str] = []
+        for item in self._clip_strip():
+            key = str(item.get("key") or "")
+            if (
+                item.get("kind") == "video"
+                and key
+                and key != own
+                and key not in minted
+                and key not in keys
+                and is_r2_key(key)
+                and not upload_served(key)
+            ):
+                keys.append(key)
+        return keys
 
     def _clip_sequence(self) -> edit_sequence.PreviewSequence:
         media, overlays, _total = self._clip_tl()
-        thumbs = self.piece_views
+        # a video's poster: the same picture its timeline block shows (ED-11)
+        thumbs = self._clip_block_thumbs()
         for item in media:
             if item["kind"] == "video" and thumbs.get(str(item["key"])):
                 item["thumb"] = clip_editor_vm.SEQ_BASE + thumbs[str(item["key"])]
@@ -6983,9 +7062,10 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_seq_resolve(self) -> bool:
-        """The editor's own R2 video has no playable path yet: the screen asks for one
-        (the preview in sequence has no «pending» button of its own)."""
-        return self.clip_edit_r2_pending
+        """Some video of the Clip has no playable path yet — the editor's own R2 video or
+        any other R2 video (`_clip_media_unresolved`): the screen asks for them (the
+        preview in sequence has no «pending» button of its own)."""
+        return self.clip_edit_r2_pending or bool(self._clip_media_unresolved())
 
     @rx.var
     def clip_fast_on(self) -> bool:
@@ -7298,6 +7378,9 @@ class CreativeState(rx.State):
         self.clip_preview_url = ""
         self.clip_preview_for = ""
         self._clip_preview_renewed = ""
+        self._clip_media_urls = {}
+        self._clip_media_renewed = []
+        self._clip_media_dead = {}
         self.clip_cut_error = ""
         self.clip_speed_refused = ""
         self.clip_edit_notice = ""
@@ -7368,8 +7451,10 @@ class CreativeState(rx.State):
         sources = self._clip_seq_sources()
         broken = self.clip_source_broken and self.clip_source_key == own
         pending = self.clip_edit_r2_pending  # the own R2 video's path is being minted
+        minting = set(self._clip_media_unresolved())  # …and the other R2 videos' paths
         waiting = bool(unmeasured) and all(
-            (bool(sources.get(key)) or (key == own and pending)) and not (broken and key == own)
+            (bool(sources.get(key)) or (key == own and pending) or key in minting)
+            and not (broken and key == own)
             for key in unmeasured
         )
         return clip_editor_vm.recipe_problem(
@@ -7452,28 +7537,69 @@ class CreativeState(rx.State):
         and, for an R2 video, the editor clears `clip_preview_for` ONCE so the script asks
         again; this mints a new path. If that renewal gives the same path back (the token
         was still alive: the file itself failed) or the new one fails too, the video stays
-        broken."""
-        key = self._clip_edit_key()
-        if not key or not is_r2_key(key) or not self.clip_editor_shown:
+        broken.
+
+        ED-11 review: the same call mints the path of every OTHER R2 video of the Clip
+        (`_clip_media_unresolved`: a second publication, a Galería or stock video) into
+        `_clip_media_urls`, each once ("" when it cannot be minted), so the preview in
+        sequence plays and measures every video. Those videos stay without handles or
+        «Cortar» (another ticket); only the own video is cut."""
+        if not self.clip_editor_shown:
             return
-        url = ""
-        old_url = self.clip_preview_url
+        key = self._clip_edit_key()
+        own_due = bool(key) and is_r2_key(key) and self.clip_preview_for != key
+        if not own_due and not self._clip_media_unresolved():
+            return
+        tenant_id: UUID | None = None
         try:
             tenant_id = await self._clip_preview_tenant()
-            if tenant_id is not None:
-                url = await asyncio.to_thread(issue_view_path, tenant_id, key, "video")
         except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the step
-            logger.warning("clip preview token not issued: %s", type(exc).__name__)
+            logger.warning("clip preview session not read: %s", type(exc).__name__)
+        if own_due:
             url = ""
-        finally:
-            if key == self._clip_edit_key():
-                self.clip_preview_for, self.clip_preview_url = key, url
-                if self._clip_preview_renewed == key and url and url == old_url:
-                    # renewed and nothing changed: the file itself does not play here —
-                    # broken as the browser's own report leaves it (no «Cortar», no wait)
-                    self.clip_source_broken = True
-                    self.clip_source_key = key
-                    self.clip_source_seconds = 0.0
+            old_url = self.clip_preview_url
+            try:
+                if tenant_id is not None:
+                    url = await asyncio.to_thread(issue_view_path, tenant_id, key, "video")
+            except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the step
+                logger.warning("clip preview token not issued: %s", type(exc).__name__)
+                url = ""
+            finally:
+                if key == self._clip_edit_key():
+                    self.clip_preview_for, self.clip_preview_url = key, url
+                    if self._clip_preview_renewed == key and url and url == old_url:
+                        # renewed and nothing changed: the file itself does not play here
+                        # — broken as the browser's own report leaves it (no «Cortar»)
+                        self.clip_source_broken = True
+                        self.clip_source_key = key
+                        self.clip_source_seconds = 0.0
+        await self._resolve_clip_media(tenant_id)
+
+    async def _resolve_clip_media(self, tenant_id: UUID | None) -> None:
+        """Mint the `/r2media` path of each other R2 video still without one, server-side
+        with the session's tenant (`issue_view_path` refuses another business's key). Each
+        key is asked once: a failure leaves "" and is never asked again in a loop; a
+        video added while this runs is minted in the same call. A renewal that gives back
+        the path that died (`issue_view_path` reuses a token with more than 15 min left:
+        the file itself does not play here) leaves "" too: broken, as the own video in
+        `resolve_clip_preview`, so «Crear» says it cannot read its length."""
+        asked: set[str] = set()
+        while True:
+            due = [key for key in self._clip_media_unresolved() if key not in asked]
+            if not due:
+                return
+            for key in due:
+                asked.add(key)
+                url = ""
+                try:
+                    if tenant_id is not None:
+                        url = await asyncio.to_thread(issue_view_path, tenant_id, key, "video")
+                except Exception as exc:  # noqa: BLE001 — a preview is not worth failing
+                    logger.warning("clip media token not issued: %s", type(exc).__name__)
+                    url = ""
+                if url and url == self._clip_media_dead.get(key):
+                    url = ""  # renewed and nothing changed: broken, never asked again
+                self._clip_media_urls = {**self._clip_media_urls, key: url}
 
     @rx.event
     def report_clip_source(self, key: str, seconds: float, width: int = 0, height: int = 0) -> None:
@@ -7484,7 +7610,13 @@ class CreativeState(rx.State):
     def report_clip_media(self, key: str, seconds: float, width: int = 0, height: int = 0) -> None:
         """ED-10: the preview in sequence measured one of the timeline's videos. Its length
         places it on the timeline; the editor's own video goes on to
-        `_report_clip_source` (the stretch it proposes, «Cortar»'s checks)."""
+        `_report_clip_source` (the stretch it proposes, «Cortar»'s checks).
+
+        ED-11 review: another R2 video the browser cannot play from its minted path (its
+        1 h token died after a reload) gets a new one, ONCE — its path is dropped (and kept
+        in `_clip_media_dead`), so the screen asks `resolve_clip_preview` again; a second
+        failure leaves it broken (its path "", a card: «Crear» says `LENGTH_UNKNOWN`
+        instead of waiting), and a video that plays may renew again later."""
         try:
             value = float(seconds)
         except (TypeError, ValueError):
@@ -7493,6 +7625,20 @@ class CreativeState(rx.State):
             self.clip_media_seconds = {**self.clip_media_seconds, key: round(value, 2)}
         if key == self._clip_edit_key():
             self._report_clip_source(key, value, width, height)
+            return
+        renewed = self._clip_media_renewed
+        url = self._clip_media_urls.get(key)
+        if value > 0 and key in renewed:
+            self._clip_media_renewed = [k for k in renewed if k != key]
+            self._clip_media_dead = {k: v for k, v in self._clip_media_dead.items() if k != key}
+        elif value < 0 and url and key not in renewed:
+            self._clip_media_renewed = [*renewed, key]
+            self._clip_media_dead = {**self._clip_media_dead, key: url}
+            self._clip_media_urls = {k: v for k, v in self._clip_media_urls.items() if k != key}
+        elif value < 0 and url:
+            # the renewed path fails too: broken (its path "", a card) — `_clip_edit_problem`
+            # stops waiting and says it cannot read its length (LENGTH_UNKNOWN)
+            self._clip_media_urls = {**self._clip_media_urls, key: ""}
 
     def _report_clip_source(
         self, key: str, seconds: float, width: int = 0, height: int = 0
@@ -12383,6 +12529,7 @@ class CreativeState(rx.State):
         self.reel_parts_notice = ""
         self._pinterest_context_epoch += 1
         self.gallery_pick_note = ""
+        self._clip_posters = {}
         self.source_pins = []
         self.clear_product()
         self.brand_logo_key = ""

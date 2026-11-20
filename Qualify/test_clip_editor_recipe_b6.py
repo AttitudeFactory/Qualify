@@ -260,12 +260,14 @@ def test_a_video_not_measured_yet_waits_and_one_that_cannot_be_read_says_so(
     state = _editor()
     state.clip_media_seconds = {}  # the second video's length not read yet
     assert state.clip_edit_problem == [clip_editor_vm.CUT_WAITING, "info"]
-    gallery = f"gallery/{_TENANT}/m1/v.mp4"  # an R2 video the preview cannot play here
+    gallery = f"gallery/{_TENANT}/m1/v.mp4"  # an R2 video: its path is minted first
     state.clip_videos = [
         *state.clip_videos[:1],
         {"key": gallery, "name": "G", "source": "existing"},
     ]
     state.clip_sequence = [_PHOTO, _OWN, gallery]
+    assert state.clip_edit_problem == [clip_editor_vm.CUT_WAITING, "info"]
+    state._clip_media_urls = {gallery: ""}  # …it could not be minted: the preview cannot
     assert state.clip_edit_problem == [clip_editor_vm.LENGTH_UNKNOWN, "warn"]
 
 

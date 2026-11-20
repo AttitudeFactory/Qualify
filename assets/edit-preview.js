@@ -349,6 +349,11 @@
       st.seq = { blocks: [], texts: [], effects: [] };
     }
     st.broken = st.broken || {};
+    // a block is broken for the address that failed: a renewed one (the server minted a
+    // new `/r2media` path after a dead token) may play again
+    (st.seq.blocks || []).forEach(function (b) {
+      if (st.broken[b.key] && st.broken[b.key] !== b.url) delete st.broken[b.key];
+    });
     st.t = Math.min(st.t, core().total(st.seq));
     return true;
   }
@@ -617,7 +622,7 @@
     var st = seqState(host);
     (st.seq.blocks || []).forEach(function (b) {
       if (b.url === url && !st.broken[b.key]) {
-        st.broken[b.key] = true;
+        st.broken[b.key] = url; // the address that failed (truthy: never "")
         var trigger = host.querySelector("[data-edit-duration-trigger]");
         if (trigger) {
           window.__qEditPreviewReport = { key: b.key, seconds: -1, width: 0, height: 0 };

@@ -270,7 +270,10 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "panel": panel,
                 "help": MOVE_HELP,
                 "help_id": HELP_IDS[MOVE_HELP],
+                # ED-11 (m-25026650): its picture, a path the screen prefixes with the
+                # backend's origin ("" = the film / photo icon), and its seconds over it
                 "thumb": str(item.get("thumb", "")),
+                "secs": f"{amount(length)} s",
                 "speed": _speed_value(item),
                 "speed_tag": f"×{_speed_value(item)}" if speed_of(item) > 1 else "",
                 "place": "",
@@ -317,6 +320,7 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "help": EFFECT_HELP if kind == "effect" else TIME_HELP,
                 "help_id": HELP_IDS[EFFECT_HELP if kind == "effect" else TIME_HELP],
                 "thumb": "",
+                "secs": "",
                 "speed": "1",
                 "speed_tag": "",
                 "place": str(item.get("place", "")),

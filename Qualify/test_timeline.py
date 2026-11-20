@@ -303,9 +303,37 @@ def test_css_phone_scale_handles_and_desktop_switch() -> None:
     assert "padding-inline: 50cqw" in _CSS  # the playhead can sit on 0:00 and the end
     assert ".q-tl__scroller {\n  overflow-x: auto;" in _CSS
     handle = _CSS[_CSS.index(".q-tl__handle {") :]
-    assert "width: 44px;" in handle[: handle.index("}")]
+    assert "width: 44px;" in handle[: handle.index("}")]  # a finger's target (§3.8)
+    # ED-11 review: with a mouse the zone that grabs is the visible bar (16 px), so the
+    # cursor, the hover and the time bubble sit on it — the finger keeps its 44 px
+    grip = _CSS[_CSS.index(".q-tl__grip {") :]
+    assert "width: 16px;" in grip[: grip.index("}")]
+    # …and a touch laptop (a fine primary pointer plus a finger) keeps the 44 px too
+    fine = _CSS[_CSS.index("@media (pointer: fine) and (not (any-pointer: coarse)) {") :]
+    rule = fine[: fine.index("}") + 1]
+    assert ".q-tl__handle { width: 16px; }" in rule
+    assert "@media (pointer: fine) {" not in _CSS
+    assert "@media (pointer: coarse)" not in _CSS  # nothing narrows the finger's target
     assert ".q-tl__lane--media { height: 56px; }" in _CSS
     assert vm.PX_PER_SECOND == 44
+    # ED-11 review: high contrast hides the picture (the name never sits on a photo) and
+    # shows the icon under it; a block with a picture has a stronger edge, but the chosen
+    # one keeps its accent border (a later rule with one attribute more)
+    forced = _CSS[_CSS.index("@media (forced-colors: active) {") :]
+    forced = forced[: forced.index("\n}") + 2]
+    assert ".q-tl__pic { display: none; }" in forced
+    assert ".q-tl__pic-fallback" in forced
+    pic_edge = '.q-tl__block[data-tl-pic="1"] { border-color: var(--gray-a8); }'
+    chosen_edge = (
+        '.q-tl__block[aria-pressed="true"][data-tl-pic="1"] { border-color: var(--accent-9); }'
+    )
+    assert pic_edge in _CSS and chosen_edge in _CSS
+    assert _CSS.index(chosen_edge) > _CSS.index(pic_edge)
+    assert _CSS.index(pic_edge) > _CSS.index(
+        '.q-tl__block[aria-pressed="true"] { border: 2px solid var(--accent-9); }'
+    )
+    fallback = _CSS[_CSS.index(".q-tl__pic-fallback {") :]
+    assert "z-index: -2;" in fallback[: fallback.index("}")]  # under `.q-tl__pic` (-1)
     # Only theme variables: no hex colour in the timeline's rules.
     block = _CSS[_CSS.index("── The timeline of «Arma tu video»") :]
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)

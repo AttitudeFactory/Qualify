@@ -90,6 +90,12 @@ class GenGalleryPickState(rx.State):
             for g in self._products
         ]
 
+    def _posters(self, picks: list[Any]) -> dict[str, str]:
+        """ED-11 (m-25026650): each business video's poster — the `/r2media` picture its
+        tile already showed — by the key it was added as (a product's video has none)."""
+        shown = {c.token: c.thumb for c in self._business if c.media_type == "video" and c.thumb}
+        return {p.key: shown[p.token] for p in picks if p.token in shown}
+
     def _sync_held(self, creative: CreativeState, target: str) -> None:
         """Which tiles the slot already holds: a product's medium by its own key, a
         business one by the copy an earlier «Agregar» made (`_copied`)."""
@@ -288,7 +294,7 @@ class GenGalleryPickState(rx.State):
             self.adding = False
             self._copied = {**self._copied, **{p.token: p.key for p in picks if p.token}}
             creative = await self.get_state(CreativeState)
-            added = creative.add_gallery_picks(picks, target)
+            added = creative.add_gallery_picks(picks, target, posters=self._posters(picks))
             note = added_note(len(tokens), added)
             if added == 0:
                 self.error = note

@@ -677,6 +677,8 @@ def _timeline() -> rx.Component:
             # ED-04: «Efectos» in rows that come and go on their own
             effect_lanes=S.clip_tl_effect_lanes,
             effect_lane_names=S.clip_tl_effect_lane_names,
+            # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
+            thumb_base=BACKEND_BASE,
         ),
         timeline_actions(
             S.clip_tl_chosen_kind,

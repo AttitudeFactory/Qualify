@@ -130,26 +130,70 @@ def _handle(row: Any, edge: str) -> rx.Component:
     )
 
 
+def _picture(src: rx.Var[str]) -> rx.Component:
+    """ED-11 (m-25026650): a block's picture — one `<img alt="">` at its start (the
+    block's name already says what it is) and the same picture repeated along the rest
+    (`background-repeat: repeat-x`, `.q-tl__pic`), so a wide block reads as a strip
+    and a narrow one shows only the picture. Never a new frame: ``src`` is a picture the
+    screen already holds."""
+    return rx.el.span(
+        rx.el.img(
+            src=src,
+            alt="",
+            class_name="q-tl__pic-img",
+            loading="lazy",
+            decoding="async",
+            draggable=False,
+        ),
+        class_name="q-tl__pic",
+        aria_hidden="true",
+        style={"backgroundImage": rx.Var.create('url("') + src + '")'},
+    )
+
+
 def _block(
     row: Any,
     *,
     selected: rx.Var[str],
     on_select: Callable[[str], Any],
+    thumb_base: rx.Var[str] | str = "",
 ) -> rx.Component:
     chosen = row["id"] == selected
-    # A video or a photo shows its picture (`media_thumb`; ``thumb`` "" = the frame with
-    # the film / photo icon until ED-11 brings the real frame); a text «Aa», an effect ✦.
-    thumb = {"size": "40px", "icon_size": T.ICON_MD, "alt": ""}
+    # ED-11: a video or a photo with a picture shows it under its name and seconds
+    # (`_picture`); without one, the frame with the film / photo icon and its name — never
+    # an empty box. A text «Aa», an effect ✦.
+    pic = row["thumb"] != ""
+    thumb = {"size": "40px", "icon_size": T.ICON_MD}
     icon = rx.match(
         row["kind"],
-        ("video", media_thumb(row["thumb"], icon="film", **thumb)),
-        ("photo", media_thumb(row["thumb"], icon="image", **thumb)),
+        ("video", media_thumb("", icon="film", **thumb)),
+        ("photo", media_thumb("", icon="image", **thumb)),
         ("text", rx.el.span("Aa", class_name="q-tl__aa")),
         rx.icon("sparkles", size=T.ICON_SM),
     )
+    # ED-11 review: under the picture, its film / photo icon centred on the block — it
+    # shows through when the picture does not load (a `/r2media` token past its hour) or
+    # is hidden (high contrast), so the block is never a bare grey box. No script.
+    under = rx.el.span(
+        rx.cond(
+            row["kind"] == "photo",
+            rx.icon("image", size=T.ICON_MD),
+            rx.icon("film", size=T.ICON_MD),
+        ),
+        class_name="q-tl__pic-fallback",
+        aria_hidden="true",
+    )
     button = rx.el.button(
-        rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
+        rx.cond(
+            pic,
+            rx.fragment(under, _picture(thumb_base + row["thumb"])),
+            rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
+        ),
         rx.el.span(row["label"], class_name="q-tl__label", aria_hidden="true"),
+        rx.cond(
+            pic & (row["secs"] != ""),
+            rx.el.span(row["secs"], class_name="q-tl__secs", aria_hidden="true"),
+        ),
         rx.cond(
             row["speed_tag"] != "",
             rx.el.span(row["speed_tag"], class_name="q-tl__speed", aria_hidden="true"),
@@ -167,6 +211,8 @@ def _block(
             # where it sits and how long, in seconds (the drag reads them)
             "data-tl-start": row["start"],
             "data-tl-len": row["length"],
+            # ED-11: it shows its picture (the name and seconds go over it)
+            "data-tl-pic": rx.cond(pic, "1", "0"),
         },
     )
     return rx.el.div(
@@ -234,6 +280,7 @@ def timeline(
     status_action: rx.Component | None = None,
     effect_lanes: rx.Var[list[list[dict[str, str]]]] | None = None,
     effect_lane_names: rx.Var[list[dict[str, str]]] | None = None,
+    thumb_base: rx.Var[str] | str = "",
 ) -> rx.Component:
     """The timeline of one video.
 
@@ -254,8 +301,11 @@ def timeline(
     ED-04 (m-25026627): with ``effect_lanes`` (its rows' blocks, row by row) and
     ``effect_lane_names`` (``{"name", "empty"}`` each) «Efectos» is several rows — the
     owner's effects never overlapping on a row; an effect dragged up or down changes
-    row (`assets/timeline-drag.js`)."""
-    block_props = {"selected": selected, "on_select": on_select}
+    row (`assets/timeline-drag.js`).
+
+    ED-11 (m-25026650): ``thumb_base`` goes before each media row's ``thumb`` path (the
+    browser's backend origin; "" when the rows carry whole addresses)."""
+    block_props = {"selected": selected, "on_select": on_select, "thumb_base": thumb_base}
     lanes = effect_lanes is not None and effect_lane_names is not None
     effect_names: list[rx.Component] = [
         rx.foreach(
