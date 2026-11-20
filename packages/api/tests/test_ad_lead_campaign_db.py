@@ -161,3 +161,38 @@ def test_unpublished_form_cannot_be_loaded_or_approved(lead_world):
         PostgresPromotionRepository().create_or_get(_request(w, forged))
     with tenant_session(w["tenant"]) as s:
         assert not s.scalar(text("SELECT count(*) FROM ad_promotions"))
+
+
+def _connection(w, sql: str) -> None:
+    with tenant_session(w["tenant"]) as s:
+        s.execute(text(f"UPDATE social_connections SET {sql} WHERE id=:id"), {"id": w["source"]})
+
+
+def test_published_form_attaches_to_a_new_ad_after_a_token_renewal(lead_world):
+    # m-25072366: identity, not the frozen version; the form keeps version 1 as provenance.
+    w = lead_world
+    _connection(w, "current_credential_version=2")
+    target = published_lead_form(w["tenant"], w["form"])
+    assert target.credential_version == 1
+    promotion = PostgresPromotionRepository().create_or_get(_request(w, target))
+    assert promotion.request["lead_form_snapshot"]["credential_version"] == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "current_credential_version=2, linked_page_id='8'",
+        "current_credential_version=2, status='revoked'",
+        "current_credential_version=2, purge_started_at=now()",
+    ],
+)
+def test_renewed_form_of_another_page_or_a_gone_connection_is_refused(lead_world, change):
+    w = lead_world
+    target = published_lead_form(w["tenant"], w["form"])
+    _connection(w, change)
+    with pytest.raises(WizardUnavailable):
+        published_lead_form(w["tenant"], w["form"])
+    with pytest.raises(ValueError):
+        PostgresPromotionRepository().create_or_get(_request(w, target))
+    with tenant_session(w["tenant"]) as s:
+        assert not s.scalar(text("SELECT count(*) FROM ad_promotions"))
