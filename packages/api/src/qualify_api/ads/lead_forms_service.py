@@ -59,7 +59,11 @@ def _context(tenant_id: UUID, connection_id: UUID, *, version: int | None = None
             AND purge_started_at IS NULL AND purged_at IS NULL"""),
             {"id": connection_id},
         ).first()
-        if row is None or (version is not None and row.current_credential_version != version):
+        if row is None:
+            raise LeadFormUnavailable(
+                "Tu cuenta de Meta ya no está conectada. Conéctala de nuevo en «Tus redes»."
+            )
+        if version is not None and row.current_credential_version != version:
             raise LeadFormUnavailable("El acceso con Meta cambió. Vuelve a revisar el formulario.")
         meta_id(row.linked_page_id)
         return dict(row._mapping)
@@ -311,10 +315,14 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
         raise LeadFormUnavailable("No pudimos comprobar el anuncio de este formulario.")
 
 
-def _persist(tenant_id: UUID, form: dict, data: dict, *, received_via: str) -> bool:
+def _persist(
+    tenant_id: UUID, form: dict, data: dict, *, received_via: str, credential_version: int
+) -> bool:
+    """`credential_version` is the one the lead was fetched with; a rotation since rejects."""
     if form["status"] != "published":
         raise LeadFormUnavailable("Primero comprueba que el formulario esté publicado en Meta.")
-    version = _form_guard(tenant_id, form)["current_credential_version"]
+    _form_guard(tenant_id, form)
+    version = credential_version
     with tenant_session(tenant_id) as session:
         # Serialize against revocation/purge/re-link/rotation before retaining any PII.
         connection = session.execute(
@@ -389,7 +397,15 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
                 data = parse_lead(raw, form_id=form["meta_form_id"])
                 await _verify_ad(client, form, data)
                 _member(tenant_id)
-                count += int(_persist(tenant_id, form, data, received_via="backup"))
+                count += int(
+                    _persist(
+                        tenant_id,
+                        form,
+                        data,
+                        received_via="backup",
+                        credential_version=context["current_credential_version"],
+                    )
+                )
             if page.after is None:
                 _member(tenant_id)
                 _form_guard(tenant_id, form)

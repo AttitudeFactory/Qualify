@@ -211,7 +211,7 @@ def test_duplicate_webhook_and_backup_concurrently_create_one_inquiry_without_wa
     data = lead(form)
 
     def persist(via: str) -> bool:
-        return service._persist(values[0], form, data, received_via=via)
+        return service._persist(values[0], form, data, received_via=via, credential_version=1)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(persist, ("webhook", "backup")))
@@ -256,7 +256,7 @@ def test_revoked_or_relinked_connection_cannot_persist_fetched_pii(change: str) 
             text(f"UPDATE social_connections SET {change} WHERE id=:id"), {"id": values[3]}
         )
     with pytest.raises(LeadFormUnavailable):
-        service._persist(values[0], form, lead(form), received_via="webhook")
+        service._persist(values[0], form, lead(form), received_via="webhook", credential_version=1)
     assert repo.list_inquiries(values[0]) == ()
 
 
@@ -283,10 +283,40 @@ def test_token_renewal_keeps_receiving_leads_and_records_current_version() -> No
     values = world()
     form = published(values)
     rotate(values)
-    assert service._persist(values[0], form, lead(form), received_via="webhook")
+    assert service._persist(
+        values[0], form, lead(form), received_via="webhook", credential_version=2
+    )
     assert repo.get_form(values[0], form["id"])["credential_version"] == 1
     with tenant_session(values[0]) as session:
         assert session.scalar(text("SELECT credential_version FROM meta_lead_submissions")) == 2
+
+
+def test_rotation_between_fetch_and_save_rejects_that_attempt_only() -> None:
+    """m-25072004: PII fetched under v1 is never saved once v2 is current; a refetch is."""
+    values = world()
+    form = published(values)
+    rotate(values)
+    with pytest.raises(LeadFormUnavailable):
+        service._persist(values[0], form, lead(form), received_via="webhook", credential_version=1)
+    assert repo.list_inquiries(values[0]) == ()
+    assert service._persist(
+        values[0], form, lead(form), received_via="webhook", credential_version=2
+    )
+    assert len(repo.list_inquiries(values[0])) == 1
+
+
+def test_context_tells_disconnected_apart_from_changed_access() -> None:
+    # A purge is caught by _connection first; its own row-missing branch only covers a race.
+    values = world()
+    with pytest.raises(LeadFormUnavailable, match="Vuelve a revisar el formulario"):
+        service._context(values[0], values[3], version=99)
+    with tenant_session(values[0]) as session:
+        session.execute(
+            text("UPDATE social_connections SET purge_started_at=now() WHERE id=:id"),
+            {"id": values[3]},
+        )
+    with pytest.raises(LeadFormUnavailable, match="ya no está disponible"):
+        service._context(values[0], values[3])
 
 
 @pytest.mark.asyncio
@@ -352,8 +382,10 @@ async def test_backup_sync_after_token_renewal_saves_leads(
 def test_connection_purger_cascades_only_its_own_meta_inquiries() -> None:
     owner, foreign = world(), world()
     form, other_form = published(owner), published(foreign)
-    service._persist(owner[0], form, lead(form), received_via="webhook")
-    service._persist(foreign[0], other_form, lead(other_form), received_via="webhook")
+    service._persist(owner[0], form, lead(form), received_via="webhook", credential_version=1)
+    service._persist(
+        foreign[0], other_form, lead(other_form), received_via="webhook", credential_version=1
+    )
     with connection_purge_session(owner[0]) as session:
         deleted = session.execute(
             text("DELETE FROM ad_lead_forms WHERE tenant_id=:tid AND connection_id=:cid"),
@@ -476,7 +508,7 @@ def test_lead_from_our_lead_ad_is_attributed_to_its_promotion() -> None:
             text("UPDATE ad_promotions SET meta_ad_id='4242' WHERE id=:id"), {"id": promotion.id}
         )
     data = {**lead(form), "meta_ad_id": "4242"}
-    assert service._persist(tenant, form, data, received_via="webhook")
+    assert service._persist(tenant, form, data, received_via="webhook", credential_version=1)
     with tenant_session(tenant) as session:
         attributed = session.scalar(
             text("SELECT promotion_id FROM meta_lead_submissions WHERE leadgen_id=:id"),
