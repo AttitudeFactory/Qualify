@@ -32,4 +32,16 @@ for probe in '/ping 200' '/api/connections/callback?code=x&state=x 303|403' '/lo
   case "|$want|" in *"|$got|"*) ;; *) mark=FAIL; failed=1 ;; esac
   printf '  %-4s %-62s %s (want %s)\n' "$mark" "$base$path" "$got" "$want"
 done
+
+# m-24824122: age of the last complete off-site backup. Informational only (never changes the
+# exit code, so a deploy is not blocked by a backup); the 4-hourly health review reads it.
+ok_file="$(dirname "$ENV_FILE")/backups/offsite.ok"
+if [ -f "$ok_file" ]; then
+  hours=$(( ($(date +%s) - $(stat -c %Y "$ok_file" 2>/dev/null || date +%s)) / 3600 ))
+  mark=ok
+  [ "$hours" -lt 30 ] || mark=WARN
+  printf '  %-4s %-62s %sh ago (want < 30h)\n' "$mark" "off-site backup (R2)" "$hours"
+else
+  printf '  %-4s %-62s %s\n' WARN "off-site backup (R2)" "never completed"
+fi
 exit $failed
