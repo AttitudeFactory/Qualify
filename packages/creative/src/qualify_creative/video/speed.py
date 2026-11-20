@@ -1,6 +1,7 @@
 """«Cámara rápida» (EF-04, epic «Video automático con efectos, por pasos», ADR 50): one or
 more stretches of already prepared (upright, vertical) videos, each sped up ×1 to ×30, laid
-end to end with hard cuts as one silent H.264 MP4 at 30 fps CFR — a Reel's time-lapse.
+end to end with hard cuts as one H.264 MP4 at 30 fps CFR — a Reel's time-lapse — silent, or
+with the ×1 stretches' own sound when the caller asks for it (`resolve_audio`).
 
 Two steps, so a live preview (an editor-like timeline) can use the first without a file:
 
@@ -43,8 +44,18 @@ Colour: the output is tagged BT.709, limited range — what its sources (`prepar
 Sources must be upright: one carrying a display rotation is refused
 (`rotation_unsupported`) before anything is written — `prepare` writes them upright.
 
-No audio: only the video stream is decoded; the output has no audio track (a sped-up
-soundtrack is noise; music goes on in a later step).
+Sound (m-25049580). Without `resolve_audio` (every caller but the local assembly) only
+the video stream is decoded and the output has no audio track. With it the output ALWAYS
+has exactly one AAC-LC 48 kHz stereo 128 kbps track for its whole length
+(`sound.AacWriter`, `join`'s format), so the music (a later step) and `join` always find
+one: a ×1 stretch whose source has a sidecar (`resolve_audio(reference)` → a `sound` WAV,
+sample 0 at the source's first frame, as `prepare` writes it) takes ITS samples from
+`start_s × 48000`, exactly `frames × 1600` of them (48000 / 30) — the instants its frames
+show, so picture and sound start and end together; a sped-up stretch (its sound would be
+noise; no time-stretching), a photo or a source without sound is silence of its exact
+length. The track is encoded once, sample-counted from 0, so nothing drifts across cuts,
+with `join`'s 80 ms fade at every cut (half on each side, `sound.faded`). The sidecar is
+read a second at a time: never a whole stretch's sound in memory.
 
 Before the encoder opens, every distinct source is probed ONCE (`_source.probe`, through
 `open_video` so FFmpeg errors come out typed): readable, has a picture, upright, the
@@ -89,7 +100,8 @@ SPEED_EFFECT_ID = "camara_rapida"
 #: a smaller stretch bicubic in its own pass, and tags the output BT.709 limited range. This
 #: is the RENDER recipe's provenance; the catalogue's `camara_rapida` entry (its params
 #: contract, never offered — D-T3) keeps `version: 1`, as its `speed` param did not change.
-SPEED_VERSION = "camara_rapida-v2"
+#: v3 (m-25049580): the ×1 stretches' own sound on request (`resolve_audio`).
+SPEED_VERSION = "camara_rapida-v3"
 #: How a stretch of another size is scaled to the output (FFmpeg `scale` flags).
 SPEED_SCALE_FLAGS = "bicubic"
 #: The scale keeps the YUV as it is: without these, FFmpeg's `scale` converts a BT.709
@@ -119,11 +131,14 @@ CODE_DURATION = "speed_duration_out_of_range"
 CODE_OUT_OF_SOURCE = "speed_interval_out_of_source"
 CODE_ENCODE = "speed_encode_failed"
 CODE_END_UNKNOWN = "speed_source_end_unknown"
+CODE_AUDIO = "speed_audio_invalid"
 #: How far past the source's last frame an interval may end (container rounding).
 _END_TOLERANCE_S = 0.05
 
 #: Turns a source reference into a local file path (default: the reference is the path).
 Resolver = Callable[[str], "str | os.PathLike[str]"]
+#: Turns a source reference into its sound's sidecar (`sound`'s WAV), or None: no sound.
+AudioResolver = Callable[[str], "str | os.PathLike[str] | None"]
 
 
 class SpeedError(VideoSourceError):
@@ -335,6 +350,9 @@ class SpeedResult:
     content_type: str = "video/mp4"
     effect_id: str = SPEED_EFFECT_ID
     version: str = SPEED_VERSION
+    #: The sound track's provenance (its format and which stretches carry their own
+    #: sound), None when the render was silent (no `resolve_audio`).
+    sound: dict[str, Any] | None = None
 
     @property
     def fps(self) -> int:
@@ -359,7 +377,8 @@ class SpeedResult:
             "duration_s": round(self.duration_s, 6),
             "width": self.width,
             "height": self.height,
-            "audio": False,
+            "audio": self.sound is not None,
+            **({"sound": self.sound} if self.sound is not None else {}),
             "segments": [planned.to_dict() for planned in self.plan.segments],
         }
 
@@ -381,9 +400,13 @@ def render_speed(
     resolve: Resolver | None = None,
     threads: int = SPEED_THREADS,
     size: tuple[int, int] | None = None,
+    resolve_audio: AudioResolver | None = None,
 ) -> SpeedResult:
-    """Encode `plan` as H.264 `yuv420p` at 30 fps CFR, BT.709 limited, no audio,
-    `+faststart`, to `out_path`, at `size` (floored to even; default the first stretch's).
+    """Encode `plan` as H.264 `yuv420p` at 30 fps CFR, BT.709 limited, `+faststart`, to
+    `out_path`, at `size` (floored to even; default the first stretch's) — without an audio
+    track, or with `resolve_audio` one AAC track for the whole video (see the module): a ×1
+    stretch's sidecar sliced to its interval, silence for the rest. Every sidecar is checked
+    (`speed_audio_invalid`) before the encoder opens.
     Sources are `prepare` / `photo_hold` output (BT.709, limited range): the scale keeps
     their YUV as is, so a BT.601 or full-range file from elsewhere would shift colour.
     `resolve` turns each stretch's source reference into a local file
@@ -412,6 +435,7 @@ def render_speed(
         if reference not in probed:
             probed[reference] = _probe(resolve(reference), threads)
         sources.append(_check_interval(planned, probed[reference]))
+    sounds = _sounds(plan, resolve_audio)
     if size is None:
         width, height = sources[0].width, sources[0].height
     else:
@@ -419,7 +443,7 @@ def render_speed(
     partial = out.with_name(f".{out.name}.{uuid.uuid4().hex}.partial.mp4")
     try:
         try:
-            _render(av, plan, sources, partial, (width, height), threads)
+            _render(av, plan, sources, partial, (width, height), threads, sounds)
         except VideoSourceError:
             raise
         except (OSError, av.error.FFmpegError) as error:
@@ -429,7 +453,47 @@ def render_speed(
         os.replace(partial, out)
     finally:
         partial.unlink(missing_ok=True)
-    return SpeedResult(path=out, width=width, height=height, plan=plan)
+    return SpeedResult(
+        path=out,
+        width=width,
+        height=height,
+        plan=plan,
+        sound=_sound_params(sounds) if sounds is not None else None,
+    )
+
+
+def _sounds(plan: SpeedPlan, resolve_audio: AudioResolver | None) -> list[str | None] | None:
+    """Each stretch's sidecar — asked only for a ×1 stretch; None for a sped-up one, a
+    photo or a silent source — or None for a silent render. Each sidecar's format is checked
+    here, before anything is written."""
+    if resolve_audio is None:
+        return None
+    from qualify_creative.video.sound import SoundError, wav_samples  # noqa: PLC0415
+
+    sounds: list[str | None] = []
+    for planned in plan.segments:
+        found = resolve_audio(planned.segment.source) if planned.segment.speed == 1.0 else None
+        if found is not None:
+            try:
+                wav_samples(found)
+            except (SoundError, OSError) as error:
+                raise SpeedError(
+                    CODE_AUDIO, f"{planned.segment.source}: its sound cannot be read: {error}"
+                ) from error
+        sounds.append(None if found is None else os.fspath(found))
+    return sounds
+
+
+def _sound_params(sounds: Sequence[str | None]) -> dict[str, Any]:
+    """The sound track's provenance: its format and the stretches (0-based, in the plan's
+    order) that carry their own sound — the others are silence."""
+    from qualify_creative.video.sound import SOUND_VERSION, sound_format  # noqa: PLC0415
+
+    return {
+        "version": SOUND_VERSION,
+        **sound_format(),
+        "original_sound": [index for index, found in enumerate(sounds) if found is not None],
+    }
 
 
 def _probe(path: str | os.PathLike[str], threads: int) -> _Probed:
@@ -477,10 +541,12 @@ def _render(
     out: Path,
     size: tuple[int, int],
     threads: int,
+    sounds: Sequence[str | None] | None = None,
 ) -> int:
     from fractions import Fraction  # noqa: PLC0415
 
     from qualify_creative.video.join import JOIN_X264, _bound  # noqa: PLC0415
+    from qualify_creative.video.sound import AacWriter  # noqa: PLC0415
 
     width, height = size
     tick = Fraction(1, SPEED_FPS)
@@ -497,6 +563,7 @@ def _render(
         context.color_primaries = _BT709
         context.color_trc = _BT709
         _bound(context, threads)
+        sound_out = AacWriter(av, sink) if sounds is not None else None
 
         def emit(frame: Any) -> None:
             nonlocal written
@@ -513,14 +580,45 @@ def _render(
                 raise SpeedError(CODE_ENCODE, f"the frame cannot be written: {error}") from error
             written += 1
 
-        for planned, source in zip(plan.segments, sources, strict=True):
+        last = len(plan.segments) - 1
+        for index, (planned, source) in enumerate(zip(plan.segments, sources, strict=True)):
+            if sound_out is not None and sounds is not None:
+                # the stretch's sound first, as `join` lays a part's: the muxer interleaves
+                _sound_segment(sound_out, planned, sounds[index], index > 0, index < last)
             _render_segment(av, planned, source, size, threads, emit)
             gc.collect()  # this stretch's decoder, graph and frames, before the next
+        if sound_out is not None:
+            sound_out.finish()
         for packet in encoder.encode():
             sink.mux(packet)
     if written != plan.frames:  # pragma: no cover — the sampler always fills its frames
         raise SpeedError(CODE_ENCODE, f"wrote {written} frames, planned {plan.frames}")
     return written
+
+
+def _sound_segment(
+    sound_out: Any, planned: PlannedSegment, sidecar: str | None, fade_in: bool, fade_out: bool
+) -> None:
+    """The stretch's sound handed to the AAC track: exactly `frames × 48000 / 30` samples —
+    its sidecar's from `start_s` (sample 0 = the source's first frame, the clock its frames'
+    `source_time` counts on) or silence — with half the cut's fade at each edge that meets
+    another stretch. Streamed from the sidecar a second at a time."""
+    from qualify_creative.video import sound  # noqa: PLC0415
+
+    samples = planned.frames * sound.SAMPLE_RATE // SPEED_FPS
+    half = min(sound.half_fade(), samples)
+    fades = (half if fade_in else 0, half if fade_out else 0)
+    chunks = (
+        sound.read_wav_window(
+            sidecar, start=round(planned.segment.start_s * sound.SAMPLE_RATE), samples=samples
+        )
+        if sidecar is not None
+        else sound.silence(samples)
+    )
+    position = 0
+    for chunk in chunks:
+        sound_out.add(sound.faded(chunk, position, samples, *fades))
+        position += chunk.shape[1]
 
 
 def _decode(container: Any, stream: Any, timeline: Timeline, start_s: float) -> Any:

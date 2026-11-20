@@ -421,7 +421,7 @@ def test_a_size_asked_for_enlarges_every_stretch_in_the_same_pass(
         context = out.streams.video[0].codec_context
         assert (context.color_range, context.colorspace) == (1, 1)
         assert (context.color_primaries, context.color_trc) == (1, 1)
-    assert result.params()["effect_version"] == SPEED_VERSION == "camara_rapida-v2"
+    assert result.params()["effect_version"] == SPEED_VERSION == "camara_rapida-v3"
     assert (result.params()["width"], result.params()["height"]) == FULL
 
 
@@ -543,7 +543,7 @@ def test_the_provenance_is_in_the_result(sources: dict[str, Path], tmp_path: Pat
     result = render_speed(plan, tmp_path / "p.mp4")
     params = json.loads(json.dumps(result.params()))
     assert params["effect_id"] == SPEED_EFFECT_ID == "camara_rapida"
-    assert params["effect_version"] == SPEED_VERSION == "camara_rapida-v2"
+    assert params["effect_version"] == SPEED_VERSION == "camara_rapida-v3"
     assert (params["fps"], params["frames"], params["duration_s"]) == (30, 90, 3.0)
     assert params["audio"] is False
     first, second = params["segments"]

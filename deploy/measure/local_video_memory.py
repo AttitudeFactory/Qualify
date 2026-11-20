@@ -111,6 +111,17 @@ CASES: dict[str, tuple[list[tuple[str, float, float, float, str]], int]] = {
     ),
     "k5_112_x2_3texts": ([("k5_hevc_112.mp4", 0, 112, 2, "video")], 3),
     "k4_60_x2_3texts": ([("k4_h264_60.mp4", 0, 60, 2, "video")], 3),
+    # m-25049580: the stretches that keep their original sound (x1), the longest allowed
+    "k4_60_x1": ([("k4_h264_60.mp4", 0, 60, 1, "video")], 0),
+    "k4_60_x1_3texts": ([("k4_h264_60.mp4", 0, 60, 1, "video")], 3),
+    "mixed_x1_x5_x1": (
+        [
+            ("k4_h264_60.mp4", 0, 15, 1, "video"),
+            ("k4_h264_60.mp4", 15, 45, 5, "video"),
+            ("hd_h264_15.mp4", 0, 15, 1, "video"),
+        ],
+        0,
+    ),
 }
 
 
