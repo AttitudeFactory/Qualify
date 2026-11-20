@@ -94,6 +94,28 @@ def frame_rotation(frame: Any) -> int:
     return right % 360
 
 
+#: AVColorSpace codes → the matrix swscale reads them with (its `src_colorspace` names).
+COLOUR_MATRICES = {1: "ITU709", 4: "FCC", 5: "ITU601", 6: "ITU601", 7: "SMPTE240M", 9: "BT2020"}
+#: AVColorRange code of full ("pc", JPEG) range.
+FULL_RANGE = 2
+#: The long side from which an untagged picture is read as BT.709 (HD), below it BT.601.
+HD_LONG_SIDE = 1280
+
+
+def source_colour(
+    colorspace: int | None, color_range: int | None, pix_fmt: str, width: int, height: int
+) -> tuple[str, str]:
+    """(matrix, range), in swscale's names, a picture's YUV is to be read with: its own
+    tags, a `yuvj*` format meaning full range; an untagged matrix is BT.709 for HD and
+    BT.601 below — the convention FFmpeg's players and browsers follow for untagged video,
+    and what an SD phone or webcam clip really holds (a modern phone tags BT.709)."""
+    full = pix_fmt.startswith("yuvj") or int(color_range or 0) == FULL_RANGE
+    matrix = COLOUR_MATRICES.get(int(colorspace or 0))
+    if matrix is None:
+        matrix = "ITU709" if max(width, height) >= HD_LONG_SIDE else "ITU601"
+    return matrix, "JPEG" if full else "MPEG"
+
+
 def decoded(frames: Iterator[Any]) -> Iterator[Any]:
     """`frames` (a decode iterator) with a decode error surfaced as `unreadable` right
     where it happens — so an FFmpeg error elsewhere (the encoder, the disk) is not blamed
