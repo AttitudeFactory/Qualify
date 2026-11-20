@@ -391,7 +391,7 @@ CLAIM_SQL = text(
                 WHERE connection.id = whatsapp_outbox.connection_id
                   AND connection.tenant_id = whatsapp_outbox.tenant_id
                   AND connection.status = 'active')
-         ORDER BY created_at, id
+         ORDER BY created_at, seq
          LIMIT :limit
          FOR UPDATE SKIP LOCKED)
     UPDATE whatsapp_outbox AS o
@@ -400,7 +400,7 @@ CLAIM_SQL = text(
       FROM due
      WHERE o.id = due.id
     RETURNING o.id, o.tenant_id, o.connection_id, o.thread_id, o.kind, o.payload, o.attempts,
-              o.created_at, o.template_category, o.attachment
+              o.created_at, o.seq, o.template_category, o.attachment
     """
 )
 
@@ -512,7 +512,9 @@ class PostgresOutboxRepository:
             rows = session.execute(
                 CLAIM_SQL, {"worker": worker_id, "now": now, "stale": stale, "limit": limit}
             ).all()
-        rows = sorted(rows, key=lambda r: (r.created_at, str(r.id)))
+        # UPDATE … RETURNING has no order of its own: re-sort as the CTE picked. `seq`
+        # (0172) breaks the created_at tie of rows queued in one transaction (m-25049598).
+        rows = sorted(rows, key=lambda r: (r.created_at, r.seq))
         return [
             ClaimedOutboxItem(
                 id=r.id,
@@ -664,9 +666,10 @@ class MemoryOutboxRow:
     template_category: str | None = None
     preview_text: str | None = None
     attachment: dict[str, Any] | None = None
-    # Insertion order — the tie-break Postgres gets for free because every enqueue is its
-    # own transaction with its own now(); a frozen test clock would otherwise leave two
-    # rows tied on created_at and ordered by their random ids.
+    # Insertion order — the mirror of the `whatsapp_outbox.seq` identity (0172,
+    # m-25049598). Rows tie on created_at both here (a frozen test clock) and in Postgres
+    # (the menu engine queues a whole step in ONE transaction, so its rows share now());
+    # seq keeps them in the order they were queued instead of their random ids'.
     seq: int = 0
 
 
