@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import os
 import secrets
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import chain
@@ -35,7 +35,7 @@ from qualify_creative.video._source import (
     open_video,
     probe,
 )
-from qualify_creative.video.upright import upright_frame
+from qualify_creative.video.upright import upright_filters
 
 #: A part's whole seconds (design §13, P2: parts of 4-10 s).
 MIN_WINDOW_SECONDS = 4
@@ -248,7 +248,7 @@ def _write_frames(
     once; the number written."""
     half_frame = 0.5 / float(rate)
     tick = Fraction(1, 1) / rate
-    stored_w, stored_h = stored
+    turn = _upright(av, stream, stored, timeline.rotation)
     frames = 0
     with av.open(partial, mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
         encoder = _window_encoder(sink, rate, size)
@@ -261,13 +261,7 @@ def _write_frames(
                 continue
             if time_s >= window_end - half_frame:
                 break
-            picture = upright_frame(
-                frame,
-                width=stored_w,
-                height=stored_h,
-                format="yuv420p",
-                rotation=timeline.rotation,
-            )
+            picture = turn(frame)
             # stamped by hand from 0 (see `fit._encode`: no pts = time 0)
             picture.pts = frames
             picture.time_base = tick
@@ -301,10 +295,13 @@ def _write_retimed(
     source_frame = 1.0 / float(timeline.rate)
     last_tick = window_end - 0.5 / float(rate)
     tick = Fraction(1, 1) / rate
-    stored_w, stored_h = stored
+    turn = _upright(av, stream, stored, timeline.rotation)
     frames = 0
     held: Any = None
     held_s = 0.0
+    #: `held` upright, made the first time it is shown: a frame left out is never turned,
+    #: a repeated one is turned once
+    held_picture: Any = None
 
     def tick_s(index: int) -> float:
         return window_start + index / float(rate)
@@ -312,18 +309,14 @@ def _write_retimed(
     with av.open(partial, mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
         encoder = _window_encoder(sink, rate, size)
 
-        def emit(frame: Any) -> None:
-            nonlocal frames
-            # a repeated frame may be the SAME object (`reformat` returns it unchanged when
-            # nothing changes): safe, the encoder takes its own reference to the frame and
-            # its pts at `encode` time, so re-stamping it for the next tick touches nothing sent
-            picture = upright_frame(
-                frame,
-                width=stored_w,
-                height=stored_h,
-                format="yuv420p",
-                rotation=timeline.rotation,
-            )
+        def emit() -> None:
+            nonlocal frames, held_picture
+            # a repeated frame is the SAME object: safe, the encoder takes its own
+            # reference to the frame and its pts at `encode` time, so re-stamping it for
+            # the next tick touches nothing sent
+            if held_picture is None:
+                held_picture = turn(held)
+            picture = held_picture
             picture.pts = frames  # stamped by hand from 0 (see `_write_frames`)
             picture.time_base = tick
             for packet in encoder.encode(picture):
@@ -341,10 +334,10 @@ def _write_retimed(
                 and tick_s(frames) < last_tick
                 and tick_s(frames) + source_half < time_s
             ):
-                emit(held)
+                emit()
             if tick_s(frames) >= last_tick:
                 break
-            held, held_s = frame, time_s
+            held, held_s, held_picture = frame, time_s, None
         else:
             # the source ended: its last frame lasts one frame of the source, no longer
             while (
@@ -352,7 +345,7 @@ def _write_retimed(
                 and tick_s(frames) < last_tick
                 and tick_s(frames) + source_half < held_s + source_frame
             ):
-                emit(held)
+                emit()
         for packet in encoder.encode():
             sink.mux(packet)
     return frames
@@ -366,6 +359,45 @@ def _window_encoder(sink: Any, rate: Fraction, size: tuple[int, int]) -> Any:
     encoder.options = dict(WINDOW_X264)
     encoder.codec_context.time_base = Fraction(1, 1) / rate
     return encoder
+
+
+def _upright(av: Any, stream: Any, stored: tuple[int, int], rotation: int) -> Callable[[Any], Any]:
+    """What makes a decoded frame of `stream` the window's picture: the stored picture at
+    `stored` (its size made even) in `yuv420p` — `reformat`, the same frame when nothing
+    changes — then, for a phone's display `rotation`, turned upright by FFmpeg's own
+    filters in YUV (`upright_filters`, as `fit._encode` does, m-25029130): a 4K frame in a
+    few ms, where `upright_frame` went through full-size RGB and numpy (~170 ms). One frame
+    in, that frame turned out — the same pixels as the stored `yuv420p` planes turned by
+    numpy, chroma included (an even-sized 4:2:0 picture turns by whole 2×2 blocks) — and,
+    like `upright_frame`'s, without the display matrix: the turn is in its pixels."""
+    stored_w, stored_h = stored
+
+    def stored_picture(frame: Any) -> Any:
+        return frame.reformat(width=stored_w, height=stored_h, format="yuv420p")
+
+    filters = upright_filters(rotation)
+    if not filters:
+        return stored_picture
+    graph = av.filter.Graph()
+    head = graph.add_buffer(
+        width=stored_w, height=stored_h, format="yuv420p", time_base=stream.time_base
+    )
+    frames_in = head
+    # the turn, then the display matrix dropped: an encoder that wrote it would turn twice
+    for spec in (*filters, "sidedata=mode=delete:type=DISPLAYMATRIX"):
+        name, _, args = spec.partition("=")
+        step = graph.add(name, args or None)
+        head.link_to(step)
+        head = step
+    frames_out = graph.add("buffersink")
+    head.link_to(frames_out)
+    graph.configure()
+
+    def turned(frame: Any) -> Any:
+        frames_in.push(stored_picture(frame))
+        return frames_out.pull()  # these filters give each frame back at once
+
+    return turned
 
 
 def _decode_from(
