@@ -29,16 +29,19 @@ from qualify_creative.video.speed import (
     CODE_SPEED,
     CODE_TOO_SHORT,
     SPEED_EFFECT_ID,
-    SPEED_VERSION,
+    SPEED_EFFECT_VERSION,
+    SPEED_RECIPE_VERSION,
     PlannedSegment,
     SpeedDurationOutOfRange,
     SpeedError,
     SpeedPlan,
+    SpeedResult,
     SpeedSegment,
     plan_speed,
     render_speed,
     resolve_segment,
     segment_frames,
+    speed_effect_version,
 )
 
 try:
@@ -421,7 +424,8 @@ def test_a_size_asked_for_enlarges_every_stretch_in_the_same_pass(
         context = out.streams.video[0].codec_context
         assert (context.color_range, context.colorspace) == (1, 1)
         assert (context.color_primaries, context.color_trc) == (1, 1)
-    assert result.params()["effect_version"] == SPEED_VERSION == "camara_rapida-v3"
+    assert result.params()["effect_version"] == SPEED_EFFECT_VERSION == 1
+    assert result.params()["recipe_version"] == SPEED_RECIPE_VERSION == "camara_rapida-v3"
     assert (result.params()["width"], result.params()["height"]) == FULL
 
 
@@ -543,7 +547,8 @@ def test_the_provenance_is_in_the_result(sources: dict[str, Path], tmp_path: Pat
     result = render_speed(plan, tmp_path / "p.mp4")
     params = json.loads(json.dumps(result.params()))
     assert params["effect_id"] == SPEED_EFFECT_ID == "camara_rapida"
-    assert params["effect_version"] == SPEED_VERSION == "camara_rapida-v3"
+    assert params["effect_version"] == SPEED_EFFECT_VERSION == 1
+    assert params["recipe_version"] == SPEED_RECIPE_VERSION == "camara_rapida-v3"
     assert (params["fps"], params["frames"], params["duration_s"]) == (30, 90, 3.0)
     assert params["audio"] is False
     first, second = params["segments"]
@@ -722,3 +727,73 @@ def test_a_write_failure_is_an_encode_error_not_an_unreadable_source(
         render_speed(plan_speed([_seg(1, 0, 3, str(sources["s30"]))]), out)
     assert caught.value.code == CODE_ENCODE
     assert list(tmp_path.iterdir()) == []
+
+
+# --- m-25029126: `effect_version` is the library's integer, the recipe goes apart ---------
+
+
+def _library_versions(effect_id: str) -> list[int]:
+    """The versions the CURRENT effects library file holds for `effect_id`, read straight
+    from its JSON (not through `load_effects`), so the check does not share code with it."""
+    import qualify_creative.effects as effects_module  # noqa: PLC0415
+
+    path = Path(effects_module.__file__).parent / "effects_data"
+    raw = json.loads(
+        (path / f"{effects_module.EFFECTS_LIBRARY_VERSION}.json").read_text(encoding="utf-8")
+    )
+    return [e["version"] for e in raw["entries"] if e["id"] == effect_id]
+
+
+def test_speed_effect_version_matches_the_library() -> None:
+    """Drift guard: the version `speed.py` writes is the `camara_rapida` entry of the
+    current library — moving the entry (a new params contract) fails here until the code
+    implementing it moves too."""
+    from qualify_creative.effects import load_effects  # noqa: PLC0415
+
+    assert _library_versions(SPEED_EFFECT_ID) == [SPEED_EFFECT_VERSION]
+    assert load_effects().get(SPEED_EFFECT_ID, SPEED_EFFECT_VERSION) is not None
+
+
+def test_the_asset_records_the_library_version_as_an_integer() -> None:
+    """Criterion 1, without PyAV: the result's `params` carry `effect_version` as the
+    library's integer (JSON round trip included) and the render recipe in its own key."""
+    plan = plan_speed([_seg(10), _seg(1, 0, 1.5, "b.mp4")])
+    result = SpeedResult(path=Path("unused.mp4"), width=1080, height=1920, plan=plan)
+    params = json.loads(json.dumps(result.params()))
+    (library_version,) = _library_versions(SPEED_EFFECT_ID)
+    assert type(params["effect_version"]) is int
+    assert params["effect_version"] == library_version == SPEED_EFFECT_VERSION
+    assert params["recipe_version"] == SPEED_RECIPE_VERSION == "camara_rapida-v3"
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ({"effect_version": 1}, 1),
+        ({"effect_version": 2}, 2),
+        ({"effect_version": "camara_rapida-v3"}, 1),  # written before m-25029126
+        ({"effect_version": "camara_rapida-v2"}, 1),
+        ({"effect_version": "camara_rapida-v1"}, 1),
+    ],
+)
+def test_both_stored_formats_read_as_the_library_version(
+    stored: dict[str, object], expected: int
+) -> None:
+    assert speed_effect_version(stored) == expected
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {},
+        {"effect_version": None},
+        {"effect_version": 0},
+        {"effect_version": True},
+        {"effect_version": "humo_capa-v1"},
+        {"effect_version": "camara_rapida-vX"},
+        {"effect_version": "1"},
+    ],
+)
+def test_an_unknown_stored_version_is_refused(stored: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="camara_rapida effect_version"):
+        speed_effect_version(stored)

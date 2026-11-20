@@ -342,8 +342,13 @@ def test_the_asset_records_its_provenance(queue_on: None, sources: dict[str, byt
     meta = write.params["local"]
     assert meta["recipe_contract"] == 2 and meta["recipe_version"] == "local-v2"
     assert meta["effects_pipeline_version"] == 1 and meta["pricing_version"] == "v10"
-    assert meta["effect_version"] == "camara_rapida-v3"
-    assert meta["speed"]["effect_version"] == "camara_rapida-v3"
+    assert meta["effect_version"] == 1 and type(meta["effect_version"]) is int  # m-25029126
+    assert meta["speed"]["recipe_version"] == "camara_rapida-v3"
+    assert meta["speed"]["effect_version"] == 1
+    assert meta["steps"]["speed"] == "camara_rapida-v3"
+    from qualify_creative.video.speed import speed_effect_version
+
+    assert speed_effect_version(meta) == speed_effect_version(meta["speed"]) == 1
     assert set(meta["steps"]) == {"prepare", "speed", "photo_hold", "sound"}
     assert [s["kind"] for s in meta["segments"]] == ["video", "photo"]
     assert all("tmp" not in str(s["source"]).lower() for s in meta["speed"]["segments"])
@@ -357,7 +362,7 @@ def test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once(
     the speed's single encode enlarges it — 1080×1920 is encoded once, not twice — and the
     provenance names the speed recipe that does it."""
     from qualify_creative.video import prepare
-    from qualify_creative.video.speed import SPEED_VERSION
+    from qualify_creative.video.speed import SPEED_RECIPE_VERSION
 
     assert prepare.TARGET_SIZE == (1080, 1920)  # not shrunk by the autouse fixture
     prepared: list[tuple[int, int]] = []
@@ -382,7 +387,7 @@ def test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once(
     (write,) = outcome.media
     assert prepared == [SIZE]  # the intermediate: never enlarged by `prepare`
     steps = write.params["local"]["steps"]
-    assert steps["speed"] == SPEED_VERSION == "camara_rapida-v3"
+    assert steps["speed"] == SPEED_RECIPE_VERSION == "camara_rapida-v3"
     frames = _decoded(store.files[write.object_key])
     assert {(f.width, f.height) for f in frames} == {(1080, 1920)}
     with av.open(io.BytesIO(store.files[write.object_key])) as written:

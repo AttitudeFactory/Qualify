@@ -467,7 +467,7 @@ def render_local_part(
             beat()
     steps: dict[str, Any] = {
         "prepare": PREPARE_VERSION,
-        "speed": result.version,
+        "speed": result.recipe_version,
         "sound": SOUND_VERSION,
     }
     if photos:

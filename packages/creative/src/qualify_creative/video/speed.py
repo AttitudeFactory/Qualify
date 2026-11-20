@@ -85,6 +85,7 @@ from __future__ import annotations
 import gc
 import math
 import os
+import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -95,13 +96,21 @@ from qualify_creative.video._source import Timeline, VideoSourceError
 
 #: The effect's id in the effects catalogue and in the asset's `params`.
 SPEED_EFFECT_ID = "camara_rapida"
-#: Version of this effect's recipe — recorded with the asset (provenance). v2
+#: The `camara_rapida` entry's version in the effects library (its params contract, never
+#: offered — D-T3) — the integer the asset records as `effect_version`, like every other
+#: effect (m-25029126). Written here, not read from the library at run time, on purpose: it
+#: names the params contract THIS code implements, so a library that moves the entry to
+#: another version fails `test_speed_effect_version_matches_the_library` until the code follows.
+SPEED_EFFECT_VERSION = 1
+#: Version of this effect's RENDER recipe — recorded with the asset as `recipe_version`
+#: (provenance), apart from the library version above, which did not change with it. v2
 #: (m-25041163): renders at the `size` asked for (the local assembly's 1080×1920), enlarging
-#: a smaller stretch bicubic in its own pass, and tags the output BT.709 limited range. This
-#: is the RENDER recipe's provenance; the catalogue's `camara_rapida` entry (its params
-#: contract, never offered — D-T3) keeps `version: 1`, as its `speed` param did not change.
+#: a smaller stretch bicubic in its own pass, and tags the output BT.709 limited range.
 #: v3 (m-25049580): the ×1 stretches' own sound on request (`resolve_audio`).
-SPEED_VERSION = "camara_rapida-v3"
+SPEED_RECIPE_VERSION = "camara_rapida-v3"
+#: Before m-25029126 an asset's `effect_version` held the recipe (`"camara_rapida-v2"`…):
+#: every one of those belongs to the library's `camara_rapida` version 1.
+_LEGACY_RECIPE = re.compile(rf"^{SPEED_EFFECT_ID}-v(\d+)$")
 #: How a stretch of another size is scaled to the output (FFmpeg `scale` flags).
 SPEED_SCALE_FLAGS = "bicubic"
 #: The scale keeps the YUV as it is: without these, FFmpeg's `scale` converts a BT.709
@@ -349,7 +358,10 @@ class SpeedResult:
     plan: SpeedPlan
     content_type: str = "video/mp4"
     effect_id: str = SPEED_EFFECT_ID
-    version: str = SPEED_VERSION
+    #: The library entry's version (`effect_version`, an integer like every effect's).
+    version: int = SPEED_EFFECT_VERSION
+    #: The render recipe's provenance (`recipe_version`).
+    recipe_version: str = SPEED_RECIPE_VERSION
     #: The sound track's provenance (its format and which stretches carry their own
     #: sound), None when the render was silent (no `resolve_audio`).
     sound: dict[str, Any] | None = None
@@ -372,6 +384,7 @@ class SpeedResult:
         return {
             "effect_id": self.effect_id,
             "effect_version": self.version,
+            "recipe_version": self.recipe_version,
             "fps": SPEED_FPS,
             "frames": self.frames,
             "duration_s": round(self.duration_s, 6),
@@ -697,3 +710,16 @@ def _render_segment(
             raise SpeedError("no_video", f"{planned.segment.source}: no frame in its interval")
         while n < frames:  # the source's last frame lasts to the interval's end
             show()
+
+
+def speed_effect_version(params: Mapping[str, Any]) -> int:
+    """The library version of a stored «cámara rápida» provenance (`SpeedResult.params()`,
+    or the local assembly's `params["local"]`), in either format: the integer written since
+    m-25029126, or the recipe text written before it (`"camara_rapida-vN"`, all of them
+    library version 1). Anything else is a `ValueError` naming it."""
+    raw = params.get("effect_version")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
+        return raw
+    if isinstance(raw, str) and _LEGACY_RECIPE.match(raw):
+        return SPEED_EFFECT_VERSION
+    raise ValueError(f"not a camara_rapida effect_version: {raw!r}")
