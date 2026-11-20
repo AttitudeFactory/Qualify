@@ -135,6 +135,36 @@ def test_approval_and_creation_intents_cannot_be_changed_or_reset() -> None:
         )
 
 
+def test_failed_step_is_reclaimed_once_and_only_with_the_same_intent() -> None:
+    """m-25077974: a released step (Meta created nothing) can be claimed again; nothing else."""
+    req = _request()
+    repo = PostgresPromotionRepository()
+    row = repo.create_or_get(req)
+    payload, token = step_payload(row, "campaigns"), uuid4()
+    assert repo.claim(req.tenant_id, row.id, "campaigns", payload, token)
+    assert not repo.fail(req.tenant_id, row.id, "campaigns", uuid4())
+    assert repo.fail(req.tenant_id, row.id, "campaigns", token)
+    assert not repo.complete(req.tenant_id, row.id, "campaigns", token, "111")
+    for query in (
+        "UPDATE ad_promotion_steps SET state='completed',meta_id='1' WHERE promotion_id=:id",
+        "UPDATE ad_promotion_steps SET payload='{}'::jsonb WHERE promotion_id=:id",
+        "UPDATE ad_promotion_steps SET meta_id='1' WHERE promotion_id=:id",
+    ):
+        with pytest.raises(IntegrityError), tenant_session(req.tenant_id) as session:
+            session.execute(text(query), {"id": row.id})
+    retry = uuid4()
+    assert repo.claim(req.tenant_id, row.id, "campaigns", payload, retry)
+    assert not repo.claim(req.tenant_id, row.id, "campaigns", payload, uuid4())
+    step = repo.step(req.tenant_id, row.id, "campaigns")
+    assert step.state == "in_flight" and step.claim_token == retry
+    assert repo.complete(req.tenant_id, row.id, "campaigns", retry, "111")
+    with pytest.raises(IntegrityError), tenant_session(req.tenant_id) as session:
+        session.execute(
+            text("UPDATE ad_promotion_steps SET state='failed' WHERE promotion_id=:id"),
+            {"id": row.id},
+        )
+
+
 def test_schema_rls_enable_force_and_unset_context_fails_closed() -> None:
     req = _request()
     row = PostgresPromotionRepository().create_or_get(req)

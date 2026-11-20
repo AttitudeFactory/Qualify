@@ -17,6 +17,7 @@ from qualify_api.ads.enhancements import (
     verify_compatibility,
     verify_remote_preview,
 )
+from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.lead_ads import LeadFormTarget
 from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_greeting import MessageGreeting
@@ -272,6 +273,9 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
     )
 
 
+RETRY_CREATION = "No se activó ningún anuncio. Puedes volver a intentarlo."
+
+
 def charge_notice(promotion: Promotion) -> str:
     # COP is displayed with two explicit decimal places; no float rounding.
     minor = promotion.request["budget_minor"]
@@ -359,14 +363,19 @@ class PromotionWizard:
                 )
             self.gateway.local_guard(self.sources.get(tenant_id, publish_attempt_id))
 
-        promotion = await self.creation.start(
-            request,
-            **(
-                {"before_write": creation_guard, "validate_step": self.gateway.validate_step}
-                if live
-                else {}
-            ),
-        )
+        try:
+            promotion = await self.creation.start(
+                request,
+                **(
+                    {"before_write": creation_guard, "validate_step": self.gateway.validate_step}
+                    if live
+                    else {}
+                ),
+            )
+        except MarketingError as error:
+            # start() keeps a claim only when the POST may have reached Meta (no raise):
+            # here the step was released, so the same request can simply be retried.
+            raise WizardUnavailable(f"{error} {RETRY_CREATION}") from None
         if promotion.status != "paused" or len(promotion.ids) != 4:
             raise WizardUnavailable(
                 "La creación quedó pendiente. Revisa la cuenta antes de repetirla."

@@ -20,6 +20,7 @@ from qualify_api.ads.promotions import (
     PromotionRequest,
     PromotionService,
 )
+from qualify_api.ads.wizard import WizardUnavailable
 
 
 def request(**changes):
@@ -273,3 +274,71 @@ def test_repository_snapshots_are_deep_copies():
     req.targeting["countries"].append("VE")
     row.request["targeting"]["countries"].append("UY")
     assert repo.get(req.tenant_id, row.id).request["targeting"] == {"countries": ["CO"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", STEPS)
+async def test_definite_rejection_after_claim_fails_the_step_and_the_owner_can_retry(resource):
+    """m-25077974: a 4xx means Meta created nothing; the step must not stay in flight."""
+
+    class Rejects(FakeMarketingClient):
+        once = True
+
+        async def create(self, kind, *, params):
+            if self.once and kind == resource:
+                self.once = False
+                raise MarketingError("Meta no aceptó este anuncio.", http_status=400, code=100)
+            return await super().create(kind, params=params)
+
+    req, repo, client, binding, service = setup(client=Rejects(account_id="12"))
+    with pytest.raises(MarketingError):
+        await service.start(req)
+    row = next(iter(repo.promotions.values()))
+    assert repo.step(req.tenant_id, row.id, resource).state == "failed"
+    result = await PromotionService(repo, binding).resume(req.tenant_id, row.id)
+    assert result.status == "paused" and len(client.objects) == 4
+    assert repo.step(req.tenant_id, row.id, resource).state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_refusal_before_the_post_leaves_no_claim_and_sends_nothing():
+    """m-25077974: the receipt expiring mid-creation must not brick the promotion."""
+    req, repo, client, binding, service = setup()
+    expired = True
+
+    async def guard():
+        if expired:
+            raise WizardUnavailable("La comprobación venció. Vuelve a revisar la promoción.")
+
+    with pytest.raises(WizardUnavailable, match="venció"):
+        await service.start(req, before_write=guard)
+    row = next(iter(repo.promotions.values()))
+    assert repo.step(req.tenant_id, row.id, "campaigns").state == "failed"
+    assert client.calls == [] and client.objects == {}
+    expired = False
+    result = await service.resume(req.tenant_id, row.id, before_write=guard)
+    assert result.status == "paused" and len(client.objects) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after", [False, True])
+async def test_network_error_after_the_post_stays_recoverable_never_failed(after):
+    """A POST that may have reached Meta is settled only by recovery: no duplicate campaign."""
+
+    class Guarded(Interrupted):
+        async def create(self, resource, *, params, before_write=None):
+            await before_write()  # The local checks pass; the POST then times out.
+            return await super().create(resource, params=params)
+
+    async def guard():
+        return None
+
+    req, repo, client, binding, service = setup(client=Guarded("campaigns", after=after))
+    row = await service.start(req, before_write=guard)
+    assert repo.step(req.tenant_id, row.id, "campaigns").state == "in_flight"
+    result = await service.resume(req.tenant_id, row.id, before_write=guard)
+    assert repo.step(req.tenant_id, row.id, "campaigns").state == (
+        "completed" if after else "in_flight"
+    )
+    assert len(client.objects) == (4 if after else 0)
+    assert (result.status == "paused") is after

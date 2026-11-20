@@ -918,6 +918,7 @@ async def poll_promotion_results(*, tenant_id: UUID, limit: int = 100) -> dict[s
     """Readonly system tick. Production scheduling is a separate deployment step."""
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError("limit must be between one and five hundred")
+    now = datetime.now(UTC)
     with tenant_session(tenant_id) as s:
         ids = s.scalars(
             text("""SELECT p.id FROM ad_promotions p
@@ -925,8 +926,12 @@ async def poll_promotion_results(*, tenant_id: UUID, limit: int = 100) -> dict[s
           WHERE p.meta_ad_id IS NOT NULL
             AND (o.refresh_started_at IS NULL OR o.refresh_started_at < :due)
             AND (o.effective_status IS NULL OR o.effective_status NOT IN ('ARCHIVED','DELETED'))
+            -- Abandoned (never activated, preview expired): paused forever, nothing to read.
+            AND EXISTS(SELECT 1 FROM ad_promotion_activations a
+              WHERE a.promotion_id=p.id AND a.tenant_id=p.tenant_id
+                AND (a.state<>'ready' OR a.expires_at>:now))
           ORDER BY o.refresh_started_at NULLS FIRST,p.created_at LIMIT :limit"""),
-            {"due": datetime.now(UTC) - POLL_INTERVAL, "limit": limit},
+            {"due": now - POLL_INTERVAL, "now": now, "limit": limit},
         ).all()
     counts = {"checked": 0, "unavailable": 0}
     for promotion_id in ids:
