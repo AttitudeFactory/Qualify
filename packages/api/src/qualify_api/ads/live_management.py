@@ -235,6 +235,8 @@ async def _spend_cap_guard(
     counts this ad's spend). No cap, or no reading, blocks nothing.
     """
     raise_meta = (new_minor - promotion.request["budget_minor"]) // 100
+    # A failed read (MarketingError) refuses the raise: results_service maps it to its retry
+    # message. Money safety: a raise is never sent without reading the cap first.
     async with gateway.client(source) as client:
         room = spend_cap_room(await client.read_account(fields="spend_cap,amount_spent"))
         if room is None:
@@ -244,7 +246,7 @@ async def _spend_cap_guard(
     if adset.get("id") != promotion.ids["adsets"] or unspent is None:
         unspent = 0  # Unknown unspent budget: the raise alone still has to fit.
     if unspent + raise_meta > room:
-        raise ResultsUnavailable(spend_cap_exceeded(room, 1))
+        raise ResultsUnavailable(spend_cap_exceeded(room, 1, "COP"))
 
 
 FLOOR_UNAVAILABLE = "No pudimos comprobar lo gastado y el mínimo de Meta. Inténtalo de nuevo."

@@ -42,6 +42,7 @@ class MetaHTTP:
         # act_12 spend_cap / amount_spent in whole COP; None = Meta's "0", no cap.
         self.spend_cap: int | None = None
         self.amount_spent = 0
+        self.account_error = False  # act_12 answers a Graph error (MarketingError)
         # interest id -> (targetingvalidation `valid`, targetingoptionstatus `current_status`)
         self.interests: dict[str, tuple[bool, str]] = {}
 
@@ -82,6 +83,8 @@ class MetaHTTP:
             elif path == "search":
                 assert request.url.params["type"] == "targetingoptionstatus"
                 data = [{"id": k, "current_status": v[1]} for k, v in self.interests.items()]
+            elif path == "act_12" and self.account_error:
+                return httpx.Response(400, json={"error": {"code": 1, "message": "secret"}})
             elif path == "act_12":
                 return httpx.Response(
                     200,
@@ -347,7 +350,9 @@ async def confirm(live, preview):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["budget", "budget_down", "end_time", "resume"])
-@pytest.mark.parametrize("failure", [None, "credential_after_write", "audit_failure", "spend_grew"])
+@pytest.mark.parametrize(
+    "failure", [None, "credential_after_write", "audit_failure", "spend_grew", "cap_grew"]
+)
 async def test_paid_management_real_http_receipt_and_full_chain_verification(
     live, monkeypatch, action, failure
 ):
@@ -361,6 +366,11 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
 
     if failure == "spend_grew" and action != "budget_down":
         pytest.skip("the confirm-time floor applies only to a budget decrease")
+    if failure == "cap_grew" and action != "budget":
+        pytest.skip("the confirm-time spend cap applies only to a budget raise")
+    if failure == "cap_grew":
+        # 25.000 COP left: the 10.000 unspent + 10.000 raise fits at prepare.
+        live["remote"].spend_cap, live["remote"].amount_spent = 30_000, 5_000
 
     preview = await prepare(live)
     await confirm(live, preview)
@@ -439,6 +449,24 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
                 raise RuntimeError("database unavailable")
 
             monkeypatch.setattr(management, "_finish_pause", fail_audit)
+        if failure == "cap_grew":
+            # Other ads spent 7.000 more while the owner read the review: 18.000 left < 20.000.
+            live["remote"].amount_spent = 12_000
+            with pytest.raises(ResultsUnavailable, match=r"límite de gasto.*\$18\.000 COP"):
+                await management.confirm_promotion_edit(
+                    tenant_id=tenant,
+                    promotion_id=promotion.id,
+                    request_key="edit-actual",
+                    approval_token=review.approval_token,
+                    confirm_change=True,
+                )
+            assert audits == []  # refused before _claim_pause
+            assert not [
+                call
+                for call in live["remote"].calls[start:]
+                if call[0] == "POST" and "execution_options" not in call[2]
+            ]
+            return
         if failure == "spend_grew":
             # 9.000 of 10.000 spent while the owner read the review: floor is now 12.000.
             live["remote"].spent = 9000
@@ -572,11 +600,27 @@ async def test_budget_over_the_account_spend_cap_is_refused_before_any_meta_post
         await prepare(live)
     remaining = "9.999" if cap == 60_000 else "0"
     assert str(error.value) == (
-        "Este presupuesto supera lo que le queda al tope de gasto de tu cuenta publicitaria "
-        f"(quedan ${remaining}). Bájalo o sube el tope en Meta."
+        "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
+        f"(quedan ${remaining} COP). Bájalo o sube el límite en Meta, en Facturación y pagos."
     )
     assert error.value.diagnostics[-1]["key"] == "currency"
     assert not [call for call in remote.calls if call[0] == "POST"]
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_is_checked_again_right_before_the_real_create(live):
+    """Preflight passes; spend grows before the create: refused with no object created."""
+    remote = live["remote"]
+    remote.spend_cap = 60_000
+
+    def spend(method, path, params):
+        if method == "POST" and path == "act_12/ads" and "execution_options" in params:
+            remote.amount_spent = 55_000  # 5.000 left < 10.000
+
+    remote.before_request = spend
+    with pytest.raises(WizardUnavailable, match=r"quedan \$5\.000 COP"):
+        await prepare(live)
+    assert not remote.actual_creates and not remote.activations
 
 
 @pytest.mark.parametrize(
@@ -648,10 +692,57 @@ async def test_live_budget_raise_over_the_spend_cap_is_refused_and_a_decrease_ne
         if allowed:
             assert (await call).new_budget_minor == budget_minor
         else:
-            with pytest.raises(ResultsUnavailable, match=r"tope de gasto.*quedan \$19\.000\)"):
+            with pytest.raises(ResultsUnavailable, match=r"límite de gasto.*\$19\.000 COP\)"):
                 await call
         posts = [c for c in live["remote"].calls[start:] if c[0] == "POST"]
         assert bool(posts) is allowed
+
+
+@pytest.mark.asyncio
+async def test_budget_raise_is_refused_when_the_spend_cap_cannot_be_read(live, monkeypatch):
+    """Fail closed for money: a Graph error reading the account refuses the raise with the
+    module's retry message, and nothing is validated or sent."""
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads import results_service
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+    from qualify_api.ads.results import ResultsUnavailable
+
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(management, "PostgresPromotionRepository", lambda: live["repo"])
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        monkeypatch.setattr(management, "_local", lambda *args: None)
+        monkeypatch.setattr(gateway, "remote_guard", _no_remote_guard)
+        live["remote"].account_error = True
+        start = len(live["remote"].calls)
+        with pytest.raises(ResultsUnavailable) as error:
+            await results_service.prepare_promotion_edit(
+                tenant_id=tenant,
+                promotion_id=promotion.id,
+                request_key="edit-cap-error",
+                action="budget",
+                budget_minor=2_000_000,
+            )
+        assert str(error.value) == results_service.UNAVAILABLE
+        assert not [c for c in live["remote"].calls[start:] if c[0] == "POST"]
 
 
 async def _no_remote_guard(*args, **kwargs) -> None:

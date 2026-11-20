@@ -62,11 +62,12 @@ def spend_cap_room(account: dict[str, Any]) -> int | None:
     return max(0, cap - spent)
 
 
-def spend_cap_exceeded(room: int, offset: int) -> str:
+def spend_cap_exceeded(room: int, offset: int, currency: str) -> str:
     amount = f"{room * 100 // offset // 100:,}".replace(",", ".")
     return (
-        "Este presupuesto supera lo que le queda al tope de gasto de tu cuenta publicitaria "
-        f"(quedan ${amount}). Bájalo o sube el tope en Meta."
+        "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
+        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta, "
+        "en Facturación y pagos."
     )
 
 
@@ -306,6 +307,13 @@ class LiveWizardGateway:
         if current != form.messaging:
             self.fail("validation", "El chat del anuncio cambió. Vuelve a elegirlo.")
 
+    def spend_cap_guard(
+        self, account: dict[str, Any], form: WizardForm, offset: int | None
+    ) -> None:
+        room = spend_cap_room(account)
+        if offset and room is not None and form.budget_minor * offset // 100 > room:
+            self.fail("currency", spend_cap_exceeded(room, offset, form.currency))
+
     async def preflight(self, source: PromotionSource, form: WizardForm) -> VerifiedChecks:
         self.diagnostics = []
         self.goal = "chat" if form.messaging else "lead" if form.lead_form else "website"
@@ -326,9 +334,7 @@ class LiveWizardGateway:
                     )
                 # Read live with the account checks above: a typed extra zero stops here,
                 # before any validate or create reaches Meta (m-25077975).
-                room = spend_cap_room(account)
-                if offset and room is not None and form.budget_minor * offset // 100 > room:
-                    self.fail("currency", spend_cap_exceeded(room, offset))
+                self.spend_cap_guard(account, form, offset)
                 requested = self.clock()
                 payloads = payloads_for_validation(source, form, self.actor, requested, offset)
                 for resource in ("campaigns", "adcreatives"):
@@ -418,7 +424,10 @@ class LiveWizardGateway:
         if not valid_receipt(checks.exact_validation, source, form, self.clock(), self.actor):
             self.fail("validation", "La comprobación venció. Vuelve a revisar la promoción.")
         async with self.client(source) as client:
-            await self.observations(source, client)
+            account = await self.observations(source, client)
+            # Spend against the cap may have grown since preflight: check it right before
+            # the real create, with the offset the receipt was validated at.
+            self.spend_cap_guard(account, form, checks.currency_offset)
             await self.interest_guard(client, form)
         if not valid_receipt(checks.exact_validation, source, form, self.clock(), self.actor):
             self.fail(
