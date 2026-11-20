@@ -696,7 +696,7 @@ apagado en producción (ADR 50 §6.1 #13).
  0:03   0:04   0:05 │ 0:06   0:07      ← regla de segundos
  ▣▣ Video 1 ▣▣▣◀▌╔══│══ Video 2 ══╗▐▶  ← «Fotos y videos» (56 px); elegido: borde + 2 tiradores
  Aa «2×1 hoy» ══════│═════╗            ← «Textos» (44 px)
- ░░░░ Vapor ░░░░░░░░│░░░░░░░░░░░░     ← «Efectos» (44 px por fila; suma filas sola)
+ ░░░░ Vapor ░░░░░░░░│░░░░░░░░░░░░     ← «Efectos 1» (44 px por fila; suma filas sola)
        ░░ Humo ░░░░░│░░░               ← «Efectos 2» (solo mientras dos efectos se encimarían)
                     ▲ cabezal
  [+ Agregar]  o, con un bloque elegido, [Quitar]   ← barra de acciones
@@ -708,10 +708,12 @@ apagado en producción (ADR 50 §6.1 #13).
    (`[data-edit-sync]`). Debajo del cuadro no va la hora: la única es la de la regla.
 2. **Regla de segundos**, con la hora en texto.
 3. **Tres pistas**, siempre visibles y en este orden: «Fotos y videos», «Textos», «Efectos». Una
-   pista vacía no desaparece: queda como una fila en blanco de la misma altura, sin texto de ayuda, y su nombre accesible dice que está vacía («Pista de textos vacía»
-   (`EMPTY_TRACK_NAMES`).
+   pista vacía no desaparece: queda como una fila en blanco de la misma altura, sin texto de
+   ayuda, y su nombre accesible dice que está vacía («Pista de textos vacía»,
+   `EMPTY_TRACK_NAMES`).
 4. **Filas de «Efectos»** (Deivid, 2026-11-20, #759): la pista suma una fila sola cuando dos
-   efectos se encimarían y la quita cuando ya no hace falta («Efectos 2»…). Un efecto pasa de una
+   efectos se encimarían y la quita cuando ya no hace falta. Con una sola fila se llama
+   «Efectos»; con dos o más, «Efectos 1», «Efectos 2»… (`lane_name`). Un efecto pasa de una
    fila a otra arrastrándolo hacia arriba o hacia abajo. **No hay «+ Pista»**: el dueño nunca
    crea pistas a mano.
 5. **Bloques:** cada foto, video, texto o efecto es un bloque con ícono **y** nombre (nunca solo
@@ -784,7 +786,8 @@ apagado en producción (ADR 50 §6.1 #13).
 - La línea es un grupo con `aria-label` «Línea de tiempo de tu video» y tres listas: «Fotos y
   videos», «Textos» y «Efectos». Cada bloque es un `<button>` alcanzable con Tab, con nombre
   completo y `aria-pressed` cuando está elegido.
-- **Escape** dentro del panel lo cierra y suelta el bloque.
+- **Enter** elige el bloque y lleva el foco a su panel; **Escape** dentro del panel lo cierra y
+  suelta el bloque.
 - **←/→ sobre un bloque de video o foto lo cambian de lugar** («Usa las flechas para cambiarlo de
   lugar.»); sobre un texto o un efecto lo corren ½ s («Usa las flechas para cambiar cuándo
   sale.»). **↑/↓ sobre un efecto** lo pasan a otra fila. Cada ayuda vive una vez, en un `span`
@@ -796,15 +799,15 @@ apagado en producción (ADR 50 §6.1 #13).
 - **Se guarda al momento y no hay «Deshacer»** (D-E6; Deivid quitó «Deshacer» el 2026-11-19,
   #743). Cada cambio se anuncia **una vez** en la línea viva `role="status"` de la línea de
   tiempo («Moviste el video 2.», «Pusiste el video 2 ×10.»…). No hay botón «Guardar».
-- `prefers-reduced-motion`: la lente del bloque elegido salta sin deslizarse, la pantalla lleva al panel sin
-  desplazamiento suave y los bucles de efectos de la vista previa se detienen.
+- `prefers-reduced-motion`: la lente del bloque elegido salta sin deslizarse, la pantalla lleva
+  al panel sin desplazamiento suave y los bucles de efectos de la vista previa se detienen.
 
 **Lo que NO hace** (ADR 50 §1.7). Tiene el estilo de un editor con línea de tiempo, pero **no es
 un editor de video:** sin zoom, sin fotogramas clave, sin recorte cuadro a cuadro, sin capas
 libres, sin pistas de audio aparte, sin huecos ni bloques encimados en la pista de video, y sin
 pistas que el dueño cree a mano (no hay «+ Pista»). **Transiciones:** el Clip no tiene; entre
-partes llegan con el editor de Video por partes (ED-07) y, mientras no llegue EF-16, la única que
-se ofrece es **«corte»** (D9: `fundido` y `barrido` se ocultan hasta EF-16). No genera nada:
+partes llegan con el editor de Video por partes (ED-07). Deivid decidió (D9) ofrecer solo
+«corte» hasta EF-16; el cambio va en un PR aparte (ADR 50 §6.1 #2a). No genera nada:
 todo lo que está en la pista se ve gratis en la vista previa antes de crear; lo que cuesta pasa
 al tocar «Crear». En la pantalla nunca se escriben «timeline», «track», «clip», «capa», «frame»,
 «render», «split» ni «trim»; «Cortar» es la palabra del dueño.
