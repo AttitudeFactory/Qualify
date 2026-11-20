@@ -403,7 +403,10 @@ class PostgresPromotionRepository:
                     "INSERT INTO ad_promotion_steps "
                     "(tenant_id,promotion_id,resource,payload,claim_token,state) "
                     "VALUES (:tenant,:id,:resource,CAST(:payload AS jsonb),:token,'in_flight') "
-                    "ON CONFLICT (promotion_id,resource) DO NOTHING RETURNING promotion_id"
+                    # Only a released ('failed') step is reclaimed; nothing reached Meta for it.
+                    "ON CONFLICT (promotion_id,resource) DO UPDATE "
+                    "SET state='in_flight',claim_token=EXCLUDED.claim_token "
+                    "WHERE ad_promotion_steps.state='failed' RETURNING promotion_id"
                 ),
                 {
                     "tenant": tenant_id,
@@ -448,6 +451,20 @@ class PostgresPromotionRepository:
                     {"meta": meta_id, "id": promotion_id, "status": status},
                 )
         return result is not None
+
+    def fail(self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID) -> bool:
+        with tenant_session(tenant_id, independent=True) as session:
+            return (
+                session.execute(
+                    text(
+                        "UPDATE ad_promotion_steps SET state='failed' "
+                        "WHERE promotion_id=:id AND resource=:resource AND state='in_flight' "
+                        "AND claim_token=:token RETURNING promotion_id"
+                    ),
+                    {"id": promotion_id, "resource": resource, "token": token},
+                ).first()
+                is not None
+            )
 
 
 class MemoryPromotionRepository:
@@ -529,7 +546,7 @@ class MemoryPromotionRepository:
             ) or payload != step_payload(row, resource):
                 raise ValueError("invalid creation sequence or payload")
             key = (promotion_id, resource)
-            if key in self.steps:
+            if key in self.steps and self.steps[key].state != "failed":
                 return False
             self.steps[key] = CreationStep(resource, deepcopy(payload), "in_flight", token)
             self.promotions[row.id] = replace(row, status="creating")
@@ -553,4 +570,12 @@ class MemoryPromotionRepository:
                 ids={**row.ids, resource: meta_id},
                 status="paused" if resource == "ads" else "creating",
             )
+            return True
+
+    def fail(self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID) -> bool:
+        with self._lock:
+            step = self.step(tenant_id, promotion_id, resource)
+            if not step or step.state != "in_flight" or step.claim_token != token:
+                return False
+            self.steps[promotion_id, resource] = replace(step, state="failed")
             return True

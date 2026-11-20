@@ -582,3 +582,19 @@ async def test_a_website_button_never_rides_a_lead_ad() -> None:
     with pytest.raises(WizardUnavailable, match="botón"):
         await wizard.prepare(**{**args, "form": replace(args["form"], cta_type="SHOP_NOW")})
     assert not client.calls and not client.objects
+
+
+@pytest.mark.asyncio
+async def test_meta_rejecting_a_creation_step_explains_and_the_same_request_retries() -> None:
+    """m-25077974: a definite 4xx frees the step; preparing again finishes the promotion."""
+    wizard, client, _, _, args, _ = setup()
+    client.failures.append(
+        MarketingError("Meta está recibiendo muchas solicitudes.", http_status=400, code=17)
+    )
+    with pytest.raises(
+        WizardUnavailable, match="^No se activó ningún anuncio. Meta está recibiendo"
+    ):
+        await wizard.prepare(**args)
+    assert client.objects == {}
+    preview = await wizard.prepare(**args)
+    assert preview.status == "paused" and len(client.objects) == 4

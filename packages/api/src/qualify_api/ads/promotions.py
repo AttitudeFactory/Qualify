@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -19,6 +21,8 @@ ID_COLUMNS = dict(
     zip(STEPS, ("meta_campaign_id", "meta_adset_id", "meta_creative_id", "meta_ad_id"))
 )
 ADAPTER_VERSION = "ad-promotions-v1"
+TRANSIENT_CODES = frozenset({1, 2})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,22 @@ def fingerprint(snapshot: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def definite_rejection(error: MarketingError) -> bool:
+    """True only when Meta's answer proves it created nothing (a 4xx that is not transient).
+
+    Codes 1/2 are Meta's transient/unknown errors and an error inside a 2xx body is
+    ambiguous: both stay in flight for recovery. `is_transient` is not exposed by
+    MarketingError, so transient answers are recognised by these codes only.
+    """
+    status = error.http_status
+    return (
+        not error.outcome_unknown
+        and status is not None
+        and 400 <= status < 500
+        and error.code not in TRANSIENT_CODES
+    )
+
+
 @dataclass(frozen=True)
 class Promotion:
     id: UUID
@@ -223,6 +243,9 @@ class PromotionRepository(Protocol):
     def complete(
         self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID, meta_id: str
     ) -> bool: ...
+    def fail(self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID) -> bool:
+        """Release an in-flight claim nothing created in Meta (state 'failed', reclaimable)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -338,7 +361,7 @@ class PromotionService:
                 continue
             access = await self._access(promotion)
             existing = self.repository.step(tenant_id, promotion_id, resource)
-            if existing is not None:
+            if existing is not None and existing.state != "failed":
                 # Never reset an in-flight claim to create-ready, even after a crash.
                 found = await self._recover(access.client, existing)
                 if found is None:
@@ -356,20 +379,49 @@ class PromotionService:
                 return self.repository.get(tenant_id, promotion_id) or promotion
             # claim() must COMMIT independently before this call; cancellation or
             # persistence failure leaves a durable claim, which only recovery can finish.
+            # `sent` turns true once the last local check passed and the POST may leave.
+            sent = before_write is None
+
+            async def guarded(check: Callable[[], Awaitable[None] | None]) -> None:
+                nonlocal sent
+                checked = check()
+                if inspect.isawaitable(checked):
+                    await checked
+                sent = True
+
             try:
                 if before_write is None:
                     identifier = await access.client.create(resource, params=payload)
                 else:
                     identifier = await access.client.create(
-                        resource, params=payload, before_write=before_write
+                        resource, params=payload, before_write=lambda: guarded(before_write)
                     )
-            except MarketingError:
-                return self.repository.get(tenant_id, promotion_id) or promotion
+            except MarketingError as error:
+                if sent and not definite_rejection(error):
+                    # The POST may have reached Meta: only _recover may settle this claim.
+                    return self.repository.get(tenant_id, promotion_id) or promotion
+                # Meta answered a definite rejection, or nothing left: the owner may retry.
+                self._release(tenant_id, promotion_id, resource, token)
+                raise
+            except BaseException:
+                if not sent:
+                    self._release(tenant_id, promotion_id, resource, token)
+                raise
             if not self.repository.complete(tenant_id, promotion_id, resource, token, identifier):
                 return self.repository.get(tenant_id, promotion_id) or promotion
         result = self.repository.get(tenant_id, promotion_id)
         assert result is not None
         return result
+
+    def _release(
+        self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID
+    ) -> None:
+        # Called while another exception propagates: that one must win. A failed release
+        # leaves the step in_flight, which is safe (recovery only, never a duplicate).
+        try:
+            self.repository.fail(tenant_id, promotion_id, resource, token)
+        except Exception:
+            logger.exception("ads.promotion.release_failed resource=%s", resource)
 
     async def _recover(self, client: MarketingAPI, step: CreationStep) -> str | None:
         # Enumerate the bound account, never GET an arbitrary caller-provided id.
