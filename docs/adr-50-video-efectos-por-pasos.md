@@ -1,6 +1,6 @@
 # ADR 50 — Video con efectos, por pasos: un motor sobre el Clip, efectos locales a costo 0 y un editor guiado con línea de tiempo
 
-**Estado:** `[PROPUESTO — pendiente de la firma de Deivid Vargas]` · redactado por principal-architect el 2026-11-20 (m-25026568, EF-00). Deivid firmó las decisiones D1–D8 y D-E1…D-E6 el **2026-11-13**. Al revisar este ADR pidió **reflejar lo construido** (2026-11-20, por medio de «creacion de tickets»). Por eso §2 dice cada decisión **como quedó en `main`**. Donde la decisión cambió, una nota guarda el texto firmado el 2026-11-13, con la fecha y el PR del cambio. Lo que sigue abierto, con su ticket, está en §6 («Pendiente»). Los umbrales que reabren decisiones (§4 y §8: ~600 MiB, ~200 entradas, el 10 % de los negocios activos) son **propuesta del arquitecto**, no decisiones firmadas: entran en vigor solo si Deivid firma este ADR.
+**Estado:** `[PROPUESTO — pendiente de la firma de Deivid Vargas]` · redactado por principal-architect el 2026-11-20 (m-25026568, EF-00). Deivid firmó las decisiones D1–D8 y D-E1…D-E6 el **2026-11-13**. Al revisar este ADR pidió **reflejar lo construido** (2026-11-20, por medio de «creacion de tickets»). Por eso §2 dice cada decisión **como quedó en `main`**. Donde la decisión cambió, una nota guarda el texto firmado el 2026-11-13, con la fecha y el PR del cambio. El mismo día respondió las preguntas abiertas; sus respuestas están en §2 y §2.3 y se resumen en §6.3. Firma este ADR solo Deivid. Lo que sigue abierto, con su ticket, está en §6 («Pendiente»). Los umbrales que reabren decisiones (§4 y §8: ~600 MiB, ~200 entradas, el 10 % de los negocios activos) son **propuesta del arquitecto**, no decisiones firmadas: entran en vigor solo si Deivid firma este ADR.
 **Épica:** m-25026566 «Video automático con efectos, por pasos» · **Ticket:** m-25026568 (EF-00).
 **Evidencia:** la descripción de la épica y de EF-00 en Meegle (leídas el 2026-11-20), `main` en `ab39151a` (2026-11-20), `docs/design-system.md` §5.10 y `docs/armado-local-medicion.md`.
 **Numeración:** el 49 es `docs/adr-49-pipeline-imagen-carrusel.md`. Esta decisión es la **50**. El código ya la cita como «ADR 50» y por sección (§1.2 receta, §1.3 regla de modo, §1.4 biblioteca, §1.6 compatibilidad); esa numeración se respeta abajo.
@@ -79,7 +79,7 @@ Lo que quiere el dueño: subir su video, ponerle un texto y uno o varios efectos
 - Una entrada **nunca se edita en su lugar**: un cambio de parámetros, de prompt o de archivo es una entrada nueva en `version + 1`. Un brief guarda la versión con la que se hizo. Hay una sola excepción documentada: la v3 ofrece las capas en versión 1 sin cambiar sus bytes.
 - Los archivos de vista previa y de capa son globales, de solo lectura y van empaquetados en la imagen (`effects_assets/`). Nunca viven bajo el `t/` de un negocio ni en R2.
 - Lo que trae hoy la v3:
-  - **Ofrecidos:** `texto`; las capas `humo_capa`, `brasas_capa` y `vapor_capa`; las transiciones `corte`, `fundido` y `barrido` (las dos últimas todavía se rechazan al crear, §6).
+  - **Ofrecidos:** `texto`; las capas `humo_capa`, `brasas_capa` y `vapor_capa`; las transiciones `corte`, `fundido` y `barrido`. Deivid decidió el 2026-11-20 ocultar `fundido` y `barrido` hasta EF-16 y ofrecer mientras tanto solo `corte` (D9, §2.3). Lo hará un PR chico aparte (§6); hasta que se mergee, las dos siguen apareciendo como ofrecidas y se rechazan al crear.
   - **No ofrecidos:** `camara_rapida`, porque la velocidad es una acción del bloque (D-T3), y las cinco plantillas de Seedance (D5).
 
 ### 1.5 Modo local: «Tu video, con efectos»
@@ -125,26 +125,26 @@ Lo que quiere el dueño: subir su video, ponerle un texto y uno o varios efectos
 
 ## 2. Decisiones de Deivid, como quedaron en `main`
 
-Cada fila dice lo que hoy hace el código. Cuando la decisión cambió, la columna «Firmado el 2026-11-13» guarda el texto original.
+Cada fila dice lo que hoy hace el código. Cuando la decisión cambió, la columna «Firmado el 2026-11-13» guarda el texto original. Las respuestas de Deivid del 2026-11-20 cierran D1 y D7, mantienen en pie el cuadro del servidor de D-E1 y agregan D9 (§2.3); lo que aún no está construido figura en §6.
 
 ### 2.1 Motor
 
 | # | Decisión, como está construida | Firmado el 2026-11-13 → cambio (fecha · PR) |
 |---|---|---|
-| D1 | El texto sobre el video lo dibuja **Remotion** (plantilla `video_text` v1): una capa PNG transparente de 1080×1920 con los diseños cerrados de ADR 49 (hoy solo `scrim`). PyAV la pone sobre cada cuadro, con un fundido que elige el dueño (0,3–1,0 s; 0,5 por defecto). Admite hasta 3 textos por parte o Clip y funciona en piezas `local`, también en la porción mínima. Se usa la **licencia gratis de Remotion**, y `remotion_selfhost` queda en US$0,00. | Firmado: «decisión de pago pendiente de Deivid», porque la licencia es gratis hasta 3 personas y el equipo es de 5. → Deivid, 2026-11-16 · #724: «usemos la free solo somos 3 personas». Sigue abierto el conteo de 3 o 5 personas (§6). |
+| D1 | El texto sobre el video lo dibuja **Remotion** (plantilla `video_text` v1): una capa PNG transparente de 1080×1920 con los diseños cerrados de ADR 49 (hoy solo `scrim`). PyAV la pone sobre cada cuadro, con un fundido que elige el dueño (0,3–1,0 s; 0,5 por defecto). Admite hasta 3 textos por parte o Clip y funciona en piezas `local`, también en la porción mínima. Se usa la **licencia gratis de Remotion**, y `remotion_selfhost` queda en US$0,00. | Firmado: «decisión de pago pendiente de Deivid», porque la licencia es gratis hasta 3 personas y el equipo es de 5. → Deivid, 2026-11-16 · #724: «usemos la free solo somos 3 personas»; confirmado el 2026-11-20: «Somos 3». **Cerrada:** se queda la licencia gratis. |
 | D2 | Humo, brasas y vapor son **bucles hechos una vez y versionados**: VP9 WebM sobre negro, generados por procedimiento con `packages/creative/scripts/make_effect_loops.py` y puestos con mezcla `screen`. Son los mismos píxeles en la vista previa y en el video final (EF-08). | Firmado: «bucles grabados con transparencia». → 2026-11-17 · #733: no salen de una cámara sino de un script, una sola vez. |
 | D3 | Lo local **no descuenta cupo**, ni segundos de F1 ni vistas previas: el cobro es una fila en cero. Lo limita un **tope de 10 armados locales por negocio y por día**, que cuenta cada armado (pieza nueva y «otra versión»). El tope se cambia con `QUALIFY_LOCAL_DAILY_CAP` (`creative/local_cap.py`). | Firmado: «tope diario que sale de la medición de EF-15», con la cifra pendiente. → Deivid, 2026-11-16 · #735: «10 al día (Recomendado)», medido en `docs/armado-local-medicion.md`. |
 | D4 | **Nunca `edit` cuando aparece una persona, tampoco en el video propio.** Un video propio siempre sale `local`, con efecto de Seedance o sin él; la fila `own_video_ai_effect` es inalcanzable (`mode_choice.py`). | Sin cambio. |
 | D5 | Solo se ofrecen **efectos de Seedance medidos** (éxito ≥ 2/3 con n ≥ 4). Las cinco plantillas de Seedance de la v3 tienen `offered: false` y `measured: null`. | Sin cambio. |
 | D6 | Banco pagado de efectos de 5 s: **≈ US$28, tope US$30**, y **solo con OK explícito de Deivid antes de correrlo** (EF-12, m-25026587). Todavía no se ha corrido. | Sin cambio. |
-| D7 | **Preparar trabaja sobre lo propio del negocio:** lo subido en el generador, la **Galería** (`gallery/…`) y las **Publicaciones**. Una publicación de la Galería es una sola ficha y trae todos sus archivos. Cada tramo pasa por `owned_by`. Lo ajeno queda fuera: un reel de inspiración nunca se vuelve un tramo propio. | Firmado: «Preparar solo sobre lo subido en el generador». → Deivid, 2026-11-14 · #685 (Galería y Publicaciones en el selector) y 2026-11-17 · #739 (una publicación es una ficha). |
+| D7 | **Preparar trabaja con todos los archivos del negocio:** los subidos al generador, los de la **Galería** (`gallery/…`) y los de las **Publicaciones** (decisión firmada por Deivid el 2026-11-20). Una publicación de la Galería es una sola ficha y trae todos sus archivos. Cada tramo pasa por `owned_by`. Lo ajeno queda fuera: un reel de inspiración nunca se vuelve un tramo propio. | Firmado: «Preparar solo sobre lo subido en el generador». → Deivid, 2026-11-14 · #685 (Galería y Publicaciones en el selector) y 2026-11-17 · #739 (una publicación es una ficha); firmada así el 2026-11-20. |
 | D8 | **Revisa solo el dueño**, sin revisión de Claude en la fase 1. Hoy revisa el video armado, porque la hoja de contacto (EF-18) no está construida. | Firmado: «la hoja de contacto la revisa solo el dueño». La hoja está pendiente (§6). |
 
 ### 2.2 Editor
 
 | # | Decisión, como está construida | Firmado el 2026-11-13 → cambio (fecha · PR) |
 |---|---|---|
-| D-E1 | Vista previa **en el navegador**, en vivo y gratis: el video como va a salir, en secuencia y con un solo reloj para todo el video, sin decodificar nada en Reflex ni en el servidor (ED-01 #683, ED-01b #722). | Firmado: «… más un cuadro real del servidor». → El cuadro del servidor no está construido (§6). |
+| D-E1 | Vista previa **en el navegador**, en vivo y gratis: el video como va a salir, en secuencia y con un solo reloj para todo el video, sin decodificar nada en Reflex ni en el servidor (ED-01 #683, ED-01b #722). **Más un cuadro real de cada video, que siempre saca el servidor y nunca el navegador**; llega con ED-11b (m-25029110). | Firmado: «… más un cuadro real del servidor». → Sigue en pie (Deivid, 2026-11-20); falta construirlo (§6). |
 | D-E2 | La vista previa reproduce el **archivo original**: lo subido, desde el almacenamiento local, y lo que está en R2 (Galería, Publicaciones), por su ruta `/r2media/`. | Firmado: «archivo local del teléfono al subir y después una copia liviana de 480p». → La copia de 480p (ED-09) está pendiente (§6); hoy el teléfono descarga el original. |
 | D-E3 | **Línea de tiempo editable en el celular y en escritorio** (D-T1…D-T6, §2.3): foto quieta de 1–5 s, hasta 3 textos, «Velocidad» como acción del bloque, un cuadro por bloque, sin zoom y, en el celular, solo arrastrar. | Firmado: «fichas “Todo · 1 · 2 · 3…” en el celular y línea de tiempo de solo lectura en escritorio». → Reemplazada por D-T1…D-T6 (Deivid, 2026-11-14) y construida en ED-10 · #739 (2026-11-17). |
 | D-E4 | **«Idea» vive dentro del editor**, como la opción «Pedir una idea» de «Agregar» y como pestaña del panel lateral (#739). | Firmado: «… y el video pasa a 3 pasos». → El paso a 3 pasos (ED-06, m-25026636) está pendiente (§6). |
@@ -165,6 +165,11 @@ Cada fila dice lo que hoy hace el código. Cuando la decisión cambió, la colum
 | Antes del 2026-11-17 (merge de #741; lo decidió el fundador, m-25042483) | Fuentes de más de 4K o de más de 8 bits: «Bajarlos a 4K 8 bits» en el `media-worker` antes del armado | revisión `0171`, #741 | §1.5 |
 | 2026-11-19 | Sin «Deshacer» en el editor | #743 | D-E6 |
 | 2026-11-20 | La pista «Efectos» suma filas sola; un efecto pasa de una fila a otra arrastrándolo; no hay «+ Pista» | #759 | §1.7 |
+| 2026-11-20 | El equipo es de 3 personas («Somos 3»): se queda la licencia gratis de Remotion | este ADR | D1 |
+| 2026-11-20 | Preparar trabaja con todos los archivos del negocio: los del generador, la Galería y las Publicaciones | este ADR | D7 |
+| 2026-11-20 | El cuadro real de cada video lo saca el servidor, nunca el navegador, y llega con ED-11b (m-25029110) | este ADR | D-E1 |
+| 2026-11-20 | **D9:** `fundido` y `barrido` se ocultan hasta EF-16; mientras tanto solo se ofrece `corte`. Lo hace un PR chico aparte | este ADR; PR pendiente (§6) | §1.4 |
+| 2026-11-20 | `qualify-context` (equipo de 3) y `design-system.md` §5.10 (firmada y sin «Deshacer») se actualizan en un PR aparte, solo de documentación | este ADR; PR pendiente (§6.2) | §6.2 |
 | 2026-11-20 | Normalizador con `bframes=1`, no 3 (con 3 llega a 679 MiB, demasiado cerca de 768m) | #760, m-25071265 | §1.5 |
 
 ## 3. Encaje con las reglas y los ADR firmados
@@ -214,13 +219,14 @@ Los umbrales numéricos de la última columna son propuesta del arquitecto (ver 
 
 | # | Qué falta | Ticket | Decisión |
 |---|---|---|---|
-| 1 | Copia liviana de 480p al subir al generador. Hoy el teléfono descarga el original para la vista previa y para «Cortar». | ED-09 · m-25026643 | D-E2 |
-| 2 | Transiciones al unir partes. `fundido` y `barrido` figuran como ofrecidas (`offered: true`) en la v3, pero el motor las rechaza al crear (`recipe_unavailable`): la pantalla puede ofrecer algo que después se niega. | EF-16 · m-25026594 | §1.4 |
+| 1 | Copia liviana de 480p al subir al generador. Hoy el teléfono descarga el original para la vista previa y para «Cortar». Está en curso en otra rama, todavía sin mergear. | ED-09 · m-25026643 | D-E2 |
+| 2a | PR chico que oculta `fundido` y `barrido` y deja solo `corte` (D9). Hasta que se mergee, las dos figuran como ofrecidas (`offered: true`) en la v3 y el motor las rechaza al crear (`recipe_unavailable`). | PR aparte (sin abrir) | D9 |
+| 2b | Transiciones al unir partes. Con ellas, `fundido` y `barrido` se vuelven a ofrecer. | EF-16 · m-25026594 | D9, §1.4 |
 | 3 | Hoja de contacto para revisar el video antes de aprobarlo. | EF-18 · m-25026598 | D8 |
 | 4 | El editor en Video por partes: fichas, modo con motivo, transiciones y orden. | ED-07 · m-25026638 | §1.1 |
 | 5 | «Rehacer esta parte» desde el resultado. | ED-08 · m-25026640 | D-E5 |
 | 6 | El video en 3 pasos, con «Idea» como paso del editor. | ED-06 · m-25026636 | D-E4 |
-| 7 | El «cuadro real del servidor» al lado de la vista previa. Ningún ticket lo construye. | sin ticket | D-E1 |
+| 7 | El cuadro real de cada video, sacado por el servidor (nunca por el navegador), al lado de la vista previa. | ED-11b · m-25029110 | D-E1 |
 | 8 | Texto y capas sobre una pieza hecha con Seedance (hoy se rechazan), y el final 1080p vuelto a componer con la misma receta. | EF-14 · m-25026592 | D1 |
 | 9 | Efectos de Seedance: el banco pagado (con OK de Deivid), Seedance sobre lo preparado y «objeto en una zona del cuadro». | EF-12 · m-25026587, EF-11 · m-25026585, EF-13 · m-25026589 | D5, D6 |
 | 10 | Golden set de modos (150 partes) y `just eval-modo-partes`. `choose_clip_mode` todavía no la usa ninguna pantalla. | EF-10 · m-25026578 | §1.3 |
@@ -232,22 +238,19 @@ Los umbrales numéricos de la última columna son propuesta del arquitecto (ver 
 
 | # | Qué | Dónde |
 |---|---|---|
-| 14 | La §5.10 sigue diciendo «pendiente de firma» (m-25029104) aunque ya está en `main`. Además todavía describe «Deshacer (sin temporizador, 10 pasos)», «+ Pista» y la pista de efectos con «una fila más si dos se pisan». | `docs/design-system.md` §5.10 |
-| 15 | `qualify-context` no menciona el armado local a costo 0, el tope de 10 al día ni el editor «Arma tu video». | `.claude/skills/qualify-context/SKILL.md` §2 |
+| 14 | La §5.10 sigue diciendo «pendiente de firma» (m-25029104) aunque ya está en `main`, y todavía describe «Deshacer (sin temporizador, 10 pasos)», «+ Pista» y la pista de efectos con «una fila más si dos se pisan». Se marca como firmada y sin «Deshacer» en un **PR aparte de documentación, decidido el 2026-11-20**. | `docs/design-system.md` §5.10 |
+| 15 | `qualify-context` no menciona el armado local a costo 0, el tope de 10 al día ni el editor «Arma tu video», y nombra a cinco personas en el equipo, cuando son 3. Va en el mismo **PR aparte de documentación, decidido el 2026-11-20**. | `.claude/skills/qualify-context/SKILL.md` §1–§2 |
 | 16 | **Normalizador local sin ADR propio.** ADR 47 es la Galería y su `media-worker`. El normalizador local (m-25042483) corre en ese worker, pero no tiene ADR propio. | `docs/arquitectura.md` §6 |
 
-### 6.3 Preguntas para Deivid — **pendiente de respuesta**
+### 6.3 Preguntas para Deivid — todas respondidas el 2026-11-20
 
-Ya respondida: «¿se firma el texto del 2026-11-13 o lo construido?» → «Reflejar lo construido» (2026-11-20). Es la razón de esta versión.
-
-| # | Pregunta | Estado |
-|---|---|---|
-| P2 | Licencia de Remotion: ¿el equipo que cuenta para la licencia gratis es de 3 o de 5 personas? `qualify-context` y la épica nombran a cinco: Herwin, Darwin, Yesika, Deivid y Raúl. Si son 5, la decisión de pago de D1 sigue abierta. | **Pendiente de respuesta** |
-| P3 | D7: ¿confirmas que Preparar también trabaja sobre archivos de la Galería y de Publicaciones, como ya hace el código? | **Pendiente de respuesta** |
-| P4 | D-E1: ¿el «cuadro real del servidor» sigue en pie (y necesita ticket) o se cae? | **Pendiente de respuesta** |
-| P5 | ¿Firmas este ADR tú o Herwin? Los ADR 45 y 49 los firmó el fundador; el 44 lo decidió Deivid. | **Pendiente de respuesta** |
-| P6 | ¿`qualify-context` y `design-system.md` §5.10 se actualizan en el mismo PR de EF-00 o quedan para ux-designer o reflex-ui? | **Pendiente de respuesta** |
-| P7 | `fundido` y `barrido` están ofrecidas pero se rechazan al crear: ¿se dejan de ofrecer hasta EF-16? | **Pendiente de respuesta** |
+- **P1 · ¿Texto firmado o lo construido?** → «Reflejar lo construido». Es la razón de esta versión.
+- **P2 · Licencia de Remotion** → «Somos 3». Se queda la licencia gratis y D1 queda cerrada.
+- **P3 · Preparar (D7)** → trabaja con todos los archivos: los del generador, los de la Galería y los de las Publicaciones.
+- **P4 · Cuadro real (D-E1)** → sigue en pie. Lo saca el servidor, nunca el navegador, y llega con ED-11b (m-25029110).
+- **P5 · Quién firma** → solo Deivid.
+- **P6 · Documentación** → `qualify-context` y `design-system.md` §5.10 se actualizan en un PR aparte, solo de documentación.
+- **P7 · Transiciones** → `fundido` y `barrido` se ocultan hasta EF-16 y mientras tanto solo se ofrece `corte` (D9), en un PR chico aparte.
 
 ## 7. Consecuencias
 
@@ -260,7 +263,7 @@ Ya respondida: «¿se firma el texto del 2026-11-13 o lo construido?» → «Ref
 
 Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 
-- Que la licencia gratis de Remotion deje de cubrir al equipo real, o que Remotion cambie sus términos (D1, P2).
+- Que la licencia gratis de Remotion deje de cubrir al equipo real, por ejemplo si el equipo pasa de 3 personas, o que Remotion cambie sus términos (D1).
 - Que un armado local pase de ~600 MiB anónimos *(propuesta del arquitecto)*.
 - Que el tope de 10 al día frene a más del 10 % de los negocios activos en un mes *(propuesta del arquitecto)* (D3).
 - Que un efecto de Seedance llegue a ≥ 2/3 con n ≥ 4 en el banco (D5/D6): entonces entra a la oferta como entrada nueva de la biblioteca.
