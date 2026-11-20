@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -20,6 +21,8 @@ ID_COLUMNS = dict(
     zip(STEPS, ("meta_campaign_id", "meta_adset_id", "meta_creative_id", "meta_ad_id"))
 )
 ADAPTER_VERSION = "ad-promotions-v1"
+TRANSIENT_CODES = frozenset({1, 2})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -186,6 +189,22 @@ def fingerprint(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def definite_rejection(error: MarketingError) -> bool:
+    """True only when Meta's answer proves it created nothing (a 4xx that is not transient).
+
+    Codes 1/2 are Meta's transient/unknown errors and an error inside a 2xx body is
+    ambiguous: both stay in flight for recovery. `is_transient` is not exposed by
+    MarketingError, so transient answers are recognised by these codes only.
+    """
+    status = error.http_status
+    return (
+        not error.outcome_unknown
+        and status is not None
+        and 400 <= status < 500
+        and error.code not in TRANSIENT_CODES
+    )
 
 
 @dataclass(frozen=True)
@@ -378,21 +397,31 @@ class PromotionService:
                         resource, params=payload, before_write=lambda: guarded(before_write)
                     )
             except MarketingError as error:
-                if sent and error.outcome_unknown:
+                if sent and not definite_rejection(error):
                     # The POST may have reached Meta: only _recover may settle this claim.
                     return self.repository.get(tenant_id, promotion_id) or promotion
                 # Meta answered a definite rejection, or nothing left: the owner may retry.
-                self.repository.fail(tenant_id, promotion_id, resource, token)
+                self._release(tenant_id, promotion_id, resource, token)
                 raise
             except BaseException:
                 if not sent:
-                    self.repository.fail(tenant_id, promotion_id, resource, token)
+                    self._release(tenant_id, promotion_id, resource, token)
                 raise
             if not self.repository.complete(tenant_id, promotion_id, resource, token, identifier):
                 return self.repository.get(tenant_id, promotion_id) or promotion
         result = self.repository.get(tenant_id, promotion_id)
         assert result is not None
         return result
+
+    def _release(
+        self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID
+    ) -> None:
+        # Called while another exception propagates: that one must win. A failed release
+        # leaves the step in_flight, which is safe (recovery only, never a duplicate).
+        try:
+            self.repository.fail(tenant_id, promotion_id, resource, token)
+        except Exception:
+            logger.exception("ads.promotion.release_failed resource=%s", resource)
 
     async def _recover(self, client: MarketingAPI, step: CreationStep) -> str | None:
         # Enumerate the bound account, never GET an arbitrary caller-provided id.

@@ -342,3 +342,47 @@ async def test_network_error_after_the_post_stays_recoverable_never_failed(after
     )
     assert len(client.objects) == (4 if after else 0)
     assert (result.status == "paused") is after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        MarketingError("transient", http_status=400, code=1),
+        MarketingError("transient", http_status=400, code=2),
+        MarketingError("error inside a 2xx body", http_status=200, code=100),
+        MarketingError("no status", code=100),
+    ],
+)
+async def test_ambiguous_answers_after_the_post_stay_in_flight_for_recovery(error):
+    """Only a non-transient 4xx proves Meta created nothing; the rest is never retried."""
+
+    class Ambiguous(FakeMarketingClient):
+        once = True
+
+        async def create(self, kind, *, params):
+            if self.once:
+                self.once = False
+                await super().create(kind, params=params)  # Meta may have created it.
+                raise error
+            return await super().create(kind, params=params)
+
+    req, repo, client, binding, service = setup(client=Ambiguous(account_id="12"))
+    row = await service.start(req)
+    assert repo.step(req.tenant_id, row.id, "campaigns").state == "in_flight"
+    result = await service.resume(req.tenant_id, row.id)
+    assert result.status == "paused" and len(client.objects) == 4  # Recovered, no duplicate.
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_keeps_the_meta_error_and_a_safe_in_flight_step():
+    class BrokenFail(MemoryPromotionRepository):
+        def fail(self, *args):
+            raise RuntimeError("database down")
+
+    req, repo, client, binding, service = setup(repo=BrokenFail())
+    client.failures.append(MarketingError("rejected", http_status=400, code=100))
+    with pytest.raises(MarketingError, match="rejected"):
+        await service.start(req)
+    row = next(iter(repo.promotions.values()))
+    assert repo.step(req.tenant_id, row.id, "campaigns").state == "in_flight"

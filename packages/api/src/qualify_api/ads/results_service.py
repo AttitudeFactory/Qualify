@@ -927,6 +927,7 @@ async def poll_promotion_results(*, tenant_id: UUID, limit: int = 100) -> dict[s
             AND (o.refresh_started_at IS NULL OR o.refresh_started_at < :due)
             AND (o.effective_status IS NULL OR o.effective_status NOT IN ('ARCHIVED','DELETED'))
             -- Abandoned (never activated, preview expired): paused forever, nothing to read.
+            -- Assumes every activated promotion has an activation row (all do since 0118).
             AND EXISTS(SELECT 1 FROM ad_promotion_activations a
               WHERE a.promotion_id=p.id AND a.tenant_id=p.tenant_id
                 AND (a.state<>'ready' OR a.expires_at>:now))

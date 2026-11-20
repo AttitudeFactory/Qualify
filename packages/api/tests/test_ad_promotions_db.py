@@ -141,10 +141,11 @@ def test_failed_step_is_reclaimed_once_and_only_with_the_same_intent() -> None:
     repo = PostgresPromotionRepository()
     row = repo.create_or_get(req)
     payload, token = step_payload(row, "campaigns"), uuid4()
+    meta_id = str(uuid4().int)[:15]  # Unique per account across reruns of the shared DB.
     assert repo.claim(req.tenant_id, row.id, "campaigns", payload, token)
     assert not repo.fail(req.tenant_id, row.id, "campaigns", uuid4())
     assert repo.fail(req.tenant_id, row.id, "campaigns", token)
-    assert not repo.complete(req.tenant_id, row.id, "campaigns", token, "111")
+    assert not repo.complete(req.tenant_id, row.id, "campaigns", token, meta_id)
     for query in (
         "UPDATE ad_promotion_steps SET state='completed',meta_id='1' WHERE promotion_id=:id",
         "UPDATE ad_promotion_steps SET payload='{}'::jsonb WHERE promotion_id=:id",
@@ -157,7 +158,7 @@ def test_failed_step_is_reclaimed_once_and_only_with_the_same_intent() -> None:
     assert not repo.claim(req.tenant_id, row.id, "campaigns", payload, uuid4())
     step = repo.step(req.tenant_id, row.id, "campaigns")
     assert step.state == "in_flight" and step.claim_token == retry
-    assert repo.complete(req.tenant_id, row.id, "campaigns", retry, "111")
+    assert repo.complete(req.tenant_id, row.id, "campaigns", retry, meta_id)
     with pytest.raises(IntegrityError), tenant_session(req.tenant_id) as session:
         session.execute(
             text("UPDATE ad_promotion_steps SET state='failed' WHERE promotion_id=:id"),
