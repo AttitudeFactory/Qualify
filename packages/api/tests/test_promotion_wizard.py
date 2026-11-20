@@ -469,7 +469,6 @@ async def test_lead_campaign_uses_published_form_paused_then_explicit_activation
         ({"connection_id": uuid4()}, "SIGN_UP"),
         ({"page_id": "78"}, "SIGN_UP"),
         ({"brand_id": uuid4()}, "SIGN_UP"),
-        ({"credential_version": 2}, "SIGN_UP"),
         ({}, "SHOP_NOW"),
         ({}, ""),
     ],
@@ -482,6 +481,17 @@ async def test_lead_form_of_another_account_or_unsupported_button_never_creates(
     with pytest.raises(WizardUnavailable):
         await wizard.prepare(**args)
     assert not client.calls and not client.objects
+
+
+@pytest.mark.asyncio
+async def test_published_form_survives_a_token_renewal_of_the_same_account() -> None:
+    # m-25072366: the form keeps its own credential_version as provenance.
+    wizard, client, source, args, target = lead_setup()
+    wizard.sources.source = replace(source, credential_version=2)
+    preview = await wizard.prepare(**args)
+    stored = wizard.creation.repository.get(args["tenant_id"], preview.promotion_id)
+    assert stored.request["lead_form_snapshot"]["credential_version"] == 1
+    assert client.objects["4"]["status"] == "PAUSED"
 
 
 # --- The website promotion's button (m-24828976) ---

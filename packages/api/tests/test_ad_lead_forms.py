@@ -329,3 +329,20 @@ def test_genuine_lead_text_is_normalized_not_refused() -> None:
         service.parse_lead(raw_lead(created_time=too_far), form_id="800")
     with pytest.raises(LeadFormUnavailable):
         service.parse_lead(["not", "an", "object"], form_id="800")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "dropped,ok", [(None, True), ("leads_retrieval", False), ("pages_manage_ads", False)]
+)
+def test_lead_access_reason_requires_the_current_grant_to_keep_lead_scopes(
+    monkeypatch, dropped, ok
+) -> None:
+    # m-25072366: a renewal that drops a lead scope blocks new lead ads, as intake does.
+    from qualify_api.connections.ad_accounts import AdConnection
+
+    scopes = tuple(s for s in (*service.LEAD_FORM_SCOPES, "ads_management") if s != dropped)
+    grant = AdConnection(uuid4(), uuid4(), "1", 2, "active", scopes, None, True)
+    monkeypatch.setattr(service, "_connection", lambda session, cid: grant)
+    reason = service.lead_access_reason(None, grant.connection_id)
+    assert (reason == "") is ok
+    assert ok or "actualiza el acceso con Meta" in reason

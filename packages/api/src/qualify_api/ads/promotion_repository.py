@@ -249,7 +249,8 @@ class PostgresPromotionRepository:
 
                 target = LeadFormTarget.from_snapshot(request.lead_form_snapshot)
                 # A published form is terminal and immutable (0143 trigger); lock it and its
-                # connection so a purge or reconnect cannot race the approval insert.
+                # connection so a purge or reconnect cannot race the approval insert. Its own
+                # credential_version is provenance; a token renewal keeps it usable.
                 bound = session.execute(
                     text("""SELECT 1 FROM ad_lead_forms f
                       JOIN social_connections c ON c.id=f.connection_id
@@ -259,7 +260,6 @@ class PostgresPromotionRepository:
                        AND f.page_id=:page AND f.brand_id=:brand AND f.connection_id=:connection
                        AND f.credential_version=:version AND c.status='active'
                        AND c.linked_page_id=f.page_id
-                       AND c.current_credential_version=f.credential_version
                        AND c.purge_started_at IS NULL AND c.purged_at IS NULL
                        AND p.id=:published AND p.published_media_id=:media
                        FOR SHARE OF f,c,p"""),
@@ -276,6 +276,10 @@ class PostgresPromotionRepository:
                 ).first()
                 if bound is None:
                     raise ValueError("lead form is not a published form of the promoted account")
+                from qualify_api.ads.lead_forms_service import lead_access_reason
+
+                if lead_access_reason(session, target.connection_id):
+                    raise ValueError("lead form connection cannot receive leads")
             columns = [
                 "tenant_id",
                 "brand_id",
