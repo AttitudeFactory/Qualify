@@ -107,6 +107,8 @@ from . import (
     reel_parts_vm,
     reel_wait_provider,
     reel_wait_vm,
+    upload_preview_provider,
+    upload_preview_state,
 )
 from . import editor_preview_contract as editor_contract
 from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
@@ -1902,6 +1904,8 @@ class CreativeState(rx.State):
     clip_preview_for: str = ""
     #: The R2 video whose dead path was renewed once already (a second failure breaks it).
     _clip_preview_renewed: str = ""
+    #: ED-09: the ORIGINAL's upright size of an own video shown from its 480p copy.
+    _clip_copy_sizes: dict[str, list[int]] = {}
     #: ED-11 review: the `/r2media/<token>` path of each OTHER R2 video of the Clip (not
     #: the editor's own, not an upload `/_upload` serves), by key, minted server-side by
     #: `resolve_clip_preview` so the preview in sequence plays and measures it ("" = asked
@@ -6525,8 +6529,8 @@ class CreativeState(rx.State):
         """Whether the browser can play the editor's video: a local key (an upload, or a
         publication's `generated/<tenant>/…` in the upload store) always; an R2 key
         (`t/`, `gallery/`, `reel-windows/`) once `resolve_clip_preview` minted its
-        `/r2media/` path. With ED-09 the preview plays the 480p copy instead (D-E2);
-        today the phone downloads the original."""
+        `/r2media/` path. With ED-09 the main video plays its 480p copy once it exists
+        (`upload_preview_state.play_key_for`, D-E2); until then, the original."""
         key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
         if not key:
             return False
@@ -7560,7 +7564,8 @@ class CreativeState(rx.State):
             old_url = self.clip_preview_url
             try:
                 if tenant_id is not None:
-                    url = await asyncio.to_thread(issue_view_path, tenant_id, key, "video")
+                    play = await upload_preview_state.play_key_for(self, tenant_id, key)
+                    url = await asyncio.to_thread(issue_view_path, tenant_id, play, "video")
             except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the step
                 logger.warning("clip preview token not issued: %s", type(exc).__name__)
                 url = ""
@@ -7674,6 +7679,7 @@ class CreativeState(rx.State):
         self._clip_preview_renewed = ""  # it plays: a later expiry may renew again
         self.clip_source_key = key
         self.clip_source_seconds = round(seconds, 2)
+        width, height = upload_preview_state.reported_size(self, key, width, height)
         self.clip_source_width, self.clip_source_height = max(width, 0), max(height, 0)
         if fresh:
             whole = editor_contract.whole_video(key, seconds)
@@ -8949,6 +8955,7 @@ class CreativeState(rx.State):
                 ),
             ]
         elif kind == clip_gallery_vm.VIDEO:
+            await upload_preview_provider.ask_for_previews(self, [k for k, _n in saved])  # ED-09
             self.clip_videos = [
                 *self.clip_videos,
                 *({"key": key, "name": name, "source": "upload"} for key, name in saved),

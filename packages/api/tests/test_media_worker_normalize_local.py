@@ -321,7 +321,7 @@ def test_a_normalize_is_claimed_after_the_galerias_own_jobs(
     assert runner.claim(TENANT) is None
     order = claimed[0][claimed[0].index("ORDER BY") :]
     normalize = order.index("(gallery_jobs.kind = 'normalize_local') THEN 1")
-    seasonal = order.index("THEN 2")
+    seasonal = order.index("THEN 3")
     assert normalize < seasonal and "ELSE 0" in order
 
 

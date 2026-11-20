@@ -63,6 +63,7 @@ from .ui.timeline import (
     timeline_panel,
     timeline_script,
 )
+from .upload_preview_state import upload_preview_notice
 
 S = CreativeState
 
@@ -720,6 +721,7 @@ def arma_tu_video(media_body: rx.Component) -> rx.Component:
             rx.cond(S.clip_tl_selected != "", _block_panel()),
             _problem(),
             rx.text(vm.PREVIEW_FREE, size="1", color=T.TEXT_MUTED),
+            upload_preview_notice(),  # ED-09: its 480p copy could not be made
             class_name="q-edit__main",
         ),
         # last, under the panel and full width, on a phone and on a desktop

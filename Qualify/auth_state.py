@@ -332,6 +332,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .story_mark_state import StoryMarkState
     from .tiktok_state import TikTokConnectionsState, TikTokDraftState
     from .trending_state import TrendingState
+    from .upload_preview_state import UploadPreviewState
     from .variations_state import VariationsState
     from .voice_lab import VoiceLabState
     from .whatsapp_campaigns_state import WhatsAppCampaignsState
@@ -374,6 +375,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         CreativeState,
         # m-24921082 UI-7: the rows of a video by parts
         PartProgressState,
+        # m-25026643 ED-09: the editor's video whose 480p copy failed (a tenant key)
+        UploadPreviewState,
         PinterestState,
         FinalVideoState,  # m-24921084: «Tu video completo» of a video by parts
         # «Descubrir reels» (2026-10-15): the brand's referentes' reels

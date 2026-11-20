@@ -350,6 +350,30 @@ próxima vez que se arme (otra clave, otro trabajo). Hoy el editor está apagado
 
 - **Costo:** US$0. Fuentes sintéticas, ningún proveedor.
 
+## Copia liviana de 480p al subir al generador (ED-09, m-25026643, medido 2026-11-20)
+
+El `media-worker` hace, por cada video subido al generador, una copia de 480p sin sonido
+(`upload-preview-480p-v1`, `qualify_creative.video.upload_preview`): todo el largo con los
+mismos tiempos, derecha (la rotación ya aplicada), lado corto ≤ 480, H.264 8 bits CRF 28 con
+tope de 1,2 Mbps, un cuadro clave por segundo, un solo hilo. Costo de proveedor: US$0.
+
+Medido con `deploy/measure/upload-preview-memory.sh` (imagen `qualify-memtest:ffmpeg`, FFmpeg
+5.1 de Debian, como la imagen de la app), en un contenedor nuevo por corrida con el límite del
+media-worker (768m, 1 CPU), amd64. Fuentes sintéticas hechas con `make`: el 5K de 10 s de
+m-25071265 repetido hasta 112 s por copia de flujo (sin recodificar), la misma versión en 10
+bits, y el 4K HEVC de 10 bits con rotación de 90°. El Python de la medición ocupa 23 MiB.
+
+| Fuente | Pico `anon` MiB | RSS de ffmpeg MiB | CPU s | Pared s | Copia |
+|---|---|---|---|---|---|
+| 5K HEVC 8 bits, 112 s | 282 | 303 | 458 | 465 | 854×480, 16,2 MiB, sin sonido |
+| 5K HEVC 10 bits, 112 s | **407** | 428 | 383 | 388 | 854×480, 16,2 MiB, sin sonido |
+| 4K HEVC 10 bits, 60 s, rotado 90° | 282 | 304 | 166 | 168 | 480×854, 8,7 MiB, sin sonido |
+
+Ningún toque al límite (`memory.events max` = 0) ni OOM. El peor caso queda en ~430 MiB, debajo
+de los 600 MiB del ticket y con ~340 MiB de margen hasta 768m. Lo que pesa es el decodificador
+HEVC de 5K; la codificación a 480p casi no suma. En arm64 (producción) el tiempo será mayor; el
+tiempo permitido es 300 s + 20 s por segundo de video (2540 s para 112 s), tope 3 h.
+
 ## Pendiente
 
 - **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el
