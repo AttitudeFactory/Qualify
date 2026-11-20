@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -346,3 +350,95 @@ def test_lead_access_reason_requires_the_current_grant_to_keep_lead_scopes(
     reason = service.lead_access_reason(None, grant.connection_id)
     assert (reason == "") is ok
     assert ok or "actualiza el acceso con Meta" in reason
+
+
+class _AdReadsClient:
+    """Fake Meta client for a backup sync: one page of leads, counts `read_ad` calls."""
+
+    def __init__(self, rows: list[dict], failures: dict[str, Exception]) -> None:
+        self.rows, self.failures, self.reads = rows, failures, []
+
+    async def leads(self, form_id: str, *, since: int, after: str | None) -> object:
+        return SimpleNamespace(rows=self.rows, after=None)
+
+    async def read_ad(self, ad_id: str, *, fields: str) -> dict:
+        self.reads.append(ad_id)
+        if ad_id in self.failures:
+            raise self.failures[ad_id]
+        cta = {"value": {"lead_gen_form_id": "800"}}
+        spec = {"page_id": "700", "link_data": {"call_to_action": cta}}
+        return {"id": ad_id, "creative": {"object_story_spec": spec}}
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _sync_run(monkeypatch: pytest.MonkeyPatch, client: _AdReadsClient) -> list[dict]:
+    form = {
+        "status": "published",
+        "page_id": "700",
+        "meta_form_id": "800",
+        "credential_version": 1,
+        "backup_since": None,
+        "backup_started_at": None,
+        "backup_after": None,
+        "last_synced_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "approved_at": None,
+    }
+    saved: list[dict] = []
+
+    @contextmanager
+    def session(_tenant: object) -> Iterator[SimpleNamespace]:
+        yield SimpleNamespace(execute=lambda *_: SimpleNamespace(rowcount=1))
+
+    monkeypatch.setattr(service, "_member", lambda *_: None)
+    monkeypatch.setattr(service, "_form_guard", lambda *_: {"current_credential_version": 1})
+    monkeypatch.setattr(service.repository, "get_form", lambda *_: form)
+    monkeypatch.setattr(service, "_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(service, "_page_access", AsyncMock())
+    monkeypatch.setattr(service, "_remote_form", AsyncMock())
+    monkeypatch.setattr(service, "tenant_session", session)
+    monkeypatch.setattr(service, "_persist", lambda _t, _f, data, **_: saved.append(data) or True)
+    return saved
+
+
+def _leads_from(*ads: str) -> list[dict]:
+    return [raw_lead(id=str(901 + n), ad_id=ad) for n, ad in enumerate(ads)]
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_reads_each_ad_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AdReadsClient(_leads_from("11", "11", "22", "11"), {})
+    saved = _sync_run(monkeypatch, client)
+    assert await service.sync_lead_form(tenant_id=uuid4(), form_id=uuid4()) == (4, 0)
+    assert sorted(client.reads) == ["11", "22"]
+    assert [d["meta_ad_id"] for d in saved] == ["11", "11", "22", "11"]
+    assert all("pipeline" not in d for d in saved)
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_caches_a_definite_unverifiable_ad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AdReadsClient(_leads_from("11", "22", "11"), {"11": LeadNotVerifiable("x")})
+    saved = _sync_run(monkeypatch, client)
+    assert await service.sync_lead_form(tenant_id=uuid4(), form_id=uuid4()) == (3, 0)
+    assert client.reads == ["11", "22"]
+    assert [(d["meta_ad_id"], d.get("pipeline")) for d in saved] == [
+        (None, service.UNATTRIBUTED_PIPELINE),
+        ("22", None),
+        (None, service.UNATTRIBUTED_PIPELINE),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_never_caches_a_transient_ad_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AdReadsClient(_leads_from("11", "11"), {"11": LeadFormUnavailable("x")})
+    saved = _sync_run(monkeypatch, client)
+    for _ in range(2):
+        with pytest.raises(LeadFormUnavailable):
+            await service.sync_lead_form(tenant_id=uuid4(), form_id=uuid4())
+    assert client.reads == ["11", "11"]  # Aborted at the first lead each run, read again.
+    assert saved == []
