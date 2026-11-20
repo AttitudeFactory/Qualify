@@ -66,8 +66,7 @@ def spend_cap_exceeded(room: int, offset: int, currency: str) -> str:
     amount = f"{room * 100 // offset // 100:,}".replace(",", ".")
     return (
         "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
-        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta, "
-        "en Facturación y pagos."
+        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta."
     )
 
 
@@ -96,14 +95,14 @@ class LiveWizardGateway:
         self.diagnostics: list[dict[str, str]] = []
         self._validated: dict[str, tuple[str, datetime]] = {}
 
-    def check(self, key: str, detail: str, *, status: str = "verified") -> None:
+    def check(self, key: str, detail: str, *, status: str = "verified", **extra: str) -> None:
         self.diagnostics = [row for row in self.diagnostics if row["key"] != key]
         self.diagnostics.append(
-            {"key": key, "label": LABELS[key], "status": status, "detail": detail}
+            {"key": key, "label": LABELS[key], "status": status, "detail": detail, **extra}
         )
 
-    def fail(self, key: str, detail: str, *, unavailable: bool = False) -> None:
-        self.check(key, detail, status="unavailable" if unavailable else "blocked")
+    def fail(self, key: str, detail: str, *, unavailable: bool = False, **extra: str) -> None:
+        self.check(key, detail, status="unavailable" if unavailable else "blocked", **extra)
         raise WizardUnavailable(detail, diagnostics=tuple(self.diagnostics))
 
     @asynccontextmanager
@@ -312,7 +311,15 @@ class LiveWizardGateway:
     ) -> None:
         room = spend_cap_room(account)
         if offset and room is not None and form.budget_minor * offset // 100 > room:
-            self.fail("currency", spend_cap_exceeded(room, offset, form.currency))
+            # A machine-readable reason + the account's billing page, so the screen can link
+            # it without parsing the Spanish text (m-25078366).
+            self.fail(
+                "currency",
+                spend_cap_exceeded(room, offset, form.currency),
+                reason="spend_cap_exceeded",
+                billing_url="https://business.facebook.com/billing_hub/accounts?asset_id="
+                + str(account.get("account_id", "")),
+            )
 
     async def preflight(self, source: PromotionSource, form: WizardForm) -> VerifiedChecks:
         self.diagnostics = []

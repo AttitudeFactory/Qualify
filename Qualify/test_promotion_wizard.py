@@ -111,6 +111,41 @@ def test_check_projection_has_closed_labels_and_no_payment_guarantee() -> None:
     assert isinstance(PromotionCheckVM().label, str)
 
 
+BILLING = "https://business.facebook.com/billing_hub/accounts?asset_id=12"
+
+
+@pytest.mark.parametrize(
+    "row,link",
+    [
+        ({"key": "currency", "status": "blocked", "reason": "spend_cap_exceeded"}, BILLING),
+        # Other currency failures, a passing check or another key never show the link.
+        ({"key": "currency", "status": "blocked"}, ""),
+        ({"key": "currency", "status": "verified", "reason": "spend_cap_exceeded"}, ""),
+        ({"key": "currency", "status": "unavailable", "reason": "spend_cap_exceeded"}, ""),
+        ({"key": "payment", "status": "blocked", "reason": "spend_cap_exceeded"}, ""),
+    ],
+)
+def test_billing_link_only_for_the_spend_cap_failure(row: dict, link: str) -> None:
+    """m-25078366: the link opens the billing page of that ad account, nothing else."""
+    (check,) = promotion_checks(({**row, "detail": "Bájalo.", "billing_url": BILLING},))
+    assert check.billing_url == link
+
+
+def test_spend_cap_billing_link_refuses_an_untrusted_destination() -> None:
+    (check,) = promotion_checks(
+        (
+            {
+                "key": "currency",
+                "status": "blocked",
+                "detail": "Bájalo.",
+                "reason": "spend_cap_exceeded",
+                "billing_url": "https://evil.example/billing_hub/accounts?asset_id=12",
+            },
+        )
+    )
+    assert check.status == "blocked" and check.billing_url == ""
+
+
 @pytest.mark.parametrize("status", ["active", "unknown", "pending", "success", None, []])
 def test_confirmation_provider_preserves_closed_status_and_discards_raw_message(
     monkeypatch: pytest.MonkeyPatch, status: object
