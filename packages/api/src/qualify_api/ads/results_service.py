@@ -45,6 +45,14 @@ UNAVAILABLE = (
     "No pudimos consultar esta promoción. Revisa la cuenta publicitaria e inténtalo de nuevo."
 )
 UNCERTAIN = "No pudimos confirmar la pausa. Actualiza el estado antes de intentar otro cambio."
+PAUSING = "Ya estamos pausando esta promoción. Actualiza el estado en unos segundos."
+PAUSE_RETRY = (
+    "Meta todavía no permite otro cambio en este anuncio. "
+    "Espera unos segundos, actualiza el estado y vuelve a pausarlo."
+)
+# Graph codes/subcode that mean "too many requests / too soon after another edit".
+_RATE_CODES = {17, 613, 80004}
+_EDIT_TOO_SOON = 4841018
 POLL_INTERVAL = timedelta(minutes=25)
 
 
@@ -228,7 +236,8 @@ def _summary(row: Any) -> PromotionResultSummary:
         can_pause=bool(
             not stale
             and row["can_read"]
-            and not row["outstanding"]
+            # m-25072681: an unresolved edit never hides the brake; only a pause on its way.
+            and not row.get("pause_in_flight", row["outstanding"])
             and status
             in {
                 "ACTIVE",
@@ -254,6 +263,8 @@ _SUMMARY_SQL = """
        AND c.purge_started_at IS NULL) AS cache_current,
       EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
              AND x.state IN ('in_flight','unknown')) AS outstanding,
+      EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
+             AND x.action='pause' AND x.state='in_flight') AS pause_in_flight,
       EXISTS(SELECT 1 FROM ad_promotion_activations x WHERE x.promotion_id=p.id
         AND x.tenant_id=p.tenant_id AND x.state='active' AND x.confirmed_by IS NOT NULL
         AND x.confirmed_at IS NOT NULL) AS activation_confirmed,
@@ -693,13 +704,35 @@ def _claim_pause(
 
             if revision(operations(s, scope.promotion_id)) != expected_revision:
                 raise ResultsUnavailable("El historial cambió. Vuelve a revisar el cambio.")
-        recent = s.execute(
-            text("""SELECT id FROM ad_promotion_operations WHERE promotion_id=:id
+        if action == "pause":
+            # m-25072681: the pause is the brake. An unresolved edit or the 30 s pacing never
+            # blocks it; only a pause still on its way (or one just confirmed) answers instead.
+            # A claim older than five minutes can no longer dispatch (`_dispatch`): settle it.
+            s.execute(
+                text("""UPDATE ad_promotion_operations SET finished_at=:now,
+              state=CASE WHEN dispatched_at IS NULL THEN 'failed' ELSE 'unknown' END
+              WHERE promotion_id=:id AND action='pause' AND state='in_flight'
+                AND created_at <= :stale"""),
+                {"id": scope.promotion_id, "now": now, "stale": now - timedelta(minutes=5)},
+            )
+            current = s.execute(
+                text("""SELECT id,state FROM ad_promotion_operations
+              WHERE promotion_id=:id AND action='pause' AND (state='in_flight'
+                OR (state IN ('completed','reconciled') AND finished_at > :cutoff))
+              ORDER BY created_at DESC LIMIT 1"""),
+                {"id": scope.promotion_id, "cutoff": now - timedelta(seconds=30)},
+            ).first()
+            if current:
+                return current[0], current[1]
+            recent = None
+        else:
+            recent = s.execute(
+                text("""SELECT id FROM ad_promotion_operations WHERE promotion_id=:id
           AND (state IN ('in_flight','unknown') OR
                GREATEST(created_at,COALESCE(dispatched_at,created_at),
                         COALESCE(finished_at,created_at)) > :cutoff) LIMIT 1"""),
-            {"id": scope.promotion_id, "cutoff": now - timedelta(seconds=30)},
-        ).first()
+                {"id": scope.promotion_id, "cutoff": now - timedelta(seconds=30)},
+            ).first()
         if recent:
             raise ResultsUnavailable(
                 "Espera treinta segundos y actualiza el estado antes de otro cambio."
@@ -795,7 +828,7 @@ async def _pause(
             operation = None  # Repeated intents cannot finish another dispatch.
             if state in {"completed", "reconciled"}:
                 return _load(tenant_id, promotion_id)
-            raise ResultsUnavailable(UNCERTAIN)
+            raise ResultsUnavailable(PAUSING if state == "in_flight" else UNCERTAIN)
 
         def guard() -> None:
             nonlocal dispatched
@@ -819,6 +852,16 @@ async def _pause(
         _same(scope)
         return _load(tenant_id, promotion_id)
     except (MarketingError, AdAccountUnavailable) as exc:
+        too_soon = (
+            action == "pause"
+            and isinstance(exc, MarketingError)
+            and not exc.outcome_unknown
+            and (exc.code in _RATE_CODES or exc.subcode == _EDIT_TOO_SOON)
+        )
+        if operation is not None and too_soon:
+            # Meta answered and refused: nothing was paused, and a new pause may be sent.
+            _finish_pause(scope, operation, "failed")
+            raise ResultsUnavailable(PAUSE_RETRY) from None
         if operation is not None:
             _finish_pause(
                 scope,

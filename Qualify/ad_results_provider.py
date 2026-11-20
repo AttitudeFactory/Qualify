@@ -59,7 +59,8 @@ def summary_vm(row: PromotionResultSummary) -> AdResultVM:
         approved_budget=money_label(Decimal(row.budget_minor) / 100, row.currency),
         end_label=date_label(row.end_time, row.timezone_name),
         checked_label=date_label(row.checked_at, row.timezone_name),
-        can_pause=row.can_pause is True and fresh,
+        # m-25072681: an unresolved edit does not hide the pause (the brake).
+        can_pause=row.can_pause is True and not row.stale and not row.refresh_failed,
         can_manage=row.can_manage is True and fresh,
         management_reason=row.management_reason,
         currency=row.currency,

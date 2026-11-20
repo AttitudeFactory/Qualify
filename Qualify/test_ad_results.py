@@ -306,10 +306,12 @@ def test_actual_primary_action_render_has_one_button_for_each_review_phase(
     )
 
 
-def test_pending_backend_operation_disables_every_management_action() -> None:
+def test_pending_backend_operation_disables_edits_but_never_the_pause() -> None:
+    # m-25072681: an unresolved edit keeps edits blocked; the backend's can_pause decides.
     row = summary(currency="COP", operation_pending=True, can_manage=True, can_resume=True)
     vm = provider.summary_vm(row)
-    assert not vm.can_pause and not vm.can_manage and not vm.can_resume
+    assert vm.can_pause and not vm.can_manage and not vm.can_resume
+    assert not provider.summary_vm(replace(row, can_pause=False)).can_pause
 
 
 @pytest.mark.asyncio

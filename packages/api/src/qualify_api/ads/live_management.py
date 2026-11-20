@@ -517,6 +517,17 @@ async def confirm_promotion_edit(
         return PromotionEditResult(promotion_id, body["action"], "unknown", UNKNOWN)
 
 
+def _after_pauses(rows: list[Any], operation: UUID) -> tuple[list[Any], dict[UUID, str]]:
+    """Split the pauses claimed after `operation` (m-25072681) from the rest of the chain.
+
+    A pause may be claimed while an edit is unresolved; it changes neither budget nor end
+    time, so it is not part of the history the edit was reviewed against.
+    """
+    position = next(index for index, row in enumerate(rows) if row["id"] == operation)
+    later = {row["id"]: row["state"] for row in rows[position + 1 :] if row["action"] == "pause"}
+    return [row for row in rows if row["id"] != operation and row["id"] not in later], later
+
+
 async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) -> bool:
     """Read the entire approved chain; never resends a write with an uncertain outcome."""
     with tenant_session(scope.tenant_id, independent=True) as session:
@@ -551,8 +562,8 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
         )
     ):
         return False
-    others = [row for row in rows if row["id"] != operation]
-    if revision(others) != body.get("ledger"):
+    others, later = _after_pauses(rows, operation)
+    if revision(others) != body.get("ledger") or {"in_flight", "unknown"} & set(later.values()):
         return False
     original = PostgresPromotionRepository().get(scope.tenant_id, scope.promotion_id)
     if original is None or fingerprint(original.request) != body.get("original"):
@@ -581,6 +592,10 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
         goal=request_goal(after.request),
     )
     active = tuple(RESOURCES) if own["action"] == "resume" else tuple(body["baseline"])
+    if {"completed", "reconciled"} & set(later.values()):
+        # m-25072681: a later pause wins. The ad must read back PAUSED; an older resume that
+        # landed after it leaves the ad ACTIVE, fails this read and is never marked a success.
+        active = tuple(resource for resource in active if resource != "ads")
     try:
         await gateway.remote_guard(after, active_resources=active)
         authorize(scope.tenant_id, gateway.actor)
@@ -598,7 +613,8 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
             if (
                 observed_dispatch != dispatch_stamp
                 or current_own["state"] not in {"in_flight", "unknown"}
-                or revision([row for row in current if row["id"] != operation]) != body["ledger"]
+                or revision(_after_pauses(current, operation)[0]) != body["ledger"]
+                or _after_pauses(current, operation)[1] != later
             ):
                 return False
             session.execute(

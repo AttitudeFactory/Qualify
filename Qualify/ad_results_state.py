@@ -382,7 +382,7 @@ class AdResultsState(rx.State):
 
     @rx.event
     def ask_pause(self) -> None:
-        if self.busy or self.loading or self.change_pending or not self.detail.promotion.can_pause:
+        if self.busy or self.loading or not self.detail.promotion.can_pause:
             return
         self.pause_open = True
         self._pause_request = str(uuid4())
@@ -408,7 +408,6 @@ class AdResultsState(rx.State):
                 or not self.pause_open
                 or not self._pause_request
                 or not self.detail.promotion.can_pause
-                or self.change_pending
                 or self.detail.promotion.id != self._selected_id
             ):
                 return
