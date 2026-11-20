@@ -390,6 +390,17 @@ def save_audience(
 ) -> SavedAudience:
     if type(expected_version) is not int or expected_version < 0:
         raise AudienceUnavailable("Vuelve a cargar el público antes de guardarlo.")
+    # Enforced at save, not in AudienceDraft.validate(): older saved drafts must still load.
+    if (
+        audience.point is None
+        and type(audience.radius_km) is int
+        and audience.radius_km < CITY_RADIUS_KM[0]
+    ):
+        raise AudienceUnavailable(
+            f"Alrededor de una ciudad, la distancia mínima es {CITY_RADIUS_KM[0]} km. "
+            f"Cámbiala a {CITY_RADIUS_KM[0]} km o más, o déjala vacía para mostrar el anuncio "
+            "en toda la ciudad."
+        )
     scope = _scope(
         tenant_id=tenant_id,
         content_draft_id=content_draft_id,

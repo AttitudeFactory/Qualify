@@ -16,6 +16,11 @@ from qualify_api.ads.enhancements import (
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
+GONE_BRAND = (
+    "Esta marca ya no está disponible en este negocio. "
+    "Abre «Tu marca» en el menú para revisar la marca actual."
+)
+
 
 def _member(tenant_id: UUID) -> UUID:
     login = current_acting_login()
@@ -31,7 +36,7 @@ def read_policy(session: object, tenant_id: UUID, brand_id: UUID) -> BrandEnhanc
         text("SELECT id FROM brands WHERE id=:id FOR SHARE"), {"id": brand_id}
     ).scalar_one_or_none()
     if brand is None:
-        raise EnhancementsUnavailable("Esta marca ya no está disponible en este negocio.")
+        raise EnhancementsUnavailable(GONE_BRAND)
     row = (
         session.execute(
             text(
@@ -75,11 +80,12 @@ def save_brand_enhancements(
             text("SELECT id FROM brands WHERE id=:id FOR UPDATE"), {"id": brand_id}
         ).scalar_one_or_none()
         if brand is None:
-            raise EnhancementsUnavailable("Esta marca ya no está disponible en este negocio.")
+            raise EnhancementsUnavailable(GONE_BRAND)
         current = read_policy(session, tenant_id, brand_id)
         if current.version != expected_version:
             raise EnhancementsUnavailable(
-                "Otra persona cambió estos permisos. Vuelve a cargarlos antes de guardar."
+                "Otra persona cambió estos permisos. "
+                "Toca «Descartar cambios y consultar» y vuelve a elegir."
             )
         if current.values == values:
             return current
