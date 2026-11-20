@@ -90,6 +90,18 @@ def _check_result(check: PromotionCheckVM) -> rx.Component:
             width="100%",
         ),
         rx.text(check.detail, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+        rx.cond(
+            check.billing_url != "",
+            rx.link(
+                "Abrir facturación en Meta",
+                href=check.billing_url,
+                is_external=True,
+                aria_label="Abrir facturación en Meta (se abre en una pestaña nueva)",
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
+        ),
         spacing="1",
         width="100%",
     )

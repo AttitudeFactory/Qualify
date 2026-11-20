@@ -12,7 +12,7 @@ from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .ad_enhancements_vm import BrandEnhancementsVM
-from .ad_health_vm import AccountHealthVM
+from .ad_health_vm import AccountHealthVM, safe_billing_url
 from .promotion_audience_vm import (
     COUNTRY_UNKNOWN,
     NEAR_HOUSING_PROBLEM,
@@ -319,6 +319,8 @@ class PromotionCheckVM:
     label: str = "Comprobación pendiente"
     status: str = "unavailable"
     detail: str = "No pudimos confirmar esta comprobación. Vuelve a consultar."
+    # Only when the budget exceeds what is left of the account's spending limit (m-25078366).
+    billing_url: str = ""
 
 
 def promotion_checks(raw: object) -> list[PromotionCheckVM]:
@@ -358,6 +360,11 @@ def promotion_checks(raw: object) -> list[PromotionCheckVM]:
                     if key == "payment" and status == "verified"
                     else detail
                 ),
+                billing_url=safe_billing_url(str(item.get("billing_url") or ""))
+                if key == "currency"
+                and status == "blocked"
+                and item.get("reason") == "spend_cap_exceeded"
+                else "",
             )
         )
     return rows

@@ -603,7 +603,14 @@ async def test_budget_over_the_account_spend_cap_is_refused_before_any_meta_post
         "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
         f"(quedan ${remaining} COP). Bájalo o sube el límite en Meta, en Facturación y pagos."
     )
-    assert error.value.diagnostics[-1]["key"] == "currency"
+    failed = error.value.diagnostics[-1]
+    assert failed["key"] == "currency"
+    # m-25078366: a machine-readable reason and the billing page of THIS ad account.
+    assert failed["reason"] == "spend_cap_exceeded"
+    assert failed["billing_url"] == (
+        "https://business.facebook.com/billing_hub/accounts?asset_id=12"
+    )
+    assert not any("reason" in row for row in error.value.diagnostics[:-1])
     assert not [call for call in remote.calls if call[0] == "POST"]
 
 
