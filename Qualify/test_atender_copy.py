@@ -286,6 +286,7 @@ def test_followup_trigger_labels() -> None:
 
 def test_leads_screen_copy() -> None:
     # m-24842992 moved the screen's words to `leads_vm` and rewrote the empty state.
+    source = inspect.getsource(leads_page) + inspect.getsource(leads_vm)
     # Meta forms also supply contact details; their presence alone proves no channel consent.
     assert leads_vm.INTRO == "Personas que te dejaron sus datos en un formulario."
     assert "aceptaron que las contactes" not in leads_vm.INTRO
