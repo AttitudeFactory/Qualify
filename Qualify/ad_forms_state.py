@@ -21,6 +21,7 @@ from .ad_forms_vm import (
     FormConnectionVM,
     form_problem,
     form_step_problem,
+    notice_has_skipped,
     question_summary,
     sync_notice,
 )
@@ -54,6 +55,10 @@ class AdFormsState(rx.State):
     @rx.var
     def title(self) -> str:
         return FORM_STEPS[max(0, min(self.step - 1, len(FORM_STEPS) - 1))]
+
+    @rx.var
+    def notice_skipped(self) -> bool:
+        return notice_has_skipped(self.notice)
 
     @rx.var
     def has_available_page(self) -> bool:

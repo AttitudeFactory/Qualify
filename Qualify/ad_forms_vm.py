@@ -65,14 +65,22 @@ class AdFormVM:
     draft: AdFormDraftVM = AdFormDraftVM()
 
 
+SYNC_DONE = "Consulta terminada. Revisa los clientes interesados en Por responder."
+# Meta's lead center, on the same host the account-health links are pinned to.
+META_LEADS_URL = "https://business.facebook.com/latest/leads_center"
+
+
 def sync_notice(skipped: int) -> str:
-    """The refresh result, naming the contacts Meta sent that could not be brought in."""
-    done = "Consulta terminada. Revisa los clientes interesados en Por responder."
+    """The refresh result, reassuring that contacts not brought in are still in Meta."""
     if skipped <= 0:
-        return done
+        return SYNC_DONE
     if skipped == 1:
-        return f"{done} 1 contacto no se pudo traer. Puedes verlo en Meta."
-    return f"{done} {skipped} contactos no se pudieron traer. Puedes verlos en Meta."
+        return f"{SYNC_DONE} 1 contacto no se pudo traer, pero sigue guardado en Meta."
+    return f"{SYNC_DONE} {skipped} contactos no se pudieron traer, pero siguen guardados en Meta."
+
+
+def notice_has_skipped(notice: str) -> bool:
+    return notice.startswith(SYNC_DONE) and notice != SYNC_DONE
 
 
 def safe_https(value: str) -> bool:

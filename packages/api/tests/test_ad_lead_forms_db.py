@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -538,40 +539,81 @@ def backup_client(monkeypatch: pytest.MonkeyPatch, fake: AsyncMock) -> None:
     monkeypatch.setattr(service, "_remote_form", AsyncMock())
 
 
+def stored_leads(tenant: UUID) -> dict:
+    with tenant_session(tenant) as session:
+        rows = session.execute(
+            text(
+                "SELECT leadgen_id,meta_ad_id,promotion_id,pipeline_version"
+                " FROM meta_lead_submissions"
+            )
+        ).all()
+    return {row.leadgen_id: row for row in rows}
+
+
 @pytest.mark.asyncio
 async def test_backup_skips_bad_leads_saves_the_rest_and_moves_the_window(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """m-25072672: one unreadable lead or unverifiable ad no longer blocks every later sync."""
+    """m-25072672: an unreadable lead is skipped once; an unverifiable ad only loses attribution."""
+    caplog.set_level(logging.INFO)
     values = world()
     form = published(values)
     fake = AsyncMock()
     fake.read_ad.side_effect = LeadNotVerifiable("gone")
+    bad = raw_lead(form, "912", field_data="not a list")
     fake.leads.side_effect = [
-        LeadPage(
-            (
-                raw_lead(form, "911"),
-                raw_lead(form, "912", field_data="not a list"),
-                raw_lead(form, "913", ad_id="77"),
-            ),
-            "next",
-        ),
-        LeadPage((raw_lead(form, "914"),), None),
+        LeadPage((raw_lead(form, "911"), bad, raw_lead(form, "913", ad_id="77")), "next"),
+        # The window overlap hands back a saved lead and the bad one: neither counts twice.
+        LeadPage((bad, raw_lead(form, "911"), raw_lead(form, "914")), None),
     ]
     backup_client(monkeypatch, fake)
     with acting_login(values[4]):
-        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (2, 2)
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (3, 1)
     stored = repo.get_form(values[0], form["id"])
     assert stored["last_synced_at"] is not None and stored["backup_after"] is None
-    assert len(repo.list_inquiries(values[0])) == 2
-    assert "912 (unparseable)" in caplog.text and "913 (ad_not_verifiable)" in caplog.text
+    rows = stored_leads(values[0])
+    assert set(rows) == {"911", "913", "914"}
+    assert rows["911"].meta_ad_id is None and rows["911"].pipeline_version == "meta-lead-v1"
+    assert rows["913"].meta_ad_id is None and rows["913"].promotion_id is None
+    assert rows["913"].pipeline_version == "meta-lead-v1:ad-unverified"
+    assert caplog.text.count("912 (unparseable)") == 1
+    assert "913 saved without ad attribution" in caplog.text
     assert "synthetic@example.invalid" not in caplog.text
     fake.leads.side_effect = [LeadPage((), None)]
     with acting_login(values[4]):
         assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (0, 0)
-    # The next window starts after the bad leads, so Meta does not hand them back.
+    # The next window starts after the bad lead, so Meta does not hand it back.
     since = fake.leads.call_args.kwargs["since"]
     assert since > datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+
+
+@pytest.mark.asyncio
+async def test_webhook_lead_from_unverifiable_ad_is_saved_unattributed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.ads import lead_forms_webhook as webhook
+
+    values = world()
+    form = published(values)
+    fake = AsyncMock()
+    fake.read.return_value = raw_lead(form, "941", ad_id="77")
+    fake.read_ad.side_effect = LeadNotVerifiable("gone")
+    monkeypatch.setattr(webhook, "_client", AsyncMock(return_value=fake))
+    monkeypatch.setattr(webhook, "_page_access", AsyncMock())
+    monkeypatch.setattr(webhook, "_remote_form", AsyncMock())
+    value = {"leadgen_id": "941", "form_id": form["meta_form_id"], "page_id": "200"}
+    event = ClaimedEvent(
+        uuid4(), None, "page", "200", "leadgen", value, 1, owners=((values[0], values[3]),)
+    )
+    assert (await webhook.leadgen_handler(event)).status == "processed"
+    row = stored_leads(values[0])["941"]
+    assert row.meta_ad_id is None and row.pipeline_version == "meta-lead-v1:ad-unverified"
+    # A transient ad read still raises, so the webhook retries as before.
+    fake.read.return_value = raw_lead(form, "942", ad_id="77")
+    fake.read_ad.side_effect = LeadFormUnavailable("rate limited")
+    with pytest.raises(LeadFormUnavailable):
+        await webhook.leadgen_handler(replace(event, value={**value, "leadgen_id": "942"}))
+    assert "942" not in stored_leads(values[0])
 
 
 @pytest.mark.asyncio

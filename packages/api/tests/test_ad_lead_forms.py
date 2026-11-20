@@ -83,7 +83,6 @@ def test_invalid_editor_values_fail_before_remote_write(changes: dict) -> None:
         {"field_data": [{"name": "email", "values": "one"}]},
         {"field_data": [{"name": "email", "values": ["a"]}, {"name": "email", "values": ["b"]}]},
         {"field_data": [{"name": "email", "values": [True]}]},
-        {"ad_id": "https://evil.invalid"},
     ],
 )
 def test_off_contract_lead_does_not_enter_crm(changes: dict) -> None:
@@ -294,3 +293,31 @@ async def test_only_a_missing_ad_is_definite_when_verifying_a_lead(
     with pytest.raises(LeadFormUnavailable) as raised:
         await client.read_ad("5", fields="id")
     assert isinstance(raised.value, LeadNotVerifiable) is definite
+
+
+def test_genuine_lead_text_is_normalized_not_refused() -> None:
+    """m-25072672: CR line breaks, long answers, clock skew and odd ad ids keep the contact."""
+    from datetime import UTC, datetime, timedelta
+
+    soon = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    parsed = service.parse_lead(
+        raw_lead(
+            created_time=soon,
+            ad_id="https://evil.invalid",
+            field_data=[
+                {"name": "email", "values": ["synthetic@example.invalid"]},
+                {"name": "notes", "values": ["a\r\nb\rc", "x" * 600]},
+                {"name": "empty", "values": []},
+            ],
+        ),
+        form_id="800",
+    )
+    first, long = parsed["answers"]["notes"].split("; ")
+    assert first == "a\nb\nc" and len(long) == 500 and long.endswith("…")
+    assert parsed["answers"]["empty"] == "" and parsed["meta_ad_id"] is None
+    assert parsed["created"] <= datetime.now(UTC)
+    too_far = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
+    with pytest.raises(LeadFormUnavailable):
+        service.parse_lead(raw_lead(created_time=too_far), form_id="800")
+    with pytest.raises(LeadFormUnavailable):
+        service.parse_lead(["not", "an", "object"], form_id="800")  # type: ignore[arg-type]

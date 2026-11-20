@@ -20,10 +20,13 @@ from .ad_forms_page import _editor, ad_forms_index
 from .ad_forms_state import AdFormsState
 from .ad_forms_vm import (
     FORM_UNCERTAIN,
+    META_LEADS_URL,
+    SYNC_DONE,
     AdFormDraftVM,
     AdFormVM,
     form_problem,
     form_step_problem,
+    notice_has_skipped,
     sync_notice,
 )
 from .auth_state import AuthState, business_state_classes
@@ -78,11 +81,14 @@ def test_privacy_is_required_and_plain_contacts_do_not_establish_whatsapp_consen
 
 
 def test_refresh_result_names_contacts_that_could_not_be_brought_in() -> None:
-    """m-25072672: skipped leads are counted for the owner, singular and plural."""
-    done = "Consulta terminada. Revisa los clientes interesados en Por responder."
-    assert sync_notice(0) == done
-    assert sync_notice(1) == f"{done} 1 contacto no se pudo traer. Puedes verlo en Meta."
-    assert sync_notice(3) == f"{done} 3 contactos no se pudieron traer. Puedes verlos en Meta."
+    """m-25072672: skipped leads are counted, reassuringly, with a way to see them in Meta."""
+    assert sync_notice(0) == SYNC_DONE and not notice_has_skipped(sync_notice(0))
+    one, many = sync_notice(1), sync_notice(3)
+    assert one == f"{SYNC_DONE} 1 contacto no se pudo traer, pero sigue guardado en Meta."
+    assert many == f"{SYNC_DONE} 3 contactos no se pudieron traer, pero siguen guardados en Meta."
+    assert notice_has_skipped(one) and notice_has_skipped(many)
+    assert not notice_has_skipped("Borrador guardado en Qualify.")
+    assert META_LEADS_URL.startswith("https://business.facebook.com/")
 
 
 def test_saved_question_options_round_trip_and_review_revision_are_preserved() -> None:
