@@ -308,6 +308,8 @@ def test_genuine_lead_text_is_normalized_not_refused() -> None:
                 {"name": "email", "values": ["synthetic@example.invalid"]},
                 {"name": "notes", "values": ["a\r\nb\rc", "x" * 600]},
                 {"name": "empty", "values": []},
+                {"name": "q" * 120 + "a", "values": ["first"]},
+                {"name": "q" * 120 + "b", "values": ["second"]},
             ],
         ),
         form_id="800",
@@ -315,6 +317,12 @@ def test_genuine_lead_text_is_normalized_not_refused() -> None:
     first, long = parsed["answers"]["notes"].split("; ")
     assert first == "a\nb\nc" and len(long) == 500 and long.endswith("…")
     assert parsed["answers"]["empty"] == "" and parsed["meta_ad_id"] is None
+    # The ad id was there but unusable: the contact is kept and marked unverified.
+    assert parsed["pipeline"] == service.UNATTRIBUTED_PIPELINE
+    # Two long names cut to the same prefix both keep their answers.
+    assert parsed["answers"]["q" * 99 + "…"] == "first"
+    assert parsed["answers"]["q" * 96 + " (2)"] == "second"
+    assert "pipeline" not in service.parse_lead(raw_lead(), form_id="800")
     assert parsed["created"] <= datetime.now(UTC)
     too_far = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
     with pytest.raises(LeadFormUnavailable):

@@ -21,7 +21,6 @@ from .ad_forms_vm import (
     FormConnectionVM,
     form_problem,
     form_step_problem,
-    notice_has_skipped,
     question_summary,
     sync_notice,
 )
@@ -45,6 +44,7 @@ class AdFormsState(rx.State):
     busy: bool = False
     error: str = ""
     notice: str = ""
+    skipped_leads: int = 0
     publish_consent: bool = False
     receive_consent: bool = False
     discard_open: bool = False
@@ -58,7 +58,8 @@ class AdFormsState(rx.State):
 
     @rx.var
     def notice_skipped(self) -> bool:
-        return notice_has_skipped(self.notice)
+        # The count only belongs to the refresh notice; any other notice hides it.
+        return self.skipped_leads > 0 and self.notice == sync_notice(self.skipped_leads)
 
     @rx.var
     def has_available_page(self) -> bool:
@@ -402,6 +403,7 @@ class AdFormsState(rx.State):
         async with self:
             if await self._current(context, operation):
                 self.busy = False
+                self.skipped_leads = skipped
                 self.notice = sync_notice(skipped)
 
     @rx.event(background=True)

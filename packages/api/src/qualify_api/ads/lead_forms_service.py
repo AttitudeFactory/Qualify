@@ -277,21 +277,29 @@ def parse_lead(raw: dict, *, form_id: str, leadgen_id: str | None = None) -> dic
     fields = raw.get("field_data")
     if not isinstance(fields, list) or len(fields) > 20:
         raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
-    answers = {}
+    answers: dict[str, str] = {}
+    names = set()
     for item in fields:
         if not isinstance(item, dict):
             raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
-        key = _lead_text(item.get("name"), maximum=100)
+        name = item.get("name")
+        key = _lead_text(name, maximum=100)
         values = item.get("values")
-        if not key or key in answers or not isinstance(values, list) or len(values) > 10:
+        if not key or name in names or not isinstance(values, list) or len(values) > 10:
             raise LeadFormUnavailable("Meta no devolvió respuestas válidas para el formulario.")
+        names.add(name)
+        base, number = key, 2
+        while key in answers:  # Two long names cut to the same prefix: keep both answers.
+            suffix = f" ({number})"
+            key, number = base[: 100 - len(suffix)] + suffix, number + 1
         answers[key] = "; ".join(_lead_text(value, maximum=500) for value in values)
     ad_id = raw.get("ad_id")
+    dropped = False
     try:
         ad_id = None if ad_id is None else meta_id(ad_id)
     except LeadFormUnavailable:
-        ad_id = None  # An odd ad id only costs the attribution, never the contact.
-    return {
+        ad_id, dropped = None, True  # An odd ad id only costs the attribution, never the contact.
+    data = {
         "leadgen_id": identity,
         "meta_ad_id": ad_id,
         "created": created,
@@ -300,6 +308,7 @@ def parse_lead(raw: dict, *, form_id: str, leadgen_id: str | None = None) -> dic
         "email": answers.get("email") or None,
         "answers": answers,
     }
+    return _unattributed(data) if dropped else data
 
 
 async def _remote_form(client: LeadFormsClient, form: dict) -> None:

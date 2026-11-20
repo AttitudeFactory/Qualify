@@ -79,10 +79,6 @@ def sync_notice(skipped: int) -> str:
     return f"{SYNC_DONE} {skipped} contactos no se pudieron traer, pero siguen guardados en Meta."
 
 
-def notice_has_skipped(notice: str) -> bool:
-    return notice.startswith(SYNC_DONE) and notice != SYNC_DONE
-
-
 def safe_https(value: str) -> bool:
     try:
         parsed = urlsplit(value.strip())

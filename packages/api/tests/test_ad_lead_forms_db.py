@@ -651,3 +651,14 @@ async def test_backup_credential_rotation_mid_run_aborts_without_moving_the_wind
         await service.sync_lead_form(tenant_id=values[0], form_id=form["id"])
     assert repo.get_form(values[0], form["id"])["last_synced_at"] is None
     assert repo.list_inquiries(values[0]) == ()
+
+
+def test_lead_with_unusable_ad_id_is_saved_marked_unverified() -> None:
+    values = world()
+    form = published(values)
+    data = service.parse_lead(
+        raw_lead(form, "951", ad_id="not-an-id"), form_id=form["meta_form_id"]
+    )
+    service._persist(values[0], form, data, received_via="backup", credential_version=1)
+    row = stored_leads(values[0])["951"]
+    assert row.meta_ad_id is None and row.pipeline_version == "meta-lead-v1:ad-unverified"
