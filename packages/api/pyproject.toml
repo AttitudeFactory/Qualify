@@ -12,7 +12,7 @@ dependencies = [
     "qualify-creative",
     "fastapi>=0.147.0",
     "httpx>=0.28.1",
-    "redis>=5.2.0",
+    "redis>=8.1.0",
     "sqlalchemy>=2.0.36",
     "psycopg[binary]>=3.3.6",
     "alembic>=1.14.0",
