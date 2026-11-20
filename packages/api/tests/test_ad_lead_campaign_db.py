@@ -188,17 +188,16 @@ def _grant(tenant, connection, version: int, scopes: tuple[str, ...]) -> None:
 
 
 def _renew(w, change: str = "", scopes: tuple[str, ...] = SCOPES) -> None:
-    """A token renewal: version 2 with its own grant, plus any other connection change."""
-    with tenant_session(w["tenant"]) as s:
-        s.execute(
-            text(
-                "UPDATE social_connections SET current_credential_version=2"
-                + (f", {change}" if change else "")
-                + " WHERE id=:id"
-            ),
-            {"id": w["source"]},
-        )
-    _grant(w["tenant"], w["source"], 2, scopes)
+    """A token renewal: version 2 with its own grant, then any other connection change
+    (after the grant: the recorder refuses a connection already being purged)."""
+    for sql in ("current_credential_version=2", change):
+        if sql:
+            with tenant_session(w["tenant"]) as s:
+                s.execute(
+                    text(f"UPDATE social_connections SET {sql} WHERE id=:id"), {"id": w["source"]}
+                )
+        if sql.startswith("current_credential_version"):
+            _grant(w["tenant"], w["source"], 2, scopes)
 
 
 def test_published_form_attaches_to_a_new_ad_after_a_token_renewal(lead_world):
