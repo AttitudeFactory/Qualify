@@ -276,6 +276,10 @@ class PostgresPromotionRepository:
                 ).first()
                 if bound is None:
                     raise ValueError("lead form is not a published form of the promoted account")
+                from qualify_api.ads.lead_forms_service import lead_access_reason
+
+                if lead_access_reason(session, target.connection_id):
+                    raise ValueError("lead form connection cannot receive leads")
             columns = [
                 "tenant_id",
                 "brand_id",

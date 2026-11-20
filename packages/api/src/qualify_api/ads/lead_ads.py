@@ -107,6 +107,7 @@ def published_lead_form(tenant_id: UUID, form_id: UUID) -> LeadFormTarget:
     from qualify_shared.db.session import tenant_session
     from sqlalchemy import text
 
+    from qualify_api.ads.lead_forms_service import lead_access_reason
     from qualify_api.ads.wizard import WizardUnavailable
 
     with tenant_session(tenant_id) as session:
@@ -119,6 +120,10 @@ def published_lead_form(tenant_id: UUID, form_id: UUID) -> LeadFormTarget:
               AND c.purge_started_at IS NULL AND c.purged_at IS NULL"""),
             {"id": form_id},
         ).first()
+        # A renewal may drop leads_retrieval: intake would refuse the leads Meta charges for.
+        reason = row and lead_access_reason(session, row.connection_id)
+        if reason:
+            raise WizardUnavailable(reason)
     if row is None:
         raise WizardUnavailable(
             "Elige un formulario que ya esté listo y sea de la misma cuenta de esta publicación."

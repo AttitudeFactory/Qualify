@@ -10,6 +10,7 @@ from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from qualify_api.ads import lead_forms_repository as repository
 from qualify_api.ads.lead_forms import (
@@ -40,26 +41,30 @@ def _member(tenant_id: UUID) -> None:
     require_acting_member(tenant_id)
 
 
+LEAD_FORM_SCOPES = frozenset(
+    {"leads_retrieval", "pages_manage_ads", "pages_manage_metadata", "pages_show_list"}
+)
+
+
+def lead_access_reason(session: Session, connection_id: UUID) -> str:
+    """Why the connection's CURRENT grant cannot manage forms or receive leads, or ""."""
+    try:
+        grant = _connection(session, connection_id)
+    except ValueError:
+        return "Esta conexión ya no está disponible. Conéctala de nuevo en «Tus redes»."
+    reason = _permission_reason(grant)
+    if reason:
+        return reason
+    if not LEAD_FORM_SCOPES <= set(grant.scopes):
+        return "Actualiza el acceso con Meta para administrar formularios y recibir sus datos."
+    return ""
+
+
 def _context(tenant_id: UUID, connection_id: UUID, *, version: int | None = None) -> dict:
     with tenant_session(tenant_id) as session:
-        try:
-            grant = _connection(session, connection_id)
-        except ValueError:
-            raise LeadFormUnavailable(
-                "Esta conexión ya no está disponible. Conéctala de nuevo en «Tus redes»."
-            ) from None
-        reason = _permission_reason(grant)
+        reason = lead_access_reason(session, connection_id)
         if reason:
             raise LeadFormUnavailable(reason)
-        if not {
-            "leads_retrieval",
-            "pages_manage_ads",
-            "pages_manage_metadata",
-            "pages_show_list",
-        } <= set(grant.scopes):
-            raise LeadFormUnavailable(
-                "Actualiza el acceso con Meta para administrar formularios y recibir sus datos."
-            )
         row = session.execute(
             text("""SELECT id,brand_id,linked_page_id,current_credential_version,
             COALESCE(external_username,external_account_id) AS label
