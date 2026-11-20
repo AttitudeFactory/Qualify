@@ -25,6 +25,8 @@ URGENT_PAUSE = (
     "Si necesitas detener el gasto, pausa el anuncio directamente en el Administrador "
     "de anuncios de Meta."
 )
+PAUSE_HERE = "Aunque otro cambio siga en curso, puedes pausar el anuncio aquí."
+EDIT_STOP_SPEND = "Si necesitas detener el gasto, usa «Pausar anuncio»."
 EDIT_EXPIRED = "La comprobación venció. Vuelve a comprobar el cambio antes de confirmarlo."
 EDIT_ACTION_LABELS = {
     "budget": "Aumentar presupuesto",

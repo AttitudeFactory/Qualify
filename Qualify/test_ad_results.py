@@ -20,6 +20,7 @@ from .ad_results_vm import (
     LOAD_FAILED,
     NO_SESSION,
     PAUSE_FAILED,
+    PAUSE_HERE,
     REFRESH_FAILED,
     URGENT_PAUSE,
     AdDetailVM,
@@ -244,7 +245,9 @@ async def test_edit_requires_review_consent_and_blocks_retry_after_unknown(
     assert len(calls) == 1
     from .ad_results_page import _management
 
-    assert URGENT_PAUSE in str(_management().render())
+    rendered = str(_management().render())
+    # The rendered tree escapes accents; the plain part of the sentence is enough.
+    assert URGENT_PAUSE in rendered and PAUSE_HERE.split(",")[1].split(" aqu")[0] in rendered
 
 
 @pytest.mark.asyncio

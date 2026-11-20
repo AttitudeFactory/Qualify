@@ -6,7 +6,14 @@ import reflex as rx
 from qualify_api.ads.status_webhook import SUBSCRIBE_OFFER
 
 from .ad_results_state import AdResultsState as S
-from .ad_results_vm import URGENT_PAUSE, AdDayVM, AdResultVM, AlertAccountVM
+from .ad_results_vm import (
+    EDIT_STOP_SPEND,
+    PAUSE_HERE,
+    URGENT_PAUSE,
+    AdDayVM,
+    AdResultVM,
+    AlertAccountVM,
+)
 from .ui import (
     app_shell,
     callout,
@@ -290,7 +297,7 @@ def _edit_confirmation() -> rx.Component:
             rx.vstack(
                 rx.cond(S.error != "", callout(S.error, "error")),
                 rx.cond(S.edit_warning != "", callout(S.edit_warning, "warn")),
-                rx.cond(S.change_pending, callout(URGENT_PAUSE, "warn")),
+                rx.cond(S.change_pending, callout(EDIT_STOP_SPEND, "warn")),
                 rx.cond(
                     S.edit_action == "budget",
                     rx.vstack(
@@ -450,11 +457,18 @@ def _management() -> rx.Component:
         rx.vstack(
             rx.heading("Controla este anuncio", size="4", as_="h2"),
             rx.cond(
-                S.change_pending
-                | S.detail.promotion.operation_pending
-                | S.detail.promotion.stale
-                | S.detail.promotion.refresh_failed,
-                callout(URGENT_PAUSE, "warn"),
+                ~S.detail.promotion.can_pause,
+                rx.cond(
+                    S.change_pending
+                    | S.detail.promotion.operation_pending
+                    | S.detail.promotion.stale
+                    | S.detail.promotion.refresh_failed,
+                    callout(URGENT_PAUSE, "warn"),
+                ),
+                rx.cond(
+                    S.change_pending | S.detail.promotion.operation_pending,
+                    callout(PAUSE_HERE, "info"),
+                ),
             ),
             rx.button(
                 "Pausar anuncio",

@@ -523,9 +523,9 @@ async def test_pause_audit_idempotency_and_immutable_approval(result_world):
         await service._pause(ids["tenant_id"], promotion.id, "intent-1", api=api)
         await service._pause(ids["tenant_id"], promotion.id, "intent-1", api=api)
         assert len([c for c in api.calls if c[0] == "POST"]) == 1
-        # A second click with a new key answers with the pause Meta just confirmed.
+        # A new key after a finished pause sends PAUSED again (harmless, m-25072681).
         await service._pause(ids["tenant_id"], promotion.id, "intent-2", api=api)
-        assert len([c for c in api.calls if c[0] == "POST"]) == 1
+        assert len([c for c in api.calls if c[0] == "POST"]) == 2
     with tenant_session(ids["tenant_id"]) as s:
         row = (
             s.execute(
@@ -533,7 +533,7 @@ async def test_pause_audit_idempotency_and_immutable_approval(result_world):
                 {"id": promotion.id},
             )
             .mappings()
-            .one()
+            .first()
         )
         assert row["actor_id"] == user and row["state"] == "completed"
         assert row["created_at"] and row["finished_at"]
@@ -1035,11 +1035,23 @@ async def test_two_pauses_with_different_keys_make_one_meta_write(result_world):
     with acting_login(login):
         scope = service._scope(ids["tenant_id"], promotion.id)
         _unresolved(scope, "budget-edit")
-        await asyncio.gather(
-            service._pause(ids["tenant_id"], promotion.id, "click-1", api=api),
-            service._pause(ids["tenant_id"], promotion.id, "click-2", api=api),
-            return_exceptions=True,
+        original, sending, release = api.update, asyncio.Event(), asyncio.Event()
+
+        async def slow(*args, **kwargs):
+            sending.set()
+            await release.wait()  # The first pause is still on its way to Meta.
+            return await original(*args, **kwargs)
+
+        api.update = slow
+        first = asyncio.create_task(
+            service._pause(ids["tenant_id"], promotion.id, "click-1", api=api)
         )
+        await asyncio.wait_for(sending.wait(), 5)
+        api.update = original
+        with pytest.raises(ResultsUnavailable, match="Ya estamos pausando"):
+            await service._pause(ids["tenant_id"], promotion.id, "click-2", api=api)
+        release.set()
+        await first
     assert _posts(api) == [("3", {"status": "PAUSED"})]
     with tenant_session(ids["tenant_id"]) as s:
         assert (
@@ -1085,7 +1097,7 @@ async def test_meta_edit_rate_limit_on_pause_asks_to_retry_and_frees_the_brake(r
 
     api.update = too_soon
     with acting_login(login):
-        with pytest.raises(ResultsUnavailable, match="vuelve a pausarlo"):
+        with pytest.raises(ResultsUnavailable, match="otra vez"):
             await service._pause(ids["tenant_id"], promotion.id, "first", api=api)
         assert _states(ids, promotion) == {"pause": "failed"}
         api.update = original
@@ -1183,3 +1195,67 @@ async def test_older_unknown_resume_reconciled_after_a_finished_pause_never_wins
                 )
             await service._pause(ids["tenant_id"], promotion.id, "brake-again", api=api)
             assert len(_posts(api)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_pause_stuck_in_flight_past_five_minutes_gives_the_brake_back(result_world):
+    ids, login, _, _, promotion, api = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        stuck, _ = service._claim_pause(scope, "worker-died", datetime.now(UTC))
+        await service._refresh(ids["tenant_id"], promotion.id, api=api)
+        shown = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert not shown.promotion.can_pause
+        with tenant_session(ids["tenant_id"]) as s:
+            s.execute(
+                text(
+                    "UPDATE ad_promotion_operations SET created_at=now()-interval '6 minutes' "
+                    "WHERE id=:id"
+                ),
+                {"id": stuck},
+            )
+        shown = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert shown.promotion.can_pause
+        await service._pause(ids["tenant_id"], promotion.id, "brake", api=api)
+    assert _posts(api) == [("3", {"status": "PAUSED"})]
+    with tenant_session(ids["tenant_id"]) as s:
+        assert (
+            s.scalar(text("SELECT state FROM ad_promotion_operations WHERE id=:id"), {"id": stuck})
+            == "failed"
+        )
+
+
+def test_an_edit_claimed_before_a_pause_never_dispatches(result_world):
+    ids, login, _, _, promotion, _ = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        resume = _unresolved(scope, "resume", action="resume", state="in_flight")
+        brake, _ = service._claim_pause(scope, "brake", datetime.now(UTC))
+        service._dispatch(scope, brake)
+        service._finish_pause(scope, brake, "completed")
+        with pytest.raises(ResultsUnavailable, match="se pausó"):
+            service._dispatch(scope, resume)
+    assert _states(ids, promotion) == {"resume": "failed", "pause": "completed"}
+    with tenant_session(ids["tenant_id"]) as s:
+        assert (
+            s.scalar(
+                text("SELECT dispatched_at FROM ad_promotion_operations WHERE id=:id"),
+                {"id": resume},
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_pause_right_after_a_finished_pause_still_writes_to_meta(result_world):
+    ids, login, _, _, promotion, api = result_world
+    with acting_login(login):
+        await service._pause(ids["tenant_id"], promotion.id, "brake", api=api)
+        # A late resume re-activated the ad within 30 s of the finished pause.
+        api.objects["3"]["status"] = api.objects["3"]["effective_status"] = "ACTIVE"
+        await service._pause(ids["tenant_id"], promotion.id, "brake-again", api=api)
+    assert _posts(api) == [("3", {"status": "PAUSED"})] * 2

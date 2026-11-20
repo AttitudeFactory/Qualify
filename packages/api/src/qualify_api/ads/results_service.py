@@ -45,10 +45,10 @@ UNAVAILABLE = (
     "No pudimos consultar esta promoción. Revisa la cuenta publicitaria e inténtalo de nuevo."
 )
 UNCERTAIN = "No pudimos confirmar la pausa. Actualiza el estado antes de intentar otro cambio."
-PAUSING = "Ya estamos pausando esta promoción. Actualiza el estado en unos segundos."
+PAUSING = "Ya estamos pausando este anuncio. Actualiza el estado en unos segundos para confirmarlo."
 PAUSE_RETRY = (
-    "Meta todavía no permite otro cambio en este anuncio. "
-    "Espera unos segundos, actualiza el estado y vuelve a pausarlo."
+    "Meta pidió esperar un momento y el anuncio sigue activo. Espera unos segundos, "
+    "actualiza el estado y toca «Pausar anuncio» otra vez."
 )
 # Graph codes/subcode that mean "too many requests / too soon after another edit".
 _RATE_CODES = {17, 613, 80004}
@@ -264,7 +264,9 @@ _SUMMARY_SQL = """
       EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
              AND x.state IN ('in_flight','unknown')) AS outstanding,
       EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
-             AND x.action='pause' AND x.state='in_flight') AS pause_in_flight,
+             AND x.action='pause' AND x.state='in_flight'
+             -- A claim older than five minutes can no longer dispatch: the brake comes back.
+             AND x.created_at > now() - interval '5 minutes') AS pause_in_flight,
       EXISTS(SELECT 1 FROM ad_promotion_activations x WHERE x.promotion_id=p.id
         AND x.tenant_id=p.tenant_id AND x.state='active' AND x.confirmed_by IS NOT NULL
         AND x.confirmed_at IS NOT NULL) AS activation_confirmed,
@@ -706,7 +708,8 @@ def _claim_pause(
                 raise ResultsUnavailable("El historial cambió. Vuelve a revisar el cambio.")
         if action == "pause":
             # m-25072681: the pause is the brake. An unresolved edit or the 30 s pacing never
-            # blocks it; only a pause still on its way (or one just confirmed) answers instead.
+            # blocks it; only a pause still on its way answers instead (a repeated PAUSED after
+            # a finished one is harmless and covers a late resume that re-activated the ad).
             # A claim older than five minutes can no longer dispatch (`_dispatch`): settle it.
             s.execute(
                 text("""UPDATE ad_promotion_operations SET finished_at=:now,
@@ -717,10 +720,9 @@ def _claim_pause(
             )
             current = s.execute(
                 text("""SELECT id,state FROM ad_promotion_operations
-              WHERE promotion_id=:id AND action='pause' AND (state='in_flight'
-                OR (state IN ('completed','reconciled') AND finished_at > :cutoff))
+              WHERE promotion_id=:id AND action='pause' AND state='in_flight'
               ORDER BY created_at DESC LIMIT 1"""),
-                {"id": scope.promotion_id, "cutoff": now - timedelta(seconds=30)},
+                {"id": scope.promotion_id},
             ).first()
             if current:
                 return current[0], current[1]
@@ -777,19 +779,38 @@ def _finish_pause(scope: ResultScope, operation: UUID, state: str) -> None:
 def _dispatch(scope: ResultScope, operation: UUID) -> None:
     """A cancelled/reconciled or expired claim may never dispatch after cooldown."""
     with tenant_session(scope.tenant_id, independent=True) as s:
-        claimed = s.execute(
-            text("""UPDATE ad_promotion_operations SET dispatched_at=:now
-            WHERE id=:operation AND promotion_id=:id AND state='in_flight'
-              AND dispatched_at IS NULL AND created_at > :deadline RETURNING id"""),
-            {
-                "now": datetime.now(UTC),
-                "deadline": datetime.now(UTC) - timedelta(minutes=5),
-                "operation": operation,
-                "id": scope.promotion_id,
-            },
+        # Same lock as the claim: a pause claimed after this edit is always seen here.
+        s.execute(
+            text("SELECT id FROM ad_promotions WHERE id=:id FOR UPDATE"), {"id": scope.promotion_id}
+        ).one()
+        # m-25072681: a later pause wins. An edit claimed before it never reaches Meta.
+        superseded = s.execute(
+            text("""UPDATE ad_promotion_operations o SET state='failed',finished_at=:now
+            WHERE o.id=:operation AND o.promotion_id=:id AND o.state='in_flight'
+              AND o.action<>'pause' AND o.dispatched_at IS NULL
+              AND EXISTS (SELECT 1 FROM ad_promotion_operations p
+                WHERE p.promotion_id=o.promotion_id AND p.action='pause'
+                  AND p.created_at > o.created_at) RETURNING o.id"""),
+            {"now": datetime.now(UTC), "operation": operation, "id": scope.promotion_id},
         ).scalar()
-        if claimed is None:
-            raise ResultsUnavailable("La confirmación venció o cambió. Actualiza la promoción.")
+        claimed = None
+        if superseded is None:
+            claimed = s.execute(
+                text("""UPDATE ad_promotion_operations SET dispatched_at=:now
+                WHERE id=:operation AND promotion_id=:id AND state='in_flight'
+                  AND dispatched_at IS NULL AND created_at > :deadline RETURNING id"""),
+                {
+                    "now": datetime.now(UTC),
+                    "deadline": datetime.now(UTC) - timedelta(minutes=5),
+                    "operation": operation,
+                    "id": scope.promotion_id,
+                },
+            ).scalar()
+    # Outside the transaction: the superseded edit stays marked failed.
+    if superseded is not None:
+        raise ResultsUnavailable("La promoción se pausó. Actualiza el estado.")
+    if claimed is None:
+        raise ResultsUnavailable("La confirmación venció o cambió. Actualiza la promoción.")
 
 
 async def _pause(
