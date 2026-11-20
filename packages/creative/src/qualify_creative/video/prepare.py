@@ -67,6 +67,7 @@ from qualify_creative.video._source import (
     frame_seconds,
     open_video,
     probe,
+    source_colour,
 )
 from qualify_creative.video.cut import WINDOW_X264, _decode_from
 from qualify_creative.video.upright import turn_pixels
@@ -104,12 +105,9 @@ PREPARE_VERSION = "prepare-v2"
 #: Slack for float noise when comparing a stretch with the source's length.
 _EPSILON = 1e-3
 
-#: AVColorSpace codes → the matrix swscale reads them with.
-_MATRICES = {1: "ITU709", 4: "FCC", 5: "ITU601", 6: "ITU601", 7: "SMPTE240M", 9: "BT2020"}
 #: AVCOL_* code 1 is BT.709 for range-independent tags (primaries, transfer, matrix).
 _BT709 = 1
 _LIMITED_RANGE = 1
-_FULL_RANGE = 2
 
 
 class PrepareRejected(VideoSourceError):
@@ -686,13 +684,11 @@ def _check_plan(stream: Any, timeline: Timeline, plan: PreparePlan) -> None:
 
 
 def _source_colour(frame: Any) -> tuple[str, str]:
-    """(matrix, range) a decoded frame's YUV is to be read with: its own tags, a `yuvj*`
-    format meaning full range; an untagged matrix is BT.709 for HD and BT.601 below."""
-    full = frame.format.name.startswith("yuvj") or int(frame.color_range or 0) == _FULL_RANGE
-    matrix = _MATRICES.get(int(frame.colorspace or 0))
-    if matrix is None:
-        matrix = "ITU709" if max(frame.width, frame.height) >= 1280 else "ITU601"
-    return matrix, "JPEG" if full else "MPEG"
+    """(matrix, range) a decoded frame's YUV is to be read with (`_source.source_colour`,
+    the policy `fit` follows too)."""
+    return source_colour(
+        frame.colorspace, frame.color_range, frame.format.name, frame.width, frame.height
+    )
 
 
 def _stored_crop(plan: PreparePlan) -> CropRect:

@@ -294,11 +294,12 @@ def test_fit_and_fit_reference_refuse_a_rotation_that_is_not_a_right_angle() -> 
 #: libx264 writes other bytes for the same frames as the process ages (m-25029128: 18
 #: distinct MP4s in 200 encodes of one process — the SIMD macroblock-tree propagation in
 #: its lookahead), so a hash without the fixture would be flaky, not wrong.
+#: Posters changed by m-25029127: BT.709 matrix (the fixture is untagged SD, read as BT.601).
 UNTURNED_POSTER_SHA256 = {
-    "fit": "8cf9ef35936ad06054a0c42f8a8394595c495c914ead7f78a5a280f240deecf1",
-    "fit_reference": "1e24eda1c967afb450f784e4ebb8ba87a9edbd11d9220ee526f038fa6417584a",
-    "fit_reference_small": "3ab83121aee471acd6a213daa0acb898b5f527faa2bccff333b181101a84b29c",
-    "subtitle": "1e24eda1c967afb450f784e4ebb8ba87a9edbd11d9220ee526f038fa6417584a",
+    "fit": "ff367919a0b7f290ebd0839ffc402b90faf7fdba2d067edaa5ab8f9432ffea40",
+    "fit_reference": "d9627c6437cb15f44d96d0b6684be4d8a71779a0546c72ad0e1706c4c20d58bc",
+    "fit_reference_small": "5a85ddf7919e0fedfb34c8f716e82193abcdbf33b71dd133fec82110bc1c1a10",
+    "subtitle": "d9627c6437cb15f44d96d0b6684be4d8a71779a0546c72ad0e1706c4c20d58bc",
 }
 #: (width, height, frames) of each output on origin/main
 UNTURNED_SHAPE = {
@@ -346,7 +347,8 @@ def _reproducible_fitter_tables(reproducible_x264: Callable[..., None]) -> None:
 #: `reproducible_x264` with PyAV 19.0.1 (its bundled FFmpeg/x264). Measured 2026-11-20
 #: (m-25029128): the same on Windows (60/60 in one process) and on Linux x86_64
 #: (python:3.12-slim, 40/40 on 8 cores and 60/60 on 2), so it is not pinned to a platform.
-REFERENCE_SMALL_SHA256 = "4eacc08ac3d738b6befd7958ec4e19f1c8ab87ac1aac80655dc7324282f834b5"
+#: Changed by m-25029127 (BT.709 matrix and tags); measured with the fixture, 2026-11-20.
+REFERENCE_SMALL_SHA256 = "50af79a9ab2863c73ec01b78dbde7f3fe296735a6208a2e092f08e63e92042cd"
 
 
 def _reference_small() -> bytes:
@@ -446,7 +448,11 @@ def test_without_a_turn_the_graph_is_the_one_before_ef01(monkeypatch: pytest.Mon
         nodes: list[tuple[str, object]] = [
             ("buffer", ("VideoStream", {})),
             crop(width, height),
-            ("scale", f"{width}:{height}"),
+            (
+                "scale",
+                f"{width}:{height}:in_color_matrix=bt601:in_range=tv:out_color_matrix=bt709"
+                ":out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int",
+            ),
             ("format", "yuv420p"),
             ("buffersink", None),
         ]
