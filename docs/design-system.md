@@ -673,127 +673,155 @@ Cuatro recetas que los lotes de la migración Liquid Glass repetían en dos o m�
 
 Demo en vivo: `/design` → «Elegir, subir, mostrar, conversar».
 
-### 5.10 Línea de tiempo (ED-00b, patrón nuevo, pendiente de firma)
+### 5.10 Línea de tiempo (ED-00b, patrón firmado con el ADR 50)
 
-> **Estado:** propuesto por ux-designer el 2026-11-14 a pedido de Deivid («ok pero si quiero
-> timeline donde pueda reproducir el video hacer los cortes desde la timeline , arrastar la media
-> dentro etc poner los efectos , etc»; dónde: «Escritorio y celular adaptado (Recomendado)»).
-> D-T1…D-T6 están decididas; la sección espera el «sí» de Deivid en m-25029104. Reemplaza D-E3
-> («solo en escritorio y solo para mirar»). Se construye en ED-10 y la usan ED-03, ED-04, ED-07,
-> ED-12, ED-13 y ED-14. Fuente: `.claude/epica-efectos-propuesta-linea-de-tiempo.md` §1 y §3.
+> **Estado:** **firmado.** Deivid firmó el ADR 50 el 2026-11-20
+> (`docs/adr-50-video-efectos-por-pasos.md` §1.7, §2.2 D-E3 y D-E6, §2.3 D-T1…D-T6 y D9), y con
+> él este patrón tal como quedó en `main`. Lo propuso ux-designer el 2026-11-14 a pedido de
+> Deivid (m-25029104; «Escritorio y celular adaptado (Recomendado)») y se construyó en ED-10
+> (#739), ED-03 (#743), ED-04 (#759) y el cuadro por bloque de m-25026650 (#761). Reemplaza la
+> D-E3 firmada el 2026-11-13 («solo en escritorio y solo para mirar»). Código:
+> `Qualify/ui/timeline.py` y `Qualify/ui/timeline_vm.py` (el componente), y
+> `Qualify/clip_editor_view.py` y `Qualify/clip_editor_vm.py` (la pantalla que lo monta).
 
 **Para qué.** Que el dueño arme su video **tocando el video mismo**: ve las partes en orden, toca
-una y la cambia ahí, sin elegir herramientas. Va debajo de `edit_preview` (§5.9), dentro del paso
-1 del Clip, en el marco de §4.5.
+una y la cambia ahí, sin elegir herramientas. Es el corazón de **«Arma tu video»**, el paso 1 del
+Clip, dentro del marco de §4.5. La pantalla está detrás de `QUALIFY_CLIP_EDITOR`, que está
+apagado en producción (ADR 50 §6.1 #13).
 
-**Anatomía** (de arriba abajo):
+**Anatomía** (de arriba abajo, ADR 50 §1.7):
 
 ```
+ ┌───────── vista previa en secuencia (edit_preview, §5.9) ─────────┐
  0:03   0:04   0:05 │ 0:06   0:07      ← regla de segundos
  ▣▣ Video 1 ▣▣▣◀▌╔══│══ Video 2 ══╗▐▶  ← «Fotos y videos» (56 px); elegido: borde + 2 tiradores
  Aa «2×1 hoy» ══════│═════╗            ← «Textos» (44 px)
- ░░░░ Vapor ░░░░░░░░│░░░░░░░░░░░░     ← «Efectos» (44 px; una fila más si dos se pisan)
+ ░░░░ Vapor ░░░░░░░░│░░░░░░░░░░░░     ← «Efectos 1» (44 px por fila; suma filas sola)
+       ░░ Humo ░░░░░│░░░               ← «Efectos 2» (solo mientras dos efectos se encimarían)
                     ▲ cabezal
-[✂ Cortar aquí][Velocidad][⟳ Girar][Quitar]  ← barra de acciones (cambia con lo elegido)
- Video 2 · usas 0:02 a 0:09 · 7 s   [Listo]  ← panel del bloque elegido
+ [+ Agregar]  o, con un bloque elegido, [Quitar]   ← barra de acciones
+ Video 2 · Cortar · Velocidad · Girar    [Listo]   ← panel del bloque elegido
 ```
 
-1. **Regla de segundos** arriba, con la hora en texto.
-2. **Tres pistas**, siempre visibles y en este orden: «Fotos y videos», «Textos», «Efectos». Una
-   pista vacía no desaparece: muestra una línea punteada y «Toca + y elige Texto» /
-   «Toca + y elige Efecto» (escritorio: «Haz clic en + y elige…»).
-3. **Bloques:** cada foto, video, texto o efecto es un bloque con ícono **y** nombre (nunca solo
-   color, P1). Los de video llevan su cuadro (ED-11a). La pista de video **nunca tiene huecos**:
-   recortar, quitar o mover corre los bloques de después; textos y efectos se quedan en su hora.
-4. **Cabezal:** una línea vertical de acento que marca el momento que muestra la vista previa. Es
-   el mismo reloj que `edit_preview`.
-5. **Tiradores:** solo en el bloque elegido, uno al inicio y otro al final, **por fuera** del
-   bloque para que el dedo no tape lo que recorta.
-6. **Barra de acciones:** hasta 4 botones de vidrio (`variant="surface"`) con ícono y nombre, en la
-   cápsula flotante `.q-island`. Sin nada elegido: un solo **«Agregar»**, el `orbit_menu` de §5.9 (el «+»
-   gira a «×» y abre la columna «Foto o video · Texto · Efecto · Idea»; Deivid, 2026-11-14). El bloque
-   elegido lleva debajo la lente líquida `.q-glass-blob` del menú. Con un bloque elegido, sus acciones (video: «Cortar aquí ·
-   Velocidad · Girar · Quitar»; foto: «Duración · Girar · Quitar»; texto: «Editar texto ·
-   Quitar»; efecto: «Cambiar efecto · Quitar»). Reemplaza al selector de 4 herramientas.
-7. **Panel del bloque:** debajo de la barra; habla de **un solo bloque a la vez** y siempre tiene
-   «Listo», que quita la selección.
+1. **Vista previa en secuencia** arriba (`edit_sequence_preview`, ED-01b): el video entero en
+   orden, gratis y en el navegador, con **un solo reloj** compartido con la línea
+   (`[data-edit-sync]`). Debajo del cuadro no va la hora: la única es la de la regla.
+2. **Regla de segundos**, con la hora en texto.
+3. **Tres pistas**, siempre visibles y en este orden: «Fotos y videos», «Textos», «Efectos». Una
+   pista vacía no desaparece: queda como una fila en blanco de la misma altura, sin texto de
+   ayuda, y su nombre accesible dice que está vacía («Pista de textos vacía»,
+   `EMPTY_TRACK_NAMES`).
+4. **Filas de «Efectos»** (Deivid, 2026-11-20, #759): la pista suma una fila sola cuando dos
+   efectos se encimarían y la quita cuando ya no hace falta. Con una sola fila se llama
+   «Efectos»; con dos o más, «Efectos 1», «Efectos 2»… (`lane_name`). Un efecto pasa de una
+   fila a otra arrastrándolo hacia arriba o hacia abajo. **No hay «+ Pista»**: el dueño nunca
+   crea pistas a mano.
+5. **Bloques:** cada foto, video, texto o efecto es un bloque con ícono **y** nombre (nunca solo
+   color, P1). Cada bloque de foto o video lleva su propio cuadro (m-25026650, #761). La pista de
+   video **nunca tiene huecos**: recortar, quitar o mover corre los bloques de después; textos y
+   efectos se quedan en su hora.
+6. **Cabezal:** una línea vertical de acento que marca el momento que muestra la vista previa.
+   Es un `<input type="range">` nativo («Momento del video»).
+7. **Tiradores:** solo en el bloque elegido, uno al inicio y otro al final, **por fuera** del
+   bloque para que el dedo no tape lo que recorta. En un texto o un efecto lo recortan en el
+   tiempo; en el video propio lo recortan o lo alargan **dentro de su archivo** (ED-03, #743).
+8. **Barra de acciones**, en la cápsula flotante `.q-island`, debajo de las pistas. Sin nada
+   elegido: un solo **«Agregar»**, el `orbit_menu` de §5.9: el «+» gira a «×» y abre, hacia la
+   derecha (Deivid, 2026-11-16), «Foto o video · Texto · Efecto · Pedir una idea». Cada opción
+   abre **un solo panel lateral con pestañas** («Agregar a tu video»: «¿Con qué lo armamos? ·
+   Texto · Efecto · Pedir una idea», Deivid 2026-11-17); nunca agrega sola. Con un bloque
+   elegido, la barra de «Arma tu video» muestra hoy solo **«Quitar»**: lo demás vive en el panel,
+   un solo lugar por acción (`EDITOR_ACTIONS`).
+9. **Panel del bloque elegido**, debajo de la barra; habla de **un solo bloque a la vez** y
+   siempre termina en «Listo», que quita la selección:
+   - **video propio:** «Cortar» (corta donde está el cabezal; Deivid 2026-11-17: sin
+     «Desde/Hasta»), «Velocidad» y «Girar»;
+   - **texto y efecto:** «Empieza / Termina» con «− ½ s / + ½ s», y el lugar del texto
+     «Arriba · En el medio · Abajo»;
+   - **foto:** dura 2 s; cambiar su duración (1–5 s, D-T1) llega con ED-14.
 
 **Tamaños y reglas fijas.**
 
-- **1 s = 44 px en el celular**, así el bloque más corto (1 s) ya mide 44 px de toque.
-- **Toques de 44 px como mínimo:** botones de la barra 44 px de alto; tiradores de **44 × 56 px**;
-  8 px de margen entre la pista y la barra.
-- **Imán de ½ s siempre** (la rejilla de `NUDGE_SECONDS`); además, un borde se pega al cabezal o
-  al borde de otro bloque a menos de ¼ s. Mientras se arrastra, un globo dice la hora («0:04,5»).
+- **1 s = 44 px en el celular** (`PX_PER_SECOND`), así el bloque más corto (1 s) ya mide 44 px
+  de toque.
+- **Toques de 44 px como mínimo:** botones de la barra de 44 px de alto; tiradores por fuera del
+  bloque (44 × 56 px en la pista de video, 44 × 44 px en las otras).
+- **Imán de ½ s siempre** (`STEP_S`), al arrastrar y con «− ½ s / + ½ s». Mientras se arrastra, un
+  globo dice la hora.
 - **Sin zoom** (D-T5): ni botones ni pellizco.
-- **Todo viene armado** (E3): al entrar, la pista ya tiene lo elegido en su orden (videos enteros
-  hasta 15 s, fotos de 2 s, el texto del gancho de 0:00 al final si existe, sin efectos).
-  «Siguiente» funciona sin tocar nada.
-- **Límites dichos antes del choque:** 8 fotos o videos, 1 s por tramo como mínimo, 3 textos y 8
-  efectos. Al llegar al límite, el botón queda no disponible (`q-button-off`, §5.5) con su motivo.
+- **«Velocidad»** es una acción del bloque de video, no un efecto (D-T3): Normal · ×2 · ×3 · ×5 ·
+  ×10 · ×20, cada una disponible solo si el resultado dura 3–60 s (Deivid, 2026-11-17); la que no
+  cabe queda no disponible con su motivo.
+- **Límites dichos antes del choque:** 8 fotos o videos (`SEGMENTS_MAX`), 1 s por tramo como
+  mínimo, 8 efectos (`EFFECTS_MAX`) y un video final de 3 a 60 s. Al llegar al límite, el botón
+  queda no disponible (`q-button-off`, §5.5) con su motivo.
+- **Textos:** el contrato admite hasta 3 (D-T2, `TEXT_LAYERS_MAX`); la pantalla de hoy maneja
+  **uno** (`texto-1`) y los otros dos llegan con ED-13.
+- **Efectos:** solo las capas que la biblioteca ofrece (`effects_data/v3.json`: humo, brasas y
+  vapor), primero las del rubro del negocio; el mismo efecto puede repetirse sin pisarse a sí
+  mismo (D-T2).
 
-**En el celular** (y en escritorio cuando el contenedor `.q-edit-host` mide menos de 900 px):
+**En el celular** (cuando el componente mide menos de 52rem, medido en su propio contenedor
+`q-tl`, nunca en la ventana):
 
-- El cabezal queda **fijo al centro** y la pista se desliza debajo. Deslizar la pista pausa y lleva
-  la vista previa a ese momento; con ▶ la pista corre sola. Solo la pista se desliza en
-  horizontal: la página nunca.
+- El cabezal queda **fijo al centro** y las pistas se deslizan debajo, **dentro de su caja**:
+  la página nunca se desplaza de lado. Deslizar las pistas mueve el cabezal y la vista previa.
 - Nombres de pista en `aria-label`, no visibles.
-- **Mover:** se mantiene apretado el bloque **½ s**, se levanta y se arrastra; los demás hacen
-  lugar (como `slide-drag.js`). Al levantarlo, la línea viva dice «Suelta donde quieras ponerlo.».
-  No hay botones para mover (D-T6).
-- «Agregar» → «Foto o video» abre el cajón de hoy; lo elegido entra **después del bloque bajo el cabezal**.
-  «Agregar» → «Texto» y «Efecto» crean un bloque **desde el cabezal hasta el final**.
-- El «atrás» del teléfono primero quita la selección y después vuelve al paso anterior (N5). La
-  dirección guarda el bloque elegido (`?bloque=video-2`, N5; el «atrás» por pasos es N6b).
+- **Mover:** se mantiene apretado el bloque un momento (300 ms, `LONG_PRESS_MS`), se levanta y se
+  arrastra; los demás hacen lugar. Al levantarlo, la línea viva dice «Suelta donde quieras
+  ponerlo.». No hay botones para mover (D-T6).
+- La dirección guarda el bloque elegido (`?bloque=video-2`).
 
-**En escritorio** (contenedor de 900 px o más):
+**En escritorio** (componente de 52rem o más):
 
-- La pista ocupa todo el ancho y **se ajusta al largo del video**; si pasa de unos 40 s, aparece el
-  desplazamiento horizontal dentro de la pista. Nombres de pista visibles a la izquierda.
-- El cabezal se mueve con un clic en la regla o arrastrándolo.
-- Al lado de la vista previa, el panel «Tus fotos y videos»: desde ahí se arrastran medios a la
-  pista (una línea muestra dónde caen), y también se sueltan archivos de la computadora, que se
-  suben con el flujo de «Subir».
-- Tiradores, imán, arrastre y panel funcionan igual que en el celular.
+- Las pistas ocupan todo el ancho y **se ajustan al largo del video** (uno de 12 s cabe entero);
+  los nombres de pista se ven a la izquierda. La vista previa va centrada sobre la línea.
+- Un clic en la regla mueve el cabezal.
+- Tiradores, imán, arrastre con el ratón y panel funcionan igual que en el celular. Lo nuevo se
+  agrega por «Agregar» y su panel lateral (no hay un panel aparte de medios para arrastrar a la
+  pista).
 
 **Accesibilidad** (§8):
 
 - La línea es un grupo con `aria-label` «Línea de tiempo de tu video» y tres listas: «Fotos y
   videos», «Textos» y «Efectos». Cada bloque es un `<button>` alcanzable con Tab, con nombre
-  completo («Video 2 de 3, usas de 0:02 a 0:09, dura 7 s» · «Vapor, de 0:02 a 0:09») y
-  `aria-pressed` cuando está elegido.
-- **Enter** elige el bloque y lleva el foco a su panel; **Escape** cierra el panel y vuelve al
-  bloque.
-- **←/→ sobre un bloque de video o foto lo cambian de lugar** (como la tira de UI-3), con la ayuda
-  «Usa las flechas para cambiarlo de lugar.» en `aria-description`. Sobre un texto o un efecto, lo
-  corren ½ s.
-- **El cabezal es un `slider`** («Momento del video», `aria-valuetext` «0:05 de 0:12»): ←/→ lo
-  mueven ½ s; Inicio y Fin van a los extremos. **Los tiradores también son `slider`** («Inicio de
-  {bloque}» · «Final de {bloque}»), con el mismo paso de ½ s.
-- El panel repite con botones lo que hacen los tiradores: «− ½ s / + ½ s», «Cortar aquí»,
-  «Quitar». Mover no tiene botón (D-T6).
-- Cada cambio se anuncia **una vez** en la línea `role="status"` de `edit_preview` («Cortaste el
-  video 2 en dos.», «Moviste la foto 1.»…), junto a «Deshacer» (sin temporizador, 10 pasos).
-- `prefers-reduced-motion`: los bloques cambian de lugar sin deslizarse y la pista no corre
-  animada al buscar.
+  completo y `aria-pressed` cuando está elegido.
+- **Enter** elige el bloque y lleva el foco a su panel; **Escape** dentro del panel lo cierra y
+  suelta el bloque.
+- **←/→ sobre un bloque de video o foto lo cambian de lugar** («Usa las flechas para cambiarlo de
+  lugar.»); sobre un texto o un efecto lo corren ½ s («Usa las flechas para cambiar cuándo
+  sale.»). **↑/↓ sobre un efecto** lo pasan a otra fila. Cada ayuda vive una vez, en un `span`
+  oculto, y el bloque la señala con `aria-describedby`.
+- **El cabezal es un control deslizante** («Momento del video», `aria-valuetext` «0:05 de 0:12»).
+  **Los tiradores también son `role="slider"`** con su `aria-valuetext`, con el mismo paso de ½ s.
+- El panel repite con botones lo que hacen los tiradores de un texto o un efecto: «− ½ s /
+  + ½ s». Mover no tiene botón (D-T6).
+- **Se guarda al momento y no hay «Deshacer»** (D-E6; Deivid quitó «Deshacer» el 2026-11-19,
+  #743). Cada cambio se anuncia **una vez** en la línea viva `role="status"` de la línea de
+  tiempo («Moviste el video 2.», «Pusiste el video 2 ×10.»…). No hay botón «Guardar».
+- `prefers-reduced-motion`: la lente del bloque elegido salta sin deslizarse, la pantalla lleva
+  al panel sin desplazamiento suave y los bucles de efectos de la vista previa se detienen.
 
-**Lo que NO hace.** No es un editor de video completo: **sin zoom, sin capas libres, sin
-fotogramas sueltos, sin transiciones, sin pistas de audio aparte, sin huecos ni bloques
-superpuestos en la pista de video.** No genera nada: todo lo que está en la pista se ve gratis en
-la vista previa antes de crear (E5); lo que cuesta pasa al tocar «Crear». En la pantalla nunca se
-escriben «timeline», «track», «clip», «capa», «frame», «render», «split» ni «trim»; «Cortar aquí»
-es la palabra del dueño.
+**Lo que NO hace** (ADR 50 §1.7). Tiene el estilo de un editor con línea de tiempo, pero **no es
+un editor de video:** sin zoom, sin fotogramas clave, sin recorte cuadro a cuadro, sin capas
+libres, sin pistas de audio aparte, sin huecos ni bloques encimados en la pista de video, y sin
+pistas que el dueño cree a mano (no hay «+ Pista»). **Transiciones:** el Clip no tiene; entre
+partes llegan con el editor de Video por partes (ED-07). Deivid decidió (D9) ofrecer solo
+«corte» hasta EF-16; el cambio va en un PR aparte (ADR 50 §6.1 #2a). No genera nada:
+todo lo que está en la pista se ve gratis en la vista previa antes de crear; lo que cuesta pasa
+al tocar «Crear». En la pantalla nunca se escriben «timeline», «track», «clip», «capa», «frame»,
+«render», «split» ni «trim»; «Cortar» es la palabra del dueño.
 
-**Decisiones de Deivid (2026-11-14), textuales.**
+**Decisiones de Deivid (2026-11-14), textuales, y cómo quedaron.**
 
-| Decisión | Respuesta de Deivid | Qué fija |
+| Decisión | Respuesta de Deivid | Qué fija hoy |
 |---|---|---|
-| D-T1 · ¿Qué es una foto en la línea? | «Foto quieta de N s (Recomendado)» | Una foto es un bloque quieto de 1 a 5 s (2 s por defecto), gratis y visible en la vista previa. «Darle movimiento con IA» queda fuera (ED-14). |
-| D-T2 · ¿Varios textos y el mismo efecto dos veces? | «Sí, hasta 3 textos (Recomendado)». El mismo efecto se puede repetir, cada uno con su inicio y su fin. | Hasta 3 textos con inicio y fin; un efecto puede repetirse sin pisarse a sí mismo (contrato v2, ED-15). |
-| D-T3 · ¿Dónde va «Cámara rápida»? | «Velocidad del bloque (Recomendado)» | «Velocidad» (Normal · ×5 · ×10 · ×20) es una acción del bloque de video, no un efecto. |
-| D-T4 · Miniaturas en la pista de video | «Un cuadro ya, tira después (Recomendado)» | Un cuadro por bloque ya (ED-11a); la tira de cuadros del servidor después (ED-11b). |
+| D-T1 · ¿Qué es una foto en la línea? | «Foto quieta de N s (Recomendado)» | Una foto es un bloque quieto de 1 a 5 s, gratis y visible en la vista previa. Hoy entra con 2 s; cambiar su duración llega con ED-14. «Darle movimiento con IA» queda fuera (ED-14). |
+| D-T2 · ¿Varios textos y el mismo efecto dos veces? | «Sí, hasta 3 textos (Recomendado)». El mismo efecto se puede repetir, cada uno con su inicio y su fin. | El contrato v2 (ED-15) admite hasta 3 textos y efectos repetidos sin pisarse a sí mismos. La pantalla maneja hoy un texto; los otros dos llegan con ED-13. |
+| D-T3 · ¿Dónde va «Cámara rápida»? | «Velocidad del bloque (Recomendado)» | «Velocidad» es una acción del bloque de video, no un efecto: Normal · ×2 · ×3 · ×5 · ×10 · ×20, cada una solo si el resultado dura 3–60 s (Deivid, 2026-11-17). |
+| D-T4 · Miniaturas en la pista de video | «Un cuadro ya, tira después (Recomendado)» | Un cuadro por bloque ya (#761); la tira de cuadros del servidor después (ED-11, m-25026650). |
 | D-T5 · ¿Zoom? | «Sin zoom (Recomendado)» | 1 s = 44 px en el celular; ajustada al ancho en escritorio. |
-| D-T6 · ¿Cómo se ordena en el celular? | «Solo arrastrar» | En el celular solo se mantiene y arrastra, sin botones; en escritorio, ←/→ con el teclado, sin botones visibles (como UI-3). ux-designer recomendaba sumar «‹ Antes / Después ›». |
+| D-T6 · ¿Cómo se ordena en el celular? | «Solo arrastrar» | En el celular solo se mantiene y arrastra, sin botones; en escritorio, además, ←/→ con el teclado, sin botones visibles. ux-designer recomendaba sumar «‹ Antes / Después ›». |
 
 **Riesgo aceptado (D-T6):** en el celular, quien no puede arrastrar no puede reordenar (WCAG 2.5.7).
 
@@ -801,17 +829,18 @@ es la palabra del dueño.
 
 | Parte | Con qué se dibuja |
 |---|---|
-| Bloque | material control (`--q-control-edge`, `--q-control-hi`), `T.RADIUS_CONTROL`; ícono lucide `T.ICON_SM`; nombre en `rx.text size=1`; cuadro del video con `media_thumb` (§5.9) |
-| Bloque elegido | anillo de 2 px del acento y lavado, el mismo de `choice_card` (`.q-choice-card--on`); `aria-pressed` |
-| Pista vacía | borde punteado del `dropzone` (`.q-dropzone`), texto en `T.TEXT_MUTED` |
-| Regla y horas | `rx.text size=1`, `T.TEXT_MUTED`, `.q-nums` |
-| Cabezal y tiradores | `accent-9` (sólido del acento, §3.1); foco `accent-8` |
-| Globo con la hora | el vidrio oscuro del `rx.tooltip` (`--q-tooltip-fill`) |
-| Barra de acciones | `rx.button` `soft` size 2 con ícono `T.ICON_MD`; no disponible = `q-button-off` |
-| Panel del bloque | `card` (§5.1); «Listo» = `rx.button` `soft` |
-| Línea viva y «Deshacer» | la zona fija `role="status"` de `edit_preview` (§5.9) |
-| Movimiento | `T.SPRING` al hacer lugar, `T.DUR_FAST` al elegir; nada con `prefers-reduced-motion` |
-| Arrastre | el patrón `DragCard` + `slide-drag.js` de la tira de hoy |
+| Bloque | borde y fondo por tipo: video con el lavado del acento (`--accent-a4`), foto y texto en gris, efecto con borde punteado del acento; `--q-radius-control`; cuadro con `media_thumb` (§5.9) |
+| Bloque elegido | borde de 2 px `accent-9`; foco `accent-8`; `aria-pressed` |
+| Pista vacía | fila en blanco de la misma altura; mientras se arrastra un efecto hacia una fila nueva, su lugar se marca con borde punteado del acento |
+| Regla y horas | la hora en texto; los valores del panel con `.q-nums` |
+| Cabezal y tiradores | `accent-9` (sólido del acento, §3.1) |
+| Globo con la hora | el globo de arrastre de `.q-tl` (la hora mientras se arrastra) |
+| Barra de acciones | `rx.button` `surface` con ícono, en `.q-island`; «Agregar» = `orbit_menu`; no disponible = `q-button-off` |
+| Panel del bloque | `.q-tl-panel`; «Velocidad» y lugar del texto con el menú segmentado del kit (`.q-source-seg`); «Listo» = `rx.button` |
+| Panel lateral de «Agregar» | `drawer` (§5.8) con pestañas |
+| Línea viva | `role="status"` bajo la línea de tiempo |
+| Movimiento | la lente `.q-glass-blob` bajo el bloque elegido; sin transiciones con `prefers-reduced-motion` |
+| Arrastre | `assets/timeline-drag-core.js` (la cuenta, probada con node) y `assets/timeline-drag.js` (el DOM) |
 
 Demo en `/design`: sección "Línea de tiempo".
 
