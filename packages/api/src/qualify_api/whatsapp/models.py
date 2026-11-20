@@ -25,6 +25,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -285,6 +286,10 @@ class WhatsAppOutboxItem(Base):
     attachment: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+    # 0172 (m-25049598): the order rows were queued in — the sender's tie-break after
+    # `created_at`, which every row of one transaction shares (`now()`). `GENERATED
+    # ALWAYS`: the database assigns it, the ORM never writes it.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), nullable=False)
 
 
 class WhatsAppMenu(Base):
