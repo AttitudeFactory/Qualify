@@ -28,11 +28,14 @@ no layer it is exactly `overlay_text_layers`; with no text exactly `overlay_effe
 
 The soundtrack is
 copied as it is. x264 runs on ONE thread like `text_overlay`. Byte-for-byte determinism
-is NOT guaranteed on this path (m-25029128): on a 2-core Linux runner two runs can differ
-by a few levels on a handful of pixels — not the filter graph's threads, not the loop
-decoder's; x264 without lookahead makes it stable but is not used (it would change the
-published quality); the root cause is not identified (see `test_video_layer_overlay.
-PSNR_MIN_DB` for what was measured). The text-only path stays byte for byte.
+is NOT guaranteed with these settings (m-25029128), on this path or any other x264 encode:
+the same frames can come out a few levels different on a handful of pixels because the
+SIMD assembly of x264's macroblock-tree propagation (in the lookahead) depends on the
+state of the process's memory — not the filter graph, the loop decoder or the threads.
+`rc-lookahead=0`, `mbtree=0` or `cpu-independent=1` make it stable; production keeps
+`OVERLAY_X264` (the drift is invisible, and those cost quality or speed), and the tests
+that pin bytes opt in with the `reproducible_x264` fixture
+(`packages/creative/tests/conftest.py`, where the measurement is written up).
 Written to `out`.partial
 and moved into place only when complete; `src` is never touched. Cost: US$0.
 """
