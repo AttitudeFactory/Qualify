@@ -17,7 +17,12 @@ from sqlalchemy.exc import IntegrityError
 
 from qualify_api.ads import lead_forms_repository as repo
 from qualify_api.ads import lead_forms_service as service
-from qualify_api.ads.lead_forms import LeadFormDraft, LeadFormQuestion, LeadFormUnavailable
+from qualify_api.ads.lead_forms import (
+    LeadFormDraft,
+    LeadFormQuestion,
+    LeadFormUnavailable,
+    LeadNotVerifiable,
+)
 from qualify_api.ads.lead_forms_client import LeadPage
 from qualify_api.ads.lead_forms_webhook import owned_form
 from qualify_api.connections.ad_accounts import PostgresAdsGrantRecorder
@@ -374,7 +379,7 @@ async def test_backup_sync_after_token_renewal_saves_leads(
     monkeypatch.setattr(service, "_page_access", AsyncMock())
     monkeypatch.setattr(service, "_remote_form", AsyncMock())
     with acting_login(values[4]):
-        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == 1
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (1, 0)
     assert client.call_args.args[1]["current_credential_version"] == 2
     assert repo.get_form(values[0], form["id"])["last_synced_at"] is not None
 
@@ -420,7 +425,7 @@ async def test_backup_failure_resumes_exact_cursor_without_advancing_window(
     assert len(repo.list_inquiries(values[0])) == 1
     fake.leads.side_effect = [LeadPage(({**raw, "id": "902"},), None)]
     with acting_login(values[4]):
-        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == 1
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (1, 0)
     assert fake.leads.call_args.kwargs["after"] == "next"
     final = repo.get_form(values[0], form["id"])
     assert final["last_synced_at"] == stored["backup_started_at"]
@@ -515,3 +520,92 @@ def test_lead_from_our_lead_ad_is_attributed_to_its_promotion() -> None:
             {"id": data["leadgen_id"]},
         )
     assert attributed == promotion.id
+
+
+def raw_lead(form: dict, identity: str, **changes: object) -> dict:
+    return {
+        "id": identity,
+        "form_id": form["meta_form_id"],
+        "created_time": "2026-01-01T00:00:00Z",
+        "field_data": [{"name": "email", "values": ["synthetic@example.invalid"]}],
+        **changes,
+    }
+
+
+def backup_client(monkeypatch: pytest.MonkeyPatch, fake: AsyncMock) -> None:
+    monkeypatch.setattr(service, "_client", AsyncMock(return_value=fake))
+    monkeypatch.setattr(service, "_page_access", AsyncMock())
+    monkeypatch.setattr(service, "_remote_form", AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_backup_skips_bad_leads_saves_the_rest_and_moves_the_window(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """m-25072672: one unreadable lead or unverifiable ad no longer blocks every later sync."""
+    values = world()
+    form = published(values)
+    fake = AsyncMock()
+    fake.read_ad.side_effect = LeadNotVerifiable("gone")
+    fake.leads.side_effect = [
+        LeadPage(
+            (
+                raw_lead(form, "911"),
+                raw_lead(form, "912", field_data="not a list"),
+                raw_lead(form, "913", ad_id="77"),
+            ),
+            "next",
+        ),
+        LeadPage((raw_lead(form, "914"),), None),
+    ]
+    backup_client(monkeypatch, fake)
+    with acting_login(values[4]):
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (2, 2)
+    stored = repo.get_form(values[0], form["id"])
+    assert stored["last_synced_at"] is not None and stored["backup_after"] is None
+    assert len(repo.list_inquiries(values[0])) == 2
+    assert "912 (unparseable)" in caplog.text and "913 (ad_not_verifiable)" in caplog.text
+    assert "synthetic@example.invalid" not in caplog.text
+    fake.leads.side_effect = [LeadPage((), None)]
+    with acting_login(values[4]):
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (0, 0)
+    # The next window starts after the bad leads, so Meta does not hand them back.
+    since = fake.leads.call_args.kwargs["since"]
+    assert since > datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+
+
+@pytest.mark.asyncio
+async def test_backup_transient_ad_read_aborts_without_moving_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = world()
+    form = published(values)
+    fake = AsyncMock()
+    fake.read_ad.side_effect = LeadFormUnavailable("rate limited")
+    fake.leads.side_effect = [LeadPage((raw_lead(form, "921", ad_id="77"),), None)]
+    backup_client(monkeypatch, fake)
+    with acting_login(values[4]), pytest.raises(LeadFormUnavailable, match="rate limited"):
+        await service.sync_lead_form(tenant_id=values[0], form_id=form["id"])
+    stored = repo.get_form(values[0], form["id"])
+    assert stored["last_synced_at"] is None and stored["backup_after"] is None
+    assert repo.list_inquiries(values[0]) == ()
+
+
+@pytest.mark.asyncio
+async def test_backup_credential_rotation_mid_run_aborts_without_moving_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = world()
+    form = published(values)
+
+    async def rotated_page(*_: object, **__: object) -> LeadPage:
+        rotate(values)
+        return LeadPage((raw_lead(form, "931"),), None)
+
+    fake = AsyncMock()
+    fake.leads.side_effect = rotated_page
+    backup_client(monkeypatch, fake)
+    with acting_login(values[4]), pytest.raises(LeadFormUnavailable, match="acceso con Meta"):
+        await service.sync_lead_form(tenant_id=values[0], form_id=form["id"])
+    assert repo.get_form(values[0], form["id"])["last_synced_at"] is None
+    assert repo.list_inquiries(values[0]) == ()

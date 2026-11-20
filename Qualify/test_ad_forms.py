@@ -24,6 +24,7 @@ from .ad_forms_vm import (
     AdFormVM,
     form_problem,
     form_step_problem,
+    sync_notice,
 )
 from .auth_state import AuthState, business_state_classes
 from .leads_page import _lead_card
@@ -74,6 +75,14 @@ def test_privacy_is_required_and_plain_contacts_do_not_establish_whatsapp_consen
     assert payload["privacy_policy"]["url"] == draft().privacy_url
     assert not any("whatsapp" in key.lower() for key in payload)
     assert payload["questions"][-1]["options"][0]["value"] == "Playa"
+
+
+def test_refresh_result_names_contacts_that_could_not_be_brought_in() -> None:
+    """m-25072672: skipped leads are counted for the owner, singular and plural."""
+    done = "Consulta terminada. Revisa los clientes interesados en Por responder."
+    assert sync_notice(0) == done
+    assert sync_notice(1) == f"{done} 1 contacto no se pudo traer. Puedes verlo en Meta."
+    assert sync_notice(3) == f"{done} 3 contactos no se pudieron traer. Puedes verlos en Meta."
 
 
 def test_saved_question_options_round_trip_and_review_revision_are_preserved() -> None:

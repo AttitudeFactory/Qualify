@@ -65,6 +65,16 @@ class AdFormVM:
     draft: AdFormDraftVM = AdFormDraftVM()
 
 
+def sync_notice(skipped: int) -> str:
+    """The refresh result, naming the contacts Meta sent that could not be brought in."""
+    done = "Consulta terminada. Revisa los clientes interesados en Por responder."
+    if skipped <= 0:
+        return done
+    if skipped == 1:
+        return f"{done} 1 contacto no se pudo traer. Puedes verlo en Meta."
+    return f"{done} {skipped} contactos no se pudieron traer. Puedes verlos en Meta."
+
+
 def safe_https(value: str) -> bool:
     try:
         parsed = urlsplit(value.strip())

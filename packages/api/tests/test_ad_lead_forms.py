@@ -11,7 +11,12 @@ import httpx
 import pytest
 
 from qualify_api.ads import lead_forms_service as service
-from qualify_api.ads.lead_forms import LeadFormDraft, LeadFormQuestion, LeadFormUnavailable
+from qualify_api.ads.lead_forms import (
+    LeadFormDraft,
+    LeadFormQuestion,
+    LeadFormUnavailable,
+    LeadNotVerifiable,
+)
 from qualify_api.ads.lead_forms_client import LeadFormsClient
 from qualify_api.ads.lead_forms_webhook import leadgen_handler
 from qualify_api.webhooks.repository import ClaimedEvent
@@ -266,3 +271,26 @@ async def test_webhook_entry_page_mismatch_is_dead() -> None:
     )
     result = await leadgen_handler(event)
     assert result.status == "dead" and result.error == "leadgen_page_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "definite"),
+    [
+        (400, {"error": {"code": 100, "error_subcode": 33}}, True),
+        (400, {"error": {"code": 100}}, False),
+        (400, {"error": {"code": 17}}, False),
+        (429, {"error": {"code": 4}}, False),
+        (500, {"error": {"code": 1}}, False),
+        (200, {"error": {"code": 100, "error_subcode": 33}}, True),
+    ],
+)
+async def test_only_a_missing_ad_is_definite_when_verifying_a_lead(
+    status: int, body: dict, definite: bool
+) -> None:
+    """m-25072672: rate limits and outages must not make a backup skip a lead forever."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+    client = LeadFormsClient(AsyncMock(), ad_client=httpx.AsyncClient(transport=transport))
+    with pytest.raises(LeadFormUnavailable) as raised:
+        await client.read_ad("5", fields="id")
+    assert isinstance(raised.value, LeadNotVerifiable) is definite

@@ -13,6 +13,10 @@ class LeadFormUnavailable(ValueError):
     """A client-safe explanation, never provider response text."""
 
 
+class LeadNotVerifiable(LeadFormUnavailable):
+    """Meta answered definitively that one lead's ad is gone or is not this form's ad."""
+
+
 def safe_text(value: str, *, maximum: int = 500, required: bool = True) -> str:
     if not isinstance(value, str):
         raise LeadFormUnavailable("Revisa los textos del formulario.")

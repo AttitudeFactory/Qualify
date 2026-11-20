@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -15,6 +17,7 @@ from qualify_api.ads.lead_forms import (
     LeadFormDraft,
     LeadFormSummary,
     LeadFormUnavailable,
+    LeadNotVerifiable,
     MetaLeadSummary,
     draft_from_json,
     safe_text,
@@ -26,6 +29,8 @@ from qualify_api.connections.ad_accounts import (
     _permission_reason,
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
+
+logger = logging.getLogger(__name__)
 
 
 def _member(tenant_id: UUID) -> None:
@@ -314,7 +319,7 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
         or not isinstance(value, dict)
         or value.get("lead_gen_form_id") != form["meta_form_id"]
     ):
-        raise LeadFormUnavailable("No pudimos comprobar el anuncio de este formulario.")
+        raise LeadNotVerifiable("No pudimos comprobar el anuncio de este formulario.")
 
 
 def _persist(
@@ -371,14 +376,15 @@ def _persist(
         return inserted.rowcount == 1
 
 
-async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
+async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> tuple[int, int]:
+    """Returns (saved, skipped). One unreadable lead is skipped so it cannot block the rest."""
     _member(tenant_id)
     form = repository.get_form(tenant_id, form_id)
     if form["status"] != "published":
         raise LeadFormUnavailable("Primero comprueba que el formulario esté publicado en Meta.")
     context = _form_guard(tenant_id, form)
     client = await _client(tenant_id, context)
-    count = 0
+    count = skipped = 0
     try:
         await _page_access(client, form["page_id"])
         await _remote_form(client, form)
@@ -396,8 +402,26 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
                 form["meta_form_id"], since=max(0, int(lower.timestamp())), after=after
             )
             for raw in page.rows:
-                data = parse_lead(raw, form_id=form["meta_form_id"])
-                await _verify_ad(client, form, data)
+                try:
+                    reason = "unparseable"
+                    data = parse_lead(raw, form_id=form["meta_form_id"])
+                    reason = "ad_not_verifiable"
+                    await _verify_ad(client, form, data)
+                except LeadFormUnavailable as exc:
+                    # Transient Meta errors on the ad read stay run-wide: only definite ones skip.
+                    if reason == "ad_not_verifiable" and not isinstance(exc, LeadNotVerifiable):
+                        raise
+                    skipped += 1
+                    lead_id = raw.get("id")
+                    logger.warning(
+                        "lead form %s: skipped lead %s (%s)",
+                        form_id,
+                        lead_id
+                        if isinstance(lead_id, str) and re.fullmatch(r"[0-9]{1,40}", lead_id)
+                        else "-",
+                        reason,
+                    )
+                    continue
                 _member(tenant_id)
                 count += int(
                     _persist(
@@ -429,7 +453,7 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> int:
                         raise LeadFormUnavailable(
                             "Otra consulta actualizó el formulario. Vuelve a revisarlo."
                         )
-                return count
+                return count, skipped
             if page.after in seen:
                 raise LeadFormUnavailable("Meta repitió una página. Vuelve a comprobar los datos.")
             seen.add(page.after)

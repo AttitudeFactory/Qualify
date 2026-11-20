@@ -22,6 +22,7 @@ from .ad_forms_vm import (
     form_problem,
     form_step_problem,
     question_summary,
+    sync_notice,
 )
 from .auth_state import AuthState
 from .tenant import tenant_uuid
@@ -381,7 +382,7 @@ class AdFormsState(rx.State):
             self.busy, self.error, self.notice = True, "", ""
         try:
             with acting_login(UUID(context[1])):
-                await asyncio.to_thread(sync_form, UUID(context[0]), UUID(form_id))
+                _, skipped = await asyncio.to_thread(sync_form, UUID(context[0]), UUID(form_id))
         except Exception as exc:
             logger.warning("lead form answers refresh failed: %s", type(exc).__name__)
             message = (
@@ -396,9 +397,7 @@ class AdFormsState(rx.State):
         async with self:
             if await self._current(context, operation):
                 self.busy = False
-                self.notice = (
-                    "Consulta terminada. Revisa los clientes interesados en Por responder."
-                )
+                self.notice = sync_notice(skipped)
 
     @rx.event(background=True)
     async def receive_answers(self) -> None:
