@@ -273,7 +273,7 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
     )
 
 
-RETRY_CREATION = "No se activó ningún anuncio. Puedes volver a intentarlo."
+NOTHING_ACTIVATED = "No se activó ningún anuncio."
 
 
 def charge_notice(promotion: Promotion) -> str:
@@ -375,7 +375,7 @@ class PromotionWizard:
         except MarketingError as error:
             # start() keeps a claim only when the POST may have reached Meta (no raise):
             # here the step was released, so the same request can simply be retried.
-            raise WizardUnavailable(f"{error} {RETRY_CREATION}") from None
+            raise WizardUnavailable(f"{NOTHING_ACTIVATED} {error}") from None
         if promotion.status != "paused" or len(promotion.ids) != 4:
             raise WizardUnavailable(
                 "La creación quedó pendiente. Revisa la cuenta antes de repetirla."

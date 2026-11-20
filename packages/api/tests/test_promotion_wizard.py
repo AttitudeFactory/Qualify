@@ -581,7 +581,9 @@ async def test_meta_rejecting_a_creation_step_explains_and_the_same_request_retr
     client.failures.append(
         MarketingError("Meta está recibiendo muchas solicitudes.", http_status=400, code=17)
     )
-    with pytest.raises(WizardUnavailable, match="Puedes volver a intentarlo"):
+    with pytest.raises(
+        WizardUnavailable, match="^No se activó ningún anuncio. Meta está recibiendo"
+    ):
         await wizard.prepare(**args)
     assert client.objects == {}
     preview = await wizard.prepare(**args)
