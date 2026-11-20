@@ -232,7 +232,7 @@ async def _spend_cap_guard(
 
     What this ad can still spend after the change (its unspent budget plus the raise) is
     compared with what the cap still allows (`spend_cap - amount_spent`, which already
-    counts this ad's spend). No cap, or no reading, blocks nothing.
+    counts this ad's spend). No cap blocks nothing; a failed read refuses the raise.
     """
     raise_meta = (new_minor - promotion.request["budget_minor"]) // 100
     # A failed read (MarketingError) refuses the raise: results_service maps it to its retry
