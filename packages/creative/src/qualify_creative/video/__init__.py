@@ -22,7 +22,7 @@ from qualify_creative.video.fit import (
     SubtitleLayer,
     VideoFitter,
 )
-from qualify_creative.video.join import JoinClip, JoinedVideo, JoinError, join_clips
+from qualify_creative.video.join import JoinClip, JoinedVideo, JoinError, JoinTransition, join_clips
 from qualify_creative.video.normalize import (
     FfmpegUnavailable,
     FfmpegVideoNormalizer,
@@ -122,6 +122,7 @@ __all__ = [
     "VideoNormalizer",
     "is_video_filename",
     "join_clips",
+    "JoinTransition",
     "FfmpegUnavailable",
     "POSTER_TIMEOUT_SECONDS",
     "VideoFacts",

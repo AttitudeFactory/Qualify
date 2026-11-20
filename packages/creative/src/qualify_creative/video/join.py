@@ -23,6 +23,27 @@ path — the joined bytes never sit in memory (founder, 2026-11-04).
 
 Done with PyAV (its wheels bundle FFmpeg with libx264 and AAC), imported lazily like
 `fit.py`: production has no `ffmpeg` binary.
+
+Transitions (EF-16, m-25026594, ADR 50 D9): a part may blend with the one before it
+(`JoinClip.transition_in`) — a fade (`fundido`) or a wipe (`barrido`) of 0.3–0.8 s. The
+two parts OVERLAP for that time: the last `n` frames of the part before are blended with
+the first `n` frames of the part after (`n` = the duration at the common rate), so the
+joined video lasts the sum of its parts minus each transition. Nothing is added or paid
+for: the parts are the same seconds the owner was charged for. The sound overlaps the
+same way, as an equal-power crossfade of exactly the samples those frames last, so the
+synchrony rule above still holds sample for sample. A part without a transition (a cut,
+`corte`) is joined exactly as before — same frames, same sound, same bytes. The blend is
+done on the fitted `yuv420p` frames with numpy, in integers, never with an `xfade` graph:
+one frame of each part at a time. In the 1080p final's segments (`encode_transition`, one
+child per transition) only ONE decoder is open at a time: the part before's `n` fitted
+frames are spooled to a raw file first.
+
+Measured 2026-11-20 with `deploy/measure/join_memory.py` (Windows, peak working set,
+`threads=1`): the whole join of 6 × 10 s 1080p H.264 parts — cuts 229 MiB / 73.5 s, five
+0.5 s fades 265 MiB / 71.9 s, five 0.8 s wipes 257 MiB / 66.3 s; the final's children
+on 10-bit H.265 1080p parts — a part's segment 222 MiB / 47 s, a 0.8 s transition's
+247 MiB (fade) / 239 MiB (wipe), 14–16 s (it decodes the part before from its start, no
+seek). Not measured on linux/arm64 nor under the worker's cgroup.
 """
 
 from __future__ import annotations
@@ -31,11 +52,11 @@ import gc
 import io
 import os
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from qualify_creative.video._source import VideoSourceError, frame_rotation
 from qualify_creative.video.fit import DETAIL_X264, _cover_crop, _layer_frame
@@ -77,20 +98,153 @@ class JoinError(ValueError):
     """A part cannot be joined (no video stream, empty interval, nothing decodable)."""
 
 
+#: EF-16: how long a transition between two parts lasts (the ticket: 0,3–0,8 s).
+TRANSITION_MIN_S = 0.3
+TRANSITION_MAX_S = 0.8
+TransitionKind = Literal["fade", "wipe"]
+#: Where a wipe's edge travels: `left` = the next part comes in from the right edge.
+WipeDirection = Literal["left", "right", "up", "down"]
+WIPE_DIRECTIONS: tuple[str, ...] = ("left", "right", "up", "down")
+
+
+@dataclass(frozen=True)
+class JoinTransition:
+    """How a part blends with the part before it (EF-16): a `fade` (the library's
+    `fundido`) or a `wipe` (`barrido`, toward `direction`) lasting `duration_s`, during
+    which the two parts overlap. A cut (`corte`) is no transition: None."""
+
+    kind: TransitionKind
+    duration_s: float
+    direction: WipeDirection = "left"
+    #: The library entry it came from, `(effect_id, version)` — provenance only: not part
+    #: of what the join draws (not compared, not in the child's spec).
+    source: tuple[str, int] | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("fade", "wipe"):
+            raise JoinError(f"unknown transition {self.kind!r}")
+        if not TRANSITION_MIN_S - 1e-9 <= self.duration_s <= TRANSITION_MAX_S + 1e-9:
+            raise JoinError(
+                f"a transition lasts {TRANSITION_MIN_S}–{TRANSITION_MAX_S} s, not {self.duration_s}"
+            )
+        if self.direction not in WIPE_DIRECTIONS:
+            raise JoinError(f"unknown wipe direction {self.direction!r}")
+
+    def frames(self, rate: int | Fraction) -> int:
+        """How many output frames the two parts overlap at `rate` (at least one)."""
+        return max(1, round(self.duration_s * Fraction(rate)))
+
+    def as_spec(self) -> dict[str, Any]:
+        """A JSON-safe record (the child's spec, provenance and fingerprints)."""
+        return {"kind": self.kind, "duration_s": self.duration_s, "direction": self.direction}
+
+    @classmethod
+    def from_spec(cls, spec: Any) -> JoinTransition | None:
+        """`as_spec` back; None for None (a cut)."""
+        if spec is None:
+            return None
+        return cls(
+            kind=spec["kind"],
+            duration_s=float(spec["duration_s"]),
+            direction=spec.get("direction", "left"),
+        )
+
+
 @dataclass(frozen=True)
 class JoinClip:
     """One part: its MP4 on disk and the interval to keep, in seconds from its first
-    video frame. `end_s=None` keeps it to its end; an `end_s` past the end is cut to it."""
+    video frame. `end_s=None` keeps it to its end; an `end_s` past the end is cut to it.
+    `transition_in` (EF-16): how it blends with the part before it — None is a cut."""
 
     path: Path
     start_s: float = 0.0
     end_s: float | None = None
+    transition_in: JoinTransition | None = None
 
     def __post_init__(self) -> None:
         if self.start_s < 0:
             raise JoinError(f"a part cannot start before 0 s ({self.start_s})")
         if self.end_s is not None and self.end_s <= self.start_s:
             raise JoinError(f"empty interval {self.start_s}–{self.end_s} s")
+
+
+def _overlaps(clips: Sequence[JoinClip], rate: Fraction) -> list[int]:
+    """The frames each part overlaps the one before it (0 = a cut, and always 0 for the
+    first part, which has nothing before it to blend with: a `JoinError`)."""
+    if clips and clips[0].transition_in is not None:
+        raise JoinError("the first part has no part before it to blend with")
+    return [0 if c.transition_in is None else c.transition_in.frames(rate) for c in clips]
+
+
+def _check_room(name: str, frames: int, overlap_in: int, overlap_out: int) -> None:
+    """A part must last at least the transitions that eat into it, or two would cross."""
+    if overlap_in + overlap_out > frames:
+        raise JoinError(
+            f"{name} lasts {frames} frames, shorter than its transitions "
+            f"({overlap_in} + {overlap_out})"
+        )
+
+
+def _transition_samples(frames: int, rate: Fraction) -> int:
+    """The samples `frames` overlapped frames last — the sound overlaps exactly as long."""
+    return round(frames * JOIN_SAMPLE_RATE / rate)
+
+
+def _crossfade(np: Any, tail: Any, head: Any) -> Any:
+    """Equal-power crossfade of two (2, n) float32 sounds: the part before fades out as
+    the part after fades in, with no dip in loudness for two unrelated sounds."""
+    n = tail.shape[1]
+    ramp = (np.arange(n, dtype=np.float32) + 0.5) / max(n, 1)
+    fade_in = np.sin(ramp * (np.pi / 2)).astype(np.float32)
+    fade_out = np.cos(ramp * (np.pi / 2)).astype(np.float32)
+    return (tail * fade_out + head * fade_in).astype(np.float32)
+
+
+def _blend(av: Any, np: Any, before: Any, after: Any, step: int, steps: int, how: Any) -> Any:
+    """Overlapped frame `step` of `steps` (0-based): `before`'s picture blended into
+    `after`'s, both fitted `yuv420p` frames of the same size. A fade mixes the planes
+    by the progress; a wipe shows `after` on the side its edge has uncovered. Returns a
+    new frame (the inputs are left as they are)."""
+    width, height = before.width, before.height
+    progress = (step + 1) / (steps + 1)  # never all of one part: both show in every frame
+    a = before.to_ndarray()  # (height * 3 / 2, width): Y, then U, then V, flat
+    b = after.to_ndarray()
+    if how.kind == "fade":
+        # integer weights out of 256, in place in two uint16 buffers: a float32 mix made
+        # ~60 MiB of temporaries per 1080p frame (measured, `deploy/measure/join_memory.py`)
+        weight = round(progress * 256)
+        mixed = a.astype(np.uint16)
+        mixed *= 256 - weight
+        other = b.astype(np.uint16)
+        other *= weight
+        mixed += other
+        del other
+        mixed += 128  # round to nearest: at most 255 × 256 + 128, inside uint16
+        mixed >>= 8
+        out = mixed.astype(np.uint8)
+    else:
+        out = a.copy()
+        flat_out, flat_b = out.reshape(-1), b.reshape(-1)
+        luma = width * height
+        chroma = (width // 2) * (height // 2)
+        planes = (
+            (0, width, height),
+            (luma, width // 2, height // 2),
+            (luma + chroma, width // 2, height // 2),
+        )
+        for offset, w, h in planes:
+            target = flat_out[offset : offset + w * h].reshape(h, w)
+            source = flat_b[offset : offset + w * h].reshape(h, w)
+            if how.direction in ("left", "right"):
+                edge = round(width // 2 * progress) * (w // (width // 2))  # luma = 2 × chroma
+                cols = slice(w - edge, w) if how.direction == "left" else slice(0, edge)
+                target[:, cols] = source[:, cols]
+            else:
+                edge = round(height // 2 * progress) * (h // (height // 2))
+                rows = slice(h - edge, h) if how.direction == "up" else slice(0, edge)
+                target[rows, :] = source[rows, :]
+    frame = av.VideoFrame.from_ndarray(out, format="yuv420p")
+    return frame
 
 
 @dataclass(frozen=True)
@@ -291,32 +445,172 @@ def _join(
                 sink.mux(packet)
             total += 1
 
-        half_fade = round(crossfade_s / 2 * JOIN_SAMPLE_RATE)
-        for index, clip in enumerate(clips):
-            try:
-                span = _probe(av, clip.path)
-                frames = _part_frames(clip, span, rate)
-                samples = round(frames * JOIN_SAMPLE_RATE / rate)
-                fade = (
-                    min(half_fade, samples) if index > 0 else 0,
-                    min(half_fade, samples) if index < len(clips) - 1 else 0,
-                )
-                sound_out.add(_part_audio(av, np, clip, span, samples, fade, threads))
-                _part_video(av, clip, span, frames, size, rate, overlay, emit, threads)
-                if threads is not None:
-                    gc.collect()  # this part's decoder, graph and frames, before the next
-            except JoinError:
-                raise
-            except (OSError, av.error.FFmpegError) as error:
-                # a missing or corrupt part: one typed error, the cause kept
-                raise JoinError(
-                    f"part {index + 1} ({clip.path.name}) could not be joined: {error}"
-                ) from error
+        overlaps = _overlaps(clips, rate)
+        if not any(overlaps):
+            # only cuts: exactly the join before EF-16, part after part (same bytes)
+            _cut_parts(av, np, clips, size, rate, overlay, crossfade_s, threads, emit, sound_out)
+        else:
+            _blended_parts(
+                av, np, clips, overlaps, size, rate, overlay, crossfade_s, threads, emit, sound_out
+            )
 
         sound_out.finish()
         for packet in video_out.encode():
             sink.mux(packet)
     return total, (poster[0] if poster else None)
+
+
+def _joined_wrong(index: int, clip: JoinClip, error: BaseException) -> JoinError:
+    """A missing or corrupt part: one typed error, naming it (the cause is chained)."""
+    return JoinError(f"part {index + 1} ({clip.path.name}) could not be joined: {error}")
+
+
+def _cut_parts(
+    av: Any,
+    np: Any,
+    clips: Sequence[JoinClip],
+    size: tuple[int, int],
+    rate: Fraction,
+    overlay: bytes | None,
+    crossfade_s: float,
+    threads: int | None,
+    emit: Any,
+    sound_out: AacWriter,
+) -> None:
+    """Every part after the other with a hard cut (VE-07, unchanged by EF-16): its sound
+    with half the cut's fade at each edge that meets another part, then its frames."""
+    half_fade = round(crossfade_s / 2 * JOIN_SAMPLE_RATE)
+    for index, clip in enumerate(clips):
+        try:
+            span = _probe(av, clip.path)
+            frames = _part_frames(clip, span, rate)
+            samples = round(frames * JOIN_SAMPLE_RATE / rate)
+            fade = (
+                min(half_fade, samples) if index > 0 else 0,
+                min(half_fade, samples) if index < len(clips) - 1 else 0,
+            )
+            sound_out.add(_part_audio(av, np, clip, span, samples, fade, threads))
+            _part_video(av, clip, span, frames, size, rate, overlay, emit, threads)
+            if threads is not None:
+                gc.collect()  # this part's decoder, graph and frames, before the next
+        except JoinError:
+            raise
+        except (OSError, av.error.FFmpegError) as error:
+            raise _joined_wrong(index, clip, error) from error
+
+
+def _take_frame(frames: Iterator[Any], clip: JoinClip) -> Any:
+    try:
+        return next(frames)
+    except StopIteration:  # `_part_video_frames` yields exactly its count: never expected
+        raise JoinError(f"{clip.path.name}: fewer frames than its interval") from None
+
+
+def _blended_parts(
+    av: Any,
+    np: Any,
+    clips: Sequence[JoinClip],
+    overlaps: Sequence[int],
+    size: tuple[int, int],
+    rate: Fraction,
+    overlay: bytes | None,
+    crossfade_s: float,
+    threads: int | None,
+    emit: Any,
+    sound_out: AacWriter,
+) -> None:
+    """EF-16: the parts with at least one transition. Each part's frames that no
+    transition touches go out as in a cut; where part `i + 1` blends in, the last `n`
+    frames of part `i` and the first `n` of part `i + 1` are read side by side (two
+    decoders open for those `n` frames only) and blended (`_blend`). The sound: the
+    samples those frames last are crossfaded (`_crossfade`); a cut keeps its short
+    fade. Every count is known before decoding (`_probe`), so a part too short for its
+    transitions is refused before anything is encoded."""
+    spans: list[_Span] = []
+    counts: list[int] = []
+    for index, clip in enumerate(clips):
+        try:
+            span = _probe(av, clip.path)
+            frames = _part_frames(clip, span, rate)
+        except JoinError:
+            raise
+        except (OSError, av.error.FFmpegError) as error:
+            raise _joined_wrong(index, clip, error) from error
+        spans.append(span)
+        counts.append(frames)
+    last = len(clips) - 1
+    after = [*overlaps[1:], 0]  # the frames each part overlaps the next one
+    for index, clip in enumerate(clips):
+        name = f"part {index + 1} ({clip.path.name})"
+        _check_room(name, counts[index], overlaps[index], after[index])
+
+    half_fade = round(crossfade_s / 2 * JOIN_SAMPLE_RATE)
+    tail: Any = None  # the part before's last samples, crossfaded into this part's first
+    current: Iterator[Any] | None = None  # this part's frames, opened by its transition
+    nxt: Iterator[Any] | None = None  # the next part's, while a transition reads it
+    try:
+        for index, clip in enumerate(clips):
+            try:
+                frames, n_in, n_out = counts[index], overlaps[index], after[index]
+                samples = round(frames * JOIN_SAMPLE_RATE / rate)
+                # the samples the part before kept for this crossfade (its own clamp)
+                t_in = min(tail.shape[1], samples) if n_in else 0
+                t_out = min(_transition_samples(n_out, rate), samples - t_in) if n_out else 0
+                fade = (
+                    min(half_fade, samples) if index > 0 and not n_in else 0,
+                    min(half_fade, samples) if index < last and not n_out else 0,
+                )
+                sound = _part_audio(av, np, clip, spans[index], samples, fade, threads)
+                if n_in:
+                    sound_out.add(_crossfade(np, tail, sound[:, :t_in]))
+                sound_out.add(sound[:, t_in : samples - t_out])
+                tail = sound[:, samples - t_out :].copy() if n_out else None
+                del sound
+                if current is None:
+                    current = _part_video_frames(
+                        av, clip, spans[index], frames, size, rate, overlay, threads
+                    )
+                for _ in range(frames - n_in - n_out):
+                    emit(_take_frame(current, clip))
+                if n_out:
+                    following = clips[index + 1]
+                    how = following.transition_in
+                    nxt = _part_video_frames(
+                        av,
+                        following,
+                        spans[index + 1],
+                        counts[index + 1],
+                        size,
+                        rate,
+                        overlay,
+                        threads,
+                    )
+                    for step in range(n_out):
+                        picture = _blend(
+                            av,
+                            np,
+                            _take_frame(current, clip),
+                            _take_frame(nxt, following),
+                            step,
+                            n_out,
+                            how,
+                        )
+                        emit(picture)
+                    current.close()
+                    current, nxt = nxt, None
+                else:
+                    current.close()
+                    current = None
+                if threads is not None:
+                    gc.collect()  # this part's decoder, graph and frames, before the next
+            except JoinError:
+                raise
+            except (OSError, av.error.FFmpegError) as error:
+                raise _joined_wrong(index, clip, error) from error
+    finally:
+        for opened in (current, nxt):
+            if opened is not None:
+                opened.close()  # its file, even when a part failed half way
 
 
 def _part_rotation(av: Any, clip: JoinClip, threads: int | None = None) -> int:
@@ -348,7 +642,27 @@ def _part_video(
 ) -> None:
     """Decode the part once and hand `frames` output frames to `emit`, each the source
     frame shown at that tick of the common rate (repeated or dropped as the rates
-    differ), cover-cropped and scaled to `size`, with `overlay` on top.
+    differ), cover-cropped and scaled to `size`, with `overlay` on top
+    (`_part_video_frames`, consumed whole)."""
+    for frame in _part_video_frames(av, clip, span, frames, size, rate, overlay, threads):
+        emit(frame)
+
+
+def _part_video_frames(
+    av: Any,
+    clip: JoinClip,
+    span: _Span,
+    frames: int,
+    size: tuple[int, int],
+    rate: Fraction,
+    overlay: bytes | None,
+    threads: int | None = None,
+) -> Iterator[Any]:
+    """Decode the part once and yield `frames` output frames, each the source frame
+    shown at that tick of the common rate (repeated or dropped as the rates differ),
+    cover-cropped and scaled to `size`, with `overlay` on top. A generator (EF-16): a
+    transition reads the tail of one part and the head of the next side by side; closing
+    it early closes the part's file.
 
     Upright (EF-01): a phone part's display rotation is applied first in the graph
     (`upright_filters`, FFmpeg's `transpose` in YUV), so the crop and the scale work on
@@ -402,21 +716,21 @@ def _part_video(
         written = 0
         shown: Any = None  # the last fitted frame, shown until the next one's time
 
-        def offer(frame: Any) -> None:
+        def offer(frame: Any) -> Iterator[Any]:
             nonlocal written, shown
             moment = float(frame.time) - span.origin
             while written < frames and start + written / rate < moment - _TICK_EPSILON:
-                emit(shown if shown is not None else frame)
+                yield shown if shown is not None else frame
                 written += 1
             shown = frame
 
-        def drain() -> None:
+        def drain() -> Iterator[Any]:
             while True:
                 try:
                     fitted = sink.pull()
                 except (av.error.BlockingIOError, av.error.EOFError):
                     return
-                offer(fitted)
+                yield from offer(fitted)
 
         before: Any = None  # the latest frame before the interval: shown at its start
         for frame in source.decode(stream):
@@ -432,15 +746,15 @@ def _part_video(
             if moment >= stop - _TICK_EPSILON:
                 break
             video_in.push(frame)
-            drain()
+            yield from drain()
         if before is not None:  # the whole interval sits inside the last frame
             video_in.push(before)
         video_in.push(None)
-        drain()
+        yield from drain()
         if shown is None:
             raise JoinError(f"{clip.path.name}: no decodable frame in its interval")
         while written < frames:
-            emit(shown)
+            yield shown
             written += 1
 
 
@@ -527,6 +841,8 @@ def encode_segment(
     crossfade_audio_s: float = JOIN_CROSSFADE_S,
     threads: int | None = None,
     poster: bool = False,
+    drop_head: int = 0,
+    drop_tail: int = 0,
 ) -> JoinSegment:
     """ONE part as `join_clips` would lay it in the joined video — cut to its interval,
     cover-cropped and scaled to `size`, `overlay` on every frame — encoded as a video-only
@@ -535,57 +851,46 @@ def encode_segment(
     part (`fade_in` / `fade_out`, as `join_clips` fades them). The sound is NOT encoded
     here: `concat_segments` encodes the whole soundtrack once, so the AAC encoder's
     priming happens once and never accumulates per cut (risk N6). Written beside `out`
-    and renamed into place: a failure leaves neither file."""
+    and renamed into place: a failure leaves neither file.
+
+    EF-16: `drop_head` / `drop_tail` leave out the frames a transition overlaps with the
+    part before / after (and the samples they last): those go in the transition's own
+    segment (`encode_transition`). An edge with a transition has no cut fade."""
     import av  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
 
-    width, height = size
-    if width % 2 or height % 2:
-        raise JoinError(f"an H.264 video needs even dimensions, not {width}×{height}")
+    _even(size)
     rate = Fraction(fps)
-    tick = 1 / rate
     out, pcm_out = Path(out), Path(pcm_out)
     partial = out.with_name(f".{out.name}.{uuid.uuid4().hex}.partial.mp4")
     pcm_partial = pcm_out.with_name(f".{pcm_out.name}.{uuid.uuid4().hex}.partial")
-    first: list[bytes] = []
     written = 0
     samples = 0
+    picture: bytes | None = None
     try:
         try:
             span = _probe(av, clip.path)
             frames = _part_frames(clip, span, rate)
+            _check_room(clip.path.name, frames, drop_head, drop_tail)
             samples = round(frames * JOIN_SAMPLE_RATE / rate)
             half = round(crossfade_audio_s / 2 * JOIN_SAMPLE_RATE)
             fade = (min(half, samples) if fade_in else 0, min(half, samples) if fade_out else 0)
             sound = _part_audio(av, np, clip, span, samples, fade, threads)
+            if drop_head or drop_tail:
+                head = _transition_samples(drop_head, rate) if drop_head else 0
+                tail = min(_transition_samples(drop_tail, rate), samples - head) if drop_tail else 0
+                sound = sound[:, head : samples - tail]
+                samples -= head + tail
             np.ascontiguousarray(sound.T, dtype="<f4").tofile(pcm_partial)
             del sound
-            with av.open(str(partial), mode="w", format="mp4") as sink:
-                video_out = sink.add_stream("libx264", rate=rate)
-                video_out.width, video_out.height = width, height
-                video_out.pix_fmt = "yuv420p"
-                video_out.options = segment_x264()
-                if threads is not None:
-                    video_out.options = {**video_out.options, "threads": str(threads)}
-                    _bound(video_out.codec_context, threads)
-                video_out.codec_context.time_base = tick
-
-                def emit(frame: Any) -> None:
-                    nonlocal written
-                    if poster and not first:
-                        jpeg = io.BytesIO()
-                        # already upright from `_part_video`'s graph (see `_join`'s emit)
-                        frame.to_image().save(jpeg, format="JPEG", quality=90)
-                        first.append(jpeg.getvalue())
-                    frame.pts = written
-                    frame.time_base = tick
-                    for packet in video_out.encode(frame):
-                        sink.mux(packet)
-                    written += 1
-
-                _part_video(av, clip, span, frames, size, rate, overlay, emit, threads)
-                for packet in video_out.encode():
-                    sink.mux(packet)
+            pictures: Iterator[Any] = _part_video_frames(
+                av, clip, span, frames, size, rate, overlay, threads
+            )
+            if drop_head or drop_tail:
+                pictures = _middle(
+                    pictures, clip, skip=drop_head, keep=frames - drop_head - drop_tail
+                )
+            written, picture = _write_segment(av, partial, size, rate, threads, pictures, poster)
         except JoinError:
             raise
         except (OSError, av.error.FFmpegError) as error:
@@ -595,7 +900,236 @@ def encode_segment(
     finally:
         partial.unlink(missing_ok=True)
         pcm_partial.unlink(missing_ok=True)
-    return JoinSegment(out, pcm_out, written, samples, first[0] if first else None)
+    return JoinSegment(out, pcm_out, written, samples, picture)
+
+
+def _even(size: tuple[int, int]) -> None:
+    width, height = size
+    if width % 2 or height % 2:
+        raise JoinError(f"an H.264 video needs even dimensions, not {width}×{height}")
+
+
+def _middle(frames: Iterator[Any], clip: JoinClip, *, skip: int, keep: int) -> Iterator[Any]:
+    """`keep` frames after the first `skip` — then the part's file is closed."""
+    try:
+        for _ in range(skip):
+            _take_frame(frames, clip)
+        for _ in range(keep):
+            yield _take_frame(frames, clip)
+    finally:
+        _close(frames)
+
+
+def _close(frames: Iterator[Any]) -> None:
+    close = getattr(frames, "close", None)
+    if callable(close):
+        close()
+
+
+def _write_segment(
+    av: Any,
+    path: Path,
+    size: tuple[int, int],
+    rate: Fraction,
+    threads: int | None,
+    pictures: Iterator[Any],
+    poster: bool,
+) -> tuple[int, bytes | None]:
+    """Encode `pictures` as a video-only segment at `path` (`segment_x264`: closed GOP,
+    the same profile and level as every other segment, so they lay end to end by stream
+    copy). Returns the frames written and, with `poster`, the first one as JPEG."""
+    try:
+        return _encode_pictures(av, path, size, rate, threads, pictures, poster)
+    finally:
+        _close(pictures)  # the parts' files, also when the encode failed half way
+
+
+def _encode_pictures(
+    av: Any,
+    path: Path,
+    size: tuple[int, int],
+    rate: Fraction,
+    threads: int | None,
+    pictures: Iterator[Any],
+    poster: bool,
+) -> tuple[int, bytes | None]:
+    width, height = size
+    tick = 1 / rate
+    written = 0
+    first: bytes | None = None
+    with av.open(str(path), mode="w", format="mp4") as sink:
+        video_out = sink.add_stream("libx264", rate=rate)
+        video_out.width, video_out.height = width, height
+        video_out.pix_fmt = "yuv420p"
+        video_out.options = segment_x264()
+        if threads is not None:
+            video_out.options = {**video_out.options, "threads": str(threads)}
+            _bound(video_out.codec_context, threads)
+        video_out.codec_context.time_base = tick
+        for frame in pictures:
+            if poster and first is None:
+                jpeg = io.BytesIO()
+                # already upright from `_part_video_frames`'s graph (see `_join`'s emit)
+                frame.to_image().save(jpeg, format="JPEG", quality=90)
+                first = jpeg.getvalue()
+            frame.pts = written
+            frame.time_base = tick
+            for packet in video_out.encode(frame):
+                sink.mux(packet)
+            written += 1
+        for packet in video_out.encode():
+            sink.mux(packet)
+    return written, first
+
+
+def encode_transition(
+    before: JoinClip,
+    after: JoinClip,
+    *,
+    out: Path,
+    pcm_out: Path,
+    size: tuple[int, int],
+    fps: int | Fraction = JOIN_FPS,
+    overlay: bytes | None = None,
+    threads: int | None = None,
+) -> JoinSegment:
+    """EF-16: the segment of the transition between two parts (`after.transition_in`):
+    the last `n` frames of `before` blended with the first `n` of `after`, as
+    `join_clips` blends them, and the samples those frames last, crossfaded. It sits in
+    the joined video between `before`'s segment (made with `drop_tail=n`) and `after`'s
+    (`drop_head=n`), so the video lasts the sum of the parts minus `n` frames. Encoded
+    like any segment (`_write_segment`); written beside `out` and renamed into place."""
+    import av  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    how = after.transition_in
+    if how is None:
+        raise JoinError("a transition segment needs the part after to have a transition")
+    _even(size)
+    rate = Fraction(fps)
+    n = how.frames(rate)
+    out, pcm_out = Path(out), Path(pcm_out)
+    partial = out.with_name(f".{out.name}.{uuid.uuid4().hex}.partial.mp4")
+    pcm_partial = pcm_out.with_name(f".{pcm_out.name}.{uuid.uuid4().hex}.partial")
+    spool = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tail.yuv")
+    samples = _transition_samples(n, rate)
+    written = 0
+    try:
+        try:
+            span_b, span_a = _probe(av, before.path), _probe(av, after.path)
+            frames_b = _part_frames(before, span_b, rate)
+            frames_a = _part_frames(after, span_a, rate)
+            _check_room(before.path.name, frames_b, 0, n)
+            _check_room(after.path.name, frames_a, n, 0)
+            whole_b = round(frames_b * JOIN_SAMPLE_RATE / rate)
+            whole_a = round(frames_a * JOIN_SAMPLE_RATE / rate)
+            samples = min(samples, whole_b, whole_a)
+            tail = _part_audio(av, np, before, span_b, whole_b, (0, 0), threads)
+            tail = tail[:, whole_b - samples :].copy()
+            head = _part_audio(av, np, after, span_a, whole_a, (0, 0), threads)
+            head = head[:, :samples].copy()
+            sound = _crossfade(np, tail, head)
+            np.ascontiguousarray(sound.T, dtype="<f4").tofile(pcm_partial)
+            del sound, tail, head
+            # the part before from its first overlapped frame: its earlier frames are
+            # decoded (no seek) but never fitted
+            last = JoinClip(
+                before.path,
+                start_s=before.start_s + (frames_b - n) / rate,
+                end_s=before.start_s + frames_b / rate,
+            )
+            # ONE decoder at a time (a 1080p 10-bit H.265 decoder is ~70 MiB): the part
+            # before's `n` fitted frames go to a raw file beside `out`, its decoder is
+            # closed, then the part after is decoded and blended frame by frame with them
+            _spool(av, _part_video_frames(av, last, span_b, n, size, rate, overlay, threads), spool)
+            if threads is not None:
+                gc.collect()  # the part before's decoder and graph, before the next opens
+            pictures = _blended(
+                av,
+                np,
+                _unspool(av, np, spool, size, n, before),
+                _part_video_frames(av, after, span_a, frames_a, size, rate, overlay, threads),
+                before,
+                after,
+                n,
+                how,
+            )
+            written, _ = _write_segment(av, partial, size, rate, threads, pictures, False)
+        except JoinError:
+            raise
+        except (OSError, av.error.FFmpegError) as error:
+            raise JoinError(
+                f"the transition {before.path.name} → {after.path.name} could not be "
+                f"encoded: {error}"
+            ) from error
+        os.replace(partial, out)
+        os.replace(pcm_partial, pcm_out)
+    finally:
+        partial.unlink(missing_ok=True)
+        pcm_partial.unlink(missing_ok=True)
+        spool.unlink(missing_ok=True)
+    return JoinSegment(out, pcm_out, written, samples, None)
+
+
+def _forget_pages(handle: Any) -> None:
+    """Let the kernel drop a file's cached pages (the worker's cgroup counts page cache):
+    `posix_fadvise(DONTNEED)` where the platform has it. A hint, never a failure."""
+    advise = getattr(os, "posix_fadvise", None)
+    if advise is None:
+        return
+    try:
+        os.fsync(handle.fileno())
+        advise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    except OSError:
+        pass
+
+
+def _spool(av: Any, frames: Iterator[Any], path: Path) -> None:
+    """Write fitted `yuv420p` frames to `path` as raw planes (Y, U, V, flat), closing the
+    part's file once they are all out."""
+    try:
+        with path.open("wb") as handle:
+            for frame in frames:
+                handle.write(frame.to_ndarray().tobytes())
+            handle.flush()
+            _forget_pages(handle)
+    finally:
+        _close(frames)
+
+
+def _unspool(
+    av: Any, np: Any, path: Path, size: tuple[int, int], count: int, clip: JoinClip
+) -> Iterator[Any]:
+    """`_spool`'s frames back, one at a time."""
+    width, height = size
+    length = width * height * 3 // 2
+    with path.open("rb") as handle:
+        for _ in range(count):
+            data = handle.read(length)
+            if len(data) != length:
+                raise JoinError(f"{clip.path.name}: fewer frames than its interval")
+            planes = np.frombuffer(data, dtype=np.uint8).reshape(height * 3 // 2, width)
+            yield av.VideoFrame.from_ndarray(planes, format="yuv420p")
+        _forget_pages(handle)
+
+
+def _blended(
+    av: Any,
+    np: Any,
+    tail: Iterator[Any],
+    head: Iterator[Any],
+    before: JoinClip,
+    after: JoinClip,
+    n: int,
+    how: JoinTransition,
+) -> Iterator[Any]:
+    """The `n` overlapped frames (`_blend`), then both parts' files closed."""
+    try:
+        for step in range(n):
+            yield _blend(av, np, _take_frame(tail, before), _take_frame(head, after), step, n, how)
+    finally:
+        _close(tail)
+        _close(head)
 
 
 def segment_frames(path: Path) -> int:

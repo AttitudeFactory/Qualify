@@ -51,11 +51,16 @@ from qualify_creative.video.join import (
     JoinClip,
     JoinError,
     JoinSegment,
+    JoinTransition,
     concat_segments,
     segment_crf,
     segment_lookahead,
 )
-from qualify_creative.video.join_child import JoinChildLost, segment_in_child
+from qualify_creative.video.join_child import (
+    JoinChildLost,
+    segment_in_child,
+    transition_in_child,
+)
 from qualify_shared.db.session import tenant_unit_of_work
 from sqlalchemy import text
 
@@ -76,13 +81,16 @@ from qualify_api.creative.part_join import (
     _keep,
     _missing,
     _read_logo,
+    _transitions_field,
     io_failure,
     is_local_part,
     join_fingerprint,
     join_key,
+    join_transitions,
     part_span,
     parts_ai_generated,
     ready_parts,
+    transitions_record,
 )
 from qualify_api.creative.pipeline import CheckpointError, PipelineStore, current_preparation
 
@@ -177,11 +185,17 @@ def block_logo_key(block: Mapping[str, Any] | None) -> str | None:
     return None
 
 
-def preview_fingerprint(parts: Sequence[PartPreview], block: Mapping[str, Any] | None) -> str:
+def preview_fingerprint(
+    parts: Sequence[PartPreview],
+    block: Mapping[str, Any] | None,
+    transitions: Sequence[JoinTransition | None] = (),
+) -> str:
     """The joined-preview fingerprint `parts` (their active versions) would have with the
-    logo the shown preview carries — equal to the shown one iff the owner saw THESE
-    versions joined. Pure."""
-    return join_fingerprint(parts, [part_span(p.params) for p in parts], block_logo_key(block))
+    logo the shown preview carries and (EF-16) the plan's transitions — equal to the
+    shown one iff the owner saw THESE versions joined THIS way. Pure."""
+    return join_fingerprint(
+        parts, [part_span(p.params) for p in parts], block_logo_key(block), transitions
+    )
 
 
 def approval_problem(
@@ -207,7 +221,8 @@ def approval_problem(
         return NOT_READY
     if block.get("parent_revision") != snapshot.revision:
         return STALE
-    if preview_fingerprint(parts, block) != snapshot.joined_fingerprint:
+    transitions = join_transitions(snapshot, parts)
+    if preview_fingerprint(parts, block, transitions) != snapshot.joined_fingerprint:
         return STALE
     return None
 
@@ -246,9 +261,11 @@ def join_final_fingerprint(
     parts: Sequence[PartPreview],
     spans: Sequence[tuple[float, float | None]],
     logo_key: str | None,
+    transitions: Sequence[JoinTransition | None] = (),
 ) -> str:
     """What makes a final join THIS one: its recipe, size, logo and, in order, each
-    part's draft, active version, raw 1080p and trim. Pure."""
+    part's draft, active version, raw 1080p and trim — and (EF-16) the transitions
+    between them (absent with only cuts: older fingerprints stay what they were). Pure."""
     data: dict[str, Any] = {
         "version": JOIN_FINAL_VERSION,
         "recipe": JOIN_VERSION,
@@ -259,6 +276,9 @@ def join_final_fingerprint(
         ],
         "logo": logo_key,
     }
+    record = transitions_record(transitions)
+    if record is not None:
+        data["transitions"] = record
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:20]
 
@@ -359,12 +379,14 @@ def segment_fingerprint(
     *,
     fade_in: bool,
     fade_out: bool,
+    drop_head: int = 0,
+    drop_tail: int = 0,
 ) -> str:
     """What makes one part's encoded segment THIS one: the segment recipe, size and
     rate, the part's draft, active version, raw 1080p and trim, the logo laid on it and
-    which of its edges fade (a part's place among the others). The same fingerprint is
-    the same file: a pass that lost its lease resumes from the segments already kept.
-    Pure."""
+    which of its edges fade (a part's place among the others) — and (EF-16) the frames
+    its transitions take at each edge. The same fingerprint is the same file: a pass
+    that lost its lease resumes from the segments already kept. Pure."""
     data = {
         "version": JOIN_SEGMENT_VERSION,
         # the encoder's lookahead in force (`QUALIFY_JOIN_SEGMENT_LOOKAHEAD`): another
@@ -377,6 +399,36 @@ def segment_fingerprint(
         "part": [str(part.draft_id), str(part.version_id), raw_key(part), span[0], span[1]],
         "logo": logo_key,
         "fade": [fade_in, fade_out],
+    }
+    if drop_head or drop_tail:  # absent for a part between cuts: the VE-10b fingerprint
+        data["drop"] = [drop_head, drop_tail]
+    encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def transition_fingerprint(
+    before: PartPreview,
+    after: PartPreview,
+    spans: tuple[tuple[float, float | None], tuple[float, float | None]],
+    logo_key: str | None,
+    how: JoinTransition,
+) -> str:
+    """What makes a transition's segment (EF-16) THIS one: the segment recipe, both
+    parts as `segment_fingerprint` names them, the logo and the transition. Pure."""
+    data = {
+        "version": JOIN_SEGMENT_VERSION,
+        "kind": "transition",
+        "lookahead": segment_lookahead(),
+        "crf": segment_crf(),
+        "recipe": JOIN_VERSION,
+        "size": list(JOIN_FINAL_SIZE),
+        "fps": JOIN_FPS,
+        "parts": [
+            [str(p.draft_id), str(p.version_id), raw_key(p), span[0], span[1]]
+            for p, span in zip((before, after), spans, strict=True)
+        ],
+        "logo": logo_key,
+        "transition": how.as_spec(),
     }
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:20]
@@ -439,13 +491,74 @@ def _whole_join(
     overlay: bytes | None,
     root: Path,
     joiner: Callable[..., Any],
+    transitions: Sequence[JoinTransition | None] = (),
 ) -> Any:
+    hows = list(transitions) or [None] * len(parts)
     clips = []
-    for index, (part, (start, end)) in enumerate(zip(parts, spans, strict=True)):
+    for index, (part, (start, end), how) in enumerate(zip(parts, spans, hows, strict=True)):
         path = root / f"part-{index}.mp4"
         _fetch_raw(store, tenant_id, part, path)
-        clips.append(JoinClip(path, start_s=start, end_s=end))
+        clips.append(JoinClip(path, start_s=start, end_s=end, transition_in=how))
     return joiner(clips, out=root / "final.mp4", size=JOIN_FINAL_SIZE, overlay=overlay)
+
+
+def _reuse_segment(
+    store: Any,
+    tenant_id: UUID,
+    keys: tuple[str, str, str],
+    video: Path,
+    pcm: Path,
+    *,
+    poster: bool,
+) -> JoinSegment | None:
+    """A segment already kept in R2 under its fingerprint (`keys`: video, sound,
+    poster), fetched — or None when it is not (all) there."""
+    video_key, pcm_key, poster_key = keys
+    if not (_held(store, tenant_id, video_key) and _held(store, tenant_id, pcm_key)):
+        return None
+    _fetch(store, tenant_id, video_key, video)
+    _fetch(store, tenant_id, pcm_key, pcm)
+    picture = None
+    if poster and _held(store, tenant_id, poster_key):
+        picture = store.read(poster_key)
+    samples = pcm.stat().st_size // 8  # float32 stereo
+    # its frames are its samples at the common rate (`encode_segment` cuts the sound to
+    # exactly `frames × 48000 / fps`): no need to read the video
+    frames = round(Fraction(samples) * JOIN_FPS / JOIN_SAMPLE_RATE)
+    return JoinSegment(video, pcm, frames, samples, picture)
+
+
+def _keep_segment(
+    store: Any,
+    tenant_id: UUID,
+    parent_id: UUID,
+    keys: tuple[str, str, str],
+    segment: JoinSegment,
+    root: Path,
+) -> None:
+    """Keep a just-encoded segment in R2 under its fingerprint (its poster, a nicety)."""
+    video_key, pcm_key, poster_key = keys
+    if not _keep(store, tenant_id, video_key, segment.path, MP4):
+        raise JoinNotKept(video_key)
+    if not _keep(store, tenant_id, pcm_key, segment.pcm, "application/octet-stream"):
+        raise JoinNotKept(pcm_key)
+    if segment.poster:
+        picture_path = root / "segment-poster.jpg"
+        picture_path.write_bytes(segment.poster)
+        try:
+            _keep(store, tenant_id, poster_key, picture_path, JPEG)
+        except Exception:  # noqa: BLE001 — a nicety
+            logger.warning("parent %s: segment poster not kept", parent_id)
+        picture_path.unlink(missing_ok=True)
+
+
+def _segment_keys(tenant_id: UUID, parent_id: UUID, fingerprint: str) -> tuple[str, str, str]:
+    name = f"segment-{fingerprint}"
+    return (
+        join_key(tenant_id, parent_id, name),
+        join_key(tenant_id, parent_id, name, "pcm"),
+        join_key(tenant_id, parent_id, name, "jpg"),
+    )
 
 
 def _segment_join(
@@ -460,40 +573,81 @@ def _segment_join(
     *,
     segmenter: Callable[..., Any] | None,
     concat: Callable[..., Any] | None,
+    transitions: Sequence[JoinTransition | None] = (),
+    transitioner: Callable[..., Any] | None = None,
 ) -> Any:
     """Each part encoded on its own in a short-lived child (`segment_in_child`: its
     decoder, encoder and malloc memory go back to the OS before the next part), kept in
     R2 under its fingerprint at once (`join-segment-<fp>.mp4` + `.pcm`), its raw file
     deleted; a segment already kept is fetched instead of encoded (a pass that lost its
     lease resumes there). Then the segments are laid end to end by stream copy
-    (`concat_segments`, no frame decoded) with the sound encoded once."""
+    (`concat_segments`, no frame decoded) with the sound encoded once.
+
+    EF-16: where part `i` blends with part `i - 1`, a third kind of segment goes between
+    them — the transition's overlapped frames (`transition_in_child`, from both raw
+    files) — and the two parts' segments leave those frames out (`drop_tail` /
+    `drop_head`). The raw file of a part stays on disk until its transition after it is
+    made; never more than two at a time."""
+    hows = list(transitions) or [None] * len(parts)
+    overlaps = [0 if how is None else how.frames(JOIN_FPS) for how in hows]
+    after = [*overlaps[1:], 0]
     segments: list[JoinSegment] = []
     last = len(parts) - 1
-    for index, (part, span) in enumerate(zip(parts, spans, strict=True)):
-        fade_in, fade_out = index > 0, index < last
-        fingerprint = segment_fingerprint(part, span, logo_key, fade_in=fade_in, fade_out=fade_out)
-        video_key = join_key(tenant_id, parent_id, f"segment-{fingerprint}")
-        pcm_key = join_key(tenant_id, parent_id, f"segment-{fingerprint}", "pcm")
-        poster_key = join_key(tenant_id, parent_id, f"segment-{fingerprint}", "jpg")
-        video, pcm = root / f"segment-{index}.mp4", root / f"segment-{index}.pcm"
-        if _held(store, tenant_id, video_key) and _held(store, tenant_id, pcm_key):
-            _fetch(store, tenant_id, video_key, video)
-            _fetch(store, tenant_id, pcm_key, pcm)
-            picture = None
-            if index == 0 and _held(store, tenant_id, poster_key):
-                picture = store.read(poster_key)
-            samples = pcm.stat().st_size // 8  # float32 stereo
-            # its frames are its samples at the common rate (`encode_segment` cuts the
-            # sound to exactly `frames × 48000 / fps`): no need to read the video
-            frames = round(Fraction(samples) * JOIN_FPS / JOIN_SAMPLE_RATE)
-            segment = JoinSegment(video, pcm, frames, samples, picture)
-            logger.info("parent %s: segment %s already kept; reused", parent_id, index + 1)
-        else:
-            raw = root / f"raw-{index}.mp4"
-            _fetch_raw(store, tenant_id, part, raw)
-            try:
+    raws: dict[int, Path] = {}
+
+    def raw_of(index: int) -> Path:
+        if index not in raws:
+            path = root / f"raw-{index}.mp4"
+            _fetch_raw(store, tenant_id, parts[index], path)
+            raws[index] = path
+        return raws[index]
+
+    def done_with(index: int) -> None:
+        path = raws.pop(index, None)
+        if path is not None:
+            path.unlink(missing_ok=True)  # its segments exist (or the join stops here)
+
+    try:
+        for index, (part, span) in enumerate(zip(parts, spans, strict=True)):
+            how = hows[index]
+            if how is not None and index > 0:
+                fingerprint = transition_fingerprint(
+                    parts[index - 1], part, (spans[index - 1], span), logo_key, how
+                )
+                keys = _segment_keys(tenant_id, parent_id, fingerprint)
+                video, pcm = root / f"transition-{index}.mp4", root / f"transition-{index}.pcm"
+                segment = _reuse_segment(store, tenant_id, keys, video, pcm, poster=False)
+                if segment is None:
+                    before_span = spans[index - 1]
+                    segment = (transitioner or transition_in_child)(
+                        JoinClip(raw_of(index - 1), start_s=before_span[0], end_s=before_span[1]),
+                        JoinClip(raw_of(index), start_s=span[0], end_s=span[1], transition_in=how),
+                        out=video,
+                        pcm_out=pcm,
+                        size=JOIN_FINAL_SIZE,
+                        overlay=overlay,
+                    )
+                    _keep_segment(store, tenant_id, parent_id, keys, segment, root)
+                else:
+                    logger.info("parent %s: transition %s already kept; reused", parent_id, index)
+                done_with(index - 1)
+                _drop_cache(video)
+                _drop_cache(pcm)
+                segments.append(segment)
+                _keep_lease()
+            fade_in, fade_out = index > 0 and not overlaps[index], index < last and not after[index]
+            drops = {"drop_head": overlaps[index], "drop_tail": after[index]}
+            fingerprint = segment_fingerprint(
+                part, span, logo_key, fade_in=fade_in, fade_out=fade_out, **drops
+            )
+            keys = _segment_keys(tenant_id, parent_id, fingerprint)
+            video, pcm = root / f"segment-{index}.mp4", root / f"segment-{index}.pcm"
+            segment = _reuse_segment(store, tenant_id, keys, video, pcm, poster=index == 0)
+            if segment is not None:
+                logger.info("parent %s: segment %s already kept; reused", parent_id, index + 1)
+            else:
                 segment = (segmenter or segment_in_child)(
-                    JoinClip(raw, start_s=span[0], end_s=span[1]),
+                    JoinClip(raw_of(index), start_s=span[0], end_s=span[1]),
                     out=video,
                     pcm_out=pcm,
                     size=JOIN_FINAL_SIZE,
@@ -501,25 +655,19 @@ def _segment_join(
                     fade_in=fade_in,
                     fade_out=fade_out,
                     poster=index == 0,
+                    # only when a transition takes frames: a cut calls it as VE-10b did
+                    **{name: value for name, value in drops.items() if value},
                 )
-            finally:
-                raw.unlink(missing_ok=True)  # its segment exists (or the join stops here)
-            if not _keep(store, tenant_id, video_key, video, MP4):
-                raise JoinNotKept(video_key)
-            if not _keep(store, tenant_id, pcm_key, pcm, "application/octet-stream"):
-                raise JoinNotKept(pcm_key)
-            if segment.poster:
-                picture_path = root / "segment-poster.jpg"
-                picture_path.write_bytes(segment.poster)
-                try:
-                    _keep(store, tenant_id, poster_key, picture_path, JPEG)
-                except Exception:  # noqa: BLE001 — a nicety
-                    logger.warning("parent %s: segment poster not kept", parent_id)
-                picture_path.unlink(missing_ok=True)
-        _drop_cache(video)
-        _drop_cache(pcm)
-        segments.append(segment)
-        _keep_lease()
+                _keep_segment(store, tenant_id, parent_id, keys, segment, root)
+            if not after[index]:
+                done_with(index)  # no transition after it needs its raw file
+            _drop_cache(video)
+            _drop_cache(pcm)
+            segments.append(segment)
+            _keep_lease()
+    finally:
+        for index in list(raws):
+            done_with(index)
     return (concat or concat_segments)(segments, out=root / "final.mp4")
 
 
@@ -536,6 +684,7 @@ def join_final(
     joiner: Callable[..., Any] | None = None,
     segmenter: Callable[..., Any] | None = None,
     concat: Callable[..., Any] | None = None,
+    transitioner: Callable[..., Any] | None = None,
 ) -> MediaWrite | None:
     """The 1080p final of `parent_id` to save, or None when there is nothing to do: the
     parent not approved, a part's final still on its way, or the final already made.
@@ -554,14 +703,15 @@ def join_final(
         logger.info("parent %s: not every part's final is kept yet; nothing joined", parent_id)
         return None
     spans = [part_span(p.params) for p in parts]
-    if preview_fingerprint(parts, block) != block.get("approved_fingerprint"):
+    transitions = join_transitions(snapshot, parts)
+    if preview_fingerprint(parts, block, transitions) != block.get("approved_fingerprint"):
         # the parts are not the versions the owner approved: never a final of them
         logger.error("parent %s: its parts are not the approved ones; no final", parent_id)
         return None
     logo_key = block_logo_key(block)
     logo = _read_logo(store, tenant_id, logo_key)
     logo_key = logo_key if logo is not None else None
-    fingerprint = join_final_fingerprint(parts, spans, logo_key)
+    fingerprint = join_final_fingerprint(parts, spans, logo_key, transitions)
     logo_record: dict[str, Any] | str = (
         {"key": logo_key, "sha256": hashlib.sha256(logo).hexdigest()[:16]}
         if logo is not None
@@ -585,7 +735,9 @@ def join_final(
             try:
                 if joiner is not None:
                     # a whole-video joiner (tests): every part in one call
-                    joined = _whole_join(store, tenant_id, parts, spans, overlay, root, joiner)
+                    joined = _whole_join(
+                        store, tenant_id, parts, spans, overlay, root, joiner, transitions
+                    )
                 else:
                     # production: one short-lived child per part, then a stream copy
                     joined = _segment_join(
@@ -599,6 +751,8 @@ def join_final(
                         root,
                         segmenter=segmenter,
                         concat=concat,
+                        transitions=transitions,
+                        transitioner=transitioner,
                     )
             except PartsGone as gone:
                 logger.error("parent %s: %s", parent_id, gone)
@@ -640,7 +794,7 @@ def join_final(
             else:
                 poster_key = None
     width, height = JOIN_FINAL_SIZE
-    duration = _duration(parts, spans)
+    duration = _duration(parts, spans, transitions)
     provenance = {
         "version": JOIN_FINAL_VERSION,
         "recipe": JOIN_VERSION,
@@ -648,6 +802,7 @@ def join_final(
         "fps": JOIN_FPS,
         "frames": frames,
         "parts": _provenance(parts, spans),
+        **_transitions_field(transitions),
         "logo": logo_record,
         "approved_fingerprint": block.get("approved_fingerprint"),
         "cost_usd": "0",

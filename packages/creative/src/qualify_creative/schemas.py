@@ -717,6 +717,8 @@ RecipeRefusal = Literal[
     "photo_not_from_start",  # a still photo's stretch does not start at 0
     # m-25042483: appended, never reordered
     "segment_source_too_long",  # a video stretch takes over `SEGMENT_SOURCE_MAX_S` of source
+    # EF-16 (m-25026594): appended, never reordered
+    "transitions_longer_than_part",  # a part shorter than the transitions eating into it
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -1190,6 +1192,7 @@ PartsRefusal = Literal[
     "local_daily_cap_reached",  # today's local builds of the business are spent
     # m-25042483: appended, never reordered
     "segment_source_too_long",  # a video stretch of a `local` part takes over 60 s of source
+    "transitions_longer_than_part",  # EF-16: a part shorter than its transitions
 ]
 PARTS_REFUSALS: tuple[str, ...] = get_args(PartsRefusal)
 
