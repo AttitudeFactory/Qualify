@@ -39,6 +39,9 @@ class MetaHTTP:
         self.before_request = None
         self.spent = 0  # whole COP the ad set has already spent
         self.min_daily = 1500  # whole COP, act_12/minimum_budgets
+        # act_12 spend_cap / amount_spent in whole COP; None = Meta's "0", no cap.
+        self.spend_cap: int | None = None
+        self.amount_spent = 0
         # interest id -> (targetingvalidation `valid`, targetingoptionstatus `current_status`)
         self.interests: dict[str, tuple[bool, str]] = {}
 
@@ -81,7 +84,14 @@ class MetaHTTP:
                 data = [{"id": k, "current_status": v[1]} for k, v in self.interests.items()]
             elif path == "act_12":
                 return httpx.Response(
-                    200, json={"account_id": "12", "currency": "COP", "failed_delivery_checks": []}
+                    200,
+                    json={
+                        "account_id": "12",
+                        "currency": "COP",
+                        "failed_delivery_checks": [],
+                        "spend_cap": str(self.spend_cap or 0),
+                        "amount_spent": str(self.amount_spent),
+                    },
                 )
             elif path == "88":
                 return httpx.Response(
@@ -540,6 +550,108 @@ async def test_budget_decrease_floors_on_spent_and_meta_daily_minimum(
         posts = [c for c in live["remote"].calls[start:] if c[0] == "POST"]
         assert bool(posts) is allowed
         assert all(c[2].get("execution_options") == ["validate_only"] for c in posts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cap,spent,allowed",
+    [(None, 0, True), (60_000, 50_000, True), (60_000, 50_001, False), (5_000, 9_000, False)],
+)
+async def test_budget_over_the_account_spend_cap_is_refused_before_any_meta_post(
+    live, cap, spent, allowed
+):
+    """The 10.000 COP budget against `spend_cap - amount_spent`, read live in preflight;
+    no cap ("0") changes nothing, equal passes, over is refused with no POST at all."""
+    remote = live["remote"]
+    remote.spend_cap, remote.amount_spent = cap, spent
+    if allowed:
+        preview = await prepare(live)
+        assert preview.promotion_id
+        return
+    with pytest.raises(WizardUnavailable) as error:
+        await prepare(live)
+    remaining = "9.999" if cap == 60_000 else "0"
+    assert str(error.value) == (
+        "Este presupuesto supera lo que le queda al tope de gasto de tu cuenta publicitaria "
+        f"(quedan ${remaining}). Bájalo o sube el tope en Meta."
+    )
+    assert error.value.diagnostics[-1]["key"] == "currency"
+    assert not [call for call in remote.calls if call[0] == "POST"]
+
+
+@pytest.mark.parametrize(
+    "account,room",
+    [
+        ({"spend_cap": "0", "amount_spent": "5"}, None),
+        ({"amount_spent": "5"}, None),
+        ({"spend_cap": "10", "amount_spent": None}, None),
+        ({"spend_cap": "10", "amount_spent": "4"}, 6),
+        ({"spend_cap": "10", "amount_spent": "12"}, 0),
+    ],
+)
+def test_spend_cap_room_follows_meta_semantics(account, room):
+    from qualify_api.ads.live_wizard import spend_cap_room
+
+    assert spend_cap_room(account) == room
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "budget_minor,cap,allowed",
+    [
+        (2_000_000, None, True),  # no cap: unchanged
+        (2_000_000, 30_000, True),  # 10.000 unspent + 10.000 raise = 20.000 <= 25.000 left
+        (2_000_000, 24_000, False),  # 20.000 > 19.000 left
+        (600_000, 5_000, True),  # a decrease is never blocked by the cap
+    ],
+)
+async def test_live_budget_raise_over_the_spend_cap_is_refused_and_a_decrease_never(
+    live, monkeypatch, budget_minor, cap, allowed
+):
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+    from qualify_api.ads.results import ResultsUnavailable
+
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    live["remote"].spend_cap, live["remote"].amount_spent = cap, 5_000
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(management, "PostgresPromotionRepository", lambda: live["repo"])
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        monkeypatch.setattr(management, "_local", lambda *args: None)
+        monkeypatch.setattr(gateway, "remote_guard", _no_remote_guard)
+        start = len(live["remote"].calls)
+        call = management.prepare_promotion_edit(
+            tenant_id=tenant,
+            promotion_id=promotion.id,
+            request_key="edit-cap",
+            action="budget",
+            budget_minor=budget_minor,
+        )
+        if allowed:
+            assert (await call).new_budget_minor == budget_minor
+        else:
+            with pytest.raises(ResultsUnavailable, match=r"tope de gasto.*quedan \$19\.000\)"):
+                await call
+        posts = [c for c in live["remote"].calls[start:] if c[0] == "POST"]
+        assert bool(posts) is allowed
 
 
 async def _no_remote_guard(*args, **kwargs) -> None:
