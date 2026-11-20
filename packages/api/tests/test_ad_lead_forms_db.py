@@ -509,11 +509,13 @@ def test_lead_from_our_lead_ad_is_attributed_to_its_promotion() -> None:
     )
     request = compose_brand_policy(request, BrandEnhancementSettings(tenant, brand))
     promotion = PostgresPromotionRepository().create_or_get(request)
+    ad_id = str(uuid4().int % 10**15)  # meta_ad_id is unique across runs on a shared DB
     with tenant_session(tenant) as session:
         session.execute(
-            text("UPDATE ad_promotions SET meta_ad_id='4242' WHERE id=:id"), {"id": promotion.id}
+            text("UPDATE ad_promotions SET meta_ad_id=:ad WHERE id=:id"),
+            {"ad": ad_id, "id": promotion.id},
         )
-    data = {**lead(form), "meta_ad_id": "4242"}
+    data = {**lead(form), "meta_ad_id": ad_id}
     assert service._persist(tenant, form, data, received_via="webhook", credential_version=1)
     with tenant_session(tenant) as session:
         attributed = session.scalar(

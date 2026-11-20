@@ -581,3 +581,15 @@ def test_immutable_promotion_targeting_and_selection_restore_and_policy_gate():
     )
     with pytest.raises(ValueError, match="differs"):
         replace(request, targeting={}).snapshot()
+
+
+@pytest.mark.parametrize("radius", [1, 16])
+def test_save_refuses_city_radius_below_meta_minimum(radius):
+    with pytest.raises(AudienceUnavailable, match="la distancia mínima es 17 km"):
+        service.save_audience(
+            tenant_id=uuid4(),
+            content_draft_id=uuid4(),
+            publish_attempt_id=uuid4(),
+            ad_account_id=uuid4(),
+            audience=audience(radius_km=radius),
+        )

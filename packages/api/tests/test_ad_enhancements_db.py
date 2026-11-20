@@ -51,7 +51,7 @@ def test_default_scoped_save_cas_and_cross_tenant_rejection():
             tenant_id=req.tenant_id, brand_id=req.brand_id, values=flags, expected_version=0
         )
         assert saved.version == 1 and saved.enabled
-        with pytest.raises(EnhancementsUnavailable):
+        with pytest.raises(EnhancementsUnavailable, match="«Descartar cambios y consultar»"):
             save_brand_enhancements(
                 tenant_id=req.tenant_id, brand_id=req.brand_id, values=flags, expected_version=0
             )
@@ -61,7 +61,7 @@ def test_default_scoped_save_cas_and_cross_tenant_rejection():
             ).version
             == 1
         )
-        with pytest.raises(EnhancementsUnavailable):
+        with pytest.raises(EnhancementsUnavailable, match="Abre «Tu marca» en el menú"):
             load_brand_enhancements(tenant_id=req.tenant_id, brand_id=other.brand_id)
     with tenant_session(other.tenant_id) as s:
         assert s.execute(text("SELECT count(*) FROM ad_brand_enhancements")).scalar_one() == 0

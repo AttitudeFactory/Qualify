@@ -254,7 +254,7 @@ def test_creation_local_guidance_rejects_housing_lookalike_and_invalid_retention
         housing=False,
     )
     assert creation_problem(**values) == ""
-    assert creation_problem(**{**values, "retention": "731"})
+    assert creation_problem(**{**values, "retention": "366"})
     assert creation_problem(**{**values, "kind": "lookalike", "housing": True})
 
 

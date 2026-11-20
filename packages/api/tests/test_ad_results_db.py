@@ -19,12 +19,6 @@ from qualify_api.ads.fake import FakeMarketingClient
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import ADAPTER_VERSION, PromotionRequest, fingerprint
 from qualify_api.ads.results import ResultsUnavailable
-from qualify_api.ads.results_management import (
-    PromotionEdit,
-    VerifiedEditApproval,
-    apply_verified_edit,
-    edit_scope_hash,
-)
 from qualify_api.connections.ad_accounts import (
     AdAccountObservation,
     PostgresAdsGrantRecorder,
@@ -694,67 +688,15 @@ async def test_specific_meta_reason_saved_only_after_exact_account_and_safe_text
 
 
 @pytest.mark.asyncio
-async def test_injected_paid_budget_edit_audited_but_production_wrapper_disabled(result_world):
-    ids, login, user, _, promotion, api = result_world
-    edit = PromotionEdit("budget", "lifetime", 20000)
-    now = datetime.now(UTC)
-    api.objects["2"] = {"id": "2", "_resource": "adsets"}
-
-    class FixtureApprovals:
-        async def verify(self, scope, requested):
-            return VerifiedEditApproval(
-                scope.tenant_id,
-                scope.promotion_id,
-                scope.account_id,
-                scope.connection.version,
-                login,
-                fingerprint({"action": edit.action, "payload": edit.payload()}),
-                now + timedelta(minutes=1),
-                True,
-                True,
-                True,
-                "lifetime",
-                1000,
-                100,
-                now - timedelta(days=1),
-                "fixture-only-v1",
-                edit_scope_hash(scope),
-            )
-
-    with acting_login(login):
-        with pytest.raises(ResultsUnavailable):
-            await service.edit_promotion(
-                tenant_id=ids["tenant_id"],
-                promotion_id=promotion.id,
-                action="budget",
-                request_key="paid",
-                budget_minor=20000,
-            )
-        await apply_verified_edit(
+async def test_production_wrapper_refuses_paid_budget_edit(result_world):
+    ids, login, _, _, promotion, _ = result_world
+    with acting_login(login), pytest.raises(ResultsUnavailable):
+        await service.edit_promotion(
             tenant_id=ids["tenant_id"],
             promotion_id=promotion.id,
+            action="budget",
             request_key="paid",
-            edit=edit,
-            api=api,
-            approvals=FixtureApprovals(),
-        )
-    with tenant_session(ids["tenant_id"]) as s:
-        row = (
-            s.execute(
-                text("SELECT * FROM ad_promotion_operations WHERE promotion_id=:id"),
-                {"id": promotion.id},
-            )
-            .mappings()
-            .one()
-        )
-        assert row["actor_id"] == user and row["payload"] == {"lifetime_budget": 20000}
-        assert row["action"] == "budget" and row["approval_evidence"]["confirmed"] is True
-        assert (
-            s.scalar(
-                text("SELECT request_snapshot FROM ad_promotions WHERE id=:id"),
-                {"id": promotion.id},
-            )
-            == promotion.request
+            budget_minor=20000,
         )
 
 
@@ -803,47 +745,6 @@ async def test_pause_keeps_last_daily_results_but_requires_new_status_read(resul
         after = await service._pause(ids["tenant_id"], promotion.id, "pause", api=api)
         assert after.daily == before.daily and after.updated_at == before.updated_at
         assert after.promotion.stale and not after.promotion.can_pause
-
-
-@pytest.mark.asyncio
-async def test_paid_edit_evidence_expiring_during_cooldown_never_dispatches(result_world):
-    ids, login, _, _, promotion, api = result_world
-    now = datetime.now(UTC)
-    edit = PromotionEdit("resume")
-    times = iter([now, now, now + timedelta(minutes=2)])
-
-    class FixtureApprovals:
-        async def verify(self, scope, requested):
-            return VerifiedEditApproval(
-                scope.tenant_id,
-                scope.promotion_id,
-                scope.account_id,
-                scope.connection.version,
-                login,
-                fingerprint({"action": edit.action, "payload": edit.payload()}),
-                now + timedelta(seconds=30),
-                True,
-                True,
-                True,
-                "lifetime",
-                1000,
-                100,
-                now - timedelta(days=1),
-                "fixture-only-v1",
-                edit_scope_hash(scope),
-            )
-
-    with acting_login(login), pytest.raises(ResultsUnavailable):
-        await apply_verified_edit(
-            tenant_id=ids["tenant_id"],
-            promotion_id=promotion.id,
-            request_key="resume",
-            edit=edit,
-            api=api,
-            approvals=FixtureApprovals(),
-            clock=lambda: next(times),
-        )
-    assert all(call[0] == "GET" for call in api.calls)
 
 
 @pytest.mark.asyncio

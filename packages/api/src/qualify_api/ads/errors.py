@@ -12,11 +12,12 @@ UNKNOWN_WRITE_MESSAGE = (
 )
 READ_ERROR_MESSAGE = "No pudimos consultar esta información en Meta. Intenta de nuevo más tarde."
 
+# Graph throttling codes: 4 app, 17 user, 32 Page, 613 hourly, 80000 ads insights and
+# 80004 ads management (the business-use-case family). All get the same cooldown.
+RATE_LIMIT_CODES = frozenset({4, 17, 32, 613, 80000, 80004})
 # These are separate namespaces: 17/294/etc. are Graph codes, not subcodes.
 CODE_MESSAGES = {
-    17: _WAIT,
-    613: _WAIT,
-    80004: _WAIT,
+    **dict.fromkeys(RATE_LIMIT_CODES, _WAIT),
     294: "Meta no permitió esta acción. Revisa los permisos de la cuenta publicitaria.",
     2654: _REVIEW,
     190: "Meta pidió volver a conectar la cuenta. Conéctala de nuevo en Cuentas conectadas.",
