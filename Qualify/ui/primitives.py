@@ -610,6 +610,23 @@ def asset_script(name: str) -> str:
     return (_ASSETS / name).read_text(encoding="utf-8")
 
 
+THEME_TOGGLE_LABEL = "Cambiar entre tema claro y oscuro"
+
+
+def theme_toggle() -> rx.Component:
+    """The light/dark switch every page head carries (`page_header`, and `step_head`
+    in its place on a step-by-step screen, m-25078650). Ghost and gray: a page
+    control, never the page's one solid action (P3). An icon alone, so it names
+    itself for a screen reader; `.q-theme-toggle` makes it a 44 px thumb target."""
+    return rx.color_mode.button(
+        variant="ghost",
+        color_scheme="gray",
+        aria_label=THEME_TOGGLE_LABEL,
+        title=THEME_TOGGLE_LABEL,
+        class_name="q-theme-toggle",
+    )
+
+
 def _loader_layer(class_name: str) -> rx.Component:
     """One copy of the mark for the loader; every path has length 1 so CSS can dash it."""
     svg = rx.el.svg
