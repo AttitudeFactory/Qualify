@@ -328,12 +328,26 @@ async def _remote_form(client: LeadFormsClient, form: dict) -> None:
         raise LeadFormUnavailable("El formulario de Meta no corresponde a esta Página.")
 
 
-async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
-    if data["meta_ad_id"] is None:
+async def _verify_ad(
+    client: LeadFormsClient, form: dict, data: dict, ads: dict | None = None
+) -> None:
+    """`ads` caches one run's reads by ad id; None marks a definite "cannot verify"."""
+    ad_id = data["meta_ad_id"]
+    if ad_id is None:
         return
-    ad = await client.read_ad(
-        data["meta_ad_id"], fields="id,creative{object_story_spec,object_id,call_to_action}"
-    )
+    if ads is None or ad_id not in ads:
+        try:
+            ad = await client.read_ad(
+                ad_id, fields="id,creative{object_story_spec,object_id,call_to_action}"
+            )
+        except LeadNotVerifiable:
+            ad = None  # Transient errors propagate uncached; only the definite one is kept.
+        if ads is not None:
+            ads[ad_id] = ad
+    else:
+        ad = ads[ad_id]
+    if ad is None:
+        raise LeadNotVerifiable("No pudimos comprobar el anuncio en Meta.")
     creative = ad.get("creative")
     creative = creative if isinstance(creative, dict) else {}
     spec = creative.get("object_story_spec")
@@ -355,14 +369,16 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
         raise LeadNotVerifiable("No pudimos comprobar el anuncio de este formulario.")
 
 
-async def _attribution(client: LeadFormsClient, form: dict, data: dict) -> dict:
+async def _attribution(
+    client: LeadFormsClient, form: dict, data: dict, ads: dict | None = None
+) -> dict:
     """The lead is the owner's either way; only a verified ad may attribute it.
 
     Transient Meta errors still raise (retry later); a definite "cannot verify" saves the
     contact without ad or promotion, marked in `pipeline_version`.
     """
     try:
-        await _verify_ad(client, form, data)
+        await _verify_ad(client, form, data, ads)
         return data
     except LeadNotVerifiable:
         return _unattributed(data)
@@ -447,6 +463,7 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> tuple[int, int]:
     client = await _client(tenant_id, context)
     count = 0
     skipped: set[str] = set()
+    ads: dict[str, dict | None] = {}  # One Meta read per ad for this run only.
     try:
         await _page_access(client, form["page_id"])
         await _remote_form(client, form)
@@ -478,7 +495,7 @@ async def sync_lead_form(*, tenant_id: UUID, form_id: UUID) -> tuple[int, int]:
                             "lead form %s: skipped lead %s (unparseable)", form_id, lead_id or "-"
                         )
                     continue
-                data = await _attribution(client, form, data)
+                data = await _attribution(client, form, data, ads)
                 _member(tenant_id)
                 count += int(
                     _persist(
