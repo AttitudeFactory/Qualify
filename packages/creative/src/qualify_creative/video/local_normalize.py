@@ -55,20 +55,28 @@ from qualify_creative.video.source_limits import MAX_LOCAL_SOURCE
 #: The normalizer's version — provenance of every normalized copy (the job's result and,
 #: through the assembly, each stretch of the local asset). A new encode is a new version,
 #: and a new version is a new copy (its key and its job key carry it). v2 (m-25049580):
-#: the sound is kept (v1 copies were silent, and are never read by a v2 assembly).
-NORMALIZE_LOCAL_VERSION = "local-source-v2"
+#: the sound is kept (v1 copies were silent, and are never read by a v2 assembly). v3
+#: (m-25071265): x264 with 1 B-frame again (v2 copies are never read by a v3 assembly).
+NORMALIZE_LOCAL_VERSION = "local-source-v3"
 CRF = "18"
 PRESET = "veryfast"
 #: Codec threads for the decoder and x264: the media-worker has ONE CPU (`cpus: 1.0`), so
 #: a second thread buys nothing and costs a frame in flight per thread.
 THREADS = "1"
-#: x264 without lookahead, B-frames or macroblock tree (m-25042483, measured 2026-11-17 in
+#: Until v3, x264 without lookahead, B-frames or macroblock tree (m-25042483, measured 2026-11-17 in
 #: 768m, 1 CPU, the first 10 s of the EF-15 clips, peak anonymous memory of ffmpeg): a 4K
 #: 10-bit HEVC → 4K 8-bit was 985 MiB with veryfast's defaults and 2 threads (OOM-killed in
 #: the media-worker), 672 MiB with lookahead 5 on 1 thread, 414 MiB with these; a 5K HEVC
 #: 1023 → 705 → 443. The copy is an intermediate the local assembly encodes again at
 #: 1080×1920, so the bits a lookahead saves do not matter here.
-X264_PARAMS = "rc-lookahead=0:sync-lookahead=0:bframes=0:mbtree=0"
+#: m-25071265: ONE B-frame back, still without lookahead or mbtree and on 1 thread (768m,
+#: 1 CPU, peak cgroup anon on a 60 s 4K 10-bit HEVC / 10 s 5K HEVC): 0 → 449 / 466 MiB,
+#: 1 → 524 / 542, 2 → 629 / 652, 3 → 661 / 679 — only 1 stays under ~550 MiB, and it
+#: already gives most of what 3 gave (SSIM at 1080×1920 on the noise worst case 0.940 →
+#: 0.945; 3: 0.946) for ~7 % more CPU. Measured with
+#: `deploy/measure/local-normalize-memory.sh` (see
+#: `docs/armado-local-medicion.md`).
+X264_PARAMS = "rc-lookahead=0:sync-lookahead=0:bframes=1:mbtree=0"
 #: The copy stays below the object store's 300 MiB single PUT (`MAX_MEDIA_BYTES`).
 MAX_OUTPUT_BYTES = 280 * 1024 * 1024
 MAX_RATE_KBPS = 40_000
