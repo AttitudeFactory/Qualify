@@ -39,7 +39,9 @@ def _context(tenant_id: UUID, connection_id: UUID, *, version: int | None = None
         try:
             grant = _connection(session, connection_id)
         except ValueError:
-            raise LeadFormUnavailable("Esta conexión ya no está disponible.") from None
+            raise LeadFormUnavailable(
+                "Esta conexión ya no está disponible. Conéctala de nuevo en «Tus redes»."
+            ) from None
         reason = _permission_reason(grant)
         if reason:
             raise LeadFormUnavailable(reason)
