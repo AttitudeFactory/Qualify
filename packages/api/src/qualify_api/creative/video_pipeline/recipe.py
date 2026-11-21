@@ -473,6 +473,27 @@ def is_built_transition(use: EffectUse | None) -> bool:
     return use is not None and (use.effect_id, use.version) in BUILT_TRANSITIONS
 
 
+def _part_references(brief: ContentBrief) -> tuple[bool, ...]:
+    """Whether each part of `recipe_of(brief)` carries references Seedance follows
+    (photos, videos or audio), in its order — a child its own `clip_*` keys; a parent's
+    plan entry its own, its photos inherited from the parent when it names none (UI-4:
+    `clip_image_keys` None), as `parts` builds the child. A normal Clip: `(False,)`. Pure."""
+    media = brief.media
+    if brief.kind is ContentKind.SHOT_VIDEO:
+        inherited = bool(media.clip_image_keys or media.product_keys)
+        return tuple(
+            bool(
+                (bool(plan.clip_image_keys) if plan.clip_image_keys is not None else inherited)
+                or plan.clip_video_keys
+                or plan.clip_audio_keys
+            )
+            for plan in media.parts
+        )
+    if brief.kind is ContentKind.CLIP and media.part is not None:
+        return (media.clip_has_references,)
+    return (False,)
+
+
 def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     """What a valid recipe still cannot be made with today (pure), so the owner never
     pays for a video without what he chose.
@@ -487,23 +508,39 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     them: any other effect (a Seedance template, `camara_rapida` as an effect, an unknown
     one) and any effect on a piece that is not `local` (no compose runs after Seedance),
     a text over a piece that is not `local`, a transition the join does not make
-    (`is_built_transition`: EF-16 draws `fundido`/`barrido` v2), stretches of a piece
-    that is not `local` (Seedance would only follow them), the parent's whole-video texts
-    and its `video_recipe` (ED-15).
+    (`is_built_transition`: EF-16 draws `fundido`/`barrido` v2), stretches of an `edit`
+    or `extend` piece (D4: an own video is never edited by Seedance; EF-11 lets a
+    `reference` piece open on its first stretch, prepared — a `reference` PART with
+    references too only with `QUALIFY_PARTS_PREPARED_FRAME_REFS` on), the parent's
+    whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
     producing is refused."""
+    from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+        stretches_wait_for_switch,
+    )
+
     found: list[RecipeProblem] = []
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
-    for part in recipe_of(brief):
+    references = _part_references(brief)
+    for at, part in enumerate(recipe_of(brief)):
         number = None if in_clip else part.index
         local = part.mode == "local"
         unbuilt = tuple(use for use in part.effects if not (local and is_built_layer(use)))
+        # EF-11: a `reference` piece opens on its first stretch, prepared
+        # (`prepared_frame`); D4: never an `edit` (or `extend`) of own video. A
+        # `reference` PART that also carries references opens on it only with
+        # `QUALIFY_PARTS_PREPARED_FRAME_REFS` on: off, it is refused as before EF-11
+        stretches_refused = part.mode not in ("local", "reference") or (
+            part.mode == "reference"
+            and not in_clip
+            and stretches_wait_for_switch(references[at] if at < len(references) else False)
+        )
         for field, value in (
             # EF-08: a library layer over a `local` piece is laid (`video_pipeline.local`)
             ("effects", unbuilt),
             # EF-05: the compose step draws the texts over a `local` piece's built video
             ("text_layers", part.text_layers if not local else ()),
-            ("segments", part.segments if not local else ()),
+            ("segments", part.segments if stretches_refused else ()),
             # D9 + EF-16: the join makes `corte` and blends `fundido`/`barrido` v2
             (
                 "transition_in",
