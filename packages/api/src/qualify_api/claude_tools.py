@@ -559,7 +559,7 @@ def api_key_from_env() -> str:
 
 
 def default_client(api_key: str) -> Any:
-    """Anthropic itself (§ 2026-10-19: the OmniRoute gateway option was reverted)."""
+    """Anthropic itself: every call goes straight to api.anthropic.com."""
     import anthropic  # lazy: optional dependency (`qualify-creative[llm]`)
 
     return anthropic.Anthropic(api_key=api_key)
