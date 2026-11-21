@@ -239,3 +239,103 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
 - **Logo de otra cadena al fondo:** lo tiene que ver el control de marca antes de que la pieza
   llegue al dueño.
 - `QUALIFY_PARTS_EXTEND` sigue en `off`; encenderlo (`draft`) es una decisión aparte.
+
+## Prueba EF11-001 — cuadro preparado como «Image 1» en una parte «Nueva» con fotos (prompt de parte v6) — 2026-11-20/21 (m-25078702)
+
+- **Qué se mide:** EF-11 (m-25026585, PR #768) dejó detrás de
+  `QUALIFY_PARTS_PREPARED_FRAME_REFS` (apagado) el camino de una parte `reference` («Nueva»)
+  que lleva tramos del video propio del dueño **y** fotos de producto. ModelArk no acepta
+  `first_frame` junto a referencias, así que el primer cuadro del tramo, ya preparado (derecho
+  y 9:16), va como primera `reference_image` y el prompt de la parte pasa a la versión 6
+  (`PART_PREPARED_FRAME_PROMPT_VERSION`, `part_reference_prompt(opening_frame=True)`): agrega
+  «The opening frame is Image 1: the shot starts on it and brings it to life.» y numera las
+  fotos desde la 2.
+- **Línea base:** la misma parte **sin** tramos propios, lo que hace hoy `main` con el
+  interruptor apagado: solo las fotos, prompt de parte versión 3 (compilador 6).
+- **Montaje:** `packages/api/evals/prompt_v6_partes/run_experiment.py`. Llama al
+  `MediaProducer.produce` real y al `SeedanceVideoAdapter` real (nada de la lógica duplicada);
+  el interruptor se enciende **solo dentro del proceso** de la variante v6. Almacén en memoria,
+  nada escrito en la base ni en R2. Salidas fuera del repositorio (`%TEMP%/m-25078702/`).
+- **Ajustes, iguales en las dos variantes:** `dreamina-seedance-2-5-260628`, borrador
+  (`draft: true`) a 480p, 4 s (el mínimo de una parte), `ratio: 9:16`,
+  `omni_reference_task_type: reference`, con audio (lo que pide el brief por omisión), misma
+  descripción de la parte, mismo producto y misma marca ficticia.
+- **Material real de un negocio nuestro (decisión de Deivid, 2026-11-20: «llave de app +
+  material real»):** una hamburguesería del catálogo de desarrollo, leído solo con la puerta
+  `tenant_session` de su negocio en una transacción de solo lectura y del volumen local de
+  subidas por las mismas llaves de la app; nada escrito, cambiado ni borrado. Fotos: la foto
+  principal de dos productos del catálogo (una smash triple sostenida en la mano y una smash
+  doble sobre papel). «Video propio»: el único video que subió el negocio, un clip de 4,8 s de
+  una hamburguesa de pan con ajonjolí sobre fondo negro que gira despacio (un clip de banco de
+  imágenes que el dueño subió como referencia, no su propio producto); tramo 0,0–2,4 s en el
+  caso A y 2,4–4,8 s en el B. Marca: paleta y tipografías del Brand Kit del negocio. El
+  material se descargó a `%TEMP%\m-25078702\` (fuera del repositorio) y los casos se pasan
+  al script con `--cases`; no entra al repositorio. Sin `--cases`, el script usa
+  las fotos de muestra y los videos de efectos del repositorio.
+- **Tope de gasto:** US$2,00 en total (Deivid, 2026-11-20, vía «creacion de tickets»). Cada
+  tarea se cotiza con la fórmula del adaptador y la tabla `v8` antes de enviarse, se reserva
+  con 10 % de margen en un `SpendLedger` con techo de US$2 y se liquida con los tokens que
+  cobra ModelArk. Sin Claude: el texto es fijo (el prompt de una parte no lo usa).
+- **Plan cotizado (corrida en seco, sin gasto):** 2 casos × 2 variantes = 4 tareas de 4 s a
+  480p, 38.430 tokens estimados cada una (480×854×24×4/1024), US$0,411201 cada una a 10,70/M,
+  **US$1,644804** en total; reservado con margen, US$1,81 ≤ US$2. Un tercer par (US$2,47)
+  no cabía.
+- **Horario y llave:** llave de la app (no hay `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` en el
+  `.env` local), huella `sha256:3c54154d`. La ventana de 23:00–05:00 (hora de Bogotá) es una
+  regla del repositorio (m-24852161, `byteplus_eval_guard.py`), no del proveedor ni del precio;
+  el script trae `--allow-daytime`, que pasa `allow_daytime` al guardia y queda registrado en el
+  informe (`daytime_override`).
+
+- **Corrida:** 2026-11-21, 02:08:33–02:12:47 UTC (21:08–21:12 en Bogotá), **4 min 14 s** para
+  las 4 tareas, una a la vez. Fuera de la ventana de 23:00–05:00, con `--allow-daytime`, por
+  decisión de Deivid con el visto bueno del fundador (2026-11-20, escrita en la sesión
+  coordinadora); la lanzó esa sesión tras comprobar que Seedance tenía **0 tareas** en cola o
+  corriendo.
+
+| Caso | Variante | Tarea | Prompt de parte | Tokens cobrados | Costo |
+|---|---|---|---|---|---|
+| A, «Super smash» | Línea base | `cgt-20261121100843-gf972` | v3 | 38.830 | US$0,415481 |
+| A, «Super smash» | v6 | `cgt-20261121100946-bog2f` | v6 | 38.830 | US$0,415481 |
+| B, «Smash doble» | Línea base | `cgt-20261121101050-jdxjq` | v3 | 38.830 | US$0,415481 |
+| B, «Smash doble» | v6 | `cgt-20261121101150-kp6py` | v6 | 38.830 | US$0,415481 |
+| | **Total** | | | 155.320 | **US$1,661924** |
+
+- **Costo:** cotizado US$1,644804, cobrado **US$1,661924** (+400 tokens, +1,04 %: 38.830 frente a
+  38.430 de la fórmula). **US$0,415 por pieza** de 4 s a 480p, igual con y sin el cuadro
+  preparado: la imagen de más no se cobra. Reservado con margen US$1,8096, por debajo del tope
+  de US$2. Sin Claude.
+- **Cómo se revisó:** tres cuadros por video (primero, del medio y último, 480×854) puestos al
+  lado del cuadro de apertura enviado y de la foto del producto, mirados uno por uno. Además,
+  la diferencia media por píxel (0–255, a 90×160) entre el primer cuadro de cada video y el
+  cuadro de apertura preparado: cerca de 0, el video arranca en ese cuadro.
+
+**Resultado por caso**
+
+| Caso | Continuidad con el cuadro de apertura | Fidelidad al producto |
+|---|---|---|
+| A — v6 | **No.** Diferencia 52,0 (la línea base, que no lo recibe, da 44,9). Arranca en otra toma: pan con ajonjolí sobre una piedra oscura, queso chorreando, sin la lechuga ni la mesa clara del cuadro. | **Mezcla.** Toma el pan con ajonjolí del cuadro de apertura y la carne smash, el queso y la cebolla morada de la foto. La «Super smash» de la foto tiene pan liso y tres carnes; aquí el pan es otro y se ve una sola carne gruesa. Queso exagerado. |
+| A — base | (no recibe cuadro) | **Buena.** Pan liso, carnes smash apiladas y cebolla morada como en la foto. Agrega pepinillos que la foto no muestra y exagera el queso hacia el final. |
+| B — v6 | **Sí.** Diferencia 12,1: el primer cuadro es casi el de apertura y el video lo anima (la cámara gira y el queso se derrite). | **Mala.** Se queda con la hamburguesa del clip (pan con ajonjolí, lechuga, una carne). La «Smash doble» (pan liso, dos carnes, cheddar) no aparece. |
+| B — base | (no recibe cuadro) | **Buena.** Pan liso, dos carnes, cheddar derretido como en la foto. Fondo oscuro con luz roja, de los colores de la marca. |
+
+**Veredicto: v6 NO queda apto para encender `QUALIFY_PARTS_PREPARED_FRAME_REFS`.** En los dos
+casos el cuadro de apertura y la foto del producto se contradicen, y Seedance resuelve el
+choque de forma distinta cada vez: en A ignora el cuadro y mezcla los dos productos; en B
+sigue el cuadro y pierde el producto del cliente. En ninguno se consiguen las dos cosas a la
+vez, y en los dos la línea base es más fiel al producto. El interruptor sigue apagado.
+
+**Limitaciones y qué falta:**
+
+- **n = 2**, un solo negocio, un solo «video propio».
+- **El «video propio» no muestra el producto:** es un clip de banco de imágenes que subió el
+  negocio, de otra hamburguesa. El caso para el que se hizo EF-11 es el contrario: el dueño
+  graba su propio producto, y el cuadro y las fotos coinciden. Esta corrida mide el peor caso
+  (cuadro y foto contradictorios), no el caso normal. Para decidir sobre el caso normal hay
+  que repetirla con un video propio de verdad que muestre el mismo producto de las fotos.
+- Aun así, el riesgo existe en producción: nada impide que el tramo elegido muestre otra cosa
+  que las fotos. Si se enciende algún día, conviene avisar al dueño o quitar las fotos cuando
+  el tramo no muestre el producto.
+- Borradores 480p de 4 s; no se midió el final 1080p.
+- Corrida sin repetición: con la misma entrada Seedance puede dar otro resultado.
+- El material real se descargó a `%TEMP%` y se borró al terminar, con todas las salidas. No
+  quedó nada en el repositorio.
