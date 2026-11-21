@@ -1,7 +1,8 @@
 """Peak memory of `qualify_creative.video.join_clips` (VE-07) — a local harness, not CI.
 
     python deploy/measure/join_memory.py make <dir> [--parts 6 --seconds 10 --codec h264]
-    python deploy/measure/join_memory.py join <dir> [--size 1080x1920]
+    python deploy/measure/join_memory.py join <dir> [--size 1080x1920] [--transition fade:0.5]
+    python deploy/measure/join_memory.py segment <dir> [--transition fade:0.5]
 
 `make` writes synthetic 1080p parts (H.264 + AAC, noisy frames so the encoder works for
 real; `--codec hevc10` writes 10-bit H.265 instead, what Seedance 2.5 delivers as a
@@ -83,22 +84,75 @@ def peak_mib() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KiB on Linux
 
 
-def join(folder: Path, size: tuple[int, int]) -> None:
-    """Join `part-*.mp4` into `<folder>/joined.mp4` (streamed to disk, never in memory)."""
+def _transition(spec: str | None) -> object:
+    """`fade:0.5` / `wipe:0.4:left` → a `JoinTransition` (EF-16); None → a cut."""
+    if not spec:
+        return None
+    from qualify_creative.video import JoinTransition
+
+    kind, seconds, *direction = spec.split(":")
+    return JoinTransition(kind, float(seconds), *(direction or ["left"]))  # type: ignore[arg-type]
+
+
+def join(
+    folder: Path, size: tuple[int, int], transition: str | None = None, threads: int | None = None
+) -> None:
+    """Join `part-*.mp4` into `<folder>/joined.mp4` (streamed to disk, never in memory).
+    `transition` (EF-16): every part after the first blends into the one before it."""
     # this checkout's package first, whatever the venv's editable install points at
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/creative/src"))
     from qualify_creative.video import JoinClip, join_clips
 
-    clips = [JoinClip(path) for path in sorted(folder.glob("part-*.mp4"))]
+    how = _transition(transition)
+    paths = sorted(folder.glob("part-*.mp4"))
+    clips = [JoinClip(path, transition_in=None if i == 0 else how) for i, path in enumerate(paths)]
     before = peak_mib()
     began = time.perf_counter()
-    joined = join_clips(clips, out=folder / "joined.mp4", size=size)
+    joined = join_clips(clips, out=folder / "joined.mp4", size=size, threads=threads)
     took = time.perf_counter() - began
     print(
-        f"parts={len(clips)} size={size[0]}x{size[1]} duration={joined.duration_sec:.2f}s "
+        f"parts={len(clips)} size={size[0]}x{size[1]} transition={transition or 'corte'} "
+        f"threads={threads} duration={joined.duration_sec:.2f}s "
         f"output={joined.path.stat().st_size / 2**20:.1f}MiB time={took:.1f}s "
         f"peak_before_join={before:.0f}MiB peak={peak_mib():.0f}MiB"
     )
+    _cgroup()
+
+
+def segment(
+    folder: Path, size: tuple[int, int], transition: str | None = None, threads: int | None = 1
+) -> None:
+    """The 1080p final's children (VE-10b), one per run: `encode_segment` of part 0, or
+    with `transition` (EF-16) `encode_transition` of part 0 into part 1 — each child's
+    peak is what the worker's cgroup sees while it runs."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/creative/src"))
+    from qualify_creative.video import JoinClip
+    from qualify_creative.video.join import encode_segment, encode_transition
+
+    first, second = sorted(folder.glob("part-*.mp4"))[:2]
+    before = peak_mib()
+    began = time.perf_counter()
+    how = _transition(transition)
+    if how is None:
+        made = encode_segment(
+            JoinClip(first), out=folder / "seg.mp4", pcm_out=folder / "seg.pcm", size=size,
+            threads=threads, fade_out=True,
+        )  # fmt: skip
+    else:
+        made = encode_transition(
+            JoinClip(first), JoinClip(second, transition_in=how), out=folder / "seg.mp4",
+            pcm_out=folder / "seg.pcm", size=size, threads=threads,
+        )  # fmt: skip
+    took = time.perf_counter() - began
+    print(
+        f"child={'transition ' + transition if transition else 'segment'} "
+        f"size={size[0]}x{size[1]} threads={threads} frames={made.frames} time={took:.1f}s "
+        f"peak_before={before:.0f}MiB peak={peak_mib():.0f}MiB"
+    )
+    _cgroup()
+
+
+def _cgroup() -> None:
     cgroup = Path("/sys/fs/cgroup/memory.peak")  # inside a container: the cap's own count
     if cgroup.exists():
         print(f"cgroup_memory_peak={int(cgroup.read_text()) / 2**20:.0f}MiB")
@@ -106,18 +160,24 @@ def join(folder: Path, size: tuple[int, int]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("step", choices=("make", "join"))
+    parser.add_argument("step", choices=("make", "join", "segment"))
     parser.add_argument("folder", type=Path)
     parser.add_argument("--parts", type=int, default=6)
     parser.add_argument("--seconds", type=int, default=10)
     parser.add_argument("--size", default="1080x1920")
     parser.add_argument("--codec", choices=("h264", "hevc10"), default="h264")
+    # EF-16: `fade:0.5`, `wipe:0.4:left` — every part after the first blends in
+    parser.add_argument("--transition", default=None)
+    parser.add_argument("--threads", type=int, default=None)
     args = parser.parse_args()
     if args.step == "make":
         make(args.folder, args.parts, args.seconds, args.codec)
+        return
+    width, height = (int(side) for side in args.size.split("x"))
+    if args.step == "join":
+        join(args.folder, (width, height), args.transition, args.threads)
     else:
-        width, height = (int(side) for side in args.size.split("x"))
-        join(args.folder, (width, height))
+        segment(args.folder, (width, height), args.transition, args.threads or 1)
 
 
 if __name__ == "__main__":

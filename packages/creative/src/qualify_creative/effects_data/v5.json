@@ -1,0 +1,304 @@
+{
+  "version": 5,
+  "notes": "EF-16 / m-25026594 (ADR 50 D9): the effects library v5. The SAME entries as v4, at the same versions, plus fundido and barrido at version 2, offered: the join draws them now (qualify_creative.video.join: the two parts overlap for duration_s, picture blended and sound crossfaded, without changing the seconds charged). Version 2 because their parameters changed: duration_s goes 0.3-0.8 s (the join's range; v1 allowed 0.2-1.5 and 0.2-1.0). Their version 1 entries stay, not offered, so a brief made with them still reads. corte stays at version 1. v1-v4 keep reading exactly as they were. An effect is never edited in place: a change of parameters, prompt or asset is a new entry at version + 1. Categories as in v3 (filter only, never hide).",
+  "entries": [
+    {
+      "id": "camara_rapida",
+      "version": 1,
+      "stage": "local",
+      "scope": "part",
+      "label": "Cámara rápida",
+      "cost_note": "Gratis",
+      "offered": false,
+      "params": {
+        "speed": {"type": "float", "min": 1.0, "max": 30.0, "default": 8.0}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["own_video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["movimiento"]
+    },
+    {
+      "id": "texto",
+      "version": 1,
+      "stage": "compose",
+      "scope": "part",
+      "label": "Texto",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {
+        "size": {"type": "enum", "values": ["small", "medium", "large"], "default": "medium"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["texto"]
+    },
+    {
+      "id": "corte",
+      "version": 1,
+      "stage": "transition",
+      "scope": "between_parts",
+      "label": "Corte",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {},
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": [],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["transicion"]
+    },
+    {
+      "id": "fundido",
+      "version": 1,
+      "stage": "transition",
+      "scope": "between_parts",
+      "label": "Fundido",
+      "cost_note": "Gratis",
+      "offered": false,
+      "params": {
+        "duration_s": {"type": "float", "min": 0.2, "max": 1.5, "default": 0.5}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": [],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["transicion"]
+    },
+    {
+      "id": "barrido",
+      "version": 1,
+      "stage": "transition",
+      "scope": "between_parts",
+      "label": "Barrido",
+      "cost_note": "Gratis",
+      "offered": false,
+      "params": {
+        "duration_s": {"type": "float", "min": 0.2, "max": 1.0, "default": 0.4},
+        "direction": {"type": "enum", "values": ["left", "right", "up", "down"], "default": "left"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": [],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["transicion"]
+    },
+    {
+      "id": "fundido",
+      "version": 2,
+      "stage": "transition",
+      "scope": "between_parts",
+      "label": "Fundido",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {
+        "duration_s": {"type": "float", "min": 0.3, "max": 0.8, "default": 0.5}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": [],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["transicion"]
+    },
+    {
+      "id": "barrido",
+      "version": 2,
+      "stage": "transition",
+      "scope": "between_parts",
+      "label": "Barrido",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {
+        "duration_s": {"type": "float", "min": 0.3, "max": 0.8, "default": 0.4},
+        "direction": {"type": "enum", "values": ["left", "right", "up", "down"], "default": "left"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": [],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["transicion"]
+    },
+    {
+      "id": "humo_capa",
+      "version": 1,
+      "stage": "compose",
+      "scope": "part",
+      "label": "Humo",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {
+        "intensity": {"type": "float", "min": 0.2, "max": 1.0, "default": 0.6},
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "top"}
+      },
+      "asset": "effects/humo_capa/v1/",
+      "preview_asset": "effects/humo_capa/v1/preview.webm",
+      "blend": "screen",
+      "needs": ["video"],
+      "max_per_part": 3,
+      "measured": null,
+      "categories": ["comida"]
+    },
+    {
+      "id": "brasas_capa",
+      "version": 1,
+      "stage": "compose",
+      "scope": "part",
+      "label": "Brasas",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {
+        "intensity": {"type": "float", "min": 0.2, "max": 1.0, "default": 0.5},
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "bottom"}
+      },
+      "asset": "effects/brasas_capa/v1/",
+      "preview_asset": "effects/brasas_capa/v1/preview.webm",
+      "blend": "screen",
+      "needs": ["video"],
+      "max_per_part": 3,
+      "measured": null,
+      "categories": ["comida"]
+    },
+    {
+      "id": "vapor_capa",
+      "version": 1,
+      "stage": "compose",
+      "scope": "part",
+      "label": "Vapor",
+      "cost_note": "Gratis",
+      "offered": true,
+      "params": {
+        "intensity": {"type": "float", "min": 0.2, "max": 1.0, "default": 0.5},
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "middle"}
+      },
+      "asset": "effects/vapor_capa/v1/",
+      "preview_asset": "effects/vapor_capa/v1/preview.webm",
+      "blend": "screen",
+      "needs": ["video"],
+      "max_per_part": 3,
+      "measured": null,
+      "categories": ["comida"]
+    },
+    {
+      "id": "fuego_lena_base",
+      "version": 1,
+      "stage": "seedance_prompt",
+      "scope": "part",
+      "label": "Fuego de leña",
+      "cost_note": "Con IA",
+      "offered": false,
+      "params": {
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "bottom"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["comida"],
+      "prompt_version": "efecto-fuego_lena_base-v1",
+      "prompt_template": "A real wood fire burns in the {zone} of the frame, under {subject}; the flames move naturally and light the scene warmly. Everything else stays as it is."
+    },
+    {
+      "id": "quemadores_brillan",
+      "version": 1,
+      "stage": "seedance_prompt",
+      "scope": "part",
+      "label": "Quemadores encendidos",
+      "cost_note": "Con IA",
+      "offered": false,
+      "params": {
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "bottom"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["comida"],
+      "prompt_version": "efecto-quemadores_brillan-v1",
+      "prompt_template": "The burners in the {zone} of the frame glow bright blue and orange under {subject}, with a soft live flame. Everything else stays as it is."
+    },
+    {
+      "id": "vapor_sobre_comida",
+      "version": 1,
+      "stage": "seedance_prompt",
+      "scope": "part",
+      "label": "Vapor sobre la comida",
+      "cost_note": "Con IA",
+      "offered": false,
+      "params": {
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "middle"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["comida"],
+      "prompt_version": "efecto-vapor_sobre_comida-v1",
+      "prompt_template": "Thin white steam rises slowly from {subject} in the {zone} of the frame, as from a freshly served hot dish. Everything else stays as it is."
+    },
+    {
+      "id": "humo_denso",
+      "version": 1,
+      "stage": "seedance_prompt",
+      "scope": "part",
+      "label": "Humo denso",
+      "cost_note": "Con IA",
+      "offered": false,
+      "params": {
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "top"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["comida"],
+      "prompt_version": "efecto-humo_denso-v1",
+      "prompt_template": "Dense grey smoke drifts through the {zone} of the frame above {subject}, as from a grill, without hiding it. Everything else stays as it is."
+    },
+    {
+      "id": "brasas",
+      "version": 1,
+      "stage": "seedance_prompt",
+      "scope": "part",
+      "label": "Brasas sobre la comida",
+      "cost_note": "Con IA",
+      "offered": false,
+      "params": {
+        "zone": {"type": "enum", "values": ["top", "middle", "bottom"], "default": "bottom"}
+      },
+      "asset": null,
+      "preview_asset": null,
+      "blend": null,
+      "needs": ["video"],
+      "max_per_part": 1,
+      "measured": null,
+      "categories": ["comida"],
+      "prompt_version": "efecto-brasas-v1",
+      "prompt_template": "Glowing embers pulse red and orange in the {zone} of the frame under {subject}, with a few sparks rising. Everything else stays as it is."
+    }
+  ]
+}

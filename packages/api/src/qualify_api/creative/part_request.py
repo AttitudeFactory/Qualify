@@ -131,6 +131,9 @@ def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | Non
             # m-25042483: a stretch over 60 s of its video, said with `duration_s` too
             else "segment_source_too_long"
             if "segment_source_too_long" in codes
+            # EF-16: a part shorter than its transitions, said with the part's number
+            else "transitions_longer_than_part"
+            if "transitions_longer_than_part" in codes
             else "effects_invalid"
         )
         about = [p for p in exc.problems if p.code == code] or list(exc.problems)

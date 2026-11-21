@@ -47,7 +47,9 @@ ADR 50 D9 (Deivid 2026-11-20): v4 stops offering `fundido` and `barrido` at entr
 now), not part of the effect — its params, prompt and asset did not change, so neither did
 its version. The join did not draw them (a recipe that chose them was refused at creation
 as `recipe_unavailable`), so the screen must not offer them; until EF-16 (m-25026594) the
-only transition offered is `corte`.
+only transition offered is `corte`. EF-16 made the join draw them (the two parts overlap for
+the transition's `duration_s`, 0.3–0.8 s), so v5 offers them again as NEW entries at version
+2 — their parameters' ranges changed — and keeps their unoffered version 1.
 """
 
 from __future__ import annotations
@@ -78,8 +80,10 @@ _ASSETS_DIR = Path(__file__).parent / "effects_assets"
 #: layers repeatable (`max_per_part` 3). EF-08: v3 — v2's entries, with the smoke, ember
 #: and steam layers recorded and offered. ADR 50 D9: v4 — v3's entries, with `fundido` and
 #: `barrido` no longer offered until the join draws them (EF-16): `corte` is the only
-#: transition offered. v1, v2 and v3 still load and read exactly as before.
-EFFECTS_LIBRARY_VERSION = "v4"
+#: transition offered. EF-16 (m-25026594): v5 — v4's entries plus `fundido` and `barrido`
+#: at version 2 (0.3–0.8 s), offered again now that the join draws them
+#: (`video.join.JoinTransition`). v1–v4 still load and read exactly as before.
+EFFECTS_LIBRARY_VERSION = "v5"
 #: The file of a layer's recorded loop inside its asset folder (`effects/<id>/v1/`).
 LAYER_LOOP_FILE = "preview.webm"
 

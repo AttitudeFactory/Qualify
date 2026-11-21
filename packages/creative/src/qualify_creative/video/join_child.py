@@ -76,9 +76,26 @@ from qualify_creative.video.join import (  # noqa: E402
     JoinedVideo,
     JoinError,
     JoinSegment,
+    JoinTransition,
     encode_segment,
+    encode_transition,
     join_clips,
 )
+
+
+def _clip_spec(clip: JoinClip) -> list[Any]:
+    """A part for the child's spec: path, interval and (EF-16) its transition, if any.
+    A cut writes the three fields it always wrote."""
+    head: list[Any] = [str(clip.path), clip.start_s, clip.end_s]
+    return head if clip.transition_in is None else [*head, clip.transition_in.as_spec()]
+
+
+def _clip_of(spec: Sequence[Any]) -> JoinClip:
+    """`_clip_spec` back."""
+    path, start, end, *rest = spec
+    how = JoinTransition.from_spec(rest[0]) if rest else None
+    return JoinClip(Path(path), start_s=start, end_s=end, transition_in=how)
+
 
 #: Exit codes of the child (anything else: killed or crashed — retried).
 EXIT_OK = 0
@@ -248,7 +265,7 @@ def join_in_child(
     poster_path = out.with_name(f"{out.name}.poster.jpg")
     spec: dict[str, Any] = {
         "mode": "join",
-        "clips": [[str(c.path), c.start_s, c.end_s] for c in clips],
+        "clips": [_clip_spec(c) for c in clips],
         "out": str(out),
         "size": list(size),
         "fps": str(Fraction(fps)),
@@ -286,6 +303,8 @@ def segment_in_child(
     threads: int | None = None,
     timeout: float | None = None,
     command: Sequence[str] | None = None,
+    drop_head: int = 0,
+    drop_tail: int = 0,
 ) -> JoinSegment:
     """`encode_segment` (ONE part) in a child process: the same boundary and outcomes
     as `join_in_child`. The parent runs one child per part, so the decoder and encoder
@@ -294,7 +313,7 @@ def segment_in_child(
     poster_path = out.with_name(f"{out.name}.poster.jpg")
     spec: dict[str, Any] = {
         "mode": "segment",
-        "clip": [str(clip.path), clip.start_s, clip.end_s],
+        "clip": _clip_spec(clip),
         "out": str(out),
         "pcm": str(pcm_out),
         "size": list(size),
@@ -303,6 +322,8 @@ def segment_in_child(
         "fade_out": fade_out,
         "poster": str(poster_path) if poster else None,
     }
+    if drop_head or drop_tail:  # EF-16: the frames a transition's own segment shows
+        spec.update(drop_head=drop_head, drop_tail=drop_tail)
     if threads is not None:
         spec["threads"] = threads
     try:
@@ -319,6 +340,41 @@ def segment_in_child(
     )
 
 
+def transition_in_child(
+    before: JoinClip,
+    after: JoinClip,
+    *,
+    out: Path,
+    pcm_out: Path,
+    size: tuple[int, int],
+    overlay: bytes | None = None,
+    fps: int | Fraction = JOIN_FPS,
+    threads: int | None = None,
+    timeout: float | None = None,
+    command: Sequence[str] | None = None,
+) -> JoinSegment:
+    """`encode_transition` (EF-16: the overlapped frames of two parts) in a child
+    process, with `segment_in_child`'s boundary and outcomes."""
+    out = Path(out)
+    spec: dict[str, Any] = {
+        "mode": "transition",
+        "clips": [_clip_spec(before), _clip_spec(after)],
+        "out": str(out),
+        "pcm": str(pcm_out),
+        "size": list(size),
+        "fps": str(Fraction(fps)),
+    }
+    if threads is not None:
+        spec["threads"] = threads
+    answer = _run(spec, out, overlay=overlay, timeout=timeout, command=command)
+    return JoinSegment(
+        path=out,
+        pcm=Path(pcm_out),
+        frames=int(answer["frames"]),
+        samples=int(answer["samples"]),
+    )
+
+
 def _answer(spec: dict[str, Any], data: dict[str, Any]) -> None:
     Path(str(spec["result"])).write_text(json.dumps(data), encoding="utf-8")
 
@@ -327,10 +383,22 @@ def _work(spec: dict[str, Any]) -> dict[str, Any]:
     overlay = Path(spec["overlay"]).read_bytes() if spec.get("overlay") else None
     size = (int(spec["size"][0]), int(spec["size"][1]))
     threads = int(spec["threads"])
+    if spec.get("mode") == "transition":
+        before, after = (_clip_of(c) for c in spec["clips"])
+        segment = encode_transition(
+            before,
+            after,
+            out=Path(spec["out"]),
+            pcm_out=Path(spec["pcm"]),
+            size=size,
+            fps=Fraction(spec["fps"]),
+            overlay=overlay,
+            threads=threads,
+        )
+        return {"frames": segment.frames, "samples": segment.samples}
     if spec.get("mode") == "segment":
-        path, start, end = spec["clip"]
         segment = encode_segment(
-            JoinClip(Path(path), start_s=start, end_s=end),
+            _clip_of(spec["clip"]),
             out=Path(spec["out"]),
             pcm_out=Path(spec["pcm"]),
             size=size,
@@ -340,12 +408,14 @@ def _work(spec: dict[str, Any]) -> dict[str, Any]:
             fade_out=bool(spec["fade_out"]),
             threads=threads,
             poster=bool(spec.get("poster")),
+            drop_head=int(spec.get("drop_head", 0)),
+            drop_tail=int(spec.get("drop_tail", 0)),
         )
         if segment.poster and spec.get("poster"):
             Path(spec["poster"]).write_bytes(segment.poster)
         return {"frames": segment.frames, "samples": segment.samples}
     joined = join_clips(
-        [JoinClip(Path(p), start_s=start, end_s=end) for p, start, end in spec["clips"]],
+        [_clip_of(c) for c in spec["clips"]],
         out=Path(spec["out"]),
         size=size,
         fps=Fraction(spec["fps"]),
