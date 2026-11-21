@@ -183,7 +183,7 @@ from qualify_creative.schemas import (
 )
 from qualify_creative.subtitles import chunk_script, clip_cues, timed_cues
 from qualify_creative.text_colors import text_colors
-from qualify_creative.video import SubtitleLayer, VideoFitter
+from qualify_creative.video import FittedVideo, SubtitleLayer, VideoFitter
 from qualify_creative.video._source import frame_rotation
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
@@ -2403,9 +2403,13 @@ class MediaProducer:
         #: texts — our own service, cost 0. None = a local video with a text fails as
         #: the service being down (nothing charged), never made without its texts.
         render_client: RemotionRenderClient | None = None,
+        #: EF-14: what draws and lays the texts and layers over a Seedance clip (its
+        #: preview and its final). None = `recompose.ClipComposer` over `render_client`.
+        clip_composer: Any = None,
     ) -> None:
         self._store = store
         self._render_client = render_client
+        self._clip_composer = clip_composer
         self._part_windows = part_windows
         self._part_joins = part_joins
         self._previous_parts = previous_parts
@@ -3209,6 +3213,18 @@ class MediaProducer:
         # one key per order: a try whose final was saved but never put in place left
         # its file under its own key, and this one never collides with it
         tag = _attempt_tag(block)
+        # EF-14: the preview's texts and layers composed again over the final, with the
+        # recipe frozen with the preview (a normal Clip only: a part is joined instead)
+        compose = None
+        if finish == FINISH_CLIP:
+            fitted, compose = self._recompose_final(
+                tenant_id,
+                draft_id,
+                asset,
+                fitted,
+                save.key_for(f"{stem}-final-{tag}.mp4"),
+                raw,
+            )
         key = save(f"{stem}-final-{tag}.mp4", fitted.data, MP4)
         poster = (
             save.optional(f"{stem}-final-{tag}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG)
@@ -3245,6 +3261,8 @@ class MediaProducer:
         )
         if finish == FINISH_CLIP:
             params["logo"] = overlay is not None
+        if compose is not None:
+            params["compose"] = compose
         return MediaWrite(
             position=asset.position,
             media_type="video",
@@ -5022,6 +5040,137 @@ class MediaProducer:
 
     # -- clip (§ request 2026-10-14) -------------------------------------------------------
 
+    def _composer(self) -> Any:
+        """EF-14: the texts-and-layers composer (`recompose.ClipComposer`)."""
+        if self._clip_composer is not None:
+            return self._clip_composer
+        from qualify_api.creative.video_pipeline.recompose import ClipComposer  # noqa: PLC0415
+
+        return ClipComposer(self._render_client)
+
+    def _seedance_compose(self, brief: ContentBrief, kit: BrandKit) -> Any | None:
+        """EF-14: `(recipe, drawn texts)` for a normal Clip made by Seedance that carries
+        texts or layers, or None. The texts are drawn NOW, before anything is paid: a
+        text that does not fit, or the render service down, fails the piece with
+        nothing spent (`_MediaFailed`, the owner's own message)."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            ClipComposeFailed,
+            compose_recipe_of,
+        )
+
+        recipe = compose_recipe_of(brief, kit)
+        if recipe is None:
+            return None
+        try:
+            drawn = self._composer().draw(recipe)
+        except ClipComposeFailed as exc:
+            raise _MediaFailed(exc.failure, exc.owner_message, raw=exc.raw) from exc
+        return recipe, drawn
+
+    def _compose_clip(
+        self,
+        draft_id: UUID,
+        fitter: VideoFitter,
+        video: bytes,
+        size: tuple[int, int],
+        composing: Any,
+        thumbnail: bytes | None,
+        warnings: list[MediaWarning] | None,
+    ) -> tuple[bytes, bytes | None, int, int, dict[str, Any] | None]:
+        """EF-14: the drawn texts and the layers laid over the paid clip, cut to 9:16
+        first when Seedance's size is off it (`recompose.nine_sixteen_size`). The clip is
+        paid for: a compose that fails keeps it as it is, with a warning, and records no
+        recipe — its final is then made without texts either, as the owner saw it."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_NOT_ADDED,
+            COMPOSE_NOT_ADDED_TEXT,
+            nine_sixteen_size,
+        )
+
+        recipe, drawn = composing
+        try:
+            cut = nine_sixteen_size(*size)
+            source = (
+                fitter.fit(
+                    video, size=cut, keep_audio=True, max_seconds=3600.0, x264=DETAIL_X264
+                ).data
+                if cut is not None
+                else video
+            )
+            made = self._composer().compose(source, recipe, drawn=drawn, stage="preview")
+        except Exception as exc:  # noqa: BLE001 — the clip is paid for: never lose it
+            logger.warning("clip %s: texts and layers not laid: %s", draft_id, exc)
+            if warnings is not None:
+                warnings.append(MediaWarning(COMPOSE_NOT_ADDED, COMPOSE_NOT_ADDED_TEXT))
+            return video, thumbnail, size[0], size[1], None
+        params: dict[str, Any] = {"recipe": recipe.to_params(), "preview": dict(made.params)}
+        if cut is not None:
+            params["preview"]["cut_from"] = list(size)
+        return made.data, made.poster or thumbnail, made.width, made.height, params
+
+    def _recompose_final(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        asset: Any,
+        fitted: FittedVideo,
+        key: str,
+        raw: Mapping[str, Any],
+    ) -> tuple[FittedVideo, dict[str, Any] | None]:
+        """EF-14: the preview's frozen recipe (`params["compose"]`, never the brief as it
+        reads today) composed again over the fitted 1080p final. Idempotent per order:
+        when this order's final file is already kept under `key` (an earlier try whose
+        last write never landed) it is taken as it is, nothing composed again. A failure
+        fails the final; the raw 1080p stays kept, so the retry costs nothing more."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_PARAMS_KEY,
+            FINAL_COMPOSE_FAILED_TEXT,
+            ClipComposeFailed,
+            stored_recipe,
+        )
+
+        recipe = stored_recipe(asset.params)
+        if recipe is None:
+            return fitted, None
+        block = dict((asset.params or {}).get(COMPOSE_PARAMS_KEY) or {})
+        origin = {
+            "from_task_id": raw.get("task_id"),
+            "from_raw_final_key": raw.get("key"),
+            "from_draft_object_key": asset.object_key,
+        }
+        if _object_held(self._store, tenant_id, key):
+            data = self._store.read(key)
+            final = {
+                "stage": "final",
+                "reused": True,
+                "recipe_sha256": recipe.digest(),
+                "output_sha256": hashlib.sha256(data).hexdigest(),
+                **origin,
+            }
+            # the fitted poster has no texts: the preview's composed one stays the thumbnail
+            return replace(fitted, data=data, poster=None), {**block, "final": final}
+        try:
+            made = self._composer().compose(fitted.data, recipe, stage="final")
+        except ClipComposeFailed as exc:
+            raise _MediaFailed(
+                FailureReason.PROVIDER_ERROR.value, FINAL_COMPOSE_FAILED_TEXT, raw=exc.raw
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 — the raw final is kept: a free retry
+            raise _MediaFailed(
+                FailureReason.PROVIDER_ERROR.value,
+                FINAL_COMPOSE_FAILED_TEXT,
+                raw=f"{type(exc).__name__}: {exc}",
+            ) from exc
+        logger.info("final of %s composed again with its preview's recipe", draft_id)
+        composed = replace(
+            fitted,
+            data=made.data,
+            width=made.width,
+            height=made.height,
+            poster=made.poster or fitted.poster,
+        )
+        return composed, {**block, "final": {**dict(made.params), **origin}}
+
     def _local_clip(
         self,
         tenant_id: UUID,
@@ -5154,7 +5303,15 @@ class MediaProducer:
         subtitled = (
             part is None and media.clip_subtitles and bool(copy.hook.strip() or copy.cta.strip())
         )
-        fitter = self._require_fitter() if logo is not None or subtitled else None
+        # EF-14 (m-25026592): the owner's texts and layers over the clip — drawn by our
+        # render service HERE, before anything is paid (a text that does not fit costs
+        # nothing), laid after the logo and the subtitles, frozen for the final
+        composing = self._seedance_compose(brief, kit) if part is None else None
+        fitter = (
+            self._require_fitter()
+            if logo is not None or subtitled or composing is not None
+            else None
+        )
 
         transport_manifest: list[dict[str, Any]] = []
         # m-24820842: the prompt's budget provenance (compiler, length, budget, cuts)
@@ -5522,6 +5679,11 @@ class MediaProducer:
                 cues = []
             else:
                 video, thumbnail = fitted.data, fitted.poster or thumbnail
+        compose_params: dict[str, Any] | None = None
+        if composing is not None and fitter is not None:
+            video, thumbnail, width, height, compose_params = self._compose_clip(
+                draft_id, fitter, video, (width, height), composing, thumbnail, warnings
+            )
         if clean_key is None:
             video_key = save("clip.mp4", video, MP4)
         elif logo_laid:
@@ -5609,6 +5771,8 @@ class MediaProducer:
                         "clip_subtitles": media.clip_subtitles,
                         "subtitles": cues,
                         "model_revision": result.model_revision,
+                        # EF-14: the frozen recipe its final is composed again with
+                        **({"compose": compose_params} if compose_params else {}),
                     },
                     payload,
                     model_id=result.model_id,

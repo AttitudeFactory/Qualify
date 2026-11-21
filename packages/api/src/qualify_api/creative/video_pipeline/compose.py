@@ -218,6 +218,35 @@ def _video_seconds(path: Path) -> float | None:
     return None
 
 
+def draw_text_layers(
+    text_layers: Sequence[VideoTextLayer],
+    brand: Any,
+    *,
+    render_client: RemotionRenderClient | RenderClientFactory,
+    timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
+) -> tuple[VideoTextImage, ...]:
+    """Every text drawn by the render service, in order, nothing encoded. EF-14: a piece
+    made by Seedance draws its texts BEFORE the vendor is paid, so a text that does not
+    fit, or a render service that is down, costs the owner nothing. Raises what
+    `compose_text_layers` raises for a text; with no text no client is built."""
+    layers = tuple(text_layers)
+    if not layers:
+        return ()
+    brand_map = brand_props(brand)
+    client = _client(render_client)
+    images: list[VideoTextImage] = []
+    for index, layer in enumerate(layers):
+        request = VideoTextRequest(
+            text=layer.text,
+            place=layer.place,
+            brand=brand_map,
+            layout_id=layer.layout_id.value if layer.layout_id is not None else None,
+            layout_version=layer.layout_version,
+        )
+        images.append(_draw(client, index, request, timeout_seconds))
+    return tuple(images)
+
+
 def compose_text_layers(
     video_path: Path | str,
     out_path: Path | str,
@@ -227,6 +256,7 @@ def compose_text_layers(
     render_client: RemotionRenderClient | RenderClientFactory,
     timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
     effect_layers: Sequence[Any] = (),
+    drawn_images: Sequence[VideoTextImage] | None = None,
 ) -> ComposeResult:
     """The texts over `video_path`, written to `out_path` (see the module's docstring).
     Every text is drawn BEFORE anything is encoded: a render failure writes nothing.
@@ -234,27 +264,30 @@ def compose_text_layers(
     `effect_layers` (EF-08): the library's layers (`layer_overlay.TimedEffectLayer`) laid
     UNDER the texts in the same single pass (`overlay_layers_and_texts`: one decode, one
     encode). Only with texts: with no text nothing runs here and the caller lays the
-    layers itself. A layer problem raises `LayerOverlayError` as it is."""
+    layers itself. A layer problem raises `LayerOverlayError` as it is.
+
+    `drawn_images` (EF-14): the texts already drawn by `draw_text_layers`, one per text
+    in the same order; nothing is asked of the render service again."""
     video_path, out_path = Path(video_path), Path(out_path)
     layers = tuple(text_layers)
     if not layers:
         # no text: the stage does not run (the output is exactly the input)
         return ComposeResult(path=video_path, composed=False, params={})
-    brand_map = brand_props(brand)
-    client = _client(render_client)
+    images = (
+        tuple(drawn_images)
+        if drawn_images is not None
+        else draw_text_layers(
+            layers, brand, render_client=render_client, timeout_seconds=timeout_seconds
+        )
+    )
+    if len(images) != len(layers):
+        raise ValueError("compose_text_layers: one drawn image per text")
     source_sha256 = _file_sha256(video_path)
     seconds = _video_seconds(video_path)
-    drawn: list[tuple[VideoTextLayer, VideoTextImage, float]] = []
-    for index, layer in enumerate(layers):
-        request = VideoTextRequest(
-            text=layer.text,
-            place=layer.place,
-            brand=brand_map,
-            layout_id=layer.layout_id.value if layer.layout_id is not None else None,
-            layout_version=layer.layout_version,
-        )
-        image = _draw(client, index, request, timeout_seconds)
-        drawn.append((layer, image, fade_in_seconds(layer, seconds)))
+    drawn: list[tuple[VideoTextLayer, VideoTextImage, float]] = [
+        (layer, image, fade_in_seconds(layer, seconds))
+        for layer, image in zip(layers, images, strict=True)
+    ]
     timed = [
         TimedLayer(png=image.png, start_s=layer.start_s, end_s=layer.end_s, fade_in_s=fade)
         for layer, image, fade in drawn
@@ -312,5 +345,6 @@ __all__ = [
     "RenderClientFactory",
     "TextLayerRefused",
     "compose_text_layers",
+    "draw_text_layers",
     "fade_in_seconds",
 ]

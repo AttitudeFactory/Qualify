@@ -1332,7 +1332,8 @@ def test_a_layer_failure_of_ours_charges_nothing_and_hides_its_message(
 
 def test_an_effect_still_unbuilt_is_refused_before_any_row(queue_on: None) -> None:
     """Only the library's layers over a `local` piece are laid: fast motion as an effect
-    stays `recipe_unavailable`, and so does smoke over a Clip that is not `local`."""
+    stays `recipe_unavailable`, and so does smoke over a Clip that is not `local` and
+    that EF-14 does not compose either (a square one: the layers are drawn for 9:16)."""
     from qualify_creative.schemas import EffectUse
 
     fast = EffectUse(effect_id="camara_rapida", version=1, params={"speed": 8.0})
@@ -1349,7 +1350,7 @@ def test_an_effect_still_unbuilt_is_refused_before_any_row(queue_on: None) -> No
     seedance = make_brief(
         variants=1,
         kind=ContentKind.CLIP,
-        format=ContentFormat.REELS_9_16,
+        format=ContentFormat.FEED_1_1,
         media=MediaInputs(duration_seconds=5, effects=(_smoke(),)),
     )
     with pytest.raises(RecipeRefused) as refused:

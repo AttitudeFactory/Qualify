@@ -211,8 +211,17 @@ def is_local_recipe(brief: ContentBrief) -> bool:
 
 def effects_version_for(brief: ContentBrief) -> int:
     """The `effects_pipeline_version` the server stamps on a NEW brief: this module's for
-    a `local` recipe with stretches, 0 (made as before EF-06) for anything else. Pure."""
-    return LOCAL_EFFECTS_PIPELINE_VERSION if is_local_recipe(brief) else 0
+    a `local` recipe with stretches, EF-14's for a Clip made by Seedance with texts or
+    layers to compose (`recompose.composes_over_seedance`), 0 (made as before EF-06) for
+    anything else. Pure."""
+    from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+        SEEDANCE_COMPOSE_EFFECTS_VERSION,
+        composes_over_seedance,
+    )
+
+    if is_local_recipe(brief):
+        return LOCAL_EFFECTS_PIPELINE_VERSION
+    return SEEDANCE_COMPOSE_EFFECTS_VERSION if composes_over_seedance(brief) else 0
 
 
 def local_price(seconds: float) -> Decimal:

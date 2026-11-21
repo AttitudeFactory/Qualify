@@ -404,9 +404,8 @@ def test_the_effects_pipeline_version_is_the_servers() -> None:
 @pytest.mark.parametrize(
     ("media", "field"),
     [
-        ({"effects": (SMOKE,)}, "effects"),
-        ({"text_layer": WORDS}, "text_layers"),  # the v1 key reads as `text_layers`
-        ({"text_layers": (WORDS,)}, "text_layers"),
+        # (EF-14 composes the library's layers and the texts over a 9:16 Seedance Clip:
+        # `test_video_pipeline_recompose.py`)
         # D4 (EF-11): stretches of own video never go to an `edit` — only a `reference`
         # (`motion`) piece opens on them, prepared
         (

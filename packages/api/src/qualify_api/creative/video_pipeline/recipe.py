@@ -446,13 +446,18 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
         stretches_wait_for_switch,
     )
+    from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+        seedance_compose_allowed,
+    )
 
     found: list[RecipeProblem] = []
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
     references = _part_references(brief)
     for at, part in enumerate(recipe_of(brief)):
         number = None if in_clip else part.index
-        local = part.mode == "local"
+        # EF-14: a normal 9:16 `reference` Clip made by Seedance is composed too (its
+        # preview and its 1080p final, `recompose`); a part made by Seedance is not yet
+        local = part.mode == "local" or (in_clip and seedance_compose_allowed(brief))
         unbuilt = tuple(use for use in part.effects if not (local and is_built_layer(use)))
         # EF-11: a `reference` piece opens on its first stretch, prepared
         # (`prepared_frame`); D4: never an `edit` (or `extend`) of own video. A
