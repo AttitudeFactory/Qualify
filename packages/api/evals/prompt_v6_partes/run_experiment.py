@@ -227,6 +227,9 @@ class GuardedSeedance:
         self.dry = dry
         self.label = ""
         self.calls: list[dict[str, Any]] = []
+        #: Set when the ledger refused a reservation: the router turns the raised
+        #: `CeilingExceededError` into a failed hop, so the run reads this to stop.
+        self.refused: str | None = None
 
     def estimate_cost_usd(self, request: Any, pricing: Any, **kwargs: Any) -> Any:
         return self.inner.estimate_cost_usd(request, pricing, **kwargs)
@@ -234,13 +237,19 @@ class GuardedSeedance:
     def generate(self, request: Any, *, api_key: str) -> Any:
         from qualify_creative.adapters.byteplus_ark import video_cost_usd
 
+        from qualify_api.evals.spend_control import CeilingExceededError
+
         quote = self.inner.estimate_cost_usd(request, self.pricing)
         call: dict[str, Any] = {"label": self.label, "quote_usd": str(quote), "request": request}
         self.calls.append(call)
         if self.dry:
             raise DryRun(self.label)
         reserve = (quote * RESERVE_MARGIN).quantize(Decimal("0.0001"), ROUND_UP)
-        hold = self.ledger.reserve(reserve, label=self.label)
+        try:
+            hold = self.ledger.reserve(reserve, label=self.label)
+        except CeilingExceededError as exc:
+            self.refused = call["refused"] = str(exc)
+            raise
         try:
             result = self.inner.generate(request, api_key=api_key)
         except Exception as exc:
@@ -337,6 +346,7 @@ def _sheet(rows: list[list[Any]], path: Path) -> None:
 
 def run(args: argparse.Namespace) -> int:
     from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter
+    from qualify_creative.enums import FailureReason
     from qualify_creative.pricing import JsonPricingTable
     from qualify_creative.router import BudgetContext, CreativeRouter
 
@@ -348,7 +358,7 @@ def run(args: argparse.Namespace) -> int:
         off_hours_refusal,
         resolve_eval_key,
     )
-    from qualify_api.evals.spend_control import CeilingExceededError, SpendLedger
+    from qualify_api.evals.spend_control import SpendLedger
 
     paid = args.i_have_spend_authorization
     try:
@@ -382,25 +392,25 @@ def run(args: argparse.Namespace) -> int:
         "cases": {},
     }
     cases = [c for c in all_cases if not args.case or c["id"] in args.case]
-    for case in cases:
-        photo, own = _keys(case)
-        files = {
-            photo: (base / case["photo"]).read_bytes(),
-            own: (base / case["own"]).read_bytes(),
-        }
-        case_dir = out / case["id"]
-        case_dir.mkdir()
-        entry: dict[str, Any] = {"product": case["product"], "variants": {}}
-        report["cases"][case["id"]] = entry
-        for variant in VARIANTS:
-            os.environ[PREPARED_FRAME_REFS_SWITCH] = "on" if variant == "v6" else "off"
-            brief = _brief(case, variant)
-            store = MemoryStore(files)
-            producer = _producer(store, router, keys, pricing)
-            guarded.label = f"{case['id']}/{variant}"
-            calls_before = len(guarded.calls)
-            budget = BudgetContext(remaining_usd=ledger.remaining_usd)
-            try:
+    try:
+        for case in cases:
+            photo, own = _keys(case)
+            files = {
+                photo: (base / case["photo"]).read_bytes(),
+                own: (base / case["own"]).read_bytes(),
+            }
+            case_dir = out / case["id"]
+            case_dir.mkdir()
+            entry: dict[str, Any] = {"product": case["product"], "variants": {}}
+            report["cases"][case["id"]] = entry
+            for variant in VARIANTS:
+                os.environ[PREPARED_FRAME_REFS_SWITCH] = "on" if variant == "v6" else "off"
+                brief = _brief(case, variant)
+                store = MemoryStore(files)
+                producer = _producer(store, router, keys, pricing)
+                guarded.label = f"{case['id']}/{variant}"
+                calls_before = len(guarded.calls)
+                budget = BudgetContext(remaining_usd=ledger.remaining_usd)
                 outcome = producer.produce(
                     tenant_id=TENANT_ID,
                     draft_id=uuid4(),
@@ -409,65 +419,74 @@ def run(args: argparse.Namespace) -> int:
                     copy=_copy(),
                     budget=budget,
                 )
-            except CeilingExceededError as exc:
-                print(f"TOPE: {exc}", file=sys.stderr)
-                report["stopped"] = str(exc)
-                break
-            calls = guarded.calls[calls_before:]
-            item: dict[str, Any] = {
-                "failure": outcome.failure,
-                "detail": outcome.detail,
-                "attempts": [],
-            }
-            for i, call in enumerate(calls, 1):
-                params = dict(call["request"].params)
-                prompt = str(params.get("prompt", ""))
-                (case_dir / f"{variant}-prompt-{i}.txt").write_text(prompt, encoding="utf-8")
-                sent = [str(u) for u in params.get("reference_images", ()) or ()]
-                for n, url in enumerate(sent, 1):
-                    (case_dir / f"{variant}-enviada-{i}-image{n}.jpg").write_bytes(
-                        _decode_data_url(url)
+                calls = guarded.calls[calls_before:]
+                item: dict[str, Any] = {
+                    "failure": outcome.failure,
+                    "detail": outcome.detail,
+                    "attempts": [],
+                }
+                for i, call in enumerate(calls, 1):
+                    params = dict(call["request"].params)
+                    prompt = str(params.get("prompt", ""))
+                    (case_dir / f"{variant}-prompt-{i}.txt").write_text(prompt, encoding="utf-8")
+                    sent = [str(u) for u in params.get("reference_images", ()) or ()]
+                    for n, url in enumerate(sent, 1):
+                        (case_dir / f"{variant}-enviada-{i}-image{n}.jpg").write_bytes(
+                            _decode_data_url(url)
+                        )
+                    item["attempts"].append(
+                        {
+                            **{k: v for k, v in call.items() if k != "request"},
+                            "prompt_words": len(prompt.split()),
+                            "reference_images": len(sent),
+                            "first_frame": "first_frame" in params,
+                            "params": {
+                                k: v
+                                for k, v in params.items()
+                                if k not in {"prompt", "reference_images", "first_frame"}
+                            },
+                        }
                     )
-                item["attempts"].append(
-                    {
-                        **{k: v for k, v in call.items() if k != "request"},
-                        "prompt_words": len(prompt.split()),
-                        "reference_images": len(sent),
-                        "first_frame": "first_frame" in params,
-                        "params": {
-                            k: v
-                            for k, v in params.items()
-                            if k not in {"prompt", "reference_images", "first_frame"}
-                        },
-                    }
+                if outcome.media:
+                    video = outcome.media[0]
+                    item["prompt_version"] = video.params.get("part_prompt_version")
+                    item["reference_manifest"] = video.params.get("reference_manifest")
+                    data = store.read(video.object_key)
+                    (case_dir / f"{variant}.mp4").write_bytes(data)
+                    frames = _keyframes(data)
+                    for name, frame in zip(("inicio", "medio", "final"), frames, strict=True):
+                        frame.save(case_dir / f"{variant}-{name}.jpg", quality=90)
+                    item["video_size"] = list(frames[0].size)
+                else:
+                    item["prompt_version"] = part_prompt_version(
+                        brief, opening_frame=variant == "v6"
+                    )
+                entry["variants"][variant] = item
+                print(
+                    f"  {guarded.label}: "
+                    + (
+                        "ok"
+                        if outcome.media
+                        else ("compilado (seco)" if not paid else f"falló: {outcome.detail}")
+                    )
+                    + "".join(f" · cotizado USD {a['quote_usd']}" for a in item["attempts"])
                 )
-            if outcome.media:
-                video = outcome.media[0]
-                item["prompt_version"] = video.params.get("part_prompt_version")
-                item["reference_manifest"] = video.params.get("reference_manifest")
-                data = store.read(video.object_key)
-                (case_dir / f"{variant}.mp4").write_bytes(data)
-                frames = _keyframes(data)
-                for name, frame in zip(("inicio", "medio", "final"), frames, strict=True):
-                    frame.save(case_dir / f"{variant}-{name}.jpg", quality=90)
-                item["video_size"] = list(frames[0].size)
+                # the ceiling refused: the ledger's reservation (`guarded.refused`) or the
+                # router's pre-flight against what the ledger has left (`budget_exceeded`)
+                stop = guarded.refused or (
+                    outcome.failure == FailureReason.BUDGET_EXCEEDED.value
+                    and f"{guarded.label}: {outcome.detail}"
+                )
+                if stop:
+                    print(f"TOPE: {stop}", file=sys.stderr)
+                    report["stopped"] = stop
+                    break
             else:
-                item["prompt_version"] = part_prompt_version(brief, opening_frame=variant == "v6")
-            entry["variants"][variant] = item
-            print(
-                f"  {guarded.label}: "
-                + (
-                    "ok"
-                    if outcome.media
-                    else ("compilado (seco)" if not paid else f"falló: {outcome.detail}")
-                )
-                + "".join(f" · cotizado USD {a['quote_usd']}" for a in item["attempts"])
-            )
-        else:
-            _case_sheet(case_dir, entry)
-            continue
-        break
-    os.environ.pop(PREPARED_FRAME_REFS_SWITCH, None)
+                _case_sheet(case_dir, entry)
+                continue
+            break
+    finally:
+        os.environ.pop(PREPARED_FRAME_REFS_SWITCH, None)
     report["ledger"] = ledger.snapshot()
     (out / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding="utf-8"

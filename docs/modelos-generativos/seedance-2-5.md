@@ -277,7 +277,7 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
   con 10 % de margen en un `SpendLedger` con techo de US$2 y se liquida con los tokens que
   cobra ModelArk. Sin Claude: el texto es fijo (el prompt de una parte no lo usa).
 - **Plan cotizado (corrida en seco, sin gasto):** 2 casos × 2 variantes = 4 tareas de 4 s a
-  480p, 38.428 tokens estimados cada una (480×854×24×4/1024), US$0,411201 cada una a 10,70/M,
+  480p, 38.430 tokens estimados cada una (480×854×24×4/1024), US$0,411201 cada una a 10,70/M,
   **US$1,644804** en total; reservado con margen, US$1,81 ≤ US$2. Un tercer par (US$2,47)
   no cabía.
 - **Horario y llave:** llave de la app (no hay `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` en el
@@ -300,8 +300,8 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
 | B, «Smash doble» | v6 | `cgt-20261121101150-kp6py` | v6 | 38.830 | US$0,415481 |
 | | **Total** | | | 155.320 | **US$1,661924** |
 
-- **Costo:** cotizado US$1,644804, cobrado **US$1,661924** (+1,0 %: 38.830 tokens frente a
-  38.428 de la fórmula). **US$0,415 por pieza** de 4 s a 480p, igual con y sin el cuadro
+- **Costo:** cotizado US$1,644804, cobrado **US$1,661924** (+400 tokens, +1,04 %: 38.830 frente a
+  38.430 de la fórmula). **US$0,415 por pieza** de 4 s a 480p, igual con y sin el cuadro
   preparado: la imagen de más no se cobra. Reservado con margen US$1,8096, por debajo del tope
   de US$2. Sin Claude.
 - **Cómo se revisó:** tres cuadros por video (primero, del medio y último, 480×854) puestos al
