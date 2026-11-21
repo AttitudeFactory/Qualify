@@ -407,8 +407,17 @@ def test_the_effects_pipeline_version_is_the_servers() -> None:
         ({"effects": (SMOKE,)}, "effects"),
         ({"text_layer": WORDS}, "text_layers"),  # the v1 key reads as `text_layers`
         ({"text_layers": (WORDS,)}, "text_layers"),
-        # stretches of a Clip that is NOT `local`: Seedance would only follow them
-        ({"segments": (_stretch(),)}, "segments"),
+        # D4 (EF-11): stretches of own video never go to an `edit` — only a `reference`
+        # (`motion`) piece opens on them, prepared
+        (
+            {
+                "clip_reference_mode": "edit",
+                "clip_video_keys": (f"uploads/{TENANT_ID}/reel.mp4",),
+                "clip_image_keys": (f"uploads/{TENANT_ID}/p.jpg",),
+                "segments": (_stretch(),),
+            },
+            "segments",
+        ),
     ],
 )
 def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) -> None:

@@ -79,6 +79,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_creative.adapters.byteplus_ark import (
+    ADAPTIVE,
     DEFAULT_SEEDANCE_MODEL,
     DEFAULT_SEEDREAM_MODEL,
     DRAFT_RESOLUTION,
@@ -168,6 +169,7 @@ from qualify_creative.scene_plan import (
     without_product,
 )
 from qualify_creative.schemas import (
+    CLIP_MAX_IMAGES,
     HOOK_MAX,
     MAX_PRODUCT_IMAGES,
     SCRIPT_MAX,
@@ -780,6 +782,31 @@ def _key_problems(
     malformed = [key for key in present if parse_tenant_key(key) is None]
     foreign = [key for key in present if key not in malformed and not owned_by(tenant_id, key)]
     return malformed, foreign
+
+
+def _own_video_mode_refusal(brief: ContentBrief) -> tuple[str, str] | None:
+    """D4 (EF-11): `(failure, detail)` when a Clip (or a part) made from stretches of the
+    owner's own video asks for `edit` or `extend` — never sent to Seedance; None
+    otherwise. Pure; a part's refusal reads as the part's own failure."""
+    from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+        PreparedFrameFailed,
+        own_segments,
+        refuse_stretch_mode,
+    )
+
+    if brief.kind is not ContentKind.CLIP:
+        return None
+    part = brief.media.part
+    try:
+        refuse_stretch_mode(
+            part.mode if part is not None else brief.media.clip_reference_mode,
+            own_segments(brief),
+        )
+    except PreparedFrameFailed as exc:
+        if part is not None:
+            return FailureReason.PART_FAILED.value, PART_FAILED_TEXT
+        return exc.failure, exc.detail
+    return None
 
 
 #: How many times a generated file is put in R2 before the piece fails, and the wait
@@ -1966,16 +1993,27 @@ PART_PROMPT_VERSION_V5 = 3
 PART_REFERENCE_MEDIA_PROMPT_VERSION_V5 = 4
 #: 5 (VE-13): a «Sigue a la anterior» part (`part_extend_prompt`), any compiler.
 PART_EXTEND_PROMPT_VERSION = 5
+#: 6 (EF-11): a `reference` part made from the owner's own stretches that ALSO carries
+#: references (photos, videos or audio): its prepared opening frame is «Image 1» and the
+#: photos follow from «Image 2» (`part_reference_prompt(opening_frame=True)`), any
+#: compiler. Not measured yet (`qualify-measure`): no paid run was made for it.
+PART_PREPARED_FRAME_PROMPT_VERSION = 6
 
 
-def part_prompt_version(brief: ContentBrief, part: PartRef | None = None) -> int:
+def part_prompt_version(
+    brief: ContentBrief, part: PartRef | None = None, *, opening_frame: bool = False
+) -> int:
     """The part prompt version `brief`'s part (`part`, else `brief.media.part`) is
     compiled with: the compiler (0-4 or 5 on) and whether a `reference` part carries
-    its own reference videos or audio (UI-4); an `extend` part has its own (VE-13). The
-    one place that decides it."""
+    its own reference videos or audio (UI-4); an `extend` part has its own (VE-13); EF-11:
+    `opening_frame` — the prompt named the prepared frame «Image 1» (only with
+    `QUALIFY_PARTS_PREPARED_FRAME_REFS` on) — is version 6. The one place that decides it."""
     part = part if part is not None else brief.media.part
     if part is not None and part.mode == "extend":
         return PART_EXTEND_PROMPT_VERSION
+    if opening_frame and part is not None and part.mode == "reference":
+        # EF-11: the prepared opening frame named «Image 1», the photos from 2
+        return PART_PREPARED_FRAME_PROMPT_VERSION
     with_media = (
         part is not None
         and part.mode == "reference"
@@ -2646,6 +2684,15 @@ class MediaProducer:
             return MediaOutcome(
                 failure=FailureReason.ROUTE_BLOCKED_BY_POLICY.value, detail=_FOREIGN_FILE
             )
+        own_mode = _own_video_mode_refusal(brief)
+        if own_mode is not None:
+            # D4 (EF-11): before any read, cut, spend or vendor call — an own video never
+            # goes to `edit` (nor `extend`)
+            logger.warning(
+                "creative media for draft %s refused: own video, not reference", draft_id
+            )
+            failure, detail = own_mode
+            return MediaOutcome(failure=failure, detail=detail)
         misplaced_stock = stock_problems(brief)
         if misplaced_stock:
             # before any read, spend or vendor call — stock only where a piece may use it
@@ -3339,6 +3386,108 @@ class MediaProducer:
         width, _, height = SCENE_SIZES[ratio].partition("x")
         return to_reference_jpeg(image, aspect=(int(width), int(height)))
 
+    def _prepared_frame_model(self, in_part: bool) -> str:
+        """EF-11: the model a task opening on a PREPARED frame runs on — the adapter's own
+        when it takes `ratio: adaptive` (2.x), else the reference model when that one
+        does. Neither (Seedance 1.0 only): refused before any spend, never sent with a
+        named ratio."""
+        for model in (self._seedance_model, self._seedance_reference_model):
+            if not model:
+                continue
+            try:
+                if seedance_family(model).adaptive:
+                    return model
+            except ValueError:  # an unknown family is not guessed
+                continue
+        logger.error("a prepared opening frame needs a Seedance 2.x model; none is configured")
+        raise _MediaFailed(
+            FailureReason.PART_FAILED.value if in_part else FailureReason.INVALID_PARAMETERS.value,
+            PART_FAILED_TEXT
+            if in_part
+            else "Para empezar desde tu video necesitamos un modelo de video que no está "
+            "disponible. Elige otra forma de crearlo.",
+            raw="no Seedance model with an adaptive ratio",
+        )
+
+    def _prepared_frame_room(self, brief: ContentBrief) -> None:
+        """EF-11: with references the prepared frame travels as one more reference image
+        (ModelArk takes no `first_frame` beside them): it and the closing frame count
+        against `CLIP_MAX_IMAGES` (and the reference model's own limit) like the opening
+        frame the brief's own rule counts. Over it: refused before the copy is paid."""
+        media = brief.media
+        if not media.clip_has_references:
+            return  # a frame task: the frame is not a reference image
+        limit = CLIP_MAX_IMAGES
+        if self._seedance_reference_model:
+            try:
+                limit = min(
+                    limit, seedance_family(self._seedance_reference_model).max_references[0]
+                )
+            except ValueError:
+                pass  # an unknown family: the brief's own limit
+        frames = 1 + int(bool(media.clip_last_frame_key))
+        if len(media.clip_image_keys) + frames <= limit:
+            return
+        room = max(limit - frames, 0)
+        raise _MediaFailed(
+            FailureReason.INVALID_PARAMETERS.value,
+            "Con tu video no caben fotos de referencia. Quítalas y vuelve a crear el video."
+            if room == 0
+            else (
+                "Con tu video cabe 1 foto de referencia."
+                if room == 1
+                else f"Con tu video caben hasta {room} fotos de referencia."
+            )
+            + " Quita las que sobren y vuelve a crear el video.",
+            raw=f"{len(media.clip_image_keys)} images + {frames} frames over {limit}",
+        )
+
+    def _prepared_opening_frame(
+        self, tenant_id: UUID, draft_id: UUID, brief: ContentBrief, save: _Saver
+    ) -> Any:
+        """EF-11: the prepared opening frame of a Clip (or part) made from own stretches
+        (`video_pipeline.prepared_frame.PreparedFrame`), None without stretches. In order,
+        before any cut or spend: D4 (never `edit`/`extend` of own video), a model that
+        takes `ratio: adaptive`, then the frame (sticky per revision). Raises `_MediaFailed`
+        — and `LocalSourceNormalizing` (a `CheckpointError`) while a lighter copy of a
+        source over 4K or 8 bits is being made."""
+        from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+            PreparedFrameFailed,
+            own_segments,
+            prepared_first_frame,
+            refuse_waiting_stretches,
+            uses_prepared_frame,
+        )
+
+        stretches = own_segments(brief)
+        if brief.kind is not ContentKind.CLIP or not stretches:
+            return None
+        own_mode = _own_video_mode_refusal(brief)
+        if own_mode is not None:
+            raise _MediaFailed(*own_mode, raw="own video not as reference (D4)")
+        try:
+            # a part with references while `QUALIFY_PARTS_PREPARED_FRAME_REFS` is off:
+            # refused as before EF-11, never made without the owner's video
+            refuse_waiting_stretches(brief)
+        except PreparedFrameFailed as exc:
+            raise _MediaFailed(exc.failure, exc.detail, raw=exc.raw) from exc
+        if not uses_prepared_frame(brief):
+            return None  # `local`: made here, never sent to Seedance
+        part = brief.media.part
+        self._prepared_frame_model(part is not None)
+        self._prepared_frame_room(brief)
+        try:
+            return prepared_first_frame(
+                tenant_id=tenant_id,
+                segments=stretches,
+                store=self._store,
+                save=save,
+                draft_id=draft_id,
+                brand_id=brief.brand_id,
+            )
+        except PreparedFrameFailed as exc:
+            raise _MediaFailed(exc.failure, exc.detail, raw=exc.raw) from exc
+
     # -- inputs ------------------------------------------------------------------------
 
     def _read(self, key: str | None) -> bytes | None:
@@ -3419,6 +3568,15 @@ class MediaProducer:
             except _MediaFailed as exc:
                 raise BrandReferenceError(exc.detail) from exc
             return
+        if brief.kind is ContentKind.CLIP:
+            # EF-11: own stretches — D4, the 2.x model and the prepared opening frame
+            # (kept under this revision, read back by the clip) before the copy is paid
+            try:
+                self._prepared_opening_frame(
+                    tenant_id, draft_id, brief, _Saver(self._store, tenant_id, draft_id, revision)
+                )
+            except _MediaFailed as exc:
+                raise BrandReferenceError(exc.detail) from exc
         if brief.kind is not ContentKind.CLIP or not brief.media.clip_video_keys:
             return
         if any(not owned_by(tenant_id, key) for key in brief.media.clip_video_keys):
@@ -4927,6 +5085,12 @@ class MediaProducer:
         no logo, no brand resource, no subtitles and never remade without its
         references; its own prompts (`part_reference_prompt`, `part_edit_prompt`)."""
         part = brief.media.part
+        # EF-11 (m-25026585): with stretches of the owner's own video or photos the clip
+        # opens on the FIRST frame of the first one, PREPARED (upright, 9:16, as «Preparar»
+        # makes it) — never the file as uploaded. D4, the 2.x model and the frame itself
+        # are settled first, before any cut or spend (the service made the frame before
+        # the copy was paid: read back here, the same bytes)
+        prepared = self._prepared_opening_frame(tenant_id, draft_id, brief, save)
         window: PartWindow | None = None
         extend_source: dict[str, Any] | None = None
         if part is not None:
@@ -4968,7 +5132,12 @@ class MediaProducer:
                     "referencia.",
                     raw=f"reference {reference_seconds} s for {media.duration_seconds} s",
                 )
-        first = self._clip_frame(media.clip_first_frame_key, last=False)
+        first = (
+            prepared.jpeg
+            if prepared is not None
+            else self._clip_frame(media.clip_first_frame_key, last=False)
+        )
+        first_key = prepared.key if prepared is not None else media.clip_first_frame_key
         last = self._clip_frame(media.clip_last_frame_key, last=True)
         images = [self._store.read(key) for key in media.clip_image_keys]
         # the logo the operator chose (§ request 2026-10-20) goes over every frame, laid
@@ -5018,7 +5187,18 @@ class MediaProducer:
                 transport_manifest.clear()
                 descriptors = [
                     *(
-                        ({"role": "opening_frame", "key": media.clip_first_frame_key},)
+                        (
+                            {
+                                "role": "opening_frame",
+                                "key": first_key,
+                                # EF-11: the prepared frame of an own stretch
+                                **(
+                                    {"source_key": prepared.manifest["segment"]["key"]}
+                                    if prepared is not None
+                                    else {}
+                                ),
+                            },
+                        )
                         if first is not None
                         else ()
                     ),
@@ -5095,6 +5275,23 @@ class MediaProducer:
                     # VE-13: ModelArk continues the source; it keeps its canvas
                     # (`adaptive`) and is asked for the part's own seconds
                     params.update(omni_reference_task_type="extend", ratio="adaptive")
+            elif prepared is not None:
+                # EF-11: the prepared frame is already upright and 9:16 — sent as it is
+                # (a `data:` URL, never a public link to the owner's file) with `ratio:
+                # adaptive`, never a named one (a frame task with «9:16» is refused, §3.4
+                # of the epic's source), so only on a model that takes it
+                model = self._prepared_frame_model(part is not None)
+                params["model"] = model
+                params["ratio"] = ADAPTIVE
+                # the bytes whose sha256 the manifest records (`sent_sha256`)
+                params["first_frame"] = _jpeg_url(prepared.sent)
+                if last is not None:
+                    # cropped to the piece's ratio whatever the family: the video follows
+                    # the opening frame's 9:16
+                    width, _, height = SCENE_SIZES[ratio].partition("x")
+                    params["last_frame"] = _jpeg_url(
+                        to_reference_jpeg(last, aspect=(int(width), int(height)))
+                    )
             else:
                 # 2.5 keeps the opening frame's own aspect (`ratio: adaptive`): an
                 # operator's frame is cropped to the piece's ratio, so the clip is too
@@ -5115,6 +5312,8 @@ class MediaProducer:
                         kit=kit,
                         images=len(images) if references else 0,
                         model=str(params.get("model") or self._seedance_model),
+                        # EF-11: with references the prepared frame is «Image 1»
+                        opening_frame=references and prepared is not None,
                     )
                     if part is not None
                     else clip_prompt(
@@ -5353,6 +5552,13 @@ class MediaProducer:
                         **prompt_provenance,
                         "replication_brand_text": bool(_replication_brand_wording(brief, kit)),
                         "reference_manifest": list(transport_manifest) if references else [],
+                        # EF-11: which prepared stretch the opening frame came from, the
+                        # step's versions and the frame's sha256 (rule 6)
+                        **(
+                            {"prepared_frame": dict(prepared.manifest)}
+                            if prepared is not None
+                            else {}
+                        ),
                         **(
                             {
                                 "source_pins": [
@@ -5393,7 +5599,9 @@ class MediaProducer:
                             raw_key=payload.get("checkpoint_media"),
                             clean_key=clean_key or video_key,
                             logo=_logo_provenance(logo_key, logo) if logo_laid else None,
-                            prompt_version=part_prompt_version(brief, part),
+                            prompt_version=part_prompt_version(
+                                brief, part, opening_frame=references and prepared is not None
+                            ),
                             extend=extend_source,
                         ),
                         "logo": logo_laid,
@@ -9675,13 +9883,22 @@ def _part_product(brief: ContentBrief) -> str:
     return _quoted(product, 120) if product else ""
 
 
-def _part_prompt(*, brief: ContentBrief, kit: BrandKit, images: int, model: str | None) -> str:
+def _part_prompt(
+    *,
+    brief: ContentBrief,
+    kit: BrandKit,
+    images: int,
+    model: str | None,
+    opening_frame: bool = False,
+) -> str:
     part = brief.media.part
     if part is not None and part.mode == "edit":
         return part_edit_prompt(brief=brief, kit=kit, images=images, model=model)
     if part is not None and part.mode == "extend":
         return part_extend_prompt(brief=brief, kit=kit, images=images, model=model)
-    return part_reference_prompt(brief=brief, kit=kit, images=images, model=model)
+    return part_reference_prompt(
+        brief=brief, kit=kit, images=images, model=model, opening_frame=opening_frame
+    )
 
 
 def _part_common_lines(brief: ContentBrief, kit: BrandKit, model: str | None) -> list[str]:
@@ -9696,11 +9913,21 @@ def _part_common_lines(brief: ContentBrief, kit: BrandKit, model: str | None) ->
 
 @_compiled_for
 def part_reference_prompt(
-    *, brief: ContentBrief, kit: BrandKit, images: int, model: str | None = None
+    *,
+    brief: ContentBrief,
+    kit: BrandKit,
+    images: int,
+    model: str | None = None,
+    opening_frame: bool = False,
 ) -> str:
     """VE-09 «Nueva, inspirada en el original»: ONE shot made new from the product photos
     and the shot's sheet (rewritten, never the analysis pasted) — no video of the
-    original, nobody of it. Palette, typefaces and no text on screen as a clip's."""
+    original, nobody of it. Palette, typefaces and no text on screen as a clip's.
+
+    EF-11 (`opening_frame`, `PART_PREPARED_FRAME_PROMPT_VERSION`): the first reference
+    image is the prepared opening frame of the owner's own stretch (ModelArk takes no
+    `first_frame` role beside references), named «Image 1» the way `clip_prompt` names
+    one; the photos follow from «Image 2». Without it the text is what it was."""
     media = brief.media
     part = media.part
     seconds = media.duration_seconds
@@ -9717,14 +9944,19 @@ def part_reference_prompt(
     ]
     roles = media.clip_image_roles
     roles = roles if len(roles) == images else (unroled_image_role(brief),) * images
+    # EF-11: the prepared opening frame goes first among the reference images
+    first = 1
+    if opening_frame:
+        lines.append("The opening frame is Image 1: the shot starts on it and brings it to life.")
+        first = 2
     if images and _WORDING.get() and set(roles) != {"product"}:
         # compiler 5 (m-24985141): each photo told its own role, as a clip's — a place or
         # a style photo is never called the product (all products: the line as before)
         if product:
             lines.append("It shows the client's product, " + f'"{product}".')
-        lines.extend(_clip_role_lines(brief, roles, images, 1))
+        lines.extend(_clip_role_lines(brief, roles, images, first))
     elif images:
-        named = _image_names(range(1, images + 1), "Image")
+        named = _image_names(range(first, first + images), "Image")
         what = "the client's real product" + (f', "{product}",' if product else ",")
         lines.append(
             f"{named}: {what} shown in the shot — keep it exactly as it is (shape, colors, label)."
