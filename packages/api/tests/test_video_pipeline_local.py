@@ -1382,7 +1382,7 @@ def test_v3_lets_a_local_part_use_the_three_layers_up_to_three_times_each() -> N
     )
     part = PartRecipe(index=1, mode="local", seconds=6, segments=(stretch,), effects=uses)
     library = load_effects()
-    assert library.version == 3
+    assert library.version >= 3  # v3 and later (D9: v4) offer the three layers
     assert validate_recipe((part,), video_by_parts=False, library=library) == ()
     four = part.model_copy(update={"effects": (*uses, _smoke(start_s=5.0, end_s=6.0))})
     codes = [p.code for p in validate_recipe((four,), video_by_parts=False, library=library)]

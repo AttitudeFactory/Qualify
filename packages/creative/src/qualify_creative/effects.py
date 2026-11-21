@@ -40,6 +40,14 @@ An explicit exception to «never edited in place»: v3 offers `humo_capa`, `bras
 change. Nobody could use version 1 while it was not offered, and the editor sends version
 1. A future change of a loop (other bytes in `v1/`) does require `v2/` and an entry at
 version 2.
+
+ADR 50 D9 (Deivid 2026-11-20): v4 stops offering `fundido` and `barrido` at entry version
+1. That is not an edit of the entry in place: v3 still reads exactly as it was, and
+`offered` is what a library version says about an entry (whether the screen may offer it
+now), not part of the effect — its params, prompt and asset did not change, so neither did
+its version. The join did not draw them (a recipe that chose them was refused at creation
+as `recipe_unavailable`), so the screen must not offer them; until EF-16 (m-25026594) the
+only transition offered is `corte`.
 """
 
 from __future__ import annotations
@@ -68,8 +76,10 @@ _ASSETS_DIR = Path(__file__).parent / "effects_assets"
 
 #: The library a new request is checked against. ED-15: v2 — v1's entries, with the
 #: layers repeatable (`max_per_part` 3). EF-08: v3 — v2's entries, with the smoke, ember
-#: and steam layers recorded and offered. v1 and v2 still load and read exactly as before.
-EFFECTS_LIBRARY_VERSION = "v3"
+#: and steam layers recorded and offered. ADR 50 D9: v4 — v3's entries, with `fundido` and
+#: `barrido` no longer offered until the join draws them (EF-16): `corte` is the only
+#: transition offered. v1, v2 and v3 still load and read exactly as before.
+EFFECTS_LIBRARY_VERSION = "v4"
 #: The file of a layer's recorded loop inside its asset folder (`effects/<id>/v1/`).
 LAYER_LOOP_FILE = "preview.webm"
 

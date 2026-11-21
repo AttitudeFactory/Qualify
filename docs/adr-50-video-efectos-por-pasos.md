@@ -79,8 +79,9 @@ Lo que quiere el dueño: subir su video, ponerle un texto y uno o varios efectos
 - Una entrada **nunca se edita en su lugar**: un cambio de parámetros, de prompt o de archivo es una entrada nueva en `version + 1`. Un brief guarda la versión con la que se hizo. Hay una sola excepción documentada: la v3 ofrece las capas en versión 1 sin cambiar sus bytes.
 - Los archivos de vista previa y de capa son globales, de solo lectura y van empaquetados en la imagen (`effects_assets/`). Nunca viven bajo el `t/` de un negocio ni en R2.
 - Lo que trae hoy la v3:
-  - **Ofrecidos:** `texto`; las capas `humo_capa`, `brasas_capa` y `vapor_capa`; las transiciones `corte`, `fundido` y `barrido`. Deivid decidió el 2026-11-20 ocultar `fundido` y `barrido` hasta EF-16 y ofrecer mientras tanto solo `corte` (D9, §2.3). Lo hará un PR chico aparte (§6); hasta que se mergee, las dos siguen apareciendo como ofrecidas y se rechazan al crear.
+  - **Ofrecidos:** `texto`; las capas `humo_capa`, `brasas_capa` y `vapor_capa`; las transiciones `corte`, `fundido` y `barrido`. Deivid decidió el 2026-11-20 ocultar `fundido` y `barrido` hasta EF-16 y ofrecer mientras tanto solo `corte` (D9, §2.3).
   - **No ofrecidos:** `camara_rapida`, porque la velocidad es una acción del bloque (D-T3), y las cinco plantillas de Seedance (D5).
+- La **v4** hace eso: son las mismas entradas de la v3, en las mismas versiones, y solo `fundido` y `barrido` pasan a `offered: false` (su versión de entrada sigue en 1, porque no cambió nada del efecto). Es la biblioteca que usan las solicitudes nuevas; elegir una de las dos es `not_offered`.
 
 ### 1.5 Modo local: «Tu video, con efectos»
 
@@ -168,7 +169,7 @@ Cada fila dice lo que hoy hace el código. Cuando la decisión cambió, la colum
 | 2026-11-20 | El equipo es de 3 personas («Somos 3»): se queda la licencia gratis de Remotion | este ADR | D1 |
 | 2026-11-20 | Preparar trabaja con todos los archivos del negocio: los del generador, la Galería y las Publicaciones | este ADR | D7 |
 | 2026-11-20 | El cuadro real de cada video lo saca el servidor, nunca el navegador, y llega con ED-11b (m-25029110) | este ADR | D-E1 |
-| 2026-11-20 | **D9:** `fundido` y `barrido` se ocultan hasta EF-16; mientras tanto solo se ofrece `corte`. Lo hace un PR chico aparte | este ADR; PR pendiente (§6) | §1.4 |
+| 2026-11-20 | **D9:** `fundido` y `barrido` se ocultan hasta EF-16; mientras tanto solo se ofrece `corte`. Lo hace un PR chico aparte | `effects_data/v4.json`, en este PR | §1.4 |
 | 2026-11-20 | `qualify-context` (equipo de 3) y `design-system.md` §5.10 (firmada y sin «Deshacer») se actualizan en un PR aparte, solo de documentación | este ADR; PR pendiente (§6.2) | §6.2 |
 | 2026-11-20 | Normalizador con `bframes=1`, no 3 (con 3 llega a 679 MiB, demasiado cerca de 768m) | #760, m-25071265 | §1.5 |
 
@@ -220,7 +221,7 @@ Los umbrales numéricos de la última columna son propuesta del arquitecto (ver 
 | # | Qué falta | Ticket | Decisión |
 |---|---|---|---|
 | 1 | Copia liviana de 480p al subir al generador. Hoy el teléfono descarga el original para la vista previa y para «Cortar». Está en curso en otra rama, todavía sin mergear. | ED-09 · m-25026643 | D-E2 |
-| 2a | PR chico que oculta `fundido` y `barrido` y deja solo `corte` (D9). Hasta que se mergee, las dos figuran como ofrecidas (`offered: true`) en la v3 y el motor las rechaza al crear (`recipe_unavailable`). | PR aparte (sin abrir) | D9 |
+| 2a | PR chico que oculta `fundido` y `barrido` y deja solo `corte` (D9): biblioteca v4. Antes, la v3 las ofrecía (`offered: true`) y el motor las rechazaba al crear (`recipe_unavailable`). | en este PR | D9 |
 | 2b | Transiciones al unir partes. Con ellas, `fundido` y `barrido` se vuelven a ofrecer. | EF-16 · m-25026594 | D9, §1.4 |
 | 3 | Hoja de contacto para revisar el video antes de aprobarlo. | EF-18 · m-25026598 | D8 |
 | 4 | El editor en Video por partes: fichas, modo con motivo, transiciones y orden. | ED-07 · m-25026638 | §1.1 |
