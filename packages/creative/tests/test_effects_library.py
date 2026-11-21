@@ -165,7 +165,7 @@ def test_every_default_is_within_its_range() -> None:
 
 
 def test_the_library_is_loaded_once() -> None:
-    assert load_effects() is load_effects("v3")  # EF-08: v3 is what new requests use
+    assert load_effects() is load_effects("v4")  # ADR 50 D9: v4 is what new requests use
     assert load_effects("v1") is load_effects("v1")
 
 
@@ -696,3 +696,46 @@ def test_no_library_method_filters_by_business() -> None:
             continue
         params = set(inspect.signature(member).parameters) - {"self"}
         assert not params & {"tenant_id", "tenant", "business", "brand_id", "category"}, name
+
+
+# --- ADR 50 D9 (Deivid, 2026-11-20): only `corte` is offered until EF-16 ------------------
+
+
+def test_v4_offers_corte_as_its_only_transition() -> None:
+    """D9: the join does not draw `fundido` nor `barrido` yet, so the library new requests
+    use offers only `corte` among the transitions — the screen never offers what creating
+    would refuse."""
+    library = load_effects()
+    assert library.version == 4
+    assert [e.id for e in library.offered() if e.stage == "transition"] == ["corte"]
+    for name in ("fundido", "barrido"):
+        entry = library.get(name, 1)
+        assert entry is not None and not entry.offered
+
+
+def test_v4_is_v3_but_for_the_hidden_transitions() -> None:
+    """v4 only flips `offered` of `fundido` and `barrido` (entry version 1, same params):
+    every other field of every entry is v3's, and v3 still reads as it was."""
+    v3, v4 = load_effects("v3"), load_effects("v4")
+    hidden = ("fundido", "barrido")
+    assert [(e.id, e.version) for e in v3.entries] == [(e.id, e.version) for e in v4.entries]
+    for old, new in zip(v3.entries, v4.entries, strict=True):
+        changed = {"offered"} if new.id in hidden else set()
+        assert old.model_dump(exclude=changed) == new.model_dump(exclude=changed)
+    assert [e.id for e in v3.offered() if e.stage == "transition"] == ["corte", *hidden]
+    assert [e.id for e in v4.offered()] == [e.id for e in v3.offered() if e.id not in hidden]
+
+
+@pytest.mark.parametrize(
+    ("use", "codes"),
+    [
+        (EffectUse(effect_id="corte", version=1), []),
+        (EffectUse(effect_id="fundido", version=1, params={"duration_s": 0.5}), ["not_offered"]),
+        (EffectUse(effect_id="barrido", version=1), ["not_offered"]),
+    ],
+)
+def test_choosing_a_hidden_transition_is_not_offered(use: EffectUse, codes: list[str]) -> None:
+    """D9: between two parts, `corte` passes the library's checks; `fundido` and `barrido`
+    are `not_offered` — refused when the plan is saved, not only when it is created."""
+    problems = transition_problems(use, load_effects(), part=2, first=False, in_clip=False)
+    assert _codes(problems) == codes

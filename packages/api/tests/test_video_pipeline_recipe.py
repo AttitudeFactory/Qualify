@@ -488,9 +488,13 @@ def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
     assert draft in repo.drafts
 
 
-def test_a_parent_with_a_recipe_is_refused_but_its_plan_may_be_saved(
+def test_a_parent_with_an_unbuilt_recipe_is_refused_but_an_offered_plan_may_be_saved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The rule (saving stays free, creating refuses what is not made yet) against this
+    module's v1-with-layers library, where `fundido` v1 is still OFFERED. In production
+    (ADR 50 D9, library v4) `fundido` v1 is not offered, so saving it is refused too:
+    `test_saving_a_hidden_transition_is_not_offered`."""
     from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
 
     plan = (
@@ -511,6 +515,63 @@ def test_a_parent_with_a_recipe_is_refused_but_its_plan_may_be_saved(
     )
     save_parts_plan(tenant_id=TENANT_ID, parent_id=uuid4(), parts=plan)  # saving stays free
     assert _saved_parts(row)[1].transition_in == FADE
+
+
+def test_saving_a_hidden_transition_is_not_offered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR 50 D9 against the REAL default library: a plan carrying `fundido` v1 (hidden
+    until EF-16) is refused when saved again, `not_offered`, and nothing is written; the
+    same plan with `corte` is saved."""
+    from qualify_creative.effects import load_effects
+
+    from qualify_api.creative.video_pipeline import recipe
+
+    monkeypatch.setattr(recipe, "load_effects", load_effects)  # undo the v1 fixture
+    one = VideoPartPlan(seconds=5, description="Uno.")
+    two = VideoPartPlan(seconds=4, description="Dos.", transition_in=FADE)
+    row = _saving(monkeypatch, parent_brief(one, two))
+    with pytest.raises(PartsPlanRefused) as refused:
+        save_parts_plan(tenant_id=TENANT_ID, parent_id=uuid4(), parts=(one, two))
+    assert [(p.code, p.part, p.field) for p in refused.value.problems] == [
+        ("not_offered", 2, "transition_in")
+    ]
+    assert row.media is None
+    cut = two.model_copy(update={"transition_in": EffectUse(effect_id="corte", version=1)})
+    save_parts_plan(tenant_id=TENANT_ID, parent_id=uuid4(), parts=(one, cut))
+    assert _saved_parts(row)[1].transition_in == cut.transition_in
+
+
+def test_a_corte_between_parts_is_made_and_the_hidden_ones_are_not() -> None:
+    """ADR 50 D9: `corte`, the only transition offered, is the join's hard cut — creating
+    with it is not `recipe_unavailable`; `fundido` is not offered and not made. Checked
+    against the REAL default library (the autouse fixture's is v1)."""
+    from qualify_creative.effects import load_effects
+
+    from qualify_api.creative.video_pipeline.recipe import (
+        is_built_transition,
+        unbuilt_recipe_problems,
+        validate_brief_recipe,
+    )
+
+    cut = EffectUse(effect_id="corte", version=1)
+    assert is_built_transition(cut) and not is_built_transition(FADE)
+    assert not is_built_transition(None)
+    with_cut = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(seconds=4, description="Dos.", transition_in=cut),
+    )
+    assert unbuilt_recipe_problems(with_cut) == ()
+    real = load_effects()
+    assert validate_brief_recipe(with_cut, library=real) == ()
+    with_fade = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(seconds=4, description="Dos.", transition_in=FADE),
+    )
+    assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(with_fade)] == [
+        ("recipe_unavailable", 2, "transition_in")
+    ]
+    assert [(p.code, p.part, p.field) for p in validate_brief_recipe(with_fade, library=real)] == [
+        ("not_offered", 2, "transition_in")
+    ]
 
 
 def test_a_part_with_a_recipe_makes_no_part_and_charges_nothing() -> None:

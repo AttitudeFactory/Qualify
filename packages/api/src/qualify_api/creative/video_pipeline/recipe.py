@@ -402,6 +402,18 @@ def is_built_layer(use: EffectUse, library: EffectsLibrary | None = None) -> boo
     )
 
 
+#: The transitions the join draws, as `(effect_id, version)` of the library (ADR 50 D9):
+#: `corte` is the hard cut the join has always made. Another one stays `recipe_unavailable`
+#: until the join draws it (EF-16, m-25026594).
+BUILT_TRANSITIONS: frozenset[tuple[str, int]] = frozenset({("corte", 1)})
+
+
+def is_built_transition(use: EffectUse | None) -> bool:
+    """Whether a part's `transition_in` is one the join draws (`BUILT_TRANSITIONS`). Pure.
+    Whether it is offered and its params are valid is `validate_recipe`'s."""
+    return use is not None and (use.effect_id, use.version) in BUILT_TRANSITIONS
+
+
 def _part_references(brief: ContentBrief) -> tuple[bool, ...]:
     """Whether each part of `recipe_of(brief)` carries references Seedance follows
     (photos, videos or audio), in its order — a child its own `clip_*` keys; a parent's
@@ -436,11 +448,12 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     refused either. Still refused (`recipe_unavailable`) until the effects engine draws
     them: any other effect (a Seedance template, `camara_rapida` as an effect, an unknown
     one) and any effect on a piece that is not `local` (no compose runs after Seedance),
-    a text over a piece that is not `local`, a transition (`fundido`/`barrido`),
-    stretches of an `edit` or `extend` piece (D4: an own video is never edited by
-    Seedance; EF-11 lets a `reference` piece open on its first stretch, prepared — a
-    `reference` PART with references too only with `QUALIFY_PARTS_PREPARED_FRAME_REFS`
-    on), the parent's whole-video texts and its `video_recipe` (ED-15).
+    a text over a piece that is not `local`, a transition other than `corte`
+    (`is_built_transition`; `fundido`/`barrido` wait for EF-16, D9), stretches of an
+    `edit` or `extend` piece (D4: an own video is never edited by Seedance; EF-11 lets a
+    `reference` piece open on its first stretch, prepared — a `reference` PART with
+    references too only with `QUALIFY_PARTS_PREPARED_FRAME_REFS` on), the parent's
+    whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
     producing is refused."""
     from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
@@ -474,7 +487,11 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
             # EF-05: the compose step draws the texts over a `local` piece's built video
             ("text_layers", part.text_layers if not local else ()),
             ("segments", part.segments if stretches_refused else ()),
-            ("transition_in", part.transition_in),
+            # ADR 50 D9: `corte` is the join's hard cut, made today — only the others wait
+            (
+                "transition_in",
+                None if is_built_transition(part.transition_in) else part.transition_in,
+            ),
         ):
             if value:
                 found.append(RecipeProblem(code="recipe_unavailable", part=number, field=field))

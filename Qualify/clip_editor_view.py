@@ -54,6 +54,7 @@ from .ui.primitives import (
     choice_card,
     choice_card_check,
     drawer,
+    dropzone,
     tone_badge,
 )
 from .ui.timeline import (
@@ -662,6 +663,27 @@ def _trim_hint() -> rx.Component:
 
 
 def _timeline() -> rx.Component:
+    """The timeline and its bar. ED-12 (m-25029107): the whole of it takes files of the
+    computer dropped on it (the design system's «section» dropzone: never a click, its
+    own controls stay usable) — uploaded as «Subir» does and put in the gap the line
+    marked (`assets/timeline-insert.js`); «Foto o video» is off with 8 photos or
+    videos, and says why."""
+    return dropzone(
+        rx.box(_timeline_body(), custom_attrs={"data-tl-insert-zone": ""}),
+        upload_id=vm.TIMELINE_UPLOAD_ID,
+        accept=vm.TIMELINE_ACCEPT,
+        max_files=0,
+        multiple=True,
+        max_size=vm.TIMELINE_MAX_BYTES,
+        on_drop=S.handle_clip_timeline_uploads(  # type: ignore[call-arg]
+            rx.upload_files(upload_id=vm.TIMELINE_UPLOAD_ID)
+        ),
+        on_drop_rejected=S.clip_timeline_files_rejected,
+        variant="section",
+    )
+
+
+def _timeline_body() -> rx.Component:
     return timeline_layout(
         timeline(
             media=S.clip_tl_media_rows,
@@ -687,6 +709,8 @@ def _timeline() -> rx.Component:
             on_action=S.clip_block_action,
             label=S.clip_tl_chosen_label,
             actions=vm.EDITOR_ACTIONS,
+            add_off={"media": S.clip_tl_full},
+            add_note=S.clip_tl_add_note,
         ),
         bar_below=True,
     )

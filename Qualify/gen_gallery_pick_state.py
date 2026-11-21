@@ -295,7 +295,8 @@ class GenGalleryPickState(rx.State):
             self._copied = {**self._copied, **{p.token: p.key for p in picks if p.token}}
             creative = await self.get_state(CreativeState)
             added = creative.add_gallery_picks(picks, target, posters=self._posters(picks))
-            note = added_note(len(tokens), added)
+            # ED-12: «Arma tu video»'s 8 photos or videos left some out — said as such
+            note = creative._clip_cap_note() or added_note(len(tokens), added)
             if added == 0:
                 self.error = note
                 follow = self._settle_clip_now(tokens) if now else []

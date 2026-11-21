@@ -20,13 +20,19 @@
    block never leaves its track (`clampShift`), and one dropped outside the tracks
    (`insideTracks`) goes back to its place with nothing changed (`dropVerdict`). An
    effect may also go up or down to another row of «Efectos» (`laneAt`, `laneShift`;
-   ED-04), never out of them. */
+   ED-04), never out of them.
+
+   - **insert** (ED-12 m-25029107) — files of the computer dragged over «Fotos y
+     videos»: the gap they land in is the number of blocks whose middle is left of the
+     pointer (`insertIndex`); `carriesFiles` tells such a drag from text or a link. */
 (function (root) {
   "use strict";
 
   var STEP = 0.5; // the magnet (§3.3)
   var PHONE_PX = 44; // 1 s on a phone (D-T5)
-  var LONG_PRESS_MS = 300; // a finger or a pen holds still this long to lift
+  // ED-12 (m-25029107): «se mantiene apretado ½ s» — a finger or a pen holds still
+  // this long to lift, so a short swipe slides the tracks and moves nothing
+  var LONG_PRESS_MS = 500;
   var MOUSE_LIFT_PX = 5; // a mouse lifts once it moves this far while pressed
   var MOVE_CANCEL_PX = 10; // a finger moving this far before the hold: a scroll
   var EDGE_PX = 48; // the band at each edge of the scroller that scrolls it
@@ -231,6 +237,22 @@
     return num(opts.elapsed) >= LONG_PRESS_MS ? "lift" : "wait";
   }
 
+  /* ED-12: the gap a dragged photo or video lands in — 0 before the first block, n
+     after the last: how many blocks have their middle left of `x` (client px). */
+  function insertIndex(mids, x) {
+    var n = 0;
+    (mids || []).forEach(function (mid) {
+      if (num(mid) < num(x)) n += 1;
+    });
+    return n;
+  }
+
+  /* ED-12: whether a drag over the timeline carries files of the computer (anything
+     else — text, a link — is left alone). */
+  function carriesFiles(types) {
+    return Array.prototype.slice.call(types || []).indexOf("Files") >= 0;
+  }
+
   /* «0:04», «0:04,5» — the time the bubble shows while a block is dragged
      (`timeline_vm.clock`). */
   function clock(seconds) {
@@ -384,6 +406,8 @@
     trimBounds: trimBounds,
     trimValue: trimValue,
     clockExact: clockExact,
+    insertIndex: insertIndex,
+    carriesFiles: carriesFiles,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) root.__qTimelineDragCore = api;
