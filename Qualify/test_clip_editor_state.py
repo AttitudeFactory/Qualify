@@ -1425,7 +1425,7 @@ def test_cortar_is_off_with_eight_blocks(editor_on: None) -> None:
     assert len(state.clip_tl_media_rows) == 8
     CreativeState.hear_clip_time.fn(state, 14.0, "pause")
     assert state.clip_cut_here_reason == (
-        "Tu video puede tener hasta 8 fotos o videos. Quita uno para cortar de nuevo."
+        "Tu video ya tiene 8 fotos o videos. Quita una para cortar de nuevo."
     )
     assert CreativeState.cut_clip_video.fn(state) == []
     assert len(state.clip_tl_media_rows) == 8

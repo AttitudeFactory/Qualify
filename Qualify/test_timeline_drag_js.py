@@ -163,16 +163,20 @@ def test_the_scroll_stays_inside_the_scroller() -> None:
     assert got == [0, 400, 114]
 
 
-def test_a_mouse_lifts_after_five_px_a_finger_after_300_ms() -> None:
+def test_a_mouse_lifts_after_five_px_a_finger_after_half_a_second() -> None:
+    # ED-12 (m-25029107): «se mantiene apretado ½ s»; a finger that moves first (a short
+    # swipe, criterion 2) slides the tracks and lifts nothing
     got = _run(
         "return ["
         " core.liftDecision({touch: false, dist: 4}),"
         " core.liftDecision({touch: false, dist: 5}),"
-        " core.liftDecision({touch: true, dist: 3, elapsed: 299}),"
-        " core.liftDecision({touch: true, dist: 3, elapsed: 300}),"
-        " core.liftDecision({touch: true, dist: 11, elapsed: 100})];"
+        " core.liftDecision({touch: true, dist: 3, elapsed: 499}),"
+        " core.liftDecision({touch: true, dist: 3, elapsed: 500}),"
+        " core.liftDecision({touch: true, dist: 11, elapsed: 100}),"
+        " core.liftDecision({touch: true, dist: 40, elapsed: 600}),"
+        " core.LONG_PRESS_MS];"
     )
-    assert got == ["wait", "lift", "wait", "lift", "cancel"]
+    assert got == ["wait", "lift", "wait", "lift", "cancel", "cancel", 500]
 
 
 def test_the_bubble_reads_like_the_screen() -> None:

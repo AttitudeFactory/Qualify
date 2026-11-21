@@ -23,7 +23,7 @@ and the edits are the screen's state: rows from `ui.timeline_vm` (strings only).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import reflex as rx
@@ -37,6 +37,12 @@ SCRIPT = "timeline.js"
 #: ED-10 m-25026648: drag and drop — the pure math (tested with node) and the DOM half.
 DRAG_CORE_SCRIPT = "timeline-drag-core.js"
 DRAG_SCRIPT = "timeline-drag.js"
+#: ED-12 m-25029107: photos and videos of the computer dropped on the timeline, with
+#: the line that marks where they land.
+INSERT_SCRIPT = "timeline-insert.js"
+#: ED-12 UX review S4: the id of «Agregar»'s why (above the «+»), which the «+» names in
+#: `aria-describedby` while it says something.
+ADD_NOTE_ID = "q-tl-add-note"
 
 Rows = rx.Var[list[dict[str, str]]]
 Row = rx.Var[dict[str, str]]
@@ -46,7 +52,8 @@ def timeline_script() -> rx.Component:
     """Mount `assets/timeline.js` and the drag and drop (ED-10). Their guards keep one set
     of document listeners; a second mount only attaches the timelines now on the page,
     and the unmount lets go of the observers of a timeline that left (ED-10 review)."""
-    script = ";".join(asset_script(name) for name in (DRAG_CORE_SCRIPT, DRAG_SCRIPT, SCRIPT))
+    names = (DRAG_CORE_SCRIPT, DRAG_SCRIPT, INSERT_SCRIPT, SCRIPT)
+    script = ";".join(asset_script(name) for name in names)
     return rx.box(
         display="none",
         on_mount=rx.call_script(script),
@@ -414,17 +421,41 @@ def _action_button(label: str, icon: str, on_action: Callable[[str], Any] | None
     )
 
 
-def timeline_add(on_add: Callable[[str], Any]) -> rx.Component:
+def timeline_add(
+    on_add: Callable[[str], Any],
+    *,
+    off: Mapping[str, Any] | None = None,
+    note: rx.Var[str] | str = "",
+) -> rx.Component:
     """«Agregar» with nothing chosen: the kit's `orbit_menu` — «+» turns into «×» and
     opens «Foto o video · Texto · Efecto · Idea» to its right. ``on_add(key)`` OPENS the
     flow of that option (the drawer, the text field, the effects list), never adds by
-    itself."""
+    itself. ``off``: an option's key → a `Var[bool]` that turns it off; ``note``: why,
+    said on its own line ABOVE the «+» while it is not "" — never beside it, where the
+    options open over it (ED-12: «Tu video ya tiene 8 fotos o videos. Quita una para
+    agregar otra.») —, with an id the «+» names in `aria-describedby` (`ADD_NOTE_ID`)."""
+    shut = dict(off or {})
+    saying = rx.Var.create(note) != ""
     return rx.el.div(
-        orbit_menu(
-            vm.ADD_LABEL,
-            [OrbitItem(key, icon, text, on_add(key)) for key, icon, text in vm.ADD_OPTIONS],
-            # Deivid, 2026-11-16: the options open to the right of the «+», not above it
-            direction="right",
+        rx.cond(
+            saying,
+            rx.text(
+                note, size="2", color=T.TEXT_MUTED, class_name="q-tl-add__note", id=ADD_NOTE_ID
+            ),
+        ),
+        rx.el.div(
+            orbit_menu(
+                vm.ADD_LABEL,
+                [
+                    OrbitItem(key, icon, text, on_add(key), disabled=shut.get(key, False))
+                    for key, icon, text in vm.ADD_OPTIONS
+                ],
+                # Deivid, 2026-11-16: the options open to the right of the «+», not above it
+                direction="right",
+                # the «+» is described by its why while there is one (UX review S4)
+                described_by=rx.cond(saying, ADD_NOTE_ID, ""),
+            ),
+            class_name="q-tl-add__row",
         ),
         class_name="q-tl-add",
     )
@@ -437,13 +468,16 @@ def timeline_actions(
     on_action: Callable[[str], Any] | None = None,
     label: rx.Var[str] | str = "",
     actions: dict[str, tuple[tuple[str, str], ...]] | None = None,
+    add_off: Mapping[str, Any] | None = None,
+    add_note: rx.Var[str] | str = "",
 ) -> rx.Component:
     """What the owner can do now (§2): with nothing chosen (``kind`` ""), «Agregar»
     (`timeline_add`); with a video, a photo, a text or an effect chosen, its up-to-4
     `surface` buttons floating in a glass island (`.q-island`). ``on_action(label)``.
     ``label``: the chosen block's short name — the bar is «Acciones de Video 1»
     (`aria-label`). ``actions``: a screen's own buttons by kind (default `vm.ACTIONS`;
-    a kind with none shows no island)."""
+    a kind with none shows no island). ``add_off`` / ``add_note``: «Agregar»'s options
+    turned off and why (`timeline_add`)."""
     by_kind = vm.ACTIONS if actions is None else actions
     name: rx.Var[str] | str = (
         vm.actions_label(label)
@@ -465,7 +499,7 @@ def timeline_actions(
     return rx.match(
         kind,
         *((key, bar(key)) for key in ("video", "photo", "text", "effect")),
-        timeline_add(on_add),
+        timeline_add(on_add, off=add_off, note=add_note),
     )
 
 

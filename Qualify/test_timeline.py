@@ -281,7 +281,8 @@ def test_lens_and_island_exist() -> None:
     assert ".q-tl-island" in _CSS and "@container q-tl-stack (min-width: 52rem)" in _CSS
     # The lens and the island reuse the menu's classes: no copy of their material here.
     block = _CSS[_CSS.index("Round 2 (Deivid, 2026-11-14)") :]
-    assert "backdrop-filter" not in block
+    # (ED-12's off option only switches the glass OFF: `backdrop-filter: none`)
+    assert "backdrop-filter: blur" not in block and "backdrop-filter: var(" not in block
     stack = str(tl.timeline_layout(rx.text("t"), rx.text("a"), rx.text("p")).render())
     assert "q-tl-stack__actions" in stack and "q-tl-stack__panel" in stack
 

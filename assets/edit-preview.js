@@ -510,7 +510,13 @@
       active.setAttribute("data-rotate", String(block.rotate || 0));
       active.playbackRate = c.rate(block.speed);
       var want = c.sourceTime(block, st.t);
-      if (active.readyState >= 1 && Math.abs(active.currentTime - want) > SLACK) {
+      // ED-12: a player measuring its file's length goes to `want` once it is done
+      // (`measureLength`'s `backTo`), never in the middle of it
+      if (
+        active.readyState >= 1 &&
+        !active.__qMeasuring &&
+        Math.abs(active.currentTime - want) > SLACK
+      ) {
         try {
           active.currentTime = want;
         } catch (err) {
@@ -658,8 +664,19 @@
     }
     if (st.mode === "video") {
       var video = seqActiveVideo(host);
-      if (video && video.ended) st.t = block.out_end; // the source ended before its stretch
-      else if (video && video.readyState >= 2) st.t = c.finalTime(block, video.currentTime);
+      // ED-12: while `measureLength` seeks this player past its end to read a recorded
+      // file's length, its time and `ended` are not the sequence's — the clock holds
+      if (video && video.__qMeasuring) st.wall = now;
+      else if (video && video.ended) st.t = block.out_end; // the source ended before its stretch
+      else if (video && video.readyState >= 2) {
+        // safety net (ED-12 review): a player left paused by a measure while the sequence
+        // plays starts again — at most twice a second; an owner's pause stops this tick
+        if (video.paused && !(now - (video.__qResumedAt || 0) < 500)) {
+          video.__qResumedAt = now;
+          c.resumeIfPlaying(video, st.playing);
+        }
+        st.t = c.finalTime(block, video.currentTime);
+      }
     } else {
       st.t = Math.min(st.t + dt, block.out_end);
     }
@@ -915,6 +932,28 @@
     document.addEventListener(type, seqHoldTracks, { capture: true, passive: true });
   });
 
+  /* The length and size of the sequence video `video` to the screen (its block's key),
+     through the single preview's hidden button — once per file and length (the two
+     players take turns with different files). */
+  function seqReportLength(host, video, seconds) {
+    var rounded = Math.round(Number(seconds) * 100) / 100;
+    var said = (video.getAttribute("src") || "") + "|" + rounded;
+    if (!isFinite(rounded) || rounded <= 0 || video.__qSeqLength === said) return;
+    var block = (seqState(host).seq.blocks || []).filter(function (b) {
+      return b.url === video.getAttribute("src");
+    })[0];
+    var trigger = host.querySelector("[data-edit-duration-trigger]");
+    if (!block || !trigger) return;
+    video.__qSeqLength = said;
+    window.__qEditPreviewReport = {
+      key: block.key,
+      seconds: rounded,
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+    };
+    trigger.click();
+  }
+
   function seqVideoHost(video) {
     return video && video.hasAttribute && video.hasAttribute("data-edit-seq-video")
       ? seqHostOf(video)
@@ -935,20 +974,43 @@
           /* nothing */
         }
       }
-      // each source's length and size, through the single preview's report
-      var block = (st.seq.blocks || []).filter(function (b) {
-        return b.url === video.getAttribute("src");
-      })[0];
-      var trigger = host.querySelector("[data-edit-duration-trigger]");
-      if (block && trigger && isFinite(video.duration) && video.duration > 0) {
-        window.__qEditPreviewReport = {
-          key: block.key,
-          seconds: Math.round(video.duration * 100) / 100,
-          width: video.videoWidth || 0,
-          height: video.videoHeight || 0,
-        };
-        trigger.click();
-      }
+      // each source's length and size, through the single preview's report. ED-12: a
+      // file recorded with MediaRecorder says Infinity or NaN here — it is measured by
+      // seeking past its end (`measureLength`), never left at the timeline's default
+      // (ED-12 review: measured in the player that holds the file — the other one is
+      // busy with the next block —, so the sequence's clock holds while it measures,
+      // `seqTick`, and it goes back to the time the sequence asked for)
+      core().measureLength(
+        video,
+        function (seconds) {
+          seqReportLength(host, video, seconds);
+        },
+        {
+          backTo: function () {
+            return video.__qSeqWant;
+          },
+          // the seek past the end paused it: the sequence that was playing goes on
+          after: function () {
+            var on = st.playing && st.mode === "video" && video === seqActiveVideo(host);
+            core().resumeIfPlaying(video, on);
+          },
+        }
+      );
+    },
+    true
+  );
+
+  /* ED-12: a length that changes after `loadedmetadata` (a fragmented MP4 first says
+     what it has read so far) is reported again, once it is finite and different. */
+  document.addEventListener(
+    "durationchange",
+    function (e) {
+      var video = e.target;
+      var host = seqVideoHost(video);
+      // while `measureLength` seeks past the end, it reports (and goes back) itself
+      if (!host || video.__qMeasuring) return;
+      var seconds = Number(video.duration);
+      if (isFinite(seconds) && seconds > 0) seqReportLength(host, video, seconds);
     },
     true
   );
@@ -996,7 +1058,8 @@
       if (!host) return;
       var st = seqState(host);
       if (!st.playing || st.mode !== "video" || video !== seqActiveVideo(host)) return;
-      if (!video.paused || video.ended) return;
+      // a measure's seek past the end pauses it: not the owner's pause (ED-12 review)
+      if (!video.paused || video.ended || video.__qMeasuring) return;
       var block = (st.seq.blocks || [])[st.idx];
       if (!block || (video.getAttribute("src") || "") !== block.url) return;
       seqPause(host);

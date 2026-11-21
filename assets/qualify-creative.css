@@ -1396,7 +1396,30 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl-island { padding: var(--space-2); }
 /* The island's depth layer (`::before`, z 0) is positioned: the buttons go above it. */
 .q-tl-island > * { position: relative; z-index: 1; }
-.q-tl-add { display: flex; align-items: center; min-height: 44px; }
+/* ED-12 (m-25029107): why «Foto o video» is off (8 photos or videos) goes on its own
+   line ABOVE the «+», in the flow — never beside it, where the options open over it
+   (Deivid review). */
+.q-tl-add { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); min-height: 44px; }
+.q-tl-add__row { display: flex; align-items: center; min-height: 44px; }
+.q-tl-add__note { min-width: 0; }
+/* The option that is off: a solid, flat pill (no glass, no opacity — nothing behind it
+   shows through), grey text with the contrast Radix's steps 3/11 keep in light and dark
+   mode, and the «not allowed» pointer. */
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled],
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled][data-highlighted] {
+  opacity: 1;
+  background: var(--gray-3);
+  box-shadow: inset 0 0 0 1px var(--gray-a6);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  color: var(--gray-11);
+  cursor: not-allowed;
+}
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled] .q-orbit-dot {
+  background: var(--gray-a3);
+  color: var(--gray-11);
+}
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled]:active { transform: none; }
 .q-tl-panel__field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 
 /* ── The preview in sequence (ED-01b m-25029106): `ui.edit_sequence_preview` ──────────
@@ -1486,6 +1509,20 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    same column, the preview centred and min(62svh, 40rem) tall whatever is chosen; what
    «Agregar» opens goes in the side panel (`ui.drawer`), never beside the preview. */
 .q-edit--timeline { grid-template-areas: "preview" "timeline" "main" "parts"; }
+/* ED-12 (m-25029107): files of the computer dragged over «Fotos y videos» — the line
+   marks the gap they land in (`assets/timeline-insert.js`); no animation, so reduced
+   motion needs nothing. */
+.q-tl__insert {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  margin-left: -1.5px;
+  z-index: 7;
+  border-radius: 2px;
+  background: var(--accent-9);
+  pointer-events: none;
+}
 .q-edit--timeline > .q-edit__parts { grid-area: parts; min-width: 0; }
 .q-edit--timeline > .q-edit__preview { grid-area: preview; }
 .q-edit--timeline > .q-edit__main { grid-area: main; }
