@@ -20,6 +20,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from urllib.parse import quote
 
+from . import clip_gallery_vm
 from . import editor_preview_contract as contract
 from .ui import timeline_vm
 
@@ -355,11 +356,13 @@ CUT_LABEL = "Cortar el video donde está el marcador"
 CUT_NOT_HERE = "Mueve el marcador dentro de tu video para cortar."
 CUT_TOO_CLOSE = "Muy cerca del borde: mueve el marcador al menos 1 s."
 #: ED-03: «Cortar» adds a block; the recipe takes `contract.SEGMENTS_MAX` stretches in
-#: all (photos, other videos and the own video's pieces): with that many it is off. ONE
-#: sentence for the cap (review ED-03): «Cortar» adds what to do; before «Crear»
-#: (`TOO_MANY_PIECES`) the cap alone.
-FULL_LINE = f"Tu video puede tener hasta {contract.SEGMENTS_MAX} fotos o videos."
-CUT_FULL = f"{FULL_LINE} Quita uno para cortar de nuevo."
+#: all (photos, other videos and the own video's pieces): with that many it is off.
+#: ED-12 UX review: each place says what is true there and what to do — «Agregar»
+#: (`FULL_LINE`), «Cortar» (`CUT_FULL`), «Crear» with too many (`TOO_MANY_PIECES`) —,
+#: never the same sentence twice.
+_FULL_NOW = f"Tu video ya tiene {contract.SEGMENTS_MAX} fotos o videos."
+FULL_LINE = f"{_FULL_NOW} Quita una para agregar otra."
+CUT_FULL = f"{_FULL_NOW} Quita una para cortar de nuevo."
 #: Fallback lines of `change_message` (the screen says which block: `cut_line`, …).
 CUT_DONE_LINE = "Cortaste tu video."
 PIECE_REMOVED_LINE = "Quitaste un pedazo de tu video."
@@ -909,7 +912,9 @@ NEEDS_MEDIA = "Para poner un texto o un efecto, primero agrega una foto o un vid
 LENGTH_UNKNOWN = (
     "No pudimos abrir uno de tus videos y no sabemos cuánto dura. Quítalo o cámbialo por otro."
 )
-TOO_MANY_PIECES = FULL_LINE
+TOO_MANY_PIECES = (
+    f"Tu video tiene más de {contract.SEGMENTS_MAX} fotos o videos. Quita una para poder crearlo."
+)
 #: What the preview cannot show and the video made here does not take: the AI's
 #: references — «Inspiración» (its banks' photos and videos, `stock` too) and Pinterest —
 #: and the music (`clip_gallery_vm.AUDIO_TAG`). Said where they are taken out: their
@@ -1140,6 +1145,202 @@ def split_check(
             return 0.0, too_close_text(edge)
         return round(src_start + offset * speed, 2), ""
     return 0.0, CUT_NOT_HERE
+
+
+# -- ED-12 m-25029107: media put in at a place of the timeline ------------------------------
+
+#: ED-12 UX review S7: the editor's live line said again with the same words ends in
+#: this thin space (or loses it), so the `role=status` changes and is read once more.
+SAY_AGAIN = "\u2009"
+#: A file dropped on the timeline that is neither a photo nor a video (criterion 4).
+BAD_FILE_LINE = "Ese archivo no es una foto ni un video. Prueba con otro."
+#: What the timeline takes from the computer: the Clip's «Subir» photos and videos
+#: (`content_generator._CLIP_IMAGE_ACCEPT` / `_CLIP_VIDEO_ACCEPT`), up to 200 MB each.
+TIMELINE_UPLOAD_ID = "clip_timeline_drop"
+TIMELINE_ACCEPT: dict[str, list[str]] = {
+    "image/*": [".png", ".jpg", ".jpeg", ".webp"],
+    "video/mp4": [".mp4"],
+    "video/quicktime": [".mov"],
+}
+TIMELINE_MAX_BYTES = clip_gallery_vm.MAX_MB * 1024 * 1024
+
+
+def timeline_full(media: Sequence[Mapping[str, object]]) -> bool:
+    """The timeline holds `contract.SEGMENTS_MAX` blocks: nothing more goes in."""
+    return len(media) >= contract.SEGMENTS_MAX
+
+
+def media_room(media: Sequence[Mapping[str, object]]) -> int:
+    """How many more photos or videos the timeline takes."""
+    return max(contract.SEGMENTS_MAX - len(media), 0)
+
+
+def keep_within_cap(
+    fresh: Sequence[str], media: Sequence[Mapping[str, object]]
+) -> tuple[list[str], list[str]]:
+    """Which of the `fresh` files (in the order they were chosen) stay so the timeline
+    (`media`, with them already in) holds at most `contract.SEGMENTS_MAX` blocks: the
+    first ones, while they fit; the rest, from the end of what was chosen, do not go in.
+    A block is what the timeline shows — the own video cut with «Cortar» counts one per
+    piece —, so a fresh file the timeline does not show (a reference for the AI only)
+    neither counts nor is left out. Returns (kept, left out)."""
+    new = set(fresh)
+    blocks: dict[str, int] = {}
+    for item in media:
+        key = str(item.get("key") or "")
+        blocks[key] = blocks.get(key, 0) + 1
+    used = sum(n for key, n in blocks.items() if key not in new)
+    kept: list[str] = []
+    out: list[str] = []
+    for key in dict.fromkeys(fresh):
+        count = blocks.get(key, 0)
+        if not count:
+            continue
+        if used + count <= contract.SEGMENTS_MAX:
+            used += count
+            kept.append(key)
+        else:
+            out.append(key)
+    return kept, out
+
+
+def _what(left_out: Sequence[str]) -> str:
+    """«la foto» / «las fotos» / «el video» / «los videos» / «las fotos ni los videos»."""
+    kinds = set(left_out)
+    one = len(left_out) == 1
+    if kinds == {"photo"}:
+        return "la foto" if one else "las fotos"
+    if kinds == {"video"}:
+        return "el video" if one else "los videos"
+    return "las fotos ni los videos"
+
+
+def cap_line(added: int, left_out: Sequence[str], *, full: bool = False) -> str:
+    """The live line when the timeline's 8 photos or videos left some of what was chosen
+    out (`left_out`: each one's kind, «photo» or «video»; ED-12 UX review S2):
+    «Agregamos 1 de 2. La última foto no entró: tu video puede tener hasta 8 fotos o
+    videos.» — «La última foto» / «Las últimas 2 fotos» / «El último video» / «Los
+    últimos 2 videos» agree with what did not go in; photos and videos mixed say only
+    how many («Los últimos 3 no entraron…»). Nothing added: «No agregamos la foto: tu
+    video ya tiene 8 fotos o videos. Quita una para agregar otra.» — that only when the
+    timeline is really `full`; else «No agregamos la foto: tu video puede tener hasta 8
+    fotos o videos.» "" when nothing was left out."""
+    out = len(left_out)
+    if out <= 0:
+        return ""
+    cap = contract.SEGMENTS_MAX
+    limit = f"tu video puede tener hasta {cap} fotos o videos."
+    if added <= 0:
+        why = (
+            f"tu video ya tiene {cap} fotos o videos. Quita una para agregar otra."
+            if full
+            else limit
+        )
+        return f"No agregamos {_what(left_out)}: {why}"
+    kinds = set(left_out)
+    if kinds == {"photo"}:
+        rest = "La última foto no entró" if out == 1 else f"Las últimas {out} fotos no entraron"
+    elif kinds == {"video"}:
+        rest = "El último video no entró" if out == 1 else f"Los últimos {out} videos no entraron"
+    else:
+        rest = f"Los últimos {out} no entraron"
+    return f"Agregamos {added} de {added + out}. {rest}: {limit}"
+
+
+def video_cap_line(count: int, *, most: int) -> str:
+    """ED-12 UX review S1: the Clip's own limit of `most` videos refused `count` videos
+    of one drop (those the 8 photos or videos left out are summed in: one sentence that
+    is true): «No agregamos los 2 videos: ya tienes 3 videos, el máximo. Quita uno para
+    agregar otro.» "" for none."""
+    if count <= 0:
+        return ""
+    what = "el video" if count == 1 else f"los {count} videos"
+    return f"No agregamos {what}: ya tienes {most} videos, el máximo. Quita uno para agregar otro."
+
+
+def index_after_playhead(media: Sequence[Mapping[str, object]], playhead: float) -> int:
+    """Where «+ Foto o video» puts what is chosen (criterion: «después del bloque que está
+    bajo el cabezal»): the place right after the block under the marker — on the line
+    between two blocks, after the one that starts there (as `block_at`); past the end or
+    on an empty timeline, at the end."""
+    at = 0.0
+    for index, item in enumerate(media):
+        length = _shown_length(item)
+        if at - 1e-6 <= float(playhead) < at + length - 1e-6:
+            return index + 1
+        at += length
+    return len(media)
+
+
+def block_start(media: Sequence[Mapping[str, object]], index: int) -> float:
+    """The second of the final video block `index` starts at (the end past the last)."""
+    return round(sum(_shown_length(item) for item in list(media)[: max(int(index), 0)]), 2)
+
+
+def insert_order(
+    keys: Sequence[str],
+    media: Sequence[Mapping[str, object]],
+    fresh: Sequence[str],
+    index: int,
+) -> list[str]:
+    """The Clip's whole order of files (`keys`, the `fresh` ones among them, wherever
+    `CreativeState._clip_strip` put them) with the `fresh` files that are blocks of the
+    timeline (`media`, `timeline_media`) put at block `index` of the timeline as it was
+    without them, in the order given. Never between two pieces of the same video
+    (`Cortar`'s pieces stay side by side, as `_clip_move_media` keeps them): such an
+    index goes after the last piece. A file the timeline does not show keeps its place."""
+    new = set(fresh)
+    blocks = [str(item.get("key") or "") for item in media if str(item.get("key")) not in new]
+    on = {str(item.get("key") or "") for item in media}
+    at = min(max(int(index), 0), len(blocks))
+    while 0 < at < len(blocks) and blocks[at - 1] == blocks[at]:
+        at += 1
+    going = [key for key in fresh if key in on]
+    shown = list(dict.fromkeys([*blocks[:at], *going, *blocks[at:]]))
+    return reorder_keys(list(keys), shown)
+
+
+def added_line(media: Sequence[Mapping[str, object]], spots: Sequence[int]) -> str:
+    """The live line once files went in (§4): one — «Agregaste la foto 2.» / «Agregaste
+    el video 2.» (its place) —, several — «Agregaste 3 fotos o videos.» ("" = none)."""
+    places = [i for i in spots if 0 <= i < len(media)]
+    if not places:
+        return ""
+    if len(places) == 1:
+        noun = "la foto" if media[places[0]].get("kind") == "photo" else "el video"
+        return f"Agregaste {noun} {places[0] + 1}."
+    return f"Agregaste {len(places)} fotos o videos."
+
+
+def timeline_rejected_line(rejected: Sequence[object] | None) -> str:
+    """What the timeline's drop refused in the browser (react-dropzone's
+    `fileRejections`): a file of another type says `BAD_FILE_LINE` (criterion 4); one over
+    the size cap, the Clip's own size note (`clip_gallery_vm.rejected_text`)."""
+    too_big: list[object] = []
+    other = False
+    for row in rejected or ():
+        errors = row.get("errors", []) if isinstance(row, dict) else []
+        codes = {str(e.get("code", "")) for e in errors or () if isinstance(e, dict)}
+        if "file-too-large" in codes:
+            too_big.append(row)
+        else:
+            other = True
+    notes = [BAD_FILE_LINE] if other else []
+    if too_big:
+        notes.append(clip_gallery_vm.rejected_text(too_big, clip_gallery_vm.VIDEO))
+    return " ".join(note for note in notes if note)
+
+
+def jump_script(seconds: float) -> str:
+    """The preview in sequence goes to `seconds` (criterion: «la vista previa salta
+    ahí»), once the timeline re-rendered with what went in (`assets/edit-preview.js`
+    `seq.goTo`)."""
+    return (
+        "window.setTimeout(function () {"
+        " var h = document.querySelector('[data-edit-sync] [data-edit-seq-host]');"
+        " var p = window.__qEditPreview;"
+        f" if (h && p && p.seq) p.seq.goTo(h, {max(float(seconds), 0.0):.2f}); }}, 150)"
+    )
 
 
 def is_flow(block: str) -> bool:

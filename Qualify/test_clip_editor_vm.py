@@ -660,10 +660,13 @@ def test_ed03_lines() -> None:
     assert vm.fitted_line(["el texto", "Vapor"]) == (
         "El texto y Vapor ahora terminan con tu video."
     )
-    assert vm.CUT_FULL == (
-        "Tu video puede tener hasta 8 fotos o videos. Quita uno para cortar de nuevo."
+    # ED-12 UX review S3: each place says what is true there — never the same sentence
+    assert vm.CUT_FULL == "Tu video ya tiene 8 fotos o videos. Quita una para cortar de nuevo."
+    assert vm.FULL_LINE == "Tu video ya tiene 8 fotos o videos. Quita una para agregar otra."
+    assert vm.TOO_MANY_PIECES == (
+        "Tu video tiene más de 8 fotos o videos. Quita una para poder crearlo."
     )
-    assert vm.TOO_MANY_PIECES == "Tu video puede tener hasta 8 fotos o videos."
+    assert len({vm.CUT_FULL, vm.FULL_LINE, vm.TOO_MANY_PIECES}) == 3
     assert vm.TRIM_HINT == (
         "Arrastra las barras de color: hacia adentro recortas, hacia afuera alargas."
     )

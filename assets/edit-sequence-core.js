@@ -1,5 +1,6 @@
-/* The preview-in-sequence's clock (ED-01b m-25029106), PURE: no DOM, no timers, so
-   `node` tests it without a browser (`Qualify/test_edit_sequence_js.py`). The engine in
+/* The preview-in-sequence's clock (ED-01b m-25029106), PURE: no DOM and no timers
+   (but `measureLength`'s give-up, which a test can inject), so `node` tests it
+   without a browser (`Qualify/test_edit_sequence_js.py`). The engine in
    `assets/edit-preview.js` (sequence mode) uses it through `window.__qEditSeqCore`.
 
    One clock: `t`, seconds of the FINAL video. A sequence is `Qualify/edit_sequence.py`'s
@@ -158,8 +159,124 @@
     return "broken";
   }
 
+  /* ED-12 (m-25029107): a video's real length, also when `loadedmetadata` says
+     Infinity or NaN — a file recorded with MediaRecorder carries no length in its
+     header. The standard way out: seek far past the end (`currentTime = 1e101`), so the
+     browser reads to the last frame; on `durationchange` / `timeupdate` the length is
+     finite, and the video goes back to where it was. `done(seconds)` is called ONCE,
+     with a finite length above 0 (at once when the browser already knows it). Returns
+     true while it is measuring (a second call on the same video waits for the first).
+     The measure is tied to the file it started on (ED-12 review): a new `src`
+     (`emptied` / `loadstart`, or another address seen on the next event) stops it with
+     no length and no seek back — the time it held belongs to the other file —; after
+     `MEASURE_MS` with no finite length it gives up (`__qMeasuring` is let go and the
+     video goes back). `video` is anything with `duration`, `currentTime`,
+     `addEventListener` / `removeEventListener` and a `src` (or `getAttribute("src")`):
+     node tests a stub, with `opts.setTimer(fn, ms)` / `opts.clearTimer(id)` in place of
+     the global timers. `opts.backTo()`: where to go back to, when the player was asked
+     for another time while it measured (default: where it was). `opts.after()`: called
+     once the measure is over, however it ended (found, new file, gave up) — the seek
+     past the end paused a player that was playing, and the preview starts it again
+     (`resumeIfPlaying`). */
+  var FAR_PAST_END = 1e101;
+  var MEASURE_MS = 5000;
+
+  function srcOf(video) {
+    if (video && typeof video.getAttribute === "function") return video.getAttribute("src") || "";
+    return (video && video.src) || "";
+  }
+
+  function measureLength(video, done, opts) {
+    if (!video) return false;
+    var known = Number(video.duration);
+    if (isFinite(known) && known > 0) {
+      done(known);
+      return false;
+    }
+    if (video.__qMeasuring) return true;
+    video.__qMeasuring = true;
+    var o = opts || {};
+    var setTimer = o.setTimer || (typeof setTimeout === "function" ? setTimeout : null);
+    var clearTimer = o.clearTimer || (typeof clearTimeout === "function" ? clearTimeout : null);
+    var src = srcOf(video);
+    var back = Number(video.currentTime) || 0;
+    var timer = null;
+    function stop() {
+      video.removeEventListener("durationchange", check);
+      video.removeEventListener("timeupdate", check);
+      video.removeEventListener("emptied", abandon);
+      video.removeEventListener("loadstart", abandon);
+      if (timer !== null && clearTimer) clearTimer(timer);
+      timer = null;
+      video.__qMeasuring = false;
+    }
+    function goBack() {
+      if (srcOf(video) !== src) return; // another file: its time is not ours to move
+      var to = o.backTo ? Number(o.backTo()) : back;
+      try {
+        video.currentTime = isFinite(to) && to >= 0 ? to : back;
+      } catch (err) {
+        /* it stays at the end: the next seek of the preview moves it */
+      }
+    }
+    function finish() {
+      if (o.after) o.after();
+    }
+    function abandon() {
+      stop(); // a new file in the player: this measure is over, with no length
+      finish();
+    }
+    function check() {
+      if (srcOf(video) !== src) {
+        abandon();
+        return;
+      }
+      var length = Number(video.duration);
+      if (!isFinite(length) || length <= 0) return; // still reading: wait
+      stop();
+      goBack();
+      done(length);
+      finish();
+    }
+    video.addEventListener("durationchange", check);
+    video.addEventListener("timeupdate", check);
+    video.addEventListener("emptied", abandon);
+    video.addEventListener("loadstart", abandon);
+    if (setTimer) {
+      timer = setTimer(function () {
+        timer = null;
+        stop(); // never finite: give up — the block keeps the timeline's guess
+        goBack();
+        finish();
+      }, MEASURE_MS);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    }
+    try {
+      video.currentTime = FAR_PAST_END;
+    } catch (err) {
+      stop(); // not seekable: no length (the preview treats it as a timed block)
+      return false;
+    }
+    return true;
+  }
+
+  /* ED-12 review: reaching the end (the seek to 1e101) pauses a playing player, and the
+     sequence's `pause` listener lets it be (`ended`): once the measure is over, a player
+     the sequence is `playing` — the owner did not pause it — plays again. Never while it
+     measures, never at its real end. Whether `play()` was called. */
+  function resumeIfPlaying(video, playing) {
+    if (!video || !playing || !video.paused || video.ended || video.__qMeasuring) return false;
+    var started = video.play();
+    if (started && started.catch) started.catch(function () {});
+    return true;
+  }
+
   var api = {
     RATE_MAX: RATE_MAX,
+    FAR_PAST_END: FAR_PAST_END,
+    MEASURE_MS: MEASURE_MS,
+    measureLength: measureLength,
+    resumeIfPlaying: resumeIfPlaying,
     WAIT_MS: WAIT_MS,
     waitVerdict: waitVerdict,
     scrollTarget: scrollTarget,

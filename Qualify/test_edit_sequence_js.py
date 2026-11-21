@@ -152,3 +152,174 @@ def test_the_clock_shows_whole_seconds_while_playing() -> None:
         " core.clockShown(59.99, true), core.clockShown(-1, true)];"
     )
     assert got == ["0:04", "0:04,4", "0:59", "0:00"]
+
+
+# ED-12 (m-25029107): a stub `<video>` — `duration`, `currentTime`, `src` and its listeners; a
+# seek past the end makes it know its real length (`real`), as a browser does once it
+# read to the last frame; the test fires `durationchange` as the browser would, later.
+_STUB_VIDEO = (
+    "function stub(duration, real, at) {"
+    " const on = {};"
+    " const v = {duration, _t: at || 0, seeks: [], src: '/a.mp4',"
+    "  addEventListener(n, f) { (on[n] = on[n] || []).push(f); },"
+    "  removeEventListener(n, f) { on[n] = (on[n] || []).filter(g => g !== f); },"
+    "  fire(n) { (on[n] || []).slice().forEach(f => f()); },"
+    "  listeners() { return Object.values(on).reduce((n, l) => n + l.length, 0); },"
+    "  get currentTime() { return this._t; },"
+    "  set currentTime(t) { this.seeks.push(t);"
+    "   if (t >= 1e100 && real) { this.duration = real; this._t = real; }"
+    "   else { this._t = t; } } };"
+    " return v; }"
+)
+
+
+def test_a_recorded_video_with_no_length_is_measured_past_its_end() -> None:
+    """MediaRecorder files say Infinity (or NaN) on `loadedmetadata`: the length is read
+    by seeking to 1e101, and the video goes back to where it was."""
+    got = _run(
+        _STUB_VIDEO + ";"
+        " const out = [];"
+        " const v = stub(Infinity, 3.04, 0.5);"
+        " const waiting = core.measureLength(v, s => out.push(s));"
+        " v.fire('durationchange');"
+        " const n = stub(NaN, 2.96, 0);"
+        " core.measureLength(n, s => out.push(s));"
+        " n.fire('timeupdate');"
+        " return [waiting, out, v.seeks, v.currentTime, v.listeners(), v.__qMeasuring,"
+        "  core.FAR_PAST_END];"
+    )
+    assert got == [True, [3.04, 2.96], [1e101, 0.5], 0.5, 0, False, 1e101]
+
+
+def test_a_video_whose_length_is_known_is_not_seeked() -> None:
+    got = _run(
+        _STUB_VIDEO + ";"
+        " const out = [];"
+        " const v = stub(4.2, 0, 1);"
+        " const waiting = core.measureLength(v, s => out.push(s));"
+        " return [waiting, out, v.seeks, v.listeners(), core.measureLength(null, () => 0)];"
+    )
+    assert got == [False, [4.2], [], 0, False]
+
+
+def test_measuring_waits_for_a_finite_length_and_runs_once() -> None:
+    # the first `timeupdate` still says Infinity: it keeps waiting; a second call on the
+    # same video while it measures does not seek again
+    got = _run(
+        _STUB_VIDEO + ";"
+        " const out = [];"
+        " const v = stub(Infinity, 0, 0);"  # the seek alone does not give the length
+        " core.measureLength(v, s => out.push(s));"
+        " const again = core.measureLength(v, s => out.push(s));"
+        " v.fire('timeupdate');"
+        " const before = out.length;"
+        " v.duration = 6.5; v.fire('timeupdate'); v.fire('durationchange');"
+        " return [again, before, out, v.seeks, v.listeners()];"
+    )
+    assert got == [True, 0, [6.5], [1e101, 0], 0]
+
+
+def test_the_sequence_measures_and_rereports_a_changing_length() -> None:
+    script = (_ASSETS / "edit-preview.js").read_text(encoding="utf-8")
+    assert "core().measureLength(" in script and "backTo" in script
+    # the clock holds while a player measures (ED-12 review #5)
+    assert "video.__qMeasuring) st.wall = now" in script
+    assert '"durationchange"' in script and "seqReportLength" in script
+
+
+# A fake clock for `measureLength`'s give-up: the test fires it by hand.
+_FAKE_TIMER = (
+    "const timers = [];"
+    " const opts = {setTimer(f, ms) { timers.push({f, ms, on: true}); return timers.length - 1; },"
+    "  clearTimer(id) { timers[id].on = false; }};"
+)
+
+
+def test_a_new_file_in_the_player_stops_the_measure() -> None:
+    """ED-12 review: the measure belongs to the file it started on — a `loadstart` (or
+    another address on the next event) ends it with no length and no seek back."""
+    got = _run(
+        _STUB_VIDEO + ";" + _FAKE_TIMER + " const out = [];"
+        " const v = stub(Infinity, 0, 2);"
+        " core.measureLength(v, s => out.push(s), opts);"
+        " v.src = '/b.mp4'; v.fire('loadstart');"
+        " v.duration = 9; v.fire('durationchange');"
+        " const first = [out, v.seeks, v.__qMeasuring, v.listeners(), timers[0].on];"
+        # the address changes with no `loadstart`: the next event notices it
+        " const w = stub(Infinity, 0, 1);"
+        " core.measureLength(w, s => out.push(s), opts);"
+        " w.src = '/c.mp4'; w.duration = 4; w.fire('timeupdate');"
+        " return [first, out, w.seeks, w.__qMeasuring, w.listeners(), timers[1].on];"
+    )
+    assert got == [[[], [1e101], False, 0, False], [], [1e101], False, 0, False]
+
+
+def test_a_length_that_never_comes_gives_up_after_five_seconds() -> None:
+    got = _run(
+        _STUB_VIDEO + ";" + _FAKE_TIMER + " const out = [];"
+        " const v = stub(Infinity, 0, 1.5);"
+        " core.measureLength(v, s => out.push(s), opts);"
+        " v.fire('timeupdate');"
+        " const waiting = v.__qMeasuring;"
+        " timers[0].f();"
+        " const after = [v.__qMeasuring, v.listeners(), v.seeks.slice(), out.slice()];"
+        # let go: the next `loadedmetadata` may measure again
+        " const again = core.measureLength(v, s => out.push(s), opts);"
+        " return [waiting, timers[0].ms, core.MEASURE_MS, after, again, timers.length];"
+    )
+    assert got == [True, 5000, 5000, [False, 0, [1e101, 1.5], []], True, 2]
+
+
+def test_it_goes_back_to_the_time_the_sequence_asked_for() -> None:
+    got = _run(
+        _STUB_VIDEO + ";" + _FAKE_TIMER + " const out = [];"
+        " const v = stub(NaN, 7, 0); let want = 0;"
+        " core.measureLength(v, s => out.push(s), {...opts, backTo: () => want});"
+        " want = 3.5; v.fire('durationchange');"
+        " return [out, v.seeks, timers[0].on];"
+    )
+    assert got == [[7], [1e101, 3.5], False]
+
+
+# A stub player that plays: the seek past the end pauses it (as a browser does there).
+_PLAYER = (
+    "function player(playing) {"
+    " const v = stub(Infinity, 3, 1); v.paused = !playing; v.ended = false; v.plays = 0;"
+    " v.play = function () { this.plays += 1; this.paused = false; };"
+    " return v; }"
+)
+
+
+def test_a_sequence_that_was_playing_plays_again_after_the_measure() -> None:
+    """ED-12 review: the seek to 1e101 pauses the player and the sequence's `pause`
+    listener lets it be — once the measure is over it plays again, only if the sequence
+    was playing (an owner's pause stays)."""
+    got = _run(
+        _STUB_VIDEO + ";" + _FAKE_TIMER + _PLAYER + ";"
+        " const out = [];"
+        " function measure(v, playing) {"
+        "  core.measureLength(v, s => out.push(s),"
+        "   {...opts, after: () => core.resumeIfPlaying(v, playing)});"
+        "  v.paused = true; v.fire('durationchange'); return [v.plays, v.paused]; }"
+        " const sounding = measure(player(true), true);"
+        " const stopped = measure(player(false), false);"
+        # it gave up after 5 s: it plays again too
+        " const late = player(true); late.duration = NaN;"
+        " core.measureLength(late, s => out.push(s),"
+        "  {...opts, after: () => core.resumeIfPlaying(late, true)});"
+        " late.paused = true; timers[timers.length - 1].f();"
+        # never at its real end, never while it measures
+        " const end = player(true); end.paused = true; end.ended = true;"
+        " const busy = player(true); busy.paused = true; busy.__qMeasuring = true;"
+        " return [sounding, stopped, late.plays, out,"
+        "  core.resumeIfPlaying(end, true), core.resumeIfPlaying(busy, true),"
+        "  core.resumeIfPlaying(player(false), false)];"
+    )
+    assert got == [[1, False], [0, True], 1, [3, 3], False, False, False]
+
+
+def test_the_preview_resumes_after_a_measure_and_never_fights_a_pause() -> None:
+    script = (_ASSETS / "edit-preview.js").read_text(encoding="utf-8")
+    assert "core().resumeIfPlaying(video, on)" in script  # after the measure
+    assert "c.resumeIfPlaying(video, st.playing)" in script  # the tick's safety net
+    assert "video.ended || video.__qMeasuring) return;" in script  # not the owner's pause

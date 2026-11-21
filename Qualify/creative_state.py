@@ -1866,6 +1866,28 @@ class CreativeState(rx.State):
     #: The id the side panel gives the focus back to when it closes ("" = the «+»): the
     #: «Producto» row's «Cambiar» opens it too.
     clip_flow_opener: str = ""
+    #: ED-12 (m-25029107): the block of the timeline where the next photos or videos go
+    #: in (-1 = at the end, as before): after the block under the marker for «+ Foto o
+    #: video», where they were dropped for a computer's files. Each file that goes in
+    #: moves it one place on, so several keep their order.
+    _clip_insert_at: int = -1
+    #: ED-12 review: the gap where the computer's files were just dropped on the timeline
+    #: (`drop_clip_block` «place»; -1 = none). Only their upload reads it
+    #: (`handle_clip_timeline_uploads`), and lets it go whatever happens; a drop the
+    #: browser refused whole (no upload follows) is let go by the editor's next action.
+    _clip_drop_at: int = -1
+    #: The second the preview jumps to once what went in shows (-1 = none).
+    _clip_jump_s: float = -1.0
+    #: What the timeline's last drop refused in the browser (said with what went in).
+    _clip_drop_refused: str = ""
+    #: The live line that says what a drop refused («Ese archivo no es una foto ni un
+    #: video. Prueba con otro.»): the editor's next action takes it away (Deivid review).
+    _clip_notice_once: str = ""
+    #: ED-12: one owner action's photos and videos against the timeline's 8 blocks
+    #: (`_clip_cap_trim`): how many went in, and the kind («photo»/«video») of each one
+    #: that did not — the live line says it (`clip_editor_vm.cap_line`).
+    _clip_cap_added: int = 0
+    _clip_cap_out: list[str] = []
     clip_rotate: int = 0
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
@@ -5550,7 +5572,12 @@ class CreativeState(rx.State):
         def held() -> set[str]:
             return {item["key"] for item in (*self.clip_images, *self.clip_videos)}
 
+        self._clip_cap_begin()
+
         def has_room(target: str) -> bool:
+            # ED-12: with «Arma tu video» on, the timeline's 8 blocks are a limit too
+            if self.clip_editor_shown and clip_editor_vm.timeline_full(self._clip_tl_media()):
+                return False
             if target == "clip_images":
                 return self.clip_image_room > 0
             return len(self.clip_videos) < CLIP_MAX_VIDEOS
@@ -5576,7 +5603,10 @@ class CreativeState(rx.State):
                 images_full = True
             else:
                 videos_full = True
-        if len(rows) > 1:  # one file says nothing more than it did before
+        if self._clip_cap_out:
+            # ED-12: the timeline's 8 blocks stopped it — said in the drawer as on the line
+            self.gallery_pick_note = self._clip_cap_note()
+        elif len(rows) > 1:  # one file says nothing more than it did before
             self.gallery_pick_note = clip_gallery_vm.gallery_partial_text(
                 added, len(rows), images_full=images_full, videos_full=videos_full
             )
@@ -5919,6 +5949,7 @@ class CreativeState(rx.State):
                 return
             known = self.inspiration_hit_keys.get(inspiration_hit_ref(media, choice_id), "")
             if known and known in self._inspiration_files:
+                self._clip_cap_begin()  # ED-12 review: its own count, never an earlier one
                 self._pick(_MIXED_SLOTS.get(target, {}).get(media, target), "inspiration", known)
                 return
             # live bug 2026-11-04: a gallery picker imports only what ITS grid listed
@@ -5962,6 +5993,7 @@ class CreativeState(rx.State):
             return
         async with self:
             self.inspiration_importing = ""
+            self._clip_cap_begin()  # ED-12 review: its own count, never an earlier one
             self._add_inspiration_file(imported, media)
             self.inspiration_hit_keys = {
                 **self.inspiration_hit_keys,
@@ -6004,8 +6036,10 @@ class CreativeState(rx.State):
         the role select changes it), a video as a reference video, within its room. A
         slot: each file of its type, as if picked in its other tabs. Returns how many went
         in (one already there counts). ED-11: ``posters`` — a video's key → the picture
-        its tile showed (the timeline block shows it)."""
+        its tile showed (the timeline block shows it). ED-12: with «Arma tu video» on,
+        what passes the timeline's 8 blocks is not added (`_clip_cap_note` says it)."""
         self.gallery_pick_note = ""
+        self._clip_cap_begin()
         added = 0
         for pick in picks:
             image = pick.media_type == "image"
@@ -6086,6 +6120,7 @@ class CreativeState(rx.State):
         """A file of the catalog product or of one of the brand's pieces into a slot —
         a slot of one file takes it (the same one again takes it out), a slot of
         several adds it or takes it out."""
+        self._clip_cap_begin()
         self._pick(target, source, key)
         if target in ("part_images", "part_videos"):
             return [CreativeState.inspect_part_videos, CreativeState.inspect_part_merge]
@@ -7348,6 +7383,7 @@ class CreativeState(rx.State):
         change or until the owner leaves the step. Deivid 2026-11-19 («quitemos el botón
         de deshacer»): there is no «Deshacer» any more — the snapshots only find the
         words of the line (`clip_editor_vm.change_message`)."""
+        self._clip_notice_done()
         after = self._clip_edit_snapshot()
         line = clip_editor_vm.change_message(before, after)
         if line:
@@ -7364,6 +7400,12 @@ class CreativeState(rx.State):
         self.clip_cut_end = 0.0
         self.clip_cut_pieces = []
         self.clip_flow_opener = ""
+        self._clip_insert_at = -1
+        self._clip_drop_at = -1
+        self._clip_jump_s = -1.0
+        self._clip_drop_refused = ""
+        self._clip_notice_once = ""
+        self._clip_cap_begin()
         self.clip_rotate = 0
         self.clip_overlay_text = ""
         self._clip_text_committed = ""
@@ -7842,8 +7884,19 @@ class CreativeState(rx.State):
             clip_editor_vm.block_url_script(clip_editor_vm.BLOCK_PARAM, slug, flow=flow)
         )
 
-    def _clip_choose(self, block: str) -> list[rx.event.EventSpec]:
-        """One thing under the timeline at a time: a block (its panel) or a flow."""
+    def _clip_choose(self, block: str, *, keep_aim: bool = False) -> list[rx.event.EventSpec]:
+        """One thing under the timeline at a time: a block (its panel) or a flow. ED-12
+        review: leaving «Foto o video» for anything else lets its place go — what comes
+        in next goes at the end, as before — unless the panel is closing (`keep_aim`:
+        «Tu Galería»'s files still go in, then `jump_clip_preview` lets it go)."""
+        self._clip_notice_done()
+        media = clip_editor_vm.FLOW_MEDIA
+        if (
+            not keep_aim
+            and clip_editor_vm.flow_of(self.clip_edit_block) == media
+            and clip_editor_vm.flow_of(block) != media
+        ):
+            self._clip_insert_at = -1
         if block != self.clip_edit_block:
             # a handle's «hasta aquí» and an off speed's «why» belong to their block
             self.clip_cut_error = ""
@@ -7871,10 +7924,13 @@ class CreativeState(rx.State):
         from .gen_gallery_pick_state import GenGalleryPickState  # noqa: PLC0415
 
         media = clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_MEDIA
-        events: list[Any] = list(self._clip_choose(""))
+        events: list[Any] = list(self._clip_choose("", keep_aim=True))
         if media:
             self._stop_playing()
             events.append(GenGalleryPickState.finish(MEDIA_DRAWER_CLIP))
+            # ED-12: once the last of «Tu Galería» went in, the preview jumps to what
+            # was added and the next files go at the end again
+            events.append(CreativeState.jump_clip_preview)
         return events
 
     @rx.event
@@ -7954,6 +8010,13 @@ class CreativeState(rx.State):
             self.clip_effect_error = ""
             if not self.clip_effect_category_read:
                 events.append(CreativeState.load_clip_effect_rubro)
+        if flow == clip_editor_vm.FLOW_MEDIA and not already:
+            # ED-12: what is chosen goes in after the block under the marker
+            media = self._clip_tl_media()
+            if clip_editor_vm.timeline_full(media):
+                self._clip_insert_at = -1
+            else:
+                self._clip_aim(clip_editor_vm.index_after_playhead(media, self.clip_edit_playhead))
         if flow == clip_editor_vm.FLOW_MEDIA and not (already and not tab):
             events += self._clip_media_flow(tab)
         return events
@@ -7962,7 +8025,13 @@ class CreativeState(rx.State):
     def open_clip_flow(self, flow: str) -> list[Any]:
         """«Agregar» → «Foto o video», «Texto», «Efecto» or «Pedir una idea»: the ONE
         side panel opens on that tab (Deivid 2026-11-17). «Texto» edits the one text
-        there is (ED-13 brings more)."""
+        there is (ED-13 brings more). ED-12: with 8 photos or videos «Foto o video» is
+        off, and says why."""
+        if flow == clip_editor_vm.FLOW_MEDIA and clip_editor_vm.timeline_full(
+            self._clip_tl_media()
+        ):
+            self._clip_say(clip_editor_vm.FULL_LINE)
+            return []
         return self._clip_open_flow(flow)
 
     @rx.event
@@ -8025,6 +8094,245 @@ class CreativeState(rx.State):
             place = pieces_now.index(self.clip_edit_block)
             self.clip_edit_block = clip_editor_vm.piece_id(own, place)
 
+    # -- ED-12 m-25029107: photos and videos put in at a place of the timeline ----------
+
+    def _clip_aim(self, index: int) -> None:
+        """What goes in next lands at block `index` of the timeline (clamped to its
+        ends). The order known now is written first, so only files added after this
+        count as new (`_clip_place_fresh`)."""
+        media = self._clip_tl_media()
+        self.clip_sequence = [item["key"] for item in self._clip_strip()]
+        self._clip_insert_at = min(max(int(index), 0), len(media))
+
+    def _clip_place_fresh(self) -> None:
+        """Files the Clip did not hold before (`clip_sequence` does not know them yet)
+        go to the block aimed at, in the order they came; the next ones go after them.
+        The preview jumps to the first one (`_clip_jump_s`) and the live line says it
+        («Agregaste la foto 2.»). Nothing aimed (-1): they go where `_clip_strip` puts
+        them, as before."""
+        at = self._clip_insert_at
+        if at < 0:
+            return
+        known = set(self.clip_sequence)
+        strip = self._clip_strip()
+        fresh = [item["key"] for item in strip if item["key"] not in known]
+        if not fresh:
+            return
+        media = self._clip_tl_media()
+        keys = [item["key"] for item in strip]
+        self.clip_sequence = clip_editor_vm.insert_order(keys, media, fresh, at)
+        placed = self._clip_tl_media()
+        spots = [i for i, item in enumerate(placed) if item["key"] in fresh]
+        if not spots:
+            return  # a reference for the AI only (Inspiración, Pinterest): not a block
+        self._clip_insert_at = spots[-1] + 1
+        if self._clip_jump_s < 0:
+            # several added in a row: the preview goes to the first of them
+            self._clip_jump_s = clip_editor_vm.block_start(placed, spots[0])
+        # the marker on the last one added: «+ Foto o video» again puts the next after it
+        self.clip_edit_playhead = clip_editor_vm.block_start(placed, spots[-1])
+        self._clip_say(clip_editor_vm.added_line(placed, spots))
+
+    def _clip_cap_begin(self) -> None:
+        """An owner action that may bring photos or videos starts counting from zero."""
+        self._clip_cap_added = 0
+        self._clip_cap_out = []
+
+    def _clip_cap_note(self) -> str:
+        """What the timeline's 8 blocks left out of the current action ("" = nothing).
+        «ya tiene 8» only when the timeline really is full (ED-12 UX review S1)."""
+        full = clip_editor_vm.timeline_full(self._clip_tl_media())
+        return clip_editor_vm.cap_line(self._clip_cap_added, self._clip_cap_out, full=full)
+
+    def _clip_say(self, line: str, *, before: str | None = None) -> None:
+        """The editor's live line (`clip_edit_notice`, a `role=status`). ED-12 UX review
+        S7: the same words said again would change nothing in the page and a screen
+        reader would stay quiet — so a repeat toggles a thin space at its end
+        (`clip_editor_vm.SAY_AGAIN`): the text changes, what is read does not.
+        ``before``: the line the page shows now, when this event already changed it."""
+        shown = self.clip_edit_notice if before is None else before
+        if line and shown == line:
+            line = f"{line}{clip_editor_vm.SAY_AGAIN}"
+        self.clip_edit_notice = line
+
+    def _clip_cap_refuse(self, kinds: Sequence[str]) -> None:
+        """Files the action brought that are left out before they are even stored."""
+        self._clip_cap_out = [*self._clip_cap_out, *kinds]
+
+    def _clip_cap_trim(self) -> list[str]:
+        """ED-12 (Deivid: «que se elimine el último con el aviso»): with «Arma tu video»
+        on, the timeline never passes `SEGMENTS_MAX` blocks, whichever way files came in
+        (the drawer's «Tu Galería», «Subir», «Publicaciones» — a carousel or a gallery
+        whole —, a product's media, files dropped on the timeline). The files the Clip
+        did not hold before (`clip_sequence` does not know them yet) go in from the first
+        chosen while they fit; the rest are not added — nothing already there leaves,
+        and what was stored stays stored. The own video's pieces count one each
+        (`clip_editor_vm.keep_within_cap`). Editor off: the Clip's own 9 photos / 3
+        videos rule, unchanged. Returns the kind of each file THIS call left out (ED-12
+        review: the live line says only what this call did, never an earlier count)."""
+        if not self.clip_editor_shown:
+            return []
+        known = set(self.clip_sequence)
+        kind = {
+            **{v["key"]: "video" for v in self.clip_videos},
+            **{i["key"]: "photo" for i in self.clip_images},
+        }
+        fresh = [
+            *(i["key"] for i in self.clip_images if i["key"] not in known),
+            *(v["key"] for v in self.clip_videos if v["key"] not in known),
+        ]
+        if not fresh:
+            return []
+        kept, out = clip_editor_vm.keep_within_cap(fresh, self._clip_tl_media())
+        self._clip_cap_added += len(kept)
+        if not out:
+            return []
+        gone = set(out)
+        left = [kind[key] for key in out]
+        self._clip_cap_refuse(left)
+        self.clip_images = [i for i in self.clip_images if i["key"] not in gone]
+        self.clip_videos = [v for v in self.clip_videos if v["key"] not in gone]
+        return left
+
+    def _clip_jump_events(self) -> list[rx.event.EventSpec]:
+        """The preview to where the last files went in (criterion: «la vista previa
+        salta ahí»), once."""
+        seconds = self._clip_jump_s
+        self._clip_jump_s = -1.0
+        return [rx.call_script(clip_editor_vm.jump_script(seconds))] if seconds >= 0 else []
+
+    @rx.event
+    def jump_clip_preview(self) -> list[rx.event.EventSpec]:
+        """After «¿Con qué lo armamos?» closed and what «Tu Galería» held went in: the
+        preview goes to the first file added, and the next files go at the end again."""
+        self._clip_insert_at = -1
+        return self._clip_jump_events()
+
+    @rx.var
+    def clip_tl_full(self) -> bool:
+        """The timeline holds 8 photos or videos: «+ Foto o video» is off (criterion 6)."""
+        return clip_editor_vm.timeline_full(self._clip_tl_media())
+
+    @rx.var
+    def clip_tl_add_note(self) -> str:
+        """Said beside «Agregar» while it cannot take more photos or videos."""
+        full = clip_editor_vm.timeline_full(self._clip_tl_media())
+        return clip_editor_vm.FULL_LINE if full else ""
+
+    @rx.event
+    async def handle_clip_timeline_uploads(
+        self, files: list[rx.UploadFile]
+    ) -> list[rx.event.EventSpec] | None:
+        """Files of the computer dropped on the timeline (criterion 4): uploaded through
+        the SAME flow as «Subir» (`_upload_clip_kind`: its rooms, names and notes) and
+        put where they were dropped (`drop_clip_block` «place» aimed it just before).
+        Never more than the timeline's 8 photos or videos: the first ones dropped go in,
+        the rest are not even stored, and the live line says how many did not
+        (`clip_editor_vm.cap_line`)."""
+        from qualify_creative.video import is_video_filename  # noqa: PLC0415 — as the provider
+
+        def kinds(dropped: list[rx.UploadFile]) -> list[str]:
+            return ["video" if is_video_filename(f.name or "") else "photo" for f in dropped]
+
+        self._clip_cap_begin()
+        shown = self.clip_edit_notice
+        aimed = self._clip_insert_at  # «Foto o video» open: its place (-1 = none)
+        drop_at = self._clip_drop_at
+        refused = self._clip_drop_refused
+        self._clip_drop_refused = ""
+        try:
+            media = self._clip_tl_media()
+            room = clip_editor_vm.media_room(media)
+            if not files:
+                return None  # the browser refused all of it: its line is already said
+            if room <= 0:
+                # nit 7: the full timeline's words and what the browser refused, together
+                self._clip_cap_refuse(kinds(files))
+                self._clip_say_drop(self._clip_cap_note(), refused)
+                return None
+            if drop_at >= 0:
+                self._clip_aim(drop_at)
+            elif self._clip_insert_at < 0:
+                self._clip_aim(clip_editor_vm.index_after_playhead(media, self.clip_edit_playhead))
+            # A drop with photos and videos mixed stores its photos first, then its videos
+            # (one upload per kind, as «Subir»): within what fits, the videos land after
+            # the photos, whatever their order in the drop.
+            taken = files[:room]
+            self._clip_cap_refuse(kinds(files[room:]))
+            images = [f for f in taken if not is_video_filename(f.name or "")]
+            videos = [f for f in taken if is_video_filename(f.name or "")]
+            self._clear_clip_notes()
+            self.clip_edit_notice = ""
+            videos_refused = 0
+            if images:
+                await self._upload_clip_kind(clip_gallery_vm.IMAGE, images)
+            if videos:
+                videos_refused = await self._upload_clip_kind(clip_gallery_vm.VIDEO, videos)
+            self._clip_say_drop(self._clip_drop_line(videos_refused), refused, before=shown)
+            return self._clip_jump_events()
+        finally:
+            # ED-12 review: a drop's gap is used once — an upload that fails or never
+            # comes leaves nothing aimed for what comes in next; a drop with no gap of its
+            # own, made while «Foto o video» is open, keeps that panel's place — moved on
+            # past what went in, as a pick there does
+            self._clip_drop_at = -1
+            if drop_at >= 0 or aimed < 0:
+                self._clip_insert_at = -1
+
+    def _clip_drop_line(self, videos_refused: int) -> str:
+        """What a drop of the computer's files says once it was stored (ED-12 UX review
+        S1). What passed the 8 is said in place of «Agregaste…» (it says how many went
+        in). When the Clip's own 3 videos refused some, ONE sentence says it and counts
+        the videos the 8 left out too («No agregamos los 2 videos: ya tienes 3 videos, el
+        máximo…»); the 8's sentence, if any, then speaks only of photos: two short true
+        sentences. The other notes of «Subir» (its 9 photos) follow."""
+        added_words = self.clip_edit_notice
+        out = self._clip_cap_out
+        notes = dict(self.clip_notes)
+        if videos_refused <= 0:
+            lines = [self._clip_cap_note() or added_words]
+        else:
+            photos_out = [kind for kind in out if kind == "photo"]
+            videos_out = len(out) - len(photos_out)
+            full = clip_editor_vm.timeline_full(self._clip_tl_media())
+            photo_line = clip_editor_vm.cap_line(self._clip_cap_added, photos_out, full=full)
+            # (no reel case: with a reel's video the editor is not shown)
+            video_line = clip_editor_vm.video_cap_line(
+                videos_refused + videos_out, most=clip_gallery_vm.MAX_VIDEOS
+            )
+            lines = [photo_line or added_words, video_line]
+            notes.pop(clip_gallery_vm.VIDEO, None)  # said above, with the 8's videos summed
+        lines += [n for n in notes.values() if n]
+        return " ".join(dict.fromkeys(n for n in lines if n))
+
+    def _clip_say_drop(self, line: str, refused: str, *, before: str | None = None) -> None:
+        """A drop's line, with what the browser refused of it (said once: the editor's
+        next action takes the line away)."""
+        self._clip_say(" ".join(n for n in (line, refused) if n), before=before)
+        self._clip_notice_once = self.clip_edit_notice if refused else ""
+
+    @rx.event
+    def clip_timeline_files_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """What the timeline's drop refused in the browser: another type says «Ese
+        archivo no es una foto ni un video. Prueba con otro.»; too heavy, the size."""
+        line = clip_editor_vm.timeline_rejected_line(rejected)
+        if line:
+            self._clip_say(line)
+            self._clip_drop_refused = line
+            self._clip_notice_once = self.clip_edit_notice
+
+    def _clip_notice_done(self) -> None:
+        """What a drop refused is said once (Deivid review): the editor's next action —
+        choosing a block, opening «Agregar», a change, another drop — takes the line
+        away, or puts its own words in its place. Not the preview's clock: it also moves
+        by itself to what a drop added. A drop's gap no upload used (the browser refused
+        all of it) goes too (ED-12 review)."""
+        self._clip_drop_at = -1
+        once = self._clip_notice_once
+        self._clip_notice_once = ""
+        if once and self.clip_edit_notice == once:
+            self.clip_edit_notice = ""
+
     def _clip_overlay(self, block_id: str) -> dict[str, object]:
         _media, overlays, _total = self._clip_tl()
         return next((row for row in overlays if row["id"] == block_id), {})
@@ -8083,6 +8391,7 @@ class CreativeState(rx.State):
         """The keyboard on the timeline (§3.7): Escape lets the block go; ←/→ on a video
         or photo moves it one place (D-T6: no buttons), on a text or effect ½ s, and on a
         handle that edge ½ s."""
+        self._clip_notice_done()
         if key == "Escape":
             return self._clip_choose("") if self.clip_edit_block else []
         if key in ("ArrowUp", "ArrowDown") and not edge:
@@ -8128,6 +8437,17 @@ class CreativeState(rx.State):
         try:
             number = float(value)
         except (TypeError, ValueError):
+            return []
+        self._clip_notice_done()
+        if what == "place":
+            # ED-12: files of the computer dropped there; their upload follows
+            # (`handle_clip_timeline_uploads`)
+            self._clip_drop_refused = ""
+            if clip_editor_vm.timeline_full(self._clip_tl_media()):
+                self._clip_drop_at = -1
+                self._clip_say(clip_editor_vm.FULL_LINE)
+            else:
+                self._clip_drop_at = max(int(round(number)), 0)
             return []
         if what == "move" and block_id in self._clip_media_ids():
             self._clip_move_media(block_id, int(round(number)))
@@ -8898,7 +9218,15 @@ class CreativeState(rx.State):
         orden sea el clip inicial/final», videos included): the first file opens the
         clip, the last — when there are two or more — closes it. A video as a frame
         lends its first frame to open the clip and its last one to close it
-        (`MediaProducer._clip_frame`)."""
+        (`MediaProducer._clip_frame`). ED-12: files that just went in take the place
+        «Arma tu video» aimed at (`_clip_insert_at`) before the frames are read — once
+        what passes the timeline's 8 blocks was left out (`_clip_cap_trim`), which the
+        live line then says."""
+        shown = self.clip_edit_notice
+        left_out = self._clip_cap_trim()
+        self._clip_place_fresh()
+        if left_out:  # ED-12 review: only what THIS sync left out is said
+            self._clip_say(self._clip_cap_note(), before=shown)
         strip = self._clip_strip()
         keys = [item["key"] for item in strip]
         self.clip_sequence = keys
@@ -8980,8 +9308,9 @@ class CreativeState(rx.State):
         self._clip_reject_notes = {}
         self.clip_notes = {kind: "" for kind in clip_gallery_vm.KINDS}
 
-    async def _upload_clip_kind(self, kind: str, files: list[rx.UploadFile]) -> None:
-        """A category's drop: stored within its room; what did not fit is said there."""
+    async def _upload_clip_kind(self, kind: str, files: list[rx.UploadFile]) -> int:
+        """A category's drop: stored within its room; what did not fit is said there.
+        Returns how many did not fit (ED-12: the timeline's drop words them itself)."""
         refused = await self._add_clip_files(kind, files)
         held = {
             clip_gallery_vm.IMAGE: len(self.clip_images),
@@ -8992,6 +9321,7 @@ class CreativeState(rx.State):
         note = clip_gallery_vm.refused_text(kind, refused, held=held, reel_video=reel)
         self._clip_upload_notes = {**self._clip_upload_notes, kind: note}
         self._show_clip_note(kind)
+        return refused
 
     @rx.event
     def clip_files_rejected(self, kind: str, rejected: list[dict[str, Any]]) -> None:
@@ -9005,6 +9335,7 @@ class CreativeState(rx.State):
 
     @rx.event
     async def handle_clip_image_uploads(self, files: list[rx.UploadFile]) -> None:
+        self._clip_cap_begin()
         await self._upload_clip_kind(clip_gallery_vm.IMAGE, files)
 
     @rx.event
@@ -9016,6 +9347,7 @@ class CreativeState(rx.State):
 
     @rx.event
     async def handle_clip_video_uploads(self, files: list[rx.UploadFile]) -> None:
+        self._clip_cap_begin()
         await self._upload_clip_kind(clip_gallery_vm.VIDEO, files)
 
     @rx.event
@@ -9163,6 +9495,7 @@ class CreativeState(rx.State):
         if self._pinterest_problem(target) or source.get("image_key") != key:
             return False
         if target == "clip_images":
+            self._clip_cap_begin()  # ED-12 review: its own count, never an earlier one
             self.clip_images = [
                 *self.clip_images,
                 {"key": key, "name": name, "source": "pinterest", "role": "style"},
@@ -9840,6 +10173,7 @@ class CreativeState(rx.State):
         fit is said, never dropped in silence."""
         if self.brief_kind != "clip":
             return
+        self._clip_cap_begin()
         main = self.selected_product_photo_key
         photos = [main] if main else []
         photos += [k for k in self._selected_product_photo_keys if k and k not in photos]
@@ -9867,12 +10201,17 @@ class CreativeState(rx.State):
             ]
         if fit_photos or fit_videos:
             self._sync_clip_frames()
+        # ED-12 review: counted once synced — the timeline's 8 may have left some out
+        photos_now = {i["key"] for i in self.clip_images}
+        videos_now = {v["key"] for v in self.clip_videos}
+        photos_in = sum(1 for k in fit_photos if k in photos_now)
+        videos_in = sum(1 for k in fit_videos if k in videos_now)
         self.product_seed_note = product_seed_note(
             self.brief_product_ref,
-            photos_in=len(fit_photos),
-            photos_out=len(new_photos) - len(fit_photos),
-            videos_in=len(fit_videos),
-            videos_out=len(new_videos) - len(fit_videos),
+            photos_in=photos_in,
+            photos_out=len(new_photos) - photos_in,
+            videos_in=videos_in,
+            videos_out=len(new_videos) - videos_in,
         )
 
     def _parts_on_screen(self) -> bool:

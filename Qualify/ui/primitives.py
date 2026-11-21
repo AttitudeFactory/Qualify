@@ -519,12 +519,15 @@ ORBIT_FOCUS_SCRIPT = (
 class OrbitItem:
     """One option of `orbit_menu`: `key` (tests and `data-orbit-key`), a Lucide `icon`,
     its `text` (16 characters at most, never icon alone) and the event that OPENS a flow
-    (never one that sends or publishes)."""
+    (never one that sends or publishes). ``disabled`` (a bool or a `Var[bool]`): the
+    option shows but cannot be chosen — the screen says why beside the «+» (ED-12:
+    «Foto o video» with 8 photos or videos)."""
 
     key: str
     icon: str
     text: str
     on_select: Any
+    disabled: Any = False
 
 
 def orbit_menu(
@@ -534,6 +537,7 @@ def orbit_menu(
     disabled: bool | rx.Var[bool] = False,
     icon: str = "plus",
     direction: Literal["up", "right"] = "up",
+    described_by: str | rx.Var[str] = "",
 ) -> rx.Component:
     """The «+» that opens a column of options above it (the kit's Orbit gesture redrawn
     on our tokens; founder 2026-11-06, m-24955785). Radix DropdownMenu — the «⋯» menus'
@@ -553,7 +557,11 @@ def orbit_menu(
     ``direction="right"`` (Deivid, 2026-11-16, «Arma tu video»): the options open in a
     ROW to the right of the «+» (`side="right"`, centred on it, never flipped to the
     left), the nearest rising first, sliding in from the button; with reduced motion
-    they only fade. The default ``"up"`` is WhatsApp's column, unchanged."""
+    they only fade. The default ``"up"`` is WhatsApp's column, unchanged.
+
+    ``described_by`` (optional, ED-12 UX review S4): the id of a line that says why an
+    option is off — the «+» gets `aria-describedby` with it, so a screen reader hears
+    the why on the button. A `Var` may be "" while there is nothing to say."""
     if direction not in ("up", "right"):
         raise ValueError("orbit_menu direction must be 'up' or 'right'")
     if not ORBIT_MIN_ITEMS <= len(items) <= ORBIT_MAX_ITEMS:
@@ -562,6 +570,11 @@ def orbit_menu(
         if not item.text.strip() or len(item.text) > ORBIT_MAX_TEXT:
             raise ValueError(f"orbit_menu option text must be 1-{ORBIT_MAX_TEXT} characters")
     right = direction == "right"
+    described = (
+        {"aria-describedby": described_by}
+        if isinstance(described_by, rx.Var) or described_by
+        else {}
+    )
     return rx.menu.root(
         rx.menu.trigger(
             rx.icon_button(
@@ -573,7 +586,7 @@ def orbit_menu(
                 disabled=disabled,
                 aria_label=label,
                 class_name="q-orbit-trigger",
-                custom_attrs={"data-orbit-trigger": "true"},
+                custom_attrs={"data-orbit-trigger": "true", **described},
             ),
         ),
         rx.menu.content(
@@ -585,6 +598,7 @@ def orbit_menu(
                     ),
                     rx.text(item.text, size="2", weight="medium"),
                     on_click=item.on_select,
+                    disabled=item.disabled,
                     class_name="q-orbit-pill",
                     custom_attrs={"data-orbit-key": item.key},
                     # the nearest to the button rises first, then each 30 ms (§5): a real
