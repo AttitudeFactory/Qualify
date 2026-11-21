@@ -24,6 +24,8 @@ JOB_INGEST = "ingest"
 JOB_CUT = "cut"
 #: m-25042483 (0171): a local-video source brought to 4K 8 bits before the assembly.
 JOB_NORMALIZE_LOCAL = "normalize_local"
+#: m-25026643 (0175): the light 480p copy of a video uploaded to the generator (ED-09).
+JOB_UPLOAD_PREVIEW = "upload_preview"
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"

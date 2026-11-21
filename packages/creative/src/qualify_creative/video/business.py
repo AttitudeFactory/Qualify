@@ -72,6 +72,12 @@ class TranscodeInterrupted(RuntimeError):
     on our own normalized output. Transient: the job retries."""
 
 
+class TranscodeTimedOut(TranscodeInterrupted):
+    """FFmpeg ran past the time allowed and was killed. A `TranscodeInterrupted` (retried)
+    unless the job says otherwise: the generator upload's 480p copy (m-25026643) fails for
+    good, since nobody waits for it."""
+
+
 class BusinessVideoNormalizer(Protocol):
     def normalize_file(self, source: Path, *, out_dir: Path) -> NormalizedBusinessVideo: ...
 
