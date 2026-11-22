@@ -7,6 +7,7 @@ from qualify_api.ads.messaging_greeting import MAX_QUESTION, MAX_WELCOME
 
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
+from .promotion_budget_vm import GENERAL_VALUES
 from .promotion_market_vm import SATURATED
 from .promotion_state import PromotionState as S
 from .promotion_story_ui import (
@@ -53,6 +54,7 @@ from .ui import (
     step_frame,
     step_head,
     step_sync,
+    tone_badge,
 )
 from .ui import tokens as T
 
@@ -677,6 +679,7 @@ def _link_destination() -> rx.Component:
 def _budget() -> rx.Component:
     return card(
         rx.vstack(
+            rx.cond(S.market_shown, _suggestion()),
             _field(
                 "Presupuesto total en pesos colombianos",
                 "budget",
@@ -693,6 +696,14 @@ def _budget() -> rx.Component:
             rx.cond(
                 S.budget_valid,
                 rx.text("Total: " + S.budget_label, size="2", weight="medium"),
+            ),
+            rx.cond(
+                S.budget_daily_line != "",
+                rx.text(S.budget_daily_line, size="2", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                S.budget_over_cap != "",
+                rx.text(S.budget_over_cap, size="2", color=T.TEXT_MUTED),
             ),
             _field("Inicio", "start_local", S.form.start_local, type="datetime-local"),
             _field("Final", "end_local", S.form.end_local, type="datetime-local"),
@@ -713,6 +724,91 @@ def _budget() -> rx.Component:
             spacing="4",
             width="100%",
         ),
+        width="100%",
+    )
+
+
+def _muted(text: rx.Var[str]) -> rx.Component:
+    return rx.text(text, size="2", color=T.TEXT_MUTED)
+
+
+def _hint_link(label: str, href: rx.Var[str]) -> rx.Component:
+    return rx.link(label, href=href, min_height="44px", display="inline-flex", align_items="center")
+
+
+def _use_suggestion() -> rx.Component:
+    return rx.button(
+        S.budget_hint.button,
+        on_click=S.use_budget_suggestion,
+        disabled=S.busy,
+        variant="soft",
+        min_height="44px",
+        width="100%",
+        white_space="normal",
+        height="auto",
+    )
+
+
+def _suggestion() -> rx.Component:
+    """m-25091389: a suggested amount before the field. A default with its reasons, never a
+    push: ignoring it is typing another amount, and it never blocks «Siguiente»."""
+    hint = S.budget_hint
+    pieces = rx.cond(hint.pieces_note != "", _muted(hint.pieces_note))
+    return rx.box(
+        rx.match(
+            hint.mode,
+            ("loading", rx.hstack(loading_spinner("sm"), _muted(hint.line), align="center")),
+            ("none", _muted(hint.line)),
+            ("applied", _muted(hint.line)),
+            (
+                "blocked",
+                rx.vstack(
+                    callout(hint.line, "info"),
+                    _hint_link("Revisar mi tope", S.budget_cap_href),
+                    spacing="1",
+                    width="100%",
+                ),
+            ),
+            (
+                "compact",
+                rx.vstack(
+                    rx.text(hint.headline, size="2", weight="medium"),
+                    pieces,
+                    _use_suggestion(),
+                    spacing="2",
+                    width="100%",
+                ),
+            ),
+            (
+                "full",
+                card(
+                    rx.vstack(
+                        tone_badge("Sugerencia", "neutral"),
+                        rx.text(hint.headline, weight="medium"),
+                        rx.foreach(hint.reasons, _muted),
+                        pieces,
+                        rx.cond(
+                            hint.general_values,
+                            rx.vstack(
+                                _muted(GENERAL_VALUES),
+                                _hint_link(
+                                    "Responder 5 preguntas (1 minuto)", S.budget_profile_href
+                                ),
+                                spacing="0",
+                            ),
+                        ),
+                        _use_suggestion(),
+                        spacing="2",
+                        width="100%",
+                        align_items="start",
+                    ),
+                    padding="1rem",
+                ),
+            ),
+            rx.fragment(),
+        ),
+        on_mount=S.load_budget_suggestion,
+        aria_live="polite",
         width="100%",
     )
 
