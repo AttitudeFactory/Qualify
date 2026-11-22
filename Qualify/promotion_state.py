@@ -38,6 +38,7 @@ from .promotion_audience_provider import (
     audience_scope,
     find_interests,
     find_places,
+    keep_market_estimate,
     read_business_location,
     read_reach,
     read_saved_audience,
@@ -65,6 +66,7 @@ from .promotion_audience_vm import (
     point_distance_hint,
     point_distance_label,
 )
+from .promotion_market_vm import MarketVM, market_estimate, market_view
 from .promotion_provider import (
     confirm_review,
     latest_greeting,
@@ -1068,7 +1070,8 @@ class PromotionState(rx.State):
         except Exception as exc:
             logger.warning("audience estimate failed: %s", type(exc).__name__)
             estimate = AudienceReachVM(
-                label="No pudimos consultar la estimación. Vuelve a intentarlo."
+                label="No pudimos consultar la estimación. Vuelve a intentarlo.",
+                status="failed",
             )
         async with self:
             if (
@@ -1276,6 +1279,31 @@ class PromotionState(rx.State):
     @rx.var
     def budget_label(self) -> str:
         return cop_label(self.form.budget)
+
+    @rx.var
+    def market(self) -> MarketVM:
+        """m-25091388: people the budget may reach, from the audience step's range."""
+        return market_view(self.audience_reach, self.form, self.timezone_name)
+
+    @rx.var
+    def market_shown(self) -> bool:
+        """Only flows with an audience step: an unpublished piece's country has no estimate."""
+        return "audience" in step_keys(self.form)
+
+    @rx.event
+    def widen_audience(self) -> rx.event.EventSpec | None:
+        """«Ampliar mi público»: back to the audience step; the amount stays in the form."""
+        keys = step_keys(self.form)
+        if self.busy or "audience" not in keys:
+            return None
+        self.error = ""
+        self.confirm_charge = False
+        self.reviewed = False
+        self.step = keys.index("audience") + 1
+        self.direction = "back"
+        return go_to_step(
+            f"/drafts/{self._piece_id}/promote", self.step, back=True, **self._return_params
+        )
 
     @rx.var
     def budget_valid(self) -> bool:
@@ -1977,6 +2005,7 @@ class PromotionState(rx.State):
             self.error = ""
             self._operation = operation = str(uuid4())
             form, zone, review = self.form, self.timezone_name, self.review
+            reach = getattr(self, "audience_reach", AudienceReachVM())
             source = next((row for row in self.sources if row.id == form.source_id), None)
             piece, request_key = self._piece_id, self._request_key
         try:
@@ -2012,6 +2041,12 @@ class PromotionState(rx.State):
                         zone,
                         request_key,
                         source.connection_id if source else "",
+                    )
+                    await asyncio.to_thread(
+                        keep_market_estimate,
+                        UUID(context[0]),
+                        UUID(prepared.promotion_id),
+                        market_estimate(reach, form, zone),
                     )
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)

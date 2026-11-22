@@ -28,6 +28,18 @@ class AudienceReachVM:
     label: str = "Elige un lugar para consultar cuántas personas podrían verlo."
     notice: str = "Es una estimación del público, no una promesa de visitas o ventas."
     available: bool = False
+    # m-25091388: Meta's range is kept (not only its label) for the budget step, with the
+    # market class and the CPM `estimate_market` chose — no second Meta call.
+    status: str = ""  # "" not asked yet | "ready" | "unavailable" (Meta gave no range) | "failed"
+    lower: int = 0
+    upper: int = 0
+    audience_hash: str = ""
+    size_label: str = ""
+    size_hint: str = ""
+    market_class: str = ""
+    cpm_minor: int = 0  # 0 = no CPM for this country and currency
+    cpm_source: str = ""
+    market_failed: bool = False
 
 
 PLACE_KIND_LABELS = {"city": "Ciudad", "region": "Región", "country": "País"}
@@ -47,12 +59,67 @@ def placements_label(mode: str, placements: list[str]) -> str:
     return ", ".join(PLACEMENT_LABELS[key] for key in placements if key in PLACEMENT_LABELS)
 
 
+# m-25091388: the market class in the owner's words; neutral, never good or bad.
+SIZE_LABELS = {
+    "pequeno": (
+        "Público pequeño",
+        "Con poco dinero ya llegas a buena parte de estas personas. "
+        "Si quieres llegar a más, aumenta la distancia o quita intereses.",
+    ),
+    "mediano": ("Público mediano", "Hay espacio para llegar a más personas si inviertes más."),
+    "grande": (
+        "Público grande",
+        "Tu presupuesto llegará a una parte; siempre habrá personas nuevas por alcanzar.",
+    ),
+}
+NO_RANGE_NEXT = "Puedes seguir: el anuncio se crea igual."
+
+
+def _dotted(value: int) -> str:
+    return f"{value:,}".replace(",", ".")
+
+
+def _millions(value: int) -> str:
+    """«1,2» or «25» (no «,0»): the number of millions with one decimal at most."""
+    return f"{round(value / 1_000_000, 1):.1f}".removesuffix(".0").replace(".", ",")
+
+
+def people_count(value: int) -> str:
+    """«120.000 personas», «1 millón de personas», «1,2 millones de personas»."""
+    if value < 1_000_000:
+        return f"{_dotted(value)} personas"
+    amount = _millions(value)
+    return f"{amount} {'millón' if amount == '1' else 'millones'} de personas"
+
+
 def reach_label(lower: int, upper: int) -> str:
     """Only normalized, ready bounds belong here; absent estimates never become zero."""
     if type(lower) is not int or type(upper) is not int or not 0 <= lower <= upper:
         raise ValueError("invalid ready audience bounds")
-    lo, hi = f"{lower:,}".replace(",", "."), f"{upper:,}".replace(",", ".")
-    return f"Entre {lo} y {hi} personas en este público"
+    if upper < 1_000:
+        return "Menos de 1.000 personas en este público"
+    return f"Entre {audience_range(lower, upper, 'y')} en este público"
+
+
+def audience_range(lower: int, upper: int, joiner: str) -> str:
+    """«18.000 y 21.000 personas», «900.000 a 1,1 millones de personas»."""
+    if upper < 1_000:
+        return "menos de 1.000 personas"
+    low = _millions(lower) if lower >= 1_000_000 else _dotted(lower)
+    return f"{low} {joiner} {people_count(upper)}"
+
+
+def round_people(value: int) -> int:
+    """Our own number must not look exact: hundreds below 1.000, else two significant
+    digits (9.432 → 9.400, 231.000 → 230.000)."""
+    if value < 1_000:
+        return round(value, -2)
+    return round(value, -(len(str(value)) - 2))
+
+
+def approx_people(value: int) -> str:
+    """«unas 9.400 personas»; never «0 personas»: below 100 it is «menos de 100 personas»."""
+    return "menos de 100 personas" if value < 100 else f"unas {people_count(round_people(value))}"
 
 
 # «Cerca de mi negocio» (m-24828977): a distance around the phone's location at the business.
