@@ -13,7 +13,11 @@ per-business guidance (docs/discovery-asesor-inversion-meta.md §11).
   primary key, so the service upserts with `ON CONFLICT`).
 - Money in hundredths of the currency (`*_minor`, the convention of `WizardForm.budget_minor`
   and `health_models.money_label`); the currency is stored per row.
-- Margin in basis points (0 < margin ≤ 10000 = 100 %), so decimals never become floats.
+- Margin in basis points (0 < margin ≤ 10000 = 100 %), so decimals never become floats. The
+  UI may ask it as a money range and converts it to a percentage; «No lo sé todavía» stores
+  the service's prudent 30 % with `margin_is_estimated` so the result reads «aproximado».
+- Objective uses the promotion wizard's goals (`chat|website|lead`, `LiveWizard.goal`) so it
+  can pre-fill the wizard. Only the first purchase counts: no repurchase or close-rate field.
 - The «max worth paying per client» is derived in the service, never stored.
 - Owner manual input (docs/arquitectura.md §1.6): provenance is the login that last saved
   it (`updated_by`, identity-provider id like `ad_message_greetings.created_by`) and the times.
@@ -39,11 +43,12 @@ def upgrade() -> None:
             CHECK(average_ticket_minor > 0 AND average_ticket_minor < 1000000000000000),
         margin_basis_points integer NOT NULL
             CHECK(margin_basis_points > 0 AND margin_basis_points <= 10000),
+        margin_is_estimated boolean NOT NULL DEFAULT false,
         weekly_new_clients integer NOT NULL
             CHECK(weekly_new_clients > 0 AND weekly_new_clients <= 100000),
         monthly_cap_minor bigint NOT NULL
             CHECK(monthly_cap_minor > 0 AND monthly_cap_minor < 1000000000000000),
-        objective text NOT NULL CHECK(objective IN ('messages','visits','web_sales')),
+        objective text NOT NULL CHECK(objective IN ('chat','website','lead')),
         updated_by uuid NOT NULL,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now(),

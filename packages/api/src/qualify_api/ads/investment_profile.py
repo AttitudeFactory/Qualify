@@ -13,10 +13,17 @@ screens do):
 - `save_investment_profile(tenant_id=, brand_id=, average_ticket_minor=, margin_percent=,
   weekly_new_clients=, monthly_cap_minor=, objective=, currency=None)` → the saved profile.
   Re-saving the same answers changes nothing (idempotent); another answer replaces the row.
-- `InvestmentProfile.max_cost_per_client_minor` — ticket × margin, derived, never stored.
+  The profile is optional: nothing else requires it.
+- `InvestmentProfile.max_cost_per_client_minor` — ticket × margin (first purchase only),
+  derived, never stored; rounded down to $1.000 in COP and to the whole unit otherwise.
+  `margin_is_estimated` → label the result «aproximado».
 
 Money is in hundredths of the currency (`WizardForm.budget_minor`, `money_label`):
-COP 25.000 → `2_500_000`. `margin_percent` accepts 35, 35.5, "35,5" (up to 2 decimals).
+COP 25.000 → `2_500_000` (the UI asks whole units and multiplies by 100).
+`margin_percent` accepts 35, 35.5, "35,5" (up to 2 decimals), or None for «No lo sé
+todavía» (stores `ESTIMATED_MARGIN_PERCENT`, `margin_is_estimated=True`). A margin asked
+as a money range is converted to a percentage by the UI. `objective` is the wizard's
+goal, `chat` | `website` | `lead` (`OBJECTIVES`), so the answer can pre-fill the wizard.
 Every refusal is `InvestmentProfileUnavailable` with a Spanish message to show as is.
 """
 
@@ -34,9 +41,12 @@ from sqlalchemy import text
 from qualify_api.ads.live_wizard import production_currency_offset
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
-# Objectives the owner chooses from. Not the wizard's goals (website/lead/chat): «visitas»
-# may mean the shop's door, which no ad goal is; the recommender maps them later.
-OBJECTIVES = ("messages", "visits", "web_sales")
+# The promotion wizard's goals (`LiveWizard.goal`), so the answer pre-fills it.
+OBJECTIVES = ("chat", "website", "lead")
+# «No lo sé todavía» (Raul, 2026-11-22): a fixed, prudent margin, flagged as estimated.
+ESTIMATED_MARGIN_PERCENT = 30
+# Shown amounts: COP rounds down to $1.000, every other currency to the whole unit.
+_ROUND_MINOR = {"COP": 100_000}
 MAX_MONEY_MINOR = 10**15  # same bound as the table's CHECK
 MAX_WEEKLY_CLIENTS = 100_000
 
@@ -66,6 +76,7 @@ class InvestmentProfile:
     currency: str
     average_ticket_minor: int
     margin_basis_points: int  # 3550 = 35,5 %
+    margin_is_estimated: bool
     weekly_new_clients: int
     monthly_cap_minor: int
     objective: str
@@ -79,7 +90,9 @@ class InvestmentProfile:
 
     @property
     def max_cost_per_client_minor(self) -> int:
-        return max_cost_per_client_minor(self.average_ticket_minor, self.margin_basis_points)
+        step = _ROUND_MINOR.get(self.currency, 100)
+        exact = max_cost_per_client_minor(self.average_ticket_minor, self.margin_basis_points)
+        return exact // step * step
 
 
 def _money(value: object, message: str) -> int:
@@ -120,10 +133,12 @@ def clean(
         raise InvestmentProfileUnavailable(CLIENTS_INVALID)
     if objective not in OBJECTIVES:
         raise InvestmentProfileUnavailable(OBJECTIVE_INVALID)
+    estimated = margin_percent is None
     return {
         "currency": currency,
         "ticket": _money(average_ticket_minor, TICKET_INVALID),
-        "margin": margin_basis_points(margin_percent),
+        "margin": margin_basis_points(ESTIMATED_MARGIN_PERCENT if estimated else margin_percent),
+        "estimated": estimated,
         "clients": clients,
         "cap": _money(monthly_cap_minor, CAP_INVALID),
         "objective": objective,
@@ -139,7 +154,8 @@ def _member(tenant_id: UUID) -> UUID:
 
 
 _COLUMNS = (
-    "brand_id,currency,average_ticket_minor,margin_basis_points,weekly_new_clients,"
+    "brand_id,currency,average_ticket_minor,margin_basis_points,margin_is_estimated,"
+    "weekly_new_clients,"
     "monthly_cap_minor,objective,updated_by,created_at,updated_at"
 )
 
@@ -184,7 +200,7 @@ def save_investment_profile(
     tenant_id: UUID,
     brand_id: UUID,
     average_ticket_minor: int,
-    margin_percent: int | float | Decimal | str,
+    margin_percent: int | float | Decimal | str | None,
     weekly_new_clients: int,
     monthly_cap_minor: int,
     objective: str,
@@ -213,19 +229,21 @@ def save_investment_profile(
         session.execute(
             text(
                 "INSERT INTO ad_investment_profiles AS p (tenant_id,brand_id,currency,"
-                "average_ticket_minor,margin_basis_points,weekly_new_clients,monthly_cap_minor,"
-                "objective,updated_by) VALUES (:tenant,:brand,:currency,:ticket,:margin,"
-                ":clients,:cap,:objective,:login) "
+                "average_ticket_minor,margin_basis_points,margin_is_estimated,"
+                "weekly_new_clients,monthly_cap_minor,objective,updated_by) VALUES (:tenant,"
+                ":brand,:currency,:ticket,:margin,:estimated,:clients,:cap,:objective,:login) "
                 "ON CONFLICT (tenant_id,brand_id) DO UPDATE SET currency=EXCLUDED.currency,"
                 "average_ticket_minor=EXCLUDED.average_ticket_minor,"
                 "margin_basis_points=EXCLUDED.margin_basis_points,"
+                "margin_is_estimated=EXCLUDED.margin_is_estimated,"
                 "weekly_new_clients=EXCLUDED.weekly_new_clients,"
                 "monthly_cap_minor=EXCLUDED.monthly_cap_minor,objective=EXCLUDED.objective,"
                 "updated_by=EXCLUDED.updated_by,updated_at=now() "
                 "WHERE (p.currency,p.average_ticket_minor,p.margin_basis_points,"
-                "p.weekly_new_clients,p.monthly_cap_minor,p.objective) "
+                "p.margin_is_estimated,p.weekly_new_clients,p.monthly_cap_minor,p.objective) "
                 "IS DISTINCT FROM (EXCLUDED.currency,EXCLUDED.average_ticket_minor,"
-                "EXCLUDED.margin_basis_points,EXCLUDED.weekly_new_clients,"
+                "EXCLUDED.margin_basis_points,EXCLUDED.margin_is_estimated,"
+                "EXCLUDED.weekly_new_clients,"
                 "EXCLUDED.monthly_cap_minor,EXCLUDED.objective)"
             ),
             {**values, "tenant": tenant_id, "brand": brand_id, "login": login},

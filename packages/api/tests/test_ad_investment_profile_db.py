@@ -26,7 +26,7 @@ ANSWERS = {
     "margin_percent": "35,5",
     "weekly_new_clients": 20,
     "monthly_cap_minor": 50_000_000,
-    "objective": "messages",
+    "objective": "chat",
 }
 
 
@@ -59,13 +59,17 @@ def test_save_read_idempotent_resave_and_edit() -> None:
         assert default_currency(tenant_id=tenant, brand_id=brand) == "COP"
         first = save_investment_profile(tenant_id=tenant, brand_id=brand, **ANSWERS)
         assert (first.currency, first.margin_basis_points, first.updated_by) == ("COP", 3550, login)
-        assert first.max_cost_per_client_minor == 887_500
+        assert first.max_cost_per_client_minor == 800_000  # 8.875 -> $8.000
+        assert not first.margin_is_estimated
         again = save_investment_profile(tenant_id=tenant, brand_id=brand, **ANSWERS)
         assert again == first  # same answers: same row, same updated_at
         edited = save_investment_profile(
-            tenant_id=tenant, brand_id=brand, **{**ANSWERS, "objective": "visits"}
+            tenant_id=tenant,
+            brand_id=brand,
+            **{**ANSWERS, "objective": "website", "margin_percent": None},
         )
-        assert edited.objective == "visits" and edited.updated_at > first.updated_at
+        assert edited.margin_is_estimated and edited.margin_basis_points == 3000
+        assert edited.objective == "website" and edited.updated_at > first.updated_at
         assert edited.created_at == first.created_at
         assert load_investment_profile(tenant_id=tenant, brand_id=brand) == edited
     with admin_session() as s:
@@ -86,7 +90,7 @@ def test_another_tenant_cannot_read_or_write_it() -> None:
     with tenant_session(other) as s:
         assert s.execute(text("SELECT count(*) FROM ad_investment_profiles")).scalar_one() == 0
         updated = s.execute(
-            text("UPDATE ad_investment_profiles SET objective='visits' WHERE brand_id=:b"),
+            text("UPDATE ad_investment_profiles SET objective='lead' WHERE brand_id=:b"),
             {"b": brand},
         ).rowcount
     assert updated == 0
@@ -95,5 +99,5 @@ def test_another_tenant_cannot_read_or_write_it() -> None:
         with pytest.raises(InvestmentProfileUnavailable, match=BRAND_GONE):
             save_investment_profile(tenant_id=other, brand_id=brand, **ANSWERS)
     with acting_login(login):
-        assert load_investment_profile(tenant_id=tenant, brand_id=brand).objective == "messages"
+        assert load_investment_profile(tenant_id=tenant, brand_id=brand).objective == "chat"
         assert load_investment_profile(tenant_id=tenant, brand_id=other_brand) is None

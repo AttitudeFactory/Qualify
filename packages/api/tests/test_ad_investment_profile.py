@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from qualify_api.ads.investment_profile import (
     CURRENCY_UNSUPPORTED,
     LOGIN_NEEDED,
     MARGIN_INVALID,
+    InvestmentProfile,
     InvestmentProfileUnavailable,
     clean,
     load_investment_profile,
@@ -24,7 +26,7 @@ GOOD = {
     "margin_percent": 35,
     "weekly_new_clients": 20,
     "monthly_cap_minor": 50_000_000,  # COP 500.000
-    "objective": "messages",
+    "objective": "chat",
     "currency": "COP",
 }
 
@@ -34,9 +36,10 @@ def test_valid_answers_become_column_values() -> None:
         "currency": "COP",
         "ticket": 2_500_000,
         "margin": 3500,
+        "estimated": False,
         "clients": 20,
         "cap": 50_000_000,
-        "objective": "messages",
+        "objective": "chat",
     }
 
 
@@ -69,7 +72,8 @@ def test_margin_refuses_out_of_range_or_unreadable(value: object) -> None:
         ("weekly_new_clients", 0),
         ("weekly_new_clients", 2.5),
         ("weekly_new_clients", 100_001),
-        ("objective", "chat"),
+        ("objective", "messages"),
+        ("objective", "visits"),
         ("objective", ""),
     ],
 )
@@ -94,3 +98,20 @@ def test_max_cost_per_client_is_ticket_times_margin_rounded_down() -> None:
 def test_reads_need_a_login() -> None:
     with pytest.raises(InvestmentProfileUnavailable, match=LOGIN_NEEDED):
         load_investment_profile(tenant_id=uuid4(), brand_id=uuid4())
+
+
+def test_unknown_margin_is_a_flagged_prudent_30_percent() -> None:
+    values = clean(**{**GOOD, "margin_percent": None})
+    assert (values["margin"], values["estimated"]) == (3000, True)
+
+
+def _profile(currency: str, ticket: int, margin: int) -> InvestmentProfile:
+    now = datetime.now(UTC)
+    return InvestmentProfile(
+        uuid4(), currency, ticket, margin, False, 1, 1, "chat", uuid4(), now, now
+    )
+
+
+def test_shown_max_cost_rounds_down_to_a_thousand_pesos_or_a_whole_unit() -> None:
+    assert _profile("COP", 2_500_000, 3550).max_cost_per_client_minor == 800_000  # 8.875 -> 8.000
+    assert _profile("USD", 2_550, 3550).max_cost_per_client_minor == 900  # 9,05 -> 9
