@@ -45,6 +45,27 @@ enviado a Meta, sin redondeo. El recibo vincula ambos importes y moneda. Vista p
 aviso de gasto muestran el importe humano aprobado. Una aprobación antigua sin conversión
 verificada no puede activar automáticamente un anuncio mediante este flujo.
 
+**Dólares y pesos uruguayos (m-25091394, 2026-11-22).** Se aceptan cuentas en COP, USD y
+UYU; la moneda sale siempre de la cuenta publicitaria elegida, nunca del dueño. Subdivisión
+de Meta (tabla oficial de monedas, `docs/discovery-asesor-inversion-meta.md` §9): COP 1
+(pesos enteros), USD 100 (centavos), UYU 100 (centésimos). Unidad de Meta = centésimas ×
+subdivisión / 100. Todo vive en `qualify_api/ads/money.py` (`META_CURRENCY_OFFSETS`,
+`to_meta`, `from_meta`); el asistente, el recibo de validación, la edición del presupuesto
+(incluidos el piso de bajada con `act_/minimum_budgets` en la moneda de la cuenta y el
+límite de gasto) y los resultados usan esa tabla. Cualquier otra moneda (VES incluida) se
+rechaza con `CURRENCY_UNSUPPORTED` antes de llamar a Meta. Venezuela: se asume cuenta en
+USD; **pendiente la decisión de Herwin** sobre VES. Las aprobaciones COP existentes no
+cambian: mismo `meta_currency_offset=1`, mismas huellas y cargas. Las subdivisiones USD/UYU
+salen de la tabla oficial; todavía no se probaron contra una cuenta real en esas monedas.
+Los anuncios sin publicar (`unpublished_*`) siguen solo en COP.
+
+Formato único para mostrar dinero (Raul, 2026-11-22): `money_display(minor, currency)` →
+«$25.000 COP», «$10 USD», «$400 UYU» (centavos solo si los hay: «$10,50 USD»). Para el
+campo de presupuesto, `budget_field(currency)` da `unit_name` («pesos colombianos»,
+«dólares», «pesos uruguayos»), `example_minor` (25.000 COP, 10 USD, 400 UYU), `step_minor`
+y `min_minor` (100: unidades enteras); `None` = moneda no admitida. El mínimo real de Meta
+no está en la tabla: lo dice `act_/minimum_budgets` o la validación.
+
 No se calcula un mínimo total a partir de mínimos diarios. Meta valida el importe
 concreto junto con fechas y configuración; el recibo expresa aceptación de esa solicitud,
 no un mínimo numérico universal.
