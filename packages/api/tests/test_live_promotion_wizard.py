@@ -1041,6 +1041,23 @@ async def test_lead_campaign_validates_exact_payloads_creates_paused_and_activat
 
 
 @pytest.mark.asyncio
+async def test_campaign_sends_adset_budget_sharing_false_in_validation_and_create(live):
+    """m-25091386: v24+ requires the flag when the budget lives on the ad set."""
+    remote = live["remote"]
+    await prepare(live)
+    validated = {
+        call[1].split("/")[-1]: call[2]
+        for call in remote.calls
+        if call[2].get("execution_options") == ["validate_only"]
+    }
+    created = next(call[2] for call in remote.actual_creates if call[1] == "act_12/campaigns")
+    # On the wire as the literal `false`, both in validate_only and in the real create.
+    assert validated["campaigns"]["is_adset_budget_sharing_enabled"] == "false"
+    assert created["is_adset_budget_sharing_enabled"] == "false"
+    assert {k: v for k, v in validated["campaigns"].items() if k != "execution_options"} == created
+
+
+@pytest.mark.asyncio
 async def test_lead_campaign_remote_form_swap_blocks_activation(live):
     use_lead_form(live)
     preview = await prepare(live)

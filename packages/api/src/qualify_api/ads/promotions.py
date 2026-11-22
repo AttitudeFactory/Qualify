@@ -278,6 +278,8 @@ def step_payload(promotion: Promotion, resource: Resource) -> dict[str, Any]:
             "status": "PAUSED",
             "objective": request["objective"],
             "special_ad_categories": request["special_ad_categories"],
+            # Required since v24.0 when the budget lives on the ad set (m-25091386).
+            "is_adset_budget_sharing_enabled": False,
         }
     if resource == "adsets":
         return {
