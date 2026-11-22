@@ -28,8 +28,8 @@ def profile_vm(row: InvestmentProfile | None) -> ProfileVM:
         estimated=row.margin_is_estimated,
         clients=row.weekly_new_clients,
         cap=row.monthly_cap_minor // 100,
-        # half-up: an exact answer re-read as percent must give back the same percent
-        kept=(row.average_ticket_minor * row.margin_basis_points + 500_000) // 1_000_000,
+        # rounded up: an exact answer re-read as percent gives back the same percent
+        kept=-(-row.average_ticket_minor * row.margin_basis_points // 1_000_000),
         max_cost=row.max_cost_per_client_minor // 100,
         currency=row.currency,
     )

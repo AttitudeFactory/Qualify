@@ -150,6 +150,12 @@ def test_saved_profile_reads_back_and_reopens_each_answer() -> None:
     exact = profile_vm(row(average_ticket_minor=1_500_000, margin_basis_points=3333))
     assert answers_from(exact).margin_exact == "5.000"
     assert save_values(answers_from(exact))["margin_percent"] == Decimal("33.33")
+    typed = replace(ANSWERS, ticket="5.070", margin_choice="exact", margin_exact="833")
+    percent = save_values(typed)["margin_percent"]
+    points = int(percent * 100)  # type: ignore[operator]
+    exact = profile_vm(row(average_ticket_minor=507_000, margin_basis_points=points))
+    assert answers_from(exact).margin_exact == "833"
+    assert save_values(answers_from(exact))["margin_percent"] == percent
 
 
 def test_return_address_is_only_a_promotion_wizard() -> None:
