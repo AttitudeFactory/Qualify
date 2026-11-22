@@ -122,8 +122,7 @@ class InvestmentProfileState(rx.State):
         of = "De" if problem else f"De los {pesos(price)}"
         return (
             f"{of} lo que paga un cliente, ¿cuánto te queda después de pagar lo que cuesta "
-            "hacerlo o conseguirlo? Cuenta ingredientes o mercancía, empaque y comisión de "
-            "domicilio. No cuentes el arriendo ni los sueldos."
+            "hacerlo o conseguirlo?"
         )
 
     @rx.var

@@ -146,6 +146,10 @@ def test_saved_profile_reads_back_and_reopens_each_answer() -> None:
     reopened = answers_from(exact)
     assert (reopened.margin_choice, reopened.margin_exact) == ("exact", "6.999")
     assert save_values(reopened)["margin_percent"] == Decimal("23.33")
+    # saving the same exact answer again stores the same margin (no drift)
+    exact = profile_vm(row(average_ticket_minor=1_500_000, margin_basis_points=3333))
+    assert answers_from(exact).margin_exact == "5.000"
+    assert save_values(answers_from(exact))["margin_percent"] == Decimal("33.33")
 
 
 def test_return_address_is_only_a_promotion_wizard() -> None:

@@ -41,7 +41,8 @@ from sqlalchemy import text
 from qualify_api.ads.live_wizard import production_currency_offset
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
-# The promotion wizard's goals (`LiveWizard.goal`), so the answer pre-fills it.
+# The promotion wizard's goals (`LiveWizard.goal`), so the answer pre-fills it. The
+# Reflex wizard calls «website» `visit` (`PromotionState.choose_goal`): map it on pre-fill.
 OBJECTIVES = ("chat", "website", "lead")
 # «No lo sé todavía» (Raul, 2026-11-22): a fixed, prudent margin, flagged as estimated.
 ESTIMATED_MARGIN_PERCENT = 30
@@ -57,7 +58,7 @@ CAP_INVALID = "Escribe cuánto te sientes cómodo invirtiendo al mes, con un val
 OBJECTIVE_INVALID = "Elige qué quieres conseguir con tus anuncios."
 CURRENCY_UNSUPPORTED = "Por ahora solo podemos guardar montos en pesos colombianos (COP)."
 BRAND_GONE = "Esta marca ya no está disponible en este negocio."
-LOGIN_NEEDED = "Vuelve a iniciar sesión para revisar tu perfil de inversión."
+LOGIN_NEEDED = "Vuelve a iniciar sesión para ver cuánto te conviene pagar por un cliente."
 
 
 class InvestmentProfileUnavailable(ValueError):
@@ -90,8 +91,10 @@ class InvestmentProfile:
 
     @property
     def max_cost_per_client_minor(self) -> int:
-        step = _ROUND_MINOR.get(self.currency, 100)
         exact = max_cost_per_client_minor(self.average_ticket_minor, self.margin_basis_points)
+        step = _ROUND_MINOR.get(self.currency, 100)
+        # below one rounding step (a $3.000 ticket), round to the whole unit, never to 0
+        step = step if exact >= step else 100
         return exact // step * step
 
 
@@ -110,8 +113,10 @@ def margin_basis_points(value: object) -> int:
         number = Decimal(value.strip().replace(",", ".") if isinstance(value, str) else str(value))
     except InvalidOperation:
         raise InvestmentProfileUnavailable(MARGIN_INVALID) from None
+    if not number.is_finite():
+        raise InvestmentProfileUnavailable(MARGIN_INVALID)
     points = number * 100
-    if not number.is_finite() or points != points.to_integral_value() or not 0 < points <= 10_000:
+    if points != points.to_integral_value() or not 0 < points <= 10_000:
         raise InvestmentProfileUnavailable(MARGIN_INVALID)
     return int(points)
 

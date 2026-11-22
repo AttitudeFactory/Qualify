@@ -146,7 +146,9 @@ def _margin() -> rx.Component:
         ),
         rx.cond(
             S.answers.margin_choice == MARGIN_EXACT,
-            _field("Me quedan, en pesos", "margin_exact", S.answers.margin_exact, "Ejemplo: 8.000"),
+            _field(
+                "Me quedan, en pesos", "margin_exact", S.answers.margin_exact, "Ejemplo: 12.000"
+            ),
         ),
         rx.cond(S.answers.margin_choice == MARGIN_UNKNOWN, callout(S.unknown_note, "info")),
         spacing="4",
@@ -157,8 +159,8 @@ def _margin() -> rx.Component:
 def _clients() -> rx.Component:
     return rx.vstack(
         _muted(
-            "Sin que se te llene el local ni se te atrasen los pedidos. Así no pagas por "
-            "clientes que no vas a poder atender."
+            "Sin que te falte tiempo para atenderlos bien. Así no pagas por clientes que "
+            "no vas a poder atender."
         ),
         _field("Clientes nuevos por semana", "clients", S.answers.clients, "Ejemplo: 15"),
         spacing="4",
@@ -168,10 +170,7 @@ def _clients() -> rx.Component:
 
 def _cap() -> rx.Component:
     return rx.vstack(
-        _muted(
-            "Es tu tope. Te lo vamos a recordar antes de cada anuncio, y ningún anuncio se "
-            "crea sin que tú lo apruebes."
-        ),
+        _muted("Es tu tope. Ningún anuncio se crea sin que tú lo apruebes."),
         _field("Tope al mes, en pesos", "cap", S.answers.cap, "Ejemplo: 200.000", S.cap_echo),
         spacing="4",
         width="100%",
@@ -258,7 +257,13 @@ def _next() -> rx.Component:
                 rx.button("Promocionar una publicación", size="3", min_height="44px"),
                 href="/drafts",
             ),
-            rx.link("Volver a Anuncios", href="/promotions", min_height="44px"),
+            rx.link(
+                "Volver a Anuncios",
+                href="/promotions",
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
             spacing="2",
             align_items="start",
         ),
@@ -272,7 +277,15 @@ def _result() -> rx.Component:
             rx.cond(S.notice != "", callout(S.notice, "ok")),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.box(stat_card("Por cada cliente nuevo", S.headline), width="100%"),
-            rx.cond(S.profile.estimated, tone_badge("Aproximado", "warn")),
+            rx.cond(
+                S.profile.estimated,
+                rx.vstack(
+                    tone_badge("Aproximado", "warn"),
+                    _muted("Cuando sepas cuánto te queda, toca Cambiar en «Lo que te queda»."),
+                    spacing="1",
+                    align_items="start",
+                ),
+            ),
             rx.text(S.meaning),
             _muted(S.how_computed),
             _muted(
@@ -336,7 +349,13 @@ def _waiting() -> rx.Component:
                     ),
                     rx.vstack(
                         callout(S.unsupported_message, "info"),
-                        rx.link("Volver a Anuncios", href="/promotions", min_height="44px"),
+                        rx.link(
+                            "Volver a Anuncios",
+                            href="/promotions",
+                            min_height="44px",
+                            display="inline-flex",
+                            align_items="center",
+                        ),
                         spacing="3",
                         align_items="start",
                         width="100%",
@@ -364,7 +383,7 @@ def investment_profile_index() -> rx.Component:
 def investment_profile_card() -> rx.Component:
     """The Anuncios list's entry: the question until answered, then the number."""
     return rx.cond(
-        S.loading,
+        S.loading | ~S.supported,
         rx.fragment(),
         card(
             rx.vstack(

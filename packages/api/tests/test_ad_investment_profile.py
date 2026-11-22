@@ -52,7 +52,7 @@ def test_margin_accepts_up_to_two_decimals(value: object, points: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "value", [0, -1, 100.01, "12.345", "abc", "", "NaN", "Infinity", True, None, [35]]
+    "value", [0, -1, 100.01, "12.345", "abc", "", "NaN", "sNaN", "Infinity", True, None, [35]]
 )
 def test_margin_refuses_out_of_range_or_unreadable(value: object) -> None:
     with pytest.raises(InvestmentProfileUnavailable, match=MARGIN_INVALID):
@@ -115,3 +115,5 @@ def _profile(currency: str, ticket: int, margin: int) -> InvestmentProfile:
 def test_shown_max_cost_rounds_down_to_a_thousand_pesos_or_a_whole_unit() -> None:
     assert _profile("COP", 2_500_000, 3550).max_cost_per_client_minor == 800_000  # 8.875 -> 8.000
     assert _profile("USD", 2_550, 3550).max_cost_per_client_minor == 900  # 9,05 -> 9
+    # a small ticket never reads «Hasta $0»: under $1.000 it rounds to the whole peso
+    assert _profile("COP", 300_000, 3000).max_cost_per_client_minor == 90_000  # 900
