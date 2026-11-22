@@ -1,0 +1,58 @@
+{
+  "version": "presupuesto-v1",
+  "status": "PROVISIONAL — every number here is our hypothesis for founder review, not Meta's. Meta publishes no budget per business size, niche or margin (docs/discovery-asesor-inversion-meta.md §11); it only gives the account's daily minimum (act_/minimum_budgets, always read live, never stored here) and «at least 7 days» to learn [S].",
+  "source": "m-25091389. Anchor: the video Herwin shared — start at US$5 or US$10 a day depending on the size of the company (secondary source, not Meta's). Meta's old pricing page «start with at least $5», «at least seven days» [S, discovery §11]. Market-class modulation, size bands and pieces: Raul / backend, 2026-11-22, hypotheses.",
+  "business_size": {
+    "grande_from_weekly_new_clients": 20,
+    "source": "hypothesis: the profile's «clientes nuevos que puedes atender por semana» (capacity) decides the size — < 20 = pequeno (anchor US$5/day), ≥ 20 = grande (anchor US$10/day). Without a profile we use pequeno («valores generales»). Not the monthly cap: the cap is already an upper bound, using it as the size too would count it twice. Not the rubro: Tu marca stores it as free text and there are no sourced numbers per rubro."
+  },
+  "default_market_class": "mediano",
+  "default_market_class_source": "when Meta gave no audience range (no market estimate) we use the middle row",
+  "daily_minor": {
+    "USD": {
+      "pequeno": {
+        "pequeno": 500,
+        "mediano": 500,
+        "grande": 700
+      },
+      "grande": {
+        "pequeno": 700,
+        "mediano": 1000,
+        "grande": 1000
+      }
+    },
+    "COP": {
+      "pequeno": {
+        "pequeno": 2000000,
+        "mediano": 2000000,
+        "grande": 3000000
+      },
+      "grande": {
+        "pequeno": 3000000,
+        "mediano": 4000000,
+        "grande": 4000000
+      }
+    },
+    "UYU": {
+      "pequeno": {
+        "pequeno": 20000,
+        "mediano": 20000,
+        "grande": 30000
+      },
+      "grande": {
+        "pequeno": 30000,
+        "mediano": 40000,
+        "grande": 40000
+      }
+    },
+    "source": "keys: currency → business size → market class (mercado-v1). USD = the anchor (US$5 small / US$10 larger business); a small market (< 50.000 people) gets less because it saturates sooner, a large market lets a small business go a bit above US$5. COP and UYU are the same dollars written in each currency at ~COP 4.000 and ~UYU 40 per US$ (rounded to $10.000 COP / $100 UYU), fixed here — never a live conversion. VES is absent on purpose: Venezuelan accounts run in USD (discovery §9)."
+  },
+  "days": 7,
+  "days_source": "Meta: «at least seven days, so our system has time to learn» [S, discovery §3 and §11]",
+  "pieces": {
+    "first": 1,
+    "with_history": 3
+  },
+  "pieces_source": "hypothesis: one piece the first time (all the budget learns on it); with a previous promotion the suggested TOTAL is split across up to 3 pieces (discovery: one ad set with 2–3 ads; Raul 2026-11-22: split the total, never multiply it), fewer when a share would fall under Meta's daily minimum.",
+  "monthly_cap_source": "code, not data: the suggested total never passes what is left of the profile's monthly cap this calendar month (cap − the brand's Insights spend this month); at most 30 days (UX 2026-11-22)."
+}

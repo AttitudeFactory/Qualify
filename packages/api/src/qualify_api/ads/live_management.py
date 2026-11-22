@@ -217,6 +217,20 @@ def _whole(value: Any) -> int | None:
     return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]{1,18}", value) else None
 
 
+def meta_daily_minimum(rows: list[dict[str, Any]], currency: str) -> int | None:
+    """The largest `min_daily_budget*` of the one `currency` row of `act_/minimum_budgets`,
+    in Meta's unit (whole pesos for COP); None when absent, repeated or malformed."""
+    rows = [row for row in rows if row.get("currency") == currency]
+    daily = (
+        [_whole(v) for k, v in rows[0].items() if k.startswith("min_daily_budget")]
+        if len(rows) == 1
+        else []
+    )
+    if not daily or any(value is None or value <= 0 for value in daily):
+        return None
+    return max(daily)  # type: ignore[type-var]
+
+
 def _decrease(action: str, before: Promotion, after: Promotion) -> bool:
     return action == "budget" and after.request["budget_minor"] < before.request["budget_minor"]
 
@@ -286,22 +300,15 @@ async def _budget_floor(
         _whole(adset.get("lifetime_budget")),
         _whole(adset.get("budget_remaining")),
     )
-    rows = [row for row in minimums.data if row.get("currency") == "COP"]
-    daily = (
-        [_whole(v) for k, v in rows[0].items() if k.startswith("min_daily_budget")]
-        if len(rows) == 1
-        else []
-    )
+    minimum = meta_daily_minimum(minimums.data, "COP")
     if (
         adset.get("id") != promotion.ids["adsets"]
         or lifetime != current
         or remaining is None
         or remaining > lifetime
-        or not daily
-        or any(value is None or value <= 0 for value in daily)
+        or minimum is None
     ):
         raise ResultsUnavailable(FLOOR_UNAVAILABLE)
-    minimum = max(daily)
     start = datetime.fromisoformat(request["start_time"])
     end = datetime.fromisoformat(request["end_time"])
     day = timedelta(days=1)
