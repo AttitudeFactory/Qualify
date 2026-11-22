@@ -1108,7 +1108,7 @@ class PromotionState(rx.State):
                 self.audience_reach = estimate
                 self.reach_loading = False
                 # m-25091389: a suggestion already shown follows the market class.
-                if getattr(self, "budget_hint_status", ""):
+                if getattr(self, "_budget_minimum", ("", 0))[0] == self.form.source_id:
                     return PromotionState.load_budget_suggestion()
         return None
 

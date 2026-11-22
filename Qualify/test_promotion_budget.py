@@ -242,5 +242,5 @@ async def test_a_new_reach_refreshes_a_shown_suggestion(monkeypatch: pytest.Monk
     monkeypatch.setattr(state_module, "read_reach", lambda *args: AudienceReachVM(available=True))
     context = BudgetContext()
     assert await PromotionState.refresh_reach.fn(context) is None
-    context.budget_hint_status = "ready"
+    context._budget_minimum = (str(SOURCE), 4 * K)  # only once Meta was read
     assert await PromotionState.refresh_reach.fn(context) is not None
