@@ -310,6 +310,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .ice_breakers_state import IceBreakersState
     from .inbox_list_state import InboxListState
     from .inbox_state import InboxState
+    from .investment_profile_state import InvestmentProfileState
     from .leads_state import LeadsState
     from .offer_mark_state import OfferMarkState
     from .part_progress_state import PartProgressState
@@ -351,6 +352,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         GenGalleryPickState,
         AdEnhancementsState,
         AdFormsState,
+        # m-25091387: the brand's investment profile and the session's offer flags
+        InvestmentProfileState,
         PromotionState,
         AdResultsState,
         ConnectionsState,

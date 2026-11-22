@@ -58,6 +58,8 @@ from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
+from .investment_profile_page import investment_profile_index
+from .investment_profile_state import InvestmentProfileState
 from .not_found_page import not_found_index
 from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
@@ -635,13 +637,14 @@ app.add_page(
 app.add_page(
     promotion_index,
     route="/drafts/[draft_id]/promote",
-    on_load=[AuthState.require_login, PromotionState.load],
+    # m-25091387: a brand with no profile and no promotion is offered the questions first
+    on_load=[AuthState.require_login, InvestmentProfileState.offer_gate, PromotionState.load],
     title="Qualify · Promocionar publicación",
 )
 app.add_page(
     ad_results_index,
     route="/promotions",
-    on_load=[AuthState.require_login, AdResultsState.load_list],
+    on_load=[AuthState.require_login, AdResultsState.load_list, InvestmentProfileState.load],
     title="Qualify · Anuncios",
 )
 app.add_page(
@@ -649,6 +652,17 @@ app.add_page(
     route="/promotions/forms",
     on_load=[AuthState.require_login, AdFormsState.load, AdFormsState.read_step],
     title="Qualify · Formularios",
+)
+# m-25091387: «¿Cuánto te conviene pagar por un cliente?»
+app.add_page(
+    investment_profile_index,
+    route="/promotions/perfil",
+    on_load=[
+        AuthState.require_login,
+        InvestmentProfileState.load,
+        InvestmentProfileState.read_step,
+    ],
+    title="Qualify · Anuncios",
 )
 app.add_page(
     ad_result_detail_index,
