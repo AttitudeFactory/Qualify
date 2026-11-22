@@ -52,6 +52,7 @@ def test_meta_range_reads_as_people(lower: int, upper: int, label: str) -> None:
         (9_432, "unas 9.400 personas"),
         (231_000, "unas 230.000 personas"),
         (1_234_567, "unas 1,2 millones de personas"),
+        (1_020_000, "alrededor de 1 millón de personas"),
     ],
 )
 def test_our_number_is_rounded_and_never_zero(value: int, words: str) -> None:

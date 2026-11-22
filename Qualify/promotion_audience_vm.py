@@ -119,7 +119,10 @@ def round_people(value: int) -> int:
 
 def approx_people(value: int) -> str:
     """«unas 9.400 personas»; never «0 personas»: below 100 it is «menos de 100 personas»."""
-    return "menos de 100 personas" if value < 100 else f"unas {people_count(round_people(value))}"
+    if value < 100:
+        return "menos de 100 personas"
+    words = people_count(round_people(value))
+    return f"alrededor de {words}" if words.startswith("1 millón") else f"unas {words}"
 
 
 # «Cerca de mi negocio» (m-24828977): a distance around the phone's location at the business.
