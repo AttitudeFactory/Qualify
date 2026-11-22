@@ -18,7 +18,7 @@ from .promotion_audience_vm import (
     POINT_LOADING,
 )
 from .promotion_state import PromotionState as S
-from .ui import callout, card, choice_card, choice_card_check, loading_spinner
+from .ui import callout, card, choice_card, choice_card_check, loading_spinner, tone_badge
 from .ui import tokens as T
 
 
@@ -559,6 +559,16 @@ def promotion_audience() -> rx.Component:
                         loading_spinner(), rx.text("Consultando la estimación…"), role="status"
                     ),
                     rx.text(S.audience_reach.label, aria_live="polite"),
+                ),
+                # m-25091388: the market class, neutral (a size is neither good nor bad).
+                rx.cond(
+                    ~S.reach_loading & (S.audience_reach.size_label != ""),
+                    rx.vstack(
+                        tone_badge(S.audience_reach.size_label, "neutral"),
+                        rx.text(S.audience_reach.size_hint, size="2", color=T.TEXT_MUTED),
+                        spacing="1",
+                        width="100%",
+                    ),
                 ),
                 rx.text(S.audience_reach.notice, size="2", color=T.TEXT_MUTED),
                 rx.button(

@@ -7,6 +7,7 @@ from qualify_api.ads.messaging_greeting import MAX_QUESTION, MAX_WELCOME
 
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
+from .promotion_market_vm import SATURATED
 from .promotion_state import PromotionState as S
 from .promotion_story_ui import (
     story_audience,
@@ -43,6 +44,7 @@ from .ui import (
     callout,
     card,
     choice_card,
+    loading_spinner,
     page_body,
     page_header,
     signal_pill,
@@ -703,6 +705,7 @@ def _budget() -> rx.Component:
                 ),
                 callout("Revisa la zona horaria de tu negocio antes de continuar.", "warn"),
             ),
+            rx.cond(S.market_shown, _market()),
             callout(
                 "Meta debe comprobar el importe y las fechas antes de crear el anuncio.",
                 "info",
@@ -711,6 +714,57 @@ def _budget() -> rx.Component:
             width="100%",
         ),
         width="100%",
+    )
+
+
+def _market() -> rx.Component:
+    """m-25091388: people this amount may reach. Information, never a push to spend more."""
+    return rx.vstack(
+        rx.text("A cuántas personas llegarías", weight="medium"),
+        rx.cond(
+            S.reach_loading,
+            rx.hstack(loading_spinner(), rx.text("Calculando…"), role="status"),
+            rx.text(S.market.line, weight="medium"),
+        ),
+        rx.cond(
+            ~S.reach_loading & (S.market.note != ""),
+            rx.text(S.market.note, size="2", color=T.TEXT_MUTED),
+        ),
+        rx.cond(
+            ~S.reach_loading & S.market.saturated,
+            rx.vstack(
+                callout(SATURATED, "info"),
+                rx.button(
+                    "Ampliar mi público",
+                    on_click=S.widen_audience,
+                    disabled=S.busy,
+                    variant="ghost",
+                    min_height="44px",
+                    white_space="normal",
+                    height="auto",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        rx.cond(
+            ~S.reach_loading & S.market.retry,
+            rx.button(
+                "Volver a calcular",
+                on_click=S.refresh_reach,
+                disabled=S.busy,
+                variant="ghost",
+                min_height="44px",
+                white_space="normal",
+                height="auto",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        # On the block, not the line: the line is replaced when the estimate arrives.
+        aria_live="polite",
     )
 
 
@@ -772,6 +826,10 @@ def _review() -> rx.Component:
                     rx.cond(S.form.housing, "Sí, requiere comprobaciones adicionales", "No"),
                 ),
                 _fact("Presupuesto para todo el período", S.budget_label),
+                rx.cond(
+                    S.market_shown,
+                    _fact("A cuántas personas llegaría (aproximado)", S.market.review),
+                ),
                 _fact("Inicio", S.start_label),
                 _fact("Final", S.end_label),
                 _fact("Horario", S.zone_label),

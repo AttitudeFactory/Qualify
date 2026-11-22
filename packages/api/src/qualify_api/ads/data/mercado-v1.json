@@ -1,0 +1,33 @@
+{
+  "version": "mercado-v1",
+  "status": "PROVISIONAL — every number here is our hypothesis, not Meta's. Meta removed the spend→results curve from delivery_estimate (docs/discovery-asesor-inversion-meta.md §1); only the audience size range of reachestimate is Meta's. Review with the live test m-24828971 and with our own promotions' Insights.",
+  "source": "m-25091388; thresholds and saturation: Raul, 2026-11-22; docs/discovery-asesor-inversion-meta.md §1, §9",
+  "cpm": {
+    "CO": {
+      "currency": "COP",
+      "cpm_minor": 800000,
+      "source": "hipótesis: $8.000 COP por 1.000 impresiones (orden de magnitud de las referencias públicas de CPM de Meta en Latinoamérica, unos US$1–3); sin medir; revisar con la prueba en vivo m-24828971"
+    },
+    "VE": {
+      "currency": "USD",
+      "cpm_minor": 150,
+      "source": "hipótesis: US$1,50 por 1.000 impresiones; cuenta en USD por discovery §9 (no bolívares); sin medir; revisar con la prueba en vivo m-24828971"
+    },
+    "UY": {
+      "currency": "UYU",
+      "cpm_minor": 8000,
+      "source": "hipótesis: $80 UYU por 1.000 impresiones (unos US$2); sin medir; revisar con la prueba en vivo m-24828971"
+    }
+  },
+  "weekly_frequency": "1.5",
+  "weekly_frequency_source": "hipótesis: cada persona ve el anuncio 1,5 veces por semana en promedio; la frecuencia de la promoción es esto × días / 7, nunca menos de 1. No leemos todavía `frequency` de Insights (discovery §6).",
+  "own_cpm_min_impressions": 10000,
+  "own_cpm_source": "a brand's own CPM = Σ spend / Σ impressions × 1.000 of its promotions' Insights in the same currency, used once they add up to at least this many impressions",
+  "classes": {
+    "pequeno_below": 50000,
+    "grande_above": 500000,
+    "source": "Raul, 2026-11-22: pequeño < 50.000, mediano 50.000–500.000, grande > 500.000 on Meta's upper bound; provisional, the same for the three countries"
+  },
+  "saturation_share_of_lower": "0.70",
+  "saturation_source": "Raul, 2026-11-22: warn when our estimated people reached is at least 70 % of Meta's lower bound"
+}
