@@ -38,7 +38,7 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
-from qualify_api.ads.live_wizard import production_currency_offset
+from qualify_api.ads.money import CURRENCY_UNSUPPORTED, META_CURRENCY_OFFSETS
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
 # The promotion wizard's goals (`LiveWizard.goal`), so the answer pre-fills it. The
@@ -56,7 +56,6 @@ MARGIN_INVALID = "Escribe tu ganancia aproximada como un porcentaje mayor que 0 
 CLIENTS_INVALID = "Escribe cuántos clientes nuevos puedes atender por semana, con un número entero."
 CAP_INVALID = "Escribe cuánto te sientes cómodo invirtiendo al mes, con un valor mayor que cero."
 OBJECTIVE_INVALID = "Elige qué quieres conseguir con tus anuncios."
-CURRENCY_UNSUPPORTED = "Por ahora solo podemos guardar montos en pesos colombianos (COP)."
 BRAND_GONE = "Esta marca ya no está disponible en este negocio."
 LOGIN_NEEDED = "Vuelve a iniciar sesión para ver cuánto te conviene pagar por un cliente."
 
@@ -131,7 +130,7 @@ def clean(
     currency: object,
 ) -> dict[str, Any]:
     """Validated column values; raises `InvestmentProfileUnavailable` on the first bad answer."""
-    if not isinstance(currency, str) or production_currency_offset(currency) is None:
+    if not isinstance(currency, str) or currency not in META_CURRENCY_OFFSETS:
         raise InvestmentProfileUnavailable(CURRENCY_UNSUPPORTED)
     clients = weekly_new_clients
     if type(clients) is not int or not 0 < clients <= MAX_WEEKLY_CLIENTS:
@@ -193,8 +192,8 @@ def _account_currency(session: Any, brand_id: UUID) -> str:
 
 
 def default_currency(*, tenant_id: UUID, brand_id: UUID) -> str:
-    """The brand's selected ad account currency, else COP. It may be one `save` still refuses
-    (USD/UYU arrive with m-25091394): show `CURRENCY_UNSUPPORTED` instead of the form then."""
+    """The brand's selected ad account currency, else COP. It may be one `save` refuses
+    (anything but COP/USD/UYU): show `CURRENCY_UNSUPPORTED` instead of the form then."""
     _member(tenant_id)
     with tenant_session(tenant_id, independent=True) as session:
         return _account_currency(session, brand_id)

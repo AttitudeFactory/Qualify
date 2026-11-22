@@ -50,6 +50,8 @@ def promotion():
         uuid4(),
         {
             "budget_minor": 5000000,
+            "currency": "COP",
+            "meta_currency_offset": 1,
             "end_time": "2099-01-01T00:00:00+00:00",
             "start_time": "2026-01-01T00:00:00+00:00",
         },
@@ -108,6 +110,21 @@ def test_cop_increase_uses_meta_offset_one_and_rejects_reduction_fraction():
     # A whole-peso decrease is a valid intent; its floor is checked against Meta later.
     lowered, payload, _ = _intent(original, "budget", 4000000, None)
     assert payload == {"lifetime_budget": 40000} and lowered.request["budget_minor"] == 4000000
+
+
+@pytest.mark.parametrize(
+    ("currency", "payload", "summary"),
+    [
+        ("COP", 60000, "Cambiar el presupuesto total a $60.000 COP."),
+        ("USD", 6000000, "Cambiar el presupuesto total a $60.000 USD."),
+        ("UYU", 6000000, "Cambiar el presupuesto total a $60.000 UYU."),
+    ],
+)
+def test_budget_edit_uses_the_accounts_unit_and_spanish_summary(currency, payload, summary):
+    original = promotion()
+    original.request.update(currency=currency, meta_currency_offset=100 if currency != "COP" else 1)
+    _changed, sent, text = _intent(original, "budget", 6000000, None)
+    assert sent == {"lifetime_budget": payload} and text == summary
 
 
 def test_ledger_accepts_a_recorded_decrease_but_never_a_no_op():

@@ -83,10 +83,15 @@ def test_bad_answers_are_refused_in_spanish(field: str, value: object) -> None:
     assert str(refused.value).startswith(("Escribe", "Elige"))
 
 
-@pytest.mark.parametrize("currency", ["USD", "UYU", "VES", "cop", None])
+@pytest.mark.parametrize("currency", ["VES", "EUR", "cop", None])
 def test_only_currencies_the_ads_module_supports(currency: object) -> None:
     with pytest.raises(InvestmentProfileUnavailable, match=re.escape(CURRENCY_UNSUPPORTED)):
         clean(**{**GOOD, "currency": currency})
+
+
+@pytest.mark.parametrize("currency", ["COP", "USD", "UYU"])
+def test_dollars_and_uruguayan_pesos_are_saved_like_pesos(currency: str) -> None:
+    assert clean(**{**GOOD, "currency": currency})["currency"] == currency
 
 
 def test_max_cost_per_client_is_ticket_times_margin_rounded_down() -> None:

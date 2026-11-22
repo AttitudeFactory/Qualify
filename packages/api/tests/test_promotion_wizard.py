@@ -111,7 +111,7 @@ def setup():
 async def test_fake_full_lifecycle_paused_preview_then_explicit_charge_active() -> None:
     wizard, client, _, source, args, authors = setup()
     preview = await wizard.prepare(**args)
-    assert preview.status == "paused" and "$150,00 COP" in preview.charge_notice
+    assert preview.status == "paused" and "$150 COP" in preview.charge_notice
     assert all(client.objects[k]["status"] == "PAUSED" for k in ("1", "2", "4"))
     creative = client.objects["3"]
     assert creative["source_instagram_media_id"] == source.source_media_id
@@ -410,7 +410,7 @@ async def test_public_production_seams_require_authenticated_actor(monkeypatch) 
         {"link_url": "http://example.org"},
         {"link_url": "https://u:p@example.org"},
         {"budget_minor": True},
-        {"currency": "USD"},
+        {"currency": "VES"},
         {"radius_km": 0},
         {"age_min": 17},
         {"city_name": ""},
