@@ -14,6 +14,7 @@ from .ad_results_vm import (
     AdResultVM,
     AlertAccountVM,
 )
+from .investment_profile_page import investment_profile_card
 from .ui import (
     app_shell,
     callout,
@@ -168,6 +169,7 @@ def ad_results_index() -> rx.Component:
                 ),
                 width="100%",
             ),
+            investment_profile_card(),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.loading, rx.fragment(), _alerts()),
             rx.cond(

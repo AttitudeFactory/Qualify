@@ -57,6 +57,7 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
     "/stories": "Prepara las historias de tu negocio desde la pantalla de publicación de Qualify.",
     "/promotions": "Revisa los anuncios de tu negocio y sus resultados en Qualify.",
     "/promotions/forms": "Prepara formularios de Meta y consulta las respuestas de tus clientes.",
+    "/promotions/perfil": "Calcula cuánto te conviene pagar por cada cliente nuevo.",
     "/promotions/[promotion_id]": "Consulta el estado y los resultados de un anuncio en Qualify.",
     "/resultados": "Consulta los resultados de las redes, WhatsApp y la página web de tu negocio.",
     "/creadores": "Busca creadores para evaluar colaboraciones con tu negocio en Qualify.",
