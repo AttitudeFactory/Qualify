@@ -49,14 +49,14 @@ def test_full_card_before_an_amount_is_typed() -> None:
     assert hint.mode == "full"
     assert hint.headline == ("Te sugerimos $20.000 COP al día durante 7 días (total $140.000 COP).")
     assert hint.reasons == ["Es un monto prudente para una primera prueba."]
-    assert hint.general_values and hint.button == "Usar este monto"
+    assert hint.general_values and hint.button == "Usar $140.000 COP"
     assert hint.pieces_note == "Como es tu primer anuncio, empieza con esta sola publicación."
 
 
 def test_a_shorter_period_says_the_button_moves_the_dates() -> None:
     short = form(end="2027-01-12T09:00")  # 2 days on screen; the table asks for 7
     hint = budget_hint(general(days=2), "ready", "", short, ZONE)
-    assert hint.button == "Usar este monto y 7 días"
+    assert hint.button == "Usar $140.000 COP y 7 días"
 
 
 def test_confirmation_once_the_field_holds_the_suggestion() -> None:
@@ -64,13 +64,15 @@ def test_confirmation_once_the_field_holds_the_suggestion() -> None:
     assert field_amount(found) == "140000"
     hint = budget_hint(found, "ready", "", form("140000"), ZONE)
     assert hint.mode == "applied"
-    assert hint.line == "Pusimos la sugerencia: $140.000 COP en 7 días. Puedes cambiarlo abajo."
+    assert hint.line == "Pusimos $140.000 COP para 7 días. Puedes cambiarlo abajo."
 
 
 def test_another_amount_keeps_a_compact_suggestion_without_judging_it() -> None:
-    hint = budget_hint(general(days=7), "ready", "", form("50000"), ZONE)
+    hint = budget_hint(general(days=7), "ready", "", form("50000"), ZONE, compact=True)
     assert hint.mode == "compact" and hint.headline.startswith("Sugerencia: $20.000 COP")
-    assert not hint.reasons and hint.button == "Usar este monto"
+    assert not hint.reasons and hint.button == "Usar $140.000 COP"
+    # typed after the card showed: it stays whole, the field does not jump per keystroke
+    assert budget_hint(general(days=7), "ready", "", form("5"), ZONE).mode == "full"
 
 
 def test_minimum_over_the_cap_shows_no_amount_and_no_button() -> None:
@@ -89,10 +91,14 @@ def test_with_history_the_field_gets_this_publications_share() -> None:
     found = general(days=7, has_previous_promotions=True)
     assert found.pieces > 1 and found.piece_total_minor < found.total_minor
     hint = budget_hint(found, "ready", "", form(), ZONE)
-    assert hint.button == "Usar la parte de esta publicación"
+    assert hint.button == "Usar $42.000 COP"
+    assert hint.headline == (
+        "Te sugerimos $126.000 COP en total para 3 publicaciones: $42.000 COP para esta, "
+        "unos $6.000 COP al día durante 7 días."
+    )
     assert int(field_amount(found)) * 100 == found.piece_total_minor
     applied = budget_hint(found, "ready", "", form(field_amount(found)), ZONE)
-    assert applied.line.startswith("Pusimos la parte de esta publicación:")
+    assert applied.line.startswith("Pusimos $42.000 COP para esta publicación, en 7 días.")
 
 
 def test_loading_and_failure_never_block_the_field() -> None:

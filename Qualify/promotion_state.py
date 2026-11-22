@@ -78,6 +78,7 @@ from .promotion_budget_vm import (
     field_amount,
     over_cap_line,
     suggested_end,
+    typed_minor,
 )
 from .promotion_market_vm import CURRENCY as MARKET_CURRENCY
 from .promotion_market_vm import MarketVM, market_estimate, market_view, promotion_days
@@ -207,6 +208,7 @@ class PromotionState(rx.State):
     # m-25091389: the budget step's «Sugerencia» ("", "loading", "ready", "failed").
     budget_hint_status: str = ""
     budget_hint_message: str = ""
+    budget_hint_compact: bool = False  # an amount was typed when the suggestion arrived
     _budget_suggestion: BudgetSuggestion | None = None
     _budget_source: str = ""
     _budget_minimum: tuple[str, int] = ("", 0)  # (source id, Meta's daily minimum): read once
@@ -1338,6 +1340,7 @@ class PromotionState(rx.State):
             self.budget_hint_message,
             self.form,
             self.timezone_name,
+            self.budget_hint_compact,
         )
 
     @rx.var
@@ -1374,6 +1377,7 @@ class PromotionState(rx.State):
             market = market_estimate(self.audience_reach, form, zone)
             minimum = self._budget_minimum[1] if self._budget_minimum[0] == source else None
             self.budget_hint_status, self.budget_hint_message = "loading", ""
+            self.budget_hint_compact = typed_minor(self.form) is not None
             self._budget_suggestion = None
             self._budget_operation = operation = str(uuid4())
         try:

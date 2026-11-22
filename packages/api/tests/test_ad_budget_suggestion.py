@@ -49,7 +49,7 @@ def test_larger_business_with_history_splits_the_total() -> None:
     # $40.000 a day split into 3 pieces of $13.000 (rounded down to $1.000)
     assert (s.pieces, s.piece_daily_minor, s.daily_minor) == (3, 13 * K, 39 * K)
     assert (s.days, s.total_minor, s.piece_total_minor) == (10, 390 * K, 130 * K)
-    assert "reparte este monto entre 3 publicaciones" in s.pieces_note
+    assert "prueba 3 publicaciones distintas" in s.pieces_note
     assert s.reasons == (
         "Alcanza para una primera prueba sin gastar de más.",
         "Cabe en tu tope de $3.000.000 COP al mes.",
@@ -122,7 +122,8 @@ def test_fewer_days_when_seven_do_not_fit_and_no_amount_when_one_does_not() -> N
     assert (none.fits, none.bounded_by, none.pieces_note) == (False, "monthly_cap", None)
     assert none.reasons[0] == (
         "Meta pide al menos $8.000 COP al día en tu cuenta, y tu tope es de $5.000 COP al mes. "
-        "Con ese tope todavía no se puede hacer un anuncio."
+        "Con ese tope no alcanza para un anuncio. Puedes cambiar tu tope o escribir el monto "
+        "que quieras."
     )
 
 

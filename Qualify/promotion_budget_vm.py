@@ -44,7 +44,7 @@ def field_amount(suggestion: BudgetSuggestion) -> str:
     return str(-(-(suggestion.piece_total_minor or 0) // 100))
 
 
-def _typed_minor(draft: PromotionDraftVM) -> int | None:
+def typed_minor(draft: PromotionDraftVM) -> int | None:
     try:
         return cop_minor(draft.budget)
     except ValueError:
@@ -57,7 +57,10 @@ def budget_hint(
     message: str,
     draft: PromotionDraftVM,
     timezone_name: str,
+    compact: bool = False,
 ) -> BudgetHintVM:
+    """`compact`: an amount was already in the field when the suggestion arrived. Decided
+    then, never per keystroke, so the field does not jump while the owner types."""
     if status == "loading":
         return BudgetHintVM("loading", line=LOADING)
     if status == "failed":
@@ -70,23 +73,31 @@ def budget_hint(
     days = suggestion.days
     one = suggestion.pieces == 1
     moves_dates = promotion_days(draft, timezone_name) != days
-    button = ("Usar este monto" if one else "Usar la parte de esta publicación") + (
-        f" y {_days(days)}" if moves_dates else ""
-    )
+    amount = money(int(field_amount(suggestion)) * 100, cur)
+    # The button names the amount it writes (UX review: with several pieces the field gets
+    # this publication's share, not the total of the headline).
+    button = f"Usar {amount}" + (f" y {_days(days)}" if moves_dates else "")
     pieces_note = suggestion.pieces_note or ""
-    typed = _typed_minor(draft)
+    typed = typed_minor(draft)
     if typed is not None and draft.budget.strip() == field_amount(suggestion) and not moves_dates:
-        what = "la sugerencia" if one else "la parte de esta publicación"
         return BudgetHintVM(
             "applied",
-            line=f"Pusimos {what}: {money(int(field_amount(suggestion)) * 100, cur)} en "
-            f"{_days(days)}. Puedes cambiarlo abajo.",
+            line=(
+                f"Pusimos {amount} para {_days(days)}. Puedes cambiarlo abajo."
+                if one
+                else f"Pusimos {amount} para esta publicación, en {_days(days)}. "
+                "Puedes cambiarlo abajo."
+            ),
         )
     amounts = (
         f"{money(suggestion.daily_minor, cur)} al día durante {_days(days)} "
         f"(total {money(suggestion.total_minor or 0, cur)})."
+        if one
+        else f"{money(suggestion.total_minor or 0, cur)} en total para {suggestion.pieces} "
+        f"publicaciones: {amount} para esta, unos "
+        f"{money(suggestion.piece_daily_minor or 0, cur)} al día durante {_days(days)}."
     )
-    if typed is not None:
+    if compact and typed is not None:
         return BudgetHintVM(
             "compact",
             headline=f"Sugerencia: {amounts}",
@@ -116,7 +127,7 @@ def suggested_end(draft: PromotionDraftVM, timezone_name: str, days: int) -> str
 def daily_line(draft: PromotionDraftVM, timezone_name: str, currency: str) -> str:
     """«Son unos $5.000 COP al día durante 7 días.» for any amount; rounded down to the
     unit, never to thousands, so it never looks like we changed the owner's amount."""
-    typed = _typed_minor(draft)
+    typed = typed_minor(draft)
     days = promotion_days(draft, timezone_name)
     if typed is None or not days:
         return ""
@@ -127,7 +138,7 @@ def over_cap_line(
     suggestion: BudgetSuggestion | None, draft: PromotionDraftVM, timezone_name: str
 ) -> str:
     """Under «Total», never in the card: information, never a block."""
-    typed = _typed_minor(draft)
+    typed = typed_minor(draft)
     if suggestion is None or suggestion.cap_remaining_minor is None or typed is None:
         return ""
     days = promotion_days(draft, timezone_name)

@@ -755,11 +755,17 @@ def _suggestion() -> rx.Component:
     hint = S.budget_hint
     pieces = rx.cond(hint.pieces_note != "", _muted(hint.pieces_note))
     return rx.box(
+        # One live region that stays mounted: loading, «No pudimos…» and «Pusimos…» are
+        # announced; the card and its button are not re-read on every change.
+        rx.hstack(
+            rx.cond(hint.mode == "loading", loading_spinner("sm")),
+            rx.cond((hint.mode != "blocked") & (hint.line != ""), _muted(hint.line)),
+            align="center",
+            role="status",
+            aria_live="polite",
+        ),
         rx.match(
             hint.mode,
-            ("loading", rx.hstack(loading_spinner("sm"), _muted(hint.line), align="center")),
-            ("none", _muted(hint.line)),
-            ("applied", _muted(hint.line)),
             (
                 "blocked",
                 rx.vstack(
@@ -808,7 +814,6 @@ def _suggestion() -> rx.Component:
             rx.fragment(),
         ),
         on_mount=S.load_budget_suggestion,
-        aria_live="polite",
         width="100%",
     )
 

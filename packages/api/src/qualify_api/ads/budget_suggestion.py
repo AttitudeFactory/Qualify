@@ -239,7 +239,8 @@ def suggest(
                         if spent_this_month_minor
                         else f"tu tope es de {money(remaining, currency)} al mes"
                     )
-                    + ". Con ese tope todavía no se puede hacer un anuncio."
+                    + ". Con ese tope no alcanza para un anuncio. Puedes cambiar tu tope o "
+                    "escribir el monto que quieras."
                 )
             else:
                 days = fitting
@@ -290,8 +291,9 @@ def suggest(
     pieces_note = None
     if daily is not None and pieces > 1:
         pieces_note = (
-            f"Ya has hecho anuncios: si quieres comparar, reparte este monto entre {pieces} "
-            f"publicaciones distintas, unos {money(piece_daily, currency)} al día cada una."
+            f"Como ya has hecho anuncios, prueba {pieces} publicaciones distintas para ver "
+            f"cuál funciona mejor, unos {money(piece_daily, currency)} al día cada una. "
+            "Después de esta, promociona las otras."
         )
     elif daily is not None and not has_previous_promotions:
         pieces_note = "Como es tu primer anuncio, empieza con esta sola publicación."
