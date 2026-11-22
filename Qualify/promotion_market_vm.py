@@ -33,6 +33,7 @@ SATURATED = (
 )
 NO_RANGE_REVIEW = "Sin estimación de Meta para este público"
 PENDING_REVIEW = "Sin calcular"
+FAILED_REVIEW = "No pudimos calcularlo; puedes seguir igual"
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ def market_estimate(
 
 def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: str) -> MarketVM:
     if reach.status == "failed" or (reach.available and reach.market_failed):
-        return MarketVM(FAILED, retry=True)
+        return MarketVM(FAILED, retry=True, review=FAILED_REVIEW)
     if not reach.available:
         if reach.status == "unavailable":
             return MarketVM(NO_RANGE, review=NO_RANGE_REVIEW)
@@ -91,7 +92,8 @@ def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: 
     if not reach.cpm_minor:
         return MarketVM(
             f"Todavía no tenemos datos de anuncios en {country} para calcular a cuántas "
-            "personas llegarías. Puedes seguir de todos modos."
+            "personas llegarías. Puedes seguir de todos modos.",
+            review=f"No lo calculamos: aún no tenemos datos de anuncios en {country}",
         )
     if not _valid_budget(draft.budget):
         return MarketVM(WRITE_AMOUNT)
@@ -100,7 +102,7 @@ def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: 
         return MarketVM(CHECK_DATES)
     found = market_estimate(reach, draft, timezone_name)
     if found is None or found.people is None:
-        return MarketVM(FAILED, retry=True)
+        return MarketVM(FAILED, retry=True, review=FAILED_REVIEW)
     money = cop_label(draft.budget)
     period = "en 1 día" if days == 1 else f"en {days} días"
     people = approx_people(found.people)
@@ -111,7 +113,10 @@ def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: 
         )
     else:
         line = f"Con {money} {period} llegarías a {people} de tu público (aproximado)."
-    review = f"{people[0].upper()}{people[1:]}, de un público de " + audience_range(
+    # «Unas 9.400, de un público de …»: the word «personas» once (UX review).
+    short = people.removesuffix(" de personas").removesuffix(" personas")
+    short = short if short.startswith("unas") else people
+    review = f"{short[0].upper()}{short[1:]}, de un público de " + audience_range(
         found.audience_lower, found.audience_upper, "a"
     )
     return MarketVM(

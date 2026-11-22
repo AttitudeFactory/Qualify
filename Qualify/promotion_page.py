@@ -724,7 +724,7 @@ def _market() -> rx.Component:
         rx.cond(
             S.reach_loading,
             rx.hstack(loading_spinner(), rx.text("Calculando…"), role="status"),
-            rx.text(S.market.line, weight="medium", aria_live="polite"),
+            rx.text(S.market.line, weight="medium"),
         ),
         rx.cond(
             ~S.reach_loading & (S.market.note != ""),
@@ -756,11 +756,15 @@ def _market() -> rx.Component:
                 disabled=S.busy,
                 variant="ghost",
                 min_height="44px",
+                white_space="normal",
+                height="auto",
             ),
         ),
         spacing="2",
         width="100%",
         align_items="start",
+        # On the block, not the line: the line is replaced when the estimate arrives.
+        aria_live="polite",
     )
 
 

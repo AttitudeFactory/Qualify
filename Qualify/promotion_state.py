@@ -66,7 +66,7 @@ from .promotion_audience_vm import (
     point_distance_hint,
     point_distance_label,
 )
-from .promotion_market_vm import MarketVM, market_estimate, market_view
+from .promotion_market_vm import MarketVM, market_view
 from .promotion_provider import (
     confirm_review,
     latest_greeting,
@@ -1061,12 +1061,14 @@ class PromotionState(rx.State):
             if self.busy or not self.form.location_key or step_problem(self.form, 3):
                 return
             form = self.form
+            source = next((row for row in self.sources if row.id == form.source_id), None)
+            brand = source.brand_id if source else ""
             self.reach_loading = True
             self._reach_operation = operation = str(uuid4())
         try:
             scope = self._audience_scope(context)
             with acting_login(UUID(context[1])):
-                estimate = await asyncio.to_thread(read_reach, scope, form)
+                estimate = await asyncio.to_thread(read_reach, scope, form, brand)
         except Exception as exc:
             logger.warning("audience estimate failed: %s", type(exc).__name__)
             estimate = AudienceReachVM(
@@ -2046,7 +2048,9 @@ class PromotionState(rx.State):
                         keep_market_estimate,
                         UUID(context[0]),
                         UUID(prepared.promotion_id),
-                        market_estimate(reach, form, zone),
+                        reach,
+                        form,
+                        zone,
                     )
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)

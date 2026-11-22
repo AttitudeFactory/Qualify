@@ -18,7 +18,7 @@ from qualify_api.ads.audience_service import (
 )
 from qualify_api.ads.business_location import get_business_location, save_business_location
 from qualify_api.ads.custom_audiences import CustomAudienceSelection
-from qualify_api.ads.market_size import MarketEstimate, estimate_market, record_market_estimate
+from qualify_api.ads.market_size import estimate_market, record_market_estimate
 
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .promotion_audience_vm import (
@@ -33,6 +33,7 @@ from .promotion_audience_vm import (
     reach_label,
 )
 from .promotion_market_vm import CURRENCY as MARKET_CURRENCY
+from .promotion_market_vm import market_estimate
 from .promotion_vm import PromotionDraftVM
 
 logger = logging.getLogger(__name__)
@@ -150,7 +151,11 @@ def suggest_interests(scope: dict[str, UUID], form: PromotionDraftVM) -> list[Au
     return [AudienceInterestVM(row.id, row.name, row.status) for row in rows]
 
 
-def read_reach(scope: dict[str, UUID], form: PromotionDraftVM) -> AudienceReachVM:
+def read_reach(
+    scope: dict[str, UUID], form: PromotionDraftVM, brand_id: str = ""
+) -> AudienceReachVM:
+    """Meta's range for the form's audience, with the market class and CPM of `brand_id`
+    (the selected source's brand: always set, unlike the permissions check's)."""
     estimate = asyncio.run(estimate_audience(**scope, audience=audience_from_form(form)))
     if not estimate.ready or estimate.lower is None or estimate.upper is None:
         message = (
@@ -170,7 +175,7 @@ def read_reach(scope: dict[str, UUID], form: PromotionDraftVM) -> AudienceReachV
         # a nominal amount only makes it name the CPM; the budget step does the arithmetic.
         market = estimate_market(
             tenant_id=scope["tenant_id"],
-            brand_id=UUID(form.enhancements.brand_id),
+            brand_id=UUID(brand_id),
             reach=estimate,
             country=form.location_country,
             currency=MARKET_CURRENCY,
@@ -194,13 +199,18 @@ def read_reach(scope: dict[str, UUID], form: PromotionDraftVM) -> AudienceReachV
 
 
 def keep_market_estimate(
-    tenant_id: UUID, promotion_id: UUID, estimate: MarketEstimate | None
+    tenant_id: UUID,
+    promotion_id: UUID,
+    reach: AudienceReachVM,
+    form: PromotionDraftVM,
+    timezone_name: str,
 ) -> None:
     """The estimate shown before approval, kept with the prepared promotion (provenance).
     Never blocks the preview: a failed write is logged and the promotion goes on."""
-    if estimate is None:
-        return
     try:
+        estimate = market_estimate(reach, form, timezone_name)
+        if estimate is None:
+            return
         record_market_estimate(tenant_id=tenant_id, promotion_id=promotion_id, estimate=estimate)
     except Exception as exc:
         logger.warning("market estimate record failed: %s", type(exc).__name__)

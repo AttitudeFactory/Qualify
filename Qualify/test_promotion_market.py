@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from qualify_api.ads.audience import ReachEstimate
-from qualify_api.ads.market_size import MarketEstimate, estimate, load_table
+from qualify_api.ads.market_size import MarketEstimate
 
 from . import promotion_audience_provider as provider
 from . import promotion_state as state_module
@@ -63,6 +63,7 @@ def test_budget_line_with_days_note_and_review() -> None:
     assert view.line.startswith("Con $25.000 COP en 7 días llegarías a unas ")
     assert view.line.endswith("de tu público (aproximado).")
     assert "Colombia" in view.note and not view.saturated
+    assert view.review.startswith("Unas ") and "personas," not in view.review
     assert view.review.endswith("de un público de 18.000 a 21.000 personas")
 
 
@@ -102,6 +103,7 @@ def test_no_cost_data_for_the_country_says_so_in_words() -> None:
         replace(READY, cpm_minor=0), replace(valid_form(), location_country="UY"), ZONE
     )
     assert "Uruguay" in view.line and not re.search(r"\d", view.line)
+    assert "Uruguay" in view.review
     found = market_estimate(replace(READY, cpm_minor=0), valid_form(), ZONE)
     assert found is not None and found.people is None and found.market_class == "pequeno"
 
@@ -128,10 +130,7 @@ def test_read_reach_keeps_bounds_and_class_without_a_second_meta_call(
 
     monkeypatch.setattr(provider, "estimate_audience", meta)
     monkeypatch.setattr(provider, "estimate_market", market)
-    form = replace(
-        valid_form(), enhancements=replace(valid_form().enhancements, brand_id=str(uuid4()))
-    )
-    reach = provider.read_reach({"tenant_id": TENANT}, form)
+    reach = provider.read_reach({"tenant_id": TENANT}, valid_form(), str(uuid4()))
     assert len(calls) == 1
     assert (reach.lower, reach.upper, reach.cpm_minor, reach.cpm_source) == (
         18_000,
@@ -162,15 +161,23 @@ def test_market_failure_keeps_meta_range(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_keeping_the_estimate_never_blocks_the_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[MarketEstimate] = []
+
     def boom(**kwargs: object) -> bool:
+        recorded.append(kwargs["estimate"])
         raise RuntimeError("db down")
 
+    def broken(*args: object) -> None:
+        raise ZeroDivisionError
+
     monkeypatch.setattr(provider, "record_market_estimate", boom)
-    found = estimate(
-        lower=1, upper=2, budget_minor=None, days=None, currency="COP", cpm=None, table=load_table()
-    )
-    provider.keep_market_estimate(TENANT, uuid4(), found)  # logged, not raised
-    provider.keep_market_estimate(TENANT, uuid4(), None)
+    provider.keep_market_estimate(TENANT, uuid4(), READY, valid_form(), ZONE)  # logged
+    assert recorded[0].market_class == "pequeno" and recorded[0].audience_hash == "h1"
+    assert recorded[0].people is not None and recorded[0].people <= 21_000
+    provider.keep_market_estimate(TENANT, uuid4(), AudienceReachVM(), valid_form(), ZONE)
+    assert len(recorded) == 1  # no range from Meta: nothing to keep
+    monkeypatch.setattr(provider, "market_estimate", broken)
+    provider.keep_market_estimate(TENANT, uuid4(), READY, valid_form(), ZONE)  # never raises
 
 
 def test_widen_audience_goes_back_to_the_audience_step_keeping_the_amount() -> None:
@@ -204,7 +211,6 @@ async def test_prepared_promotion_keeps_the_estimate_shown(
     monkeypatch.setattr(state_module, "keep_market_estimate", lambda *args: kept.append(args))
     await context._remote(confirm=False)
     assert len(kept) == 1
-    tenant, promotion, found = kept[0]
+    tenant, promotion, reach, form, zone = kept[0]
     assert tenant == TENANT and str(promotion) == review().promotion_id
-    assert found.market_class == "pequeno" and found.audience_hash == "h1"
-    assert found.people is not None and found.people <= 21_000
+    assert reach == READY and form == context.form and zone == ZONE

@@ -182,7 +182,8 @@ def own_cpm(session: Any, brand_id: UUID, currency: str, table: MarketTable) -> 
     ).one()
     if not impressions or impressions < table.own_cpm_min_impressions or not spend:
         return None
-    return Cpm(int(Decimal(spend) * 100_000 / Decimal(impressions)), currency, "own")
+    minor = int(Decimal(spend) * 100_000 / Decimal(impressions))
+    return Cpm(minor, currency, "own") if minor > 0 else None  # a 0 CPM would divide by 0
 
 
 def estimate_market(
