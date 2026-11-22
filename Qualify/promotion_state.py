@@ -1078,7 +1078,7 @@ class PromotionState(rx.State):
                     self.audience_working = ""
 
     @rx.event(background=True)
-    async def refresh_reach(self) -> None:
+    async def refresh_reach(self) -> rx.event.EventSpec | None:
         async with self:
             context = await self._session()
             revision = self._audience_revision
@@ -1107,6 +1107,10 @@ class PromotionState(rx.State):
             ):
                 self.audience_reach = estimate
                 self.reach_loading = False
+                # m-25091389: a suggestion already shown follows the market class.
+                if getattr(self, "budget_hint_status", ""):
+                    return PromotionState.load_budget_suggestion()
+        return None
 
     @rx.event(background=True)
     async def restore_audience(self) -> None:
@@ -1371,7 +1375,7 @@ class PromotionState(rx.State):
         async with self:
             context = await self._session()
             source = self.form.source_id
-            if self.busy or not self.market_shown or not tenant_uuid(source):
+            if not self.market_shown or not tenant_uuid(source):  # a read: never blocked
                 return
             form, zone = self.form, self.timezone_name
             market = market_estimate(self.audience_reach, form, zone)
@@ -1504,8 +1508,11 @@ class PromotionState(rx.State):
             if name in {"radius_km", "age_min", "age_max"}:
                 self._invalidate_audience()
                 return PromotionState.refresh_reach()
-            if name in {"start_local", "end_local"} and self.budget_hint_status:
-                return PromotionState.load_budget_suggestion()  # same minimum, new days
+            # Only with Meta's minimum already read for this source: a date edit never
+            # makes another Meta call.
+            cached = getattr(self, "_budget_minimum", ("", 0))[0]
+            if name in {"start_local", "end_local"} and cached == self.form.source_id:
+                return PromotionState.load_budget_suggestion()
         return None
 
     @rx.event

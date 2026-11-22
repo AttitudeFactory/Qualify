@@ -18,6 +18,7 @@ from qualify_api.ads.investment_profile import InvestmentProfile
 from . import promotion_budget_provider as provider
 from . import promotion_state as state_module
 from .investment_profile_vm import safe_return
+from .promotion_audience_vm import AudienceReachVM
 from .promotion_budget_vm import budget_hint, daily_line, field_amount, over_cap_line
 from .promotion_page import _budget
 from .promotion_state import PromotionState
@@ -227,3 +228,19 @@ def test_budget_step_renders_the_suggestion() -> None:
     page = repr(_budget().render())
     assert "Sugerencia" in page and "Responder 5 preguntas (1 minuto)" in page
     assert "Revisar mi tope" in page
+
+
+def test_date_edits_reload_only_with_a_cached_minimum() -> None:
+    context = BudgetContext()
+    assert PromotionState.edit.fn(context, "end_local", "2027-01-20T09:00") is None
+    context._budget_minimum = (str(SOURCE), 4 * K)
+    assert PromotionState.edit.fn(context, "end_local", "2027-01-21T09:00") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_new_reach_refreshes_a_shown_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(state_module, "read_reach", lambda *args: AudienceReachVM(available=True))
+    context = BudgetContext()
+    assert await PromotionState.refresh_reach.fn(context) is None
+    context.budget_hint_status = "ready"
+    assert await PromotionState.refresh_reach.fn(context) is not None
