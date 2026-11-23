@@ -53,9 +53,9 @@ WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
   AND d.part_removed_at IS NULL""")
 # The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).
 UNPUBLISHED_COP_ONLY = (
-    "Por ahora, las piezas sin publicar solo se pueden promocionar con una cuenta publicitaria "
-    "en pesos colombianos. Publica la pieza primero y promociónala desde ahí, o elige una "
-    "cuenta en pesos colombianos en Tus redes."
+    "Por ahora, «Anunciar sin publicar» solo funciona con cuentas publicitarias en pesos "
+    "colombianos. Publica primero la publicación y luego promociónala desde Anuncios, o elige "
+    "una cuenta en pesos colombianos en Tus redes."
 )
 _ACCOUNTS = text("""SELECT a.id,COALESCE(a.name,'') AS name,COALESCE(a.currency,'') AS currency,
   COALESCE(a.timezone_name,'') AS timezone_name,

@@ -318,7 +318,7 @@ def _edit_confirmation() -> rx.Component:
                             width="100%",
                         ),
                         rx.text(
-                            "Escribe " + S.edit_unit + " completos, sin puntos ni comas. "
+                            "Escribe el monto en " + S.edit_unit + " enteros, sin puntos ni comas. "
                             "El nuevo total debe ser mayor al actual.",
                             size="2",
                         ),
@@ -355,7 +355,7 @@ def _edit_confirmation() -> rx.Component:
                             weight="medium",
                         ),
                         rx.text(
-                            "Escribe " + S.edit_unit + " completos, sin puntos ni comas. "
+                            "Escribe el monto en " + S.edit_unit + " enteros, sin puntos ni comas. "
                             "Es el total para todo el anuncio, no por día.",
                             size="2",
                         ),

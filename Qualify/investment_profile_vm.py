@@ -128,9 +128,10 @@ def whole_money(whole: int, currency: str) -> str:
 
 # Field examples in each currency, so a dollar account never reads «Ejemplo: 200.000».
 _EXAMPLES = {
-    "COP": ("20.000", "12.000", "200.000", "$20.000", "$1.500.000", "$150.000", "$8.000"),
-    "USD": ("10", "6", "100", "$10", "$500", "$50", "$4"),
-    "UYU": ("400", "240", "4.000", "$400", "$40.000", "$3.000", "$160"),
+    # (ticket, kept, cap) as typed, then combo, trip, advice and cost in whole units.
+    "COP": ("20.000", "12.000", "200.000", 20_000, 1_500_000, 150_000, 8_000),
+    "USD": ("10", "6", "100", 10, 500, 50, 4),
+    "UYU": ("400", "240", "4.000", 400, 40_000, 3_000, 160),
 }
 
 
@@ -138,7 +139,9 @@ def money_copy(currency: str) -> dict[str, str]:
     """Labels, placeholders and examples of the money questions in the account currency."""
     unit = budget_field(currency)
     code = currency if currency in _EXAMPLES else "COP"
-    ticket, kept, cap, combo, trip, advice, cost = _EXAMPLES[code]
+    ticket, kept, cap, *amounts = _EXAMPLES[code]
+    combo, trip, advice, cost = (whole_money(value, code) for value in amounts)  # type: ignore[arg-type]
+    left = whole_money(int(kept.replace(".", "")), code)
     unit_name = unit.unit_name if unit else "pesos colombianos"
     return {
         "ticket_label": f"Lo que paga en una compra, en {unit_name}",
@@ -146,7 +149,7 @@ def money_copy(currency: str) -> dict[str, str]:
         "ticket_hint": f"Por ejemplo: un combo de comida, {combo} · un paquete de viaje, {trip} "
         f"· una asesoría, {advice}.",
         "margin_hint": f"Por ejemplo: vendes un combo en {combo}. Los ingredientes y el empaque "
-        f"te cuestan {cost}. Te quedan ${kept}.",
+        f"te cuestan {cost}. Te quedan {left}.",
         "kept_label": f"Me quedan, en {unit_name}",
         "kept_placeholder": f"Ejemplo: {kept}",
         "cap_label": f"Tope al mes, en {unit_name}",

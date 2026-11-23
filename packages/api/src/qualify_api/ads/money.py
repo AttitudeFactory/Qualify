@@ -24,8 +24,8 @@ from dataclasses import dataclass
 META_CURRENCY_OFFSETS = {"COP": 1, "USD": 100, "UYU": 100}
 
 CURRENCY_UNSUPPORTED = (
-    "Por ahora los anuncios admiten cuentas publicitarias en pesos colombianos, dólares o "
-    "pesos uruguayos. Elige una cuenta en una de esas monedas en Tus redes."
+    "Por ahora los anuncios funcionan con cuentas publicitarias en pesos colombianos, dólares "
+    "o pesos uruguayos. Si tienes una cuenta en una de esas monedas, elígela en Tus redes."
 )
 
 

@@ -303,4 +303,4 @@ def test_money_questions_follow_the_account_currency() -> None:
     assert copy["ticket_label"] == "Lo que paga en una compra, en dólares"
     assert copy["cap_placeholder"] == "Ejemplo: 100"
     assert money_copy("UYU")["kept_label"] == "Me quedan, en pesos uruguayos"
-    assert money_copy("COP")["margin_hint"].endswith("Te quedan $12.000.")
+    assert money_copy("COP")["margin_hint"].endswith("Te quedan $12.000 COP.")

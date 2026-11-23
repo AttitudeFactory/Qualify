@@ -361,6 +361,13 @@ def _waiting() -> rx.Component:
                     rx.vstack(
                         callout(S.unsupported_message, "info"),
                         rx.link(
+                            "Ir a Tus redes",
+                            href="/connections",
+                            min_height="44px",
+                            display="inline-flex",
+                            align_items="center",
+                        ),
+                        rx.link(
                             "Volver a Anuncios",
                             href="/promotions",
                             min_height="44px",
