@@ -2,8 +2,10 @@
 
 Measures `qualify_api.creative.placement_ai.VisionPlacer` — the REAL module, its prompt,
 its guards — on a golden set of labelled frames, against today's fixed places (text
-`bottom`, logo `top`, free). The acceptance criterion of the ticket: on 30 frames the
-text does not cover the subject in >= 90 %.
+`bottom`, logo `top`, free). The criterion (Deivid, 2026-11-23, replacing the ticket's
+«>= 90 % of 30 frames», which a frame filled by the subject makes unreachable): the text
+does not cover the subject in >= 90 % of the frames that have a free band. Also reported:
+every frame, the best any one band per video can do (`ceiling`) and the baseline.
 
 A case is one prepared video (or a few stills of one) with 1 to 3 labelled frames; each
 labelled frame is one «cuadro» of the golden set and carries the bands the subject
@@ -52,6 +54,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from collections import Counter
 from datetime import datetime
 from decimal import Decimal
@@ -170,10 +173,33 @@ def _score(
             "subject_bands": list(bands),
             "text_ok": text not in bands,
             "logo_ok": logo not in bands,
+            # a frame where some band is free of the subject: the main criterion (Deivid,
+            # 2026-11-23) counts only these
+            "free": len(set(bands)) < len(VIDEO_BANDS),
         }
         for frame, bands in labelled
         if bands is not None
     ]
+
+
+VIDEO_BANDS = ("top", "middle", "bottom")
+#: Deivid, 2026-11-23: the text leaves the subject free in >= 90 % of the frames that have
+#: a free band.
+TARGET_FREE_RATE = 0.90
+
+
+def ceiling(cases: list[dict[str, Any]], prepared: dict[str, Any]) -> dict[str, int]:
+    """The most frames any placement can get right: one text band per video (the layers
+    keep their band for the whole video), the best band of each case."""
+    best = 0
+    total = 0
+    free = 0
+    for case in cases:
+        bands = [b for _, b in prepared[case["id"]] if b is not None]
+        total += len(bands)
+        free += sum(1 for b in bands if len(set(b)) < len(VIDEO_BANDS))
+        best += max((sum(1 for b in bands if band not in b) for band in VIDEO_BANDS), default=0)
+    return {"frames": total, "frames_with_free_band": free, "best_possible": best}
 
 
 class DryClient:
@@ -199,16 +225,35 @@ class CeilingReached(Exception):
 
 
 def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Counts over every scored frame of every repeat; `per_repeat` gives each repeat's
+    own counts (frames once), the unit of the ticket's criterion."""
     scored = [s for r in rows for s in r["scores"]]
     text_ok = sum(1 for s in scored if s["text_ok"])
     logo_ok = sum(1 for s in scored if s["logo_ok"])
+    free = [s for s in scored if s["free"]]
+    text_ok_free = sum(1 for s in free if s["text_ok"])
+    per_repeat: dict[int, dict[str, int]] = {}
+    for r in rows:
+        rep = per_repeat.setdefault(
+            int(r.get("repeat", 0)), {"text_ok": 0, "text_ok_free": 0, "logo_ok": 0}
+        )
+        for s in r["scores"]:
+            rep["text_ok"] += s["text_ok"]
+            rep["logo_ok"] += s["logo_ok"]
+            rep["text_ok_free"] += s["text_ok"] and s["free"]
+    rate_free = round(text_ok_free / len(free), 4) if free else None
     return {
         "calls": sum(1 for r in rows if r.get("source") != BASELINE),
         "frames_scored": len(scored),
+        "frames_with_free_band": len(free),
+        "text_ok_free": text_ok_free,
+        "text_ok_free_rate": rate_free,
+        "meets_target": rate_free is not None and rate_free >= TARGET_FREE_RATE,
         "text_ok": text_ok,
         "text_ok_rate": round(text_ok / len(scored), 4) if scored else None,
         "logo_ok": logo_ok,
         "logo_ok_rate": round(logo_ok / len(scored), 4) if scored else None,
+        "per_repeat": per_repeat,
         "fallbacks": dict(Counter(r["fallback_reason"] for r in rows if r.get("fallback_reason"))),
         "cost_usd": str(sum((Decimal(r["cost_usd"]) for r in rows), Decimal(0))),
     }
@@ -258,6 +303,7 @@ def run(args: argparse.Namespace) -> int:
         )
         return 3
 
+    started = time.monotonic()
     records: list[Any] = []
     claude_tools.configure_consumption_sink(records.append)
     dry_client = DryClient()
@@ -372,7 +418,14 @@ def run(args: argparse.Namespace) -> int:
         for r in records
     ]
     report["meter"] = meter.as_document()
+    report["elapsed_s"] = round(time.monotonic() - started, 1)
+    calls_made = len(records)
+    report["cost_per_call_usd"] = (
+        str((meter.spent_usd / calls_made).quantize(Decimal("0.000001"))) if calls_made else None
+    )
     if labelled_set:
+        report["ceiling"] = ceiling(cases, prepared)
+        report["target_free_rate"] = TARGET_FREE_RATE
         report["summary"] = {
             arm: _summary([r for r in report["rows"] if r["arm"] == arm])
             for arm in [BASELINE, *arms]
@@ -380,10 +433,25 @@ def run(args: argparse.Namespace) -> int:
     (out / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
     )
-    for arm, summary in (report.get("summary") or {}).items():
-        ok, scored = summary["text_ok"], summary["frames_scored"]
-        print(f"  {arm}: texto fuera del sujeto {ok}/{scored} · {summary}")
-    print(f"\nCotizado: USD {quote} · gastado: USD {meter.spent_usd} · informe en {out}")
+    if "ceiling" in report:
+        c = report["ceiling"]
+        print(
+            f"  cuadros: {c['frames']} · con franja libre: {c['frames_with_free_band']} · "
+            f"máximo posible: {c['best_possible']}/{c['frames']}"
+        )
+    for arm, s in (report.get("summary") or {}).items():
+        print(
+            f"  {arm}: con franja libre {s['text_ok_free']}/{s['frames_with_free_band']} "
+            f"({s['text_ok_free_rate']}, meta {TARGET_FREE_RATE}: "
+            f"{'cumple' if s['meets_target'] else 'no cumple'}) · texto {s['text_ok']}/"
+            f"{s['frames_scored']} · logo {s['logo_ok']}/{s['frames_scored']} · "
+            f"por repetición {s['per_repeat']} · caídas {s['fallbacks']} · USD {s['cost_usd']}"
+        )
+    print(
+        f"\nCotizado: USD {quote} · gastado: USD {meter.spent_usd} · {calls_made} llamadas · "
+        f"USD {report['cost_per_call_usd']} por llamada · {report['elapsed_s']} s · "
+        f"informe en {out}"
+    )
     return 0
 
 

@@ -165,4 +165,21 @@ Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, 
 - **Costo esperado por pieza** (estimado, sin medir): unos 5.900 tokens de entrada (3 cuadros de ~1.229 tokens más ~2.200 de prompt) = US$0,0006, y de 300 a 800 de salida = US$0,00015–0,0004. Total: **US$0,0007–0,001 por pieza** con 3 cuadros; unos US$0,0005 con 1 cuadro.
 - **Guardas:** el tope por llamada; hasta 2 llamadas por pieza; 1.500 llamadas al día para todos los negocios (`QUALIFY_VIDEO_PLACEMENT_FLEET_DAILY`), o sea, como mucho US$3,15 al día.
 - **Prueba en seco (2026-11-23):** `just eval-lugar` con el material del repo (2 fotos de muestra y 2 videos de efectos) y con un archivo de casos de prueba fuera del repo. Se armaron todas las solicitudes con el módulo real, se cotizaron y no se envió nada: 0 llamadas a Anthropic, US$0 gastado.
-- **Medición pendiente**, con tope de US$2 y la autorización de Deivid: 10 videos reales de nuestros negocios con 3 cuadros etiquetados cada uno (30 cuadros), brazos `3f` y `1f`, 3 repeticiones = 60 llamadas, cotizadas al tope en unos US$0,11. El criterio del ticket: el texto no tapa el sujeto en ≥ 90 % de los 30 cuadros, contra la línea base del lugar fijo.
+- **Material (2026-11-23):** 10 videos de comida tomados de la base de desarrollo, solo lectura. No hay videos que el dueño haya subido de su propio producto, así que se usaron:
+  - 4 videos que Qualify generó para una hamburguesería cliente: una hamburguesa smash, unas manos armando una hamburguesa, una mascota con una hamburguesa y un video de presentador con la foto del plato;
+  - 5 reels de otras cuentas, que el dueño subió como referencia: sándwich de pollo, hamburguesa con papas, pollo frito, papas con queso y un local con bocados;
+  - 1 video de banco de imágenes: una hamburguesa.
+- **Cuadros:** 3 por video, al 20, 50 y 80 % de su duración (`sample_placement_frames`). Son 30 en total.
+- **Etiquetado:** lo hizo un agente (creative-engineer), mirando cada cuadro y marcando las franjas que ocupa el sujeto. Una franja cuenta cuando el sujeto ocupa una parte visible de ella, no cuando solo toca el borde. Deivid aprobó la muestra de 8 cuadros el 2026-11-23: «está perfecto, las posiciones y la detección de los sujetos».
+- **Criterio, cambiado por decisión de Deivid del 2026-11-23:**
+  - En 13 de los 30 cuadros el sujeto ocupa las tres franjas.
+  - Como el texto mantiene su franja durante todo el video, el máximo posible es 17 de 30.
+  - El criterio principal pasa a ser: **el texto no tapa el sujeto en ≥ 90 % de los cuadros con alguna franja libre** (17 cuadros).
+  - Se informan también los 30 cuadros, el máximo posible y la línea base de hoy: texto abajo, 10 de 30 (10 de 17 con franja libre); logo arriba, 13 de 30.
+- **Método:** `just eval-lugar --cases <archivo fuera del repo> --i-have-spend-authorization --max-usd 2`, con 2 variantes (`3f`, los 3 cuadros; `1f`, solo el del medio), 3 repeticiones cada una. Son 60 llamadas, cotizadas al tope en US$0,107.
+- **Resultados: PENDIENTES.** La corrida pagada no llegó a ejecutarse (2026-11-23): el permiso de la sesión la bloqueó antes de enviar nada. 0 llamadas, US$0 gastado.
+- **Uso en la fase 2, decidido por Deivid el 2026-11-23:** «no quiero que bloquee si se pone el texto, sino que haya una advertencia de que puede tapar el producto y que muestre la mejor posición».
+  - El servidor **nunca mueve** el texto ni el logo por su cuenta.
+  - Devuelve las franjas del producto, la posición recomendada para el texto y para el logo, si la posición elegida por el dueño tapa el producto, y el motivo en español.
+  - La pantalla muestra el aviso con «Usar esta posición».
+  - El veredicto, apto o no para encenderse, se anota cuando haya resultados.
