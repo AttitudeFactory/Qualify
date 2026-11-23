@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from qualify_api.ads import month_plan as mp
 
 from . import ad_month_plan_provider as provider
-from .ad_month_plan_vm import NORMAL_WEEK, month_pair, month_plan_vm
+from . import ad_month_plan_state as state_module
+from .ad_month_plan_state import AdMonthPlanState
+from .ad_month_plan_vm import LOAD_FAILED, NORMAL_WEEK, month_pair, month_plan_vm
+from .auth_state import AuthState
+from .creative_state import CreativeState
 
 K = 100_000  # $1.000 COP in hundredths
 
@@ -84,3 +90,80 @@ def test_provider_reads_this_month_and_the_next_in_the_business_zone(
     assert asked == [(2027, 4), (2027, 5)]
     assert [m.exists for m in months] == [False, True]
     assert [m.tab for m in months] == ["Abril", "Mayo"]
+
+
+TENANT, LOGIN, USER, BRAND = uuid4(), uuid4(), uuid4(), uuid4()
+
+
+class Context:
+    _session = AdMonthPlanState._session
+
+    def __init__(self) -> None:
+        self.auth = SimpleNamespace(
+            session_tenant_id=str(TENANT), _auth_user_id=str(LOGIN), _session_user_id=str(USER)
+        )
+        self.creative = SimpleNamespace(_brand_id=str(BRAND))
+        self.months = [month_plan_vm(None, 2027, 1)]
+        self.showing, self.loading, self.error = "1", True, ""
+        self._context, self._operation = ("", "", ""), ""
+
+    async def __aenter__(self) -> Context:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+    async def get_state(self, state_class: type) -> object:
+        return {AuthState: self.auth, CreativeState: self.creative}[state_class]
+
+
+def run_load(context: Context, monkeypatch: pytest.MonkeyPatch, read: object) -> None:
+    monkeypatch.setattr(state_module, "brand_for", lambda _tenant, _cached: BRAND)
+    monkeypatch.setattr(state_module, "read_month_plans", read)
+    asyncio.run(AdMonthPlanState.load.fn(context))
+
+
+def test_load_forgets_another_business_and_reads_both_months(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = Context()
+    months = [month_plan_vm(colombia(4), 2027, 4), month_plan_vm(colombia(5), 2027, 5)]
+    run_load(context, monkeypatch, lambda _tenant, _brand: months)
+    assert context.months == months and context.showing == "0"
+    assert not context.loading and context.error == ""
+
+
+def test_load_shows_the_backend_message_as_is_and_hides_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_tenant: object, _brand: object) -> None:
+        raise mp.MonthPlanUnavailable(mp.PROFILE_OTHER_CURRENCY)
+
+    context = Context()
+    run_load(context, monkeypatch, refused)
+    assert context.error == mp.PROFILE_OTHER_CURRENCY
+
+    def broken(_tenant: object, _brand: object) -> None:
+        raise RuntimeError("db down")
+
+    context = Context()
+    run_load(context, monkeypatch, broken)
+    assert context.error == LOAD_FAILED and context.months == []
+
+
+def test_load_for_a_previous_session_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    context = Context()
+
+    def switch_business(_tenant: object, _brand: object) -> list:
+        context.auth.session_tenant_id = str(uuid4())
+        return [month_plan_vm(colombia(5), 2027, 5)]
+
+    run_load(context, monkeypatch, switch_business)
+    assert context.months == [] and context.loading
+
+
+@pytest.mark.parametrize(("value", "shown"), [("1", "1"), ("0", "0"), ("7", "0"), (["1"], "0")])
+def test_month_switch_accepts_only_this_or_next(value: object, shown: str) -> None:
+    context = SimpleNamespace(showing="0")
+    AdMonthPlanState.show.fn(context, value)
+    assert context.showing == shown

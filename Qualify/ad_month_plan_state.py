@@ -41,6 +41,10 @@ class AdMonthPlanState(rx.State):
     def next_tab(self) -> str:
         return self.months[1].tab if len(self.months) > 1 else "Mes siguiente"
 
+    async def _session(self) -> tuple[str, str, str]:
+        auth = await self.get_state(AuthState)
+        return auth.session_tenant_id, auth._auth_user_id, auth._session_user_id
+
     @rx.event
     def show(self, value: str | list[str]) -> None:
         self.showing = value if value in ("0", "1") else "0"
@@ -48,8 +52,7 @@ class AdMonthPlanState(rx.State):
     @rx.event(background=True)
     async def load(self) -> None:
         async with self:
-            auth = await self.get_state(AuthState)
-            context = auth.session_tenant_id, auth._auth_user_id, auth._session_user_id
+            context = await self._session()
             if context != self._context:  # another login or business: forget the last one
                 self.months, self.showing, self._context = [], "0", context
             cached = (await self.get_state(CreativeState))._brand_id
@@ -70,5 +73,6 @@ class AdMonthPlanState(rx.State):
                 logger.warning("month plan load failed: %s", type(exc).__name__)
                 error = str(exc) if isinstance(exc, MonthPlanUnavailable) else LOAD_FAILED
         async with self:
-            if self._operation == operation:
+            # a load for another login or business never lands in this session
+            if self._operation == operation and context == await self._session():
                 self.months, self.error, self.loading = months, error, False
