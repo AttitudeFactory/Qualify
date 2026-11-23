@@ -3409,14 +3409,9 @@ class MediaProducer:
             raw="no Seedance model with an adaptive ratio",
         )
 
-    def _prepared_frame_room(self, brief: ContentBrief) -> None:
-        """EF-11: with references the prepared frame travels as one more reference image
-        (ModelArk takes no `first_frame` beside them): it and the closing frame count
-        against `CLIP_MAX_IMAGES` (and the reference model's own limit) like the opening
-        frame the brief's own rule counts. Over it: refused before the copy is paid."""
-        media = brief.media
-        if not media.clip_has_references:
-            return  # a frame task: the frame is not a reference image
+    def _clip_image_limit(self) -> int:
+        """How many reference images a Clip sent with references may carry: the brief's
+        `CLIP_MAX_IMAGES`, or the reference model's own limit when it is lower."""
         limit = CLIP_MAX_IMAGES
         if self._seedance_reference_model:
             try:
@@ -3425,7 +3420,54 @@ class MediaProducer:
                 )
             except ValueError:
                 pass  # an unknown family: the brief's own limit
-        frames = 1 + int(bool(media.clip_last_frame_key))
+        return limit
+
+    def _clip_brand_room(self, brief: ContentBrief, brand_images: int) -> None:
+        """m-25078714: a Clip's Brand Kit images (logo in the scene, brand elements) travel
+        as reference images too, after the frames and the owner's photos
+        (`source_images` in `_produce_clip`). The frames — the PREPARED opening frame of
+        own stretches included (EF-11), which the brief's own rule cannot see — the photos
+        and the brand images together must fit the model's limit; over it the piece is
+        refused here, before the copy is paid, naming what to remove. The owner chose
+        every one of them in this same step («Recursos de tu marca»), so none is dropped
+        behind their back. Without brand images nothing changes (`_prepared_frame_room`
+        and the brief's rule keep their own refusals). A reference model that is missing
+        or takes no references is not counted here: `video_limit` refuses that first,
+        with its own words."""
+        if brand_images <= 0:
+            return
+        model = self._seedance_reference_model
+        try:
+            if not model or not seedance_family(model).references:
+                return
+        except ValueError:
+            return  # an unknown family: `video_limit` says it
+        frames = _clip_frame_images(brief)
+        photos = len(brief.media.clip_image_keys)
+        limit = self._clip_image_limit()
+        total = frames + photos + brand_images
+        if total <= limit:
+            return
+        raise BrandReferenceError(
+            _clip_over_limit_text(
+                limit=limit,
+                prepared=_uses_prepared_frame(brief),
+                frames=frames,
+                photos=photos,
+                brand_images=brand_images,
+            )
+        )
+
+    def _prepared_frame_room(self, brief: ContentBrief) -> None:
+        """EF-11: with references the prepared frame travels as one more reference image
+        (ModelArk takes no `first_frame` beside them): it and the closing frame count
+        against `CLIP_MAX_IMAGES` (and the reference model's own limit) like the opening
+        frame the brief's own rule counts. Over it: refused before the copy is paid."""
+        media = brief.media
+        if not media.clip_has_references:
+            return  # a frame task: the frame is not a reference image
+        limit = self._clip_image_limit()
+        frames = _clip_frame_images(brief)
         if len(media.clip_image_keys) + frames <= limit:
             return
         room = max(limit - frames, 0)
@@ -4395,6 +4437,9 @@ class MediaProducer:
                 frames = int(bool(media.clip_first_frame_key)) + int(
                     bool(media.clip_last_frame_key)
                 )
+                # m-25078714: the brand images counted with the frames (the prepared one
+                # of own stretches too) and the photos, before the copy is paid
+                self._clip_brand_room(brief, n)
                 if media.brand_application_version < 2 or media.clip_has_references or refs:
                     video_limit(
                         self._seedance_reference_model,
@@ -8391,6 +8436,58 @@ def _talking_over_text(brief: ContentBrief, refs: Sequence[BrandReference], over
 
 def _spanish_list(items: Sequence[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " o " + items[-1]
+
+
+def _uses_prepared_frame(brief: ContentBrief) -> bool:
+    """EF-11: whether this Clip opens on the prepared frame of own stretches (which then
+    replaces any opening frame the brief names). Pure but for the parts' switch."""
+    from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+        uses_prepared_frame,
+    )
+
+    return brief.kind is ContentKind.CLIP and uses_prepared_frame(brief)
+
+
+def _clip_frame_images(brief: ContentBrief) -> int:
+    """The frames a Clip with references sends as reference images, as `_produce_clip`
+    builds them: the opening one (the prepared frame of own stretches, or the brief's
+    own) and the closing one."""
+    media = brief.media
+    opening = 1 if _uses_prepared_frame(brief) else int(bool(media.clip_first_frame_key))
+    return opening + int(bool(media.clip_last_frame_key))
+
+
+def _clip_over_limit_text(
+    *, limit: int, prepared: bool, frames: int, photos: int, brand_images: int
+) -> str:
+    """m-25078714: what the owner reads when a Clip's frames, photos and brand images do
+    not fit the model together — what it carries and how many to remove (qualify-copy-es)."""
+    total = frames + photos + brand_images
+    excess = total - limit
+    parts: list[str] = []
+    if frames:  # the opening frame is always the first; a closing one needs it
+        parts.append("1 imagen de tu propio video" if prepared else "la imagen de inicio")
+    if frames > 1:
+        parts.append("la imagen de cierre")
+    if photos:
+        parts.append("1 foto" if photos == 1 else f"{photos} fotos")
+    if brand_images:
+        parts.append(
+            "1 imagen de tu marca" if brand_images == 1 else f"{brand_images} imágenes de tu marca"
+        )
+    listed = parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} y {parts[-1]}"
+    # only what the owner can remove and the video carries: never the frames
+    options = (
+        "tus fotos o imágenes de tu marca"
+        if photos and brand_images
+        else "tus fotos"
+        if photos
+        else "las imágenes de tu marca"
+    )
+    return (
+        f"Tu video lleva {total} imágenes y el máximo es {limit}. Cuentan: {listed}. "
+        f"Quita {excess} de {options} y vuelve a crear el video. No se cobró nada."
+    )
 
 
 def _over_budget_error(
