@@ -109,11 +109,22 @@ class ComposeUnavailable(Exception):
     code = "text_layer_unavailable"
     charge = False
 
-    def __init__(self, detail: str, *, service_code: str | None = None, transient: bool = True):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        service_code: str | None = None,
+        transient: bool = True,
+        outage: bool = False,
+    ):
         super().__init__(detail)
         self.detail = detail
         self.service_code = service_code
         self.transient = transient
+        #: EF-14: the service did not answer (transport, 502/503/504, a timeout) — the
+        #: only failure a queued Seedance clip waits for (`_passing`); `transient` keeps
+        #: its EF-05 meaning (the owner may try again)
+        self.outage = outage
         self.owner_message = OWNER_MESSAGE_UNAVAILABLE
 
 
@@ -172,6 +183,7 @@ def _client(render_client: RemotionRenderClient | RenderClientFactory) -> Remoti
         try:
             return render_client()
         except Exception as exc:  # noqa: BLE001 — no client = no render: as a service down
+            # our configuration, not a passing outage: never waited for (EF-14, `outage`)
             raise ComposeUnavailable(f"render client could not be built: {exc}") from exc
     return render_client  # a duck-typed client (tests)
 
@@ -187,9 +199,36 @@ def _draw(
         detail = f"text {index}: render service {exc.code}: {exc.message}"
         if exc.code == "invalid_parameters" or exc.status == 422:
             raise ComposeRejected(detail, service_code=exc.code) from exc
-        raise ComposeUnavailable(detail, service_code=exc.code) from exc
+        raise ComposeUnavailable(detail, service_code=exc.code, outage=_passing(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — unreachable service (httpx.TransportError…)
-        raise ComposeUnavailable(f"text {index}: render service unreachable: {exc}") from exc
+        raise ComposeUnavailable(
+            f"text {index}: render service unreachable: {exc}", outage=_passing(exc)
+        ) from exc
+
+
+#: HTTP statuses that mean «nobody answered» (a proxy in front of a service that is down),
+#: as `image_pipeline.compose_run._OUTAGE_STATUSES`.
+_OUTAGE_STATUSES = frozenset({502, 503, 504})
+
+
+def _passing(exc: BaseException) -> bool:
+    """EF-14: whether a render failure is an outage that may pass by itself — the service
+    did not answer (transport, 502/503/504) or ran too long (`RenderTimeout`), like
+    `compose_run._kind`'s `outage`. Anything else (a 4xx, a failed job, our own bug) is not:
+    waiting for it would only delay the same answer."""
+    from qualify_creative.render.client import RenderTimeout  # noqa: PLC0415
+
+    if isinstance(exc, RenderTimeout):
+        return True
+    if isinstance(exc, RenderServiceError):
+        return exc.status in _OUTAGE_STATUSES
+    if isinstance(exc, ConnectionError | TimeoutError):
+        return True
+    try:
+        import httpx  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — httpx comes with the render client
+        return False
+    return isinstance(exc, httpx.TransportError)
 
 
 def _file_sha256(path: Path) -> str | None:

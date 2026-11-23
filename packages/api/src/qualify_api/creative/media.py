@@ -3090,16 +3090,6 @@ class MediaProducer:
         # VE-10b: a part of a video by parts keeps its paid 1080p as it came (no fit, no
         # logo, no subtitles): the final join is its only re-encode and lays the logo once
         part = brief.media.part is not None
-        if not part and finish == FINISH_CLIP:
-            # EF-14: a final to compose again waits for a part join BEFORE it reads its
-            # raw 1080p, fits it or lays its subtitles (nothing redone on every pass)
-            from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
-                stored_recipe,
-                wait_if_heavy_video_busy,
-            )
-
-            if stored_recipe(asset.params) is not None:
-                wait_if_heavy_video_busy()
         overlay: bytes | None = None
         logo: bytes | None = None
         metadata = (asset.params or {}).get("brand_references")
@@ -3172,6 +3162,16 @@ class MediaProducer:
 
                 raise _MediaFailed(FailureReason.PROVIDER_ERROR.value, PART_FINAL_NOT_KEPT_TEXT)
             return self._part_final(asset, block, raw, revision)
+        if finish == FINISH_CLIP:
+            # EF-14: the pass that HAS the 1080p (not the ones that only order it) waits
+            # for a part join before it fits, subtitles or composes (none redone per pass)
+            from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+                stored_recipe,
+                wait_if_heavy_video_busy,
+            )
+
+            if stored_recipe(asset.params) is not None:
+                wait_if_heavy_video_busy()
         resolution = str(raw.get("resolution") or seedance_family(model).draft_final_resolution)
 
         # 2.5's 1080p is 10-bit H.265, which browsers and Instagram may not play: the
@@ -5107,36 +5107,43 @@ class MediaProducer:
         text that does not fit (the owner's to change) fails the piece with nothing
         spent (`_MediaFailed`, his own message).
 
-        A part join holding the heavy-video gate makes the piece wait BEFORE anything is
-        drawn or read (`recompose.wait_if_heavy_video_busy`). A render service that is
-        down (a dependency, never the owner's fault) makes it wait too
-        (`recompose.compose_waits_for_render`, a `CheckpointError`): in the queue the
+        A render service that did not answer (`ClipComposeFailed.transient`: transport,
+        502/503/504, a timeout) makes a QUEUED piece wait
+        (`recompose.wait_for_render_or_give_up`: a `LocalVideoWait` with
+        `retry_after_s`), for at most `COMPOSE_OUTAGE_WINDOW` from its first failure: the
         pass that brings Seedance's clip replays that call from its checkpoint
-        (`CheckpointRouter`), so waiting neither pays the clip twice nor fails a paid
-        one — this does not depend on telling whether the task exists, which inside a
-        preparation `_seedance_task_recorded` cannot (`service._tasks_of` is empty
-        there). Outside the queue, with the Seedance task already recorded (an inline
-        resumed run), a failed drawing goes on — `(recipe, None)` — and `_compose_clip`
-        tries again after the clip, degrading with a warning."""
+        (`CheckpointRouter`), so waiting neither pays the clip twice nor fails a paid one —
+        this does not rest on telling whether the task exists, which inside a preparation
+        `_seedance_task_recorded` cannot (`service._tasks_of` is empty there). Past the
+        window, with no queue, or for any other failure (a 4xx, no client, our own bug)
+        the piece fails at once (`_MediaFailed`, the normal refund). Outside the queue,
+        with the Seedance task already recorded (an inline resumed run), a failed drawing
+        goes on — `(recipe, None)` — and `_compose_clip` tries again after the clip,
+        degrading with a warning."""
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             ClipComposeFailed,
             compose_recipe_of,
-            compose_waits_for_render,
-            wait_if_heavy_video_busy,
+            wait_for_render_or_give_up,
         )
 
         recipe = compose_recipe_of(brief, kit)
         if recipe is None:
             return None
-        wait_if_heavy_video_busy()
         try:
             drawn = self._composer(decoding=False).draw(recipe)
         except ClipComposeFailed as exc:
             if current_preparation() is None and self._seedance_task_recorded():
                 logger.warning("clip texts not drawn before a resumed Seedance task: %s", exc.code)
                 return recipe, None
-            if exc.failure == FailureReason.DEPENDENCY_FAILED.value:
-                raise compose_waits_for_render(f"render service: {exc.code}") from exc
+            # only an outage of the render service is waited for, in the queue, for at
+            # most `COMPOSE_OUTAGE_WINDOW` (raises the wait); past it, or with no queue,
+            # or for anything else (a 4xx, no client, our bug) the piece fails at once,
+            # with the normal refund
+            if exc.transient:
+                wait_for_render_or_give_up(exc.code)
+                raise _MediaFailed(
+                    FailureReason.DEPENDENCY_FAILED.value, exc.owner_message, raw=exc.raw
+                ) from exc
             raise _MediaFailed(exc.failure, exc.owner_message, raw=exc.raw) from exc
         return recipe, drawn
 
@@ -5162,7 +5169,7 @@ class MediaProducer:
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_NOT_ADDED,
             COMPOSE_NOT_ADDED_TEXT,
-            heavy_gate,  # noqa: PLC0415
+            heavy_gate,
             nine_sixteen_size,
             text_images_params,
         )
@@ -5244,7 +5251,7 @@ class MediaProducer:
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_PARAMS_KEY,
             FINAL_COMPOSE_FAILED_TEXT,
-            heavy_gate,  # noqa: PLC0415
+            heavy_gate,
             stored_recipe,
             stored_text_images,
         )
@@ -5733,6 +5740,15 @@ class MediaProducer:
         tokens = int(result.usage.output_tokens)
         cost = self._seedance_usage(result, out_resolution, usage)
         video = self._download(str(result.media_url))
+        if composing is not None:
+            # EF-14: the pass that HAS the clip waits for a part join before any fit or
+            # compose (the passes that only order it never wait); the queue replays the
+            # paid call from its checkpoint
+            from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+                wait_if_heavy_video_busy,
+            )
+
+            wait_if_heavy_video_busy()
         width, height = (
             _video_dimensions(video) if editing or extending else None
         ) or output_dimensions(result.model_id, out_resolution, ratio)

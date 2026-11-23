@@ -430,9 +430,10 @@ def test_the_v1_text_key_is_composed_too() -> None:
     assert recipe is not None and recipe.text_layers == (WORDS,)
 
 
-def test_the_preview_waits_for_a_part_join_before_anything_is_drawn_or_paid() -> None:
-    """A part join holds the gate: the piece waits BEFORE drawing, reading or paying, and
-    the worker leaves it out of its passes for a while (`retry_after_s` > 0)."""
+def test_the_preview_waits_for_a_part_join_once_its_clip_is_there() -> None:
+    """A part join holds the gate: the pass that HAS the clip waits before any fit or
+    compose (the queue replays the paid call from its checkpoint), and the worker leaves
+    the piece out of its passes for a while (`retry_after_s` > 0)."""
     from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
 
     composer = FakeComposer()
@@ -447,10 +448,12 @@ def test_the_preview_waits_for_a_part_join_before_anything_is_drawn_or_paid() ->
             budget=BUDGET,
         )
     assert waited.value.retry_after_s == recompose.JOIN_RETRY_AFTER_SECONDS > 0
-    assert composer.draws == [] and composer.composes == [] and seedance.requests == []
+    assert composer.composes == [] and len(seedance.requests) == 1
 
 
-def test_the_final_waits_for_a_part_join_before_it_reads_fits_or_pays() -> None:
+def test_the_final_waits_for_a_part_join_before_it_fits_or_composes() -> None:
+    """The pass that HAS the 1080p waits for a part join before any fit, subtitle or
+    compose; its raw 1080p is kept, so the next pass pays nothing again."""
     from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
 
     composer = FakeComposer()
@@ -460,13 +463,23 @@ def test_the_final_waits_for_a_part_join_before_it_reads_fits_or_pays() -> None:
     fitter = producer._fitter
     fitter.calls.clear()
     paid, composed = len(seedance.requests), len(composer.composes)
+    kept: list[dict[str, Any]] = []
     with joining(), pytest.raises(LocalAssemblyWait) as waited:
-        _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+        producer.finalize(
+            tenant_id=MEDIA_TENANT,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_kit(),
+            asset=_with_attempt(draft, "a1"),
+            budget=BUDGET,
+            revision=1,
+            on_raw_kept=lambda raw: kept.append(dict(raw)),
+        )
     assert waited.value.retry_after_s > 0
-    assert len(seedance.requests) == paid and fitter.calls == []
-    assert len(composer.composes) == composed
-    retry = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
-    assert retry.failure is None and len(seedance.requests) == paid + 1  # one final
+    assert fitter.calls == [] and len(composer.composes) == composed
+    assert kept and kept[0]["key"] and len(seedance.requests) == paid + 1
+    retry = _final(producer, brief, _with_attempt(draft, "a1", raw_final=kept[0]), draft_id)
+    assert retry.failure is None and len(seedance.requests) == paid + 1  # paid once
 
 
 def test_a_join_that_takes_the_gate_mid_pass_still_makes_the_final_wait() -> None:

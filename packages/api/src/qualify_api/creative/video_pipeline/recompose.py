@@ -63,11 +63,15 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from qualify_creative.enums import ContentFormat, ContentKind, FailureReason
 from qualify_creative.schemas import ContentBrief, EffectUse, VideoTextLayer
+
+if TYPE_CHECKING:
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, LocalVideoWait
 
 logger = logging.getLogger(__name__)
 
@@ -310,31 +314,65 @@ JOIN_RETRY_AFTER_SECONDS = 30.0
 RENDER_RETRY_AFTER_SECONDS = 60.0
 
 
-def _waits() -> tuple[type, type]:
-    from qualify_api.creative.heavy_video import LocalAssemblyWait, LocalVideoWait  # noqa: PLC0415
-
-    return LocalAssemblyWait, LocalVideoWait
-
-
-def compose_waits_for_join(detail: str) -> Exception:
+def compose_waits_for_join(detail: str) -> LocalAssemblyWait:
     """A `heavy_video.LocalAssemblyWait` with `retry_after_s` > 0: a part join holds the
     worker's heavy-video gate, so this compose waits — nothing read, drawn or fitted on
     this pass, the draft out of the passes for `JOIN_RETRY_AFTER_SECONDS`."""
-    assembly_wait, _ = _waits()
-    wait = assembly_wait(detail)
+    from qualify_api.creative.heavy_video import LocalAssemblyWait  # noqa: PLC0415
+
+    wait = LocalAssemblyWait(detail)
     wait.retry_after_s = JOIN_RETRY_AFTER_SECONDS
     return wait
 
 
-def compose_waits_for_render(detail: str) -> Exception:
-    """A `heavy_video.LocalVideoWait` with `retry_after_s` > 0: our render service is down
-    or timed out (a dependency, never the owner's text) — the pass stops and a later one
+def compose_waits_for_render(detail: str) -> LocalVideoWait:
+    """A `heavy_video.LocalVideoWait` with `retry_after_s` > 0: our render service did not
+    answer (a passing outage, never the owner's text) — the pass stops and a later one
     draws the texts. In the queue the pass that brings Seedance's clip replays it from its
     checkpoint, so waiting never pays it twice and never fails a paid clip."""
-    _, video_wait = _waits()
-    wait = video_wait(detail)
+    from qualify_api.creative.heavy_video import LocalVideoWait  # noqa: PLC0415
+
+    wait = LocalVideoWait(detail)
     wait.retry_after_s = RENDER_RETRY_AFTER_SECONDS
     return wait
+
+
+#: How long a piece waits for the render service, from its FIRST failure — under the
+#: reaper's 20 min, as `image_pipeline.compose_run.OUTAGE_WINDOW` (10 min).
+COMPOSE_OUTAGE_WINDOW = timedelta(minutes=10)
+#: The pipeline step that keeps the piece's first render failure (saved once, never reset).
+#: Apart from `compose_run`'s -200… and `layer_run`'s -100…: an EF-14 clip runs neither.
+COMPOSE_FIRST_FAILURE_STEP = -300
+
+
+def wait_for_render_or_give_up(
+    code: str, *, store: Any = None, now: datetime | None = None
+) -> bool:
+    """Inside a worker preparation, when the render service did not answer: record the
+    piece's first failure (`COMPOSE_FIRST_FAILURE_STEP`) and raise
+    `compose_waits_for_render`; False once `COMPOSE_OUTAGE_WINDOW` has passed since then
+    (the caller fails the piece, with its refund). Outside a preparation: False at once
+    (no queue to wait in — it fails as before EF-14's wait)."""
+    from qualify_api.creative.pipeline import PipelineStore, current_preparation  # noqa: PLC0415
+
+    run = current_preparation()
+    if run is None:
+        return False
+    store = store or PipelineStore()
+    now = now or datetime.now(UTC)
+    row = store.load_step(run, COMPOSE_FIRST_FAILURE_STEP)
+    if row is None:
+        row = store.save_step(
+            run,
+            COMPOSE_FIRST_FAILURE_STEP,
+            {"first_failure_at": now.isoformat(), "error": code},
+            None,
+        )
+    first = datetime.fromisoformat(str(row["request"]["first_failure_at"]))
+    if now - first >= COMPOSE_OUTAGE_WINDOW:
+        logger.warning("clip texts: render service down for %s, giving up", now - first)
+        return False
+    raise compose_waits_for_render(f"render service: {code}")
 
 
 @contextmanager
@@ -366,7 +404,8 @@ def wait_if_heavy_video_busy() -> None:
 class ClipComposeFailed(Exception):
     """The compose could not run. `owner_message` is what the owner reads; `owner_fault`
     True = his text does not fit (he changes it), False = ours (try again);
-    `failure` the `FailureReason` value; `code` stable for the log and the tests."""
+    `failure` the `FailureReason` value; `code` stable for the log and the tests;
+    `transient` True only for an outage of the render service (waited for in the queue)."""
 
     def __init__(
         self,
@@ -376,6 +415,7 @@ class ClipComposeFailed(Exception):
         code: str,
         raw: str = "",
         owner_fault: bool = False,
+        transient: bool = False,
     ) -> None:
         super().__init__(raw or code)
         self.owner_message = owner_message
@@ -383,6 +423,9 @@ class ClipComposeFailed(Exception):
         self.code = code
         self.raw = raw
         self.owner_fault = owner_fault
+        #: the render service did not answer (transport, 502/503/504, a timeout): an
+        #: outage that may pass — the only failure a queued piece waits for
+        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -461,6 +504,7 @@ class ClipComposer:
                 ),
                 code=exc.code,
                 raw=exc.detail,
+                transient=exc.outage,
             ) from exc
 
     def compose(
