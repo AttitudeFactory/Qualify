@@ -30,9 +30,8 @@ MONTHS = (
 
 LOAD_FAILED = "No pudimos preparar tu plan del mes. Vuelve a entrar en un momento."
 EXPLAIN = (
-    "Es una sugerencia: repartimos el tope mensual de tu perfil entre las semanas y ponemos "
-    "más donde la gente compra más. Qualify no crea promociones por su cuenta; tú decides "
-    "cuándo promocionar."
+    "Es una sugerencia: ponemos más en las semanas en que la gente compra más. Tú decides "
+    "cuándo promocionar; Qualify no lanza anuncios por su cuenta."
 )
 EMPTY_TITLE = "Planea cuánto invertir cada semana"
 EMPTY_TEXT = (
@@ -40,9 +39,18 @@ EMPTY_TEXT = (
     "en quincenas y fechas especiales."
 )
 NORMAL_WEEK = "Semana sin fechas especiales"
-ESTIMATED = " (fecha probable)"
+ESTIMATED = ", fecha por confirmar"
+# shortcut: their day is fixed; only their weight is a hypothesis (UX review). Move to the
+# calendar table as a field if the list grows.
+_FIXED_DAY = frozenset({"quincena", "halloween"})
+# UX review, 2026-11-23: keep the names owners use, with a gloss where it is not obvious.
+_SHOWN = {
+    "Hot Sale": "Hot Sale (descuentos en línea)",
+    "Cyber Monday": "Cyber Monday (lunes de descuentos)",
+    "Black Week": "Semana del Black Friday",
+}
 # «Se acerca la Navidad», «Se acerca el Día de la Madre»; the rest takes «el».
-_ARTICLE = {"Navidad": "la ", "Black Week": "la ", "Amor y Amistad": ""}
+_ARTICLE = {"Navidad": "la ", "Semana del Black Friday": "la ", "Amor y Amistad": ""}
 
 
 @dataclass(frozen=True)
@@ -76,14 +84,15 @@ def week_label(start: date, end: date) -> str:
 
 def date_reason(item: PlanDate, week: PlanWeek) -> str:
     """«Quincena», or «Se acerca el Día de la Madre, el 9 de mayo» when the date lies ahead
-    of the week; an unconfirmed date says so."""
+    of the week; a date not announced yet says so."""
+    name = _SHOWN.get(item.name, item.name)
     if item.start > week.end:
-        article = _ARTICLE.get(item.name, "el ")
         when = f"{item.start.day} de {MONTHS[item.start.month - 1]}"
-        text = f"Se acerca {article}{item.name}, el {when}"
+        text = f"Se acerca {_ARTICLE.get(name, 'el ')}{name}, el {when}"
     else:
-        text = item.name
-    return text + (ESTIMATED if item.status == "hypothesis" else "")
+        text = name
+    estimated = item.status == "hypothesis" and item.id not in _FIXED_DAY
+    return text + (ESTIMATED if estimated else "")
 
 
 def week_reason(week: PlanWeek) -> str:
@@ -99,7 +108,8 @@ def month_plan_vm(plan: MonthPlan | None, year: int, month: int) -> MonthPlanVM:
         exists=True,
         tab=name.capitalize(),
         title=f"Tu plan de {name} de {year}",
-        cap=f"Tu tope: {money_display(plan.monthly_cap_minor, plan.currency)} al mes",
+        cap=f"Hasta {money_display(plan.monthly_cap_minor, plan.currency)} al mes en anuncios, "
+        "repartidos así:",
         weeks=[
             PlanWeekVM(
                 label=week_label(week.start, week.end),

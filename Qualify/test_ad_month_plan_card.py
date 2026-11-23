@@ -35,7 +35,7 @@ def test_weeks_show_their_dates_amounts_and_reasons() -> None:
     vm = month_plan_vm(colombia(5), 2027, 5)
     assert vm.exists and vm.tab == "Mayo"
     assert vm.title == "Tu plan de mayo de 2027"
-    assert vm.cap == "Tu tope: $1.200.000 COP al mes"
+    assert vm.cap == "Hasta $1.200.000 COP al mes en anuncios, repartidos así:"
     assert [(w.label, w.amount) for w in vm.weeks] == [
         ("Del 1 al 9 de mayo", "$414.000 COP"),
         ("Del 10 al 16 de mayo", "$267.000 COP"),
@@ -44,17 +44,26 @@ def test_weeks_show_their_dates_amounts_and_reasons() -> None:
     ]
     assert vm.weeks[0].reason == "Día de la Madre"
     assert vm.weeks[2].reason == NORMAL_WEEK and not vm.weeks[2].raised
-    # the quincena is a custom, not a fixed date: the owner is told it is probable
-    assert vm.weeks[1].reason == "Quincena (fecha probable)" and vm.weeks[1].raised
+    # the quincena's day is fixed (only its weight is a hypothesis): no marker
+    assert vm.weeks[1].reason == "Quincena" and vm.weeks[1].raised
 
 
 def test_a_date_ahead_of_the_week_says_it_is_coming() -> None:
     april = month_plan_vm(colombia(4), 2027, 4)
-    assert april.weeks[-1].reason == (
-        "Quincena (fecha probable) · Se acerca el Día de la Madre, el 9 de mayo"
-    )
+    assert april.weeks[-1].reason == ("Quincena · Se acerca el Día de la Madre, el 9 de mayo")
     december = month_plan_vm(colombia(12), 2027, 12)
     assert "Se acerca la Navidad, el 25 de diciembre" in december.weeks[2].reason
+
+
+def test_unannounced_dates_say_so_and_english_names_get_a_gloss() -> None:
+    october = month_plan_vm(colombia(10), 2027, 10)
+    assert october.weeks[2].reason == "Hot Sale (descuentos en línea), fecha por confirmar"
+    assert october.weeks[3].reason == "Quincena · Halloween"
+    uruguay = mp.plan(
+        country="UY", currency="UYU", monthly_cap_minor=10_000_00, year=2027, month=11
+    )
+    reasons = " ".join(w.reason for w in month_plan_vm(uruguay, 2027, 11).weeks)
+    assert "Semana del Black Friday" in reasons and "Black Week" not in reasons
 
 
 def test_no_profile_or_no_cap_is_the_empty_state() -> None:

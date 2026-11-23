@@ -38,7 +38,7 @@ def _empty() -> rx.Component:
         rx.text(EMPTY_TITLE, weight="medium"),
         rx.text(EMPTY_TEXT, size="2", color=T.TEXT_MUTED),
         rx.link(
-            "Completar mi perfil",
+            "Decir cuánto quiero invertir al mes",
             href=PROFILE_ROUTE,
             min_height="44px",
             display="inline-flex",
@@ -57,8 +57,9 @@ def _plan() -> rx.Component:
             rx.segmented_control.item(S.next_tab, value="1", min_height="44px"),
             value=S.showing,
             on_change=S.show,
-            size="2",
+            size="3",
             aria_label="Mes del plan",
+            min_height="44px",
             width="100%",
         ),
         rx.vstack(

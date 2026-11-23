@@ -171,9 +171,9 @@ def ad_results_index() -> rx.Component:
                 width="100%",
             ),
             investment_profile_card(),
-            month_plan_card(),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.loading, rx.fragment(), _alerts()),
+            month_plan_card(),
             rx.cond(
                 S.loading,
                 skeleton_card(4),
