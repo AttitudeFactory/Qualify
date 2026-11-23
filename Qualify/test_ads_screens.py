@@ -230,6 +230,20 @@ async def test_failed_floor_read_says_so_and_keeps_the_form(
     assert context.floor_label == FLOOR_FAILED and context._floor_input == ""
 
 
+def test_a_cents_floor_reads_and_checks_as_the_next_whole_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25091394: USD minimums carry cents; the line and the check agree on $11 USD."""
+    from qualify_api.ads import results_service
+
+    async def floor(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(floor_minor=1_050, spent_minor=347)
+
+    monkeypatch.setattr(results_service, "read_budget_floor", floor)
+    label, whole = results_provider.read_floor(TENANT, PROMOTION, "USD")
+    assert (label, whole) == ("Mínimo: $11 USD (ya gastaste $3,47 USD)", "11")
+
+
 def test_prepare_maps_budget_down_to_backend_budget_with_plain_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

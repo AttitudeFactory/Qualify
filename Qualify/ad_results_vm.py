@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_api.ads.money import budget_field, money_display
@@ -186,7 +186,7 @@ def money_label(value: Decimal | None, currency: str) -> str:
         return UNAVAILABLE
     # The app-wide «$200.000 COP» / «$12,50 USD»; COP in whole pesos (qualify-copy-es §5).
     places = Decimal(1) if currency == "COP" else Decimal("0.01")
-    return money_display(int(amount.quantize(places) * 100), currency)
+    return money_display(int(amount.quantize(places, ROUND_HALF_UP) * 100), currency)
 
 
 def day_label(value: date, timezone_name: str, now: datetime | None = None) -> str:

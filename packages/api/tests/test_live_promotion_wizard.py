@@ -831,7 +831,12 @@ async def test_usd_account_sends_cents_to_meta_and_shows_dollars(live, monkeypat
             action="budget",
             budget_minor=2_000,
         )
+        live["remote"].spent = 347  # cents, like every USD amount Meta returns
+        floor = await management.promotion_budget_floor(tenant_id=tenant, promotion_id=promotion.id)
     assert edit.summary == "Cambiar el presupuesto total a $20 USD."
+    # The decrease floor converts Meta cents back to hundredths (USD offset 100, not 1).
+    assert floor.current_minor == 1_050 and floor.spent_minor == 347
+    assert 347 < floor.floor_minor < 400  # + 1 cent a day of Meta's USD minimum
     validated = [call for call in live["remote"].calls[start:] if call[0] == "POST"]
     assert validated and validated[-1][2]["lifetime_budget"] == "2000"
 

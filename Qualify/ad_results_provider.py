@@ -124,8 +124,8 @@ def read_floor(tenant_id: UUID, promotion_id: UUID, currency: str) -> tuple[str,
         for value in (floor.floor_minor, floor.spent_minor)
     ):
         raise ResultsUnavailable("Vuelve a consultar el mínimo con Meta.")
-    label = floor_label(floor.floor_minor, floor.spent_minor, currency)
-    return label, str(-(-floor.floor_minor // 100))
+    whole = -(-floor.floor_minor // 100)  # a cents floor shows and checks as the next unit
+    return floor_label(whole * 100, floor.spent_minor, currency), str(whole)
 
 
 def alert_accounts(tenant_id: UUID) -> list[AlertAccountVM]:
