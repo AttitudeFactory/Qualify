@@ -22,11 +22,15 @@ from qualify_creative.video.business import (
     UnreadableVideo,
 )
 from qualify_creative.video.upload_preview import (
+    EARLIER_VERSIONS,
     SHORT_SIDE,
+    STRIP_HEIGHT,
     UPLOAD_PREVIEW_VERSION,
     FfmpegUploadPreviewer,
     fits_preview,
     scale_filter,
+    strip_filter,
+    strip_layout,
     timeout_for,
 )
 
@@ -84,7 +88,93 @@ def test_nice_when_available() -> None:
     assert cmd[0] in ("nice", "ffmpeg")
     if shutil.which("nice"):
         assert cmd[:3] == ["nice", "-n", "10"]
-    assert previewer.version == UPLOAD_PREVIEW_VERSION == "upload-preview-480p-v1"
+    assert previewer.version == UPLOAD_PREVIEW_VERSION == "upload-preview-480p-strip-v2"
+    assert EARLIER_VERSIONS == ("upload-preview-480p-v1",)
+
+
+# -- the frame strip (ED-11b, m-25029110) -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("duration", "frames", "columns", "rows"),
+    [
+        (20.0, 20, 20, 1),  # the ticket's case: a 20 s video gives 20 tiles
+        (20.4, 20, 20, 1),  # whole seconds only: the last tile is at 19.5 s
+        (0.4, 1, 1, 1),  # at least one
+        (60.0, 60, 60, 1),
+        (112.0, 112, 60, 2),  # a minute a row
+        (5 * 3600.0, 3600, 60, 60),  # capped at an hour
+    ],
+)
+def test_one_tile_per_whole_second_a_minute_a_row(
+    duration: float, frames: int, columns: int, rows: int
+) -> None:
+    layout = strip_layout(duration)
+    assert layout is not None
+    assert (layout.frames, layout.columns, layout.rows) == (frames, columns, rows)
+    assert layout.interval_s == 1 and layout.offset_s == 0.5
+    assert layout.to_dict()["frames"] == frames
+
+
+@pytest.mark.parametrize("duration", [None, 0.0, -1.0, float("nan"), float("inf")])
+def test_no_length_no_strip(duration: float | None) -> None:
+    assert strip_layout(duration) is None
+
+
+def test_the_strip_takes_the_middle_of_each_second_56_px_high_tiled() -> None:
+    layout = strip_layout(112.0)
+    assert layout is not None
+    graph = strip_filter(layout)
+    # the clock from the first picture, shifted back half a second; one picture a second,
+    # rounded up — the last one at or before i + 0.5 s, repeated over a gap (never skipped)
+    assert graph.startswith("setpts=PTS-STARTPTS-0.5/TB,fps=fps=1/1:round=up,")
+    assert "select" not in graph
+    assert f"scale=w=-2:h={STRIP_HEIGHT}" in graph and STRIP_HEIGHT == 56
+    assert "format=yuvj420p" in graph
+    assert graph.endswith("tile=60x2:nb_frames=112")
+
+
+def test_copy_and_strip_come_out_of_one_decode() -> None:
+    """ED-11b: ONE input, ONE `-filter_complex` whose 480p leg is `split` — the copy and
+    the strip are two outputs of the same FFmpeg run, the copy's options unchanged."""
+    layout = strip_layout(20.0)
+    assert layout is not None
+    cmd = FfmpegUploadPreviewer(use_nice=False).command(
+        Path("in.mov"), Path("out.mp4"), Path("strip.jpg"), layout
+    )
+    assert cmd.count("-i") == 1 and "-vf" not in cmd
+    graph = _value(cmd, "-filter_complex")
+    assert graph == (
+        f"[0:v:0]{scale_filter()},split=2[copy][frames];[frames]{strip_filter(layout)}[strip]"
+    )
+    assert _value(cmd, "-filter_complex_threads") == "1"
+    copy_at, strip_at = cmd.index("out.mp4"), cmd.index("strip.jpg")
+    assert cmd.index("[copy]") < copy_at < cmd.index("[strip]") < strip_at
+    copy = cmd[cmd.index("[copy]") : copy_at]
+    assert "-an" in copy and _value(copy, "-c:v") == "libx264"
+    assert _value(copy, "-fps_mode") == "passthrough" and _value(copy, "-crf") == "28"
+    strip = cmd[copy_at + 1 : strip_at]
+    assert _value(strip, "-c:v") == "mjpeg" and _value(strip, "-frames:v") == "1"
+    assert _value(strip, "-threads") == "1"
+
+
+def test_a_kept_copy_gets_the_strip_alone() -> None:
+    layout = strip_layout(20.0)
+    assert layout is not None
+    cmd = FfmpegUploadPreviewer(use_nice=False).command(
+        Path("in.mov"), None, Path("strip.jpg"), layout
+    )
+    assert "libx264" not in cmd and "split" not in _value(cmd, "-filter_complex")
+    assert _value(cmd, "-filter_complex") == f"[0:v:0]{strip_filter(layout)}[strip]"
+    assert cmd[-1] == "strip.jpg"
+
+
+def test_without_a_strip_the_command_is_the_v1_copy() -> None:
+    previewer = FfmpegUploadPreviewer(use_nice=False)
+    assert previewer.command(Path("in.mov"), Path("out.mp4")) == _command()
+    assert "-filter_complex" not in _command()
+    with pytest.raises(ValueError):
+        previewer.command(Path("in.mov"), None)
 
 
 def test_time_allowed_scales_with_the_length_and_is_capped() -> None:
@@ -233,3 +323,86 @@ def test_an_upload_gives_a_silent_upright_480p_copy(
     rotations = [d.get("rotation") for d in video.get("side_data_list", [])]
     assert not any(rotations)  # upright: no display matrix left to apply
     assert abs(float(info["format"]["duration"]) - 1.5) < 0.1  # the whole length
+
+
+def _numbered_clip(
+    path: Path, seconds: float, rate: int = 10, gap: tuple[float, float] | None = None
+) -> Path:
+    """A clip whose every picture's gray level is `16 + its index` (limited range), so a
+    tile's brightness says which moment of the video it shows. `gap`: no picture at all
+    in `[start, end)` seconds (a variable-rate video), the others at their own times."""
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    tick = Fraction(1, rate)
+    with av.open(str(path), "w", format="mp4") as sink:
+        video = sink.add_stream("libx264", rate=rate)
+        video.width, video.height, video.pix_fmt = 320, 180, "yuv420p"
+        video.options = {"preset": "ultrafast", "qp": "0", "bf": "0"}
+        video.codec_context.time_base = tick
+        for index in range(round(seconds * rate)):
+            if gap is not None and gap[0] <= index / rate < gap[1]:
+                continue
+            planes = np.full((270, 320), 128, np.uint8)  # yuv420p: Y then U, V
+            planes[:180] = 16 + index
+            frame = av.VideoFrame.from_ndarray(planes, format="yuv420p")
+            frame.pts, frame.time_base = index, tick
+            for packet in video.encode(frame):
+                sink.mux(packet)
+        for packet in video.encode():
+            sink.mux(packet)
+    return path
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="needs the ffmpeg and ffprobe binaries")
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_20_s_video_gives_20_tiles_each_at_the_middle_of_its_second(
+    tmp_path: Path, copy: bool
+) -> None:
+    """The ticket's criterion: 20 tiles, tile `i` within ½ s of the ruler's second `i`
+    (it shows `i + 0.5` s). With the copy (one decode) and without it (a kept copy)."""
+    source = _numbered_clip(tmp_path / "source.mp4", 20.0)
+    layout = strip_layout(20.0)
+    assert layout is not None and layout.frames == 20
+    out, strip = tmp_path / "preview.mp4", tmp_path / "strip.jpg"
+    FfmpegUploadPreviewer(use_nice=False).make_preview(
+        source, out if copy else None, duration_s=20.0, strip_out=strip, layout=layout
+    )
+    assert out.exists() is copy
+    moments = _tile_moments(strip, 20)
+    for index, shown_at in enumerate(moments):
+        assert abs(shown_at - (index + 0.5)) <= 0.15, (index, moments)
+
+
+def _tile_moments(strip: Path, frames: int) -> list[float]:
+    """The moment (seconds, from the picture's brightness at 10 fps) each tile shows."""
+    image = pytest.importorskip("PIL.Image")
+    stat = pytest.importorskip("PIL.ImageStat")
+    with image.open(strip) as picture:
+        gray = picture.convert("L")
+    width, height = gray.size
+    assert height == STRIP_HEIGHT and width == frames * 100  # 16:9 at 56 px high, even
+    moments = []
+    for index in range(frames):
+        box = gray.crop((index * 100 + 8, 8, (index + 1) * 100 - 8, height - 8))
+        level = stat.Stat(box).mean[0] * 219 / 255  # full range back to limited
+        moments.append(level / 10)  # the picture's index over the clip's 10 fps
+    return moments
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="needs the ffmpeg and ffprobe binaries")
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_gap_without_pictures_never_shifts_the_tiles_after_it(tmp_path: Path, copy: bool) -> None:
+    """Review of ED-11b: a variable-rate video with no picture from 3 s to 6.2 s still
+    gives 10 tiles for 10 s; the gap's seconds repeat the last picture before it and every
+    tile after it stays on its own second (a picker that skips empty seconds gave 8)."""
+    source = _numbered_clip(tmp_path / "gap.mp4", 10.0, gap=(3.0, 6.2))
+    layout = strip_layout(10.0)
+    assert layout is not None and layout.frames == 10
+    out, strip = tmp_path / "preview.mp4", tmp_path / "strip.jpg"
+    FfmpegUploadPreviewer(use_nice=False).make_preview(
+        source, out if copy else None, duration_s=10.0, strip_out=strip, layout=layout
+    )
+    moments = _tile_moments(strip, 10)
+    for index, shown_at in enumerate(moments):
+        expected = 2.9 if 3 <= index <= 5 else index + 0.5  # the gap: its last picture
+        assert abs(shown_at - expected) <= 0.15, (index, moments)
