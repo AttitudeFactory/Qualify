@@ -5,6 +5,7 @@ from __future__ import annotations
 import reflex as rx
 from qualify_api.ads.status_webhook import SUBSCRIBE_OFFER
 
+from .ad_month_plan_ui import month_plan_card
 from .ad_results_state import AdResultsState as S
 from .ad_results_vm import (
     EDIT_STOP_SPEND,
@@ -172,6 +173,7 @@ def ad_results_index() -> rx.Component:
             investment_profile_card(),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.loading, rx.fragment(), _alerts()),
+            month_plan_card(),
             rx.cond(
                 S.loading,
                 skeleton_card(4),

@@ -64,6 +64,12 @@ class InvestmentProfileUnavailable(ValueError):
     """A safe Spanish explanation for the owner."""
 
 
+def display_step_minor(currency: str) -> int:
+    """The rounding step of shown amounts, in hundredths: $1.000 in COP, the whole unit
+    otherwise (also used by the month plan, `month_plan.py`)."""
+    return _ROUND_MINOR.get(currency, 100)
+
+
 def max_cost_per_client_minor(average_ticket_minor: int, margin_basis_points: int) -> int:
     """Ticket × margin, rounded DOWN to the hundredth: never suggest paying more than the
     margin leaves."""
@@ -91,7 +97,7 @@ class InvestmentProfile:
     @property
     def max_cost_per_client_minor(self) -> int:
         exact = max_cost_per_client_minor(self.average_ticket_minor, self.margin_basis_points)
-        step = _ROUND_MINOR.get(self.currency, 100)
+        step = display_step_minor(self.currency)
         # below one rounding step (a $3.000 ticket), round to the whole unit, never to 0
         step = step if exact >= step else 100
         return exact // step * step

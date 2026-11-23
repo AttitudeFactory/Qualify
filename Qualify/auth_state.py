@@ -273,6 +273,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .ad_accounts_state import AdAccountsState
     from .ad_enhancements_state import AdEnhancementsState
     from .ad_forms_state import AdFormsState
+    from .ad_month_plan_state import AdMonthPlanState
     from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
@@ -354,6 +355,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         AdFormsState,
         # m-25091387: the brand's investment profile and the session's offer flags
         InvestmentProfileState,
+        # m-25091392: the month plan card on Anuncios
+        AdMonthPlanState,
         PromotionState,
         AdResultsState,
         ConnectionsState,
