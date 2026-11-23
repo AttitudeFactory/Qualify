@@ -159,6 +159,7 @@ from qualify_api.creative.vendor_tasks import (
 from qualify_api.creative.versions import visible_version
 from qualify_api.creative.video_pipeline.local import effects_version_for, is_local_recipe
 from qualify_api.creative.video_pipeline.recipe import RecipeRefused, refuse_unbuilt_recipe
+from qualify_api.creative.video_pipeline.recompose import composes_over_seedance
 from qualify_api.plans.packs import legacy_seconds_per_video
 
 logger = logging.getLogger(__name__)
@@ -855,8 +856,10 @@ def _with_server_effects_version(brief: ContentBrief) -> ContentBrief:
 def refuse_local_without_queue(brief: ContentBrief) -> None:
     """EF-06: a `local` video is made only in the creative worker — with the dispatcher
     `inline` (Reflex request threads) it is refused before any row, charge or decode,
-    like a video by parts (VE-08, `parts.PartsUnavailable`): `local_unavailable`."""
-    if not is_local_recipe(brief):
+    like a video by parts (VE-08, `parts.PartsUnavailable`): `local_unavailable`. EF-14:
+    so is a Clip made by Seedance with texts or layers to compose — the compose decodes
+    and encodes, which never runs in a Reflex thread."""
+    if not (is_local_recipe(brief) or composes_over_seedance(brief)):
         return
     try:
         on = queue_enabled()

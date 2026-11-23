@@ -578,6 +578,9 @@ services:
   # 386 MiB (50 %), both under the 60 % bar (461 MiB). Emulated arm64 (QEMU) inflates those figures;
   # native arm64, as production, was not measured. VE-10b's 1080p final join must be
   # re-measured against 768m before it ships. memswap_limit stays equal (no swap).
+  # EF-14 (m-25026592): a Seedance 1080p final composed again with 3 texts + 3 layers, 15 s,
+  # peaked at 416 MiB anon in 140 s on amd64 (deploy/measure/recompose-memory.sh); it holds
+  # the heavy-video gate (`heavy_video.assembling`), so it never overlaps a part join.
   creative-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped

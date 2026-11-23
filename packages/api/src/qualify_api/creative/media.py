@@ -183,7 +183,7 @@ from qualify_creative.schemas import (
 )
 from qualify_creative.subtitles import chunk_script, clip_cues, timed_cues
 from qualify_creative.text_colors import text_colors
-from qualify_creative.video import SubtitleLayer, VideoFitter
+from qualify_creative.video import FittedVideo, SubtitleLayer, VideoFitter
 from qualify_creative.video._source import frame_rotation
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
@@ -724,6 +724,15 @@ def _object_held(store: Any, tenant_id: UUID, key: str) -> bool:
         return True
     except Exception:  # noqa: BLE001 — not there, or cannot tell
         return False
+
+
+def _final_origin(asset: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
+    """EF-14 provenance: which final a composed 1080p was made over."""
+    return {
+        "from_task_id": raw.get("task_id"),
+        "from_raw_final_key": raw.get("key"),
+        "from_draft_object_key": asset.object_key,
+    }
 
 
 def owned_by(tenant_id: UUID, key: str) -> bool:
@@ -2403,9 +2412,13 @@ class MediaProducer:
         #: texts — our own service, cost 0. None = a local video with a text fails as
         #: the service being down (nothing charged), never made without its texts.
         render_client: RemotionRenderClient | None = None,
+        #: EF-14: what draws and lays the texts and layers over a Seedance clip (its
+        #: preview and its final). None = `recompose.ClipComposer` over `render_client`.
+        clip_composer: Any = None,
     ) -> None:
         self._store = store
         self._render_client = render_client
+        self._clip_composer = clip_composer
         self._part_windows = part_windows
         self._part_joins = part_joins
         self._previous_parts = previous_parts
@@ -3168,47 +3181,76 @@ class MediaProducer:
             keep_audio = True
             if logo is not None:
                 overlay = text_layer(size=size, palette=kit.palette_rgb, logo=logo)
-        try:
-            fitted = fitter.fit(
-                # the piece the operator approved and paid 1080p for keeps its detail
-                # through the H.265 → H.264 re-encode (the subtitled video's settings)
-                video,
-                size=size,
-                overlay=overlay,
-                keep_audio=keep_audio,
-                x264=DETAIL_X264,
+        # EF-14: one key per order; a retry whose composed final is already kept takes
+        # it as it is, BEFORE any fit, subtitle or compose (`_held_final`)
+        tag = _attempt_tag(block)
+        held = (
+            self._held_final(tenant_id, asset, save.key_for(f"{stem}-final-{tag}.mp4"), raw)
+            if finish == FINISH_CLIP
+            else None
+        )
+        if held is None and finish == FINISH_CLIP:
+            # EF-14: the pass that HAS the 1080p (not the ones that only order it), when
+            # its composed final is not kept yet (`_held_final` first: a kept one needs no
+            # gate), waits for a part join before it fits, subtitles or composes
+            from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+                stored_recipe,
+                wait_if_heavy_video_busy,
             )
-        except Exception as exc:  # noqa: BLE001 — the final is paid for: never lose it
-            if required_signature or finish != FINISH_CLIP or overlay is None:
-                raise
-            # like the draft: a logo that cannot be laid leaves the clip without it
-            logger.warning("final of %s: logo not laid: %s", draft_id, type(exc).__name__)
-            overlay = None
-            fitted = fitter.fit(
-                video, size=size, overlay=None, keep_audio=keep_audio, x264=DETAIL_X264
-            )
-        cues = (asset.params or {}).get("subtitles") if finish == FINISH_CLIP else None
-        if cues:
-            # founder, 2026-11-03: the subtitles the approved draft showed, laid again at the
-            # final's size. A failure fails the final: the raw 1080p is kept, so the retry
-            # costs nothing — a final without the words the owner approved is not finished
+
+            if stored_recipe(asset.params) is not None:
+                wait_if_heavy_video_busy()
+        compose: dict[str, Any] | None = None
+        if held is not None:
+            # the fitted poster would have no texts: the preview's composed one stays
+            data, compose = held
+            size = _video_dimensions(data) or size
+            fitted = FittedVideo(data=data, width=size[0], height=size[1], duration_sec=0.0)
+        else:
             try:
-                fitted = fitter.subtitle(
-                    fitted.data,
-                    layers=_clip_subtitle_layers(
-                        cues, self._text_style(tenant_id, brief.brand_id, kit, [])
-                    ),
+                fitted = fitter.fit(
+                    # the piece the operator approved and paid 1080p for keeps its detail
+                    # through the H.265 → H.264 re-encode (the subtitled video's settings)
+                    video,
+                    size=size,
+                    overlay=overlay,
+                    keep_audio=keep_audio,
+                    x264=DETAIL_X264,
                 )
-            except Exception as exc:  # noqa: BLE001 — a file PyAV cannot read
-                raise _MediaFailed(
-                    FailureReason.PROVIDER_ERROR.value,
-                    "No pudimos poner los subtítulos en el video final. Inténtalo de nuevo.",
-                    raw=f"{type(exc).__name__}: {exc}",
-                ) from exc
+            except Exception as exc:  # noqa: BLE001 — the final is paid for: never lose it
+                if required_signature or finish != FINISH_CLIP or overlay is None:
+                    raise
+                # like the draft: a logo that cannot be laid leaves the clip without it
+                logger.warning("final of %s: logo not laid: %s", draft_id, type(exc).__name__)
+                overlay = None
+                fitted = fitter.fit(
+                    video, size=size, overlay=None, keep_audio=keep_audio, x264=DETAIL_X264
+                )
+            cues = (asset.params or {}).get("subtitles") if finish == FINISH_CLIP else None
+            if cues:
+                # founder, 2026-11-03: the subtitles the approved draft showed, laid again at the
+                # final's size. A failure fails the final: the raw 1080p is kept, so the retry
+                # costs nothing — a final without the words the owner approved is not finished
+                try:
+                    fitted = fitter.subtitle(
+                        fitted.data,
+                        layers=_clip_subtitle_layers(
+                            cues, self._text_style(tenant_id, brief.brand_id, kit, [])
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — a file PyAV cannot read
+                    raise _MediaFailed(
+                        FailureReason.PROVIDER_ERROR.value,
+                        "No pudimos poner los subtítulos en el video final. Inténtalo de nuevo.",
+                        raw=f"{type(exc).__name__}: {exc}",
+                    ) from exc
 
         # one key per order: a try whose final was saved but never put in place left
-        # its file under its own key, and this one never collides with it
-        tag = _attempt_tag(block)
+        # its file under its own key, and this one never collides with it.
+        # EF-14: the preview's texts and layers composed again over the final, with the
+        # recipe frozen with the preview (a normal Clip only: a part is joined instead)
+        if held is None and finish == FINISH_CLIP:
+            fitted, compose = self._recompose_final(tenant_id, draft_id, asset, fitted, raw)
         key = save(f"{stem}-final-{tag}.mp4", fitted.data, MP4)
         poster = (
             save.optional(f"{stem}-final-{tag}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG)
@@ -3245,6 +3287,8 @@ class MediaProducer:
         )
         if finish == FINISH_CLIP:
             params["logo"] = overlay is not None
+        if compose is not None:
+            params["compose"] = compose
         return MediaWrite(
             position=asset.position,
             media_type="video",
@@ -5067,6 +5111,263 @@ class MediaProducer:
 
     # -- clip (§ request 2026-10-14) -------------------------------------------------------
 
+    def _composer(self, *, decoding: bool = True) -> Any:
+        """EF-14: the texts-and-layers composer (`recompose.ClipComposer`). A compose
+        decodes and encodes video, which never runs outside the creative worker
+        (`process.is_worker_process`, as VE-04d's cuts): there it fails closed with
+        `ClipComposeFailed` — the preview keeps its clip with a warning, the final
+        fails with its raw 1080p kept (a free retry). Drawing texts only (`decoding`
+        False) is a call to our render service and runs anywhere."""
+        from qualify_api.creative.process import is_worker_process  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_NOT_ADDED_TEXT,
+            ClipComposeFailed,
+            ClipComposer,
+        )
+
+        if decoding and not is_worker_process():
+            raise ClipComposeFailed(
+                COMPOSE_NOT_ADDED_TEXT,
+                failure=FailureReason.RENDER_ERROR.value,
+                code="not_worker_process",
+                raw="a compose outside the creative worker",
+            )
+        if self._clip_composer is not None:
+            return self._clip_composer
+        return ClipComposer(self._render_client)
+
+    def _seedance_task_recorded(self) -> bool:
+        """Whether this generation already has its Seedance task recorded (m-24852154:
+        `vendor_tasks` resumes it, nothing is paid again) — the clip is on its way."""
+        run = _TASK_RUN.get()
+        if run is None:
+            return False
+        try:
+            return bool(run.tasks.resume_id(run.peek_slot(SEEDANCE)))
+        except Exception:  # noqa: BLE001 — cannot tell: as if not recorded
+            return False
+
+    def _seedance_compose(
+        self, brief: ContentBrief, kit: BrandKit, tenant_id: UUID, save: _Saver
+    ) -> Any | None:
+        """EF-14: `(recipe, drawn texts)` for a normal Clip made by Seedance that carries
+        texts or layers, or None. The texts are drawn ONCE, before anything is paid: a
+        text that does not fit (the owner's to change) fails the piece with nothing
+        spent (`_MediaFailed`, his own message).
+
+        In the queue (a worker preparation) the drawn PNGs are kept in R2 beside the
+        piece and recorded in a pipeline step (`COMPOSE_TEXTS_STEP`, key + sha256 of each)
+        BEFORE Seedance is ordered — a step that cannot be kept stops the pass before
+        any payment. Every later pass (the one that brings the paid clip included) takes
+        them from there and never asks the render service again, so no render failure
+        can reach a paid clip through here. If they are gone (R2 lost them), the clip may
+        be paid: `(recipe, None)`, and `_compose_clip` tries once more after the clip and
+        DEGRADES with `text_layers_not_added` — never fails the piece.
+
+        Before that step exists nothing is paid yet: a render service that did not
+        answer (`ClipComposeFailed.transient`: transport, 502/503/504, a timeout) makes
+        the queued piece wait (`recompose.wait_for_render_or_give_up`: a `LocalVideoWait`
+        with `retry_after_s`), for at most `COMPOSE_OUTAGE_WINDOW` from its first
+        failure; past it, with no queue, or for any other failure (a 4xx, no client, our
+        own bug) the piece fails at once (`_MediaFailed`, the normal refund). Outside the
+        queue, with the Seedance task already recorded (an inline resumed run), a failed
+        drawing goes on — `(recipe, None)` — and `_compose_clip` degrades."""
+        from qualify_api.creative.pipeline import PipelineStore  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_TEXTS_STEP,
+            ClipComposeFailed,
+            compose_recipe_of,
+            stored_text_images,
+            text_images_params,
+            wait_for_render_or_give_up,
+        )
+
+        recipe = compose_recipe_of(brief, kit)
+        if recipe is None:
+            return None
+        run = current_preparation()
+        store = PipelineStore() if run is not None else None
+        if run is not None and store is not None and recipe.text_layers:
+            kept = store.load_step(run, COMPOSE_TEXTS_STEP)
+            if kept is not None:
+                drawn = stored_text_images(
+                    kept["request"] or {},
+                    recipe,
+                    lambda key: self._store.read(key) if owned_by(tenant_id, key) else None,
+                )
+                if drawn is None:
+                    logger.warning("clip texts kept before the order are gone: drawn after it")
+                return recipe, drawn
+        try:
+            drawn = self._composer(decoding=False).draw(recipe)
+        except ClipComposeFailed as exc:
+            if run is None and self._seedance_task_recorded():
+                logger.warning("clip texts not drawn before a resumed Seedance task: %s", exc.code)
+                return recipe, None
+            # nothing is paid yet: only an outage of the render service is waited for, in
+            # the queue, for at most `COMPOSE_OUTAGE_WINDOW` (it raises the wait); past it,
+            # with no queue, or for anything else the piece fails at once (normal refund)
+            if exc.transient:
+                wait_for_render_or_give_up(exc.code)
+                raise _MediaFailed(
+                    FailureReason.DEPENDENCY_FAILED.value, exc.owner_message, raw=exc.raw
+                ) from exc
+            raise _MediaFailed(exc.failure, exc.owner_message, raw=exc.raw) from exc
+        if run is not None and store is not None and recipe.text_layers:
+            texts = text_images_params(
+                drawn, lambda index, png: save.optional(f"compose-text-{index}.png", png, PNG)
+            )
+            if texts is None:
+                # before the order: nothing paid, the next pass draws them again
+                raise CheckpointError("compose texts not kept before the order")
+            store.save_step(run, COMPOSE_TEXTS_STEP, {"texts": texts}, None)
+        return recipe, drawn
+
+    def _compose_clip(
+        self,
+        draft_id: UUID,
+        fitter: VideoFitter,
+        video: bytes,
+        size: tuple[int, int],
+        composing: Any,
+        thumbnail: bytes | None,
+        warnings: list[MediaWarning] | None,
+        save: _Saver,
+    ) -> tuple[bytes, bytes | None, int, int, dict[str, Any] | None]:
+        """EF-14: the drawn texts and the layers laid over the paid clip, cut to 9:16
+        first when Seedance's size is off it (`recompose.nine_sixteen_size`), inside the
+        creative worker's heavy-video gate (`heavy_video.assembling`: with a part join in
+        flight it raises `LocalAssemblyWait` and the queue replays the generation through
+        its checkpoints — the clip is never paid twice). The text PNGs are kept beside the
+        piece (`compose.texts`: key + sha256) so its final lays exactly these. The clip
+        is paid for: a compose that fails keeps it as it is, with a warning, and records
+        no recipe — its final is then made without texts either, as the owner saw it."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_NOT_ADDED,
+            COMPOSE_NOT_ADDED_TEXT,
+            heavy_gate,
+            nine_sixteen_size,
+            text_images_params,
+        )
+
+        recipe, drawn = composing
+        try:
+            composer = self._composer()
+            if drawn is None:
+                drawn = composer.draw(recipe)
+            cut = nine_sixteen_size(*size)
+            with heavy_gate():
+                source = (
+                    fitter.fit(
+                        video, size=cut, keep_audio=True, max_seconds=3600.0, x264=DETAIL_X264
+                    ).data
+                    if cut is not None
+                    else video
+                )
+                made = composer.compose(source, recipe, drawn=drawn, stage="preview")
+        except CheckpointError:
+            raise  # the heavy-video gate is taken: the queue retries, nothing lost
+        except Exception as exc:  # noqa: BLE001 — the clip is paid for: never lose it
+            logger.warning("clip %s: texts and layers not laid: %s", draft_id, exc)
+            if warnings is not None:
+                warnings.append(MediaWarning(COMPOSE_NOT_ADDED, COMPOSE_NOT_ADDED_TEXT))
+            return video, thumbnail, size[0], size[1], None
+        params: dict[str, Any] = {"recipe": recipe.to_params(), "preview": dict(made.params)}
+        if cut is not None:
+            params["preview"]["cut_from"] = list(size)
+        texts = text_images_params(
+            drawn or (), lambda index, png: save.optional(f"compose-text-{index}.png", png, PNG)
+        )
+        if texts is not None:
+            params["texts"] = texts
+        return made.data, made.poster or thumbnail, made.width, made.height, params
+
+    def _held_final(
+        self, tenant_id: UUID, asset: Any, key: str, raw: Mapping[str, Any]
+    ) -> tuple[bytes, dict[str, Any]] | None:
+        """EF-14: this order's composed final already kept under `key` (an earlier try
+        whose last write never landed), with its provenance — checked BEFORE the fit,
+        the subtitles and the compose, so a retry re-encodes nothing. None when there is
+        no recipe to compose, or no such file."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_PARAMS_KEY,
+            stored_recipe,
+        )
+
+        recipe = stored_recipe(asset.params)
+        if recipe is None or not _object_held(self._store, tenant_id, key):
+            return None
+        data = self._store.read(key)
+        block = dict((asset.params or {}).get(COMPOSE_PARAMS_KEY) or {})
+        final = {
+            "stage": "final",
+            "reused": True,
+            "recipe_sha256": recipe.digest(),
+            "output_sha256": hashlib.sha256(data).hexdigest(),
+            **_final_origin(asset, raw),
+        }
+        return data, {**block, "final": final}
+
+    def _recompose_final(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        asset: Any,
+        fitted: FittedVideo,
+        raw: Mapping[str, Any],
+    ) -> tuple[FittedVideo, dict[str, Any] | None]:
+        """EF-14: the preview's frozen recipe (`params["compose"]`, never the brief as it
+        reads today) composed again over the fitted 1080p final, with the preview's own
+        text PNGs (`compose.texts`, kept in R2 and checked by sha256) — exactly the texts
+        approved, without asking the render service again; drawn again only when they
+        are missing (a piece from before they were kept). Inside the heavy-video gate:
+        with a part join in flight `LocalAssemblyWait` — the final waits for a later
+        pass, its raw 1080p kept, never paid again. A failure fails the final; the raw
+        1080p stays kept, so the retry costs nothing more."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            COMPOSE_PARAMS_KEY,
+            FINAL_COMPOSE_FAILED_TEXT,
+            heavy_gate,
+            stored_recipe,
+            stored_text_images,
+        )
+
+        recipe = stored_recipe(asset.params)
+        if recipe is None:
+            return fitted, None
+        block = dict((asset.params or {}).get(COMPOSE_PARAMS_KEY) or {})
+        drawn = stored_text_images(
+            block,
+            recipe,
+            lambda key: self._store.read(key) if owned_by(tenant_id, key) else None,
+        )
+        try:
+            composer = self._composer()
+            with heavy_gate():
+                made = composer.compose(fitted.data, recipe, drawn=drawn, stage="final")
+        except CheckpointError:
+            raise  # the heavy-video gate is taken: a later pass, nothing paid again
+        except Exception as exc:  # noqa: BLE001 — the raw final is kept: a free retry
+            raise _MediaFailed(
+                FailureReason.PROVIDER_ERROR.value,
+                FINAL_COMPOSE_FAILED_TEXT,
+                raw=getattr(exc, "raw", "") or f"{type(exc).__name__}: {exc}",
+            ) from exc
+        logger.info("final of %s composed again with its preview's recipe", draft_id)
+        composed = replace(
+            fitted,
+            data=made.data,
+            width=made.width,
+            height=made.height,
+            poster=made.poster or fitted.poster,
+        )
+        final = {
+            **dict(made.params),
+            "texts_reused": drawn is not None and bool(recipe.text_layers),
+            **_final_origin(asset, raw),
+        }
+        return composed, {**block, "final": final}
+
     def _local_clip(
         self,
         tenant_id: UUID,
@@ -5199,7 +5500,15 @@ class MediaProducer:
         subtitled = (
             part is None and media.clip_subtitles and bool(copy.hook.strip() or copy.cta.strip())
         )
-        fitter = self._require_fitter() if logo is not None or subtitled else None
+        # EF-14 (m-25026592): the owner's texts and layers over the clip — drawn by our
+        # render service HERE, before anything is paid (a text that does not fit costs
+        # nothing), laid after the logo and the subtitles, frozen for the final
+        composing = self._seedance_compose(brief, kit, tenant_id, save) if part is None else None
+        fitter = (
+            self._require_fitter()
+            if logo is not None or subtitled or composing is not None
+            else None
+        )
 
         transport_manifest: list[dict[str, Any]] = []
         # m-24820842: the prompt's budget provenance (compiler, length, budget, cuts)
@@ -5507,6 +5816,15 @@ class MediaProducer:
         tokens = int(result.usage.output_tokens)
         cost = self._seedance_usage(result, out_resolution, usage)
         video = self._download(str(result.media_url))
+        if composing is not None:
+            # EF-14: the pass that HAS the clip waits for a part join before any fit or
+            # compose (the passes that only order it never wait); the queue replays the
+            # paid call from its checkpoint
+            from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+                wait_if_heavy_video_busy,
+            )
+
+            wait_if_heavy_video_busy()
         width, height = (
             _video_dimensions(video) if editing or extending else None
         ) or output_dimensions(result.model_id, out_resolution, ratio)
@@ -5567,6 +5885,11 @@ class MediaProducer:
                 cues = []
             else:
                 video, thumbnail = fitted.data, fitted.poster or thumbnail
+        compose_params: dict[str, Any] | None = None
+        if composing is not None and fitter is not None:
+            video, thumbnail, width, height, compose_params = self._compose_clip(
+                draft_id, fitter, video, (width, height), composing, thumbnail, warnings, save
+            )
         if clean_key is None:
             video_key = save("clip.mp4", video, MP4)
         elif logo_laid:
@@ -5654,6 +5977,8 @@ class MediaProducer:
                         "clip_subtitles": media.clip_subtitles,
                         "subtitles": cues,
                         "model_revision": result.model_revision,
+                        # EF-14: the frozen recipe its final is composed again with
+                        **({"compose": compose_params} if compose_params else {}),
                     },
                     payload,
                     model_id=result.model_id,

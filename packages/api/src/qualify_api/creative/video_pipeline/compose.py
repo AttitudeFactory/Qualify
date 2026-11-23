@@ -109,11 +109,22 @@ class ComposeUnavailable(Exception):
     code = "text_layer_unavailable"
     charge = False
 
-    def __init__(self, detail: str, *, service_code: str | None = None, transient: bool = True):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        service_code: str | None = None,
+        transient: bool = True,
+        outage: bool = False,
+    ):
         super().__init__(detail)
         self.detail = detail
         self.service_code = service_code
         self.transient = transient
+        #: EF-14: the service did not answer (transport, 502/503/504, a timeout) — the
+        #: only failure a queued Seedance clip waits for (`_passing`); `transient` keeps
+        #: its EF-05 meaning (the owner may try again)
+        self.outage = outage
         self.owner_message = OWNER_MESSAGE_UNAVAILABLE
 
 
@@ -172,6 +183,7 @@ def _client(render_client: RemotionRenderClient | RenderClientFactory) -> Remoti
         try:
             return render_client()
         except Exception as exc:  # noqa: BLE001 — no client = no render: as a service down
+            # our configuration, not a passing outage: never waited for (EF-14, `outage`)
             raise ComposeUnavailable(f"render client could not be built: {exc}") from exc
     return render_client  # a duck-typed client (tests)
 
@@ -187,9 +199,36 @@ def _draw(
         detail = f"text {index}: render service {exc.code}: {exc.message}"
         if exc.code == "invalid_parameters" or exc.status == 422:
             raise ComposeRejected(detail, service_code=exc.code) from exc
-        raise ComposeUnavailable(detail, service_code=exc.code) from exc
+        raise ComposeUnavailable(detail, service_code=exc.code, outage=_passing(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — unreachable service (httpx.TransportError…)
-        raise ComposeUnavailable(f"text {index}: render service unreachable: {exc}") from exc
+        raise ComposeUnavailable(
+            f"text {index}: render service unreachable: {exc}", outage=_passing(exc)
+        ) from exc
+
+
+#: HTTP statuses that mean «nobody answered» (a proxy in front of a service that is down),
+#: as `image_pipeline.compose_run._OUTAGE_STATUSES`.
+_OUTAGE_STATUSES = frozenset({502, 503, 504})
+
+
+def _passing(exc: BaseException) -> bool:
+    """EF-14: whether a render failure is an outage that may pass by itself — the service
+    did not answer (transport, 502/503/504) or ran too long (`RenderTimeout`), like
+    `compose_run._kind`'s `outage`. Anything else (a 4xx, a failed job, our own bug) is not:
+    waiting for it would only delay the same answer."""
+    from qualify_creative.render.client import RenderTimeout  # noqa: PLC0415
+
+    if isinstance(exc, RenderTimeout):
+        return True
+    if isinstance(exc, RenderServiceError):
+        return exc.status in _OUTAGE_STATUSES
+    if isinstance(exc, ConnectionError | TimeoutError):
+        return True
+    try:
+        import httpx  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — httpx comes with the render client
+        return False
+    return isinstance(exc, httpx.TransportError)
 
 
 def _file_sha256(path: Path) -> str | None:
@@ -218,6 +257,35 @@ def _video_seconds(path: Path) -> float | None:
     return None
 
 
+def draw_text_layers(
+    text_layers: Sequence[VideoTextLayer],
+    brand: Any,
+    *,
+    render_client: RemotionRenderClient | RenderClientFactory,
+    timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
+) -> tuple[VideoTextImage, ...]:
+    """Every text drawn by the render service, in order, nothing encoded. EF-14: a piece
+    made by Seedance draws its texts BEFORE the vendor is paid, so a text that does not
+    fit, or a render service that is down, costs the owner nothing. Raises what
+    `compose_text_layers` raises for a text; with no text no client is built."""
+    layers = tuple(text_layers)
+    if not layers:
+        return ()
+    brand_map = brand_props(brand)
+    client = _client(render_client)
+    images: list[VideoTextImage] = []
+    for index, layer in enumerate(layers):
+        request = VideoTextRequest(
+            text=layer.text,
+            place=layer.place,
+            brand=brand_map,
+            layout_id=layer.layout_id.value if layer.layout_id is not None else None,
+            layout_version=layer.layout_version,
+        )
+        images.append(_draw(client, index, request, timeout_seconds))
+    return tuple(images)
+
+
 def compose_text_layers(
     video_path: Path | str,
     out_path: Path | str,
@@ -227,6 +295,7 @@ def compose_text_layers(
     render_client: RemotionRenderClient | RenderClientFactory,
     timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
     effect_layers: Sequence[Any] = (),
+    drawn_images: Sequence[VideoTextImage] | None = None,
 ) -> ComposeResult:
     """The texts over `video_path`, written to `out_path` (see the module's docstring).
     Every text is drawn BEFORE anything is encoded: a render failure writes nothing.
@@ -234,27 +303,30 @@ def compose_text_layers(
     `effect_layers` (EF-08): the library's layers (`layer_overlay.TimedEffectLayer`) laid
     UNDER the texts in the same single pass (`overlay_layers_and_texts`: one decode, one
     encode). Only with texts: with no text nothing runs here and the caller lays the
-    layers itself. A layer problem raises `LayerOverlayError` as it is."""
+    layers itself. A layer problem raises `LayerOverlayError` as it is.
+
+    `drawn_images` (EF-14): the texts already drawn by `draw_text_layers`, one per text
+    in the same order; nothing is asked of the render service again."""
     video_path, out_path = Path(video_path), Path(out_path)
     layers = tuple(text_layers)
     if not layers:
         # no text: the stage does not run (the output is exactly the input)
         return ComposeResult(path=video_path, composed=False, params={})
-    brand_map = brand_props(brand)
-    client = _client(render_client)
+    images = (
+        tuple(drawn_images)
+        if drawn_images is not None
+        else draw_text_layers(
+            layers, brand, render_client=render_client, timeout_seconds=timeout_seconds
+        )
+    )
+    if len(images) != len(layers):
+        raise ValueError("compose_text_layers: one drawn image per text")
     source_sha256 = _file_sha256(video_path)
     seconds = _video_seconds(video_path)
-    drawn: list[tuple[VideoTextLayer, VideoTextImage, float]] = []
-    for index, layer in enumerate(layers):
-        request = VideoTextRequest(
-            text=layer.text,
-            place=layer.place,
-            brand=brand_map,
-            layout_id=layer.layout_id.value if layer.layout_id is not None else None,
-            layout_version=layer.layout_version,
-        )
-        image = _draw(client, index, request, timeout_seconds)
-        drawn.append((layer, image, fade_in_seconds(layer, seconds)))
+    drawn: list[tuple[VideoTextLayer, VideoTextImage, float]] = [
+        (layer, image, fade_in_seconds(layer, seconds))
+        for layer, image in zip(layers, images, strict=True)
+    ]
     timed = [
         TimedLayer(png=image.png, start_s=layer.start_s, end_s=layer.end_s, fade_in_s=fade)
         for layer, image, fade in drawn
@@ -312,5 +384,6 @@ __all__ = [
     "RenderClientFactory",
     "TextLayerRefused",
     "compose_text_layers",
+    "draw_text_layers",
     "fade_in_seconds",
 ]
