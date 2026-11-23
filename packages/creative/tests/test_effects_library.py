@@ -125,6 +125,7 @@ def test_recipe_refusals_are_pinned() -> None:
         "photo_not_from_start",
         "segment_source_too_long",
         "transitions_longer_than_part",
+        "text_bottom_with_subtitles",
     )
 
 

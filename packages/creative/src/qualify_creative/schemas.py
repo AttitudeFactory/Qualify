@@ -719,6 +719,8 @@ RecipeRefusal = Literal[
     "segment_source_too_long",  # a video stretch takes over `SEGMENT_SOURCE_MAX_S` of source
     # EF-16 (m-25026594): appended, never reordered
     "transitions_longer_than_part",  # a part shorter than the transitions eating into it
+    # m-25026592 (decision 2026-11-23): appended, never reordered
+    "text_bottom_with_subtitles",  # a Clip's subtitles on and an owner's text at the bottom
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
