@@ -59,6 +59,7 @@ from qualify_creative.video.join_child import join_in_child
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 
+from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
 from qualify_api.creative.draft_mode import DRAFT_FAILED, DRAFT_READY, draft_expired, draft_state
 from qualify_api.creative.fsm import APPROVED, GENERATED
 from qualify_api.creative.media import JPEG, MP4, MediaWrite, owned_by
@@ -625,6 +626,53 @@ def _duration(
     return round(total, 3)
 
 
+def _keep_bytes(store: Any, tenant_id: UUID, key: str, data: bytes, content_type: str) -> bool:
+    """A small file (a contact sheet's JPEG) to R2 under `key`; the same bytes already
+    there are a success (`keep` reuses them). A store without R2 (tests, dev) writes."""
+    keep = getattr(store, "keep", None)
+    if callable(keep):
+        return bool(keep(tenant_id, key, data, content_type))
+    store.write(key, data)
+    return True
+
+
+def _join_sheet(
+    store: Any, tenant_id: UUID, parent_id: UUID, fingerprint: str, key: str, path: Path
+) -> dict[str, Any] | None:
+    """EF-18: the contact sheet of the joined preview at `path`, its files named by the
+    join's fingerprint (`join-<fp>-contact-N.jpg`), or None (left out, logged)."""
+    prefix = f"join-{fingerprint}-"
+
+    def keep(name: str, data: bytes) -> str | None:
+        object_key = f"t/{tenant_id}/generated/{parent_id}/{name}"
+        try:
+            return object_key if _keep_bytes(store, tenant_id, object_key, data, JPEG) else None
+        except Exception:  # noqa: BLE001 — the sheet is a review aid, never the join
+            logger.warning("parent %s: contact sheet file not kept", parent_id, exc_info=True)
+            return None
+
+    return keep_contact_sheet(
+        path,
+        keep,
+        source={"stage": "join", "object_key": key, "fingerprint": fingerprint},
+        prefix=prefix,
+    )
+
+
+def _held_join_sheet(
+    store: Any, tenant_id: UUID, parent_id: UUID, fingerprint: str, key: str
+) -> dict[str, Any] | None:
+    """EF-18: the sheet of a join already kept (`key`), made from that file read back."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="qualify-join-sheet-") as folder:
+            path = Path(folder) / "join.mp4"
+            _fetch(store, tenant_id, key, path)
+            return _join_sheet(store, tenant_id, parent_id, fingerprint, key, path)
+    except Exception:  # noqa: BLE001 — the join is reused as it is; the sheet is left out
+        logger.warning("parent %s: kept join's contact sheet not made", parent_id, exc_info=True)
+        return None
+
+
 def join_preview(
     store: Any,
     joins: PartJoinStore,
@@ -663,12 +711,16 @@ def join_preview(
     key = join_key(tenant_id, parent_id, fingerprint)
     poster_key: str | None = join_key(tenant_id, parent_id, fingerprint, "jpg")
     frames: int | None = None
+    sheet: dict[str, Any] | None = None
     if _held(store, tenant_id, key):
         # kept by a run whose database write never landed, or a version restored back to
         # one already joined: the same parts, the same file — not encoded again
         logger.info("parent %s: join %s already kept; reused", parent_id, fingerprint)
         if not _held(store, tenant_id, poster_key):
             poster_key = None
+        # EF-18: its contact sheet made again from the kept file — the same frames, kept
+        # under the same names (reused), never a second sheet
+        sheet = _held_join_sheet(store, tenant_id, parent_id, fingerprint, key)
     else:
         with tempfile.TemporaryDirectory(prefix="qualify-join-") as folder:
             root = Path(folder)
@@ -729,6 +781,8 @@ def join_preview(
                     poster_key = None
             else:
                 poster_key = None
+            # EF-18: the joined preview's contact sheet, inside the join's gate
+            sheet = _join_sheet(store, tenant_id, parent_id, fingerprint, key, joined.path)
     width, height = JOIN_PREVIEW_SIZE
     duration = _duration(parts, spans, transitions)
     # EF-06: «hecho con IA» follows what the parts are — any vendor part makes it AI
@@ -747,6 +801,7 @@ def join_preview(
         ai_generated=ai_generated,
         params={
             "thumbnail_key": poster_key,
+            **({CONTACT_SHEET_PARAMS_KEY: sheet} if sheet is not None else {}),
             "ai_generated": ai_generated,
             "duration_seconds": duration,
             "resolution": f"{height}p",

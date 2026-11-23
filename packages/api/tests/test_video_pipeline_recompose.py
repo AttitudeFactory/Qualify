@@ -178,6 +178,8 @@ class FakeComposer:
         self.fail_compose = fail_compose
         self.draws: list[ComposeRecipe] = []
         self.composes: list[tuple[bytes, ComposeRecipe, Any, str]] = []
+        self.sheet_hooks: list[Any] = []
+        self.sheet_video: Any = None  # EF-18: a real MP4 path the sheet hook is run on
 
     def draw(self, recipe: ComposeRecipe) -> tuple[Any, ...]:
         self.draws.append(recipe)
@@ -202,19 +204,28 @@ class FakeComposer:
         *,
         drawn: Sequence[Any] | None = None,
         stage: str,
+        contact_sheet: Any = None,
     ) -> ComposedClip:
         self.composes.append((video, recipe, drawn, stage))
+        self.sheet_hooks.append(contact_sheet)
         if self.fail_compose:
             raise ClipComposeFailed(
                 "x", failure=FailureReason.RENDER_ERROR.value, code="compose_failed"
             )
         size = (1080, 1920) if stage == "final" else (480, 854)
+        # EF-18: the hook gets a real video when the test gives one (the bytes here are not)
+        sheet = (
+            contact_sheet(self.sheet_video)
+            if contact_sheet is not None and self.sheet_video is not None
+            else None
+        )
         return ComposedClip(
             data=b"composed-" + video,
             width=size[0],
             height=size[1],
             poster=None,
             params={"stage": stage, "recipe_sha256": recipe.digest(), "cost_usd": "0.00"},
+            contact_sheet=sheet,
         )
 
 
@@ -630,3 +641,57 @@ def test_a_retry_with_the_final_kept_fits_nothing_again() -> None:
 
     assert retry.failure is None and retry.media.object_key == first.media.object_key
     assert fitter.calls == []  # no fit, no subtitles: the kept file is taken as it is
+
+
+# ---------------------------------------------------------------------------
+# EF-18 (m-25026598): the composed preview's contact sheet
+
+
+def _sheet_video(tmp_path: Any) -> Any:
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    path = tmp_path / "composed.mp4"
+    with av.open(str(path), "w") as sink:
+        stream = sink.add_stream("libx264", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 180, 320, "yuv420p"
+        for index in range(60):
+            picture = np.full((320, 180, 3), index * 4, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(picture, format="rgb24")
+            for packet in stream.encode(frame):
+                sink.mux(packet)
+        for packet in stream.encode():
+            sink.mux(packet)
+    return path
+
+
+def test_the_composed_preview_keeps_its_contact_sheet_and_the_final_does_not_reuse_it(
+    tmp_path: Any,
+) -> None:
+    """The composed preview (what the owner approves) gets its sheet, tied to the file
+    shown; the final replaces that file, so the preview's sheet is no longer offered."""
+    from qualify_api.creative.contact_sheet import contact_sheet_of
+
+    composer = FakeComposer()
+    composer.sheet_video = _sheet_video(tmp_path)
+    producer, store, _, draft_id, brief, draft = _draft_and_final_inputs(
+        composer, text_layers=(WORDS,)
+    )
+    block = draft.params["contact_sheet"]
+    assert "contact_sheet" not in draft.params["compose"]  # lifted to the asset's params
+    assert block["source"]["stage"] == "preview"
+    assert block["source"]["object_key"] == draft.object_key
+    assert len(block["frames"]) == 6 and all(f["key"] in store.files for f in block["frames"])
+    view = contact_sheet_of(draft.object_key, draft.params)
+    assert view is not None and view.sheet_key == block["sheet"]["key"]
+
+    final = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+    assert final.failure is None
+    assert composer.sheet_hooks[-1] is None  # the final makes no sheet
+    assert contact_sheet_of(final.media.object_key, final.media.params) is None
+
+
+def test_a_preview_whose_sheet_is_not_made_is_kept_without_it() -> None:
+    composer = FakeComposer()  # no real video: the hook is never run
+    _, _, _, _, _, draft = _draft_and_final_inputs(composer, text_layers=(WORDS,))
+    assert composer.sheet_hooks[0] is not None
+    assert "contact_sheet" not in draft.params and draft.params["compose"]

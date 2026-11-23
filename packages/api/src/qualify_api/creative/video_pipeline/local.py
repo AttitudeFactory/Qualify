@@ -41,7 +41,10 @@ The steps, per stretch in the recipe's order:
    `text_layers` drawn by our own render service (Remotion, cost 0, in the Brand Kit's
    typeface and palette) and laid over the built video with each text's own fade
    (`fade_s`); skipped when there is no text;
-6. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried).
+6. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried);
+7. its contact sheet (EF-18, `contact_sheet.keep_contact_sheet`): six frames of the
+   composed video kept beside it, in `params["contact_sheet"]` — best effort, still
+   inside the heavy-video gate.
 
 Provenance (rule 6) in the asset's `params.local`: the recipe contract, the effects
 pipeline version, the pricing table (`LOCAL_PRICING_VERSION`, where `local_video` costs
@@ -76,6 +79,7 @@ from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
+from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
 from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
     JPEG,
@@ -694,6 +698,19 @@ def _poster(path: Path) -> bytes | None:
     return None
 
 
+def _contact_sheet(save: Any, path: Path, key: str) -> dict[str, Any] | None:
+    """EF-18: the composed video's contact sheet kept in the revision's folder beside it
+    (`save.optional`: a refused file leaves the sheet out, never the piece), or None."""
+    optional = getattr(save, "optional", None)
+    if not callable(optional):
+        return None
+    return keep_contact_sheet(
+        path,
+        lambda name, data: optional(name, data, JPEG),
+        source={"stage": "local", "object_key": key, "revision": getattr(save, "revision", None)},
+    )
+
+
 def _keep_video(save: Any, store: Any, tenant_id: UUID, path: Path) -> str:
     """Keep the MP4 under the draft's revision: streamed from disk when the store can
     (`keep_file`: retried, an existing key is reused), else through `save` (retried)."""
@@ -829,6 +846,8 @@ def produce_local(
                 )
             key = _keep_video(save, store, tenant_id, made.path)
             poster = _poster(made.path)
+            # EF-18: the composed video's contact sheet, still inside the gate
+            sheet = _contact_sheet(save, made.path, key)
         poster_key = save.optional("first-frame.jpg", poster, JPEG) if poster else None
     except LocalVideoFailed as exc:
         logger.warning("draft %s: local video not made: %s", draft_id, exc.raw or exc.detail)
@@ -859,6 +878,8 @@ def produce_local(
             "warnings": list(made.warnings),
         },
     }
+    if sheet is not None:
+        params[CONTACT_SHEET_PARAMS_KEY] = sheet
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers
