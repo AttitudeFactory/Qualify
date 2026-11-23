@@ -401,3 +401,16 @@ def test_cop_amount_beyond_the_bound_keeps_raw_only() -> None:
         currency="COP",
     )
     assert normalized.amount_spent_minor is None and normalized.amount_spent_raw == raw
+
+
+@pytest.mark.parametrize("cap", ["0", None])
+def test_zero_or_missing_spend_cap_is_no_limit_not_zero(cap) -> None:
+    payload = {"account_id": "12", "currency": "COP", "amount_spent": "25000"}
+    if cap is not None:
+        payload["spend_cap"] = cap
+    normalized = HealthObservation.from_graph(payload, account_id="12", currency="COP")
+    assert normalized.spend_cap_minor is None and normalized.spend_cap_raw == cap
+    verified = replace(normalized, money_units_verified=True)
+    shown = project_health(target(verified), now=NOW)
+    assert shown.spend_cap_minor is None and shown.amount_spent_label == "$25.000 COP"
+    assert "$0" not in shown.spend_cap_label
