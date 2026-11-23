@@ -430,12 +430,14 @@ def test_the_v1_text_key_is_composed_too() -> None:
     assert recipe is not None and recipe.text_layers == (WORDS,)
 
 
-def test_the_preview_waits_for_a_part_join_and_is_not_paid_twice() -> None:
+def test_the_preview_waits_for_a_part_join_before_anything_is_drawn_or_paid() -> None:
+    """A part join holds the gate: the piece waits BEFORE drawing, reading or paying, and
+    the worker leaves it out of its passes for a while (`retry_after_s` > 0)."""
     from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
 
     composer = FakeComposer()
     producer, _, seedance = _composing_producer(composer)
-    with joining(), pytest.raises(LocalAssemblyWait):
+    with joining(), pytest.raises(LocalAssemblyWait) as waited:
         producer.produce(
             tenant_id=MEDIA_TENANT,
             draft_id=uuid4(),
@@ -444,31 +446,57 @@ def test_the_preview_waits_for_a_part_join_and_is_not_paid_twice() -> None:
             copy=COPY,
             budget=BUDGET,
         )
-    # nothing composed; the one Seedance call is replayed by the queue's checkpoints
-    assert composer.composes == [] and len(seedance.requests) == 1
+    assert waited.value.retry_after_s == recompose.JOIN_RETRY_AFTER_SECONDS > 0
+    assert composer.draws == [] and composer.composes == [] and seedance.requests == []
 
 
-def test_the_final_waits_for_a_part_join_with_its_raw_1080p_kept() -> None:
+def test_the_final_waits_for_a_part_join_before_it_reads_fits_or_pays() -> None:
     from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
 
     composer = FakeComposer()
     producer, _, seedance, draft_id, brief, draft = _draft_and_final_inputs(
         composer, text_layers=(WORDS,)
     )
+    fitter = producer._fitter
+    fitter.calls.clear()
+    paid, composed = len(seedance.requests), len(composer.composes)
+    with joining(), pytest.raises(LocalAssemblyWait) as waited:
+        _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+    assert waited.value.retry_after_s > 0
+    assert len(seedance.requests) == paid and fitter.calls == []
+    assert len(composer.composes) == composed
+    retry = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+    assert retry.failure is None and len(seedance.requests) == paid + 1  # one final
+
+
+def test_a_join_that_takes_the_gate_mid_pass_still_makes_the_final_wait() -> None:
+    """The race the early check cannot see: the gate is taken between the check and the
+    compose — the final waits (raw 1080p kept), it never overlaps the join."""
+    from qualify_api.creative import heavy_video
+
+    composer = FakeComposer()
+    producer, _, seedance, draft_id, brief, draft = _draft_and_final_inputs(
+        composer, text_layers=(WORDS,)
+    )
+    gate = heavy_video.joining()
     kept: list[dict[str, Any]] = []
-    asset = _with_attempt(draft, "a1")
-    with joining(), pytest.raises(LocalAssemblyWait):
-        producer.finalize(
-            tenant_id=MEDIA_TENANT,
-            draft_id=draft_id,
-            brief=brief,
-            kit=_kit(),
-            asset=asset,
-            budget=BUDGET,
-            revision=1,
-            on_raw_kept=lambda raw: kept.append(dict(raw)),
-        )
-    assert kept and kept[0]["key"]
+    real_busy = heavy_video.busy
+    heavy_video.busy = lambda: False  # the check passed just before the join started
+    try:
+        with gate, pytest.raises(heavy_video.LocalAssemblyWait) as waited:
+            producer.finalize(
+                tenant_id=MEDIA_TENANT,
+                draft_id=draft_id,
+                brief=brief,
+                kit=_kit(),
+                asset=_with_attempt(draft, "a1"),
+                budget=BUDGET,
+                revision=1,
+                on_raw_kept=lambda raw: kept.append(dict(raw)),
+            )
+    finally:
+        heavy_video.busy = real_busy
+    assert waited.value.retry_after_s > 0 and kept and kept[0]["key"]
     paid = len(seedance.requests)
     retry = _final(producer, brief, _with_attempt(draft, "a1", raw_final=kept[0]), draft_id)
     assert retry.failure is None and len(seedance.requests) == paid  # never paid twice

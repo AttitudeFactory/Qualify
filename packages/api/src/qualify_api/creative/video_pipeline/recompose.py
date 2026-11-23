@@ -60,7 +60,8 @@ import hashlib
 import io
 import logging
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -231,6 +232,7 @@ def text_images_params(
                 "height": getattr(image, "height", None),
                 "report": _plain(getattr(image, "report", None)),
                 "provenance": _plain(getattr(image, "provenance", None)),
+                "warnings": [str(w) for w in getattr(image, "warnings", ()) or ()],
             }
         )
     return kept
@@ -279,6 +281,7 @@ def stored_text_images(
                 height=entry.get("height"),
                 report=dict(entry.get("report") or {}),
                 provenance=dict(entry.get("provenance") or {}),
+                warnings=tuple(str(w) for w in entry.get("warnings") or ()),
             )
         )
     return tuple(images)
@@ -299,6 +302,65 @@ def nine_sixteen_size(width: int, height: int) -> tuple[int, int] | None:
         raise ValueError(f"a {width}x{height} video is not 9:16")
     target = round(height * _ASPECT)
     return target - target % 2, height - height % 2
+
+
+#: How long a waiting compose keeps the draft out of the worker's passes (`heavy_video.
+#: hold`): a part join takes ~1-2 min; the render service, if down, needs longer.
+JOIN_RETRY_AFTER_SECONDS = 30.0
+RENDER_RETRY_AFTER_SECONDS = 60.0
+
+
+def _waits() -> tuple[type, type]:
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, LocalVideoWait  # noqa: PLC0415
+
+    return LocalAssemblyWait, LocalVideoWait
+
+
+def compose_waits_for_join(detail: str) -> Exception:
+    """A `heavy_video.LocalAssemblyWait` with `retry_after_s` > 0: a part join holds the
+    worker's heavy-video gate, so this compose waits — nothing read, drawn or fitted on
+    this pass, the draft out of the passes for `JOIN_RETRY_AFTER_SECONDS`."""
+    assembly_wait, _ = _waits()
+    wait = assembly_wait(detail)
+    wait.retry_after_s = JOIN_RETRY_AFTER_SECONDS
+    return wait
+
+
+def compose_waits_for_render(detail: str) -> Exception:
+    """A `heavy_video.LocalVideoWait` with `retry_after_s` > 0: our render service is down
+    or timed out (a dependency, never the owner's text) — the pass stops and a later one
+    draws the texts. In the queue the pass that brings Seedance's clip replays it from its
+    checkpoint, so waiting never pays it twice and never fails a paid clip."""
+    _, video_wait = _waits()
+    wait = video_wait(detail)
+    wait.retry_after_s = RENDER_RETRY_AFTER_SECONDS
+    return wait
+
+
+@contextmanager
+def heavy_gate() -> Iterator[None]:
+    """`heavy_video.assembling()` for a compose: held for the encode; when a part join
+    took the gate in between, `compose_waits_for_join` (with its `retry_after_s`)."""
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, assembling  # noqa: PLC0415
+
+    gate = assembling()
+    try:
+        gate.__enter__()
+    except LocalAssemblyWait as exc:
+        raise compose_waits_for_join(str(exc)) from exc
+    try:
+        yield
+    finally:
+        gate.__exit__(None, None, None)  # releases the gate, whatever happened inside
+
+
+def wait_if_heavy_video_busy() -> None:
+    """`compose_waits_for_join` BEFORE any read, drawing or fit, when a part join holds the
+    gate — so a waiting compose does not redo its whole pass on every turn of the loop."""
+    from qualify_api.creative.heavy_video import busy  # noqa: PLC0415
+
+    if busy():
+        raise compose_waits_for_join("a part join is running: the compose waits")
 
 
 class ClipComposeFailed(Exception):
