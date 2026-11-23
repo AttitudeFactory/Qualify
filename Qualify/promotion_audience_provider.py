@@ -32,7 +32,6 @@ from .promotion_audience_vm import (
     place_kind_label,
     reach_label,
 )
-from .promotion_market_vm import CURRENCY as MARKET_CURRENCY
 from .promotion_market_vm import market_estimate
 from .promotion_vm import PromotionDraftVM
 
@@ -178,7 +177,7 @@ def read_reach(
             brand_id=UUID(brand_id),
             reach=estimate,
             country=form.location_country,
-            currency=MARKET_CURRENCY,
+            currency=form.currency,
             budget_minor=100,
             days=7,
         )

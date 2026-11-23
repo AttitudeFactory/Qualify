@@ -42,11 +42,12 @@ from .investment_profile_vm import (
     how_computed,
     margin_options,
     meaning,
-    pesos,
+    money_copy,
     read_amount,
     safe_return,
     step_problem,
     unknown_note,
+    whole_money,
     with_answer,
 )
 from .nav_url import scalar_param, with_query
@@ -110,16 +111,16 @@ class InvestmentProfileState(rx.State):
 
     @rx.var
     def ticket_echo(self) -> str:
-        return amount_echo(self.answers.ticket)
+        return amount_echo(self.answers.ticket, self.profile.currency)
 
     @rx.var
     def cap_echo(self) -> str:
-        return cap_echo(self.answers.cap)
+        return cap_echo(self.answers.cap, self.profile.currency)
 
     @rx.var
     def margin_help(self) -> str:
         price, problem = read_amount(self.answers.ticket)
-        of = "De" if problem else f"De los {pesos(price)}"
+        of = "De" if problem else f"De los {whole_money(price, self.profile.currency)}"
         return (
             f"{of} lo que paga un cliente, ¿cuánto te queda después de pagar lo que cuesta "
             "hacerlo o conseguirlo?"
@@ -127,11 +128,15 @@ class InvestmentProfileState(rx.State):
 
     @rx.var
     def unknown_note(self) -> str:
-        return unknown_note(self.answers.ticket)
+        return unknown_note(self.answers.ticket, self.profile.currency)
 
     @rx.var
     def margin_choices(self) -> list[tuple[str, str]]:
-        return margin_options(self.answers.ticket)
+        return margin_options(self.answers.ticket, self.profile.currency)
+
+    @rx.var
+    def money_copy(self) -> dict[str, str]:
+        return money_copy(self.profile.currency)
 
     @rx.var
     def headline(self) -> str:

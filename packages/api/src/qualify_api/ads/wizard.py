@@ -15,6 +15,7 @@ from qualify_api.ads.enhancements import BrandEnhancementSettings
 from qualify_api.ads.lead_ads import LEAD_CTAS, LeadFormTarget
 from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_greeting import MessageGreeting
+from qualify_api.ads.money import CURRENCY_UNSUPPORTED, META_CURRENCY_OFFSETS
 from qualify_api.tenancy.acting import require_acting_member
 
 LIVE_UNAVAILABLE = (
@@ -213,8 +214,10 @@ class WizardForm:
             raise WizardUnavailable("Revisa las edades: deben estar entre 18 y 65 años.")
         if type(self.advantage_audience) is not bool or type(self.housing) is not bool:
             raise WizardUnavailable("Revisa las opciones del público.")
-        if self.currency != "COP" or type(self.budget_minor) is not int or self.budget_minor <= 0:
-            raise WizardUnavailable("Indica un presupuesto total válido en pesos colombianos.")
+        if self.currency not in META_CURRENCY_OFFSETS:
+            raise WizardUnavailable(CURRENCY_UNSUPPORTED)
+        if type(self.budget_minor) is not int or self.budget_minor <= 0:
+            raise WizardUnavailable("Indica un presupuesto total válido.")
         if (
             any(t.tzinfo is None or t.utcoffset() is None for t in (self.start_time, self.end_time))
             or self.end_time <= self.start_time
@@ -374,8 +377,8 @@ def list_promotion_sources(
                 if source.unavailable_reason
                 else "Elige una cuenta publicitaria para esta marca en Tus redes."
                 if source.ad_account_id is None
-                else "Esta comprobación admite cuentas en pesos colombianos."
-                if source.currency != "COP"
+                else CURRENCY_UNSUPPORTED
+                if source.currency not in META_CURRENCY_OFFSETS
                 else "Actualiza la cuenta para comprobar su zona horaria."
                 if not source.timezone_name
                 else ""

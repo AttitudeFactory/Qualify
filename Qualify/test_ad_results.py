@@ -90,11 +90,11 @@ def test_missing_results_do_not_become_zero_or_inherit_another_currency() -> Non
         updated_at=None,
     )
     vm = provider.detail_vm(result)
-    assert vm.days[0].spend == "12,34 USD"
+    assert vm.days[0].spend == "$12,34 USD"
     assert vm.days[0].reach == vm.days[0].ctr == "Sin datos"
     assert vm.days[0].clicks == "0"
     assert vm.days[0].impressions == "1.234"
-    assert vm.promotion.approved_budget == "123,45 USD"
+    assert vm.promotion.approved_budget == "$123,45 USD"
     assert vm.promotion.currency == "USD"
     assert "COP" not in repr(vm)
     assert "UTC" not in vm.promotion.checked_label
@@ -197,11 +197,11 @@ def editable_context() -> Context:
 @pytest.mark.parametrize("value", ["10000", "9999", "10.001", "10001.5", "10,001", "١٠٠٠١", "-1"])
 def test_edit_budget_rejects_non_increases_and_fractional_or_formatted_pesos(value: str) -> None:
     with pytest.raises(EditInputError):
-        edit_budget(value, "10000")
+        edit_budget(value, "10000", "COP")
 
 
 def test_edit_inputs_preserve_exact_cop_and_account_timezone() -> None:
-    assert edit_budget("10001", "10000") == 1000100
+    assert edit_budget("10001", "10000", "COP") == 1000100
     assert edit_end("2027-01-20T12:00", "America/Bogota").hour == 12
     with pytest.raises(EditInputError):
         edit_end("2027-01-20T12:00+05:00", "America/Bogota")
@@ -271,7 +271,7 @@ async def test_expired_review_clears_consent_preserves_inputs_and_does_not_write
 
 def test_operational_values_never_fall_back_to_original_approval() -> None:
     vm = provider.summary_vm(summary())
-    assert vm.approved_budget == "123,45 USD"
+    assert vm.approved_budget == "$123,45 USD"
     assert vm.current_budget != vm.approved_budget
 
 

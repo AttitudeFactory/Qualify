@@ -16,7 +16,9 @@ from qualify_api.ads.results import ResultsUnavailable
 EDIT_PIPELINE = "ad-verified-edit-v1"
 
 
-def consistent_intent(action: str, payload: Any, before: Any, after: Any) -> bool:
+def consistent_intent(action: str, payload: Any, before: Any, after: Any, offset: int = 1) -> bool:
+    """`offset`: the promotion's Meta currency offset (1 for COP, the only one before
+    m-25091394, hence the default for evidence saved without it)."""
     if (
         not isinstance(payload, dict)
         or not isinstance(before, dict)
@@ -38,7 +40,8 @@ def consistent_intent(action: str, payload: Any, before: Any, after: Any) -> boo
             and type(payload.get("lifetime_budget")) is int
             and after["budget_minor"] % 100 == 0
             and after["end_time"] == before["end_time"]
-            and payload == {"lifetime_budget": after["budget_minor"] // 100}
+            and offset in {1, 100}
+            and payload == {"lifetime_budget": after["budget_minor"] * offset // 100}
         )
     if action == "end_time":
         return after["budget_minor"] == before["budget_minor"] and payload == {
@@ -80,7 +83,8 @@ def overlay(promotion: Promotion, rows: list[Any]) -> Promotion:
         ):
             raise ResultsUnavailable("Falta comprobar un cambio anterior de esta promoción.")
         before, after = evidence.get("before"), evidence.get("after")
-        if not consistent_intent(row["action"], row["payload"], before, after):
+        offset = request.get("meta_currency_offset") or 1
+        if not consistent_intent(row["action"], row["payload"], before, after, offset):
             raise ResultsUnavailable("El cambio guardado necesita una nueva comprobación.")
         current = {key: request[key] for key in ("budget_minor", "end_time")}
         if before != current or not isinstance(after, dict) or set(after) != set(current):

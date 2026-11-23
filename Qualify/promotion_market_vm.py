@@ -13,11 +13,13 @@ from dataclasses import dataclass
 from qualify_api.ads.market_size import Cpm, MarketEstimate, estimate, load_table
 
 from .promotion_audience_vm import AudienceReachVM, approx_people, audience_range
-from .promotion_vm import COUNTRY_LABELS, PromotionDraftVM, cop_label, cop_minor, local_datetime
-
-# shortcut: the budget field is pesos only (cop_minor), so the estimate is too; the
-# account's currency arrives with m-25091394.
-CURRENCY = "COP"
+from .promotion_vm import (
+    COUNTRY_LABELS,
+    PromotionDraftVM,
+    budget_minor,
+    budget_money,
+    local_datetime,
+)
 
 CHOOSE_AUDIENCE = "Elige a quién quieres llegar y te decimos a cuántas personas llegaría tu dinero."
 NO_RANGE = (
@@ -68,14 +70,15 @@ def market_estimate(
     if not reach.available or reach.market_failed or not reach.market_class:
         return None
     days = promotion_days(draft, timezone_name)
-    budget = cop_minor(draft.budget) if days and _valid_budget(draft.budget) else None
+    currency = draft.currency
+    budget = budget_minor(draft.budget, currency) if days and _valid_budget(draft) else None
     return estimate(
         lower=reach.lower,
         upper=reach.upper,
         budget_minor=budget,
         days=days if budget else None,
-        currency=CURRENCY,
-        cpm=Cpm(reach.cpm_minor, CURRENCY, reach.cpm_source) if reach.cpm_minor else None,
+        currency=currency,
+        cpm=Cpm(reach.cpm_minor, currency, reach.cpm_source) if reach.cpm_minor else None,
         table=load_table(),
         audience_hash=reach.audience_hash,
     )
@@ -95,7 +98,7 @@ def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: 
             "personas llegarías. Puedes seguir de todos modos.",
             review=f"No lo calculamos: aún no tenemos datos de anuncios en {country}",
         )
-    if not _valid_budget(draft.budget):
+    if not _valid_budget(draft):
         return MarketVM(WRITE_AMOUNT)
     days = promotion_days(draft, timezone_name)
     if days is None:
@@ -103,7 +106,7 @@ def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: 
     found = market_estimate(reach, draft, timezone_name)
     if found is None or found.people is None:
         return MarketVM(FAILED, retry=True, review=FAILED_REVIEW)
-    money = cop_label(draft.budget)
+    money = budget_money(draft.budget, draft.currency)
     period = "en 1 día" if days == 1 else f"en {days} días"
     people = approx_people(found.people)
     if found.people >= found.audience_upper:
@@ -130,9 +133,9 @@ def market_view(reach: AudienceReachVM, draft: PromotionDraftVM, timezone_name: 
     )
 
 
-def _valid_budget(value: str) -> bool:
+def _valid_budget(draft: PromotionDraftVM) -> bool:
     try:
-        cop_minor(value)
+        budget_minor(draft.budget, draft.currency)
     except ValueError:
         return False
     return True

@@ -162,21 +162,25 @@ def test_lead_step_and_review_render_spanish_choices() -> None:
 @pytest.mark.parametrize("value", ["10000", "12000", "0", "5.000", "abc", ""])
 def test_budget_down_must_be_a_lower_whole_amount(value: str) -> None:
     with pytest.raises(EditInputError):
-        edit_budget_down(value, "10000", "")
+        edit_budget_down(value, "10000", "", "COP")
 
 
 def test_budget_down_below_known_floor_shows_the_minimum() -> None:
     with pytest.raises(EditInputError, match=r"Puedes bajarlo hasta \$6\.000"):
-        edit_budget_down("5000", "10000", "6000")
-    assert edit_budget_down("6000", "10000", "6000") == 600_000
-    assert edit_budget_down("5000", "10000", "") == 500_000  # Meta still checks at prepare
+        edit_budget_down("5000", "10000", "6000", "COP")
+    assert edit_budget_down("6000", "10000", "6000", "COP") == 600_000
+    assert edit_budget_down("5000", "10000", "", "COP") == 500_000  # Meta still checks at prepare
 
 
 def test_floor_and_summary_are_plain_pesos() -> None:
-    assert floor_label(12_000_000, 8_000_000) == "Mínimo: $120.000 (ya gastaste $80.000)"
-    assert budget_down_summary(20_000_000, 15_000_000) == (
-        "Tu anuncio podrá gastar hasta $150.000 en total, en vez de $200.000."
+    assert floor_label(12_000_000, 8_000_000, "COP") == (
+        "Mínimo: $120.000 COP (ya gastaste $80.000 COP)"
     )
+    assert budget_down_summary(20_000_000, 15_000_000, "COP") == (
+        "Tu anuncio podrá gastar hasta $150.000 COP en total, en vez de $200.000 COP."
+    )
+    # m-25091394: a dollar account keeps its cents in what Meta reports.
+    assert floor_label(1_050, 347, "USD") == "Mínimo: $10,50 USD (ya gastaste $3,47 USD)"
 
 
 @pytest.mark.asyncio
@@ -187,13 +191,13 @@ async def test_lowering_reads_the_floor_and_never_prepares_below_it(
     assert AdResultsState.open_edit.fn(context, "budget_down") is AdResultsState.load_floor
     assert context.edit_budget_total == "10000"
 
-    def floor(tenant: UUID, promotion: UUID) -> tuple[str, str]:
-        assert current_acting_login() == LOGIN and promotion == PROMOTION
-        return floor_label(600_000, 200_000), "6000"
+    def floor(tenant: UUID, promotion: UUID, currency: str) -> tuple[str, str]:
+        assert current_acting_login() == LOGIN and promotion == PROMOTION and currency == "COP"
+        return floor_label(600_000, 200_000, currency), "6000"
 
     monkeypatch.setattr(results_state, "read_floor", floor)
     await AdResultsState.load_floor.fn(context)
-    assert context.floor_label == "Mínimo: $6.000 (ya gastaste $2.000)"
+    assert context.floor_label == "Mínimo: $6.000 COP (ya gastaste $2.000 COP)"
     monkeypatch.setattr(results_state, "prepare_edit", lambda *a, **k: pytest.fail("prepared"))
     context.edit_budget_total = "5000"
     await AdResultsState.prepare_change.fn(context)
@@ -226,6 +230,20 @@ async def test_failed_floor_read_says_so_and_keeps_the_form(
     assert context.floor_label == FLOOR_FAILED and context._floor_input == ""
 
 
+def test_a_cents_floor_reads_and_checks_as_the_next_whole_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25091394: USD minimums carry cents; the line and the check agree on $11 USD."""
+    from qualify_api.ads import results_service
+
+    async def floor(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(floor_minor=1_050, spent_minor=347)
+
+    monkeypatch.setattr(results_service, "read_budget_floor", floor)
+    label, whole = results_provider.read_floor(TENANT, PROMOTION, "USD")
+    assert (label, whole) == ("Mínimo: $11 USD (ya gastaste $3,47 USD)", "11")
+
+
 def test_prepare_maps_budget_down_to_backend_budget_with_plain_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -248,13 +266,13 @@ def test_prepare_maps_budget_down_to_backend_budget_with_plain_summary(
 
     monkeypatch.setattr(results_service, "prepare_promotion_edit", prepare)
     prepared = results_provider.prepare_edit(
-        TENANT, PROMOTION, "k", "budget_down", ZONE, budget_minor=15_000_000
+        TENANT, PROMOTION, "k", "budget_down", ZONE, currency="COP", budget_minor=15_000_000
     )
     assert prepared.review.title == "Bajar presupuesto"
     assert prepared.review.summary.startswith("Tu anuncio podrá gastar hasta $150.000")
     with pytest.raises(ResultsUnavailable):  # a "decrease" that Meta reports as an increase
         results_provider.prepare_edit(
-            TENANT, PROMOTION, "k", "budget_down", ZONE, budget_minor=30_000_000
+            TENANT, PROMOTION, "k", "budget_down", ZONE, currency="COP", budget_minor=30_000_000
         )
 
 
@@ -468,8 +486,9 @@ def test_cop_money_is_whole_pesos_everywhere() -> None:
 
     from .ad_results_vm import money_label
 
-    assert money_label(Decimal("200000.00"), "COP") == "$200.000"
-    assert money_label(Decimal("12.5"), "USD") == "12,50 USD"
+    assert money_label(Decimal("200000.00"), "COP") == "$200.000 COP"
+    assert money_label(Decimal("12.5"), "USD") == "$12,50 USD"
+    assert money_label(Decimal("400"), "UYU") == "$400 UYU"
 
 
 # --- The website ad's button (m-24828976) -------------------------------------------

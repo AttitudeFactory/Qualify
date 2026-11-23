@@ -52,7 +52,11 @@ def _option(
 
 
 def _field(
-    label: str, name: str, value: rx.Var[str], placeholder: str, echo: rx.Var[str] | None = None
+    label: str | rx.Var[str],
+    name: str,
+    value: rx.Var[str],
+    placeholder: str | rx.Var[str],
+    echo: rx.Var[str] | None = None,
 ) -> rx.Component:
     field_id = "perfil-" + name
     return rx.vstack(
@@ -100,15 +104,14 @@ def _ticket() -> rx.Component:
             "muy distintos, usa el promedio."
         ),
         _field(
-            "Lo que paga en una compra, en pesos",
+            S.money_copy["ticket_label"],
             "ticket",
             S.answers.ticket,
-            "Ejemplo: 20.000",
+            S.money_copy["ticket_placeholder"],
             S.ticket_echo,
         ),
         rx.text(
-            "Por ejemplo: un combo de comida, $20.000 · un paquete de viaje, $1.500.000 · "
-            "una asesoría, $150.000.",
+            S.money_copy["ticket_hint"],
             size="2",
             color=T.TEXT_MUTED,
         ),
@@ -121,8 +124,7 @@ def _margin() -> rx.Component:
     return rx.vstack(
         _muted(S.margin_help),
         rx.text(
-            "Por ejemplo: vendes un combo en $20.000. Los ingredientes y el empaque te "
-            "cuestan $8.000. Te quedan $12.000.",
+            S.money_copy["margin_hint"],
             size="2",
             color=T.TEXT_MUTED,
         ),
@@ -147,7 +149,10 @@ def _margin() -> rx.Component:
         rx.cond(
             S.answers.margin_choice == MARGIN_EXACT,
             _field(
-                "Me quedan, en pesos", "margin_exact", S.answers.margin_exact, "Ejemplo: 12.000"
+                S.money_copy["kept_label"],
+                "margin_exact",
+                S.answers.margin_exact,
+                S.money_copy["kept_placeholder"],
             ),
         ),
         rx.cond(S.answers.margin_choice == MARGIN_UNKNOWN, callout(S.unknown_note, "info")),
@@ -171,7 +176,13 @@ def _clients() -> rx.Component:
 def _cap() -> rx.Component:
     return rx.vstack(
         _muted("Es tu tope. Ningún anuncio se crea sin que tú lo apruebes."),
-        _field("Tope al mes, en pesos", "cap", S.answers.cap, "Ejemplo: 200.000", S.cap_echo),
+        _field(
+            S.money_copy["cap_label"],
+            "cap",
+            S.answers.cap,
+            S.money_copy["cap_placeholder"],
+            S.cap_echo,
+        ),
         spacing="4",
         width="100%",
     )
@@ -349,6 +360,13 @@ def _waiting() -> rx.Component:
                     ),
                     rx.vstack(
                         callout(S.unsupported_message, "info"),
+                        rx.link(
+                            "Ir a Tus redes",
+                            href="/connections",
+                            min_height="44px",
+                            display="inline-flex",
+                            align_items="center",
+                        ),
                         rx.link(
                             "Volver a Anuncios",
                             href="/promotions",

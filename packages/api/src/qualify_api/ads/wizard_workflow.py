@@ -21,6 +21,7 @@ from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.lead_ads import LeadFormTarget
 from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_greeting import MessageGreeting
+from qualify_api.ads.money import money_display
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
     CHAT_OF_ANOTHER_ACCOUNT,
@@ -277,10 +278,8 @@ NOTHING_ACTIVATED = "No se activó ningún anuncio."
 
 
 def charge_notice(promotion: Promotion) -> str:
-    # COP is displayed with two explicit decimal places; no float rounding.
-    minor = promotion.request["budget_minor"]
-    amount = f"{minor // 100:,}".replace(",", ".") + f",{minor % 100:02d}"
-    return f"Meta cobrará hasta ${amount} COP a tu método de pago durante estas fechas."
+    amount = money_display(promotion.request["budget_minor"], promotion.request["currency"])
+    return f"Meta cobrará hasta {amount} a tu método de pago durante estas fechas."
 
 
 class PromotionWizard:
