@@ -124,6 +124,7 @@ def test_recipe_refusals_are_pinned() -> None:
         "photo_length_out_of_range",
         "photo_not_from_start",
         "segment_source_too_long",
+        "transitions_longer_than_part",
     )
 
 
@@ -165,7 +166,7 @@ def test_every_default_is_within_its_range() -> None:
 
 
 def test_the_library_is_loaded_once() -> None:
-    assert load_effects() is load_effects("v4")  # ADR 50 D9: v4 is what new requests use
+    assert load_effects() is load_effects("v5")  # EF-16: v5 is what new requests use
     assert load_effects("v1") is load_effects("v1")
 
 
@@ -704,8 +705,8 @@ def test_no_library_method_filters_by_business() -> None:
 def test_v4_offers_corte_as_its_only_transition() -> None:
     """D9: the join does not draw `fundido` nor `barrido` yet, so the library new requests
     use offers only `corte` among the transitions — the screen never offers what creating
-    would refuse."""
-    library = load_effects()
+    would refuse (v4; EF-16 offers them again in v5)."""
+    library = load_effects("v4")
     assert library.version == 4
     assert [e.id for e in library.offered() if e.stage == "transition"] == ["corte"]
     for name in ("fundido", "barrido"):
@@ -737,5 +738,60 @@ def test_v4_is_v3_but_for_the_hidden_transitions() -> None:
 def test_choosing_a_hidden_transition_is_not_offered(use: EffectUse, codes: list[str]) -> None:
     """D9: between two parts, `corte` passes the library's checks; `fundido` and `barrido`
     are `not_offered` — refused when the plan is saved, not only when it is created."""
+    problems = transition_problems(use, load_effects("v4"), part=2, first=False, in_clip=False)
+    assert _codes(problems) == codes
+
+
+# --- EF-16 (m-25026594): the join draws them, v5 offers them again -------------------------
+
+
+def test_v5_offers_the_three_transitions_the_join_makes() -> None:
+    library = load_effects()
+    assert library.version == 5
+    offered = [(e.id, e.version) for e in library.offered() if e.stage == "transition"]
+    assert offered == [("corte", 1), ("fundido", 2), ("barrido", 2)]
+    for name in ("fundido", "barrido"):  # version 1 stays, unoffered: old briefs still read
+        old = library.get(name, 1)
+        assert old is not None and not old.offered
+
+
+def test_v5_is_v4_plus_the_two_new_transitions() -> None:
+    v4, v5 = load_effects("v4"), load_effects("v5")
+    added = {("fundido", 2), ("barrido", 2)}
+    assert [(e.id, e.version) for e in v5.entries if (e.id, e.version) not in added] == [
+        (e.id, e.version) for e in v4.entries
+    ]
+    for old in v4.entries:
+        assert v5.get(old.id, old.version) == old  # nothing edited in place
+
+
+def test_v5_transitions_are_what_the_join_draws() -> None:
+    """Drift guard: the library's ranges are the join's (`JoinTransition`), so an owner
+    can never choose a duration or a direction the join refuses."""
+    from qualify_creative.video.join import TRANSITION_MAX_S, TRANSITION_MIN_S, WIPE_DIRECTIONS
+
+    library = load_effects()
+    for name in ("fundido", "barrido"):
+        spec = library.get(name, 2).params["duration_s"]
+        assert (spec.min, spec.max) == (TRANSITION_MIN_S, TRANSITION_MAX_S)
+        assert TRANSITION_MIN_S <= float(spec.default) <= TRANSITION_MAX_S
+    direction = library.get("barrido", 2).params["direction"]
+    assert direction.values == WIPE_DIRECTIONS
+    assert set(library.get("fundido", 2).params) == {"duration_s"}
+
+
+@pytest.mark.parametrize(
+    ("use", "codes"),
+    [
+        (EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5}), []),
+        (EffectUse(effect_id="barrido", version=2, params={"direction": "up"}), []),
+        (
+            EffectUse(effect_id="fundido", version=2, params={"duration_s": 1.0}),
+            ["param_out_of_range"],
+        ),
+        (EffectUse(effect_id="fundido", version=1), ["not_offered"]),
+    ],
+)
+def test_choosing_a_v5_transition(use: EffectUse, codes: list[str]) -> None:
     problems = transition_problems(use, load_effects(), part=2, first=False, in_clip=False)
     assert _codes(problems) == codes

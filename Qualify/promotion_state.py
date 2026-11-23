@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from qualify_api.ads.audience import AudienceUnavailable
+from qualify_api.ads.budget_suggestion import BudgetSuggestion, BudgetSuggestionUnavailable
 from qualify_api.ads.messaging_greeting import (
     CHANGED_WHILE_EDITING,
     WELCOME_EMPTY,
@@ -33,11 +34,14 @@ from .ad_custom_audiences_vm import (
 )
 from .ad_enhancements_vm import AVAILABILITY_NOTICE, BrandEnhancementsVM, permission_summary
 from .auth_state import AuthState
+from .investment_profile_vm import PROFILE_ROUTE
+from .nav_url import with_query
 from .planner_vm import back_to_week_href
 from .promotion_audience_provider import (
     audience_scope,
     find_interests,
     find_places,
+    keep_market_estimate,
     read_business_location,
     read_reach,
     read_saved_audience,
@@ -65,6 +69,18 @@ from .promotion_audience_vm import (
     point_distance_hint,
     point_distance_label,
 )
+from .promotion_budget_provider import keep_budget_suggestion, read_budget_suggestion
+from .promotion_budget_vm import (
+    UNAVAILABLE,
+    BudgetHintVM,
+    budget_hint,
+    daily_line,
+    field_amount,
+    over_cap_line,
+    suggested_end,
+    typed_minor,
+)
+from .promotion_market_vm import MarketVM, market_estimate, market_view, promotion_days
 from .promotion_provider import (
     confirm_review,
     latest_greeting,
@@ -98,12 +114,14 @@ from .promotion_vm import (
     PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
-    cop_label,
-    cop_minor,
+    budget_field_copy,
+    budget_minor,
+    budget_money,
     first_problem,
     greeting_buttons_label,
     greeting_from_saved,
     greeting_problem,
+    local_datetime,
     preselect_channel,
     promotion_checks,
     promotion_result,
@@ -121,7 +139,7 @@ from .promotion_vm import (
 )
 from .tenant import tenant_uuid
 from .ui import go_to_step, settle_step
-from .ui.steps_vm import guard_step, parse_step_param, step_direction
+from .ui.steps_vm import guard_step, parse_step_param, step_direction, step_url
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +205,14 @@ class PromotionState(rx.State):
     audience_error: str = ""
     audience_working: str = ""
     reach_loading: bool = False
+    # m-25091389: the budget step's «Sugerencia» ("", "loading", "ready", "failed").
+    budget_hint_status: str = ""
+    budget_hint_message: str = ""
+    budget_hint_compact: bool = False  # an amount was typed when the suggestion arrived
+    _budget_suggestion: BudgetSuggestion | None = None
+    _budget_source: str = ""
+    _budget_minimum: tuple[str, int] = ("", 0)  # (source id, Meta's daily minimum): read once
+    _budget_operation: str = ""
     # «Cerca de mi negocio»: waiting for the browser's location, and why it failed.
     locating: bool = False
     location_error: str = ""
@@ -1052,23 +1078,26 @@ class PromotionState(rx.State):
                     self.audience_working = ""
 
     @rx.event(background=True)
-    async def refresh_reach(self) -> None:
+    async def refresh_reach(self) -> rx.event.EventSpec | None:
         async with self:
             context = await self._session()
             revision = self._audience_revision
             if self.busy or not self.form.location_key or step_problem(self.form, 3):
                 return
             form = self.form
+            source = next((row for row in self.sources if row.id == form.source_id), None)
+            brand = source.brand_id if source else ""
             self.reach_loading = True
             self._reach_operation = operation = str(uuid4())
         try:
             scope = self._audience_scope(context)
             with acting_login(UUID(context[1])):
-                estimate = await asyncio.to_thread(read_reach, scope, form)
+                estimate = await asyncio.to_thread(read_reach, scope, form, brand)
         except Exception as exc:
             logger.warning("audience estimate failed: %s", type(exc).__name__)
             estimate = AudienceReachVM(
-                label="No pudimos consultar la estimación. Vuelve a intentarlo."
+                label="No pudimos consultar la estimación. Vuelve a intentarlo.",
+                status="failed",
             )
         async with self:
             if (
@@ -1078,6 +1107,10 @@ class PromotionState(rx.State):
             ):
                 self.audience_reach = estimate
                 self.reach_loading = False
+                # m-25091389: a suggestion already shown follows the market class.
+                if getattr(self, "_budget_minimum", ("", 0))[0] == self.form.source_id:
+                    return PromotionState.load_budget_suggestion()
+        return None
 
     @rx.event(background=True)
     async def restore_audience(self) -> None:
@@ -1274,14 +1307,140 @@ class PromotionState(rx.State):
         return self.selected_source.health.blocks_preparation
 
     @rx.var
+    def budget_copy(self) -> list[str]:
+        return budget_field_copy(self.form.currency)
+
+    @rx.var
     def budget_label(self) -> str:
-        return cop_label(self.form.budget)
+        return budget_money(self.form.budget, self.form.currency)
+
+    @rx.var
+    def market(self) -> MarketVM:
+        """m-25091388: people the budget may reach, from the audience step's range."""
+        return market_view(self.audience_reach, self.form, self.timezone_name)
+
+    @rx.var
+    def market_shown(self) -> bool:
+        """Only flows with an audience step: an unpublished piece's country has no estimate."""
+        return "audience" in step_keys(self.form)
+
+    @rx.event
+    def widen_audience(self) -> rx.event.EventSpec | None:
+        """«Ampliar mi público»: back to the audience step; the amount stays in the form."""
+        keys = step_keys(self.form)
+        if self.busy or "audience" not in keys:
+            return None
+        self.error = ""
+        self.confirm_charge = False
+        self.reviewed = False
+        self.step = keys.index("audience") + 1
+        self.direction = "back"
+        return go_to_step(
+            f"/drafts/{self._piece_id}/promote", self.step, back=True, **self._return_params
+        )
+
+    @rx.var
+    def budget_hint(self) -> BudgetHintVM:
+        """m-25091389: the «Sugerencia» card above the amount."""
+        return budget_hint(
+            self._budget_suggestion,
+            self.budget_hint_status,
+            self.budget_hint_message,
+            self.form,
+            self.timezone_name,
+            self.budget_hint_compact,
+        )
+
+    @rx.var
+    def budget_daily_line(self) -> str:
+        return daily_line(self.form, self.timezone_name, self.form.currency)
+
+    @rx.var
+    def budget_over_cap(self) -> str:
+        return over_cap_line(self._budget_suggestion, self.form, self.timezone_name)
+
+    def _profile_href(self, **params: str) -> str:
+        """The investment profile, coming back to this step with the draft intact."""
+        back = step_url(f"/drafts/{self._piece_id}/promote", self.step, **self._return_params)
+        return with_query(PROFILE_ROUTE, **params, volver=back)
+
+    @rx.var
+    def budget_profile_href(self) -> str:
+        return self._profile_href()
+
+    @rx.var
+    def budget_cap_href(self) -> str:
+        return self._profile_href(paso="5")  # the profile's «Tope al mes»
+
+    @rx.event(background=True)
+    async def load_budget_suggestion(self) -> None:
+        """On entering the budget step and when its dates change. Meta's minimum is read
+        once per source; a failure only replaces the card by a line (the owner types)."""
+        async with self:
+            context = await self._session()
+            source = self.form.source_id
+            if not self.market_shown or not tenant_uuid(source):  # a read: never blocked
+                return
+            form, zone = self.form, self.timezone_name
+            market = market_estimate(self.audience_reach, form, zone)
+            minimum = self._budget_minimum[1] if self._budget_minimum[0] == source else None
+            self.budget_hint_status, self.budget_hint_message = "loading", ""
+            self.budget_hint_compact = typed_minor(self.form) is not None
+            self._budget_suggestion = None
+            self._budget_operation = operation = str(uuid4())
+        try:
+            start = local_datetime(form.start_local, zone)
+            end = local_datetime(form.end_local, zone)
+        except ValueError:
+            start = end = None  # the table's 7 days
+        found, message = None, UNAVAILABLE
+        try:
+            with acting_login(UUID(context[1])):
+                found = await asyncio.to_thread(
+                    read_budget_suggestion,
+                    UUID(context[0]),
+                    UUID(source),
+                    market,
+                    start,
+                    end,
+                    minimum,
+                )
+        except BudgetSuggestionUnavailable as exc:
+            message = str(exc)
+        except Exception as exc:
+            logger.warning("budget suggestion failed: %s", type(exc).__name__)
+        async with self:
+            if context != await self._session() or operation != self._budget_operation:
+                return
+            if found is None:
+                self.budget_hint_status, self.budget_hint_message = "failed", message
+                return
+            self._budget_suggestion, self._budget_source = found, source
+            self._budget_minimum = (source, found.meta_daily_minimum_minor)
+            self.budget_hint_status = "ready"
+
+    @rx.event
+    def use_budget_suggestion(self) -> rx.event.EventSpec | None:
+        """«Usar este monto»: the field gets the suggested amount; the end date moves only
+        when the button said so («… y 7 días»)."""
+        found = self._budget_suggestion
+        if self.busy or found is None or found.piece_total_minor is None:
+            return None
+        form = replace(self.form, budget=field_amount(found))
+        if promotion_days(form, self.timezone_name) != found.days:
+            end = suggested_end(form, self.timezone_name, found.days)
+            form = replace(form, end_local=end or form.end_local)
+        if form != self.form:
+            self.form = form
+            self.error = ""
+            self._invalidate_review()
+        return rx.call_script("document.getElementById('promotion-budget')?.focus()")
 
     @rx.var
     def budget_valid(self) -> bool:
         """The «Total: $25.000 COP» line shows only for an amount that parses."""
         try:
-            cop_minor(self.form.budget)
+            budget_minor(self.form.budget, self.form.currency)
         except ValueError:
             return False
         return True
@@ -1353,6 +1512,11 @@ class PromotionState(rx.State):
             if name in {"radius_km", "age_min", "age_max"}:
                 self._invalidate_audience()
                 return PromotionState.refresh_reach()
+            # Only with Meta's minimum already read for this source: a date edit never
+            # makes another Meta call.
+            cached = getattr(self, "_budget_minimum", ("", 0))[0]
+            if name in {"start_local", "end_local"} and cached == self.form.source_id:
+                return PromotionState.load_budget_suggestion()
         return None
 
     @rx.event
@@ -1658,6 +1822,7 @@ class PromotionState(rx.State):
                 source.greeting,
             ),
             source_id=source.id,
+            currency=source.currency,
             link_url=source.default_link_url,
             cta_type=source.default_cta_type,
             lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
@@ -1871,6 +2036,9 @@ class PromotionState(rx.State):
             self._audience_version = 0
             self._invalidate_audience()
             self._invalidate_review()
+            self.budget_hint_status, self.budget_hint_message = "", ""
+            self._budget_suggestion, self._budget_source = None, ""
+            self._budget_minimum, self._budget_operation = ("", 0), ""
             self._loaded_context = context
             self._piece_id = str(piece)
             self.loading = True
@@ -1977,6 +2145,10 @@ class PromotionState(rx.State):
             self.error = ""
             self._operation = operation = str(uuid4())
             form, zone, review = self.form, self.timezone_name, self.review
+            reach = getattr(self, "audience_reach", AudienceReachVM())
+            suggestion = getattr(self, "_budget_suggestion", None)
+            if getattr(self, "_budget_source", "") != form.source_id:
+                suggestion = None
             source = next((row for row in self.sources if row.id == form.source_id), None)
             piece, request_key = self._piece_id, self._request_key
         try:
@@ -2013,6 +2185,21 @@ class PromotionState(rx.State):
                         request_key,
                         source.connection_id if source else "",
                     )
+                    await asyncio.to_thread(
+                        keep_market_estimate,
+                        UUID(context[0]),
+                        UUID(prepared.promotion_id),
+                        reach,
+                        form,
+                        zone,
+                    )
+                    if suggestion is not None:
+                        await asyncio.to_thread(
+                            keep_budget_suggestion,
+                            UUID(context[0]),
+                            UUID(prepared.promotion_id),
+                            suggestion,
+                        )
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)
             async with self:

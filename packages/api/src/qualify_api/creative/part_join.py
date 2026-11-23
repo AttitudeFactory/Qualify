@@ -40,12 +40,21 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.compose import text_layer
-from qualify_creative.video.join import JOIN_FPS, JOIN_VERSION, JoinClip, JoinError
+from qualify_creative.effects import load_effects
+from qualify_creative.schemas import EffectUse
+from qualify_creative.video.join import (
+    JOIN_FPS,
+    JOIN_VERSION,
+    JoinClip,
+    JoinError,
+    JoinTransition,
+)
 from qualify_creative.video.join_child import join_in_child
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
@@ -55,6 +64,7 @@ from qualify_api.creative.fsm import APPROVED, GENERATED
 from qualify_api.creative.media import JPEG, MP4, MediaWrite, owned_by
 from qualify_api.creative.part_extend import extend_offset
 from qualify_api.creative.pipeline import PipelineStore, current_preparation
+from qualify_api.creative.video_pipeline.recipe import BUILT_TRANSITIONS, DRAWN_TRANSITIONS
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +149,10 @@ class PartsToJoin:
     #: m-24985192: the places in the plan of the parts the owner removed («Quitar
     #: parte»). They are not in `parts` and the video is joined without them.
     removed: frozenset[int] = frozenset()
+    #: EF-16: each plan entry's `transition_in` (its stored JSON), by its place in the
+    #: plan (`part_index`) — how that part blends with the kept part before it. A place
+    #: missing here is a cut.
+    transitions: Mapping[int, Any] = field(default_factory=dict)
 
     @property
     def kept_indexes(self) -> tuple[int, ...]:
@@ -286,15 +300,140 @@ def ready_parts(
     return tuple(ordered)
 
 
+def join_transition_of(raw: Any) -> JoinTransition | None:
+    """EF-16: the join's transition for a plan entry's stored `transition_in` (an
+    `EffectUse` or its JSON): `fundido` v2 → a fade, `barrido` v2 → a wipe, with the
+    library's defaults for what the owner left out. None — a cut — for no transition,
+    for `corte`, and for anything the join does not draw (creating refuses those:
+    `unbuilt_recipe_problems`, so none should reach a join). Pure (the library is
+    cached)."""
+    if raw is None:
+        return None
+    try:
+        use = raw if isinstance(raw, EffectUse) else EffectUse.model_validate(raw)
+    except ValueError:
+        logger.warning("a part's transition could not be read: joined with a cut")
+        return None
+    kind = DRAWN_TRANSITIONS.get((use.effect_id, use.version))
+    if kind is None:
+        if (use.effect_id, use.version) not in BUILT_TRANSITIONS:
+            logger.warning("transition %s v%s is not drawn: a cut", use.effect_id, use.version)
+        return None
+    entry = load_effects().get(use.effect_id, use.version)
+    values = {
+        **({name: spec.default for name, spec in entry.params.items()} if entry else {}),
+        **use.param_values,
+    }
+    try:
+        return JoinTransition(
+            kind=kind,  # type: ignore[arg-type]
+            duration_s=float(values.get("duration_s", 0.5)),  # type: ignore[arg-type]
+            direction=str(values.get("direction", "left")),  # type: ignore[arg-type]
+            source=(use.effect_id, use.version),
+        )
+    except JoinError:
+        logger.warning("transition %s out of the join's range: a cut", use.effect_id)
+        return None
+
+
+def plan_transitions(stored: Any) -> dict[int, Any]:
+    """EF-16: the plan's `transition_in` of each entry (a list in plan order, as the
+    database reads `media.parts[*].transition_in`), keyed by its 1-based place —
+    `part_index`. Entries without one are left out (a cut). Pure."""
+    if not isinstance(stored, list):
+        return {}
+    return {at: raw for at, raw in enumerate(stored, start=1) if isinstance(raw, Mapping)}
+
+
+def join_transitions(
+    snapshot: PartsToJoin | None, parts: Sequence[PartPreview]
+) -> list[JoinTransition | None]:
+    """EF-16: how each of `parts` (the kept ones, in order) blends with the one before
+    it, from the parent's plan — the first one never blends (nothing before it), a
+    removed part's neighbours blend as the later one's plan says. Pure."""
+    plan = snapshot.transitions if snapshot is not None else {}
+    found = [
+        None if at == 0 else join_transition_of(plan.get(part.part_index or 0))
+        for at, part in enumerate(parts)
+    ]
+    return _fitting(parts, found)
+
+
+def _part_frames(part: PartPreview) -> int | None:
+    """The frames a part lasts in the join (its kept span at the join's rate), or None
+    when its length is not known (then nothing is checked)."""
+    start, end = part_span(part.params)
+    meta = part.params.get("part") if isinstance(part.params.get("part"), Mapping) else {}
+    stop = end if end is not None else _number(meta.get("generation_seconds"))
+    if stop is None:
+        return None
+    return round(max(0.0, stop - start) * JOIN_FPS)
+
+
+def _fitting(
+    parts: Sequence[PartPreview], transitions: list[JoinTransition | None]
+) -> list[JoinTransition | None]:
+    """The safety net behind `transition_room_problems` (which refuses it before any
+    charge): a part shorter than the transitions eating into it — a plan stored before
+    the check, a removed neighbour that brought a longer transition — is joined with a
+    cut there instead of failing the join of parts already paid for. Pure."""
+    fitted = list(transitions)
+    for at, part in enumerate(parts):
+        frames = _part_frames(part)
+        if frames is None:
+            continue
+        for side in (at + 1, at):  # the transition after it goes first, then its own
+            if side >= len(fitted) or fitted[side] is None:
+                continue
+            before = fitted[at].frames(JOIN_FPS) if fitted[at] is not None else 0
+            after = (
+                fitted[at + 1].frames(JOIN_FPS)
+                if at + 1 < len(fitted) and fitted[at + 1] is not None
+                else 0
+            )
+            if before + after <= frames:
+                break
+            logger.warning(
+                "part %s lasts %s frames, shorter than its transitions: a cut instead",
+                part.part_index,
+                frames,
+            )
+            fitted[side] = None
+    return fitted
+
+
+def transitions_record(transitions: Sequence[JoinTransition | None]) -> list[Any] | None:
+    """The transitions as fingerprints and provenance record them; None when every one
+    is a cut, so every fingerprint made before EF-16 stays what it was."""
+    if not any(transitions):
+        return None
+    return [None if t is None else _transition_spec(t) for t in transitions]
+
+
+def _transition_spec(transition: JoinTransition) -> dict[str, Any]:
+    """What the join drew and (rule 6) the library entry the owner chose."""
+    spec = transition.as_spec()
+    if transition.source is not None:
+        spec = {"effect_id": transition.source[0], "version": transition.source[1], **spec}
+    return spec
+
+
+def _transitions_field(transitions: Sequence[JoinTransition | None]) -> dict[str, Any]:
+    record = transitions_record(transitions)
+    return {} if record is None else {"transitions": record}
+
+
 def join_fingerprint(
     parts: Sequence[PartPreview],
     spans: Sequence[tuple[float, float | None]],
     logo_key: str | None = None,
+    transitions: Sequence[JoinTransition | None] = (),
 ) -> str:
     """What makes a joined preview THIS one: the recipe, the size, the logo laid over it
     and, in order, each part's draft, active version, file (the one without the logo)
-    and trim. Another version of any part (made or restored) or another logo is another
-    fingerprint. Pure."""
+    and trim — and (EF-16) the transitions between them. Another version of any part
+    (made or restored), another logo or another transition is another fingerprint.
+    Pure."""
     data: dict[str, Any] = {
         "version": JOIN_PREVIEW_VERSION,
         "recipe": JOIN_VERSION,
@@ -306,6 +445,9 @@ def join_fingerprint(
     }
     if logo_key:
         data["logo"] = logo_key  # absent without one: older fingerprints stay valid
+    record = transitions_record(transitions)
+    if record is not None:
+        data["transitions"] = record  # absent with only cuts: likewise
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:20]
 
@@ -342,7 +484,12 @@ def parent_video_status(
     parts = ready_parts(snapshot, tenant_id, now)
     if parts is None:
         return PARENT_GENERATING
-    fingerprint = join_fingerprint(parts, [part_span(p.params) for p in parts], snapshot.logo_key)
+    fingerprint = join_fingerprint(
+        parts,
+        [part_span(p.params) for p in parts],
+        snapshot.logo_key,
+        join_transitions(snapshot, parts),
+    )
     return PARENT_PREVIEWING if fingerprint == snapshot.joined_fingerprint else PARENT_JOINING
 
 
@@ -457,8 +604,16 @@ def _provenance(
     return out
 
 
-def _duration(parts: Sequence[PartPreview], spans: Sequence[tuple[float, float | None]]) -> float:
-    total = 0.0
+def _duration(
+    parts: Sequence[PartPreview],
+    spans: Sequence[tuple[float, float | None]],
+    transitions: Sequence[JoinTransition | None] = (),
+) -> float:
+    """The joined video's seconds: the parts' kept intervals, less each transition's
+    overlap (EF-16) — the seconds charged are the parts', never this."""
+    total = -sum(
+        float(Fraction(t.frames(JOIN_FPS), JOIN_FPS)) for t in transitions if t is not None
+    )
     for part, (start, end) in zip(parts, spans, strict=True):
         meta = part.params.get("part") if isinstance(part.params.get("part"), Mapping) else {}
         whole = _number(meta.get("generation_seconds")) or _number(
@@ -496,7 +651,8 @@ def join_preview(
     spans = [part_span(p.params) for p in parts]
     logo = _read_logo(store, tenant_id, snapshot.logo_key)
     logo_key = snapshot.logo_key if logo is not None else None
-    fingerprint = join_fingerprint(parts, spans, logo_key)
+    transitions = join_transitions(snapshot, parts)
+    fingerprint = join_fingerprint(parts, spans, logo_key, transitions)
     if fingerprint == snapshot.joined_fingerprint:
         return None
     logo_record: dict[str, Any] | str = (
@@ -517,7 +673,9 @@ def join_preview(
         with tempfile.TemporaryDirectory(prefix="qualify-join-") as folder:
             root = Path(folder)
             clips = []
-            for index, (part, (start, end)) in enumerate(zip(parts, spans, strict=True)):
+            for index, (part, (start, end), how) in enumerate(
+                zip(parts, spans, transitions, strict=True)
+            ):
                 path = root / f"part-{index}.mp4"
                 try:
                     _fetch(store, tenant_id, str(part.join_source), path)
@@ -533,7 +691,7 @@ def join_preview(
                         part.join_source,
                     )
                     return None
-                clips.append(JoinClip(path, start_s=start, end_s=end))
+                clips.append(JoinClip(path, start_s=start, end_s=end, transition_in=how))
             # the logo ONCE over the whole joined video (VE-07's overlay), placed as on
             # any Clip: `text_layer` with the logo alone (Deivid, 2026-11-06)
             overlay = text_layer(size=JOIN_PREVIEW_SIZE, logo=logo) if logo is not None else None
@@ -572,7 +730,7 @@ def join_preview(
             else:
                 poster_key = None
     width, height = JOIN_PREVIEW_SIZE
-    duration = _duration(parts, spans)
+    duration = _duration(parts, spans, transitions)
     # EF-06: «hecho con IA» follows what the parts are — any vendor part makes it AI
     ai_generated = parts_ai_generated(parts)
     return MediaWrite(
@@ -601,6 +759,8 @@ def join_preview(
                 "frames": frames,
                 "parts": _provenance(parts, spans),
                 "logo": logo_record,
+                # EF-16: how each part blended with the one before (absent: all cuts)
+                **_transitions_field(transitions),
                 "cost_usd": "0",
             },
             # its own lifecycle: never publishable (draft_pending), never a final of
@@ -649,6 +809,11 @@ class DbPartJoins:
                     text("""
                 SELECT p.revision, p.active_version_id, p.parent_draft_id, b.kind, p.status,
                        b.media->>'brand_logo_key' AS logo_key,
+                       CASE WHEN jsonb_typeof(b.media->'parts') = 'array'
+                            THEN (SELECT jsonb_agg(e->'transition_in' ORDER BY i)
+                                  FROM jsonb_array_elements(b.media->'parts')
+                                       WITH ORDINALITY AS t(e, i))
+                       END AS transitions,
                        COALESCE(jsonb_array_length(
                            CASE WHEN jsonb_typeof(b.media->'parts') = 'array'
                                 THEN b.media->'parts' END), 0) AS planned
@@ -733,6 +898,7 @@ class DbPartJoins:
             joined_object_key=None if joined is None else joined["object_key"],
             joined_block=block,
             removed=frozenset(int(i) for i in removed if i is not None),
+            transitions=plan_transitions(parent["transitions"]),
         )
 
     def parent_logo_key(self, *, tenant_id: UUID, part_id: UUID) -> str | None:

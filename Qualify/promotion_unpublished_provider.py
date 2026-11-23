@@ -28,8 +28,8 @@ from .promotion_vm import (
     PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
-    cop_label,
-    cop_minor,
+    budget_minor,
+    budget_money,
     local_datetime,
     promotion_result,
 )
@@ -51,6 +51,12 @@ WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
   AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
   AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
   AND d.part_removed_at IS NULL""")
+# The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).
+UNPUBLISHED_COP_ONLY = (
+    "Por ahora, «Anunciar sin publicar» solo funciona con cuentas publicitarias en pesos "
+    "colombianos. Publica primero la publicación y luego promociónala desde Anuncios, o elige "
+    "una cuenta en pesos colombianos en Tus redes."
+)
 _ACCOUNTS = text("""SELECT a.id,COALESCE(a.name,'') AS name,COALESCE(a.currency,'') AS currency,
   COALESCE(a.timezone_name,'') AS timezone_name,
   COALESCE(c.external_username,c.external_account_id) AS account_label
@@ -184,7 +190,9 @@ def unpublished_sources(
                     default_cta_type=button,
                     fix_in_piece=not any(policy.values.values()) and bool(button_problem),
                     timezone_name=account["timezone_name"],
-                    unavailable_reason=blocked,
+                    unavailable_reason=blocked
+                    if account["currency"] == "COP"
+                    else UNPUBLISHED_COP_ONLY,
                     health=health,
                     ad_account_id=str(account["id"]),
                     enhancements=policy,
@@ -243,7 +251,7 @@ def prepare_unpublished(
                 message=form.message,
                 headline=form.headline.strip(),
                 link_url=form.link_url.strip(),
-                budget_minor=cop_minor(form.budget),
+                budget_minor=budget_minor(form.budget, "COP"),
                 start_time=local_datetime(form.start_local, timezone_name),
                 end_time=local_datetime(form.end_local, timezone_name),
                 country=form.country,
@@ -266,8 +274,8 @@ def prepare_unpublished(
         recipe_id=str(preview.recipe_id),
         preview_url=feed,
         vertical_preview_url=vertical,
-        charge_notice=f"Si lo autorizas, Meta podrá cobrar hasta {cop_label(form.budget)} "
-        "a tu método de pago.",
+        charge_notice="Si lo autorizas, Meta podrá cobrar hasta "
+        f"{budget_money(form.budget, 'COP')} a tu método de pago.",
         expires_label=expires.astimezone(ZoneInfo(timezone_name)).strftime("%d/%m/%Y %H:%M"),
     )
 

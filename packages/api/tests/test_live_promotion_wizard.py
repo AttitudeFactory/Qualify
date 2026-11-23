@@ -45,6 +45,7 @@ class MetaHTTP:
         self.account_error = False  # act_12 answers a Graph error (MarketingError)
         # interest id -> (targetingvalidation `valid`, targetingoptionstatus `current_status`)
         self.interests: dict[str, tuple[bool, str]] = {}
+        self.currency = "COP"  # the ad account's currency (m-25091394)
 
     def respond(self, request):
         assert "secret" not in str(request.url)
@@ -69,7 +70,7 @@ class MetaHTTP:
                 data = [
                     {
                         "account_id": "12",
-                        "currency": "COP",
+                        "currency": self.currency,
                         "timezone_name": "America/Bogota",
                         "account_status": 1,
                         "disable_reason": 0,
@@ -90,7 +91,7 @@ class MetaHTTP:
                     200,
                     json={
                         "account_id": "12",
-                        "currency": "COP",
+                        "currency": self.currency,
                         "failed_delivery_checks": [],
                         "spend_cap": str(self.spend_cap or 0),
                         "amount_spent": str(self.amount_spent),
@@ -273,7 +274,7 @@ def live(monkeypatch):
                 tenant,
                 brand,
                 aid,
-                "COP",
+                source_holder[0].currency,
                 client,
             )
 
@@ -470,7 +471,7 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
         if failure == "spend_grew":
             # 9.000 of 10.000 spent while the owner read the review: floor is now 12.000.
             live["remote"].spent = 9000
-            with pytest.raises(ResultsUnavailable, match=r"Puedes bajarlo hasta \$12\.000\."):
+            with pytest.raises(ResultsUnavailable, match=r"Puedes bajarlo hasta \$12\.000 COP\."):
                 await management.confirm_promotion_edit(
                     tenant_id=tenant,
                     promotion_id=promotion.id,
@@ -759,7 +760,7 @@ async def _no_remote_guard(*args, **kwargs) -> None:
 @pytest.mark.asyncio
 async def test_real_production_composition_validates_paused_preview_and_explicit_activation(live):
     preview = await prepare(live)
-    assert "$10.000,00 COP" in preview.charge_notice
+    assert "$10.000 COP" in preview.charge_notice
     remote = live["remote"]
     assert len(remote.actual_creates) == 4 and not remote.activations
     adset = next(row for row in remote.objects.values() if row["_resource"] == "adsets")
@@ -776,6 +777,77 @@ async def test_real_production_composition_validates_paused_preview_and_explicit
     assert result.status == "active"
     assert [call[1] for call in remote.activations] == ["103", "101", "100"]
     assert all(client._client.is_closed for client in live["clients"])
+
+
+def _usd(live) -> None:
+    """Switch the fixture to a USD ad account (m-25091394): Meta budgets in cents."""
+    live["remote"].currency = "USD"
+    live["sources"][0] = live["source"] = replace(live["source"], currency="USD")
+    live["args"]["form"] = replace(live["args"]["form"], currency="USD", budget_minor=1_050)
+
+
+@pytest.mark.asyncio
+async def test_usd_account_sends_cents_to_meta_and_shows_dollars(live, monkeypatch):
+    _usd(live)
+    preview = await prepare(live)
+    assert "$10,50 USD" in preview.charge_notice
+    adset = next(row for row in live["remote"].objects.values() if row["_resource"] == "adsets")
+    assert adset["lifetime_budget"] == "1050"  # Meta USD offset=100: cents
+    row = live["repo"].get(live["args"]["tenant_id"], preview.promotion_id)
+    assert row.request["currency"] == "USD" and row.request["meta_currency_offset"] == 100
+    review = live["reviews"].get(live["args"]["tenant_id"], preview.review_id)
+    assert review.checks_snapshot["exact_validation"]["meta_budget"] == 1050
+    assert (await confirm(live, preview)).status == "active"
+
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(management, "PostgresPromotionRepository", lambda: live["repo"])
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        monkeypatch.setattr(management, "_local", lambda *args: gateway.local_guard(live["source"]))
+        start = len(live["remote"].calls)
+        edit = await management.prepare_promotion_edit(
+            tenant_id=tenant,
+            promotion_id=promotion.id,
+            request_key="edit-usd",
+            action="budget",
+            budget_minor=2_000,
+        )
+        live["remote"].spent = 347  # cents, like every USD amount Meta returns
+        floor = await management.promotion_budget_floor(tenant_id=tenant, promotion_id=promotion.id)
+    assert edit.summary == "Cambiar el presupuesto total a $20 USD."
+    # The decrease floor converts Meta cents back to hundredths (USD offset 100, not 1).
+    assert floor.current_minor == 1_050 and floor.spent_minor == 347
+    assert 347 < floor.floor_minor < 400  # + 1 cent a day of Meta's USD minimum
+    validated = [call for call in live["remote"].calls[start:] if call[0] == "POST"]
+    assert validated and validated[-1][2]["lifetime_budget"] == "2000"
+
+
+@pytest.mark.asyncio
+async def test_unsupported_account_currency_is_refused_before_any_meta_call(live):
+    live["sources"][0] = live["source"] = replace(live["source"], currency="VES")
+    live["args"]["form"] = replace(live["args"]["form"], currency="VES")
+    with pytest.raises(WizardUnavailable, match="dólares o pesos uruguayos"):
+        await prepare(live)
+    assert live["remote"].calls == []
 
 
 @pytest.mark.asyncio
@@ -865,7 +937,9 @@ async def test_actor_or_credential_change_during_read_validation_prevents_creati
 
 def test_cop_offset_uses_verified_meta_subdivision_not_iso_decimals():
     assert production_currency_offset("COP") == 1
-    assert production_currency_offset("USD") is None
+    assert production_currency_offset("USD") == 100
+    assert production_currency_offset("UYU") == 100
+    assert production_currency_offset("VES") is None
 
 
 @pytest.mark.asyncio
@@ -1038,6 +1112,23 @@ async def test_lead_campaign_validates_exact_payloads_creates_paused_and_activat
     result = await confirm(live, preview)
     assert result.status == "active"
     assert [call[1] for call in remote.activations] == ["103", "101", "100"]
+
+
+@pytest.mark.asyncio
+async def test_campaign_sends_adset_budget_sharing_false_in_validation_and_create(live):
+    """m-25091386: v24+ requires the flag when the budget lives on the ad set."""
+    remote = live["remote"]
+    await prepare(live)
+    validated = {
+        call[1].split("/")[-1]: call[2]
+        for call in remote.calls
+        if call[2].get("execution_options") == ["validate_only"]
+    }
+    created = next(call[2] for call in remote.actual_creates if call[1] == "act_12/campaigns")
+    # On the wire as the literal `false`, both in validate_only and in the real create.
+    assert validated["campaigns"]["is_adset_budget_sharing_enabled"] == "false"
+    assert created["is_adset_budget_sharing_enabled"] == "false"
+    assert {k: v for k, v in validated["campaigns"].items() if k != "execution_options"} == created
 
 
 @pytest.mark.asyncio

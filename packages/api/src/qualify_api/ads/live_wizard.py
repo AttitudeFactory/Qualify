@@ -18,6 +18,7 @@ from qualify_api.ads.client import MarketingClient, Resource
 from qualify_api.ads.enhancements import FEATURES
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.health_models import minor_integer
+from qualify_api.ads.money import CURRENCY_UNSUPPORTED, META_CURRENCY_OFFSETS, money_display
 from qualify_api.ads.promotions import Promotion, step_payload
 from qualify_api.ads.validation import payloads_for_validation, receipt, valid_receipt
 from qualify_api.ads.wizard import (
@@ -42,15 +43,13 @@ LABELS = {
 
 
 def production_currency_offset(currency: str) -> int | None:
-    # Official Meta currencies table, retrieved 2026-11-06: COP subdivision=1.
-    # https://developers.facebook.com/docs/marketing-api/currencies/
-    # ISO decimals are NOT Meta offsets. Other currencies remain unsupported.
-    return 1 if currency == "COP" else None
+    # Meta's offsets (`money.py`): COP 1, USD 100, UYU 100. Others remain unsupported.
+    return META_CURRENCY_OFFSETS.get(currency)
 
 
 def spend_cap_room(account: dict[str, Any]) -> int | None:
     """What the ad account's spending cap still allows, in Meta's money unit (the one budgets
-    use: whole pesos for COP, offset 1). None = no cap or no reading: nothing is blocked.
+    use: whole pesos for COP, cents for USD/UYU). None = no cap or no reading: nothing is blocked.
 
     AdAccount reference: `spend_cap` 0 (or absent) means no cap; `spend_cap` and
     `amount_spent` are in the currency's basic unit, the same unit as `lifetime_budget`.
@@ -63,10 +62,10 @@ def spend_cap_room(account: dict[str, Any]) -> int | None:
 
 
 def spend_cap_exceeded(room: int, offset: int, currency: str) -> str:
-    amount = f"{room * 100 // offset // 100:,}".replace(",", ".")
+    amount = money_display(room * 100 // offset // 100 * 100, currency)
     return (
         "Este presupuesto supera lo que le queda al límite de gasto de tu cuenta publicitaria "
-        f"(quedan ${amount} {currency}). Bájalo o sube el límite en Meta."
+        f"(quedan {amount}). Bájalo o sube el límite en Meta."
     )
 
 
@@ -184,7 +183,7 @@ class LiveWizardGateway:
         )
         if (
             account_data.get("account_id") != source.meta_ad_account_id
-            or account_data.get("currency") != "COP"
+            or account_data.get("currency") != source.currency
         ):
             self.fail(
                 "payment", "No pudimos comprobar la información de esta cuenta.", unavailable=True
@@ -219,8 +218,10 @@ class LiveWizardGateway:
 
     def supported(self, source: PromotionSource, form: WizardForm) -> None:
         form.validate(for_execution=True)
-        if source.currency != "COP" or form.currency != "COP":
-            self.fail("currency", "Esta comprobación admite cuentas en pesos colombianos.")
+        if production_currency_offset(source.currency) is None:
+            self.fail("currency", CURRENCY_UNSUPPORTED)
+        if form.currency != source.currency:
+            self.fail("currency", "La moneda del presupuesto no es la de la cuenta. Actualízala.")
         if not source.linked_page_id.isdigit() or source.credential_version <= 0:
             self.fail("account", "Falta comprobar la página y la versión del acceso de Meta.")
         if form.lead_form is not None and not form.lead_form.matches(source):
@@ -350,10 +351,10 @@ class LiveWizardGateway:
                     "validation",
                     "Meta aceptó la comprobación de campaña y creatividad, sin crear objetos.",
                 )
-                if offset != 1:
+                if offset != production_currency_offset(form.currency):
                     self.fail(
                         "currency",
-                        "Falta comprobar cómo expresa Meta los importes en pesos colombianos. "
+                        "Falta comprobar cómo expresa Meta los importes en esta moneda. "
                         "No se creará ni activará el anuncio.",
                         unavailable=True,
                     )

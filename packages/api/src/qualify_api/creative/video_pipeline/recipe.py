@@ -65,6 +65,7 @@ from qualify_creative.schemas import (
     VideoTextLayer,
     _PartSource,
 )
+from qualify_creative.video.join import JOIN_FPS
 
 from qualify_api.creative.media import owned_by, parse_tenant_key
 
@@ -272,6 +273,8 @@ def validate_recipe(
             found.extend(
                 p.model_copy(update={"part": number}) for p in _key_problems(part, tenant_id)
             )
+    if video_by_parts:
+        found.extend(transition_room_problems(parts, library))
     return tuple(found)
 
 
@@ -402,10 +405,66 @@ def is_built_layer(use: EffectUse, library: EffectsLibrary | None = None) -> boo
     )
 
 
-#: The transitions the join draws, as `(effect_id, version)` of the library (ADR 50 D9):
-#: `corte` is the hard cut the join has always made. Another one stays `recipe_unavailable`
-#: until the join draws it (EF-16, m-25026594).
-BUILT_TRANSITIONS: frozenset[tuple[str, int]] = frozenset({("corte", 1)})
+#: EF-16 (m-25026594): the library transitions the join blends, `(effect_id, version)` →
+#: the join's kind (`qualify_creative.video.join.JoinTransition`). Their version 1 (ranges
+#: the join does not draw) is not here: it stays `recipe_unavailable`.
+DRAWN_TRANSITIONS: dict[tuple[str, int], str] = {("fundido", 2): "fade", ("barrido", 2): "wipe"}
+#: The transitions the join makes, as `(effect_id, version)` of the library (ADR 50 D9):
+#: `corte` is the hard cut the join has always made, plus the ones it blends (EF-16).
+BUILT_TRANSITIONS: frozenset[tuple[str, int]] = frozenset({("corte", 1), *DRAWN_TRANSITIONS})
+
+
+#: EF-16: what the owner reads when a part is shorter than the transitions that eat
+#: into it (`transitions_longer_than_part`), for the screen to show (`qualify-copy-es`).
+TRANSITIONS_LONGER_THAN_PART_TEXT = (
+    "La parte {part} es más corta que sus transiciones. "
+    "Hazla más larga o elige transiciones más cortas."
+)
+
+
+def transitions_longer_than_part_text(part: int | None) -> str:
+    """`TRANSITIONS_LONGER_THAN_PART_TEXT` for the part the owner sees as `part`."""
+    return TRANSITIONS_LONGER_THAN_PART_TEXT.format(part=part if part is not None else "")
+
+
+def transition_frames(use: EffectUse | None, library: EffectsLibrary | None = None) -> int:
+    """EF-16: the frames a part's `transition_in` overlaps the part before it at the
+    join's rate (`JoinTransition.frames`): 0 for no transition, `corte`, or one the join
+    does not draw. The owner's `duration_s`, else the library's default. Pure."""
+    if use is None or (use.effect_id, use.version) not in DRAWN_TRANSITIONS:
+        return 0
+    entry = (library or load_effects()).get(use.effect_id, use.version)
+    spec = entry.params.get("duration_s") if entry is not None else None
+    seconds = use.param_values.get("duration_s", spec.default if spec is not None else None)
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        return 0
+    return max(1, round(float(seconds) * JOIN_FPS))
+
+
+def transition_room_problems(
+    parts: Sequence[PartRecipe], library: EffectsLibrary | None = None
+) -> tuple[RecipeProblem, ...]:
+    """EF-16, before anything is charged: every part of a video by parts (in plan order)
+    lasts at least the transitions that eat into it — the one blending it with the part
+    before and the one blending the next part into it — counted in the join's frames, as
+    the join counts them. A part too short is `transitions_longer_than_part`, with its
+    length (`duration_s`); otherwise the join would refuse it after the parts are paid."""
+    library = library or load_effects()
+    overlaps = [transition_frames(part.transition_in, library) for part in parts]
+    found: list[RecipeProblem] = []
+    for at, part in enumerate(parts):
+        before = overlaps[at] if at > 0 else 0
+        after = overlaps[at + 1] if at + 1 < len(parts) else 0
+        if before + after > round(part_length(part, video_by_parts=True) * JOIN_FPS):
+            found.append(
+                RecipeProblem(
+                    code="transitions_longer_than_part",
+                    part=part.index,
+                    field="seconds",
+                    duration_s=round(float(part.seconds), 1),
+                )
+            )
+    return tuple(found)
 
 
 def is_built_transition(use: EffectUse | None) -> bool:
@@ -448,9 +507,9 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     refused either. Still refused (`recipe_unavailable`) until the effects engine draws
     them: any other effect (a Seedance template, `camara_rapida` as an effect, an unknown
     one) and any effect on a piece that is not `local` (no compose runs after Seedance),
-    a text over a piece that is not `local`, a transition other than `corte`
-    (`is_built_transition`; `fundido`/`barrido` wait for EF-16, D9), stretches of an
-    `edit` or `extend` piece (D4: an own video is never edited by Seedance; EF-11 lets a
+    a text over a piece that is not `local`, a transition the join does not make
+    (`is_built_transition`: EF-16 draws `fundido`/`barrido` v2), stretches of an `edit`
+    or `extend` piece (D4: an own video is never edited by Seedance; EF-11 lets a
     `reference` piece open on its first stretch, prepared — a `reference` PART with
     references too only with `QUALIFY_PARTS_PREPARED_FRAME_REFS` on), the parent's
     whole-video texts and its `video_recipe` (ED-15).
@@ -487,7 +546,7 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
             # EF-05: the compose step draws the texts over a `local` piece's built video
             ("text_layers", part.text_layers if not local else ()),
             ("segments", part.segments if stretches_refused else ()),
-            # ADR 50 D9: `corte` is the join's hard cut, made today — only the others wait
+            # D9 + EF-16: the join makes `corte` and blends `fundido`/`barrido` v2
             (
                 "transition_in",
                 None if is_built_transition(part.transition_in) else part.transition_in,

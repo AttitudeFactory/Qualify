@@ -7,6 +7,8 @@ from qualify_api.ads.messaging_greeting import MAX_QUESTION, MAX_WELCOME
 
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
+from .promotion_budget_vm import GENERAL_VALUES
+from .promotion_market_vm import SATURATED
 from .promotion_state import PromotionState as S
 from .promotion_story_ui import (
     story_audience,
@@ -43,6 +45,7 @@ from .ui import (
     callout,
     card,
     choice_card,
+    loading_spinner,
     page_body,
     page_header,
     signal_pill,
@@ -51,6 +54,7 @@ from .ui import (
     step_frame,
     step_head,
     step_sync,
+    tone_badge,
 )
 from .ui import tokens as T
 
@@ -675,15 +679,16 @@ def _link_destination() -> rx.Component:
 def _budget() -> rx.Component:
     return card(
         rx.vstack(
+            rx.cond(S.market_shown, _suggestion()),
             _field(
-                "Presupuesto total en pesos colombianos",
+                S.budget_copy[0],
                 "budget",
                 S.form.budget,
-                placeholder="Ejemplo: 25000",
+                placeholder=S.budget_copy[1],
                 input_mode="numeric",
             ),
             rx.text(
-                "En pesos enteros, para todo el período, no por día.",
+                S.budget_copy[2],
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -691,6 +696,14 @@ def _budget() -> rx.Component:
             rx.cond(
                 S.budget_valid,
                 rx.text("Total: " + S.budget_label, size="2", weight="medium"),
+            ),
+            rx.cond(
+                S.budget_daily_line != "",
+                rx.text(S.budget_daily_line, size="2", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                S.budget_over_cap != "",
+                rx.text(S.budget_over_cap, size="2", color=T.TEXT_MUTED),
             ),
             _field("Inicio", "start_local", S.form.start_local, type="datetime-local"),
             _field("Final", "end_local", S.form.end_local, type="datetime-local"),
@@ -703,6 +716,7 @@ def _budget() -> rx.Component:
                 ),
                 callout("Revisa la zona horaria de tu negocio antes de continuar.", "warn"),
             ),
+            rx.cond(S.market_shown, _market()),
             callout(
                 "Meta debe comprobar el importe y las fechas antes de crear el anuncio.",
                 "info",
@@ -711,6 +725,147 @@ def _budget() -> rx.Component:
             width="100%",
         ),
         width="100%",
+    )
+
+
+def _muted(text: rx.Var[str]) -> rx.Component:
+    return rx.text(text, size="2", color=T.TEXT_MUTED)
+
+
+def _hint_link(label: str, href: rx.Var[str]) -> rx.Component:
+    return rx.link(label, href=href, min_height="44px", display="inline-flex", align_items="center")
+
+
+def _use_suggestion() -> rx.Component:
+    return rx.button(
+        S.budget_hint.button,
+        on_click=S.use_budget_suggestion,
+        disabled=S.busy,
+        variant="soft",
+        min_height="44px",
+        width="100%",
+        white_space="normal",
+        height="auto",
+    )
+
+
+def _suggestion() -> rx.Component:
+    """m-25091389: a suggested amount before the field. A default with its reasons, never a
+    push: ignoring it is typing another amount, and it never blocks «Siguiente»."""
+    hint = S.budget_hint
+    pieces = rx.cond(hint.pieces_note != "", _muted(hint.pieces_note))
+    return rx.box(
+        # One live region that stays mounted: loading, «No pudimos…» and «Pusimos…» are
+        # announced; the card and its button are not re-read on every change.
+        rx.hstack(
+            rx.cond(hint.mode == "loading", loading_spinner("sm")),
+            rx.cond((hint.mode != "blocked") & (hint.line != ""), _muted(hint.line)),
+            align="center",
+            role="status",
+            aria_live="polite",
+        ),
+        rx.match(
+            hint.mode,
+            (
+                "blocked",
+                rx.vstack(
+                    callout(hint.line, "info"),
+                    _hint_link("Revisar mi tope", S.budget_cap_href),
+                    spacing="1",
+                    width="100%",
+                ),
+            ),
+            (
+                "compact",
+                rx.vstack(
+                    rx.text(hint.headline, size="2", weight="medium"),
+                    pieces,
+                    _use_suggestion(),
+                    spacing="2",
+                    width="100%",
+                ),
+            ),
+            (
+                "full",
+                card(
+                    rx.vstack(
+                        tone_badge("Sugerencia", "neutral"),
+                        rx.text(hint.headline, weight="medium"),
+                        rx.foreach(hint.reasons, _muted),
+                        pieces,
+                        rx.cond(
+                            hint.general_values,
+                            rx.vstack(
+                                _muted(GENERAL_VALUES),
+                                _hint_link(
+                                    "Responder 5 preguntas (1 minuto)", S.budget_profile_href
+                                ),
+                                spacing="0",
+                            ),
+                        ),
+                        _use_suggestion(),
+                        spacing="2",
+                        width="100%",
+                        align_items="start",
+                    ),
+                    padding="1rem",
+                ),
+            ),
+            rx.fragment(),
+        ),
+        on_mount=S.load_budget_suggestion,
+        width="100%",
+    )
+
+
+def _market() -> rx.Component:
+    """m-25091388: people this amount may reach. Information, never a push to spend more."""
+    return rx.vstack(
+        rx.text("A cuántas personas llegarías", weight="medium"),
+        rx.cond(
+            S.reach_loading,
+            rx.hstack(loading_spinner(), rx.text("Calculando…"), role="status"),
+            rx.text(S.market.line, weight="medium"),
+        ),
+        rx.cond(
+            ~S.reach_loading & (S.market.note != ""),
+            rx.text(S.market.note, size="2", color=T.TEXT_MUTED),
+        ),
+        rx.cond(
+            ~S.reach_loading & S.market.saturated,
+            rx.vstack(
+                callout(SATURATED, "info"),
+                rx.button(
+                    "Ampliar mi público",
+                    on_click=S.widen_audience,
+                    disabled=S.busy,
+                    variant="ghost",
+                    min_height="44px",
+                    white_space="normal",
+                    height="auto",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        rx.cond(
+            ~S.reach_loading & S.market.retry,
+            rx.button(
+                "Volver a calcular",
+                on_click=S.refresh_reach,
+                disabled=S.busy,
+                variant="ghost",
+                min_height="44px",
+                white_space="normal",
+                height="auto",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        # On the block, not the line: the line is replaced when the estimate arrives.
+        aria_live="polite",
     )
 
 
@@ -772,6 +927,10 @@ def _review() -> rx.Component:
                     rx.cond(S.form.housing, "Sí, requiere comprobaciones adicionales", "No"),
                 ),
                 _fact("Presupuesto para todo el período", S.budget_label),
+                rx.cond(
+                    S.market_shown,
+                    _fact("A cuántas personas llegaría (aproximado)", S.market.review),
+                ),
                 _fact("Inicio", S.start_label),
                 _fact("Final", S.end_label),
                 _fact("Horario", S.zone_label),
@@ -1035,14 +1194,6 @@ def _wizard(body: rx.Component, foot: rx.Component) -> rx.Component:
         rx.cond(
             (S.execution_reason != "") & ~S.reviewed,
             callout(S.execution_reason, "info"),
-        ),
-        rx.cond(
-            (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
-            callout(
-                "Este asistente prepara presupuestos en pesos colombianos. "
-                "Revisa la moneda de la cuenta elegida.",
-                "warn",
-            ),
         ),
         body,
         head=step_head(

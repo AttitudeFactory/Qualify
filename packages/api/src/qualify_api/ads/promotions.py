@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 from qualify_api.ads.client import MarketingAPI, Resource, _validate
 from qualify_api.ads.errors import MarketingError
+from qualify_api.ads.money import META_CURRENCY_OFFSETS
 
 STEPS: tuple[Resource, ...] = ("campaigns", "adsets", "adcreatives", "ads")
 ID_COLUMNS = dict(
@@ -96,8 +97,7 @@ class PromotionRequest:
             raise ValueError("invalid budget or currency")
         if self.meta_currency_offset is not None and (
             type(self.meta_currency_offset) is not int
-            or self.meta_currency_offset != 1
-            or self.currency != "COP"
+            or self.meta_currency_offset != META_CURRENCY_OFFSETS.get(self.currency)
             or self.budget_minor * self.meta_currency_offset % 100
         ):
             raise ValueError("unrepresentable verified Meta currency amount")
@@ -278,6 +278,8 @@ def step_payload(promotion: Promotion, resource: Resource) -> dict[str, Any]:
             "status": "PAUSED",
             "objective": request["objective"],
             "special_ad_categories": request["special_ad_categories"],
+            # Required since v24.0 when the budget lives on the ad set (m-25091386).
+            "is_adset_budget_sharing_enabled": False,
         }
     if resource == "adsets":
         return {

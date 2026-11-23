@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from qualify_api.ads.client import MarketingAPI, MarketingClient
 from qualify_api.ads.errors import MarketingError
+from qualify_api.ads.money import META_CURRENCY_OFFSETS
 from qualify_api.ads.results import (
     MANAGEMENT_REASON,
     PIPELINE_VERSION,
@@ -203,8 +204,9 @@ def _summary(row: Any) -> PromotionResultSummary:
             and not row["outstanding"]
             and row["status"] == "active"
             and row.get("activation_confirmed", False)
-            and effective.request.get("currency") == "COP"
-            and effective.request.get("meta_currency_offset") == 1
+            and effective.request.get("meta_currency_offset") is not None
+            and effective.request.get("meta_currency_offset")
+            == META_CURRENCY_OFFSETS.get(effective.request.get("currency"))
             and effective.request.get("budget_kind") == "lifetime"
             and row.get("publish_attempt_id") is not None
         )

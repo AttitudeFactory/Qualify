@@ -81,7 +81,9 @@ Lo que quiere el dueño: subir su video, ponerle un texto y uno o varios efectos
 - Lo que trae hoy la v3:
   - **Ofrecidos:** `texto`; las capas `humo_capa`, `brasas_capa` y `vapor_capa`; las transiciones `corte`, `fundido` y `barrido`. Deivid decidió el 2026-11-20 ocultar `fundido` y `barrido` hasta EF-16 y ofrecer mientras tanto solo `corte` (D9, §2.3).
   - **No ofrecidos:** `camara_rapida`, porque la velocidad es una acción del bloque (D-T3), y las cinco plantillas de Seedance (D5).
-- La **v4** hace eso: son las mismas entradas de la v3, en las mismas versiones, y solo `fundido` y `barrido` pasan a `offered: false` (su versión de entrada sigue en 1, porque no cambió nada del efecto). Es la biblioteca que usan las solicitudes nuevas; elegir una de las dos es `not_offered`.
+- La **v4** hace eso: son las mismas entradas de la v3, en las mismas versiones, y solo `fundido` y `barrido` pasan a `offered: false` (su versión de entrada sigue en 1, porque no cambió nada del efecto). Elegir una de las dos es `not_offered`.
+- La **v5** (EF-16, m-25026594) las vuelve a ofrecer, porque la unión ya las dibuja: agrega `fundido` y `barrido` en la **versión 2**, con `duration_s` de 0,3 a 0,8 s (el rango de la unión; la versión 1 admitía 0,2–1,5 y 0,2–1,0 s). Las entradas en versión 1 se quedan sin ofrecer, para que un brief hecho con ellas se siga leyendo. Es la biblioteca que usan las solicitudes nuevas.
+- Cómo une (`video/join.py`): las dos partes **se solapan** lo que dura la transición. Los últimos cuadros de una se mezclan con los primeros de la siguiente (fundido) o la siguiente entra desde un borde (barrido), y el sonido se cruza en esos mismos milisegundos. El video dura la suma de las partes menos cada transición; los segundos cobrados son los de las partes y no cambian. Con `corte`, la unión es la de antes, byte por byte.
 
 ### 1.5 Modo local: «Tu video, con efectos»
 
@@ -222,7 +224,7 @@ Los umbrales numéricos de la última columna son propuesta del arquitecto (ver 
 |---|---|---|---|
 | 1 | Copia liviana de 480p al subir al generador. Hoy el teléfono descarga el original para la vista previa y para «Cortar». Está en curso en otra rama, todavía sin mergear. | ED-09 · m-25026643 | D-E2 |
 | 2a | PR chico que oculta `fundido` y `barrido` y deja solo `corte` (D9): biblioteca v4. Antes, la v3 las ofrecía (`offered: true`) y el motor las rechazaba al crear (`recipe_unavailable`). | en este PR | D9 |
-| 2b | Transiciones al unir partes. Con ellas, `fundido` y `barrido` se vuelven a ofrecer. | EF-16 · m-25026594 | D9, §1.4 |
+| 2b | Transiciones al unir partes. Con ellas, `fundido` y `barrido` se vuelven a ofrecer (biblioteca v5). Falta el control en el editor (ED-07). | EF-16 · m-25026594, en este PR | D9, §1.4 |
 | 3 | Hoja de contacto para revisar el video antes de aprobarlo. | EF-18 · m-25026598 | D8 |
 | 4 | El editor en Video por partes: fichas, modo con motivo, transiciones y orden. | ED-07 · m-25026638 | §1.1 |
 | 5 | «Rehacer esta parte» desde el resultado. | ED-08 · m-25026640 | D-E5 |

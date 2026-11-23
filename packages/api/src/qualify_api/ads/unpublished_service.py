@@ -582,6 +582,8 @@ class UnpublishedImageService:
             expected = step_payload(promotion, resource)
             expected.pop("name", None)
             expected.pop("status", None)
+            # Write-only flag; campaigns created before m-25091386 never carried it.
+            expected.pop("is_adset_budget_sharing_enabled", None)
             if resource == "ads":
                 expected["creative"] = {"id": promotion.ids["adcreatives"]}
             if (

@@ -206,13 +206,13 @@ def _asset(kind: str, width: int, height: int) -> dict:
     }
 
 
-def _fake_piece(monkeypatch, assets: list[dict], accounts: int = 1) -> None:
+def _fake_piece(monkeypatch, assets: list[dict], accounts: int = 1, currency: str = "COP") -> None:
     piece = {"brand_id": uuid4(), "active_version_id": uuid4(), "ad_copy": None}
     rows = [
         {
             "id": uuid4(),
             "name": "Cuenta",
-            "currency": "COP",
+            "currency": currency,
             "timezone_name": ZONE,
             "account_label": "@negocio",
         }
@@ -243,6 +243,16 @@ def test_a_story_video_needs_a_vertical_cover_and_never_uses_the_4_5_files(monke
     # no ad account: not offered either
     _fake_piece(monkeypatch, [cover], accounts=0)
     assert not mod.story_ad_ready(uuid4(), uuid4())
+
+
+def test_an_unpublished_piece_on_a_dollar_account_says_why_instead_of_failing(
+    monkeypatch,
+) -> None:
+    """m-25091394: unpublished ads stay in pesos in the backend; say so up front."""
+    mod = promotion_unpublished_provider
+    _fake_piece(monkeypatch, [_asset("image", 1080, 1920)], currency="USD")
+    (row,) = mod.unpublished_sources(uuid4(), uuid4(), story=True)
+    assert row.unavailable_reason == mod.UNPUBLISHED_COP_ONLY
 
 
 def test_the_story_link_keeps_the_way_back_to_the_week() -> None:

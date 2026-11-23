@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from qualify_api.ads.money import META_CURRENCY_OFFSETS
 from qualify_api.ads.promotions import fingerprint
 
 PIPELINE = "ad-exact-validation-v1"
@@ -111,7 +112,7 @@ def valid_receipt(value: Any, source: Any, form: Any, now: datetime, actor: Any 
             and actor is not None
             and value.get("actor") == str(actor)
             and type(offset) is int
-            and offset == 1
+            and offset == META_CURRENCY_OFFSETS.get(form.currency)
             and value.get("approved_budget_minor") == form.budget_minor
             and value.get("meta_budget") == form.budget_minor * offset // 100
             and form.budget_minor * offset % 100 == 0

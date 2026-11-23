@@ -14,6 +14,7 @@ from .ad_results_vm import (
     AdResultVM,
     AlertAccountVM,
 )
+from .investment_profile_page import investment_profile_card
 from .ui import (
     app_shell,
     callout,
@@ -168,6 +169,7 @@ def ad_results_index() -> rx.Component:
                 ),
                 width="100%",
             ),
+            investment_profile_card(),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.loading, rx.fragment(), _alerts()),
             rx.cond(
@@ -302,7 +304,7 @@ def _edit_confirmation() -> rx.Component:
                     S.edit_action == "budget",
                     rx.vstack(
                         rx.text(
-                            "Nuevo presupuesto total en pesos colombianos",
+                            "Nuevo presupuesto total en " + S.edit_unit,
                             as_="label",
                             html_for="ad-edit-budget",
                         ),
@@ -316,7 +318,7 @@ def _edit_confirmation() -> rx.Component:
                             width="100%",
                         ),
                         rx.text(
-                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Escribe el monto en " + S.edit_unit + " enteros, sin puntos ni comas. "
                             "El nuevo total debe ser mayor al actual.",
                             size="2",
                         ),
@@ -328,7 +330,7 @@ def _edit_confirmation() -> rx.Component:
                     S.edit_action == "budget_down",
                     rx.vstack(
                         rx.text(
-                            "Nuevo presupuesto total en pesos colombianos",
+                            "Nuevo presupuesto total en " + S.edit_unit,
                             as_="label",
                             html_for="ad-edit-budget-down",
                         ),
@@ -353,7 +355,7 @@ def _edit_confirmation() -> rx.Component:
                             weight="medium",
                         ),
                         rx.text(
-                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Escribe el monto en " + S.edit_unit + " enteros, sin puntos ni comas. "
                             "Es el total para todo el anuncio, no por día.",
                             size="2",
                         ),
