@@ -176,3 +176,9 @@ def test_month_switch_accepts_only_this_or_next(value: object, shown: str) -> No
     context = SimpleNamespace(showing="0")
     AdMonthPlanState.show.fn(context, value)
     assert context.showing == shown
+
+
+def test_valentines_day_is_never_to_be_confirmed() -> None:
+    february = mp.plan(country="VE", currency="USD", monthly_cap_minor=300_00, year=2027, month=2)
+    reasons = " ".join(w.reason for w in month_plan_vm(february, 2027, 2).weeks)
+    assert "Día de los Enamorados" in reasons and "Enamorados, fecha" not in reasons

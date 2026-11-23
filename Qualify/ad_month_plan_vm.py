@@ -42,7 +42,7 @@ NORMAL_WEEK = "Semana sin fechas especiales"
 ESTIMATED = ", fecha por confirmar"
 # shortcut: their day is fixed; only their weight is a hypothesis (UX review). Move to the
 # calendar table as a field if the list grows.
-_FIXED_DAY = frozenset({"quincena", "halloween"})
+_FIXED_DAY = frozenset({"quincena", "halloween", "enamorados", "san_valentin"})
 # UX review, 2026-11-23: keep the names owners use, with a gloss where it is not obvious.
 _SHOWN = {
     "Hot Sale": "Hot Sale (descuentos en línea)",
