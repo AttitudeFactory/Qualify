@@ -43,6 +43,16 @@ def test_every_rule_resolves_from_december_2026_to_december_2027(country: str) -
         assert in_scope, f"{country} {e.id} has no date in scope"
 
 
+def test_yearly_ranges_cover_this_year() -> None:
+    """Goes red on 1 January when the manual December update was missed (module docstring)."""
+    year = date.today().year
+    for country, entries in mp.load_table().countries.items():
+        ranges = [e for e in entries if "start" in e.rule]
+        assert ranges and all(date.fromisoformat(e.rule["start"]).year >= year for e in ranges), (
+            f"{country}: update the yearly dates of calendario-v1.json (December review)"
+        )
+
+
 def test_rule_dates_match_the_researched_ones() -> None:
     table = mp.load_table()
 
@@ -211,10 +221,17 @@ def test_month_plan_currency_rules(wired: dict[str, object]) -> None:
     plan = _call()
     assert plan is not None and (plan.country, plan.currency) == ("VE", "USD")
     wired["currency"] = "UYU"  # profile saved in USD, account now in UYU: never mixed
-    assert _call() is None
+    with pytest.raises(mp.MonthPlanUnavailable, match="Vuelve a guardar tu perfil"):
+        _call()
     wired["currency"] = "ARS"
     with pytest.raises(mp.MonthPlanUnavailable):
         _call()
+
+
+def test_month_plan_refuses_an_impossible_month(wired: dict[str, object]) -> None:
+    for month in (0, 13):
+        with pytest.raises(mp.MonthPlanUnavailable, match="Elige un mes"):
+            mp.month_plan(tenant_id=uuid4(), brand_id=uuid4(), year=2027, month=month)
 
 
 def test_month_plan_needs_a_login(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -21,9 +21,12 @@ Rules (approved by Raul, 2026-11-23):
 
 Country and currency: the currency is the brand's selected ad account's
 (`investment_profile.default_currency`, as the budget suggestion uses); a profile saved in
-another currency is not mixed (no plan, as `budget_suggestion.suggest` drops it). The
+another currency is not mixed (`PROFILE_OTHER_CURRENCY`, as `budget_suggestion.suggest`
+drops it). The
 country is the one `data/mercado-v1.json` pairs with that currency (COP → CO, USD → VE,
-UYU → UY). A currency we do not support raises `CURRENCY_UNSUPPORTED` (`money.py`).
+UYU → UY; shortcut: one country per currency, assert in `load_table`; add a country lookup
+when a second USD country comes). A currency we do not support raises
+`CURRENCY_UNSUPPORTED` (`money.py`).
 
 The dates are updated BY HAND every December (the yearly announced ranges — Hot Sale,
 CyberLunes, school start — and anything a source changed); a change of tiers, window or
@@ -33,7 +36,9 @@ API for the Reflex layer (wrap the call in `acting_login(auth_user_id)`):
 
 - `month_plan(tenant_id=, brand_id=, year=, month=)` → `MonthPlan | None`. None: the brand
   has no investment profile or no monthly cap (show the invitation to fill the profile).
-  Refusals are `MonthPlanUnavailable` with a Spanish message to show as is.
+  Refusals are `MonthPlanUnavailable` with a Spanish message to show as is: no login, a
+  month outside 1–12, an unsupported currency, or a profile saved in another currency than
+  the ad account's («Vuelve a guardar tu perfil…»).
 - Amounts are in hundredths of `MonthPlan.currency`; format with `money.money_display`.
 """
 
@@ -70,6 +75,11 @@ STATUSES = ("verified", "hypothesis")
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 LOGIN_NEEDED = "Vuelve a iniciar sesión para ver tu plan del mes."
+MONTH_INVALID = "Elige un mes del calendario para ver tu plan."
+PROFILE_OTHER_CURRENCY = (
+    "Tu perfil de inversión está en otra moneda que tu cuenta publicitaria. Vuelve a guardar "
+    "tu perfil para ver tu plan del mes."
+)
 
 
 class MonthPlanUnavailable(ValueError):
@@ -218,6 +228,7 @@ def load_table(version: str = TABLE_VERSION) -> CalendarTable:
         and groups["todos"] == frozenset(NICHE_LABELS)
         and all(g <= frozenset(NICHE_LABELS) and g for g in groups.values())
         and set(countries) == set(market_size.load_table().cpm)
+        and len({cur for cur, _ in market_size.load_table().cpm.values()}) == len(countries)
         and all(
             len({e.id for e in entries}) == len(entries)
             and all(
@@ -325,6 +336,8 @@ def month_plan(*, tenant_id: UUID, brand_id: UUID, year: int, month: int) -> Mon
     if current_acting_login() is None:
         raise MonthPlanUnavailable(LOGIN_NEEDED)
     require_acting_member(tenant_id)
+    if type(month) is not int or type(year) is not int or not (1 <= month <= 12 and year > 1):
+        raise MonthPlanUnavailable(MONTH_INVALID)
     profile = load_investment_profile(tenant_id=tenant_id, brand_id=brand_id)
     if profile is None or not profile.monthly_cap_minor:
         return None
@@ -333,7 +346,7 @@ def month_plan(*, tenant_id: UUID, brand_id: UUID, year: int, month: int) -> Mon
     if currency not in META_CURRENCY_OFFSETS or country is None:
         raise MonthPlanUnavailable(CURRENCY_UNSUPPORTED)
     if profile.currency != currency:
-        return None  # never mix currencies (as `budget_suggestion.suggest`)
+        raise MonthPlanUnavailable(PROFILE_OTHER_CURRENCY)  # never mix currencies
     return plan(
         country=country,
         currency=currency,

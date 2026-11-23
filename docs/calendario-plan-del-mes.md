@@ -30,7 +30,8 @@ nada** (no hay tabla ni migración).
 6. País y moneda: la moneda es la de la cuenta publicitaria elegida
    (`investment_profile.default_currency`); el país es el que `mercado-v1.json` asocia a esa
    moneda (COP → Colombia, USD → Venezuela, UYU → Uruguay). Un perfil guardado en otra moneda no
-   se mezcla (no hay plan). Otra moneda: el mensaje `CURRENCY_UNSUPPORTED` de `money.py`.
+   se mezcla: se pide volver a guardar el perfil. Otra moneda: el mensaje `CURRENCY_UNSUPPORTED`
+   de `money.py`.
 
 Ejemplo verificado en las pruebas: Colombia, mayo de 2027, rubro comida y bebida, tope
 $1.200.000 COP → $414.000 / $267.000 / $214.000 / $305.000 COP.
@@ -55,7 +56,8 @@ Las fechas, sus reglas y sus fuentes están en el JSON. Resumen:
 
 - **Cada diciembre, a mano:** revisar las fechas que se anuncian cada año (Hot Sale, CyberLunes,
   regreso a clases, calendario de la CCSUy) y lo que cambie una fuente. Si cambian niveles,
-  ventana o rubros, nueva versión (`calendario-v2`).
+  ventana o rubros, nueva versión (`calendario-v2`). Si se olvida, la prueba
+  `test_yearly_ranges_cover_this_year` falla el 1 de enero.
 
 ## Mejoras futuras
 
