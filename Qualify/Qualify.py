@@ -9,6 +9,7 @@ from qualify_api.planner.embedded import calendar_worker
 
 from .ad_forms_page import ad_forms_index
 from .ad_forms_state import AdFormsState
+from .ad_month_plan_state import AdMonthPlanState
 from .ad_results_page import ad_result_detail_index, ad_results_index
 from .ad_results_state import AdResultsState
 from .approved_page import approved_index
@@ -644,7 +645,12 @@ app.add_page(
 app.add_page(
     ad_results_index,
     route="/promotions",
-    on_load=[AuthState.require_login, AdResultsState.load_list, InvestmentProfileState.load],
+    on_load=[
+        AuthState.require_login,
+        AdResultsState.load_list,
+        InvestmentProfileState.load,
+        AdMonthPlanState.load,
+    ],
     title="Qualify · Anuncios",
 )
 app.add_page(
