@@ -78,6 +78,10 @@ cost_usd}`. Claimed after `ingest`/`cut` and `normalize_local` (a piece being ma
 waits for a normalize; nobody waits for a preview). A timed-out encode fails it for good
 (`preview_timeout`): the copy is dispensable, and more long encodes of the same file would
 only delay the jobs behind it. Measured with `deploy/measure/upload-preview-memory.sh`.
+ED-11b (m-25029110): a v2 job's payload also names `strip_key` (`…/strip.jpg`, same folder):
+the frame strip (one 56 px frame a second, tiled) is a second output of the SAME FFmpeg
+run, PUT after the copy (`image/jpeg`); the result gains `strip_key` and `strip` (layout,
+tile size, bytes). A copy already in place gets the strip alone (no second 480p encode).
 
 **Reconciler** (at start, then every 24 h — rule 5 of the ADR 39 amendment), per tenant:
 (a) R2 folders under `gallery/{tenant}/` with no row (live or tombstoned) and no active
@@ -111,6 +115,7 @@ from qualify_creative.video.business import (
     UnreadableVideo,
 )
 from qualify_creative.video.business_cut import BusinessVideoCutter, CutBusinessPart
+from qualify_creative.video.upload_preview import STRIP_CONTENT_TYPE, StripLayout, strip_layout
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import (
     ObjectNotFound,
@@ -235,7 +240,15 @@ class UploadPreviewer(Protocol):
 
     def allowance(self, duration_s: float | None) -> timedelta: ...
 
-    def make_preview(self, source: Path, out: Path, *, duration_s: float | None) -> None: ...
+    def make_preview(
+        self,
+        source: Path,
+        out: Path | None,
+        *,
+        duration_s: float | None,
+        strip_out: Path | None = None,
+        layout: Any = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -255,6 +268,10 @@ class _CopySpec:
     #: (`result["source"]`): true for the upload preview, whose original size the editor
     #: needs to judge «Cortar» while it shows the copy (m-25026643 review).
     source_on_reuse: bool = False
+    #: ED-11b (m-25029110): the payload/result field of a second output of the same
+    #: decode — the upload preview's frame strip (`strip_key`); None for a single copy.
+    #: A payload without it (a v1 job) makes the copy alone, as before.
+    strip_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -490,6 +507,7 @@ class MediaJobRunner:
                 # in its time is not tried three times more (the editor plays the original)
                 final_on_timeout=True,
                 source_on_reuse=True,
+                strip_field="strip_key",
             ),
             version=previewer.version,
             allowance=previewer.allowance,
@@ -514,7 +532,14 @@ class MediaJobRunner:
         """One file of the owner's -> one derived copy at the payload's deterministic key,
         written once (`t/` is write-once: a retry after the upload finds it and encodes
         nothing). A file of the owner's that cannot be read fails for good; a killed or
-        timed-out encode or an R2 hiccup is retried."""
+        timed-out encode or an R2 hiccup is retried.
+
+        ED-11b (m-25029110): with `spec.strip_field` and that key in the payload, the frame
+        strip comes out of the SAME decode (`make(..., strip_out=, layout=)`). A copy
+        already in place (a retry after its PUT, or a v1 copy whose strip was asked for
+        apart) is never encoded again: the original is decoded for the strip alone
+        (`make(source, None, …)`). Both kept → nothing decoded. A source whose header gives
+        no length gets no strip (`strip_skipped`); its copy is still made."""
         from qualify_creative.video.source_limits import read_header  # noqa: PLC0415
 
         from qualify_api.creative.media import owned_by  # noqa: PLC0415
@@ -522,26 +547,32 @@ class MediaJobRunner:
         payload = job.payload or {}
         source_key = str(payload.get("source_key") or "")
         target_key = str(payload.get(spec.target_field) or "")
+        strip_key = str(payload.get(spec.strip_field) or "") if spec.strip_field else ""
         if (
             not owned_by(job.tenant_id, source_key)
             or not target_key.startswith(spec.target_root)
             or ".." in target_key
+            or (strip_key and (not strip_key.startswith(spec.target_root) or ".." in strip_key))
         ):
             return self._fail(job, "payload_invalid", permanent=True, cleanup=False)
         try:
             already = self._gate.has_object(job.tenant_id, target_key)
+            strip_kept = bool(strip_key) and self._gate.has_object(job.tenant_id, strip_key)
         except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry
             return self._fail(job, f"r2_head:{type(exc).__name__}", permanent=False)
-        if already:  # a retry after the upload: never encoded twice
+        if already and (not strip_key or strip_kept):  # a retry after the upload(s)
             facts: dict[str, Any] = {"reused": True}
-            if spec.source_on_reuse:
-                head_facts = self._source_header_facts(job.tenant_id, source_key)
-                if head_facts is not None:
-                    facts["source"] = head_facts
+            if spec.source_on_reuse or strip_kept:
+                kept_head = self._source_header(job.tenant_id, source_key)
+                if kept_head is not None and spec.source_on_reuse:
+                    facts["source"] = kept_head.to_dict()
+                if strip_kept:
+                    facts.update(self._kept_strip_facts(job.tenant_id, strip_key, kept_head, spec))
             return self._settle_copy(job, spec, target_key, version, facts)
         with tempfile.TemporaryDirectory(prefix=f"qualify-{spec.step}-") as tmp:
             source = Path(tmp) / "source"
             out = Path(tmp) / "video.mp4"
+            strip_out = Path(tmp) / "strip.jpg"
             try:
                 self._fetch_local_source(job.tenant_id, source_key, source)
             except (ObjectNotFound, FileNotFoundError):
@@ -552,12 +583,29 @@ class MediaJobRunner:
                 head = read_header(source)
             except Exception:  # noqa: BLE001 — PyAV refused the owner's file
                 return self._fail(job, "unreadable", permanent=True, cleanup=False)
+            layout = strip_layout(head.duration_s) if strip_key and not strip_kept else None
+            strip_facts: dict[str, Any] = {}
+            if strip_key and not strip_kept and layout is None:
+                strip_facts["strip_skipped"] = "no_duration"
+            if strip_kept:
+                strip_facts = self._kept_strip_facts(job.tenant_id, strip_key, head, spec)
+            if already and layout is None:  # the copy is kept and no strip can be made
+                return self._settle_copy(
+                    job,
+                    spec,
+                    target_key,
+                    version,
+                    {"reused": True, "source": head.to_dict(), **strip_facts},
+                )
             # the encode may outlast the lease: held for its whole allowance
             if not self._renew_lease(job, until=allowance(head.duration_s)):
                 return JobOutcome(job.id, "lost_lease")
             started = time.monotonic()
+            extra: dict[str, Any] = (
+                {"strip_out": strip_out, "layout": layout} if layout is not None else {}
+            )
             try:
-                make(source, out, duration_s=head.duration_s)
+                make(source, None if already else out, duration_s=head.duration_s, **extra)
             except UnreadableVideo:
                 return self._fail(job, "unreadable", permanent=True, cleanup=False)
             except TranscodeTimedOut:
@@ -571,52 +619,87 @@ class MediaJobRunner:
                 return self._fail(job, f"{spec.step}:{type(exc).__name__}", permanent=False)
             encode_s = round(time.monotonic() - started, 1)
             source.unlink(missing_ok=True)
-            try:
-                made = read_header(out)
-            except Exception:  # noqa: BLE001 — our own output unreadable: retry
-                return self._fail(job, f"{spec.label}_unreadable", permanent=False)
-            if rejects(made):
-                return self._fail(job, f"{spec.label}_over_limit", permanent=True, cleanup=False)
+            made_facts: dict[str, Any] = {"source": head.to_dict(), "encode_s": encode_s}
+            if already:
+                made_facts["reused"] = True
+            else:
+                try:
+                    made = read_header(out)
+                except Exception:  # noqa: BLE001 — our own output unreadable: retry
+                    return self._fail(job, f"{spec.label}_unreadable", permanent=False)
+                if rejects(made):
+                    return self._fail(
+                        job, f"{spec.label}_over_limit", permanent=True, cleanup=False
+                    )
+                made_facts.update(
+                    {
+                        spec.label: made.to_dict(),
+                        "duration_s": made.duration_s,
+                        "bytes": out.stat().st_size,
+                    }
+                )
+            made_strip = _made_strip_facts(strip_out, layout) if layout is not None else None
+            if layout is not None and made_strip is None:  # no strip written: the copy counts
+                strip_facts["strip_skipped"] = "empty"
             if not self._renew_lease(job):  # reclaimed while encoding: not ours any more
                 return JobOutcome(job.id, "lost_lease")
-            size = out.stat().st_size
-            try:
-                with out.open("rb") as fh:
-                    self._gate.put_media(job.tenant_id, target_key, fh, "video/mp4")
-            except ObjectSizeExceeded:
-                return self._fail(job, f"{spec.label}_too_large", permanent=True, cleanup=False)
-            except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry onto the same key
-                return self._fail(job, f"r2_write:{type(exc).__name__}", permanent=False)
-        return self._settle_copy(
-            job,
-            spec,
-            target_key,
-            version,
-            {
-                "source": head.to_dict(),
-                spec.label: made.to_dict(),
-                "duration_s": made.duration_s,
-                "bytes": size,
-                "encode_s": encode_s,
-            },
-        )
+            if not already:
+                try:
+                    with out.open("rb") as fh:
+                        self._gate.put_media(job.tenant_id, target_key, fh, "video/mp4")
+                except ObjectSizeExceeded:
+                    return self._fail(job, f"{spec.label}_too_large", permanent=True, cleanup=False)
+                except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry onto the same key
+                    return self._fail(job, f"r2_write:{type(exc).__name__}", permanent=False)
+            if layout is not None and made_strip is not None:
+                # after the copy: a failed strip PUT is retried as the strip alone (the copy
+                # is found in place and never encoded again)
+                try:
+                    with strip_out.open("rb") as fh:
+                        self._gate.put_media(job.tenant_id, strip_key, fh, STRIP_CONTENT_TYPE)
+                except Exception as exc:  # noqa: BLE001 — R2 hiccup (or too big): retry
+                    return self._fail(job, f"r2_write_strip:{type(exc).__name__}", permanent=False)
+                strip_facts = {"strip_key": strip_key, "strip": made_strip}
+        return self._settle_copy(job, spec, target_key, version, {**made_facts, **strip_facts})
 
-    def _source_header_facts(self, tenant_id: UUID, source_key: str) -> dict[str, Any] | None:
-        """The original's header (`SourceHeader.to_dict`) for a copy found already
-        written — never encoded, but the whole original is downloaded to read it (up to
-        the 200 MB upload cap; a rare path: a retried job that finds its copy in place).
-        None when it cannot be read: the job still settles (the copy exists) and the editor
-        keeps playing the original, which needs no size."""
+    def _source_header(self, tenant_id: UUID, source_key: str) -> Any | None:
+        """The original's header (`SourceHeader`) for a copy found already written —
+        never encoded, but the whole original is downloaded to read it (up to the 200 MB
+        upload cap; a rare path: a retried job that finds its copy in place). None when it
+        cannot be read: the job still settles (the copy exists) and the editor keeps
+        playing the original, which needs no size."""
         from qualify_creative.video.source_limits import read_header  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory(prefix="qualify-source-head-") as tmp:
             source = Path(tmp) / "source"
             try:
                 self._fetch_local_source(tenant_id, source_key, source)
-                return read_header(source).to_dict()
+                return read_header(source)
             except Exception as exc:  # noqa: BLE001 — the copy is kept either way
                 logger.warning("source header not read on reuse: %s", type(exc).__name__)
                 return None
+
+    def _kept_strip_facts(
+        self, tenant_id: UUID, strip_key: str, head: Any | None, spec: _CopySpec
+    ) -> dict[str, Any]:
+        """The result's strip facts for a strip found already written (a retry after its
+        PUT): the layout from the original's length, the tile size from the kept JPEG's
+        own header (a few KB read back). `strip_skipped` when either cannot be read — the
+        timeline then shows no frames, never misplaced ones."""
+        layout = strip_layout(getattr(head, "duration_s", None))
+        if layout is None:
+            return {"strip_skipped": "no_duration"}
+        with tempfile.TemporaryDirectory(prefix=f"qualify-{spec.step}-strip-") as tmp:
+            kept = Path(tmp) / "strip.jpg"
+            try:
+                self._download(tenant_id, strip_key, kept)
+            except Exception as exc:  # noqa: BLE001 — the copy is kept either way
+                logger.warning("kept strip not read: %s", type(exc).__name__)
+                return {"strip_skipped": "unread"}
+            made = _made_strip_facts(kept, layout)
+        if made is None:
+            return {"strip_skipped": "unread"}
+        return {"strip_key": strip_key, "strip": {**made, "reused": True}}
 
     def _fetch_local_source(self, tenant_id: UUID, key: str, target: Path) -> None:
         """The owner's file into `target`: from R2 (`t/…`, `gallery/…`), or an old local
@@ -649,11 +732,18 @@ class MediaJobRunner:
             row.updated_at = now
             row.finished_at = now
             row.last_error_code = None
+            # ED-11b review: the result's version is the JOB's (what was asked for and what
+            # the readers match on), the encoder's own is kept beside it — a job settled by
+            # a worker of another version is then told apart (`upload_previews._fold`)
+            payload = job.payload or {}
             row.result = {
                 **facts,
-                "source_key": (job.payload or {}).get("source_key"),
+                "source_key": payload.get("source_key"),
                 spec.target_field: key,
-                "version": version,
+                "version": str(
+                    payload.get("version") or getattr(row, "pipeline_version", None) or version
+                ),
+                "made_with": version,
                 "cost_usd": "0.00",
                 "worker": worker_id(),
             }
@@ -1165,6 +1255,28 @@ class MediaJobRunner:
         if count_folder or deleted.objects:
             report.folders += 1
         return True
+
+
+def _made_strip_facts(path: Path, layout: StripLayout) -> dict[str, Any] | None:
+    """What the result records of a strip JPEG at `path` (ED-11b): its layout, the tile's
+    size in pixels (the image's over `columns` × `rows`: the `tile` filter adds no margin)
+    and its bytes. None when there is no image or its size does not split into the grid."""
+    from PIL import Image  # noqa: PLC0415
+
+    try:
+        size = path.stat().st_size
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:  # noqa: BLE001 — absent or not an image
+        return None
+    if size <= 0 or width % layout.columns or height % layout.rows:
+        return None
+    return {
+        **layout.to_dict(),
+        "tile_width": width // layout.columns,
+        "tile_height": height // layout.rows,
+        "bytes": size,
+    }
 
 
 def _claimed(job: GalleryJob) -> ClaimedJob:

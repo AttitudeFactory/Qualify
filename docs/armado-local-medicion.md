@@ -374,6 +374,59 @@ de los 600 MiB del ticket y con ~340 MiB de margen hasta 768m. Lo que pesa es el
 HEVC de 5K; la codificación a 480p casi no suma. En arm64 (producción) el tiempo será mayor; el
 tiempo permitido es 300 s + 20 s por segundo de video (2540 s para 112 s), tope 3 h.
 
+## Tira de cuadros de la línea de tiempo (ED-11b, m-25029110, medido 2026-11-23)
+
+Desde `upload-preview-480p-strip-v2`, el mismo FFmpeg que hace la copia de 480p saca también la
+tira de cuadros del editor: un cuadro por segundo, el último que haya hasta la mitad de cada
+segundo (`i + 0,5` s; `setpts` + `fps`, que repite el cuadro anterior si el video no tiene
+cuadros por más de un segundo, así que la tira nunca se corre), de 56 px de alto, en una sola imagen JPEG de una fila por minuto (60 cuadros por fila, tope
+de una hora). El video se descarga y se decodifica una sola vez para las dos salidas
+(`-filter_complex` con `split`). Va junto a la copia, en
+`t/{tenant}/uploads/previews/{uuid5}/strip.jpg`. Costo de proveedor: US$0.
+
+Las copias v1 que ya existían no se rehacen: se siguen mostrando, y su tira se pide aparte (un
+trabajo v2 que encuentra la copia en su lugar y decodifica el original solo para la tira).
+
+Medido con `deploy/measure/upload-preview-memory.sh run SOURCE [both|copy|strip]`, mismas
+fuentes, imagen y límites que ED-09 (768m, 1 CPU, amd64), una corrida por contenedor:
+
+| Fuente | Modo | Pico `anon` MiB | RSS de ffmpeg MiB | CPU s | Tira |
+|---|---|---|---|---|---|
+| 5K HEVC 10 bits, 112 s | copia sola (v1) | 406 | 427 | 372 | — |
+| 5K HEVC 10 bits, 112 s | copia + tira (v2) | **408** | 430 | 465 | 6000×112, 109 KiB |
+| 5K HEVC 10 bits, 112 s | tira sola | 367 | 390 | 329 | 6000×112, 96 KiB |
+| 5K HEVC 8 bits, 112 s | copia + tira (v2) | 281 | 304 | 374 | 6000×112, 109 KiB |
+| 4K HEVC 10 bits, 60 s, rotado 90° | copia + tira (v2) | 284 | 305 | 291 | 1920×56 (cuadros de 32 px), 15 KiB |
+| 4K HEVC 10 bits, 60 s, rotado 90° | tira sola | 243 | 265 | 167 | 1920×56, 13 KiB |
+
+Ningún OOM. La memoria no cambia con la tira (408 contra 406 MiB): el decodificador de 5K sigue
+siendo lo que pesa. `memory.events max` > 0 en las corridas de 5K de 10 bits (también en la copia
+sola): es la caché de archivos de la fuente de 900 MB empujando contra el límite, no memoria
+anónima.
+
+**Tiempo de CPU por minuto de video.** Las corridas largas varían mucho entre una y otra en esta
+máquina (el mismo 5K de 8 bits dio 458 s de CPU con la copia sola el 2026-11-20 y 374 s con copia
++ tira hoy), así que el costo de la tira se midió aparte, con `-benchmark`, sobre 10 s del 5K de
+10 bits, las variantes una detrás de otra en el mismo contenedor:
+
+| Variante (10 s de 5K 10 bits) | CPU s, pasada 1 | CPU s, pasada 2 |
+|---|---|---|
+| copia sola, `-vf` (v1) | 40,2 | 62,5 |
+| copia sola, `-filter_complex` | 35,8 | 34,4 |
+| copia + tira (v2, lo que corre) | 36,1 | 52,9 |
+| tira sola | 31,8 | 29,8 |
+
+La segunda pasada muestra cuánto varía esta máquina (la misma copia sola: 34 a 63 s), así que el
+costo propio de la tira no se puede separar con más precisión que eso. Lo que sí queda claro: la
+tira sola (decodificar y tomar 1 cuadro por segundo) ya cuesta ~30 s de los ~35 s de la copia, o
+sea que casi todo es decodificar el HEVC, y en la primera pasada, la más limpia, la tira sumó ~1 %.
+La cota alta es la de las corridas largas: +25 % (465 contra 372 s).
+
+Por minuto de video, en amd64 y 1 CPU: **copia + tira de un 5K de 10 bits, 200 a 250 s de CPU**
+(la copia sola, ~200 s), **4K de 10 bits rotado, ~290 s**; **la tira sola de una copia v1,
+~170–180 s por minuto** (decodifica el original otra vez). En arm64 (producción) será más; el
+tiempo permitido (300 s + 20 s por segundo de video) no cambia y sobra.
+
 ## Pendiente
 
 - **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el

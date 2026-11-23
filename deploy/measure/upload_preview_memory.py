@@ -5,8 +5,13 @@ reuses EF-15's sampler (`local_video_memory.py`) and m-25071265's synthetic sour
 (`local_normalize_memory.py make`), and makes the ticket's worst case from them.
 
     python upload_preview_memory.py make <dir>             # the 112 s sources, by stream copy
-    python upload_preview_memory.py run <dir> <source>     # one copy, measured
+    python upload_preview_memory.py run <dir> <source> [both|copy|strip]   # measured
     python upload_preview_memory.py sources
+
+m-25029110 (ED-11b): `run` takes a mode — `both` (default: the v2 job, the copy AND the
+frame strip from one decode), `copy` (the v1 command, the copy alone, for comparison) or
+`strip` (the strip alone: what a v1 copy's strip costs when asked for apart). The result
+adds the strip's size and pixel size.
 
 `make` needs `<dir>/src/k5_hevc_10.mp4` and `k4_hevc10_60.mp4` (from
 `local-normalize-memory.sh make`). It writes, without re-encoding the 5K picture except
@@ -95,17 +100,21 @@ def _probe(path: Path) -> dict:
     return json.loads(out)
 
 
-def run(folder: Path, source: str) -> None:
+def run(folder: Path, source: str, mode: str = "both") -> None:
     import resource  # Linux only
 
     from qualify_creative.video import upload_preview
 
     src = folder / "src" / source
-    out = folder / "preview" / f"{Path(source).stem}.preview.mp4"
+    out = folder / "preview" / f"{Path(source).stem}.{mode}.preview.mp4"
+    strip = folder / "preview" / f"{Path(source).stem}.{mode}.strip.jpg"
     out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    strip.unlink(missing_ok=True)
     info = _probe(src)
     duration = float(info["format"]["duration"])
     video = next(s for s in info["streams"] if s["codec_type"] == "video")
+    layout = upload_preview.strip_layout(duration) if mode in ("both", "strip") else None
     sampler = Sampler()
     sampler.start()
     baseline = round(_cgroup_stat().get("anon", 0) / 2**20)
@@ -114,7 +123,11 @@ def run(folder: Path, source: str) -> None:
     error = None
     try:
         upload_preview.FfmpegUploadPreviewer(use_nice=False).make_preview(
-            src, out, duration_s=duration
+            src,
+            None if mode == "strip" else out,
+            duration_s=duration,
+            strip_out=strip if layout else None,
+            layout=layout,
         )
     except Exception as exc:  # noqa: BLE001 — reported
         error = f"{type(exc).__name__}: {exc}"
@@ -142,8 +155,20 @@ def run(folder: Path, source: str) -> None:
             "duration_s": round(float(probe["format"]["duration"]), 2),
         }
     size = out.stat().st_size if out.exists() else 0
+    strip_facts: dict = {}
+    if strip.exists():
+        from PIL import Image
+
+        with Image.open(strip) as picture:
+            strip_facts = {
+                "size": list(picture.size),
+                "kib": round(strip.stat().st_size / 1024, 1),
+                "layout": layout.to_dict() if layout else None,
+            }
     result = {
         "source": source,
+        "mode": mode,
+        "strip": strip_facts,
         "version": upload_preview.UPLOAD_PREVIEW_VERSION,
         "source_size": [video["width"], video["height"]],
         "source_pix_fmt": video.get("pix_fmt"),
@@ -168,13 +193,14 @@ def main() -> None:
     parser.add_argument("step", choices=("make", "run", "sources"))
     parser.add_argument("folder", nargs="?", type=Path)
     parser.add_argument("source", nargs="?")
+    parser.add_argument("mode", nargs="?", default="both", choices=("both", "copy", "strip"))
     args = parser.parse_args()
     if args.step == "sources":
         print("\n".join(SOURCES))
     elif args.step == "make":
         make(args.folder)
     else:
-        run(args.folder, args.source)
+        run(args.folder, args.source, args.mode)
 
 
 if __name__ == "__main__":

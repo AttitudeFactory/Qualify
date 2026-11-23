@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,7 +35,7 @@ from qualify_api.catalog.business_media_models import (
     STATUS_RUNNING,
 )
 from qualify_api.catalog.media_worker import ClaimedJob, MediaJobRunner
-from qualify_api.creative.upload_previews import preview_key
+from qualify_api.creative.upload_previews import preview_key, strip_key
 
 TENANT = UUID("a0000000-0000-4000-8000-000025026643")
 OTHER = UUID("b0000000-0000-4000-8000-000025026644")
@@ -65,28 +66,56 @@ class Gate:
 
     def put_media(self, tenant_id: UUID, key: str, fileobj: Any, content_type: str) -> None:
         assert key.startswith(f"t/{tenant_id}/")
-        if self.fail_put is not None:
+        if self.fail_put is not None and (self.fail_put_on is None or key == self.fail_put_on):
             raise self.fail_put
-        assert content_type == "video/mp4"
+        assert content_type == ("image/jpeg" if key.endswith("/strip.jpg") else "video/mp4")
         self.puts.append(key)
         self.files[key] = fileobj.read()
 
+    fail_put_on: str | None = None
+
+
+def _jpeg(width: int, height: int) -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 40, 40)).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
 
 class Previewer:
+    """FFmpeg's double: the copy is `preview:` + the source; the strip a real JPEG of
+    `TILE` px tiles in the layout's grid (the worker reads its size back)."""
+
     version = UPLOAD_PREVIEW_VERSION
+    TILE = (100, 56)
 
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.calls: list[float | None] = []
+        self.made: list[tuple[bool, Any]] = []  # (copy made, strip layout)
 
     def allowance(self, duration_s: float | None) -> timedelta:
         return timedelta(minutes=47)
 
-    def make_preview(self, source: Path, out: Path, *, duration_s: float | None) -> None:
+    def make_preview(
+        self,
+        source: Path,
+        out: Path | None,
+        *,
+        duration_s: float | None,
+        strip_out: Path | None = None,
+        layout: Any = None,
+    ) -> None:
         self.calls.append(duration_s)
+        self.made.append((out is not None, layout))
         if self.error is not None:
             raise self.error
-        out.write_bytes(b"preview:" + source.read_bytes())
+        if out is not None:
+            out.write_bytes(b"preview:" + source.read_bytes())
+        if strip_out is not None:
+            width, height = self.TILE
+            strip_out.write_bytes(_jpeg(layout.columns * width, layout.rows * height))
 
 
 @pytest.fixture
@@ -166,7 +195,8 @@ def test_an_upload_gets_its_copy_once_with_its_provenance(
     assert row.status == STATUS_DONE and row.lease_until is None
     result = row.result
     assert result["preview_key"] == TARGET_KEY and result["source_key"] == SOURCE_KEY
-    assert result["version"] == "upload-preview-480p-v1" and result["cost_usd"] == "0.00"
+    assert result["version"] == UPLOAD_PREVIEW_VERSION and result["cost_usd"] == "0.00"
+    assert "strip_key" not in result  # a v1 payload (no `strip_key`): the copy alone
     assert result["source"]["width"] == 5120 and result["source"]["bits"] == 10
     assert result["preview"]["height"] == 480 and result["preview"]["bits"] == 8
     assert result["bytes"] == len(b"preview:5k") and "encode_s" in result
@@ -423,3 +453,153 @@ def test_the_production_runner_has_a_previewer(monkeypatch: pytest.MonkeyPatch) 
 
     source = inspect.getsource(media_worker.production_runner)
     assert "previewer=FfmpegUploadPreviewer()" in source
+
+
+# -- the frame strip (ED-11b, m-25029110) -----------------------------------------------
+
+STRIP_KEY = strip_key(TENANT, SOURCE_KEY)
+
+
+def _strip_job(target_key: str = TARGET_KEY, strip: str = STRIP_KEY) -> ClaimedJob:
+    job = _job(target_key=target_key)
+    return replace(job, payload={**(job.payload or {}), "strip_key": strip})
+
+
+def test_the_copy_and_its_strip_come_out_of_one_decode(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    gate, previewer = Gate({SOURCE_KEY: b"5k"}), Previewer()
+    outcome = _runner(gate, previewer, tmp_path).process(_strip_job())
+    assert outcome.status == STATUS_DONE
+    # ONE FFmpeg run made both: the original was read once
+    ((copy, layout),) = previewer.made
+    assert copy and (layout.frames, layout.columns, layout.rows) == (112, 60, 2)
+    assert gate.reads == [SOURCE_KEY]
+    assert gate.puts == [TARGET_KEY, STRIP_KEY]  # the copy first, then the strip
+    assert STRIP_KEY.startswith(f"t/{TENANT}/uploads/previews/")
+    result = row.result
+    assert result["strip_key"] == STRIP_KEY and result["cost_usd"] == "0.00"
+    assert result["strip"] == {
+        "frames": 112,
+        "columns": 60,
+        "rows": 2,
+        "interval_s": 1,
+        "offset_s": 0.5,
+        "tile_width": 100,
+        "tile_height": 56,
+        "bytes": len(gate.files[STRIP_KEY]),
+    }
+    assert result["preview_key"] == TARGET_KEY and result["version"] == UPLOAD_PREVIEW_VERSION
+
+
+def test_the_results_version_is_the_jobs_and_the_encoders_is_kept_beside_it(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    """ED-11b review: a v1 job (queued before the deploy) settled by this worker says v1
+    — what it asked for, the copy alone — so the readers never take it for a v2 job with
+    a strip; the encoder that made it is `made_with`."""
+    job = _job()
+    v1_job = replace(job, payload={**(job.payload or {}), "version": "upload-preview-480p-v1"})
+    gate = Gate({SOURCE_KEY: b"5k"})
+    assert _runner(gate, Previewer(), tmp_path).process(v1_job).status == STATUS_DONE
+    assert row.result["version"] == "upload-preview-480p-v1"
+    assert row.result["made_with"] == UPLOAD_PREVIEW_VERSION
+
+
+def test_a_kept_copy_gets_its_strip_alone_never_a_second_encode(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    """A v1 copy whose strip was asked for apart, or a retry after the copy's PUT: the
+    original is decoded for the strip only, and the copy is never written again."""
+    v1_copy = preview_key(TENANT, SOURCE_KEY, "upload-preview-480p-v1")
+    gate, previewer = Gate({SOURCE_KEY: b"5k", v1_copy: b"v1 copy"}), Previewer()
+    outcome = _runner(gate, previewer, tmp_path).process(_strip_job(target_key=v1_copy))
+    assert outcome.status == STATUS_DONE
+    ((copy, layout),) = previewer.made
+    assert not copy and layout.frames == 112
+    assert gate.puts == [STRIP_KEY] and gate.files[v1_copy] == b"v1 copy"
+    result = row.result
+    assert result["reused"] is True and result["preview_key"] == v1_copy
+    assert result["source"] == BIG.to_dict()  # the editor still learns the original's size
+    assert result["strip_key"] == STRIP_KEY and result["strip"]["tile_height"] == 56
+
+
+def test_a_strip_put_that_fails_is_retried_as_the_strip_alone(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    gate = Gate({SOURCE_KEY: b"5k"})
+    gate.fail_put, gate.fail_put_on = ConnectionError("r2 down"), STRIP_KEY
+    first = Previewer()
+    _runner(gate, first, tmp_path).process(_strip_job())
+    assert row.status == STATUS_QUEUED and row.last_error_code == "r2_write_strip:ConnectionError"
+    assert gate.puts == [TARGET_KEY]  # the copy is kept (write-once `t/`)
+    gate.fail_put, row.status, row.attempts = None, STATUS_RUNNING, 2
+    retried = replace(_strip_job(), attempts=2)
+    second = Previewer()
+    assert _runner(gate, second, tmp_path).process(retried).status == STATUS_DONE
+    assert [copy for copy, _ in second.made] == [False]  # never encoded twice
+    assert gate.puts == [TARGET_KEY, STRIP_KEY] and row.result["strip_key"] == STRIP_KEY
+
+
+def test_both_kept_nothing_is_decoded_and_the_strip_is_described_from_its_file(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    kept = {SOURCE_KEY: b"5k", TARGET_KEY: b"made", STRIP_KEY: _jpeg(6000, 112)}
+    gate, previewer = Gate(kept), Previewer()
+    outcome = _runner(gate, previewer, tmp_path).process(_strip_job())
+    assert outcome.status == STATUS_DONE and previewer.calls == [] and gate.puts == []
+    strip = row.result["strip"]
+    assert (strip["frames"], strip["tile_width"], strip["tile_height"]) == (112, 100, 56)
+    assert row.result["strip_key"] == STRIP_KEY and strip["reused"] is True
+
+
+def test_a_video_without_a_length_gets_its_copy_and_no_strip(
+    tmp_path: Path,
+    row: SimpleNamespace,
+    made: dict[str, SourceHeader],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endless = replace(BIG, duration_s=None)
+    monkeypatch.setattr(
+        source_limits,
+        "read_header",
+        lambda path: SMALL if path.read_bytes().startswith(b"preview:") else endless,
+    )
+    gate, previewer = Gate({SOURCE_KEY: b"5k"}), Previewer()
+    assert _runner(gate, previewer, tmp_path).process(_strip_job()).status == STATUS_DONE
+    assert previewer.made == [(True, None)] and gate.puts == [TARGET_KEY]
+    assert row.result["strip_skipped"] == "no_duration" and "strip_key" not in row.result
+    # a kept copy of such a video: nothing to decode at all
+    row.status, row.result = STATUS_RUNNING, {}
+    again = Previewer()
+    assert _runner(gate, again, tmp_path).process(_strip_job()).status == STATUS_DONE
+    assert again.calls == [] and row.result["strip_skipped"] == "no_duration"
+
+
+def test_a_strip_ffmpeg_did_not_write_leaves_the_copy_done(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    class NoStrip(Previewer):
+        def make_preview(self, source: Path, out: Path | None, **kwargs: Any) -> None:
+            super().make_preview(source, out, duration_s=kwargs["duration_s"])
+
+    gate = Gate({SOURCE_KEY: b"5k"})
+    assert _runner(gate, NoStrip(), tmp_path).process(_strip_job()).status == STATUS_DONE
+    assert gate.puts == [TARGET_KEY] and row.result["strip_skipped"] == "empty"
+
+
+@pytest.mark.parametrize(
+    "strip",
+    [
+        f"t/{OTHER}/uploads/previews/{uuid4()}/strip.jpg",
+        f"t/{TENANT}/uploads/previews/../../{OTHER}/strip.jpg",
+        f"t/{TENANT}/normalized/{uuid4()}/strip.jpg",
+    ],
+)
+def test_a_strip_key_outside_the_tenants_copies_is_refused(
+    tmp_path: Path, row: SimpleNamespace, strip: str
+) -> None:
+    gate, previewer = Gate({SOURCE_KEY: b"5k"}), Previewer()
+    outcome = _runner(gate, previewer, tmp_path).process(_strip_job(strip=strip))
+    assert outcome.status == STATUS_FAILED and row.last_error_code == "payload_invalid"
+    assert gate.reads == [] and gate.puts == [] and previewer.calls == []
