@@ -16,17 +16,33 @@ steam: `recipe.is_built_layer`) — the same compose step a `local` piece runs
    (`text_overlay.ASPECT_TOLERANCE`) — so it is first cut to 9:16 (`nine_sixteen_size`:
    486x864, 5 px off each side) by the fitter; the layers are drawn for a 9:16 frame and
    sit at the same place relative to it in the preview and in the final. The frozen
-   recipe and the step's provenance go into the asset's `params["compose"]`.
+   recipe and the step's provenance go into the asset's `params["compose"]`, and the
+   text PNGs the render service drew are kept beside the piece in R2 (`compose.texts`:
+   key and sha256 of each, `text_images_params`). When this generation's Seedance task
+   is already recorded (a resumed run: the clip is paid), a failed drawing is not fatal:
+   it is tried again after the clip and the preview degrades with the warning.
 2. **The final.** When the 1080p final of that draft arrives (`MediaProducer.finalize`, in
    the creative worker), the SAME frozen recipe (`stored_recipe(asset.params)`, never the
    brief as it reads today: «si la receta cambió de versión entre borrador y final, se usa
    la del borrador») is composed again over the fitted final, after its logo and
-   subtitles, and its provenance (`final`: from which final task, raw file and source
-   sha256) joins the preview's. Idempotent: the final's file has one key per order
-   (`{stem}-final-{attempt}.mp4`); a retry that finds that key already kept takes the
-   file as it is (`reused`) instead of composing a second one, and the raw 1080p is
-   never paid twice (`raw_final`). A compose that fails fails the final with the raw
-   1080p kept, so «Reintentar» costs the vendor nothing.
+   subtitles, with the preview's OWN text PNGs (`stored_text_images`, checked by sha256:
+   exactly the texts approved, the render service not asked again; drawn again only when
+   one is missing or altered), and its provenance (`final`: from which final task, raw
+   file and source sha256, `texts_reused`) joins the preview's. Idempotent: the final's
+   file has one key per order (`{stem}-final-{attempt}.mp4`); a retry that finds that
+   key already kept takes the file as it is (`reused`) BEFORE any fit, subtitle or
+   compose, and the raw 1080p is never paid twice (`raw_final`). A compose that fails
+   fails the final with the raw 1080p kept, so «Reintentar» costs the vendor nothing.
+
+Where it runs. Only in the creative worker (`process.is_worker_process`): elsewhere the
+compose fails closed — the preview keeps its clip with the warning, the final fails with
+its raw 1080p kept (a free retry); drawing texts alone, a call to our render service, runs
+anywhere. Every compose (and the preview's cut to 9:16) holds the worker's heavy-video
+gate (`heavy_video.assembling`, m-25042483): with a part join in flight it raises
+`LocalAssemblyWait` and the job waits for a later pass — nothing is paid again (the final's
+raw 1080p is kept; the preview is replayed through the queue's checkpoints) — so a compose
+never overlaps a join inside the worker's 768m (measured: 416 MiB anon for a 15 s final
+with 3 texts and 3 layers, `deploy/measure/recompose-memory.sh`).
 
 What is still refused before any row (`recipe.unbuilt_recipe_problems`): texts or layers
 over a PART made by Seedance (its final is joined by `part_final`/`part_join`, which do
@@ -44,7 +60,7 @@ import hashlib
 import io
 import logging
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -191,6 +207,81 @@ def stored_recipe(params: Mapping[str, Any] | None) -> ComposeRecipe | None:
     if recipe.empty or recipe.effects_pipeline_version < SEEDANCE_COMPOSE_EFFECTS_VERSION:
         return None
     return recipe
+
+
+def text_images_params(
+    drawn: Sequence[Any], keep: Callable[[int, bytes], str | None]
+) -> list[dict[str, Any]] | None:
+    """The preview's text PNGs kept beside the piece (`keep(index, png)` → its key, or
+    None when the store refused it), each with its sha256 and what its provenance and
+    report say — `params["compose"]["texts"]`, read back by `stored_text_images`. None
+    when one could not be kept: the final then draws them again, as before."""
+    kept: list[dict[str, Any]] = []
+    for index, image in enumerate(drawn):
+        png = bytes(image.png)
+        key = keep(index, png)
+        if not key:
+            return None
+        kept.append(
+            {
+                "key": key,
+                "sha256": hashlib.sha256(png).hexdigest(),
+                "job_id": getattr(image, "job_id", None),
+                "width": getattr(image, "width", None),
+                "height": getattr(image, "height", None),
+                "report": _plain(getattr(image, "report", None)),
+                "provenance": _plain(getattr(image, "provenance", None)),
+            }
+        )
+    return kept
+
+
+def _plain(value: Any) -> dict[str, Any]:
+    """A JSON-safe copy of a mapping (anything that is not is dropped to its str)."""
+    import json  # noqa: PLC0415
+
+    if not isinstance(value, Mapping):
+        return {}
+    return json.loads(json.dumps(dict(value), default=str))
+
+
+def stored_text_images(
+    block: Mapping[str, Any], recipe: ComposeRecipe, read: Callable[[str], bytes | None]
+) -> tuple[Any, ...] | None:
+    """The preview's own text PNGs (`params["compose"]["texts"]`), read back and checked
+    by sha256, one per text of `recipe` in order — what the final lays, so its texts are
+    exactly the approved ones and the render service is not asked again. None when any
+    is missing, unreadable or altered (a piece from before they were kept): the final
+    draws them again. `read(key)` returns None for a key that is not the business's."""
+    from qualify_creative.render.video_text import VideoTextImage  # noqa: PLC0415
+
+    texts = block.get("texts")
+    if not recipe.text_layers:
+        return ()
+    if not isinstance(texts, list) or len(texts) != len(recipe.text_layers):
+        return None
+    images: list[Any] = []
+    for entry in texts:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("key"), str):
+            return None
+        try:
+            png = read(entry["key"])
+        except Exception:  # noqa: BLE001 — gone or unreadable: drawn again
+            logger.warning("compose text %s unreadable: drawn again", entry.get("key"))
+            return None
+        if not png or hashlib.sha256(png).hexdigest() != entry.get("sha256"):
+            return None
+        images.append(
+            VideoTextImage(
+                job_id=str(entry.get("job_id") or ""),
+                png=png,
+                width=entry.get("width"),
+                height=entry.get("height"),
+                report=dict(entry.get("report") or {}),
+                provenance=dict(entry.get("provenance") or {}),
+            )
+        )
+    return tuple(images)
 
 
 def nine_sixteen_size(width: int, height: int) -> tuple[int, int] | None:
@@ -427,4 +518,6 @@ __all__ = [
     "nine_sixteen_size",
     "seedance_compose_allowed",
     "stored_recipe",
+    "stored_text_images",
+    "text_images_params",
 ]

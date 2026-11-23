@@ -420,9 +420,11 @@ def test_the_effects_pipeline_version_is_the_servers() -> None:
     ],
 )
 def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) -> None:
-    """EF-02: the owner never pays for a video without what he chose — a Clip with effects,
-    a text over the video or stretches of own video (outside `local`) is refused before
-    any row."""
+    """EF-02: the owner never pays for a video without what he chose — what the engine
+    still does not make is refused before any row. EF-14 composes the texts and the
+    library's layers over a 9:16 `reference` Clip made by Seedance (no longer here:
+    `test_video_pipeline_recompose.py`); stretches of own video in an `edit` are still
+    refused (D4)."""
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(

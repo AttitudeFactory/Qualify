@@ -8,7 +8,8 @@ the same place relative to the frame — are measured with real PyAV in
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -57,6 +58,16 @@ SWITCH = "QUALIFY_CREATIVE_DISPATCHER"
 @pytest.fixture
 def queue_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(SWITCH, "queue")
+
+
+@pytest.fixture(autouse=True)
+def in_the_worker() -> Iterator[None]:
+    """The compose decodes video: only inside the creative worker (`is_worker_process`)."""
+    from qualify_api.creative.process import mark_worker_process, unmark_worker_process
+
+    mark_worker_process()
+    yield
+    unmark_worker_process()
 
 
 def _seedance_clip(fmt: ContentFormat = ContentFormat.REELS_9_16, **media: Any) -> Any:
@@ -172,7 +183,17 @@ class FakeComposer:
         self.draws.append(recipe)
         if self.fail_draw is not None:
             raise self.fail_draw
-        return tuple(f"png-{layer.text}" for layer in recipe.text_layers)
+        return tuple(
+            SimpleNamespace(
+                png=f"png-{layer.text}".encode(),
+                job_id=f"job-{layer.text}",
+                width=1080,
+                height=1920,
+                report={"lines": [layer.text]},
+                provenance={"template": "video_text"},
+            )
+            for layer in recipe.text_layers
+        )
 
     def compose(
         self,
@@ -267,7 +288,7 @@ def test_the_preview_is_composed_and_its_recipe_frozen() -> None:
     (video,) = outcome.media
     (draw,) = composer.draws
     ((source, recipe, drawn, stage),) = composer.composes
-    assert stage == "preview" and drawn == ("png-Shawarma mixto",)
+    assert stage == "preview" and [d.png for d in drawn] == [b"png-Shawarma mixto"]
     assert recipe.text_layers == (WORDS,) and recipe.effects == (SMOKE,)
     assert store.files[video.object_key] == b"composed-" + source
     frozen = video.params["compose"]
@@ -392,3 +413,179 @@ def test_a_clip_without_texts_is_finished_exactly_as_before() -> None:
     assert final.failure is None and "compose" not in final.media.params
     assert composer.composes == []
     assert store.files[final.media.object_key] == b"h264-hevc-bytes"
+
+
+# ---------------------------------------------------------------------------
+# review fixes: the v1 key, the heavy-video gate, the kept PNGs, a resumed task, the worker
+
+
+def test_the_v1_text_key_is_composed_too() -> None:
+    """A brief stored with the v1 `text_layer` key reads as `text_layers` and is composed."""
+    brief = _seedance_clip(text_layer=WORDS)
+    assert unbuilt_recipe_problems(brief) == ()
+    assert recompose.composes_over_seedance(brief)
+    recipe = recompose.compose_recipe_of(
+        _seedance_clip(text_layer=WORDS, effects_pipeline_version=1), make_kit()
+    )
+    assert recipe is not None and recipe.text_layers == (WORDS,)
+
+
+def test_the_preview_waits_for_a_part_join_and_is_not_paid_twice() -> None:
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
+
+    composer = FakeComposer()
+    producer, _, seedance = _composing_producer(composer)
+    with joining(), pytest.raises(LocalAssemblyWait):
+        producer.produce(
+            tenant_id=MEDIA_TENANT,
+            draft_id=uuid4(),
+            brief=_brief_with(text_layers=(WORDS,)),
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        )
+    # nothing composed; the one Seedance call is replayed by the queue's checkpoints
+    assert composer.composes == [] and len(seedance.requests) == 1
+
+
+def test_the_final_waits_for_a_part_join_with_its_raw_1080p_kept() -> None:
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
+
+    composer = FakeComposer()
+    producer, _, seedance, draft_id, brief, draft = _draft_and_final_inputs(
+        composer, text_layers=(WORDS,)
+    )
+    kept: list[dict[str, Any]] = []
+    asset = _with_attempt(draft, "a1")
+    with joining(), pytest.raises(LocalAssemblyWait):
+        producer.finalize(
+            tenant_id=MEDIA_TENANT,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_kit(),
+            asset=asset,
+            budget=BUDGET,
+            revision=1,
+            on_raw_kept=lambda raw: kept.append(dict(raw)),
+        )
+    assert kept and kept[0]["key"]
+    paid = len(seedance.requests)
+    retry = _final(producer, brief, _with_attempt(draft, "a1", raw_final=kept[0]), draft_id)
+    assert retry.failure is None and len(seedance.requests) == paid  # never paid twice
+
+
+def test_the_final_lays_the_previews_own_text_pngs() -> None:
+    composer = FakeComposer()
+    producer, store, _, draft_id, brief, draft = _draft_and_final_inputs(
+        composer, text_layers=(WORDS,)
+    )
+    (text,) = draft.params["compose"]["texts"]
+    assert store.files[text["key"]] == b"png-Shawarma mixto"
+    draws = len(composer.draws)
+
+    final = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+
+    assert final.failure is None
+    _, recipe, drawn, stage = composer.composes[-1]
+    assert stage == "final" and [image.png for image in drawn] == [b"png-Shawarma mixto"]
+    assert len(composer.draws) == draws  # the render service is not asked again
+    assert final.media.params["compose"]["final"]["texts_reused"] is True
+
+
+@pytest.mark.parametrize("damage", ["missing", "altered"])
+def test_a_missing_or_altered_text_png_is_drawn_again(damage: str) -> None:
+    composer = FakeComposer()
+    producer, store, _, draft_id, brief, draft = _draft_and_final_inputs(
+        composer, text_layers=(WORDS,)
+    )
+    (text,) = draft.params["compose"]["texts"]
+    if damage == "missing":
+        del store.files[text["key"]]
+    else:
+        store.files[text["key"]] = b"another picture"
+
+    final = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+
+    assert final.failure is None
+    _, _, drawn, stage = composer.composes[-1]
+    assert stage == "final" and drawn is None  # the composer draws them again
+    assert final.media.params["compose"]["final"]["texts_reused"] is False
+
+
+def test_a_resumed_seedance_task_goes_on_when_the_texts_cannot_be_drawn() -> None:
+    """The clip of this generation is already paid (its task recorded): a failed drawing
+    before the call is not fatal — the clip is kept, with the warning."""
+    down = ClipComposeFailed(
+        "El servicio no responde.",
+        failure=FailureReason.DEPENDENCY_FAILED.value,
+        code="text_layer_unavailable",
+    )
+    composer = FakeComposer(fail_draw=down)
+    producer, store, seedance = _composing_producer(composer)
+    producer._seedance_task_recorded = lambda: True
+    outcome = producer.produce(
+        tenant_id=MEDIA_TENANT,
+        draft_id=uuid4(),
+        brief=_brief_with(text_layers=(WORDS,)),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None and len(seedance.requests) == 1
+    assert COMPOSE_NOT_ADDED in [w.code for w in outcome.warnings]
+    (video,) = outcome.media
+    assert "compose" not in video.params
+    assert len(composer.draws) == 2  # before the call, and again after it
+
+
+def test_outside_the_worker_the_preview_warns_and_the_final_fails_free() -> None:
+    from qualify_api.creative.process import mark_worker_process, unmark_worker_process
+
+    composer = FakeComposer()
+    producer, store, seedance = _composing_producer(composer)
+    unmark_worker_process()
+    try:
+        outcome = producer.produce(
+            tenant_id=MEDIA_TENANT,
+            draft_id=uuid4(),
+            brief=_brief_with(text_layers=(WORDS,)),
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        )
+        assert outcome.failure is None and composer.composes == []
+        assert COMPOSE_NOT_ADDED in [w.code for w in outcome.warnings]
+        assert "compose" not in outcome.media[0].params
+    finally:
+        mark_worker_process()
+
+    # a preview composed in the worker, its final ordered outside it
+    producer, _, seedance, draft_id, brief, draft = _draft_and_final_inputs(
+        FakeComposer(), text_layers=(WORDS,)
+    )
+    unmark_worker_process()
+    try:
+        final = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+    finally:
+        mark_worker_process()
+    assert final.failure == FailureReason.PROVIDER_ERROR.value
+    assert final.detail == FINAL_COMPOSE_FAILED_TEXT
+    assert final.draft_changes and final.draft_changes["raw_final"]["key"]  # free retry
+
+
+def test_a_retry_with_the_final_kept_fits_nothing_again() -> None:
+    composer = FakeComposer()
+    producer, _, _, draft_id, brief, draft = _draft_and_final_inputs(
+        composer, text_layers=(WORDS,), clip_subtitles=True
+    )
+    first = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+    assert first.failure is None
+    fitter = producer._fitter
+    fitter.calls.clear()
+
+    retry = _final(
+        producer, brief, _with_attempt(draft, "a1", **(first.draft_changes or {})), draft_id
+    )
+
+    assert retry.failure is None and retry.media.object_key == first.media.object_key
+    assert fitter.calls == []  # no fit, no subtitles: the kept file is taken as it is
