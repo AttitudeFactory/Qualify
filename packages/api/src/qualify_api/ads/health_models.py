@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from qualify_api.ads.money import META_CURRENCY_OFFSETS, from_meta, money_display
+
 # AccountStatus constants from the official Python Business SDK 26.0.0 helper.
 # The helper calls 101 temporarily_unavailable; do not infer permanent closure.
 ACCOUNT_STATUS_LABELS = {
@@ -75,12 +77,18 @@ def minor_integer(value: Any) -> int | None:
 
 
 def money_label(value: int | None, currency: str) -> str:
-    # These currencies are used by Qualify and have two minor-unit decimal places.
-    # Other Meta currencies are not guessed or silently divided by 100.
-    if value is None or currency not in {"COP", "USD", "UYU", "VES", "EUR"}:
+    # `value` is in hundredths. Currencies without a verified Meta offset are never guessed.
+    if value is None or currency not in META_CURRENCY_OFFSETS:
         return "Importe pendiente de comprobar"
-    whole, fraction = divmod(value, 100)
-    return f"{whole:,}".replace(",", ".") + f",{fraction:02d} {currency}"
+    return money_display(value, currency)
+
+
+def _minor_from_meta(amount: int | None, currency: str) -> int | None:
+    """Meta's unit (the currency offset: COP pesos, USD/UYU cents) → hundredths, or None."""
+    if amount is None or currency not in META_CURRENCY_OFFSETS:
+        return None
+    minor = from_meta(amount, currency)
+    return minor if minor < 10**18 else None
 
 
 @dataclass(frozen=True)
@@ -125,19 +133,17 @@ class HealthObservation:
         if payload.get("account_id") != account_id or payload.get("currency") != currency:
             raise ValueError("account health identity mismatch")
         funding = minor_integer(payload.get("funding_source"))
+        spent = minor_integer(payload.get("amount_spent"))
+        cap = minor_integer(payload.get("spend_cap"))
         return cls(
             currency,
             payload.get("account_status") if type(payload.get("account_status")) is int else None,
             payload.get("disable_reason") if type(payload.get("disable_reason")) is int else None,
             True if funding is not None and funding > 0 else None,
-            None,
-            None,
-            amount_spent_raw=str(value)
-            if (value := minor_integer(payload.get("amount_spent"))) is not None
-            else None,
-            spend_cap_raw=str(value)
-            if (value := minor_integer(payload.get("spend_cap"))) is not None
-            else None,
+            _minor_from_meta(spent, currency),
+            _minor_from_meta(cap, currency),
+            amount_spent_raw=str(spent) if spent is not None else None,
+            spend_cap_raw=str(cap) if cap is not None else None,
         )
 
 

@@ -22,6 +22,7 @@ from qualify_api.ads.health_models import (
     account_status_label,
     ad_delivery_label,
     disable_reason_label,
+    money_label,
 )
 from qualify_api.connections.ad_accounts import AdAccountUnavailable, AdConnection
 from qualify_api.connections.resolver import build_authenticated_client
@@ -108,7 +109,7 @@ def test_absent_zero_malformed_funding_is_unknown_not_missing_card(funding) -> N
         currency="COP",
     )
     assert normalized.funding_present is None
-    assert normalized.amount_spent_minor is None
+    assert normalized.amount_spent_minor == 120_000  # COP offset 1: 1200 pesos
     assert normalized.amount_spent_raw == "1200"
     health = project_health(target(normalized), now=NOW)
     assert not health.can_promote and health.blocks_preparation
@@ -354,3 +355,38 @@ async def test_optional_ad_read_failure_never_erases_account_restriction_or_clai
         await client.aclose()
     assert normalized.account_status == 1 and normalized.pending_billing is None
     assert not project_health(target(normalized), now=NOW).can_promote
+
+
+@pytest.mark.parametrize(
+    ("currency", "raw", "minor", "label"),
+    [
+        ("COP", "25000", 2_500_000, "$25.000 COP"),
+        ("USD", "1050", 1_050, "$10,50 USD"),
+        ("UYU", "40000", 40_000, "$400 UYU"),
+        ("VES", "25000", None, "Importe pendiente de comprobar"),
+        ("EUR", "1050", None, "Importe pendiente de comprobar"),
+    ],
+)
+def test_meta_amounts_use_the_currency_offset(currency, raw, minor, label) -> None:
+    """m-25099912: Meta's unit is the currency offset (COP pesos, USD/UYU cents)."""
+    normalized = HealthObservation.from_graph(
+        {"account_id": "12", "currency": currency, "amount_spent": raw, "spend_cap": raw},
+        account_id="12",
+        currency=currency,
+    )
+    assert normalized.amount_spent_raw == normalized.spend_cap_raw == raw
+    assert normalized.amount_spent_minor == normalized.spend_cap_minor == minor
+    assert money_label(normalized.amount_spent_minor, currency) == label
+    # The snapshot round-trips; amounts stay hidden until the live test verifies Meta units.
+    hidden = project_health(target(normalized, currency=currency), now=NOW)
+    assert hidden.amount_spent_minor is None
+    assert hidden.amount_spent_label == "Importe pendiente de comprobar"
+    verified = replace(normalized, money_units_verified=True)
+    shown = project_health(target(verified, currency=currency), now=NOW)
+    assert shown.amount_spent_minor == shown.spend_cap_minor == minor
+    assert shown.amount_spent_label == shown.spend_cap_label == label
+
+
+def test_money_label_without_value_or_offset_is_pending() -> None:
+    assert money_label(None, "COP") == "Importe pendiente de comprobar"
+    assert money_label(2_500_000, "VES") == "Importe pendiente de comprobar"
