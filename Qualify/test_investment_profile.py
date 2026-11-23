@@ -37,6 +37,7 @@ from .investment_profile_vm import (
     first_problem,
     margin_options,
     margin_percent,
+    money_copy,
     read_amount,
     read_clients,
     safe_return,
@@ -90,27 +91,27 @@ def test_money_reads_thousands_dots_and_refuses_cents_and_letters() -> None:
     assert read_amount("0") == (0, AMOUNT_ZERO)
     assert read_clients("15") == (15, "")
     assert read_clients("1,5") == (0, CLIENTS_DECIMALS)
-    assert cap_echo("200.000") == "Son $200.000 al mes, unos $46.000 por semana."
+    assert cap_echo("200.000", "COP") == "Son $200.000 COP al mes, unos $46.000 COP por semana."
 
 
 def test_margin_ranges_follow_the_owners_price_and_become_a_percent() -> None:
-    labels = [label for _, label in margin_options("20.000")]
+    labels = [label for _, label in margin_options("20.000", "COP")]
     assert labels == [
-        "Poco: menos de $4.000",
-        "Entre $4.000 y $8.000",
-        "Entre $8.000 y $12.000",
-        "Más de $12.000",
+        "Poco: menos de $4.000 COP",
+        "Entre $4.000 COP y $8.000 COP",
+        "Entre $8.000 COP y $12.000 COP",
+        "Más de $12.000 COP",
         "Lo sé exacto",
         "No lo sé todavía",
     ]
     # no price yet: only the two choices that do not need it
-    assert [key for key, _ in margin_options("")] == ["exact", "unknown"]
+    assert [key for key, _ in margin_options("", "COP")] == ["exact", "unknown"]
     assert margin_percent("mid", "20.000", "") == (Decimal(30), "")
     assert margin_percent("unknown", "20.000", "") == (None, "")
     assert margin_percent("exact", "20.000", "8.000") == (Decimal("40.00"), "")
     assert margin_percent("exact", "30.000", "7.000") == (Decimal("23.33"), "")  # cut down
     assert margin_percent("exact", "20.000", "0") == (None, EXACT_ZERO)
-    assert "menor que los $20.000" in margin_percent("exact", "20.000", "20.000")[1]
+    assert "menor que lo que paga tu cliente" in margin_percent("exact", "20.000", "20.000")[1]
     assert margin_percent("", "20.000", "")[1]
 
 
@@ -136,12 +137,12 @@ def test_answers_validate_per_step_and_save_in_hundredths() -> None:
 def test_saved_profile_reads_back_and_reopens_each_answer() -> None:
     vm = profile_vm(row())
     assert (vm.ticket, vm.kept, vm.max_cost, vm.cap) == (20_000, 6_000, 6_000, 200_000)
-    assert card_title(vm) == "Hasta $6.000 por cliente nuevo"
+    assert card_title(vm) == "Hasta $6.000 COP por cliente nuevo"
     assert answers_from(vm) == replace(ANSWERS, ticket="20.000", cap="200.000")
     assert answer_rows(vm)[0] == (1, "Lo que quieres", "Que te escriban")
     estimated = profile_vm(row(margin_is_estimated=True))
     assert answers_from(estimated).margin_choice == "unknown"
-    assert answer_rows(estimated)[2][2] == "Unos $6.000 (aproximado)"
+    assert answer_rows(estimated)[2][2] == "Unos $6.000 COP (aproximado)"
     exact = profile_vm(row(average_ticket_minor=3_000_000, margin_basis_points=2333))
     reopened = answers_from(exact)
     assert (reopened.margin_choice, reopened.margin_exact) == ("exact", "6.999")
@@ -293,3 +294,13 @@ def test_screens_render_with_their_route_and_reset_on_logout() -> None:
     assert current_routes(("/promotions", "/responder"), "/promotions/perfil") == ["/promotions"]
     assert "/promotions/perfil" in PAGE_DESCRIPTIONS
     assert InvestmentProfileState in business_state_classes()
+
+
+def test_money_questions_follow_the_account_currency() -> None:
+    """m-25091394: a dollar or Uruguayan account reads its own unit and examples."""
+    assert cap_echo("100", "USD") == "Son $100 USD al mes, unos $23 USD por semana."
+    copy = money_copy("USD")
+    assert copy["ticket_label"] == "Lo que paga en una compra, en dólares"
+    assert copy["cap_placeholder"] == "Ejemplo: 100"
+    assert money_copy("UYU")["kept_label"] == "Me quedan, en pesos uruguayos"
+    assert money_copy("COP")["margin_hint"].endswith("Te quedan $12.000.")

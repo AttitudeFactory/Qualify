@@ -7,7 +7,7 @@ days, pieces), bounded by the only numbers that are not ours:
 
 - floor: the ad account's daily minimum, read live from `act_<id>/minimum_budgets` before the
   promotion exists (same parser as the budget-edit floor, `live_management.meta_daily_minimum`;
-  currency generic through `production_currency_offset`); never hard-coded;
+  converted with `money.from_meta`, COP/USD/UYU); never hard-coded;
 - ceiling: what is left of the owner's monthly cap this calendar month (cap − what the brand's
   promotions already spent this month per our Insights; unknown spend → not subtracted, said
   in the reasons). The suggested total never passes it (UX + Raul, 2026-11-22). Softer: the
@@ -66,6 +66,7 @@ from sqlalchemy import text
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.investment_profile import InvestmentProfile, load_investment_profile
 from qualify_api.ads.market_size import CLASSES, MarketEstimate
+from qualify_api.ads.money import from_meta, money_display
 from qualify_api.ads.wizard import WizardUnavailable
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
@@ -153,10 +154,7 @@ class BudgetSuggestion:
         return asdict(self)
 
 
-def money(minor: int, currency: str) -> str:
-    """«$25.000 COP», «$10 USD», «$5,50 USD» (decimals only when there are cents)."""
-    whole, cents = divmod(minor, 100)
-    return f"${whole:,}".replace(",", ".") + (f",{cents:02d}" if cents else "") + f" {currency}"
+money = money_display  # the one app-wide format (ads/money.py); kept for callers
 
 
 def schedule_days(start: datetime, end: datetime) -> int:
@@ -378,7 +376,7 @@ async def read_daily_minimum(*, tenant_id: UUID, publish_attempt_id: UUID) -> tu
     minimum = meta_daily_minimum(page.data, source.currency)
     if minimum is None:
         raise BudgetSuggestionUnavailable(MINIMUM_UNAVAILABLE)
-    return minimum * 100 // offset, source
+    return from_meta(minimum, source.currency), source
 
 
 def _history(tenant_id: UUID, brand_id: UUID, currency: str) -> tuple[bool, int | None]:

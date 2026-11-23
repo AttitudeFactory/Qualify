@@ -57,6 +57,7 @@ def chat_form(**changes: Any) -> PromotionDraftVM:
     return replace(
         PromotionDraftVM(
             source_id=str(SOURCE),
+            currency="COP",
             goal="chat",
             channel="whatsapp",
             welcome_text="¡Hola! ¿En qué te ayudamos?",

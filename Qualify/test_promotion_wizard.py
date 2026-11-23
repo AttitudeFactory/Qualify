@@ -25,8 +25,9 @@ from .promotion_vm import (
     PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
-    cop_label,
-    cop_minor,
+    budget_field_copy,
+    budget_minor,
+    budget_money,
     first_problem,
     local_datetime,
     promotion_checks,
@@ -47,6 +48,7 @@ ZONE = "America/Bogota"
 def valid_form() -> PromotionDraftVM:
     return PromotionDraftVM(
         source_id=str(SOURCE),
+        currency="COP",
         link_url="https://negocio.example/oferta",
         city_name="Cúcuta",
         location_key="123",
@@ -69,12 +71,22 @@ def review() -> PromotionReviewVM:
 @pytest.mark.parametrize("value", ["25.000", "25,000", "0", "-1", "25.5", "٢٥٠٠٠", "1e5"])
 def test_budget_rejects_ambiguous_or_invalid_amounts(value: str) -> None:
     with pytest.raises(ValueError):
-        cop_minor(value)
+        budget_minor(value, "COP")
 
 
 def test_money_is_exact_and_total_is_explicit() -> None:
-    assert cop_minor("25000") == 2_500_000
-    assert cop_label("25000") == "$25.000 COP"
+    assert budget_minor("25000", "COP") == 2_500_000
+    assert budget_money("25000", "COP") == "$25.000 COP"
+
+
+def test_budget_field_follows_the_account_currency() -> None:
+    """m-25091394: dollars and Uruguayan pesos are whole units too, labelled by currency."""
+    assert budget_minor("10", "USD") == 1_000 and budget_money("10", "USD") == "$10 USD"
+    assert budget_money("400", "UYU") == "$400 UYU"
+    assert budget_field_copy("USD")[0] == "Presupuesto total en dólares"
+    assert budget_field_copy("UYU")[1] == "Ejemplo: 400"
+    with pytest.raises(ValueError, match="en dólares, sin puntos ni comas. Ejemplo: 10."):
+        budget_minor("10.50", "USD")
     assert first_problem(valid_form(), ZONE) == ""
     assert "https" in step_problem(replace(valid_form(), link_url="http://example.com"), 2)
     assert "https" in step_problem(replace(valid_form(), link_url="https://user:secret@x.co"), 2)
@@ -391,11 +403,12 @@ def test_changed_choice_discards_checks_preview_and_paid_consent(change: str) ->
     if change == "budget":
         PromotionState.edit.fn(context, "budget", "30000")
     else:
-        source = replace(context.sources[0], id=str(USER), brand_id=str(TENANT))
+        source = replace(context.sources[0], id=str(USER), brand_id=str(TENANT), currency="USD")
         if change == "brand":
             source = replace(source, id=context.form.source_id, brand_id=str(PIECE))
         context.sources = [source]
         PromotionState.choose_source.fn(context, source.id)
+        assert context.form.currency == "USD"  # m-25091394: the budget follows the account
     assert not context.checks and not context.review.review_id and not context.confirm_charge
 
 

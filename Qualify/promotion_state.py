@@ -80,7 +80,6 @@ from .promotion_budget_vm import (
     suggested_end,
     typed_minor,
 )
-from .promotion_market_vm import CURRENCY as MARKET_CURRENCY
 from .promotion_market_vm import MarketVM, market_estimate, market_view, promotion_days
 from .promotion_provider import (
     confirm_review,
@@ -115,8 +114,9 @@ from .promotion_vm import (
     PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
-    cop_label,
-    cop_minor,
+    budget_field_copy,
+    budget_minor,
+    budget_money,
     first_problem,
     greeting_buttons_label,
     greeting_from_saved,
@@ -1307,8 +1307,12 @@ class PromotionState(rx.State):
         return self.selected_source.health.blocks_preparation
 
     @rx.var
+    def budget_copy(self) -> list[str]:
+        return budget_field_copy(self.form.currency)
+
+    @rx.var
     def budget_label(self) -> str:
-        return cop_label(self.form.budget)
+        return budget_money(self.form.budget, self.form.currency)
 
     @rx.var
     def market(self) -> MarketVM:
@@ -1349,7 +1353,7 @@ class PromotionState(rx.State):
 
     @rx.var
     def budget_daily_line(self) -> str:
-        return daily_line(self.form, self.timezone_name, MARKET_CURRENCY)
+        return daily_line(self.form, self.timezone_name, self.form.currency)
 
     @rx.var
     def budget_over_cap(self) -> str:
@@ -1436,7 +1440,7 @@ class PromotionState(rx.State):
     def budget_valid(self) -> bool:
         """The «Total: $25.000 COP» line shows only for an amount that parses."""
         try:
-            cop_minor(self.form.budget)
+            budget_minor(self.form.budget, self.form.currency)
         except ValueError:
             return False
         return True
@@ -1818,6 +1822,7 @@ class PromotionState(rx.State):
                 source.greeting,
             ),
             source_id=source.id,
+            currency=source.currency,
             link_url=source.default_link_url,
             cta_type=source.default_cta_type,
             lead_form_id=source.lead_forms[0].id if source.lead_forms else "",

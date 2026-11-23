@@ -1,9 +1,9 @@
 """The business's investment profile, in the owner's words (m-25091387).
 
-Pure: parsing what the owner types (pesos with thousands dots, no cents), turning the
+Pure: parsing what the owner types (whole units with thousands dots, no cents), turning the
 margin answered in money into the percent the backend stores, and the result's copy.
-Design: `.claude/ux-perfil-inversion-2026-11-22.md`. Only COP can be saved today
-(`qualify_api.ads.investment_profile.CURRENCY_UNSUPPORTED`), so amounts read as pesos.
+Design: `.claude/ux-perfil-inversion-2026-11-22.md`. Amounts are in the brand's ad account
+currency (COP, USD or UYU, m-25091394); others are refused with `CURRENCY_UNSUPPORTED`.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from decimal import ROUND_DOWN, Decimal
 
 from qualify_api.ads.investment_profile import ESTIMATED_MARGIN_PERCENT
+from qualify_api.ads.money import budget_field, money_display
 
 PROFILE_ROUTE = "/promotions/perfil"
 TOTAL_STEPS = 5
@@ -46,7 +47,7 @@ MARGIN_EXACT = "exact"
 MARGIN_UNKNOWN = "unknown"  # «No lo sé todavía»: the backend stores 30 %, estimated
 MARGIN_CHOICES = {key for key, _ in MARGIN_RANGES} | {MARGIN_EXACT, MARGIN_UNKNOWN}
 
-MAX_WHOLE_AMOUNT = 10**12  # whole pesos; the backend's bound is 10**15 hundredths
+MAX_WHOLE_AMOUNT = 10**12  # whole units; the backend's bound is 10**15 hundredths
 MAX_WEEKLY_CLIENTS = 100_000
 
 PICK_OBJECTIVE = "Elige una opción para seguir."
@@ -120,23 +121,54 @@ def read_clients(raw: str) -> tuple[int, str]:
     return value, ""
 
 
-def pesos(whole: int) -> str:
-    """«$20.000»: whole pesos, dot for thousands, no cents (qualify-copy-es §5)."""
-    return "$" + f"{whole:,}".replace(",", ".")
+def whole_money(whole: int, currency: str) -> str:
+    """«$20.000 COP», «$10 USD»: whole units in the app-wide format (qualify-copy-es §5)."""
+    return money_display(whole * 100, currency)
 
 
-def amount_echo(raw: str) -> str:
-    """«Son $20.000» under a money field once it reads, else ""."""
+# Field examples in each currency, so a dollar account never reads «Ejemplo: 200.000».
+_EXAMPLES = {
+    "COP": ("20.000", "12.000", "200.000", "$20.000", "$1.500.000", "$150.000", "$8.000"),
+    "USD": ("10", "6", "100", "$10", "$500", "$50", "$4"),
+    "UYU": ("400", "240", "4.000", "$400", "$40.000", "$3.000", "$160"),
+}
+
+
+def money_copy(currency: str) -> dict[str, str]:
+    """Labels, placeholders and examples of the money questions in the account currency."""
+    unit = budget_field(currency)
+    code = currency if currency in _EXAMPLES else "COP"
+    ticket, kept, cap, combo, trip, advice, cost = _EXAMPLES[code]
+    unit_name = unit.unit_name if unit else "pesos colombianos"
+    return {
+        "ticket_label": f"Lo que paga en una compra, en {unit_name}",
+        "ticket_placeholder": f"Ejemplo: {ticket}",
+        "ticket_hint": f"Por ejemplo: un combo de comida, {combo} · un paquete de viaje, {trip} "
+        f"· una asesoría, {advice}.",
+        "margin_hint": f"Por ejemplo: vendes un combo en {combo}. Los ingredientes y el empaque "
+        f"te cuestan {cost}. Te quedan ${kept}.",
+        "kept_label": f"Me quedan, en {unit_name}",
+        "kept_placeholder": f"Ejemplo: {kept}",
+        "cap_label": f"Tope al mes, en {unit_name}",
+        "cap_placeholder": f"Ejemplo: {cap}",
+    }
+
+
+def amount_echo(raw: str, currency: str) -> str:
+    """«Son $20.000 COP» under a money field once it reads, else ""."""
     value, problem = read_amount(raw)
-    return "" if problem else f"Son {pesos(value)}"
+    return "" if problem else f"Son {whole_money(value, currency)}"
 
 
-def cap_echo(raw: str) -> str:
+def cap_echo(raw: str, currency: str) -> str:
     value, problem = read_amount(raw, CAP_EMPTY)
     if problem:
         return ""
     weekly = _round(value * 12 // 52, _step(value))
-    return f"Son {pesos(value)} al mes, unos {pesos(weekly)} por semana."
+    return (
+        f"Son {whole_money(value, currency)} al mes, "
+        f"unos {whole_money(weekly, currency)} por semana."
+    )
 
 
 def _step(price: int) -> int:
@@ -155,13 +187,13 @@ def margin_bounds(price: int) -> tuple[int, int, int]:
     return tuple(_round(price * pct // 100, step) for pct in (20, 40, 60))  # type: ignore[return-value]
 
 
-def margin_options(ticket_raw: str) -> list[tuple[str, str]]:
+def margin_options(ticket_raw: str, currency: str) -> list[tuple[str, str]]:
     """(choice, label) of step 3, computed over the owner's own price."""
     price, problem = read_amount(ticket_raw)
     exact = [(MARGIN_EXACT, "Lo sé exacto"), (MARGIN_UNKNOWN, "No lo sé todavía")]
     if problem:
         return exact
-    low, mid, high = (pesos(value) for value in margin_bounds(price))
+    low, mid, high = (whole_money(value, currency) for value in margin_bounds(price))
     return [
         ("low", f"Poco: menos de {low}"),
         ("mid", f"Entre {low} y {mid}"),
@@ -190,9 +222,7 @@ def margin_percent(choice: str, ticket_raw: str, exact_raw: str) -> tuple[Decima
     if problem:
         return None, problem
     if kept >= price:
-        return None, (
-            f"Lo que te queda tiene que ser menor que los {pesos(price)} que paga tu cliente."
-        )
+        return None, "Lo que te queda tiene que ser menor que lo que paga tu cliente."
     percent = (Decimal(kept) * 100 / Decimal(price)).quantize(Decimal("0.01"), ROUND_DOWN)
     return (percent, "") if percent > 0 else (None, EXACT_ZERO)
 
@@ -270,16 +300,16 @@ class ProfileVM:
 
 
 def headline(profile: ProfileVM) -> str:
-    return f"Hasta {pesos(profile.max_cost)}"
+    return f"Hasta {whole_money(profile.max_cost, profile.currency)}"
 
 
 def card_title(profile: ProfileVM) -> str:
     """The Anuncios list card, once answered."""
-    return f"Hasta {pesos(profile.max_cost)} por cliente nuevo"
+    return f"Hasta {whole_money(profile.max_cost, profile.currency)} por cliente nuevo"
 
 
 def meaning(profile: ProfileVM) -> str:
-    amount = pesos(profile.max_cost)
+    amount = whole_money(profile.max_cost, profile.currency)
     return (
         f"Si un anuncio te trae un cliente por menos de {amount}, esa venta te deja "
         "ganancia. Si te cuesta más, la pierdes."
@@ -288,20 +318,22 @@ def meaning(profile: ProfileVM) -> str:
 
 def how_computed(profile: ProfileVM) -> str:
     return (
-        f"Tu cliente paga unos {pesos(profile.ticket)} y de eso te quedan unos "
-        f"{pesos(profile.kept)}."
+        f"Tu cliente paga unos {whole_money(profile.ticket, profile.currency)} y de eso "
+        f"te quedan unos {whole_money(profile.kept, profile.currency)}."
     )
 
 
 def answer_rows(profile: ProfileVM) -> list[tuple[int, str, str]]:
     """(step, label, value) of «Tus respuestas», each with its «Cambiar»."""
-    kept = f"Unos {pesos(profile.kept)}" + (" (aproximado)" if profile.estimated else "")
+    kept = f"Unos {whole_money(profile.kept, profile.currency)}" + (
+        " (aproximado)" if profile.estimated else ""
+    )
     return [
         (1, "Lo que quieres", OBJECTIVE_TITLES.get(profile.objective, "")),
-        (2, "Lo que paga un cliente", pesos(profile.ticket)),
+        (2, "Lo que paga un cliente", whole_money(profile.ticket, profile.currency)),
         (3, "Lo que te queda", kept),
         (4, "Clientes nuevos por semana", f"{profile.clients:,}".replace(",", ".")),
-        (5, "Tope al mes", pesos(profile.cap)),
+        (5, "Tope al mes", whole_money(profile.cap, profile.currency)),
     ]
 
 
@@ -338,13 +370,14 @@ def with_answer(answers: ProfileAnswersVM, name: str, value: str) -> ProfileAnsw
     return replace(answers, **{name: value})
 
 
-def unknown_note(ticket_raw: str) -> str:
+def unknown_note(ticket_raw: str, currency: str) -> str:
     """What «No lo sé todavía» means, in the owner's own price."""
     price, problem = read_amount(ticket_raw)
     if problem:
         return "Usaremos un valor prudente. Puedes cambiarlo cuando lo sepas."
     kept = price * ESTIMATED_MARGIN_PERCENT // 100
     return (
-        f"Usaremos un valor prudente: unos {pesos(kept)} de cada {pesos(price)}. "
+        f"Usaremos un valor prudente: unos {whole_money(kept, currency)} de cada "
+        f"{whole_money(price, currency)}. "
         "Puedes cambiarlo cuando lo sepas."
     )

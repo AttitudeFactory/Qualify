@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from qualify_api.ads.money import budget_field, money_display
 from qualify_api.ads.wizard import WEBSITE_CTAS
 from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 
@@ -262,6 +263,7 @@ class PromotionSourceVM:
 @dataclass(frozen=True)
 class PromotionDraftVM:
     source_id: str = ""
+    currency: str = ""  # the chosen source's ad account currency (m-25091394)
     goal: str = "visit"  # "visit" (link), "lead" (Meta form) or "chat" (m-24828980)
     channel: str = ""  # "whatsapp" | "instagram_direct" for the chat goal
     welcome_text: str = ""
@@ -411,20 +413,35 @@ def promotion_result(raw: object, expected_id: str) -> PromotionResultVM:
     )
 
 
-def cop_minor(value: str) -> int:
-    """Whole pesos, never a float or an ambiguous thousands separator."""
+def budget_minor(value: str, currency: str) -> int:
+    """Whole units of the account's currency (`budget_field`), in hundredths; never a float
+    or an ambiguous thousands separator. COP, USD and UYU all take whole units."""
+    unit = budget_field(currency) or budget_field("COP")
     value = value.strip()
     if not value.isascii() or not value.isdigit() or not 0 < int(value) < 10**10:
-        raise ValueError("Escribe el presupuesto en pesos, sin puntos ni comas. Ejemplo: 25000.")
-    return int(value) * 100
+        raise ValueError(
+            f"Escribe el presupuesto en {unit.unit_name}, sin puntos ni comas. "
+            f"Ejemplo: {unit.example_minor // 100}."
+        )
+    return int(value) * unit.step_minor
 
 
-def cop_label(value: str) -> str:
+def budget_field_copy(currency: str) -> list[str]:
+    """[label, placeholder, hint] of the budget input in the account's currency."""
+    unit = budget_field(currency) or budget_field("COP")
+    return [
+        f"Presupuesto total en {unit.unit_name}",
+        f"Ejemplo: {unit.example_minor // 100}",
+        f"En {unit.unit_name} enteros, para todo el período, no por día.",
+    ]
+
+
+def budget_money(value: str, currency: str) -> str:
+    """«$25.000 COP», «$10 USD», «$400 UYU» (`money_display`), or «Presupuesto por definir»."""
     try:
-        minor = cop_minor(value)
+        return money_display(budget_minor(value, currency), currency)
     except ValueError:
         return "Presupuesto por definir"
-    return "$" + f"{minor // 100:,}".replace(",", ".") + " COP"
 
 
 def readable_date(value: str) -> str:
@@ -618,7 +635,7 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         return ""
     if key == "budget":
         try:
-            cop_minor(draft.budget)
+            budget_minor(draft.budget, draft.currency)
             start = local_datetime(draft.start_local, timezone_name)
             end = local_datetime(draft.end_local, timezone_name)
             if end <= start:

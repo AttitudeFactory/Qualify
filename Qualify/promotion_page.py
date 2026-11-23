@@ -681,14 +681,14 @@ def _budget() -> rx.Component:
         rx.vstack(
             rx.cond(S.market_shown, _suggestion()),
             _field(
-                "Presupuesto total en pesos colombianos",
+                S.budget_copy[0],
                 "budget",
                 S.form.budget,
-                placeholder="Ejemplo: 25000",
+                placeholder=S.budget_copy[1],
                 input_mode="numeric",
             ),
             rx.text(
-                "En pesos enteros, para todo el período, no por día.",
+                S.budget_copy[2],
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -1194,14 +1194,6 @@ def _wizard(body: rx.Component, foot: rx.Component) -> rx.Component:
         rx.cond(
             (S.execution_reason != "") & ~S.reviewed,
             callout(S.execution_reason, "info"),
-        ),
-        rx.cond(
-            (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
-            callout(
-                "Este asistente prepara presupuestos en pesos colombianos. "
-                "Revisa la moneda de la cuenta elegida.",
-                "warn",
-            ),
         ),
         body,
         head=step_head(

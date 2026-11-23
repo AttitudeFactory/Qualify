@@ -14,7 +14,7 @@ from datetime import timedelta
 from qualify_api.ads.budget_suggestion import BudgetSuggestion, money
 
 from .promotion_market_vm import promotion_days
-from .promotion_vm import PromotionDraftVM, cop_minor, local_datetime
+from .promotion_vm import PromotionDraftVM, budget_minor, local_datetime
 
 LOADING = "Preparando tu sugerencia…"
 UNAVAILABLE = "No pudimos preparar una sugerencia. Escribe el monto que quieras."
@@ -46,7 +46,7 @@ def field_amount(suggestion: BudgetSuggestion) -> str:
 
 def typed_minor(draft: PromotionDraftVM) -> int | None:
     try:
-        return cop_minor(draft.budget)
+        return budget_minor(draft.budget, draft.currency)
     except ValueError:
         return None
 

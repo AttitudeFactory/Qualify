@@ -304,7 +304,7 @@ def _edit_confirmation() -> rx.Component:
                     S.edit_action == "budget",
                     rx.vstack(
                         rx.text(
-                            "Nuevo presupuesto total en pesos colombianos",
+                            "Nuevo presupuesto total en " + S.edit_unit,
                             as_="label",
                             html_for="ad-edit-budget",
                         ),
@@ -318,7 +318,7 @@ def _edit_confirmation() -> rx.Component:
                             width="100%",
                         ),
                         rx.text(
-                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Escribe " + S.edit_unit + " completos, sin puntos ni comas. "
                             "El nuevo total debe ser mayor al actual.",
                             size="2",
                         ),
@@ -330,7 +330,7 @@ def _edit_confirmation() -> rx.Component:
                     S.edit_action == "budget_down",
                     rx.vstack(
                         rx.text(
-                            "Nuevo presupuesto total en pesos colombianos",
+                            "Nuevo presupuesto total en " + S.edit_unit,
                             as_="label",
                             html_for="ad-edit-budget-down",
                         ),
@@ -355,7 +355,7 @@ def _edit_confirmation() -> rx.Component:
                             weight="medium",
                         ),
                         rx.text(
-                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Escribe " + S.edit_unit + " completos, sin puntos ni comas. "
                             "Es el total para todo el anuncio, no por día.",
                             size="2",
                         ),
