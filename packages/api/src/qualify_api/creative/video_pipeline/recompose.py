@@ -343,21 +343,24 @@ COMPOSE_OUTAGE_WINDOW = timedelta(minutes=10)
 #: The pipeline step that keeps the piece's first render failure (saved once, never reset).
 #: Apart from `compose_run`'s -200… and `layer_run`'s -100…: an EF-14 clip runs neither.
 COMPOSE_FIRST_FAILURE_STEP = -300
+#: The pipeline step that keeps the preview's drawn text PNGs (`text_images_params`: key +
+#: sha256 of each), saved BEFORE Seedance is ordered: every later pass reuses them.
+COMPOSE_TEXTS_STEP = -301
 
 
 def wait_for_render_or_give_up(
     code: str, *, store: Any = None, now: datetime | None = None
-) -> bool:
-    """Inside a worker preparation, when the render service did not answer: record the
-    piece's first failure (`COMPOSE_FIRST_FAILURE_STEP`) and raise
-    `compose_waits_for_render`; False once `COMPOSE_OUTAGE_WINDOW` has passed since then
-    (the caller fails the piece, with its refund). Outside a preparation: False at once
-    (no queue to wait in — it fails as before EF-14's wait)."""
+) -> None:
+    """Inside a worker preparation, when the render service did not answer (and nothing
+    is paid yet): record the piece's first failure (`COMPOSE_FIRST_FAILURE_STEP`) and
+    RAISE `compose_waits_for_render` while `COMPOSE_OUTAGE_WINDOW` has not passed since
+    then. Returns (None) only when the piece must fail — the window has passed, or there
+    is no preparation (no queue to wait in) — and the caller fails it, normal refund."""
     from qualify_api.creative.pipeline import PipelineStore, current_preparation  # noqa: PLC0415
 
     run = current_preparation()
     if run is None:
-        return False
+        return
     store = store or PipelineStore()
     now = now or datetime.now(UTC)
     row = store.load_step(run, COMPOSE_FIRST_FAILURE_STEP)
@@ -371,7 +374,7 @@ def wait_for_render_or_give_up(
     first = datetime.fromisoformat(str(row["request"]["first_failure_at"]))
     if now - first >= COMPOSE_OUTAGE_WINDOW:
         logger.warning("clip texts: render service down for %s, giving up", now - first)
-        return False
+        return
     raise compose_waits_for_render(f"render service: {code}")
 
 
@@ -611,6 +614,7 @@ __all__ = [
     "COMPOSE_NOT_ADDED",
     "COMPOSE_NOT_ADDED_TEXT",
     "COMPOSE_PARAMS_KEY",
+    "COMPOSE_TEXTS_STEP",
     "CUT_TOLERANCE",
     "FINAL_COMPOSE_FAILED_TEXT",
     "RECOMPOSE_VERSION",

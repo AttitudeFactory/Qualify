@@ -27,6 +27,8 @@ from qualify_api.creative.pipeline import CheckpointRouter, Preparation, encode_
 from qualify_api.creative.video_pipeline import recompose
 from qualify_api.creative.video_pipeline.recompose import (
     COMPOSE_FIRST_FAILURE_STEP,
+    COMPOSE_NOT_ADDED,
+    COMPOSE_TEXTS_STEP,
     ClipComposeFailed,
     ComposeRecipe,
     stored_text_images,
@@ -111,33 +113,74 @@ def _execute_seedance(seedance: Any, checkpoints: Checkpoints, files: Any) -> No
     row["result"] = encode_result(remote, files, "result", MEDIA_TENANT)
 
 
-def test_a_paid_task_in_the_queue_waits_for_the_render_and_is_paid_once(
+def _expired_window(checkpoints: Checkpoints) -> None:
+    long_ago = datetime.now(UTC) - recompose.COMPOSE_OUTAGE_WINDOW - timedelta(seconds=1)
+    checkpoints.rows[COMPOSE_FIRST_FAILURE_STEP] = {
+        "request": {"first_failure_at": long_ago.isoformat(), "error": DOWN.code},
+        "job_id": None,
+        "result": None,
+        "error": None,
+    }
+
+
+def test_before_the_order_an_outage_waits_and_nothing_is_paid(checkpoints: Checkpoints) -> None:
+    composer = FakeComposer(fail_draw=DOWN)
+    producer, _, seedance = _composing_producer(composer)
+    with pytest.raises(LocalVideoWait) as waited:
+        _Pass(producer, checkpoints)()
+    assert waited.value.retry_after_s == recompose.RENDER_RETRY_AFTER_SECONDS > 0
+    assert seedance.requests == [] and COMPOSE_FIRST_FAILURE_STEP in checkpoints.rows
+    assert COMPOSE_TEXTS_STEP not in checkpoints.rows
+
+
+def test_a_paid_pass_reuses_the_kept_texts_and_never_loses_the_clip(
     checkpoints: Checkpoints,
 ) -> None:
-    """Pass 1 draws, orders Seedance (paid by the executor) and is deferred; pass 2 finds
-    the render service down: it waits, the clip is not paid again; pass 3 composes."""
+    """Pass 1 draws, keeps the PNGs (step + R2) and orders Seedance (paid by the
+    executor). The render service then goes down, past an old expired window: the pass
+    that brings the paid clip does not ask it again — it composes with the kept PNGs."""
     composer = FakeComposer()
     producer, files, seedance = _composing_producer(composer)
     run = _Pass(producer, checkpoints)
 
     first = run()
     assert first.pending and len(composer.draws) == 1 and seedance.requests == []
+    assert COMPOSE_TEXTS_STEP in checkpoints.rows
     _execute_seedance(seedance, checkpoints, files)
     assert len(seedance.requests) == 1
 
     composer.fail_draw = DOWN
-    with pytest.raises(LocalVideoWait) as waited:
-        run()
-    assert waited.value.retry_after_s == recompose.RENDER_RETRY_AFTER_SECONDS > 0
-    assert len(seedance.requests) == 1 and composer.composes == []
-    assert COMPOSE_FIRST_FAILURE_STEP in checkpoints.rows
+    _expired_window(checkpoints)
+    second = run()
 
-    composer.fail_draw = None
-    third = run()
-    assert third.failure is None and not third.pending
-    assert len(seedance.requests) == 1 and len(composer.composes) == 1
-    (video,) = third.media
+    assert second.failure is None and not second.pending
+    assert len(seedance.requests) == 1 and len(composer.draws) == 1  # no render call
+    ((_, _, drawn, stage),) = composer.composes
+    assert stage == "preview" and [image.png for image in drawn] == [b"png-Shawarma mixto"]
+    (video,) = second.media
     assert video.params["compose"]["recipe"]["text_layers"][0]["text"] == WORDS.text
+
+
+def test_a_4xx_after_paying_degrades_instead_of_failing(checkpoints: Checkpoints) -> None:
+    """The kept PNGs are gone and the render now refuses (a 4xx): the paid clip is kept,
+    without texts, with `text_layers_not_added` and no recipe."""
+    composer = FakeComposer()
+    producer, files, seedance = _composing_producer(composer)
+    run = _Pass(producer, checkpoints)
+    assert run().pending
+    _execute_seedance(seedance, checkpoints, files)
+    for entry in checkpoints.rows[COMPOSE_TEXTS_STEP]["request"]["texts"]:
+        del files.files[entry["key"]]
+    composer.fail_draw = ClipComposeFailed(
+        "x", failure=FailureReason.DEPENDENCY_FAILED.value, code="text_layer_unavailable"
+    )
+
+    outcome = run()
+
+    assert outcome.failure is None and len(seedance.requests) == 1
+    assert COMPOSE_NOT_ADDED in [w.code for w in outcome.warnings]
+    (video,) = outcome.media
+    assert "compose" not in video.params and composer.composes == []
 
 
 def test_past_the_outage_window_the_piece_fails_with_its_refund(
