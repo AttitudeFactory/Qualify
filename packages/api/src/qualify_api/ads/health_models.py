@@ -78,6 +78,8 @@ def minor_integer(value: Any) -> int | None:
 
 def money_label(value: int | None, currency: str) -> str:
     # `value` is in hundredths. Currencies without a verified Meta offset are never guessed.
+    # shortcut: a spend_cap of 0 (Meta: no limit) reads «$0 COP»; map it before the
+    # money_units_verified gate opens (live test m-24828971).
     if value is None or currency not in META_CURRENCY_OFFSETS:
         return "Importe pendiente de comprobar"
     return money_display(value, currency)

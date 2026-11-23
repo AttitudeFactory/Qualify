@@ -379,6 +379,7 @@ def test_meta_amounts_use_the_currency_offset(currency, raw, minor, label) -> No
     assert money_label(normalized.amount_spent_minor, currency) == label
     # The snapshot round-trips; amounts stay hidden until the live test verifies Meta units.
     hidden = project_health(target(normalized, currency=currency), now=NOW)
+    assert not hidden.stale  # the snapshot was accepted, not dropped
     assert hidden.amount_spent_minor is None
     assert hidden.amount_spent_label == "Importe pendiente de comprobar"
     verified = replace(normalized, money_units_verified=True)
@@ -390,3 +391,13 @@ def test_meta_amounts_use_the_currency_offset(currency, raw, minor, label) -> No
 def test_money_label_without_value_or_offset_is_pending() -> None:
     assert money_label(None, "COP") == "Importe pendiente de comprobar"
     assert money_label(2_500_000, "VES") == "Importe pendiente de comprobar"
+
+
+def test_cop_amount_beyond_the_bound_keeps_raw_only() -> None:
+    raw = "9" * 18
+    normalized = HealthObservation.from_graph(
+        {"account_id": "12", "currency": "COP", "amount_spent": raw},
+        account_id="12",
+        currency="COP",
+    )
+    assert normalized.amount_spent_minor is None and normalized.amount_spent_raw == raw

@@ -245,7 +245,7 @@ https://developers.facebook.com/docs/marketing-api/ad-rules/overview/execution-s
   semanas, y nuestras tablas de referencia en VES serían inútiles). Uruguay: UYU soportado, sin
   particularidad documentada.
 - **Implicación:** ampliar el asistente de «solo COP» a COP/USD/UYU es cambiar la tabla de offsets
-  y los rótulos de dinero (`health_models.money_label` ya reconoce COP/USD/UYU/VES/EUR); la cuenta
+  y los rótulos de dinero (`health_models.money_label` reconoce solo las monedas de `money.META_CURRENCY_OFFSETS`, hoy COP/USD/UYU, m-25099912); la cuenta
   publicitaria fija la moneda y no se cambia (una cuenta = una moneda) [S].
 
 ## 10. Presupuesto de campaña Advantage+ vs presupuesto por conjunto
