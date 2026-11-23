@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class AdMonthPlanState(rx.State):
-    months: list[MonthPlanVM] = []  # [this month, next month]
+    months: list[MonthPlanVM] = []  # [this month, next month]; [] without a profile: hidden
     showing: str = "0"  # index into `months`, as the segmented control's value
     loading: bool = True
     error: str = ""

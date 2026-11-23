@@ -63,7 +63,7 @@ class PlanWeekVM:
 
 @dataclass(frozen=True)
 class MonthPlanVM:
-    exists: bool = False  # False: no investment profile or no monthly cap
+    exists: bool = False  # False: a profile without a monthly cap
     tab: str = ""  # «Mayo»
     title: str = ""  # «Tu plan de mayo de 2027»
     cap: str = ""  # «Tu tope: $1.200.000 COP al mes»

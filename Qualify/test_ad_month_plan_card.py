@@ -66,7 +66,7 @@ def test_unannounced_dates_say_so_and_english_names_get_a_gloss() -> None:
     assert "Semana del Black Friday" in reasons and "Black Week" not in reasons
 
 
-def test_no_profile_or_no_cap_is_the_empty_state() -> None:
+def test_a_profile_without_a_cap_is_the_empty_state() -> None:
     vm = month_plan_vm(None, 2026, 12)
     assert not vm.exists and vm.weeks == []
     assert vm.tab == "Diciembre"
@@ -92,6 +92,7 @@ def test_provider_reads_this_month_and_the_next_in_the_business_zone(
         asked.append((year, month))
         return colombia(month, year) if month == 5 else None
 
+    monkeypatch.setattr(provider, "load_investment_profile", lambda **_: object())
     monkeypatch.setattr(provider, "month_plan", fake_plan)
     monkeypatch.setattr(provider, "tenant_timezone", lambda _tenant: "America/Bogota")
     monkeypatch.setattr(provider, "month_pair", lambda _today: ((2027, 4), (2027, 5)))
@@ -99,6 +100,17 @@ def test_provider_reads_this_month_and_the_next_in_the_business_zone(
     assert asked == [(2027, 4), (2027, 5)]
     assert [m.exists for m in months] == [False, True]
     assert [m.tab for m in months] == ["Abril", "Mayo"]
+
+
+def test_provider_without_a_profile_reads_no_plan_so_the_card_hides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def never(**_: object) -> None:
+        raise AssertionError("no profile: no month plan to read")
+
+    monkeypatch.setattr(provider, "load_investment_profile", lambda **_: None)
+    monkeypatch.setattr(provider, "month_plan", never)
+    assert provider.read_month_plans(uuid4(), uuid4()) == []
 
 
 TENANT, LOGIN, USER, BRAND = uuid4(), uuid4(), uuid4(), uuid4()

@@ -82,6 +82,10 @@ def month_plan_card() -> rx.Component:
         rx.cond(
             S.error != "",
             callout(S.error, "warn"),
-            card(rx.cond(S.plan.exists, _plan(), _empty()), width="100%"),
+            # no investment profile: no card (the profile card above already asks for it)
+            rx.cond(
+                S.months.length() > 0,
+                card(rx.cond(S.plan.exists, _plan(), _empty()), width="100%"),
+            ),
         ),
     )
