@@ -154,7 +154,7 @@ Detalle en la [bitácora, NIVELES-006](pruebas.md#niveles-006).
 - **Fuentes:** el juez ahora recibe lo de «Debe mencionar» y los ejemplos del kit como datos dados. Sin ellos marcó «al amanecer» como inventado en 6 de 7 clips de viajes.
 - Las salidas guardadas se volvieron a juzgar con la misma vara (US$0,049 por 81 copias, en dos tandas).
 
-## Uso LUGAR-001 — lugar del texto y del logo según lo que muestra el video (m-25026599, EF-20) — 2026-11-23 · SOLO PRUEBA EN SECO
+## Uso LUGAR-001 — lugar del texto y del logo según lo que muestra el video (m-25026599, EF-20) — 2026-11-23 · MEDIDO
 
 Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, igual que el análisis de reels, con Claude Haiku 5.5.
 
@@ -177,9 +177,19 @@ Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, 
   - El criterio principal pasa a ser: **el texto no tapa el sujeto en ≥ 90 % de los cuadros con alguna franja libre** (17 cuadros).
   - Se informan también los 30 cuadros, el máximo posible y la línea base de hoy: texto abajo, 10 de 30 (10 de 17 con franja libre); logo arriba, 13 de 30.
 - **Método:** `just eval-lugar --cases <archivo fuera del repo> --i-have-spend-authorization --max-usd 2`, con 2 variantes (`3f`, los 3 cuadros; `1f`, solo el del medio), 3 repeticiones cada una. Son 60 llamadas, cotizadas al tope en US$0,107.
-- **Resultados: PENDIENTES.** La corrida pagada no llegó a ejecutarse (2026-11-23): el permiso de la sesión la bloqueó antes de enviar nada. 0 llamadas, US$0 gastado.
+- **Resultados (corrida pagada del 2026-11-23, autorizada por Deivid en la sesión):** 60 llamadas, 0 fallas, **US$0,0396 gastados** (cotizado US$0,107), 441 s en total (unos 7 s por llamada).
+
+  | Variante | Texto sin tapar, cuadros con franja libre (meta ≥ 90 %) | Texto sin tapar, los 30 cuadros | Logo sin tapar | Costo por llamada |
+  |---|---|---|---|---|
+  | Hoy (texto abajo, logo arriba) | 10/17 (58,8 %), no cumple | 10/30 (33,3 %) | 13/30 (43,3 %) | US$0 |
+  | `3f` (3 cuadros) | **48/51 (94,1 %), cumple** | 48/90 (53,3 %) | 42/90 (46,7 %) | US$0,00081 |
+  | `1f` (cuadro del medio) | **47/51 (92,2 %), cumple** | 47/90 (52,2 %) | 44/90 (48,9 %) | US$0,00051 |
+
+  - Las 3 repeticiones dieron 16, 16 y 16 aciertos (`3f`) y 15, 16 y 16 (`1f`) sobre 17, así que el resultado es estable.
+  - El máximo posible sobre los 30 cuadros es 17 (56,7 %); las dos variantes quedan a menos de un cuadro de ese techo.
+  - El logo mejora poco sobre hoy (de 43 % a 47–49 %): el modelo suele mandar el logo a la franja contraria al texto aunque el sujeto también esté ahí.
+- **Veredicto: apto para encenderse como aviso del texto**, con la variante `3f`. Empata con `1f` dentro del ruido (1 cuadro de 51), mira el video entero, que es lo que dura el texto, y cuesta menos de US$0,001 por pieza. La recomendación del logo se muestra solo como sugerencia secundaria, porque apenas supera el lugar de hoy.
 - **Uso en la fase 2, decidido por Deivid el 2026-11-23:** «no quiero que bloquee si se pone el texto, sino que haya una advertencia de que puede tapar el producto y que muestre la mejor posición».
   - El servidor **nunca mueve** el texto ni el logo por su cuenta.
   - Devuelve las franjas del producto, la posición recomendada para el texto y para el logo, si la posición elegida por el dueño tapa el producto, y el motivo en español.
   - La pantalla muestra el aviso con «Usar esta posición».
-  - El veredicto, apto o no para encenderse, se anota cuando haya resultados.
