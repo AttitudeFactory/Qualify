@@ -153,3 +153,16 @@ Detalle en la [bitácora, NIVELES-006](pruebas.md#niveles-006).
 - **Rúbrica v4:** para most_aware, el horario y el lugar cuentan como parte de «cómo comprar». La v3 los marcaba como falla, en contra del ejemplo del fundador.
 - **Fuentes:** el juez ahora recibe lo de «Debe mencionar» y los ejemplos del kit como datos dados. Sin ellos marcó «al amanecer» como inventado en 6 de 7 clips de viajes.
 - Las salidas guardadas se volvieron a juzgar con la misma vara (US$0,049 por 81 copias, en dos tandas).
+
+## Uso LUGAR-001 — lugar del texto y del logo según lo que muestra el video (m-25026599, EF-20) — 2026-11-23 · SOLO PRUEBA EN SECO
+
+Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, igual que el análisis de reels, con Claude Haiku 5.5.
+
+- **Modelo:** `claude-haiku-5-5`, esfuerzo `low`, pensamiento adaptativo por defecto (sus tokens cuentan dentro de `max_tokens` = 2048).
+- **Precio:** US$0,10 por millón de tokens de entrada y US$0,50 de salida (prompts de hasta 100K tokens). Fuente: el skill `claude-api` (tabla en caché del 2026-11-03) y `qualify_creative/pricing_data/v10.json`, que ya tenía la entrada; no hace falta una versión nueva de la tabla.
+- **Módulo:** `packages/api/src/qualify_api/creative/placement_ai.py`, prompt `placement-prompt-1`. Envía de 1 a 3 cuadros del video preparado (720×1280 como máximo) y devuelve la franja (`top`, `middle`, `bottom`) para el texto y para el logo, con un motivo y las franjas que ocupa el sujeto. Ante cualquier falla vuelve al lugar de hoy: texto abajo, logo arriba.
+- **Tope por llamada:** US$0,001943 con 3 cuadros (cada imagen contada a 1.600 tokens, prefijo como escritura de caché, 2.048 de salida); fijado en `MAX_REQUEST_USD` = US$0,0021.
+- **Costo esperado por pieza** (estimado, sin medir): unos 5.900 tokens de entrada (3 cuadros de ~1.229 tokens más ~2.200 de prompt) = US$0,0006, y de 300 a 800 de salida = US$0,00015–0,0004. Total: **US$0,0007–0,001 por pieza** con 3 cuadros; unos US$0,0005 con 1 cuadro.
+- **Guardas:** el tope por llamada; hasta 2 llamadas por pieza; 1.500 llamadas al día para todos los negocios (`QUALIFY_VIDEO_PLACEMENT_FLEET_DAILY`), o sea, como mucho US$3,15 al día.
+- **Prueba en seco (2026-11-23):** `just eval-lugar` con el material del repo (2 fotos de muestra y 2 videos de efectos) y con un archivo de casos de prueba fuera del repo. Se armaron todas las solicitudes con el módulo real, se cotizaron y no se envió nada: 0 llamadas a Anthropic, US$0 gastado.
+- **Medición pendiente**, con tope de US$2 y la autorización de Deivid: 10 videos reales de nuestros negocios con 3 cuadros etiquetados cada uno (30 cuadros), brazos `3f` y `1f`, 3 repeticiones = 60 llamadas, cotizadas al tope en unos US$0,11. El criterio del ticket: el texto no tapa el sujeto en ≥ 90 % de los 30 cuadros, contra la línea base del lugar fijo.

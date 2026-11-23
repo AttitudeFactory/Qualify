@@ -647,6 +647,12 @@ eval-voz *args:
 eval-partes *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/proponer_partes/run_experiment.py {{args}}
 
+# EF-20 (m-25026599): text and logo out of the subject, by Haiku 5.5 with vision, on a labelled
+# golden set kept OUTSIDE the repo (`--cases`). Without `--i-have-spend-authorization` it only
+# builds and quotes the requests; a paid run refuses to start over `--max-usd` (at most 2).
+eval-lugar *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/lugar_por_vision/run_experiment.py {{args}}
+
 # Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
