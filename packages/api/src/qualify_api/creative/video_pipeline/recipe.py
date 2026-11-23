@@ -345,7 +345,8 @@ def validate_brief_recipe(
     a video by parts; a normal Clip is not. A parent's own texts over the WHOLE video
     (`media.text_layers` of a `SHOT_VIDEO`) are checked too, as `part=None`, and so is
     its `video_recipe` (ED-15) when it has one: its parts, and what crosses them against
-    the length of the plan that is made (`media.parts`)."""
+    the length of the plan that is made (`media.parts`). A normal Clip with subtitles is
+    checked against its texts too (`subtitle_overlap_problems`)."""
     library = library or load_effects()
     by_parts = brief.kind is ContentKind.SHOT_VIDEO or brief.media.part is not None
     problems = validate_recipe(
@@ -377,7 +378,36 @@ def validate_brief_recipe(
                     texts_field="video_recipe.text_layers",
                 ),
             )
-    return problems
+    return (*problems, *subtitle_overlap_problems(brief))
+
+
+#: m-25026592 (decision 2026-11-23): what the owner reads when a Clip asks for its
+#: subtitles and also carries a text at the bottom (`text_bottom_with_subtitles`), for the
+#: screen to show (`qualify-copy-es`).
+TEXT_BOTTOM_WITH_SUBTITLES_TEXT = (
+    "Abajo se ven los subtítulos y tu texto se taparía. Elige otra posición o apaga los subtítulos."
+)
+
+
+def subtitle_overlap_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
+    """m-25026592 (decision 2026-11-23): a normal Clip with its copy as subtitles
+    (`media.clip_subtitles`) may not also carry an owner's text at the `bottom` — the
+    subtitles are laid at y≈1360-1459 of 1920 and a `bottom` text at y≈1410-1536, so
+    they would cover each other. One `text_bottom_with_subtitles` problem
+    (`field="text_layers"`, `part=None`: the Clip), whatever the Clip's mode (`local`
+    or made by Seedance). Pure.
+
+    Only a normal Clip gets subtitles: a part of a video by parts is born with
+    `clip_subtitles` False (`parts`), the producer lays them only when `media.part` is
+    None, and `create_draft` drops the switch on any other kind. Like every rule here it
+    runs on a NEW request only (`refuse_unbuilt_recipe`), never when a stored piece is
+    read."""
+    media = brief.media
+    if brief.kind is not ContentKind.CLIP or media.part is not None or not media.clip_subtitles:
+        return ()
+    if not any(layer.place == "bottom" for layer in media.text_layers):
+        return ()
+    return (RecipeProblem(code="text_bottom_with_subtitles", part=None, field="text_layers"),)
 
 
 class RecipeRefused(ValueError):
@@ -573,6 +603,8 @@ __all__ = [
     "recipe_of",
     "clip_seconds",
     "segments_seconds",
+    "subtitle_overlap_problems",
+    "TEXT_BOTTOM_WITH_SUBTITLES_TEXT",
     "part_length",
     "recipe_of_parts",
     "refuse_unbuilt_recipe",
