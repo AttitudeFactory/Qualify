@@ -536,8 +536,11 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     entry of stage `compose` with an `asset`) over a `local` piece, so those uses are not
     refused either. EF-14 composes them over a 9:16 `reference` Clip made by Seedance,
     and m-25103284 over a `reference` PART too (a child is always 9:16): `recompose`.
+    EF-13 (m-25026589): a Seedance template over a `reference` part or Clip, covering the
+    whole part, is asked in its own prompt (`seedance_effect`) — only with the switch
+    `QUALIFY_SEEDANCE_EFFECTS` on; off (the default) it stays refused as before.
     Still refused (`recipe_unavailable`) until the effects engine draws them: any other
-    effect (a Seedance template, `camara_rapida` as an effect, an unknown one), any
+    effect (a Seedance template otherwise, `camara_rapida` as an effect, an unknown one), any
     effect or text over a piece that is neither `local` nor such a `reference` piece
     (`edit`, `extend`, a Clip that is not 9:16), a transition the join does not make
     (`is_built_transition`: EF-16 draws `fundido`/`barrido` v2), stretches of an `edit`
@@ -553,6 +556,9 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
         seedance_composes,
     )
+    from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+        is_built_seedance_effect,
+    )
 
     found: list[RecipeProblem] = []
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
@@ -564,7 +570,16 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
         # EF-14: a 9:16 `reference` Clip made by Seedance is composed too (its preview and
         # its 1080p final, `recompose`); m-25103284: so is a `reference` part
         local = part.mode == "local" or seedance_composes(part.mode, made_at)
-        unbuilt = tuple(use for use in part.effects if not (local and is_built_layer(use)))
+        unbuilt = tuple(
+            use
+            for use in part.effects
+            if not (
+                (local and is_built_layer(use))
+                # EF-13: a measured Seedance template, asked in the part's own prompt
+                # (`seedance_effect`), only with `QUALIFY_SEEDANCE_EFFECTS` on
+                or is_built_seedance_effect(use, part.mode)
+            )
+        )
         # EF-11: a `reference` piece opens on its first stretch, prepared
         # (`prepared_frame`); D4: never an `edit` (or `extend`) of own video. A
         # `reference` PART that also carries references opens on it only with

@@ -2677,6 +2677,8 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return None
+        from qualify_api.creative.brand_references import BrandReferenceError  # noqa: PLC0415
+
         try:
             prepare_new = getattr(self._media, "prepare_new_brief", None)
             if callable(prepare_new):
@@ -2685,6 +2687,10 @@ class ContentService:
                     brief = prepare_new(brief, kit)
             return weight_for(brief)
         except CreationNotOffered:
+            return None
+        except BrandReferenceError:
+            # EF-13: a remake the producer would refuse before the copy (an effect
+            # that no longer fits or was not measured on the model) has no price
             return None
 
     def regeneration_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
@@ -2699,6 +2705,8 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return None
+        from qualify_api.creative.brand_references import BrandReferenceError  # noqa: PLC0415
+
         try:
             prepare_new = getattr(self._media, "prepare_new_brief", None)
             if callable(prepare_new):
@@ -2707,6 +2715,10 @@ class ContentService:
                     brief = prepare_new(brief, kit)
             return weight_for(brief, redo=True)
         except CreationNotOffered:
+            return None
+        except BrandReferenceError:
+            # EF-13: a remake the producer would refuse before the copy (an effect
+            # that no longer fits or was not measured on the model) has no price
             return None
 
     def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:

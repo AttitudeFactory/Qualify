@@ -53,6 +53,7 @@ def _offering(root: Path, names: tuple[str, ...], measured: bool = False) -> Eff
         "wilson_low": 0.5,
         "wilson_high": 1.0,
         "measured_on": "2026-11-20",
+        "model": "dreamina-seedance-2-5-260628",
     }
     entries = []
     for entry in copy.deepcopy(RAW["entries"]):
@@ -511,6 +512,7 @@ def test_an_offered_ai_effect_needs_its_bench_and_its_example() -> None:
         "wilson_low": 0.38,
         "wilson_high": 0.96,
         "measured_on": "2026-11-20",
+        "model": "dreamina-seedance-2-5-260628",
     }
     with pytest.raises(ValidationError, match="preview"):
         parse_library(_with(entry))
