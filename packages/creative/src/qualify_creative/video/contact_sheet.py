@@ -302,6 +302,10 @@ def _scan(source: str | os.PathLike[str], budget_s: float, clock: Callable[[], f
         thumb_h = max(2, round(THUMB_WIDTH * height / width))
         next_grid = 0.0
         for frame in container.decode(stream):
+            # the budget first: frames skipped below (no time, before the origin) count too
+            if clock() - started > budget_s:
+                reached = last[0] if last is not None else 0.0
+                raise _OverBudget(header, grid, reached, timeline.origin_s, timeline.rotation)
             time_s = frame_seconds(frame, stream)
             if time_s is None or time_s < timeline.origin_s - 1e-6:
                 continue
@@ -322,8 +326,6 @@ def _scan(source: str | os.PathLike[str], budget_s: float, clock: Callable[[], f
                 grid.append(_still(frame, relative, timeline.rotation))
                 next_grid = (int((relative + 1e-6) / step) + 1) * step
             last = (relative, frame)
-            if clock() - started > budget_s:
-                raise _OverBudget(header, grid, relative, timeline.origin_s, timeline.rotation)
     if last is None:
         from qualify_creative.video._source import NoVideoStream  # noqa: PLC0415
 
@@ -379,6 +381,8 @@ def _evenly(
             int((over.origin_s + reached) / stream.time_base), stream=stream, backward=True
         )
         for frame in container.decode(stream):
+            if clock() - started > budget_s:  # first: a skipped frame counts too
+                break
             time_s = frame_seconds(frame, stream)
             if time_s is None:
                 continue
@@ -388,8 +392,6 @@ def _evenly(
             if not grid or relative >= grid[-1].time_s + GRID_S - 1e-6:
                 grid.append(_still(frame, relative, over.rotation))
                 reached = max(reached, relative)
-            if clock() - started > budget_s:
-                break
     if not grid:
         from qualify_creative.video._source import NoVideoStream  # noqa: PLC0415
 

@@ -10,6 +10,11 @@ every 10 ms above the baseline before the call (`psutil`), and the time. Prints 
 `EF18-RESULT {json}` line per source. The sheet makes one pass with one decoded frame
 alive at a time (plus a small JPEG every grid step), so its peak is a few frames of
 1080x1920 plus the decoder's buffers — far under the compose's own.
+
+The sources are named `…_cuts5s.mp4`: a file left by an earlier version of this script
+(whose noise made no cut the detector sees) is never reused. `shots` counts the shots the
+pass found (3 for 15 s); it is 1 when the pass ran past its budget (`cuts: "even"`: the
+cuts were dropped, not missed). Measured 2026-11-23: 15 s → 3 shots, `detected`.
 """
 
 from __future__ import annotations
@@ -90,7 +95,7 @@ def main() -> None:
     folder = Path(sys.argv[1])
     folder.mkdir(parents=True, exist_ok=True)
     for seconds in [int(s) for s in sys.argv[2:]] or [15, 60]:
-        path = folder / f"composed_1080x1920_{seconds}.mp4"
+        path = folder / f"composed_1080x1920_{seconds}_cuts5s.mp4"
         if not path.exists():
             _make(path, seconds)
         print("EF18-RESULT " + json.dumps(_measure(path)), flush=True)

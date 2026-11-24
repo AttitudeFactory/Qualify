@@ -20,9 +20,14 @@ taken at, its key and sha256. Cost 0: PyAV and Pillow; no AI looks at it (D8).
 
 Best effort: a sheet that cannot be made or kept is logged and left out (None) — it
 never fails, delays or charges the piece; the screen then shows the video alone.
-Idempotent: the same video gives the same JPEG bytes, kept under the same names (a
-revision's folder, or the join's fingerprint), so a retried step reuses the files and
-records the same block; nothing is duplicated.
+Idempotent when the pass fits its budget (`cuts: "detected"`): the same video gives the
+same JPEG bytes, kept under the same names (a revision's folder, or the join's
+fingerprint), so a retried step reuses the files and records the same block; nothing is
+duplicated. A pass over its budget (`cuts: "even"`) depends on the machine's speed: a
+retry may make other bytes. In a revision's folder they go under a content-named key
+(`_Saver`); under a join's fixed names the bucket refuses them, and that run records no
+sheet (a joined preview reused from R2 makes its sheet again, it does not read back the
+earlier block).
 
 The screen reads it with `DbContactSheets.read(tenant_id=…, draft_id=…)` — the draft's
 visible video and its sheet, only when the sheet was made from THAT file
@@ -81,7 +86,8 @@ def keep_contact_sheet(
     """The sheet of the composed video at `video`, kept through `keep`, as the block for
     `params["contact_sheet"]` — or None when it could not be made or kept (logged; the
     piece goes on without it). `source` says where the video comes from (`stage`, and
-    `object_key`, `revision` or `fingerprint` when known); its sha256 is added here."""
+    `object_key`, `revision` or `fingerprint` when known); its sha256 is added here.
+    Frames kept before a failure stay in the piece's folder and go with it (ADR 39)."""
     # everything inside the try: the hook runs inside a paid clip's compose and must
     # never raise — not even for an import or a path that fails
     try:
