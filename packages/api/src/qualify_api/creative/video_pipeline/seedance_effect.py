@@ -135,6 +135,8 @@ def seedance_effect_of(
     the first is taken. Pure but for the switch (the library is cached)."""
     from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
 
+    if not seedance_effects_on():
+        return None  # off: nothing of EF-13 runs, not even a read of the recipe
     if brief.kind is not ContentKind.CLIP:
         return None  # a parent's parts are made as their own Clips
     library = library or load_effects()

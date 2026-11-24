@@ -42,6 +42,8 @@ from qualify_api.creative.media import (
     AI_EFFECT_DOES_NOT_FIT_TEXT,
     AI_EFFECT_MODEL_TEXT,
     MediaProducer,
+    ai_effect_does_not_fit_text,
+    ai_effect_model_text,
 )
 from qualify_api.creative.video_pipeline import seedance_effect as effect_module
 from qualify_api.creative.video_pipeline.recipe import (
@@ -426,7 +428,8 @@ def test_an_effect_measured_on_another_model_is_refused_before_the_copy_and_the_
         producer.prepare_new_brief(brief, _kit())  # before the copy is paid
     assert str(refused.value) == AI_EFFECT_MODEL_TEXT
     outcome = _produce(producer, brief)
-    assert outcome.detail == AI_EFFECT_MODEL_TEXT
+    # inside the production the copy was paid: the text says it is given back
+    assert outcome.detail == ai_effect_model_text(spent=True)
     assert seedance.requests == []
 
 
@@ -473,7 +476,9 @@ def test_on_a_capped_model_the_owners_words_are_trimmed_never_the_effect(
     assert prompt.endswith(seedance_effect_line(entry, _use(), subject=effect_subject(None)))
     assert len(prompt) <= media_module.MAX_PROMPT_CHARS
     (video,) = outcome.media
-    assert video.params["prompt_trims"]  # the topic was cut to make room
+    trims = video.params["prompt_trims"]
+    assert trims  # the topic was cut to make room…
+    assert all(trim["kept"] > 0 for trim in trims)  # …never to nothing
 
 
 def test_a_prompt_at_its_limit_is_refused_before_the_copy_and_never_asked(
@@ -490,7 +495,7 @@ def test_a_prompt_at_its_limit_is_refused_before_the_copy_and_never_asked(
         producer.prepare_new_brief(brief, _kit())
     assert str(refused.value) == AI_EFFECT_DOES_NOT_FIT_TEXT
     outcome = _produce(producer, brief)
-    assert outcome.detail == AI_EFFECT_DOES_NOT_FIT_TEXT
+    assert outcome.detail == ai_effect_does_not_fit_text(part=False, spent=True)
     assert seedance.requests == []
 
 
@@ -529,3 +534,82 @@ def test_the_copy_check_counts_the_effect_line(
     assert producer.copy_overage(plain, _kit(), None, payload)[0] == 0
     over, note = producer.copy_overage(with_effect, _kit(), None, payload)
     assert over > 0 and note
+
+
+def test_with_an_effect_the_owners_words_never_go_below_their_floors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 2: on a capped model the pass «below the floors» would cut the topic
+    to nothing and keep the effect — an effect over nothing. With a line it stops at the
+    floors and refuses instead; without one it still cuts as on main."""
+    topic = media_module._Flex('It is about: "', "tema " * 100)
+    lines: list[Any] = ["Fixed line.", topic]
+    line = "An effect line of the library."
+    budget = len("Fixed line.") + len(line) + 60  # room under the topic's 200 floor
+
+    holder = media_module._EFFECT_SUFFIX.set([line])
+    try:
+        with pytest.raises(media_module._EffectDoesNotFit) as refused:
+            media_module._budgeted_report(lines, budget)
+    finally:
+        media_module._EFFECT_SUFFIX.reset(holder)
+    assert refused.value.detail == AI_EFFECT_DOES_NOT_FIT_TEXT
+
+    prompt, trims = media_module._budgeted_report(lines, budget)  # no effect: as on main
+    assert len(prompt) <= budget and trims
+
+
+def test_the_texts_say_where_and_whether_anything_was_spent() -> None:
+    assert AI_EFFECT_DOES_NOT_FIT_TEXT.endswith(
+        "para este video. Acorta la descripción o quita el efecto. No se gastó nada."
+    )
+    assert "para esta parte" in ai_effect_does_not_fit_text(part=True, spent=False)
+    assert ai_effect_does_not_fit_text(part=True, spent=True).endswith(
+        "Te devolvimos lo que usaste."
+    )
+    assert AI_EFFECT_MODEL_TEXT == (
+        "Este efecto no se puede usar en este video. Quítalo o elige otro, y vuelve a "
+        "intentarlo. No se gastó nada."
+    )
+
+
+def test_switch_off_runs_nothing_of_ef13(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEEDANCE_EFFECTS_SWITCH, raising=False)
+
+    def boom(*_: object) -> None:
+        raise AssertionError("read with the switch off")
+
+    monkeypatch.setattr(effect_module, "load_effects", boom)
+    assert seedance_effect_of(_clip(effects=(_use(),))) is None
+
+
+def test_a_part_that_no_longer_fits_is_refused_before_the_copy_with_its_own_words(
+    measured: EffectsLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(media_module, "VIDEO_PROMPT_MAX_WORDS", 20)
+    part = PartRef(index=1, mode="reference", seconds=5, effects=(_use("brasas"),))
+    brief = _clip(part=part, duration_seconds=5, prompt_compiler_version=1)
+    producer = _producer(_store(), DraftSeedance(), RecordingFitter())
+    with pytest.raises(BrandReferenceError) as refused:
+        producer.prepare_new_brief(brief, _kit())
+    assert str(refused.value) == ai_effect_does_not_fit_text(part=True, spent=False)
+
+
+@pytest.mark.parametrize("method", ["recreate_price", "regeneration_price"])
+def test_a_remake_the_producer_would_refuse_has_no_price(method: str) -> None:
+    from types import SimpleNamespace
+
+    from qualify_api.creative.service import ContentService
+
+    def refuse(brief: object, kit: object) -> object:
+        raise BrandReferenceError(AI_EFFECT_MODEL_TEXT)
+
+    brief = _clip(effects=(_use(),))
+    service = object.__new__(ContentService)
+    service._creations = object()
+    service._repo = SimpleNamespace(
+        get_draft=lambda **_: SimpleNamespace(brief_id=uuid4()), get_brief=lambda **_: brief
+    )
+    service._media = SimpleNamespace(prepare_new_brief=refuse)
+    service._brand = SimpleNamespace(kit=lambda **_: _kit())
+    assert getattr(service, method)(tenant_id=TENANT_ID, draft_id=uuid4()) is None

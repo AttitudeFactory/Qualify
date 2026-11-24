@@ -3853,16 +3853,24 @@ class MediaProducer:
             return
         models = self._ai_effect_models(brief)
         if not all(measured_on_model(effect.entry, model) for model in models):
-            raise BrandReferenceError(AI_EFFECT_MODEL_TEXT)
+            raise BrandReferenceError(ai_effect_model_text(spent=False))
+        from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+            uses_prepared_frame,
+        )
+
         media = brief.media
+        references = media.clip_has_references
         try:
             for model in sorted(models):
                 if media.part is not None:
+                    # as `_clip` compiles it: the photos only with references, and the
+                    # prepared frame named «Image 1» when it travels among them
                     _part_prompt(
                         brief=brief,
                         kit=kit,
-                        images=len(media.clip_image_keys) if media.clip_has_references else 0,
+                        images=len(media.clip_image_keys) if references else 0,
                         model=model,
+                        opening_frame=references and uses_prepared_frame(brief),
                     )
                     continue
                 copies = _WORST_CASE_CLIP_COPIES if media.prompt_compiler_version >= 1 else (None,)
@@ -3879,6 +3887,10 @@ class MediaProducer:
                         image_roles=media.clip_image_roles,
                         model=model,
                     )
+        except _EffectDoesNotFit as exc:
+            raise BrandReferenceError(
+                ai_effect_does_not_fit_text(part=media.part is not None, spent=False)
+            ) from exc
         except _PromptOverBudget as exc:
             raise BrandReferenceError(exc.detail) from exc
 
@@ -5974,7 +5986,8 @@ class MediaProducer:
                     FailureReason.PART_FAILED.value
                     if part is not None
                     else FailureReason.INVALID_PARAMETERS.value,
-                    AI_EFFECT_MODEL_TEXT,
+                    # inside the production: the copy was paid and is given back
+                    ai_effect_model_text(spent=True),
                     raw=f"effect {ai_effect.entry.id} not measured on {asked_on}",
                 )
             reports: list[dict[str, Any]] = []
@@ -6004,6 +6017,14 @@ class MediaProducer:
                         model=str(params.get("model") or self._seedance_model),
                     )
                 )
+            except _EffectDoesNotFit as exc:
+                # EF-13: inside the production the copy was paid and is given back
+                raise _PromptOverBudget(
+                    ai_effect_does_not_fit_text(part=part is not None, spent=True),
+                    needed=exc.needed,
+                    budget=exc.budget,
+                    unit=exc.unit,
+                ) from exc
             finally:
                 _PROMPT_REPORTS.reset(collecting)
             report = reports[-1] if reports else {}
@@ -8444,10 +8465,15 @@ def _budgeted_report(
     if budget is None:
         words = prompt_words(prompt)
         if words > VIDEO_PROMPT_MAX_WORDS:
+            if suffix:
+                raise _EffectDoesNotFit(
+                    AI_EFFECT_DOES_NOT_FIT_TEXT,
+                    needed=words,
+                    budget=VIDEO_PROMPT_MAX_WORDS,
+                    unit="words",
+                )
             raise _PromptOverBudget(
-                AI_EFFECT_DOES_NOT_FIT_TEXT
-                if suffix
-                else f"Hay demasiado texto para este video: tiene {words} palabras y admite "
+                f"Hay demasiado texto para este video: tiene {words} palabras y admite "
                 f"hasta {VIDEO_PROMPT_MAX_WORDS}. Acorta lo que escribiste y vuelve a intentarlo.",
                 needed=words,
                 budget=VIDEO_PROMPT_MAX_WORDS,
@@ -8459,7 +8485,10 @@ def _budgeted_report(
         i: line for i, line in enumerate(lines) if isinstance(line, _Flex) and not line.protected
     }
     ranks = sorted({line.rank for line in flexible.values()})
-    for to_floor, order in ((True, ranks), (False, ranks[::-1])):
+    # EF-13: with a Seedance effect the owner's words never go below their floors — an
+    # effect over a topic or shots cut to nothing is not what the owner asked for
+    passes = ((True, ranks),) if suffix else ((True, ranks), (False, ranks[::-1]))
+    for to_floor, order in passes:
         for rank in order:
             group = [i for i, line in flexible.items() if line.rank == rank]
             while len(prompt) > budget:
@@ -8479,7 +8508,7 @@ def _budgeted_report(
     if suffix and len(prompt) > budget:
         # EF-13: the owner's words are at their least and the effect still does not fit:
         # never cut the template (it would ask for something else than what was measured)
-        raise _PromptOverBudget(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=len(prompt), budget=budget)
+        raise _EffectDoesNotFit(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=len(prompt), budget=budget)
     if strict and len(prompt) > budget:
         raise _PromptOverBudget(
             f"Hay demasiado texto para esta pieza: necesita {len(prompt)} caracteres y admite "
@@ -8531,20 +8560,43 @@ def _video_budget(brief: ContentBrief, model: str | None) -> int | None:
     return _base_budget()  # `main`'s 2,500 while compiling a brief frozen on it
 
 
-#: EF-13: what the owner reads when the chosen «Con IA» effect does not fit beside the
-#: owner's own words. The prompt is compiled with the effect's line inside its budget
-#: everywhere — the checks before the copy is paid included (`prepare_new_brief`,
-#: `copy_overage`, the brand references' preflight) —, so it says no spend.
-AI_EFFECT_DOES_NOT_FIT_TEXT = (
-    "El efecto no cabe junto a lo que escribiste para esta parte. Acorta la descripción "
-    "o quita el efecto. No se gastó nada."
-)
-#: EF-13 (D5): the effect was measured on a Seedance model other than the one this piece
-#: would be made with. Refused before anything is paid.
-AI_EFFECT_MODEL_TEXT = (
-    "Este efecto todavía no está disponible para este video. Quita el efecto y vuelve a "
-    "intentarlo. No se gastó nada."
-)
+#: EF-13: how a refusal of a «Con IA» effect ends — before anything is paid (the checks
+#: before the copy: `prepare_new_brief`, the brand references' preflight), or inside the
+#: production, where the copy was paid and the creations are given back (the refund).
+_NOTHING_SPENT = "No se gastó nada."
+_GIVEN_BACK = "Te devolvimos lo que usaste."
+
+
+def ai_effect_does_not_fit_text(*, part: bool, spent: bool) -> str:
+    """EF-13: the chosen «Con IA» effect does not fit beside the owner's own words (the
+    prompt is compiled with its line inside the budget everywhere, so the checks before
+    the copy see it first: `spent` False there)."""
+    where = "esta parte" if part else "este video"
+    return (
+        f"El efecto no cabe junto a lo que escribiste para {where}. Acorta la descripción "
+        f"o quita el efecto. {_GIVEN_BACK if spent else _NOTHING_SPENT}"
+    )
+
+
+def ai_effect_model_text(*, spent: bool) -> str:
+    """EF-13 (D5): the effect was measured on a Seedance model other than the one this
+    piece would be made with (UX review, 2026-11-24)."""
+    return (
+        "Este efecto no se puede usar en este video. Quítalo o elige otro, y vuelve a "
+        f"intentarlo. {_GIVEN_BACK if spent else _NOTHING_SPENT}"
+    )
+
+
+#: The texts of a refusal before anything is paid — a Clip's (what `_budgeted_report`
+#: raises; a caller that knows the piece is a part, or that the copy was paid, rewords it).
+AI_EFFECT_DOES_NOT_FIT_TEXT = ai_effect_does_not_fit_text(part=False, spent=False)
+AI_EFFECT_MODEL_TEXT = ai_effect_model_text(spent=False)
+
+
+class _EffectDoesNotFit(_PromptOverBudget):
+    """EF-13: the prompt does not fit because of the Seedance effect's line — with the
+    owner's words at their floors (a capped model) or over the word ceiling (2.x)."""
+
 
 #: EF-13: the Seedance effect's line the video prompt being compiled ends with — a
 #: one-shot holder (`_budgeted_report` takes it), set by `_asks_seedance_effect` around
