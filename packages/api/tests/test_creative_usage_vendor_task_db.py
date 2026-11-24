@@ -109,12 +109,16 @@ def test_events_without_a_vendor_task_are_written_every_time() -> None:
     brand_id, draft_id, asset_id = _draft_with_video(repo, _budgeted_brand(), TENANT_G)
     spent = _budget(brand_id)
 
+    # whole cents on purpose: `budget_spent_usd` is NUMERIC(10,2) (0009) and Postgres
+    # rounds every addition to the cent, while `cost_usd` keeps 6 decimals — two calls of
+    # 0.035 leave 0.08 on the budget (0.04 + 0.04), as on main before 0179
     for _ in range(2):
-        _settle_failed(repo, brand_id, draft_id, asset_id, (_usage("0.035"),))
+        _settle_failed(repo, brand_id, draft_id, asset_id, (_usage("0.04"),))
 
     rows = _usage_rows(draft_id, TENANT_G)
     assert [r.vendor_task_id for r in rows] == [None, None]
-    assert _budget(brand_id) - spent == Decimal("0.070")
+    assert [r.cost_usd for r in rows] == [Decimal("0.04"), Decimal("0.04")]
+    assert _budget(brand_id) - spent == Decimal("0.08")
 
 
 def test_the_same_task_id_in_another_tenant_is_its_own_event() -> None:
