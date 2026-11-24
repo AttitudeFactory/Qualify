@@ -167,9 +167,9 @@ def test_the_shots_are_the_detectors(three_shots: Path) -> None:
 
 def test_a_pass_over_its_budget_spreads_the_frames_evenly(three_shots: Path) -> None:
     """A slow pass is dropped: six frames spread evenly over the length, from what it
-    kept and the keyframes after it."""
+    kept and a seek to each time it lacks."""
     ticks = iter(float(n) for n in range(10_000))
-    sheet = make_contact_sheet(three_shots, budget_s=2.5, clock=lambda: next(ticks))
+    sheet = make_contact_sheet(three_shots, budget_s=0.0025, clock=lambda: next(ticks) * 1e-3)
     assert sheet.cuts == "even" and sheet.params()["cuts"] == "even"
     assert len(sheet.frames) == SHEET_FRAMES
     assert all(f.role in ("start", "fill", "end") for f in sheet.frames)
@@ -213,7 +213,7 @@ def test_even_frames_are_distinct_and_reach_the_end_without_keyframes(
         sheet = make_contact_sheet(video, budget_s=0)
     else:
         ticks = iter(float(n) for n in range(10_000))
-        sheet = make_contact_sheet(video, budget_s=3, clock=lambda: next(ticks))
+        sheet = make_contact_sheet(video, budget_s=0.003, clock=lambda: next(ticks) * 1e-3)
     assert sheet.cuts == "even"
     times = [f.time_s for f in sheet.frames]
     assert len(times) == SHEET_FRAMES and len(set(times)) == SHEET_FRAMES
@@ -238,6 +238,97 @@ def test_a_video_too_short_for_six_frames_gives_fewer_never_a_repeat(tmp_path: P
         times = [f.time_s for f in sheet.frames]
         assert 1 <= len(times) <= 3 and len(set(times)) == len(times)
         assert [f.index for f in sheet.frames] == list(range(len(times)))
+
+
+#: Twenty one-second shots (red = 12 × s) and a keyframe every 2 s exactly.
+TWENTY = [((12 * s, 255 - 12 * s, 128), 1.0) for s in range(20)]
+GOP_2S = {"g": "60", "keyint_min": "60", "sc_threshold": "0"}
+
+
+def _second_of_twenty(jpeg: bytes) -> int:
+    return round(float(_rgb(jpeg)[200:300, :, 0].mean()) / 12)
+
+
+def _over(path: Path, duration_s: float | None) -> object:
+    """What `_scan` hands the fallback when it stops at once (nothing kept yet)."""
+    from qualify_creative.video._source import open_video, probe
+    from qualify_creative.video.contact_sheet import _OverBudget
+
+    with open_video(path) as (container, stream):
+        timeline = probe(container, stream, need_end=False)
+    return _OverBudget(duration_s, [], 0.0, timeline.origin_s, timeline.rotation)
+
+
+def _check_even(frames: list, duration: float, seconds_of: object) -> list[float]:
+    times = [f.time_s for f in frames]
+    assert times == sorted(times) and len(set(times)) == len(times)
+    assert [f.index for f in frames] == list(range(len(frames)))
+    for frame in frames:  # the picture IS the frame of its own time
+        assert seconds_of(frame.jpeg) == min(int(duration) - 1, int(frame.time_s + 1e-6))
+    return times
+
+
+@pytest.fixture(scope="module")
+def gop_2s(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write(tmp_path_factory.mktemp("even") / "gop2.mp4", TWENTY, GOP_2S)
+
+
+def test_even_with_budget_answers_each_time_with_its_own_frame(gop_2s: Path) -> None:
+    from qualify_creative.video.contact_sheet import _evenly
+
+    ticks = iter(float(n) for n in range(100_000))
+    frames, duration = _evenly(gop_2s, _over(gop_2s, 20.0), lambda: next(ticks) * 1e-3)
+    times = _check_even(frames, duration, _second_of_twenty)
+    assert len(times) == SHEET_FRAMES
+    assert all(f.time_s + 1e-3 >= f.target_s for f in frames)
+    assert times[-1] >= duration - 0.25 - 1e-3  # within 0.25 s of the end
+
+
+def test_even_with_no_budget_takes_each_times_keyframe_end_kept(gop_2s: Path) -> None:
+    """Budget 0: each time gets the keyframe at or before it (documented): the end's is
+    the keyframe nearest the end (18 s), never lost to another time's frame."""
+    from qualify_creative.video.contact_sheet import _evenly
+
+    frames, duration = _evenly(gop_2s, _over(gop_2s, 20.0), lambda: 0.0, budget_s=0)
+    times = _check_even(frames, duration, _second_of_twenty)
+    assert all(abs(t / 2 - round(t / 2)) < 1e-3 for t in times)  # keyframes only
+    assert all(f.time_s <= f.target_s + 1e-3 for f in frames)
+    assert times[-1] == pytest.approx(18.0, abs=1e-3)
+    assert len(times) == SHEET_FRAMES  # six times on six different keyframes
+
+
+def test_even_with_a_clock_spent_mid_gop_keeps_the_end(gop_2s: Path) -> None:
+    """The budget runs out inside the first seek's GOP: that seek (the end's) keeps the
+    last frame it decoded; the rest are keyframes. Still ordered, distinct, its own."""
+    from qualify_creative.video.contact_sheet import _evenly
+
+    ticks = iter(float(n) for n in range(100_000))
+    frames, duration = _evenly(gop_2s, _over(gop_2s, 20.0), lambda: float(next(ticks)), budget_s=20)
+    times = _check_even(frames, duration, _second_of_twenty)
+    assert 18.0 - 1e-3 <= times[-1] <= 19.75 + 1e-3  # in the end's own GOP
+
+
+def test_even_with_one_keyframe_and_no_budget_gives_one_frame(tmp_path: Path) -> None:
+    """One keyframe at the start and no budget: every time lands on it — one frame, the
+    nearest time's (documented: fewer frames, never a repeat)."""
+    from qualify_creative.video.contact_sheet import _evenly
+
+    video = _write(tmp_path / "one.mp4", SECONDS, ONE_KEYFRAME)
+    frames, duration = _evenly(video, _over(video, 10.0), lambda: 0.0, budget_s=0)
+    assert [f.time_s for f in frames] == [0.0] and frames[0].role == "start"
+    _check_even(frames, duration, _second_of)
+
+
+def test_even_with_no_duration_in_the_header_reads_it_from_the_packets(gop_2s: Path) -> None:
+    from qualify_creative.video.contact_sheet import _demuxed_seconds, _evenly
+
+    over = _over(gop_2s, None)
+    assert _demuxed_seconds(gop_2s, over.origin_s) == pytest.approx(20.0, abs=0.05)
+    ticks = iter(float(n) for n in range(100_000))
+    frames, duration = _evenly(gop_2s, over, lambda: next(ticks) * 1e-3)
+    assert duration == pytest.approx(20.0, abs=0.05)
+    times = _check_even(frames, duration, _second_of_twenty)
+    assert times[-1] >= duration - 0.25 - 1e-3
 
 
 def test_an_unreadable_file_raises(tmp_path: Path) -> None:

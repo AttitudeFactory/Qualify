@@ -413,17 +413,22 @@ def _sought(
     over: _OverBudget,
     clock: Callable[[], float],
     budget_s: float,
-) -> list[_Still]:
-    """The first frame at or after each of `times` (in order), each read after a seek to
-    the keyframe before it: at most a GOP decoded per time. Past `budget_s` the decoder
-    reads keyframes only (`skip_frame="NONKEY"`): the frames still missing are then the
-    keyframe at or before their time — fast, maybe less exact, never unbounded."""
+) -> dict[float, _Still]:
+    """Each of `times` answered by ITS OWN frame, read after a seek to the keyframe before
+    it: the first frame at or after the time. Bounded by `budget_s`, checked on every
+    decoded frame: once it is spent, the seek in progress keeps the last frame it decoded
+    (at or before its time), and the times left are read from keyframes only
+    (`skip_frame="NONKEY"`: the keyframe at or before each). Every seek gives a frame
+    (the first one it decodes, whatever the budget): at most `len(times)` seeks, each at
+    most a GOP while the budget lasts. Pre-roll frames (before the origin) are skipped,
+    as in `_scan`. Ask the most important time first: it is the one sure to be exact."""
     started = clock()
-    out: list[_Still] = []
+    out: dict[float, _Still] = {}
     with open_video(source) as (container, stream):
         _threads(stream)
         for target_s in times:
-            if clock() - started >= budget_s:
+            spent = clock() - started >= budget_s
+            if spent:
                 stream.codec_context.skip_frame = "NONKEY"
             container.seek(
                 int((over.origin_s + target_s) / stream.time_base), stream=stream, backward=True
@@ -431,14 +436,31 @@ def _sought(
             chosen: tuple[float, Any] | None = None
             for frame in container.decode(stream):
                 time_s = frame_seconds(frame, stream)
-                if time_s is None:
-                    continue
-                chosen = (max(0.0, time_s - over.origin_s), frame)
-                if chosen[0] + 1e-6 >= target_s or stream.codec_context.skip_frame == "NONKEY":
+                if time_s is None or time_s < over.origin_s - 1e-6:
+                    continue  # pre-roll
+                chosen = (time_s - over.origin_s, frame)
+                if spent or chosen[0] + 1e-6 >= target_s:
                     break
+                if clock() - started >= budget_s:
+                    break  # spent mid-GOP: this time keeps the last frame decoded
             if chosen is not None:
-                out.append(_still(chosen[1], chosen[0], over.rotation))
+                out[target_s] = _still(chosen[1], chosen[0], over.rotation)
     return out
+
+
+def _demuxed_seconds(source: str | os.PathLike[str], origin_s: float) -> float | None:
+    """The video's length from its packets' times — read, never decoded (a file whose
+    header has no duration); at most `MAX_SECONDS`."""
+    end: float | None = None
+    with open_video(source) as (container, stream):
+        for packet in container.demux(stream):
+            if packet.pts is None:
+                continue
+            seconds = float((packet.pts + (packet.duration or 0)) * stream.time_base) - origin_s
+            end = seconds if end is None else max(end, seconds)
+            if end >= MAX_SECONDS:
+                return MAX_SECONDS
+    return end
 
 
 def _evenly(
@@ -449,27 +471,44 @@ def _evenly(
     budget_s: float = EVEN_BUDGET_S,
 ) -> tuple[list[SheetFrame], float]:
     """The even fallback, for a pass that ran past its budget: the times spread evenly
-    from the start to `BEFORE_END_S` before the end (`pick_times` with one shot), each
-    answered by a frame the pass already kept within `GRID_S` of it, or else by a seek to
-    it (`_sought`) — at most `count` seeks, bounded by `budget_s`. Distinct frames in time
-    order (`_assign`)."""
-    duration = over.duration_s
-    if not duration:
-        with open_video(source) as (container, stream):
-            duration = probe(container, stream).end_s or over.reached_s
+    from the start to `BEFORE_END_S` before the end (`pick_times` with one shot). Each is
+    answered by its OWN frame — one the pass already kept within `GRID_S` after it, or
+    else a seek to it (`_sought`, the end's time first so it is the exact one); never the
+    frame of another time. With the budget spent, a time may get the keyframe before it:
+    two times on the same keyframe keep one frame (the nearer time), so the sheet has
+    fewer frames, never a repeated one. Time order."""
+    duration = over.duration_s or _demuxed_seconds(source, over.origin_s) or over.reached_s
     targets = pick_times([ShotSpan(0, 0.0, duration)], duration, count)
     kept = list(over.grid)
-    missing = [
-        target_s
-        for target_s, _ in targets
-        if not any(target_s - 1e-6 <= s.time_s < target_s + GRID_S for s in kept)
-    ]
-    candidates = kept + (_sought(source, missing, over, clock, budget_s) if missing else [])
-    if not candidates:
+    answers: dict[float, _Still] = {}
+    for target_s, _ in targets:
+        near = [s for s in kept if target_s - 1e-6 <= s.time_s < target_s + GRID_S]
+        if near:
+            answers[target_s] = near[0]
+    missing = [t for t, _ in targets if t not in answers]
+    if missing:
+        # the end first: with little budget, it is the frame the owner must not lose
+        answers.update(_sought(source, [missing[-1], *missing[:-1]], over, clock, budget_s))
+    if not answers:
         from qualify_creative.video._source import NoVideoStream  # noqa: PLC0415
 
         raise NoVideoStream("the video has no decodable frames")
-    return _assign(candidates, targets), duration
+    # one frame per instant: of two times on the same frame, the nearer keeps it
+    best: dict[float, tuple[float, Role, _Still]] = {}
+    for target_s, role in targets:
+        still = answers.get(target_s)
+        if still is None:
+            continue
+        held = best.get(still.time_s)
+        if held is None or abs(still.time_s - target_s) < abs(still.time_s - held[0]):
+            best[still.time_s] = (target_s, role, still)
+    frames = [
+        SheetFrame(index, role, round(target_s, 4), s.time_s, s.jpeg, s.width, s.height)
+        for index, (target_s, role, s) in enumerate(
+            sorted(best.values(), key=lambda b: b[2].time_s)
+        )
+    ]
+    return frames, duration
 
 
 def _strip(frames: Sequence[SheetFrame]) -> tuple[bytes, tuple[int, int]]:
