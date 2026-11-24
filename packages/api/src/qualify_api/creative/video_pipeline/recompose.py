@@ -276,7 +276,7 @@ def stored_recipe(params: Mapping[str, Any] | None) -> ComposeRecipe | None:
 
 def part_final_composes(params: Mapping[str, Any] | None) -> bool:
     """m-25103284: whether this asset's final is a PART's raw 1080p composed again with a
-    frozen recipe — minutes of decoding Seedance's 10-bit H.265 (measured ~9.5 min for
+    frozen recipe — minutes of decoding Seedance's 10-bit H.265 (measured ~3 min for
     15 s on amd64), so the creative worker runs it off its main loop with the lease kept
     (`worker.pipeline.BackgroundJoins`) instead of inline. Pure."""
     data = params or {}

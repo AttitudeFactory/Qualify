@@ -1,5 +1,5 @@
 """m-25103284 review: a part's final composed again takes minutes (Seedance's 10-bit H.265,
-~9.5 min for 15 s measured on amd64), so the creative worker makes it OFF its main loop —
+~3 min for 15 s on amd64, more on arm64), so the creative worker makes it OFF its main loop —
 on the background thread the parts' joins use, its lease renewed the whole time — and its
 `rendering_at` is stamped while it runs. Offline: the store, the service and the loop's
 database reads are doubles."""
