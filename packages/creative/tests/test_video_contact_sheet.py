@@ -145,7 +145,7 @@ def test_the_same_file_gives_the_same_sheet(three_shots: Path) -> None:
 
 def test_the_provenance_names_the_process(three_shots: Path) -> None:
     params = make_contact_sheet(three_shots).params()
-    assert params["version"] == "contact-sheet-3"
+    assert params["version"] == "contact-sheet-4"
     assert params["detector"] and params["frames_wanted"] == SHEET_FRAMES
     assert params["shots"] == 3 and params["cuts"] == "detected"
     assert params["av_version"] == av.__version__
@@ -309,8 +309,8 @@ def test_even_with_a_clock_spent_mid_gop_keeps_the_end(gop_2s: Path) -> None:
 
 
 def test_even_with_one_keyframe_and_no_budget_gives_one_frame(tmp_path: Path) -> None:
-    """One keyframe at the start and no budget: every time lands on it — one frame, the
-    nearest time's (documented: fewer frames, never a repeat)."""
+    """One keyframe at the start and no budget: every time lands on it — one frame, kept
+    by the start by rank (documented: fewer frames, never a repeat)."""
     from qualify_creative.video.contact_sheet import _evenly
 
     video = _write(tmp_path / "one.mp4", SECONDS, ONE_KEYFRAME)
@@ -329,6 +329,82 @@ def test_even_with_no_duration_in_the_header_reads_it_from_the_packets(gop_2s: P
     assert duration == pytest.approx(20.0, abs=0.05)
     times = _check_even(frames, duration, _second_of_twenty)
     assert times[-1] >= duration - 0.25 - 1e-3
+
+
+@pytest.fixture(scope="module")
+def one_keyframe(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write(tmp_path_factory.mktemp("even") / "one.mp4", SECONDS, ONE_KEYFRAME)
+
+
+def _check_roles(frames: list, duration: float) -> list[str]:
+    """The provenance follows the pictures: targets grow with the times, the start is
+    the first frame, the end the last and near its time; a far end is `reached`."""
+    from qualify_creative.video.contact_sheet import _end_slack
+
+    targets = [f.target_s for f in frames]
+    assert targets == sorted(targets) and len(set(targets)) == len(targets)
+    roles = [f.role for f in frames]
+    assert set(roles) <= {"start", "fill", "end", "reached"}
+    assert all(roles.count(r) <= 1 for r in ("start", "end", "reached"))
+    assert "start" not in roles or roles[0] == "start"
+    assert not ("end" in roles and "reached" in roles)
+    for frame in frames:
+        if frame.role == "end":
+            assert frame is frames[-1]
+            assert frame.target_s - frame.time_s <= _end_slack(duration)
+        if frame.role == "reached":
+            assert frame is frames[-1]
+            assert frame.target_s - frame.time_s > _end_slack(duration)
+    return roles
+
+
+#: (video, budget) → the roles, and the last frame's time (None: not checked).
+EVEN_CASES = {
+    ("one_keyframe", 10.0): (["start", "fill", "fill", "fill", "fill", "end"], 9.7667),
+    # the review's case: the start's seek stops mid-GOP, the fills get the keyframe at
+    # 0.0 — before the start's frame: dropped, never a «fill» ahead of the «start»
+    ("one_keyframe", 0.3): (["start", "end"], 9.7667),
+    ("one_keyframe", 0.0): (["start"], 0.0),
+    ("gop_2s", 10.0): (["start", "fill", "fill", "fill", "fill", "end"], 19.7667),
+    ("gop_2s", 0.3): (["start", "fill", "fill", "fill", "fill", "end"], 19.7667),
+    ("gop_2s", 0.0): (["start", "fill", "fill", "fill", "fill", "end"], 18.0),
+}
+
+
+@pytest.mark.parametrize(("video", "budget"), list(EVEN_CASES))
+def test_even_roles_and_targets_follow_the_frames_time_order(
+    request: pytest.FixtureRequest, video: str, budget: float
+) -> None:
+    from qualify_creative.video.contact_sheet import _evenly
+
+    path = request.getfixturevalue(video)
+    length = 10.0 if video == "one_keyframe" else 20.0
+    seconds_of = _second_of if video == "one_keyframe" else _second_of_twenty
+    ticks = iter(range(1_000_000))
+    frames, duration = _evenly(
+        path, _over(path, length), lambda: next(ticks) * 1e-3, budget_s=budget
+    )
+    _check_even(frames, duration, seconds_of)
+    roles, last_s = EVEN_CASES[(video, budget)]
+    assert _check_roles(frames, duration) == roles
+    assert frames[-1].time_s == pytest.approx(last_s, abs=1e-3)
+    if video == "one_keyframe" and budget == 0.3:
+        assert frames[0].time_s < frames[0].target_s  # the start's frame, stopped short
+
+
+def test_an_even_end_read_far_from_the_end_is_not_the_end(one_keyframe: Path) -> None:
+    """One keyframe and a budget spent ~1 s into the end's seek of a 10 s video: that
+    frame is kept as `reached` (its own second, after the start), never called «end»."""
+    from qualify_creative.video.contact_sheet import _evenly
+
+    ticks = iter(range(1_000_000))
+    frames, duration = _evenly(
+        one_keyframe, _over(one_keyframe, 10.0), lambda: next(ticks) * 1e-2, budget_s=0.3
+    )
+    _check_even(frames, duration, _second_of)
+    assert _check_roles(frames, duration) == ["start", "reached"]
+    assert frames[0].time_s == 0.0 and frames[-1].time_s < 2.0
+    assert frames[-1].target_s == pytest.approx(9.75)
 
 
 def test_an_unreadable_file_raises(tmp_path: Path) -> None:
