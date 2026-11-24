@@ -48,9 +48,11 @@ class ExpiringLeases:
         self.run = run
         self.until = 0.0
         self.renews = 0
+        self.acquires = 0
         self.releases: list[bool] = []
 
     def acquire(self, *_args: Any) -> Any:
+        self.acquires += 1
         self.until = time.monotonic() + LEASE_S
         return self.run
 
@@ -160,8 +162,25 @@ def test_while_a_join_runs_the_composed_final_waits_for_a_later_pass(one_final: 
     preparation = PipelinePreparation(service, store, [TENANT], background_joins=True)  # type: ignore[arg-type]
     gate = threading.Event()
     assert preparation.joins.start(SimpleNamespace(draft_id=uuid4()), lambda _r: gate.wait(5))
+    for _ in range(3):  # three passes of the loop while the thread is busy
+        preparation()
+    # never claimed nor released: no lease churn while it waits for the thread
+    assert service.threads == [] and store.acquires == 0 and store.releases == []
+    gate.set()
+    assert preparation.shutdown(timeout=None)
+    preparation()  # the thread is free: now it is taken
+    assert store.acquires == 1
+    assert preparation.shutdown(timeout=None) and service.threads == ["creative-join"]
+
+
+def test_while_a_join_runs_an_ordinary_final_still_runs_inline(one_final: Any) -> None:
+    store = ExpiringLeases(one_final)
+    service = SlowFinals(store, composes=False, seconds=0.0)
+    preparation = PipelinePreparation(service, store, [TENANT], background_joins=True)  # type: ignore[arg-type]
+    gate = threading.Event()
+    assert preparation.joins.start(SimpleNamespace(draft_id=uuid4()), lambda _r: gate.wait(5))
     preparation()
-    assert service.threads == [] and store.releases == [False]  # released NOT done
+    assert store.acquires == 1 and service.threads == [threading.current_thread().name]
     gate.set()
     assert preparation.shutdown(timeout=None)
 
@@ -225,3 +244,48 @@ def test_the_final_restarts_its_rendering_at_while_it_is_made(
     after = len(stamps)
     time.sleep(0.2)
     assert len(stamps) == after  # the beat stops with the final: none lands after it
+
+
+# ---------------------------------------------------------------------------
+# a lease really lost at `settle_final`: the run stays undone, nothing failed or refunded
+
+
+def test_a_lease_lost_when_the_final_is_saved_fails_nothing_and_refunds_nothing() -> None:
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    from .test_content_service import make_kit, make_service, make_voice
+
+    service, _, _ = make_service(kit=make_kit(), voice=make_voice())
+    failed: list[Any] = []
+    refunded: list[Any] = []
+
+    def settle_final(**_kwargs: Any) -> None:
+        raise CheckpointError("preparation lease lost")  # `PipelineStore.fence`
+
+    service._repo = SimpleNamespace(settle_final=settle_final)  # type: ignore[assignment]
+    service._fail_final = lambda *a, **_k: failed.append(a)  # type: ignore[method-assign]
+    service._refund_final_part = lambda *a, **_k: refunded.append(a)  # type: ignore[method-assign]
+    outcome = SimpleNamespace(
+        media=SimpleNamespace(object_key="k"),
+        detail=None,
+        usage=(),
+        spent_usd=0,
+        draft_changes={"raw_final": {"key": "raw"}},
+    )
+    with pytest.raises(CheckpointError):
+        service._settle_final(TENANT, uuid4(), uuid4(), ASSET, None, outcome)  # type: ignore[arg-type]
+    assert failed == [] and refunded == []
+
+
+def test_the_loop_leaves_a_final_whose_lease_was_lost_undone(one_final: Any) -> None:
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    store = ExpiringLeases(one_final)
+    service = SlowFinals(store, composes=False, seconds=0.0)
+
+    def lost(**_kwargs: Any) -> None:
+        raise CheckpointError("preparation lease lost")
+
+    service.run_queued_final = lost  # type: ignore[method-assign]
+    PipelinePreparation(service, store, [TENANT])()  # type: ignore[arg-type]
+    assert store.releases == [False]  # not done: the next pass finishes it

@@ -691,6 +691,16 @@ class PipelinePreparation:
             for item in runs:
                 if item["phase"] in _JOIN_PHASES and self.joins is not None and self.joins.busy():
                     continue  # one join at a time: this one waits for the next pass
+                queued_asset = _final_asset(item["phase"])
+                if (
+                    queued_asset is not None
+                    and self.joins is not None
+                    and self.joins.busy()
+                    and self._final_composes(tenant_id, item["draft_id"], queued_asset)
+                ):
+                    # m-25103284: one heavy job at a time — a part's composed final waits
+                    # for the next pass without being claimed (an ordinary final goes on)
+                    continue
                 run = self.store.acquire(
                     tenant_id, item["draft_id"], item["revision"], item["phase"]
                 )
@@ -724,7 +734,7 @@ class PipelinePreparation:
                     if (
                         asset_id is not None
                         and self.joins is not None
-                        and self._final_composes(run, asset_id)
+                        and self._final_composes(run.tenant_id, run.draft_id, asset_id)
                     ):
                         # m-25103284: a part's final composed again takes minutes (10-bit
                         # H.265): off the loop, one heavy job at a time, its lease kept —
@@ -821,12 +831,12 @@ class PipelinePreparation:
             else:
                 self._join(run.tenant_id, run.draft_id)
 
-    def _final_composes(self, run: Any, asset_id: UUID) -> bool:
-        """Whether the final of `run` is a part's raw 1080p composed again (m-25103284)."""
+    def _final_composes(self, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> bool:
+        """Whether a queued final is a part's raw 1080p composed again (m-25103284)."""
         check = getattr(self.service, "queued_final_composes", None)
         if not callable(check):
             return False
-        return bool(check(tenant_id=run.tenant_id, draft_id=run.draft_id, asset_id=asset_id))
+        return bool(check(tenant_id=tenant_id, draft_id=draft_id, asset_id=asset_id))
 
     def _final_run(self, run: Any) -> None:
         """A queued final made on the background thread (m-25103284): its own tenant,

@@ -4874,6 +4874,18 @@ class ContentService:
                         tenant_id, draft_id, error or "final_failed", (asset_id,)
                     )
                 return
+            except CheckpointError:
+                # m-25103284: the run's lease is gone (`fence`) — another pass owns the
+                # final now. Nothing is failed or refunded here: the run stays undone and
+                # the next pass finishes it from what is kept (the raw 1080p, a composed
+                # final already under its key: `_held_final`), never paying it again.
+                cost_logger.error(
+                    "draft %s final: lease lost before it was saved; %s USD spent, the "
+                    "next pass records the final from the kept file",
+                    draft_id,
+                    outcome.spent_usd,
+                )
+                raise
             except Exception:
                 logger.exception("final of draft %s: could not save it", draft_id)
         cost_logger.error(
