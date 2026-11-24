@@ -1475,6 +1475,9 @@ class PostgresContentRepository:
                         if requires_ai_disclosure is not None
                         else draft.requires_ai_disclosure
                     ),
+                    # gross on purpose: what THIS version cost, all of it — a vendor task
+                    # recorded already (m-25112161) is not added to the budget again, but
+                    # it is still part of what made this version
                     spent_usd=spent_usd,
                     failure_reason=failure_reason,
                     failure_detail=failure_detail,
@@ -1986,7 +1989,11 @@ class PostgresContentRepository:
         m-25112161: every row naming a vendor task is written once per `(tenant, task)`
         (0179); a repeat adds neither a row nor spend. A `held_usage` row of a task other
         than `final_task_id` (an earlier raw file, due and then unreadable) is recorded on
-        that key alone."""
+        that key alone — also when `final_task_id` is None (the raw file was lost and
+        the 1080p paid in its place never came back, so nothing names a new task): then
+        every held row naming a task is such a row. When the stored mark names a task
+        recorded that way, the mark goes with this write too (the block is never left
+        marking a spend that is in the table)."""
         with tenant_session(tenant_id) as session:
             row = session.get(
                 orm.ImageAsset,
@@ -2034,8 +2041,14 @@ class PostgresContentRepository:
                 + sum((h.cost_usd for h in (*held, *lost)), Decimal(0)),
             )
             # the mark as it stands once this commits: gone when this write recorded the
-            # spend it named, else as stored (never revived from a stale in-memory block)
-            due_after = None if due and (paid or held) else stored.get(FINAL_USAGE_DUE)
+            # spend it named — its own task's (`paid`/`held`) or, m-25112161, a lost
+            # task's (written now or found on the key: recorded either way) — else as
+            # stored (never revived from a stale in-memory block)
+            mark = stored.get(FINAL_USAGE_DUE)
+            recorded_mark = (due and bool(paid or held)) or (
+                mark is not None and any(h.vendor_task_id == mark for h in lost)
+            )
+            due_after = None if recorded_mark else mark
             if row is None:
                 return
             if not ours:

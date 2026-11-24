@@ -149,7 +149,11 @@ class FinalRepository(InMemoryRepository):
         self.spend_added += (
             spent_usd - dropped - skipped + sum((h.cost_usd for h in (*held, *lost)), Decimal(0))
         )
-        due_after = None if due and (paid or held) else stored.get(FINAL_USAGE_DUE)
+        mark = stored.get(FINAL_USAGE_DUE)
+        recorded_mark = (due and bool(paid or held)) or (
+            mark is not None and any(h.vendor_task_id == mark for h in lost)
+        )
+        due_after = None if recorded_mark else mark
 
         def marked(block: dict[str, Any]) -> dict[str, Any]:
             block = {k: v for k, v in block.items() if k != FINAL_USAGE_DUE}

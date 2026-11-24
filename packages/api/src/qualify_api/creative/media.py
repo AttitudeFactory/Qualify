@@ -69,6 +69,7 @@ import itertools
 import json
 import logging
 import math
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -486,6 +487,17 @@ def vendor_task_of(payload: object) -> str | None:
     """The vendor task id a Seedance or OmniHuman result carries in its payload."""
     task = payload.get("task_id") if isinstance(payload, Mapping) else None
     return str(task) if task else None
+
+
+#: The task id in an `OmniHumanTimeout`'s text as the router keeps it (`Hop.reason` is
+#: "<Exception>: <message>", and every timeout message says "OmniHuman task <id> …").
+_TIMED_OUT_TASK = re.compile(r"OmniHumanTimeout\b.*?\btask (\S+)")
+
+
+def timed_out_task(raw: str | None) -> str | None:
+    """The OmniHuman task an `OmniHumanTimeout` named (m-25112161), or None."""
+    found = _TIMED_OUT_TASK.search(raw or "")
+    return found.group(1) if found else None
 
 
 @dataclass(frozen=True)
@@ -7729,7 +7741,12 @@ class MediaProducer:
         except _MediaFailed as exc:
             if "OmniHumanTimeout" in (exc.raw or ""):
                 # the window closed but the render goes on — and is billed when it ends:
-                # record what it will cost, so the budget is not blind to it
+                # record what it will cost, so the budget is not blind to it.
+                # m-25112161: on the task it names, so the row a success writes for that
+                # same task (a later wait by `RESUME_TASK_PARAM`) hits the key and adds
+                # nothing. Today this path runs only WITHOUT a vendor-task binding (with
+                # one `_run` raises `_MediaPending` first), so nothing records the id
+                # to resume it — the key is the guard for the day something does.
                 usage.append(
                     MediaUsage(
                         provider=OMNIHUMAN,
@@ -7742,6 +7759,7 @@ class MediaProducer:
                             self._omnihuman_resolution,
                             billed,
                         ),
+                        vendor_task_id=timed_out_task(exc.raw),
                     )
                 )
                 logger.warning("omnihuman timed out, billed render recorded: %s", exc.raw)

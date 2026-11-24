@@ -182,3 +182,115 @@ def test_a_lost_raw_final_is_recorded_once_on_its_own_task_id() -> None:
     assert _budget(brand_id) - spent == Decimal("4.84")
     (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
     assert FINAL_USAGE_DUE not in asset.params["draft"]
+
+
+def test_a_lost_task_still_marked_is_recorded_once_and_its_mark_cleared() -> None:
+    """Review of ff9be91a: T1 was kept and marked due, could not be read, and the write
+    that would have put T2 in the block (`on_raw_kept`) never landed — the block still
+    names T1, raw and mark. The settle records T1 on its key and T2 as this pass's raw
+    spend, and the mark goes with it; a second settle adds nothing to the budget and the
+    mark stays gone."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo, _budgeted_brand(), TENANT_G)
+    spent = _budget(brand_id)
+    t1, t2 = _task(), _task()
+    repo.set_video_draft(
+        tenant_id=TENANT_G,
+        asset_id=asset_id,
+        changes={
+            "status": DRAFT_RENDERING,
+            "raw_final": _raw(draft_id, t1, TENANT_G),
+            FINAL_USAGE_DUE: t1,
+        },
+    )
+    raw = _raw(draft_id, t2, TENANT_G)
+
+    def settle() -> None:
+        repo.settle_final(
+            tenant_id=TENANT_G,
+            draft_id=draft_id,
+            brand_id=brand_id,
+            asset_id=asset_id,
+            media=None,
+            error="No se pudo recodificar.",
+            usage=(),
+            spent_usd=Decimal("2.84"),
+            draft_changes={"raw_final": raw},
+            held_usage=(_tasked("2.00", t1),),
+            final_task_id=t2,
+            raw_usage=(_tasked("2.84", t2),),
+        )
+
+    settle()
+    (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
+    assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert asset.params["draft"]["raw_final"] == raw
+    assert _budget(brand_id) - spent == Decimal("4.84")
+
+    settle()
+    (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
+    assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert _budget(brand_id) - spent == Decimal("4.84")
+    assert sorted(r.vendor_task_id for r in _usage_rows(draft_id, TENANT_G)) == sorted([t1, t2])
+
+
+def test_a_lost_task_with_no_new_one_is_recorded_and_its_mark_cleared() -> None:
+    """`final_task_id` None: T1 marked due was unreadable and the 1080p ordered in its
+    place never came back. T1 is still recorded once on its key, and its mark goes."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo, _budgeted_brand(), TENANT_G)
+    spent = _budget(brand_id)
+    t1 = _task()
+    repo.set_video_draft(
+        tenant_id=TENANT_G,
+        asset_id=asset_id,
+        changes={
+            "status": DRAFT_RENDERING,
+            "raw_final": _raw(draft_id, t1, TENANT_G),
+            FINAL_USAGE_DUE: t1,
+        },
+    )
+    for _ in range(2):
+        repo.settle_final(
+            tenant_id=TENANT_G,
+            draft_id=draft_id,
+            brand_id=brand_id,
+            asset_id=asset_id,
+            media=None,
+            error="Seedance no entregó el video final.",
+            usage=(),
+            spent_usd=Decimal("0"),
+            held_usage=(_tasked("2.00", t1),),
+            final_task_id=None,
+        )
+        (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
+        assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert [r.vendor_task_id for r in _usage_rows(draft_id, TENANT_G)] == [t1]
+    assert _budget(brand_id) - spent == Decimal("2.00")
+
+
+def test_an_omnihuman_timeout_estimate_and_its_success_cost_once() -> None:
+    """Review of ff9be91a: the estimate a timed-out OmniHuman render records and the row
+    of that same task's success meet on the key — one event, one spend."""
+    repo = PostgresContentRepository()
+    brand_id = _budgeted_brand()
+    draft_id = _drafting_draft(TENANT_G, brand_id)
+    spent = _budget(brand_id)
+    task = f"omni-{uuid4().hex}"
+    omni = replace(
+        _usage("0.90"), provider="omnihuman", model_id="omnihuman-1-5", vendor_task_id=task
+    )
+    for row in (omni, replace(omni, cost_usd=Decimal("0.88"))):  # estimate, then success
+        repo.finish_generation(
+            tenant_id=TENANT_G,
+            draft_id=draft_id,
+            brand_id=brand_id,
+            new_status=DRAFTING,
+            failure_reason=None,
+            variants=(),
+            usage=(row,),
+            spent_usd=row.cost_usd,
+        )
+    (event,) = _usage_rows(draft_id, TENANT_G)
+    assert event.vendor_task_id == task and event.cost_usd == Decimal("0.90")
+    assert _budget(brand_id) - spent == Decimal("0.90")

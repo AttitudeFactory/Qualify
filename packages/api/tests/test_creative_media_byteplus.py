@@ -1348,6 +1348,47 @@ def test_an_omnihuman_timeout_still_records_the_render_it_will_bill() -> None:
         "second",
     )
     assert render.cost_usd > 0
+    # m-25112161: the estimate names the task the timeout named — the same id the row
+    # of that task's success carries, so the two meet on the usage key (one cost)
+    assert render.vendor_task_id == "7392"
+
+
+def test_an_omnihuman_timeout_then_its_success_name_the_same_task() -> None:
+    """m-25112161: timeout → the task waited for again → success. Both rows name task
+    7392 — the partial key of 0179 keeps one (`test_creative_usage_vendor_task_db`)."""
+    from qualify_api.creative.media import timed_out_task
+
+    timed_out = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=FakeSpeech(),
+            omni=FakeOmniHuman(
+                fail="OmniHumanTimeout: OmniHuman task 7392 still generating after 2401s"
+            ),
+            links=FakeLinks(),
+        ),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    finished = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=FakeSpeech(),
+            omni=FakeOmniHuman(),
+            links=FakeLinks(),
+        ),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    estimate, render = timed_out.usage[-1], finished.usage[-1]
+    assert estimate.provider == render.provider == "omnihuman"
+    assert estimate.vendor_task_id == render.vendor_task_id == "7392"
+    # every message the adapter raises names its task; anything else names none
+    assert timed_out_task("OmniHumanTimeout: OmniHuman task 9 unreachable after 5 polls") == "9"
+    assert timed_out_task("OmniHumanTaskFailed: OmniHuman task 9 expired") is None
+    assert timed_out_task(None) is None
 
 
 def test_a_long_animated_carousel_beats_after_every_slide() -> None:
