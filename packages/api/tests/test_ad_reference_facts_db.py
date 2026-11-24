@@ -4,16 +4,26 @@ idempotent re-run, currencies never mixed, group key and provenance, RLS."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
+from packages.api.tests.test_ad_audience_db import selected
+from packages.api.tests.test_ad_messaging_db import _message, _promotion, _record
+from packages.api.tests.test_ad_messaging_db import messaging_world as shared_messaging_world
 from packages.api.tests.test_ad_results_db import audience_world as shared_audience_world
 from packages.api.tests.test_ad_results_db import result_world as shared_result_world
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.ads.audience import LocationOption
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
+from qualify_api.ads.messaging_attribution import attribute_inbound_message
+from qualify_api.ads.promotion_repository import PostgresPromotionRepository
+from qualify_api.ads.promotions import PromotionRequest
 from qualify_api.ads.reference_facts import (
     CUTOFF_ENV,
     META_CONVERSATION_ACTION,
@@ -26,6 +36,7 @@ from qualify_api.tenancy.models import Tenant
 pytestmark = pytest.mark.db
 audience_world = shared_audience_world
 result_world = shared_result_world
+messaging_world = shared_messaging_world
 
 TODAY = datetime.now(UTC).date()
 OPEN_MONTH = TODAY.replace(day=1)
@@ -148,6 +159,7 @@ def test_cutoff_closed_months_idempotency_currency_and_rls(result_world, monkeyp
     )
     _sector(tenant, brand, "no-es-un-sector")
     assert record_reference_facts(tenant_id=tenant) == 1
+    assert record_reference_facts(tenant_id=tenant) == 0  # nothing changed, nothing rewritten
     again = _facts(tenant)
     assert set(again) == {CLOSED_MONTH, OPEN_MONTH}
     assert again[CLOSED_MONTH] == closed
@@ -167,3 +179,70 @@ def test_cutoff_closed_months_idempotency_currency_and_rls(result_world, monkeyp
         )
     assert record_reference_facts(tenant_id=other) == 0
     assert _facts(tenant)[CLOSED_MONTH] == closed
+
+
+def test_country_and_city_come_from_the_approved_audience(result_world, monkeypatch) -> None:
+    ids, _login, user, _connection, promotion, _api = result_world
+    tenant = ids["tenant_id"]
+    audience = replace(selected(), location=LocationOption("456", "San Cristóbal", "city", "VE"))
+    now = datetime.now(UTC)
+    request = PromotionRequest(
+        tenant_id=tenant,
+        brand_id=UUID(promotion.request["brand_id"]),
+        approved_by=user,
+        approved_at=now,
+        request_key=str(uuid4()),
+        meta_ad_account_id=ids["meta_account_id"],
+        objective="OUTCOME_TRAFFIC",
+        cta_type="LEARN_MORE",
+        link_url="https://example.org",
+        budget_kind="lifetime",
+        budget_minor=10000,
+        currency="COP",
+        start_time=now - timedelta(days=2),
+        end_time=now + timedelta(days=2),
+        content_draft_id=ids["content_draft_id"],
+        publish_attempt_id=ids["publish_attempt_id"],
+        source_media_id="777",
+        targeting=audience.targeting(),
+        audience_snapshot=audience.snapshot(),
+    )
+    request = compose_brand_policy(
+        request, BrandEnhancementSettings(request.tenant_id, request.brand_id)
+    )
+    targeted = PostgresPromotionRepository().create_or_get(request)
+    _insight(tenant, targeted.id, OPEN_MONTH, {"spend": "1", "impressions": 1, "clicks": 0})
+    monkeypatch.setenv(CUTOFF_ENV, (TODAY - timedelta(days=1)).isoformat())
+    assert record_reference_facts(tenant_id=tenant) == 1
+    with tenant_session(tenant) as s:
+        row = s.execute(
+            text(
+                "SELECT country_code,geo_source,city_key FROM ad_reference_facts "
+                "WHERE promotion_id=:p"
+            ),
+            {"p": targeted.id},
+        ).one()
+    assert tuple(row) == ("VE", "targeting", "456")
+
+
+def test_qualify_counts_attributed_threads_in_their_month(messaging_world, monkeypatch) -> None:
+    w = messaging_world
+    promotion = _promotion(w, "dm")
+    with tenant_session(w["tenant"]) as s:
+        s.execute(
+            text(
+                "INSERT INTO ad_accounts (tenant_id,connection_id,brand_id,ad_account_id,name,"
+                "currency,timezone_name,last_checked_at,credential_version,selected,source_id,"
+                "api_version,pipeline_version) VALUES (:t,:c,:b,:a,'Cuenta','COP',"
+                "'America/Bogota',now(),1,true,'test','v26.0','test')"
+            ),
+            {"t": w["tenant"], "c": w["source"], "b": w["brand"], "a": str(uuid4().int)},
+        )
+    assert attribute_inbound_message(event=_record(w, "dm"), **_message(w, "dm"))
+    month = datetime.now(ZoneInfo("America/Bogota")).date().replace(day=1)
+    _insight(w["tenant"], promotion.id, month, {"spend": "2", "impressions": 10, "clicks": 1})
+    monkeypatch.setenv(CUTOFF_ENV, (TODAY - timedelta(days=1)).isoformat())
+    assert record_reference_facts(tenant_id=w["tenant"]) == 1
+    fact = _facts(w["tenant"])[month]
+    assert (fact["objective"], fact["conversations_observed"]) == ("OUTCOME_ENGAGEMENT", 1)
+    assert fact["conversations_meta"] is None

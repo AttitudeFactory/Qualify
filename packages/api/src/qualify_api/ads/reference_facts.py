@@ -74,7 +74,8 @@ observed AS (
   SELECT promotion_id, month, count(*)::int AS threads FROM (
     SELECT a.promotion_id, m.thread_id,
       date_trunc('month', min(a.attributed_at)
-        AT TIME ZONE (SELECT timezone FROM tenants WHERE id = :tenant))::date AS month
+        AT TIME ZONE COALESCE((SELECT NULLIF(timezone, '') FROM tenants
+          WHERE id = :tenant), 'UTC'))::date AS month
     """
     + _VISIBLE_ORIGINS
     + """
@@ -121,7 +122,14 @@ ON CONFLICT (promotion_id, month) DO UPDATE SET sector = EXCLUDED.sector,
   source_pipeline_version = EXCLUDED.source_pipeline_version,
   pipeline_version = EXCLUDED.pipeline_version, method_version = EXCLUDED.method_version,
   closed = EXCLUDED.closed, updated_at = EXCLUDED.updated_at
-WHERE NOT f.closed
+WHERE NOT f.closed AND (f.sector, f.country_code, f.geo_source, f.city_key, f.spend_minor,
+  f.impressions, f.clicks, f.conversations_meta, f.conversations_observed, f.days,
+  f.source_pipeline_version, f.pipeline_version, f.method_version, f.closed)
+  IS DISTINCT FROM (EXCLUDED.sector, EXCLUDED.country_code, EXCLUDED.geo_source,
+  EXCLUDED.city_key, EXCLUDED.spend_minor, EXCLUDED.impressions, EXCLUDED.clicks,
+  EXCLUDED.conversations_meta, EXCLUDED.conversations_observed, EXCLUDED.days,
+  EXCLUDED.source_pipeline_version, EXCLUDED.pipeline_version, EXCLUDED.method_version,
+  EXCLUDED.closed)
 """
 )
 
@@ -141,7 +149,8 @@ def cutoff() -> datetime | None:
 
 
 def record_reference_facts(*, tenant_id: UUID, now: datetime | None = None) -> int:
-    """Upsert this business's open months; closed months stay frozen. Returns rows written."""
+    """Upsert this business's open months; closed months stay frozen. Returns rows changed
+    (an unchanged month is not rewritten)."""
     since = cutoff()
     if since is None:
         return 0
