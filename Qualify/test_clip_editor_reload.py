@@ -111,6 +111,30 @@ async def test_outside_the_editor_the_load_is_as_before(
     assert seen and all(seen)
 
 
+@pytest.mark.parametrize("socket", [_SOCKET, "sid-2"])
+async def test_a_session_saved_with_the_old_text_loads_it_as_text_one(
+    editor_on: None, monkeypatch: pytest.MonkeyPatch, socket: str
+) -> None:
+    """ED-13 (m-25029108): a session kept from before ED-13 holds ED-10's ONE text in
+    `clip_overlay_text` & co.; a history step or a reload of the step loads it as text 1
+    of `clip_text_uses` — its place and seconds, never twice — and the old fields are
+    left empty."""
+    state = _editor_page()
+    state.clip_overlay_text = "2×1 hoy"
+    state._clip_text_committed = "2×1 hoy"
+    state.clip_text_place = "top"
+    state.clip_text_start, state.clip_text_end = 2.0, 6.0
+    _loads(monkeypatch, state, socket)
+    await CreativeState.load_create.fn(_Proxy(state))
+    (use,) = state.clip_text_uses
+    assert (use["uid"], use["text"], use["place"]) == ("t1", "2×1 hoy", "top")
+    assert (use["start"], use["end"], use["blocks"]) == (2.0, 6.0, [])
+    assert (state.clip_overlay_text, state._clip_text_committed) == ("", "")
+    # loaded again: still one text
+    await CreativeState.load_create.fn(_Proxy(state))
+    assert len(state.clip_text_uses) == 1
+
+
 def test_a_gallery_pick_keeps_the_step_and_the_address(editor_on: None) -> None:
     state = _editor_page()
     before = (state.gen_step_key, state.create_step_n, state.clip_editor_on_screen)

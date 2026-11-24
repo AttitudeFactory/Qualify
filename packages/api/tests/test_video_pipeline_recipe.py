@@ -491,15 +491,15 @@ def test_an_edit_part_with_texts_and_smoke_stays_refused() -> None:
 def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """EF-05 draws only the `scrim` over a video: a `local` Clip whose text asks for the
-    band is refused as `unknown_layout` on that text — before any row or charge — and not
-    as `recipe_unavailable`."""
+    """A video text draws ED-13's four backgrounds (m-25029108): a `local` Clip whose text
+    asks for another ADR 49 design (the plate) is refused as `unknown_layout` on that text —
+    before any row or charge — and not as `recipe_unavailable`."""
     from qualify_creative.layer_spec import LayoutId
 
     from qualify_api.creative.queue_dispatch import SWITCH
 
     monkeypatch.setenv(SWITCH, "queue")
-    band = VideoTextLayer(text="Hola", layout_id=LayoutId.BAND, layout_version=LAYOUT_VERSION)
+    band = VideoTextLayer(text="Hola", layout_id=LayoutId.PLATE, layout_version=LAYOUT_VERSION)
     brief = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(band,))
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     with pytest.raises(RecipeRefused) as refused:
@@ -508,11 +508,14 @@ def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
         ("unknown_layout", None, "text_layers[0].layout_id")
     ]
     assert repo.drafts == {} and dispatcher.calls == []
-    # the scrim, at the catalog's version, goes on
-    scrim = band.model_copy(update={"layout_id": LayoutId.SCRIM})
-    ok = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(scrim,))
-    draft = service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=ok, user_id=USER_ID)
-    assert draft in repo.drafts
+    # the four backgrounds, at the catalog's version, go on
+    for layout_id in (LayoutId.SCRIM, LayoutId.BAND, LayoutId.BRAND_FILL, "shadow"):
+        fine = band.model_copy(update={"layout_id": layout_id})
+        ok = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(fine,))
+        draft = service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=ok, user_id=USER_ID
+        )
+        assert draft in repo.drafts
 
 
 def test_a_parent_with_an_unbuilt_recipe_is_refused_but_an_offered_plan_may_be_saved(

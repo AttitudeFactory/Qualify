@@ -232,3 +232,239 @@ def test_texts_alone_are_the_same_through_the_layers_single_pass(
     assert len(hashes) == first.frames == 30
     assert decoded_frame_hashes(again.path) == hashes
     assert decoded_frame_hashes(single.path) == hashes
+
+
+# ---------------------------------------------------------------- ED-13 (m-25029108)
+
+
+def _excess(frame: np.ndarray) -> np.ndarray:
+    """What the text adds over the synthetic video (whose luma moves 40-59 frame by frame):
+    the frame above its own median (mostly background), with a margin for x264's noise."""
+    f = frame.astype(np.float64)
+    return np.clip(f - float(np.median(f)) - 4, 0, None)
+
+
+def _centre_row(frame: np.ndarray) -> float:
+    """The brightness-weighted row of what the text adds to the frame."""
+    e = _excess(frame).sum(axis=1)
+    return float((e * np.arange(len(e))).sum() / max(e.sum(), 1e-9))
+
+
+def _width(frame: np.ndarray) -> int:
+    """How many columns carry at least half of the frame's brightest column of text."""
+    e = _excess(frame).sum(axis=0)
+    return int((e >= e.max() / 2).sum()) if e.max() > 0 else 0
+
+
+def _right_edge(frame: np.ndarray, rows: slice) -> int:
+    """The last column (video px) where the text is bright on `rows`, -1 when none."""
+    bright = np.where(frame[rows].mean(axis=0) > 150)[0]
+    return int(bright.max()) if bright.size else -1
+
+
+def test_the_motions_are_the_schemas() -> None:
+    from qualify_creative import schemas
+    from qualify_creative.video import text_overlay as to
+
+    assert to.MOTIONS_IN == schemas.VIDEO_TEXT_MOTIONS_IN
+    assert to.MOTIONS_OUT == schemas.VIDEO_TEXT_MOTIONS_OUT
+    assert to.SLIDE_FRACTION == schemas.VIDEO_TEXT_SLIDE_FRACTION
+    assert to.ZOOM_FROM == schemas.VIDEO_TEXT_ZOOM_FROM
+
+
+def test_a_text_that_does_not_move_takes_the_graph_it_took_before() -> None:
+    """Regression: the defaults (fade in, cut at the end) build no `_Motion` — the same
+    buffer, the same `fade`, the same pixels per frame as before ED-13 (checked against
+    origin/main's module during ED-13: identical decoded frames and bytes)."""
+    from qualify_creative.video.text_overlay import _prepare_texts
+
+    layer = TimedLayer(png=layer_png(TOP_BLOCK), start_s=0.0, end_s=1.0, fade_in_s=0.5)
+    assert layer.still
+    ((pixels, _top_left, same, motion),) = _prepare_texts([layer], (W, H))
+    assert same is layer and motion is None and pixels.shape[2] == 4
+
+
+def test_a_bad_motion_is_refused() -> None:
+    png = layer_png(TOP_BLOCK)
+    with pytest.raises(ValueError):
+        TimedLayer(png=png, start_s=0, end_s=1, fade_in_s=0.3, motion_in="spin")
+    with pytest.raises(ValueError):  # an animated exit needs its end
+        TimedLayer(png=png, start_s=0, end_s=None, fade_in_s=0.3, motion_out="fade")
+    with pytest.raises(ValueError):  # typed letters need their boxes
+        TimedLayer(png=png, start_s=0, end_s=1, fade_in_s=0, motion_in="typewriter")
+
+
+def test_a_fade_out_ramps_the_alpha_down_and_none_cuts_at_once(tmp_path: Path) -> None:
+    src = make_video(tmp_path / "in.mp4", seconds=2.0)
+    levels = {}
+    for out_motion in ("fade", "none"):
+        out = overlay_text_layers(
+            src,
+            tmp_path / f"{out_motion}.mp4",
+            [
+                TimedLayer(
+                    png=layer_png(TOP_BLOCK),
+                    start_s=0.0,
+                    end_s=1.5,
+                    fade_in_s=0.0,
+                    motion_out=out_motion,
+                    fade_out_s=0.5 if out_motion == "fade" else 0.0,
+                )
+            ],
+        )
+        levels[out_motion] = [float(f[BLOCK].mean()) for f in luma_frames(out.path)]
+    fade, cut = levels["fade"], levels["none"]
+    # full until 1.0 s, then falling until 1.5 s, gone after
+    assert all(v > 235 for v in fade[3:29]), fade[3:29]
+    assert fade[31] > fade[37] > fade[43]
+    assert 80 < fade[37] < 220
+    assert max(fade[46:]) < 80
+    # «De golpe»: full to the last frame, gone on the next
+    assert cut[44] > 235 and max(cut[45:]) < 80
+
+
+def test_slide_enters_rising_from_below_and_leaves_going_down(tmp_path: Path) -> None:
+    src = make_video(tmp_path / "in.mp4", seconds=2.0)
+    out = overlay_text_layers(
+        src,
+        tmp_path / "slide.mp4",
+        [
+            TimedLayer(
+                png=layer_png(TOP_BLOCK),
+                start_s=0.0,
+                end_s=2.0,
+                fade_in_s=0.5,
+                motion_in="slide",
+                motion_out="slide",
+                fade_out_s=0.5,
+            )
+        ],
+    )
+    centres = [_centre_row(f) for f in luma_frames(out.path)]
+    settled = centres[30]  # between the two windows: at its place (rows 80-120)
+    assert abs(settled - 100) < 1.5, settled
+    # entering: below its place, rising (5 % of 384 px = 19 → 20 px at most)
+    assert centres[2] > centres[8] > centres[14] > settled
+    assert centres[2] - settled > 8
+    # leaving: going down
+    assert settled < centres[50] < centres[55] < centres[58]
+    assert centres[58] - settled > 8
+
+
+def test_a_text_on_the_bottom_edge_slides_below_the_frame_without_failing(tmp_path: Path) -> None:
+    """The slid layer's buffer reaches past the frame's bottom: the overlay crops it."""
+    src = make_video(tmp_path / "in.mp4", seconds=1.0)
+    out = overlay_text_layers(
+        src,
+        tmp_path / "edge.mp4",
+        [
+            TimedLayer(
+                png=layer_png((1700, 1920)),
+                start_s=0.0,
+                end_s=1.0,
+                fade_in_s=0.3,
+                motion_in="slide",
+                motion_out="zoom",
+                fade_out_s=0.3,
+            )
+        ],
+    )
+    levels = [float(f[350:384, 30:190].mean()) for f in luma_frames(out.path)]
+    assert out.frames == 30 and max(levels[10:20]) > 235 and levels[3] < levels[9]
+
+
+def test_zoom_enters_growing_and_leaves_shrinking_around_the_block(tmp_path: Path) -> None:
+    src = make_video(tmp_path / "in.mp4", seconds=2.0)
+    out = overlay_text_layers(
+        src,
+        tmp_path / "zoom.mp4",
+        [
+            TimedLayer(
+                png=layer_png(TOP_BLOCK),
+                start_s=0.0,
+                end_s=2.0,
+                fade_in_s=0.5,
+                motion_in="zoom",
+                motion_out="zoom",
+                fade_out_s=0.5,
+                center=(540.0, 500.0),
+            )
+        ],
+    )
+    frames = luma_frames(out.path)
+    widths = [_width(f) for f in frames]
+    full = widths[30]  # the block, 880 canvas px → 176 video px
+    assert abs(full - 176) <= 3, full
+    # entering: from 90 % (≈ 158 px) up to 100 % (eased: most of the growth comes early)
+    assert widths[2] < widths[8] < full
+    assert widths[2] <= 0.95 * full
+    # leaving: back down
+    assert widths[58] < widths[52] <= full
+    assert widths[58] <= 0.95 * full
+    # centred on the block: the centre row does not move
+    assert abs(_centre_row(frames[3]) - _centre_row(frames[30])) < 1.5
+
+
+def test_typewriter_reveals_the_letters_in_order_one_at_a_time(tmp_path: Path) -> None:
+    """Ten «letters» of 88 canvas px across the block, typed over 1 s from 0.0 s: the lit
+    part grows left to right, in steps, and the whole block is up from 0.9 s."""
+    from qualify_creative.video.text_overlay import LetterReveal
+
+    boxes = tuple((100.0 + 88 * i, 400.0, 88.0, 200.0, 0) for i in range(10))
+    src = make_video(tmp_path / "in.mp4", seconds=1.5)
+    out = overlay_text_layers(
+        src,
+        tmp_path / "typed.mp4",
+        [
+            TimedLayer(
+                png=layer_png(TOP_BLOCK),
+                start_s=0.0,
+                end_s=None,
+                fade_in_s=0.0,
+                motion_in="typewriter",
+                reveal=LetterReveal(boxes=boxes, duration_s=1.0),
+            )
+        ],
+    )
+    edges = [_right_edge(f, slice(85, 115)) for f in luma_frames(out.path)]
+    # letter i appears at i × 0.1 s: frame 0 shows the first letter (canvas 100-188 → 20-37)
+    assert 30 <= edges[0] <= 40, edges[0]
+    assert edges == sorted(edges), "never hides a letter it showed"
+    assert len(set(edges[:30])) == 10, "ten steps, one per letter"
+    # at 0.55 s (frame 16): six letters (canvas 100-628 → video up to ≈125)
+    assert 120 <= edges[16] <= 130, edges[16]
+    # all typed from 0.9 s on (the block ends at canvas 980 → video 196)
+    assert all(e >= 194 for e in edges[27:]), edges[27:]
+
+
+def test_moving_texts_are_the_same_through_the_layers_single_pass(
+    tmp_path: Path, reproducible_x264: Callable[..., None]
+) -> None:
+    from qualify_creative.video.layer_overlay import overlay_layers_and_texts
+    from qualify_creative.video.text_overlay import LetterReveal
+
+    reproducible_x264(OVERLAY_X264)
+    boxes = tuple((100.0 + 88 * i, 1400.0, 88.0, 200.0, 0) for i in range(10))
+    texts = [
+        TimedLayer(
+            png=layer_png((400, 600)),
+            start_s=0.1,
+            end_s=0.9,
+            fade_in_s=0.25,
+            motion_in="slide",
+            motion_out="zoom",
+            fade_out_s=0.25,
+        ),
+        TimedLayer(
+            png=layer_png((1400, 1600)),
+            start_s=0.0,
+            end_s=None,
+            fade_in_s=0.0,
+            motion_in="typewriter",
+            reveal=LetterReveal(boxes=boxes, duration_s=0.5),
+        ),
+    ]
+    src = make_video(tmp_path / "src.mp4", seconds=1.0)
+    first = overlay_text_layers(src, tmp_path / "a.mp4", texts)
+    single = overlay_layers_and_texts(src, tmp_path / "c.mp4", [], texts)
+    assert decoded_frame_hashes(single.path) == decoded_frame_hashes(first.path)

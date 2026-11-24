@@ -220,6 +220,8 @@ def _block(
             "data-tl-len": row["length"],
             # ED-11: it shows its picture (the name and seconds go over it)
             "data-tl-pic": rx.cond(pic, "1", "0"),
+            # ED-13: in a clash (two texts in one place at once) — the warning tone
+            "data-tl-warn": rx.cond(row["warn"] == "1", "1", "0"),
         },
     )
     return rx.el.div(

@@ -271,7 +271,86 @@
     return true;
   }
 
+  /* ED-13 (m-25029108): a text's look at final time `t` — the contract's motions, the
+     same as `Qualify/editor_preview_contract.py` `text_frame` (a node test keeps them
+     equal). `text`: a sequence text (`start`, `end`, `fade`, `motion_in`, `motion_out`,
+     `text`). Returns {a: alpha 0-1, dy: share of the height it is lowered, s: scale,
+     chars: letters shown (-1 = all)}. Alpha is linear; position and scale ease with
+     1-(1-p)^3 in and p^3 out. Each animation takes `fade` at most a third of the time the
+     text shows; «Letra por letra» lasts d = 0,06 s per character of the trimmed text (also
+     a third at most), its box fading in over min(0,2 s, d). Its clock is the final video's
+     (`video_pipeline.compose` + `text_overlay.LetterReveal`): the text's whitespace runs
+     collapse to one space (`typedChars`, as the render does), the spaces a line break eats
+     are not letters (`text.breaks`: how many line breaks the preview laid out), and letter
+     i of those n appears at once at start + i·d/n, the first at start; `chars` counts
+     letters, not characters of the text. `reduced` (prefers-reduced-motion): only the
+     alpha, every character at once. */
+  var SLIDE_FRACTION = 0.05;
+  var ZOOM_FROM = 0.9;
+  var TYPE_S_PER_CHAR = 0.06;
+  var MOTION_MAX_SHARE = 1 / 3;
+
+  function easeIn(p) {
+    p = Math.min(Math.max(p, 0), 1);
+    return 1 - Math.pow(1 - p, 3);
+  }
+
+  function easeOut(p) {
+    p = Math.min(Math.max(p, 0), 1);
+    return Math.pow(p, 3);
+  }
+
+  /* The characters «Letra por letra» types, as the render lays them: trimmed, every
+     whitespace run one space, by code point (`layout.ts` `resolveVideoText`). */
+  function typedChars(text) {
+    return Array.from(String(text || "").trim().replace(/\s+/g, " "));
+  }
+
+  function round4(v) {
+    return Math.round(v * 10000) / 10000;
+  }
+
+  function textFrame(text, t, reduced) {
+    var visible = Math.max((text.end || 0) - (text.start || 0), 0);
+    var into = t - (text.start || 0);
+    if (into < 0 || into >= visible) return { a: 0, dy: 0, s: 1, chars: 0 };
+    var fade = text.fade > 0 ? text.fade : 0.5;
+    var share = visible * MOTION_MAX_SHARE;
+    var mIn = text.motion_in || "fade";
+    var mOut = text.motion_out || "none";
+    var typing = mIn === "typewriter" && !reduced;
+    // d: 0,06 s per character of the trimmed text, by code point (`compose.fade_in_seconds`)
+    var count = Array.from(String(text.text || "").trim()).length;
+    // n: the letters the render reports (`letter_boxes`): no space a line break eats
+    var letters = Math.max(typedChars(text.text).length - Math.max(text.breaks | 0, 0), 1);
+    var dIn = Math.max(typing ? Math.min(count * TYPE_S_PER_CHAR, share) : Math.min(fade, share), 0);
+    var dOut = mOut === "none" ? 0 : Math.max(Math.min(fade, share), 0);
+    var a = 1, dy = 0, s = 1, chars = -1;
+    if (dIn > 0 && into < dIn) {
+      var p = into / dIn;
+      if (typing) {
+        // letter i at start + i·d/n (`text_overlay._Motion`, the same slack)
+        var step = dIn / letters;
+        chars = step > 0 ? Math.min(letters, Math.floor(into / step + 1e-6) + 1) : letters;
+        a = Math.min(into / Math.min(0.2, dIn), 1);
+      } else {
+        a = p;
+        if (!reduced && mIn === "slide") dy = (1 - easeIn(p)) * SLIDE_FRACTION;
+        if (!reduced && mIn === "zoom") s = ZOOM_FROM + (1 - ZOOM_FROM) * easeIn(p);
+      }
+    }
+    if (dOut > 0 && into > visible - dOut) {
+      var q = (into - (visible - dOut)) / dOut;
+      a = Math.min(a, 1 - q);
+      if (!reduced && mOut === "slide") dy = easeOut(q) * SLIDE_FRACTION;
+      if (!reduced && mOut === "zoom") s = 1 - (1 - ZOOM_FROM) * easeOut(q);
+    }
+    return { a: round4(Math.min(Math.max(a, 0), 1)), dy: round4(dy), s: round4(s), chars: chars };
+  }
+
   var api = {
+    textFrame: textFrame,
+    typedChars: typedChars,
     RATE_MAX: RATE_MAX,
     FAR_PAST_END: FAR_PAST_END,
     MEASURE_MS: MEASURE_MS,

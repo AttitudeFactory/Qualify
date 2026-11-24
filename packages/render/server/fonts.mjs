@@ -16,9 +16,12 @@ const known = () => {
 export const fontWarnings = (brand) => {
   const warnings = [];
   const fonts = brand?.fonts ?? {};
+  const files = brand?.fontFiles ?? {};
   for (const role of ['heading', 'body']) {
     const family = fonts[role];
     if (typeof family !== 'string' || family.trim() === '') continue;
+    // ED-13: the brand's own font file draws this role — its family name is only a label
+    if (typeof files?.[role] === 'string' && files[role] !== '') continue;
     if (!known().has(family.trim().toLowerCase())) {
       warnings.push(`font '${family}' unavailable, used '${FALLBACK}' for ${role}`);
     }
