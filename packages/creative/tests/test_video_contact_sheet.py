@@ -30,13 +30,17 @@ LAYER = (255, 0, 255)
 LAYER_ROWS = (40, 80)
 
 
-def _write(path: Path, shots: list[tuple[tuple[int, int, int], float]]) -> Path:
+def _write(
+    path: Path,
+    shots: list[tuple[tuple[int, int, int], float]],
+    options: dict[str, str] | None = None,
+) -> Path:
     """An H.264 MP4: per shot, a flat colour for that many seconds, with the magenta
     layer band over every frame."""
     with av.open(str(path), "w") as sink:
         stream = sink.add_stream("libx264", rate=FPS)
         stream.width, stream.height, stream.pix_fmt = SIZE[0], SIZE[1], "yuv420p"
-        stream.options = {"preset": "ultrafast", "crf": "18"}
+        stream.options = {"preset": "ultrafast", "crf": "18", **(options or {})}
         for colour, seconds in shots:
             for _ in range(round(seconds * FPS)):
                 picture = np.empty((SIZE[1], SIZE[0], 3), dtype=np.uint8)
@@ -141,7 +145,7 @@ def test_the_same_file_gives_the_same_sheet(three_shots: Path) -> None:
 
 def test_the_provenance_names_the_process(three_shots: Path) -> None:
     params = make_contact_sheet(three_shots).params()
-    assert params["version"] == "contact-sheet-2"
+    assert params["version"] == "contact-sheet-3"
     assert params["detector"] and params["frames_wanted"] == SHEET_FRAMES
     assert params["shots"] == 3 and params["cuts"] == "detected"
     assert params["av_version"] == av.__version__
@@ -173,6 +177,67 @@ def test_a_pass_over_its_budget_spreads_the_frames_evenly(three_shots: Path) -> 
     for frame in sheet.frames:
         band = _rgb(frame.jpeg)[LAYER_ROWS[0] + 4 : LAYER_ROWS[1] - 4]
         assert np.abs(band - np.array(LAYER)).mean() < 20
+
+
+#: Ten one-second shots whose colour says which second a frame is from (red = 25 × s).
+SECONDS = [((25 * s, 255 - 25 * s, 128), 1.0) for s in range(10)]
+#: One keyframe at the start and none after it (no scene cut keyframes either).
+ONE_KEYFRAME = {"g": "1000", "keyint_min": "1000", "sc_threshold": "0"}
+
+
+def _second_of(jpeg: bytes) -> int:
+    red = float(_rgb(jpeg)[200:300, :, 0].mean())
+    return round(red / 25)
+
+
+def _keyframes(path: Path) -> list[float]:
+    with av.open(str(path)) as source:
+        stream = source.streams.video[0]
+        return [
+            float(packet.pts * stream.time_base)
+            for packet in source.demux(stream)
+            if packet.is_keyframe and packet.pts is not None
+        ]
+
+
+@pytest.mark.parametrize("clock", ["budget_zero", "slow_clock"])
+def test_even_frames_are_distinct_and_reach_the_end_without_keyframes(
+    tmp_path: Path, clock: str
+) -> None:
+    """The Docker finding (768m, 1 CPU): a pass over its budget, on a video with no
+    keyframe after its start, must still give six DIFFERENT frames spread to the end —
+    each read by seeking to its time, the last at 90 % of the length or more."""
+    video = _write(tmp_path / "tens.mp4", SECONDS, ONE_KEYFRAME)
+    assert [k for k in _keyframes(video) if k > 5.0] == []  # none after the half
+    if clock == "budget_zero":
+        sheet = make_contact_sheet(video, budget_s=0)
+    else:
+        ticks = iter(float(n) for n in range(10_000))
+        sheet = make_contact_sheet(video, budget_s=3, clock=lambda: next(ticks))
+    assert sheet.cuts == "even"
+    times = [f.time_s for f in sheet.frames]
+    assert len(times) == SHEET_FRAMES and len(set(times)) == SHEET_FRAMES
+    assert times == sorted(times)
+    assert times[-1] >= 0.9 * sheet.duration_s and abs(sheet.duration_s - 10.0) < 0.1
+    for frame in sheet.frames:  # the picture IS the frame of its time
+        assert frame.time_s + 1e-3 >= frame.target_s
+        assert _second_of(frame.jpeg) == min(9, int(frame.time_s + 1e-6))
+
+
+def test_a_detected_sheet_ends_near_the_end(three_shots: Path) -> None:
+    sheet = make_contact_sheet(three_shots)
+    assert sheet.cuts == "detected"
+    assert sheet.frames[-1].time_s >= sheet.duration_s - 0.3
+    assert len({f.time_s for f in sheet.frames}) == len(sheet.frames)
+
+
+def test_a_video_too_short_for_six_frames_gives_fewer_never_a_repeat(tmp_path: Path) -> None:
+    video = _write(tmp_path / "short.mp4", [((200, 40, 40), 0.1)])  # three frames
+    for budget in (10.0, 0.0):
+        sheet = make_contact_sheet(video, budget_s=budget)
+        times = [f.time_s for f in sheet.frames]
+        assert 1 <= len(times) <= 3 and len(set(times)) == len(times)
+        assert [f.index for f in sheet.frames] == list(range(len(times)))
 
 
 def test_an_unreadable_file_raises(tmp_path: Path) -> None:

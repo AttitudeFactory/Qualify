@@ -1560,7 +1560,7 @@ def test_a_local_clip_keeps_a_six_frame_contact_sheet_with_its_texts_on(
     assert plain.failure is None and composed.failure is None, composed.detail
     (write,) = composed.media
     block = write.params["contact_sheet"]
-    assert block["version"] == "contact-sheet-2" and block["cost_usd"] == "0"
+    assert block["version"] == "contact-sheet-3" and block["cost_usd"] == "0"
     assert block["review"] == "owner_only"
     assert len(block["frames"]) == 6
     assert block["source"]["stage"] == "local"

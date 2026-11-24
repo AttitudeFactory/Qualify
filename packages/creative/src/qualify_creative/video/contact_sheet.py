@@ -6,18 +6,21 @@ simulation; these frames are the truth.
 Which frames (`pick_times`): the start, the end, and the shots in between — the cuts
 found with `shots`' own detector (its thresholds, `shots._cuts`), each taken a moment
 after it (`AFTER_CUT_S`), so a transition or a text's fade in has settled. There are
-always `SHEET_FRAMES` (6): more cuts than room are thinned evenly; fewer fill the longest
-gaps evenly.
+`SHEET_FRAMES` (6): more cuts than room are thinned evenly; fewer fill the longest gaps
+evenly. The last one is always `BEFORE_END_S` (at most) before the end. Every frame is a
+different instant, in time order (`_assign`): a video too short to have six distinct
+frames gets fewer, never a repeated one.
 
 What it costs: ONE sequential pass over the file ON DISK, the decoder on
 `DECODE_THREADS` threads (it runs inside the creative worker's heavy-video gate, 768m):
 each frame's 64 px grey thumbnail feeds the detector, and a frame every `GRID_S` seconds
 (at least; `MAX_GRID_FRAMES` at most) is kept as a small JPEG — the six are picked from
 those once the cuts are known. One decoded frame alive at a time. When that pass runs
-past `SCAN_BUDGET_S`, the cuts are dropped: the six frames are spread evenly over the
-video's length, taken from what the pass kept and, past the point it reached, from the
-keyframes only (the decoder skips the rest; at most another `SCAN_BUDGET_S`) — `cuts:
-"even"` in the provenance. Deterministic for a pass inside its budget: the same file
+past `SCAN_BUDGET_S`, the cuts are dropped: the six times are spread evenly from the
+start to the end, each answered by a frame the pass already kept, or else by a SEEK to it
+(the keyframe before it, then the first frame at or after it: a GOP's decode at most, six
+at most; past `EVEN_BUDGET_S` the still missing ones take a keyframe) — `cuts: "even"` in
+the provenance. Deterministic for a pass inside its budget: the same file
 gives the same frames and bytes (a pass over it, on a slower machine, may not be). No
 network, no database, no AI: nothing is paid (D8: only the owner reviews it).
 
@@ -48,8 +51,9 @@ from qualify_creative.video.shots import (
 from qualify_creative.video.upright import upright_image
 
 #: Bump with any change to how the times are picked or the pictures are made.
-#: v2: one pass, frames from a grid, a time budget with an even fallback.
-CONTACT_SHEET_VERSION = "contact-sheet-2"
+#: v2: one pass, frames from a grid, a time budget with an even fallback. v3: the even
+#: fallback seeks to each time; frames always distinct, the last near the end.
+CONTACT_SHEET_VERSION = "contact-sheet-3"
 #: How many frames a sheet has (the ticket: «6 cuadros»).
 SHEET_FRAMES = 6
 #: The longest video read (a video by parts lasts up to a few minutes).
@@ -69,6 +73,9 @@ MAX_GRID_FRAMES = 240
 DECODE_THREADS = 2
 #: Past this, the cuts are dropped and the frames are spread evenly (`_evenly`).
 SCAN_BUDGET_S = 10.0
+#: The even fallback's own budget for its seeks (a GOP's decode each, at most one per
+#: frame of the sheet); past it, the frames still missing are read from keyframes only.
+EVEN_BUDGET_S = 10.0
 #: Each frame fits inside this box (portrait), never upscaled.
 CELL_BOX = (360, 640)
 #: The one-row sheet's height, and the gap between its frames.
@@ -120,6 +127,7 @@ class ContactSheet:
             "before_end_s": BEFORE_END_S,
             "grid_s": GRID_S,
             "scan_budget_s": SCAN_BUDGET_S,
+            "even_budget_s": EVEN_BUDGET_S,
             "decode_threads": DECODE_THREADS,
             "cell_box": list(CELL_BOX),
             "strip_height": STRIP_HEIGHT,
@@ -280,6 +288,20 @@ def _header_seconds(container: Any, stream: Any) -> float | None:
     return None
 
 
+#: On a short video, at least this many kept frames per frame of the sheet: close
+#: targets (a 2 s clip, cuts a few frames apart) each find a frame of their own.
+GRID_PER_FRAME = 4
+
+
+def _grid_step(header_s: float | None) -> float:
+    """How often the pass keeps a frame: every `GRID_S` — denser on a short video (so the
+    six times find six frames), wider on a long one (at most `MAX_GRID_FRAMES`)."""
+    if not header_s:
+        return GRID_S
+    dense = min(GRID_S, header_s / (GRID_PER_FRAME * SHEET_FRAMES))
+    return max(dense, header_s / MAX_GRID_FRAMES)
+
+
 def _scan(source: str | os.PathLike[str], budget_s: float, clock: Callable[[], float]) -> _Scan:
     """The one pass: the detector's signals on every frame, a candidate every grid step."""
     import numpy as np  # noqa: PLC0415
@@ -296,14 +318,14 @@ def _scan(source: str | os.PathLike[str], budget_s: float, clock: Callable[[], f
     with open_video(source) as (container, stream):
         _threads(stream)
         header = _header_seconds(container, stream)
-        step = max(GRID_S, (header or 0.0) / MAX_GRID_FRAMES)
+        step = _grid_step(header)
         width = stream.codec_context.width or THUMB_WIDTH
         height = stream.codec_context.height or THUMB_WIDTH
         thumb_h = max(2, round(THUMB_WIDTH * height / width))
         next_grid = 0.0
         for frame in container.decode(stream):
             # the budget first: frames skipped below (no time, before the origin) count too
-            if clock() - started > budget_s:
+            if clock() - started >= budget_s:
                 reached = last[0] if last is not None else 0.0
                 raise _OverBudget(header, grid, reached, timeline.origin_s, timeline.rotation)
             time_s = frame_seconds(frame, stream)
@@ -346,59 +368,108 @@ def _scan(source: str | os.PathLike[str], budget_s: float, clock: Callable[[], f
     return _Scan(spans=spans, duration_s=round(end, 4), grid=grid)
 
 
-def _from_grid(grid: Sequence[_Still], targets: Sequence[tuple[float, Role]]) -> list[SheetFrame]:
-    """Each target answered by the first kept frame at or after it, else the last one."""
-    out = []
+def _assign(
+    candidates: Sequence[_Still], targets: Sequence[tuple[float, Role]]
+) -> list[SheetFrame]:
+    """Each target answered by a DIFFERENT frame, in time order: the first candidate at or
+    after it that comes after the frame of the previous target, else the last such
+    candidate. Never the same instant twice: a video too short to have that many distinct
+    frames gives fewer (each still in order), never a repeated one."""
+    ordered: list[_Still] = []
+    for still in sorted(candidates, key=lambda s: s.time_s):
+        if not ordered or still.time_s > ordered[-1].time_s:
+            ordered.append(still)
+    out: list[SheetFrame] = []
+    floor = -1.0
     for index, (target_s, role) in enumerate(targets):
-        still = next((s for s in grid if s.time_s + 1e-6 >= target_s), grid[-1])
+        later = [s for s in ordered if s.time_s > floor]
+        if not later:
+            break
+        still = next((s for s in later if s.time_s + 1e-6 >= target_s), later[-1])
         out.append(
             SheetFrame(
-                index, role, round(target_s, 4), still.time_s, still.jpeg, still.width, still.height
+                len(out),
+                role,
+                round(target_s, 4),
+                still.time_s,
+                still.jpeg,
+                still.width,
+                still.height,
             )
         )
+        floor = still.time_s
+    return out
+
+
+def _from_grid(grid: Sequence[_Still], targets: Sequence[tuple[float, Role]]) -> list[SheetFrame]:
+    """The detected sheet: each target from the pass' kept frames (`_assign`). The grid
+    always ends with the video's last frame, so the end's target has a frame near it."""
+    return _assign(grid, targets)
+
+
+def _sought(
+    source: str | os.PathLike[str],
+    times: Sequence[float],
+    over: _OverBudget,
+    clock: Callable[[], float],
+    budget_s: float,
+) -> list[_Still]:
+    """The first frame at or after each of `times` (in order), each read after a seek to
+    the keyframe before it: at most a GOP decoded per time. Past `budget_s` the decoder
+    reads keyframes only (`skip_frame="NONKEY"`): the frames still missing are then the
+    keyframe at or before their time — fast, maybe less exact, never unbounded."""
+    started = clock()
+    out: list[_Still] = []
+    with open_video(source) as (container, stream):
+        _threads(stream)
+        for target_s in times:
+            if clock() - started >= budget_s:
+                stream.codec_context.skip_frame = "NONKEY"
+            container.seek(
+                int((over.origin_s + target_s) / stream.time_base), stream=stream, backward=True
+            )
+            chosen: tuple[float, Any] | None = None
+            for frame in container.decode(stream):
+                time_s = frame_seconds(frame, stream)
+                if time_s is None:
+                    continue
+                chosen = (max(0.0, time_s - over.origin_s), frame)
+                if chosen[0] + 1e-6 >= target_s or stream.codec_context.skip_frame == "NONKEY":
+                    break
+            if chosen is not None:
+                out.append(_still(chosen[1], chosen[0], over.rotation))
     return out
 
 
 def _evenly(
     source: str | os.PathLike[str],
     over: _OverBudget,
-    budget_s: float,
     clock: Callable[[], float],
     count: int = SHEET_FRAMES,
+    budget_s: float = EVEN_BUDGET_S,
 ) -> tuple[list[SheetFrame], float]:
-    """The even fallback, for a pass that ran past its budget: the frames it already kept
-    and, past the point it reached, only the KEYFRAMES (`skip_frame="NONKEY"`: the decoder
-    skips everything else, so the rest costs a few frames, not the whole file) — one per
-    grid step at most, for another `budget_s` at most. The six times are spread evenly
-    over the video's length; each takes the first kept frame at or after it."""
-    started = clock()
-    grid = list(over.grid)
-    reached = over.reached_s
-    with open_video(source) as (container, stream):
-        _threads(stream)
-        stream.codec_context.skip_frame = "NONKEY"
-        container.seek(
-            int((over.origin_s + reached) / stream.time_base), stream=stream, backward=True
-        )
-        for frame in container.decode(stream):
-            if clock() - started > budget_s:  # first: a skipped frame counts too
-                break
-            time_s = frame_seconds(frame, stream)
-            if time_s is None:
-                continue
-            relative = time_s - over.origin_s
-            if relative >= MAX_SECONDS - 1e-6:
-                break
-            if not grid or relative >= grid[-1].time_s + GRID_S - 1e-6:
-                grid.append(_still(frame, relative, over.rotation))
-                reached = max(reached, relative)
-    if not grid:
+    """The even fallback, for a pass that ran past its budget: the times spread evenly
+    from the start to `BEFORE_END_S` before the end (`pick_times` with one shot), each
+    answered by a frame the pass already kept within `GRID_S` of it, or else by a seek to
+    it (`_sought`) — at most `count` seeks, bounded by `budget_s`. Distinct frames in time
+    order (`_assign`)."""
+    duration = over.duration_s
+    if not duration:
+        with open_video(source) as (container, stream):
+            duration = probe(container, stream).end_s or over.reached_s
+    targets = pick_times([ShotSpan(0, 0.0, duration)], duration, count)
+    kept = list(over.grid)
+    missing = [
+        target_s
+        for target_s, _ in targets
+        if not any(target_s - 1e-6 <= s.time_s < target_s + GRID_S for s in kept)
+    ]
+    candidates = kept + (_sought(source, missing, over, clock, budget_s) if missing else [])
+    if not candidates:
         from qualify_creative.video._source import NoVideoStream  # noqa: PLC0415
 
         raise NoVideoStream("the video has no decodable frames")
-    duration = over.duration_s or reached
-    targets = pick_times([ShotSpan(0, 0.0, duration)], duration, count)
-    return _from_grid(grid, targets), duration
+    return _assign(candidates, targets), duration
 
 
 def _strip(frames: Sequence[SheetFrame]) -> tuple[bytes, tuple[int, int]]:
@@ -432,7 +503,7 @@ def make_contact_sheet(
     try:
         scan = _scan(source, budget_s, clock)
     except _OverBudget as over:
-        frames, duration = _evenly(source, over, budget_s, clock, count)
+        frames, duration = _evenly(source, over, clock, count)
         shots, cuts = 1, "even"
     else:
         duration = scan.duration_s

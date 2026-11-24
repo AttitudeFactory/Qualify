@@ -60,7 +60,7 @@ def test_the_block_records_where_the_frames_come_from(video: Path) -> None:
     bucket = Bucket()
     block = keep_contact_sheet(video, bucket.keep, source={"stage": "local", "object_key": KEY})
     assert block is not None
-    assert block["version"] == "contact-sheet-2" and block["cost_usd"] == "0"
+    assert block["version"] == "contact-sheet-3" and block["cost_usd"] == "0"
     assert block["review"] == "owner_only"  # D8: no AI looks at it
     assert block["source"]["stage"] == "local" and block["source"]["object_key"] == KEY
     assert len(block["source"]["sha256"]) == 64
@@ -103,7 +103,7 @@ def test_the_screen_reads_the_sheet_of_the_video_it_shows(video: Path) -> None:
     view = contact_sheet_of(KEY, {"contact_sheet": _block(video)})
     assert view is not None and view.video_key == KEY
     assert len(view.frames) == 6 and view.sheet_key.endswith("contact-sheet.jpg")
-    assert view.version == "contact-sheet-2"
+    assert view.version == "contact-sheet-3"
     assert view.title == CONTACT_SHEET_TITLE and view.help == CONTACT_SHEET_HELP
     assert [f.time_s for f in view.frames] == sorted(f.time_s for f in view.frames)
 

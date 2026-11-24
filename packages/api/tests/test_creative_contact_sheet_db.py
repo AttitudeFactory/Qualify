@@ -31,7 +31,7 @@ pytestmark = pytest.mark.db
 def _stamp(tenant: UUID, asset_id: Any, object_key: str) -> None:
     """A sheet block tied to `object_key` on the asset row `asset_id`."""
     block = {
-        "version": "contact-sheet-2",
+        "version": "contact-sheet-3",
         "source": {"stage": "test", "object_key": object_key},
         "frames": [
             {"key": f"{object_key}-contact-{n}.jpg", "time_s": float(n)} for n in range(1, 7)
