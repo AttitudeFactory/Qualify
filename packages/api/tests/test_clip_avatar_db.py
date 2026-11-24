@@ -377,6 +377,11 @@ def test_pending_seconds_are_the_brands_uncharged_live_blocks(
     # 31st approved on the 1st)
     run("UPDATE content_drafts SET created_at = created_at - interval '40 days' WHERE id = :b")
     assert owed() == (1, ca.script_seconds("Hola, soy Ana."))
+    # its Clip's files purged by the retention: it owes nothing any more
+    run("UPDATE content_drafts SET media_purged_at = now() WHERE id = :c")
+    assert owed() == (0, 0)
+    run("UPDATE content_drafts SET media_purged_at = NULL WHERE id = :c")
+    assert owed() == (1, ca.script_seconds("Hola, soy Ana."))
     run("UPDATE content_drafts SET status = 'failed' WHERE id = :b")
     assert owed() == (0, 0)
 

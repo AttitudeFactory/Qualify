@@ -575,6 +575,7 @@ class PostgresClipAvatarStore:
                   AND d.part_removed_at IS NULL AND d.status <> 'failed'
                   AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
                   AND p.status NOT IN ('approved', 'staged', 'published')
+                  AND p.media_purged_at IS NULL AND d.media_purged_at IS NULL
                   AND NOT EXISTS (SELECT 1 FROM creation_charges c
                                   WHERE c.draft_id = d.id AND c.videos > 0)
             """),
