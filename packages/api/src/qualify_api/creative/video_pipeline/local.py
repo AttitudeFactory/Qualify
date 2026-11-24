@@ -55,10 +55,13 @@ there are texts, the compose step's own `params["text_layers"]`, and, when there
 layers, `effect_layers` (each use's `TimedEffectLayer.params()`: effect, version,
 intensity, zone, span, the loop's sha256, cost 0) with `steps["layer_compose"]`. The
 asset carries no `draft` block (there is no Seedance final to order: it is publishable
-as it is) and `ai_generated=False` — Instagram's «hecho con IA» is read from what was
-made, not from the kind. m-25112920 (ADR 50 amendment `[PROPUESTO]`): a Clip whose
-recipe plays one of its avatar blocks (`clip_avatar`, a talking video OmniHuman made)
-is `ai_generated=True`, each block recorded in `params.local.avatar_blocks`; a block's
+as it is). Instagram's «hecho con IA» is read from what was made, not from the kind
+(m-25112920, ADR 50 §9, Deivid 2026-11-24): the video is `ai_generated=True` as soon as
+ONE stretch's file is AI imagery — a Seedance or Seedream piece of the generator the
+owner chose, an avatar block OmniHuman made —, read from the asset that made it
+(`clip_avatar.asset_is_ai`), whatever the avatar switches say; each such stretch is in
+`params.local.ai_sources`. Only the owner's own photos and videos: `ai_generated=False`.
+An avatar block (`clip_avatar`) is also in `params.local.avatar_blocks`, and its
 stretch must be its own Clip's and play at ×1 (its voice), else nothing is read.
 
 Idempotent: a retried preparation renders again into the same revision's keys and the
@@ -82,7 +85,11 @@ from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
-from qualify_api.creative.clip_avatar import block_stretches, stretch_problem
+from qualify_api.creative.clip_avatar import (
+    ai_stretches,
+    block_stretches,
+    stretch_problem,
+)
 from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
 from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
@@ -784,7 +791,7 @@ def produce_local(
     lease_store: Any = None,
     brand: Any = None,
     render_client: Any = None,
-    avatar_blocks: Mapping[str, Any] | None = None,
+    generated_sources: Mapping[str, Any] | None = None,
 ) -> MediaOutcome:
     """The `local` Clip of `brief` as the producer's outcome — never raises for the
     owner's files: the outcome carries the failure. `allowed` is False outside the
@@ -797,9 +804,10 @@ def produce_local(
     `lease_store` is the `PipelineStore` (a test's double). `brand` and `render_client`
     draw the recipe's texts (`render_local_part`), inside the same kept lease.
 
-    `avatar_blocks` (m-25112920) maps the recipe's stretch keys that are avatar blocks'
-    videos to their `clip_avatar.BlockSource` (the caller's lookup, `MediaProducer`);
-    None or empty: no block, exactly as before."""
+    `generated_sources` (m-25112920) maps the recipe's stretch keys that are files of
+    the generator to their `clip_avatar.GeneratedSource` (the caller's lookup,
+    `MediaProducer`): which are AI imagery, which are avatar blocks. None or empty: only
+    the owner's own files."""
     part_ref = brief.media.part
     in_part = part_ref is not None
     failed_text = LOCAL_PART_FAILED_TEXT if in_part else LOCAL_SOURCE_FAILED_TEXT
@@ -838,7 +846,7 @@ def produce_local(
     # m-25112920: the avatar blocks the recipe plays — each its own Clip's (a part, or
     # another Clip, never takes one) and at ×1, so its voice is heard; refused before
     # anything is read
-    blocks = block_stretches(part.segments, avatar_blocks or {})
+    blocks = block_stretches(part.segments, generated_sources or {})
     for stretch in blocks:
         problem = stretch_problem(stretch, draft_id)
         if problem is not None:
@@ -850,9 +858,11 @@ def produce_local(
                 code,
             )
             return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
-    # ADR 50 amendment [PROPUESTO]: «hecho con IA» read from what was made — a stretch
-    # OmniHuman made makes the whole video AI
-    ai_generated = bool(blocks)
+    # ADR 50 §9 (Deivid, 2026-11-24): «hecho con IA» read from what was made — ONE
+    # stretch whose file is AI imagery (Seedance, Seedream, OmniHuman) makes the whole
+    # video AI, with the avatar switches on or off
+    made_by_ai = ai_stretches(part.segments, generated_sources or {})
+    ai_generated = bool(made_by_ai)
     try:
         with (
             # m-25042483: never alongside a part join — with one in flight this raises
@@ -918,6 +928,9 @@ def produce_local(
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers
+    if made_by_ai:
+        # m-25112920: the label's evidence — each AI stretch's asset, provider and model
+        params["local"]["ai_sources"] = [s.source.ai_provenance(s.index) for s in made_by_ai]
     if blocks:
         # m-25112920: each block played — its draft, revision, asset, model and length
         params["local"]["avatar_blocks"] = [s.source.provenance(s.index) for s in blocks]

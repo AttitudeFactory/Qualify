@@ -215,7 +215,7 @@ class RepoStore:
     def block_video(self, *, tenant_id: UUID, block_id: UUID) -> ca.BlockVideo | None:
         return self.videos.get(block_id)
 
-    def block_sources(self, *, tenant_id: UUID, keys: Any) -> dict[str, ca.BlockSource]:
+    def generated_sources(self, *, tenant_id: UUID, keys: Any) -> dict[str, ca.GeneratedSource]:
         found = {}
         for block_id, video in self.videos.items():
             if video.object_key in keys:
@@ -225,8 +225,9 @@ class RepoStore:
         return found
 
 
-def _source(key: str, block_id: UUID, clip_id: UUID | None, seconds: float) -> ca.BlockSource:
-    return ca.BlockSource(
+def _source(key: str, block_id: UUID, clip_id: UUID | None, seconds: float) -> ca.GeneratedSource:
+    """An avatar block's video as the lookup gives it."""
+    return ca.GeneratedSource(
         object_key=key,
         block_id=block_id,
         clip_id=clip_id,
@@ -238,6 +239,26 @@ def _source(key: str, block_id: UUID, clip_id: UUID | None, seconds: float) -> c
         model_revision="realman_avatar_picture_omni15_cv",
         seconds=seconds,
         pipeline_version="creative-v1",
+    )
+
+
+def _piece(key: str, *, provider: str, model_id: str, ai: bool = True) -> ca.GeneratedSource:
+    """A file of another piece of the generator the owner chose (ADR 50 P3), as the
+    lookup gives it: not a block, AI as its asset says."""
+    return ca.GeneratedSource(
+        object_key=key,
+        block_id=uuid4(),
+        clip_id=None,
+        kind="clip",
+        revision=1,
+        asset_id=uuid4(),
+        provider=provider,
+        model_id=model_id,
+        model_revision=None,
+        seconds=4.0,
+        pipeline_version="creative-v1",
+        block=False,
+        ai_generated=ai,
     )
 
 
@@ -265,7 +286,7 @@ def _wired(
         dispatcher=dispatcher,
         creations=ledger,
         clip_avatar_sources=sources
-        or (lambda tenant, keys: store.block_sources(tenant_id=tenant, keys=keys)),
+        or (lambda tenant, keys: store.generated_sources(tenant_id=tenant, keys=keys)),
     )
     clip_id = repo.seed_draft(clip or _local_clip(), status=clip_status)
     repo.inserts = 0  # the Clip itself
@@ -573,7 +594,7 @@ def test_a_block_within_30_seconds_is_made_by_omnihuman_as_ai() -> None:
 
 
 @pytest.fixture(scope="module")
-def block_sources() -> dict[str, bytes]:
+def assembly_files() -> dict[str, bytes]:
     return {OWN_VIDEO: _video_with_sound_bytes(4.0, 1.5), PHOTO_KEY: _png_bytes()}
 
 
@@ -582,12 +603,12 @@ def _assemble(
     files: dict[str, bytes],
     *,
     clip_id: UUID,
-    sources: dict[str, ca.BlockSource] | None,
+    sources: dict[str, ca.GeneratedSource] | None,
 ) -> tuple[Any, ReadingStore, list[Any]]:
     store = ReadingStore(files)
     looked: list[Any] = []
 
-    def resolver(tenant: UUID, keys: Any) -> dict[str, ca.BlockSource]:
+    def resolver(tenant: UUID, keys: Any) -> dict[str, ca.GeneratedSource]:
         looked.append(list(keys))
         return dict(sources or {})
 
@@ -605,13 +626,13 @@ def _assemble(
 
 
 def test_a_clip_with_its_block_keeps_the_voice_and_is_marked_ai(
-    queue_on: None, block_sources: dict[str, bytes]
+    queue_on: None, assembly_files: dict[str, bytes]
 ) -> None:
     """The block's stretch at ×1 keeps its sound (the voice), the composed video is
     `ai_generated=True` and records the block; no vendor is called by the assembly."""
     clip_id, block_id = uuid4(), uuid4()
     key = _block_key(block_id)
-    files = {**block_sources, key: _video_with_sound_bytes(4.0, 1.5)}
+    files = {**assembly_files, key: _video_with_sound_bytes(4.0, 1.5)}
     clip = _local_clip(
         SourceSegment(key=key, start_s=0, end_s=4.0, speed=1.0),
         SourceSegment(key=PHOTO_KEY, start_s=0, end_s=1.5, kind="photo"),
@@ -640,11 +661,11 @@ def test_a_clip_with_its_block_keeps_the_voice_and_is_marked_ai(
     [(1.25, "self", ca.SPEED_TEXT), (1.0, "other", ca.ELSEWHERE_TEXT)],
 )
 def test_a_block_at_another_speed_or_of_another_video_is_refused_before_any_read(
-    queue_on: None, block_sources: dict[str, bytes], speed: float, owner: str, text: str
+    queue_on: None, assembly_files: dict[str, bytes], speed: float, owner: str, text: str
 ) -> None:
     clip_id, block_id = uuid4(), uuid4()
     key = _block_key(block_id)
-    files = {**block_sources, key: _video_with_sound_bytes(4.0, 1.5)}
+    files = {**assembly_files, key: _video_with_sound_bytes(4.0, 1.5)}
     clip = _local_clip(SourceSegment(key=key, start_s=0, end_s=4.0, speed=speed))
     belongs = clip_id if owner == "self" else uuid4()
     outcome, store, _ = _assemble(
@@ -656,12 +677,12 @@ def test_a_block_at_another_speed_or_of_another_video_is_refused_before_any_read
 
 
 def test_an_own_video_clip_looks_nothing_up_and_stays_not_ai(
-    queue_on: None, block_sources: dict[str, bytes]
+    queue_on: None, assembly_files: dict[str, bytes]
 ) -> None:
     """Both switches off, an owner's recipe: no lookup, `ai_generated=False` as before."""
     outcome, _, looked = _assemble(
         _local_clip(SourceSegment(key=OWN_VIDEO, start_s=0, end_s=4.0, speed=1.0)),
-        block_sources,
+        assembly_files,
         clip_id=uuid4(),
         sources={},
     )
@@ -671,13 +692,14 @@ def test_an_own_video_clip_looks_nothing_up_and_stays_not_ai(
 
 
 def test_a_blocks_video_with_no_lookup_wired_fails_closed(
-    queue_on: None, block_sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+    queue_on: None, assembly_files: dict[str, bytes]
 ) -> None:
-    monkeypatch.setenv(ca.PRESENTER_SWITCH, "on")
+    """A file of the generator (a block or any piece) and no lookup wired: never made
+    without knowing its «hecho con IA», with the avatar switches on or off."""
     key = _block_key(uuid4())
     outcome, store, _ = _assemble(
         _local_clip(SourceSegment(key=key, start_s=0, end_s=4.0, speed=1.0)),
-        {**block_sources, key: b""},
+        {**assembly_files, key: b""},
         clip_id=uuid4(),
         sources=None,
     )
@@ -804,19 +826,89 @@ def test_the_blocks_brief_length_is_one_the_brief_accepts() -> None:
     assert short.media.duration_seconds == 5
 
 
-def test_with_both_switches_off_a_generator_file_is_made_as_before(
-    queue_on: None, block_sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+def test_with_both_switches_off_a_seedance_piece_the_owner_chose_now_says_ai(
+    queue_on: None, assembly_files: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Criterion «sin cambios con los interruptores apagados»: a file of the generator in
-    the recipe (P3 of ADR 50) with no lookup wired is assembled exactly as before."""
+    """INTENTIONAL change of behaviour with both avatar switches off (Deivid, 2026-11-24,
+    ADR 50 §9): before m-25112920 a Seedance piece of the generator the owner chose as a
+    stretch (ADR 50 P3) came out `ai_generated=False`. The label is now read from what
+    was made — the asset's provider —, so the video says «hecho con IA». Everything
+    else stays as before: no block, nothing charged, nothing else read."""
     monkeypatch.delenv(ca.PRESENTER_SWITCH, raising=False)
     monkeypatch.delenv(ca.ANIMATED_SWITCH, raising=False)
     key = _block_key(uuid4())
+    piece = _piece(key, provider="seedance", model_id="seedance-2-0")
+    outcome, _, looked = _assemble(
+        _local_clip(SourceSegment(key=key, start_s=0, end_s=4.0, speed=1.0)),
+        {**assembly_files, key: _video_with_sound_bytes(4.0, 1.5)},
+        clip_id=uuid4(),
+        sources={key: piece},
+    )
+    assert outcome.failure is None, outcome.detail
+    (video,) = outcome.media
+    assert video.ai_generated is True and video.params["ai_generated"] is True
+    (record,) = video.params["local"]["ai_sources"]
+    assert record["provider"] == "seedance" and record["avatar_block"] is False
+    assert record["asset_id"] == str(piece.asset_id) and record["segment"] == 0
+    assert "avatar_blocks" not in video.params["local"]
+    assert looked == [[key]]
+
+
+def test_a_seedream_photo_among_own_videos_makes_the_clip_ai(
+    queue_on: None, assembly_files: dict[str, bytes]
+) -> None:
+    key = f"t/{TENANT_ID}/generated/{uuid4()}/r1/scene.png"
+    outcome, _, _ = _assemble(
+        _local_clip(
+            SourceSegment(key=OWN_VIDEO, start_s=0, end_s=4.0, speed=1.0),
+            SourceSegment(key=key, start_s=0, end_s=1.5, kind="photo"),
+        ),
+        {**assembly_files, key: _png_bytes()},
+        clip_id=uuid4(),
+        sources={key: _piece(key, provider="seedream", model_id="seedream-5-0")},
+    )
+    assert outcome.failure is None, outcome.detail
+    assert outcome.media[0].ai_generated is True
+    (record,) = outcome.media[0].params["local"]["ai_sources"]
+    assert record["segment"] == 1 and record["provider"] == "seedream"
+
+
+def test_a_generator_file_that_is_not_ai_keeps_the_clip_not_ai(
+    queue_on: None, assembly_files: dict[str, bytes]
+) -> None:
+    """A piece of the generator made only from the owner's files (a local video of
+    before: its asset says `ai_generated` False) does not turn the label on."""
+    key = _block_key(uuid4())
     outcome, _, _ = _assemble(
         _local_clip(SourceSegment(key=key, start_s=0, end_s=4.0, speed=1.0)),
-        {**block_sources, key: _video_with_sound_bytes(4.0, 1.5)},
+        {**assembly_files, key: _video_with_sound_bytes(4.0, 1.5)},
         clip_id=uuid4(),
-        sources=None,
+        sources={key: _piece(key, provider="local", model_id="local_video", ai=False)},
     )
     assert outcome.failure is None, outcome.detail
     assert outcome.media[0].ai_generated is False
+    assert "ai_sources" not in outcome.media[0].params["local"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "params_ai", "draft", "expected"),
+    [
+        ("seedance", None, False, True),
+        ("Seedance", None, False, True),  # some writers capitalize
+        ("seedream", None, False, True),
+        ("omnihuman", None, False, True),
+        ("local", False, False, False),  # its own record wins
+        ("local", True, False, True),  # a local video that played a block
+        ("qualify_join", True, False, True),  # a join of AI parts says so itself
+        ("qualify", None, True, True),  # our composition over a Seedream scene
+        ("qualify", None, False, False),  # our composition of the owner's photos
+        ("remotion", None, False, False),
+    ],
+)
+def test_an_asset_is_ai_by_its_own_record_then_its_vendor_then_its_draft(
+    provider: str, params_ai: bool | None, draft: bool, expected: bool
+) -> None:
+    assert (
+        ca.asset_is_ai(provider=provider, params_ai=params_ai, draft_requires_disclosure=draft)
+        is expected
+    )

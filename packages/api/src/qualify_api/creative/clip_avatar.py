@@ -16,7 +16,7 @@ Deivid's decisions (2026-11-24), all enforced here or where named:
 - **How it enters the Clip.** Its kept video (`t/{tenant}/generated/{block}/r{n}/…`) is a
   `SourceSegment` of kind `video` in the Clip's `local` recipe (`place_block`), from 0 to
   its length, at ×1. The local assembly (`video_pipeline.local.produce_local`) asks
-  `block_sources` which of its stretches are blocks: such a stretch must belong to THIS
+  `generated_sources` which of its stretches are blocks: such a stretch must belong to THIS
   Clip and play at ×1 (at any other speed its voice would be silence — m-25049580 keeps a
   stretch's sound only at ×1), and the composed video is marked `ai_generated=True` with
   each block's provenance. Nothing else in the assembly changes.
@@ -53,7 +53,7 @@ import logging
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -206,10 +206,29 @@ def block_model_problem(media: MediaInputs, req_key: str) -> str | None:
     return None
 
 
-def is_block_candidate(tenant_id: UUID, key: str) -> bool:
-    """Whether a stretch's key can be a block's video at all: a file the generator kept
-    for one of this business's drafts (`media.generated_object_key` / `generated_key`).
-    An owner's upload, Galería file or reel window never is — and is never looked up."""
+#: The vendors whose output is AI imagery (each adapter's `name`, as
+#: `image_assets.provider` keeps it; compared lower-case, some writers capitalize).
+AI_PROVIDERS = frozenset({"seedance", "seedream", "omnihuman", "heygen"})
+
+
+def asset_is_ai(*, provider: Any, params_ai: Any, draft_requires_disclosure: bool) -> bool:
+    """Whether one generator asset is AI imagery, from the most specific record there
+    is: the asset's own `params.ai_generated` when it wrote one (a local video, a join, a
+    final by parts); else its provider when it is a generation vendor; else its draft's
+    `requires_ai_disclosure` (recomputed from the media the draft made — a composition
+    of ours over a Seedream scene). Never guessed from the key's path."""
+    if isinstance(params_ai, bool):
+        return params_ai
+    if str(provider or "").strip().lower() in AI_PROVIDERS:
+        return True
+    return draft_requires_disclosure
+
+
+def is_generated_file(tenant_id: UUID, key: str) -> bool:
+    """Whether a stretch's key can be a file the generator made — the keys whose
+    provenance is looked up: one kept for one of this business's drafts
+    (`media.generated_object_key` / `generated_key`). An owner's upload, Galería file or
+    reel window never is (the owner's own, not AI) — and is never looked up."""
     return key.startswith((f"t/{tenant_id}/generated/", f"generated/{tenant_id}/"))
 
 
@@ -343,9 +362,13 @@ class BlockVideo:
 
 
 @dataclass(frozen=True)
-class BlockSource:
-    """A stretch's file that is a block's video, with what the Clip's asset records of
-    it (rule 6 — the block's own asset and usage rows keep its cost and prompt)."""
+class GeneratedSource:
+    """A stretch's file that the generator made for one of this business's drafts (its
+    `image_assets` row), with what the local assembly needs of it: whether it is AI
+    imagery (`ai_generated`, `asset_is_ai`) and whether it is an avatar block of a Clip
+    (`block`: then `kind` and `clip_id`, the block's Clip). What the Clip's asset records
+    of it is `provenance` / `ai_provenance` (rule 6 — the source's own asset and usage
+    rows keep its cost and prompt)."""
 
     object_key: str
     block_id: UUID
@@ -358,6 +381,22 @@ class BlockSource:
     model_revision: str | None
     seconds: float
     pipeline_version: str
+    #: An avatar block of a Clip (`media.clip_avatar_block`): `block_id` is the block's
+    #: draft. False: any other piece of the generator (`block_id` is its draft).
+    block: bool = True
+    #: AI imagery, read from what made it (`asset_is_ai`).
+    ai_generated: bool = True
+
+    def ai_provenance(self, segment: int) -> dict[str, Any]:
+        """The Clip asset's record of an AI stretch: the label's evidence."""
+        return {
+            "segment": segment,
+            "draft_id": str(self.block_id),
+            "asset_id": str(self.asset_id),
+            "provider": self.provider,
+            "model_id": self.model_id,
+            "avatar_block": self.block,
+        }
 
     def provenance(self, segment: int) -> dict[str, Any]:
         return {
@@ -382,7 +421,9 @@ class ClipAvatarStore(Protocol):
 
     def block_video(self, *, tenant_id: UUID, block_id: UUID) -> BlockVideo | None: ...
 
-    def block_sources(self, *, tenant_id: UUID, keys: Sequence[str]) -> dict[str, BlockSource]: ...
+    def generated_sources(
+        self, *, tenant_id: UUID, keys: Sequence[str]
+    ) -> dict[str, GeneratedSource]: ...
 
 
 def _block_kind(kind: str) -> str:
@@ -468,8 +509,13 @@ class PostgresClipAvatarStore:
             asset_id=row.id, object_key=str(row.object_key), seconds=float(row.seconds)
         )
 
-    def block_sources(self, *, tenant_id: UUID, keys: Sequence[str]) -> dict[str, BlockSource]:
-        candidates = sorted({key for key in keys if is_block_candidate(tenant_id, key)})
+    def generated_sources(
+        self, *, tenant_id: UUID, keys: Sequence[str]
+    ) -> dict[str, GeneratedSource]:
+        """Every key of `keys` the generator made for this business (its asset rows),
+        with whether it is AI imagery and whether it is an avatar block. A key with
+        several rows (versions) is AI when any of them is."""
+        candidates = sorted({key for key in keys if is_generated_file(tenant_id, key)})
         if not candidates:
             return {}
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
@@ -478,25 +524,43 @@ class PostgresClipAvatarStore:
         with tenant_session(tenant_id) as session:
             rows = session.execute(
                 text("""
-                SELECT a.object_key, a.id AS asset_id, a.provider, a.model_id,
+                SELECT a.object_key, a.id AS asset_id, a.provider, a.model_id, a.media_type,
                        a.params->>'model_revision' AS model_revision,
                        a.params->>'duration_seconds' AS seconds,
+                       a.params->'ai_generated' AS params_ai,
                        d.id AS block_id, d.parent_draft_id, d.revision, d.pipeline_version,
-                       b.kind
+                       d.requires_ai_disclosure, b.kind,
+                       COALESCE((b.media->>'clip_avatar_block')::boolean, false) AS block
                 FROM image_assets a
                 JOIN content_drafts d ON d.id = a.draft_id
                 JOIN content_briefs b ON b.id = d.brief_id
-                WHERE a.object_key IN :keys AND a.media_type = 'video'
-                  AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
+                WHERE a.object_key IN :keys
+                ORDER BY a.created_at
             """).bindparams(bindparam("keys", expanding=True)),
                 {"keys": candidates},
             ).all()
-        return {
-            str(row.object_key): BlockSource(
-                object_key=str(row.object_key),
+        found: dict[str, GeneratedSource] = {}
+        for row in rows:
+            key = str(row.object_key)
+            ai = asset_is_ai(
+                provider=row.provider,
+                params_ai=row.params_ai,
+                draft_requires_disclosure=bool(row.requires_ai_disclosure),
+            )
+            block = bool(row.block) and row.media_type == "video"
+            before = found.get(key)
+            if before is not None:
+                # several rows of one file (versions): AI when any is, a block when any is
+                ai = ai or before.ai_generated
+                if before.block and not block:
+                    found[key] = replace(before, ai_generated=ai)
+                    continue
+                block = block or before.block
+            found[key] = GeneratedSource(
+                object_key=key,
                 block_id=row.block_id,
                 clip_id=row.parent_draft_id,
-                kind=_block_kind(str(row.kind)),
+                kind=_block_kind(str(row.kind)) if block else str(row.kind),
                 revision=int(row.revision),
                 asset_id=row.asset_id,
                 provider=str(row.provider or ""),
@@ -504,14 +568,15 @@ class PostgresClipAvatarStore:
                 model_revision=row.model_revision,
                 seconds=float(row.seconds or 0),
                 pipeline_version=str(row.pipeline_version or ""),
+                block=block,
+                ai_generated=ai,
             )
-            for row in rows
-        }
+        return found
 
 
-def db_block_sources(tenant_id: UUID, keys: Sequence[str]) -> dict[str, BlockSource]:
+def db_generated_sources(tenant_id: UUID, keys: Sequence[str]) -> dict[str, GeneratedSource]:
     """The production resolver the media producer hands the local assembly."""
-    return PostgresClipAvatarStore().block_sources(tenant_id=tenant_id, keys=keys)
+    return PostgresClipAvatarStore().generated_sources(tenant_id=tenant_id, keys=keys)
 
 
 # -- the assembly's rule (pure) ------------------------------------------------------------
@@ -521,17 +586,31 @@ def db_block_sources(tenant_id: UUID, keys: Sequence[str]) -> dict[str, BlockSou
 class BlockStretch:
     index: int
     segment: SourceSegment
-    source: BlockSource
+    source: GeneratedSource
 
 
 def block_stretches(
-    segments: Sequence[SourceSegment], sources: Mapping[str, BlockSource]
+    segments: Sequence[SourceSegment], sources: Mapping[str, GeneratedSource]
 ) -> tuple[BlockStretch, ...]:
-    """The recipe's stretches that are blocks' videos, in order."""
+    """The recipe's stretches that are avatar blocks' videos, in order."""
     return tuple(
         BlockStretch(index=index, segment=segment, source=sources[segment.key])
         for index, segment in enumerate(segments)
-        if segment.kind == "video" and segment.key in sources
+        if segment.kind == "video" and segment.key in sources and sources[segment.key].block
+    )
+
+
+def ai_stretches(
+    segments: Sequence[SourceSegment], sources: Mapping[str, GeneratedSource]
+) -> tuple[BlockStretch, ...]:
+    """The recipe's stretches (videos or photos) whose file is AI imagery — Seedance,
+    Seedream, OmniHuman…, read from the asset that made it —, in order. Deivid,
+    2026-11-24: one is enough for the composed video's «hecho con IA», with the avatar
+    switches on or off."""
+    return tuple(
+        BlockStretch(index=index, segment=segment, source=sources[segment.key])
+        for index, segment in enumerate(segments)
+        if segment.key in sources and sources[segment.key].ai_generated
     )
 
 
@@ -863,7 +942,7 @@ class ClipAvatarService:
             tenant_id=tenant_id,
             clip_id=clip_id,
             brief=brief,
-            sources=lambda keys: self._store.block_sources(tenant_id=tenant_id, keys=keys),
+            sources=lambda keys: self._store.generated_sources(tenant_id=tenant_id, keys=keys),
         )[1]
 
 
@@ -877,18 +956,18 @@ def clip_block_charge(
     tenant_id: UUID,
     clip_id: UUID,
     brief: ContentBrief,
-    sources: Callable[[Sequence[str]], Mapping[str, BlockSource]],
+    sources: Callable[[Sequence[str]], Mapping[str, GeneratedSource]],
 ) -> tuple[int, int]:
     """(videos, seconds) approving the Clip `clip_id` uses for the blocks its recipe
     plays — (0, 0) for anything that is not a `local` Clip with blocks of its own (a
     block of another video is refused by the assembly, never charged here). Only keys a
-    block can have are looked up (`is_block_candidate`)."""
+    block can have are looked up (`is_generated_file`)."""
     from qualify_api.creative.video_pipeline.local import is_local_recipe  # noqa: PLC0415
 
     if not is_local_recipe(brief):
         return 0, 0
     segments = brief.media.segments
-    keys = [s.key for s in segments if s.kind == "video" and is_block_candidate(tenant_id, s.key)]
+    keys = [s.key for s in segments if s.kind == "video" and is_generated_file(tenant_id, s.key)]
     if not keys:
         return 0, 0
     own = [s for s in block_stretches(segments, sources(keys)) if s.source.clip_id == clip_id]
@@ -902,7 +981,7 @@ __all__ = [
     "AVATAR_BLOCK_SLOTS",
     "AvatarBlockRequest",
     "BlockRow",
-    "BlockSource",
+    "GeneratedSource",
     "BlockStretch",
     "BlockVideo",
     "CLIP_AVATAR_VERSION",
@@ -921,10 +1000,13 @@ __all__ = [
     "block_model_problem",
     "block_segment",
     "block_stretches",
+    "AI_PROVIDERS",
+    "ai_stretches",
+    "asset_is_ai",
     "charged_seconds",
     "clip_block_charge",
-    "db_block_sources",
-    "is_block_candidate",
+    "db_generated_sources",
+    "is_generated_file",
     "refuse_if_off",
     "script_seconds",
     "stretch_problem",

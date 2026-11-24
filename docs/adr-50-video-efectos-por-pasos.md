@@ -90,7 +90,7 @@ Lo que quiere el dueño: subir su video, ponerle un texto y uno o varios efectos
 - `PartMode` gana el modo `local`: sin Seedance y a **costo 0**, solo con video o fotos propios del negocio y sin efectos de Seedance.
 - Corre en el `creative-worker` (preparación del trabajo `preview` de ADR 41), nunca en Reflex: el despachador `inline` lo rechaza.
 - Las fuentes de más de 4K o de más de 8 bits se normalizan antes en el `media-worker` (ADR 47, trabajo `normalize_local` en `gallery_jobs`, revisión `0171`).
-- El asset lleva `ai_generated=False` y no lleva bloque `draft`: no hay final de Seedance que pedir, así que se publica tal cual. Un Clip con un bloque de avatar sale `ai_generated=True`: ver la enmienda `[PROPUESTO]` del §9.
+- El asset lleva `ai_generated=False` y no lleva bloque `draft`: no hay final de Seedance que pedir, así que se publica tal cual. Un Clip con un tramo hecho con IA (un video de Seedance o una imagen de Seedream del generador, o un bloque de avatar de OmniHuman) sale `ai_generated=True`: ver el §9.
 
 ### 1.6 Compatibilidad con lo guardado
 
@@ -288,6 +288,16 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - Su video entra a la receta del Clip como un `SourceSegment` de tipo `video`, de 0 a su largo y a ×1 (`clip_avatar.place_block`). El armado local lo une con las fotos y los videos del dueño.
 - Un bloque solo va a ×1: a otra velocidad el armado pondría silencio y se perdería la voz (m-25049580). El armado rechaza un bloque a otra velocidad o un bloque de otro video antes de leer nada.
 - Cada bloque queda en `params.local.avatar_blocks` del asset del Clip: borrador, revisión, asset, proveedor, modelo y largo. El costo y el prompt quedan en las filas del propio bloque.
+
+**La etiqueta de IA, para todos los tramos (decisión de Deivid, 2026-11-24).** Esto corrige el §1.5 aparte del avatar, y vale **aunque los interruptores del avatar estén apagados**.
+
+- Un Clip `local` sale con `ai_generated=True` si **cualquier** tramo es imagen hecha con IA. Puede ser un video de Seedance o una imagen de Seedream del generador que el dueño eligió (P3), o un bloque de OmniHuman. Basta uno.
+- Se lee de lo que se hizo (§3), en el asset del generador que dio ese archivo, nunca por la ruta. Primero cuenta lo que el propio asset anotó (`params.ai_generated`, que escriben el armado local, la unión y el final por partes). Después, su proveedor, si es un proveedor de generación (Seedance, Seedream, OmniHuman). Por último, `requires_ai_disclosure` de su borrador, que se calcula de lo que ese borrador hizo.
+- Solo se buscan los archivos que guardó el generador. Las fotos y los videos que subió el dueño, los de la Galería y las ventanas de reels son suyos: no se buscan y no cuentan como IA.
+- Un Clip solo con fotos y videos propios sigue en `False`.
+- Cada tramo de IA queda en `params.local.ai_sources` del asset del Clip: borrador, asset, proveedor y modelo.
+- Si hay archivos del generador en la receta y el armado no puede consultarlos, el Clip no se arma: nunca sale sin saber si lleva la etiqueta.
+- Antes de este cambio, un Clip con un video de Seedance elegido por el dueño salía `False`. Ahora sale `True` a propósito.
 
 **Cupo y gasto (enmienda a D3 solo para los bloques).**
 

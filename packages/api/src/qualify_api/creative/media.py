@@ -2499,10 +2499,10 @@ class MediaProducer:
         #: EF-14: what draws and lays the texts and layers over a Seedance clip (its
         #: preview and its final). None = `recompose.ClipComposer` over `render_client`.
         clip_composer: Any = None,
-        #: m-25112920: which stretches of a `local` Clip are its avatar blocks' videos
-        #: (`clip_avatar.db_block_sources`, given (tenant, keys)). None = no lookup:
-        #: with a block switch on, a recipe with a generator's file fails closed (never
-        #: made without its «hecho con IA»); with both off it is made as before.
+        #: m-25112920: the provenance of a `local` recipe's files of the generator —
+        #: AI imagery or not, avatar block or not (`clip_avatar.db_generated_sources`,
+        #: given (tenant, keys)). None = no lookup: a recipe with such a file fails
+        #: closed (never made without knowing its «hecho con IA»).
         clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
     ) -> None:
         self._store = store
@@ -5731,15 +5731,16 @@ class MediaProducer:
             allowed = run is not None or queue_enabled()
         except ValueError:  # a malformed switch: fail closed
             allowed = False
-        blocks = self._avatar_blocks(tenant_id, brief)
+        blocks = self._generated_sources(tenant_id, brief)
         if blocks is None:
-            # m-25112920: a block's video in the recipe and no way to look it up — never
-            # made without its «hecho con IA» (fails closed, nothing read or charged)
+            # m-25112920: a file of the generator in the recipe and no way to look it
+            # up — never made without knowing its «hecho con IA» (fails closed, nothing
+            # read or charged)
             from qualify_api.creative.video_pipeline.local import (  # noqa: PLC0415
                 LOCAL_SOURCE_FAILED_TEXT,
             )
 
-            logger.warning("draft %s: avatar blocks cannot be looked up here", draft_id)
+            logger.warning("draft %s: generator files cannot be looked up here", draft_id)
             return MediaOutcome(
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=LOCAL_SOURCE_FAILED_TEXT
             )
@@ -5756,31 +5757,29 @@ class MediaProducer:
             run=run,
             brand=kit,
             render_client=self._render_client,
-            avatar_blocks=blocks,
+            generated_sources=blocks,
         )
 
-    def _avatar_blocks(self, tenant_id: UUID, brief: ContentBrief) -> Mapping[str, Any] | None:
-        """m-25112920: the recipe's stretches that are avatar blocks' videos ({} for
-        none). Only a key under a draft's own generated folder is looked up (a file of
-        the generator the owner chose, or a block's video). None: there is such a key, no
-        lookup wired and a block switch on — never made without its «hecho con IA». With
-        both switches off no block can exist: {} as before."""
-        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
-            any_block_enabled,
-            is_block_candidate,
-        )
+    def _generated_sources(self, tenant_id: UUID, brief: ContentBrief) -> Mapping[str, Any] | None:
+        """m-25112920: the recipe's stretches (videos and photos) that are files of the
+        generator, with their provenance — which are AI imagery, which are avatar blocks
+        ({} for none: only the owner's own files, nothing looked up). None: there is such
+        a file and no lookup wired — never made without knowing its «hecho con IA»."""
+        from qualify_api.creative.clip_avatar import is_generated_file  # noqa: PLC0415
         from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
 
-        keys = [
-            segment.key
-            for part in recipe_of(brief)
-            for segment in part.segments
-            if segment.kind == "video" and is_block_candidate(tenant_id, segment.key)
-        ]
+        keys = list(
+            dict.fromkeys(
+                segment.key
+                for part in recipe_of(brief)
+                for segment in part.segments
+                if is_generated_file(tenant_id, segment.key)
+            )
+        )
         if not keys:
             return {}
         if self._clip_avatar_sources is None:
-            return None if any_block_enabled() else {}
+            return None
         return self._clip_avatar_sources(tenant_id, keys)
 
     def _clip(

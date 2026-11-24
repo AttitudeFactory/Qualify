@@ -2443,7 +2443,7 @@ class ContentService:
     ) -> None:
         self._media = media
         #: m-25112920: which stretches of a Clip's recipe are its avatar blocks' videos
-        #: (`clip_avatar.db_block_sources` on Postgres when None) — what approving the
+        #: (`clip_avatar.db_generated_sources` on Postgres when None) — what approving the
         #: Clip charges of the month's video seconds.
         self._clip_avatar_sources = clip_avatar_sources
         #: The vendor tasks a generation created, kept by id (m-24852154): None = a
@@ -4519,14 +4519,14 @@ class ContentService:
         without blocks — no lookup at all unless a stretch can be one."""
         from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
             clip_block_charge,
-            db_block_sources,
+            db_generated_sources,
         )
 
         resolver = self._clip_avatar_sources
         if resolver is None:
             if not isinstance(self._repo, PostgresContentRepository):
                 return 0, 0
-            resolver = db_block_sources
+            resolver = db_generated_sources
         return clip_block_charge(
             tenant_id=tenant_id,
             clip_id=clip_id,

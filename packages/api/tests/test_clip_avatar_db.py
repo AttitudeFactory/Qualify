@@ -107,7 +107,7 @@ def test_the_store_finds_the_block_its_video_and_its_stretch(
     video = store.block_video(tenant_id=tenant, block_id=block)
     assert video is not None and video.object_key == key and video.seconds == 4.2
     owned = f"uploads/{tenant}/a.mp4"
-    sources = store.block_sources(tenant_id=tenant, keys=[key, owned])
+    sources = store.generated_sources(tenant_id=tenant, keys=[key, owned])
     assert list(sources) == [key]
     source = sources[key]
     assert source.block_id == block and source.clip_id == clip
@@ -120,7 +120,60 @@ def test_the_store_finds_the_block_its_video_and_its_stretch(
     other = uuid4()
     assert store.clip(tenant_id=other, clip_id=clip) is None
     assert store.blocks_of(tenant_id=other, clip_id=clip) == ()
-    assert store.block_sources(tenant_id=other, keys=[key]) == {}
+    assert store.generated_sources(tenant_id=other, keys=[key]) == {}
+    assert source.block is True and source.ai_generated is True
+
+
+def test_a_seedance_piece_reads_as_ai_and_an_own_composition_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The label's evidence as Postgres keeps it: a Seedance clip's asset is AI by its
+    provider; our composition of the owner's photos (provider `qualify`, a draft that
+    needs no disclosure) is not; neither is a block."""
+    world = _world(monkeypatch)
+    tenant, user = world["tenant"], world["user"]
+    repo = PostgresContentRepository()
+    made: dict[str, str] = {}
+    for name, provider in (("seedance", "seedance"), ("own", "qualify")):
+        draft = repo.insert_brief_and_draft(
+            tenant_id=tenant,
+            user_id=user,
+            brief=_clip(_brand_of(tenant, world["clip"]), tenant),
+            voice_profile_version=1,
+            pipeline_version="creative-v1",
+        )
+        key = f"t/{tenant}/generated/{draft}/r1/video.mp4"
+        with tenant_session(tenant) as session:
+            session.execute(
+                text("UPDATE content_drafts SET requires_ai_disclosure = false WHERE id = :d"),
+                {"d": draft},
+            )
+            session.add(
+                orm.ImageAsset(
+                    tenant_id=tenant,
+                    draft_id=draft,
+                    media_url=key,
+                    object_key=key,
+                    media_type="video",
+                    provider=provider,
+                    model_id=f"{provider}-model",
+                    params={"duration_seconds": 4.0},
+                )
+            )
+        made[name] = key
+    sources = ca.PostgresClipAvatarStore().generated_sources(
+        tenant_id=tenant, keys=list(made.values())
+    )
+    seedance, own = sources[made["seedance"]], sources[made["own"]]
+    assert (seedance.ai_generated, seedance.block) == (True, False)
+    assert (own.ai_generated, own.block) == (False, False)
+
+
+def _brand_of(tenant: UUID, draft: UUID) -> UUID:
+    with tenant_session(tenant) as session:
+        return session.scalar(
+            text("SELECT brand_id FROM content_drafts WHERE id = :d"), {"d": draft}
+        )
 
 
 def test_the_slot_is_unique_under_the_clip(monkeypatch: pytest.MonkeyPatch) -> None:
