@@ -3138,9 +3138,10 @@ class MediaProducer:
         video: bytes | None = None
         if part and raw is not None and _object_held(self._store, tenant_id, str(raw["key"])):
             # a retry after the part's last write never landed: the kept 1080p IS the
-            # part's final — never read whole into memory, never paid again
+            # part's final — never read whole into memory, never paid again (m-25103284:
+            # read only when its texts must be composed over it and are not kept yet)
             kept["raw_final"] = raw
-            return self._part_final(asset, block, raw, revision)
+            return self._part_final(tenant_id, draft_id, asset, block, raw, revision, save, None)
         if raw is not None:
             try:
                 video = self._store.read(str(raw["key"]))
@@ -3166,7 +3167,7 @@ class MediaProducer:
                 from qualify_api.creative.part_final import PART_FINAL_NOT_KEPT_TEXT  # noqa: PLC0415
 
                 raise _MediaFailed(FailureReason.PROVIDER_ERROR.value, PART_FINAL_NOT_KEPT_TEXT)
-            return self._part_final(asset, block, raw, revision)
+            return self._part_final(tenant_id, draft_id, asset, block, raw, revision, save, video)
         resolution = str(raw.get("resolution") or seedance_family(model).draft_final_resolution)
 
         # 2.5's 1080p is 10-bit H.265, which browsers and Instagram may not play: the
@@ -3309,13 +3310,108 @@ class MediaProducer:
             params=params,
         )
 
-    @staticmethod
     def _part_final(
-        asset: Any, block: Mapping[str, Any], raw: Mapping[str, Any], revision: int
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        asset: Any,
+        block: Mapping[str, Any],
+        raw: Mapping[str, Any],
+        revision: int,
+        save: _Saver,
+        video: bytes | None,
     ) -> MediaWrite:
+        """VE-10b: a part's final is its paid raw 1080p, kept as it came. m-25103284: a
+        part whose preview froze a recipe (`params["compose"]`) gets that recipe composed
+        again over its raw 1080p (`_composed_part_final`), kept under its own key per
+        order; the final join reads that file (`part_final.raw_key`)."""
         from qualify_api.creative.part_final import part_final_media  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.recompose import stored_recipe  # noqa: PLC0415
 
-        return part_final_media(asset, block, raw, revision)
+        if stored_recipe(asset.params) is None:
+            return part_final_media(asset, block, raw, revision)
+        composed, compose = self._composed_part_final(
+            tenant_id, draft_id, asset, block, raw, save, video
+        )
+        return part_final_media(asset, block, raw, revision, composed=composed, compose=compose)
+
+    def _composed_part_final(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        asset: Any,
+        block: Mapping[str, Any],
+        raw: Mapping[str, Any],
+        save: _Saver,
+        video: bytes | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """m-25103284: the part's raw 1080p with the preview's frozen recipe composed again
+        (`_recompose_final`: the preview's own text PNGs, checked by sha256; inside the
+        heavy-video gate), kept under `{stem}-final-{attempt}.mp4` — `(composed_final,
+        compose block)`. Idempotent: a composed file already kept under this order's key
+        is taken as it is (`_held_final`), before any read, gate or encode; the raw 1080p
+        is never paid again (it is the `raw_final` the caller already holds). Cut to 9:16
+        first only when the vendor's size is off it (`recompose.nine_sixteen_size`). A
+        compose that fails fails the part's final with its raw 1080p kept: the retry
+        costs the vendor nothing."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            FINAL_COMPOSE_FAILED_TEXT,
+            nine_sixteen_size,
+            wait_if_heavy_video_busy,
+        )
+
+        stem = Path(str(asset.object_key or "video.mp4")).stem
+        name = f"{stem}-final-{_attempt_tag(block)}.mp4"
+        held = self._held_final(tenant_id, asset, save.key_for(name), raw)
+        if held is not None:
+            data, compose = held
+            compose["final"] = {**dict(compose.get("final") or {}), "part": True}
+            key = save.key_for(name)
+        else:
+            # the pass that composes waits for a part join before reading the raw 1080p
+            wait_if_heavy_video_busy()
+            if video is None:
+                if not owned_by(tenant_id, str(raw["key"])):
+                    raise _MediaFailed(
+                        FailureReason.PROVIDER_ERROR.value,
+                        FINAL_COMPOSE_FAILED_TEXT,
+                        raw="the raw final is not this business's file",
+                    )
+                video = self._store.read(str(raw["key"]))
+            size = _video_dimensions(video)
+            try:
+                cut = nine_sixteen_size(*size) if size is not None else None
+            except ValueError as exc:
+                raise _MediaFailed(
+                    FailureReason.PROVIDER_ERROR.value, FINAL_COMPOSE_FAILED_TEXT, raw=str(exc)
+                ) from exc
+            prepare: Callable[[bytes], bytes] | None = None
+            if cut is not None:
+                fitter = self._require_fitter()
+
+                def prepare(data: bytes) -> bytes:
+                    # the cut and the compose in ONE heavy-video gate (`_recompose_final`)
+                    return fitter.fit(
+                        data, size=cut, keep_audio=True, max_seconds=3600.0, x264=DETAIL_X264
+                    ).data
+
+                size = cut
+            width, height = size or (0, 0)
+            source = FittedVideo(data=video, width=width, height=height, duration_sec=0.0)
+            composed, made = self._recompose_final(
+                tenant_id, draft_id, asset, source, raw, prepare=prepare
+            )
+            data = composed.data
+            key = save(name, data, MP4)
+            compose = dict(made or {})
+            compose["final"] = {**dict(compose.get("final") or {}), "part": True}
+        final = compose.get("final") if isinstance(compose.get("final"), Mapping) else {}
+        return {
+            "key": key,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "recipe_sha256": final.get("recipe_sha256"),
+            "from_raw_final_key": raw.get("key"),
+        }, compose
 
     def _paid_final(
         self,
@@ -5335,6 +5431,8 @@ class MediaProducer:
         asset: Any,
         fitted: FittedVideo,
         raw: Mapping[str, Any],
+        *,
+        prepare: Callable[[bytes], bytes] | None = None,
     ) -> tuple[FittedVideo, dict[str, Any] | None]:
         """EF-14: the preview's frozen recipe (`params["compose"]`, never the brief as it
         reads today) composed again over the fitted 1080p final, with the preview's own
@@ -5343,7 +5441,9 @@ class MediaProducer:
         are missing (a piece from before they were kept). Inside the heavy-video gate:
         with a part join in flight `LocalAssemblyWait` — the final waits for a later
         pass, its raw 1080p kept, never paid again. A failure fails the final; the raw
-        1080p stays kept, so the retry costs nothing more."""
+        1080p stays kept, so the retry costs nothing more. `prepare` (m-25103284: a
+        part's cut to 9:16) runs on the video inside the SAME gate, before the compose,
+        so a join never slips in between."""
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_PARAMS_KEY,
             FINAL_COMPOSE_FAILED_TEXT,
@@ -5364,7 +5464,8 @@ class MediaProducer:
         try:
             composer = self._composer()
             with heavy_gate():
-                made = composer.compose(fitted.data, recipe, drawn=drawn, stage="final")
+                source = prepare(fitted.data) if prepare is not None else fitted.data
+                made = composer.compose(source, recipe, drawn=drawn, stage="final")
         except CheckpointError:
             raise  # the heavy-video gate is taken: a later pass, nothing paid again
         except Exception as exc:  # noqa: BLE001 — the raw final is kept: a free retry
@@ -5522,8 +5623,9 @@ class MediaProducer:
         )
         # EF-14 (m-25026592): the owner's texts and layers over the clip — drawn by our
         # render service HERE, before anything is paid (a text that does not fit costs
-        # nothing), laid after the logo and the subtitles, frozen for the final
-        composing = self._seedance_compose(brief, kit, tenant_id, save) if part is None else None
+        # nothing), laid after the logo and the subtitles, frozen for the final.
+        # m-25103284: a `reference` part's too, laid BEFORE its logo (below)
+        composing = self._seedance_compose(brief, kit, tenant_id, save)
         fitter = (
             self._require_fitter()
             if logo is not None or subtitled or composing is not None
@@ -5866,6 +5968,14 @@ class MediaProducer:
         thumbnail = first
         logo_laid = False
         clean_key: str | None = None
+        compose_params: dict[str, Any] | None = None
+        if part is not None and composing is not None and fitter is not None:
+            # m-25103284: a part's texts and layers go on BEFORE its logo, so the file
+            # the join reads (`clean_key`, without the logo it lays once) carries them
+            video, composed_poster, width, height, compose_params = self._compose_clip(
+                draft_id, fitter, video, (width, height), composing, None, warnings, save
+            )
+            thumbnail = composed_poster or first
         if fitter is not None and logo is not None:
             if part is not None:
                 # VE-10a: the part's file WITHOUT the logo is kept as it came: the join
@@ -5888,7 +5998,7 @@ class MediaProducer:
                     ) from exc
                 logger.warning("clip %s: logo not laid: %s", draft_id, type(exc).__name__)
             else:
-                video, thumbnail = fitted.data, fitted.poster or first
+                video, thumbnail = fitted.data, fitted.poster or thumbnail
                 logo_laid = True
         cues: list[dict[str, Any]] = []
         if fitter is not None and subtitled:
@@ -5905,8 +6015,7 @@ class MediaProducer:
                 cues = []
             else:
                 video, thumbnail = fitted.data, fitted.poster or thumbnail
-        compose_params: dict[str, Any] | None = None
-        if composing is not None and fitter is not None:
+        if part is None and composing is not None and fitter is not None:
             video, thumbnail, width, height, compose_params = self._compose_clip(
                 draft_id, fitter, video, (width, height), composing, thumbnail, warnings, save
             )
@@ -5922,7 +6031,12 @@ class MediaProducer:
         # EF-18: the composed preview's contact sheet, tied to the file the owner sees
         sheet = compose_params.pop(CONTACT_SHEET_PARAMS_KEY, None) if compose_params else None
         contact_sheet = shown_contact_sheet(
-            sheet, video_key, clean_key=clean_key, logo_laid=logo_laid
+            sheet,
+            video_key,
+            # m-25103284: a part is composed BEFORE its logo, so its clean file carries
+            # the texts too — the sheet shows what the owner sees, logo laid or not
+            clean_key=None if part is not None else clean_key,
+            logo_laid=logo_laid,
         )
         return [
             MediaWrite(

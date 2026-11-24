@@ -438,9 +438,11 @@ def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) 
 
 def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> None:
     """EF-06 + EF-05: the texts of a `local` Clip or a `local` part are drawn over the
-    built video, so they are no longer `recipe_unavailable`; a text over a part that is
-    NOT `local` (Seedance) still is. EF-08: a library layer over a `local` part is laid
-    too, so it is no longer refused either."""
+    built video, so they are no longer `recipe_unavailable`; m-25103284: neither is a
+    text over a `reference` part made by Seedance (composed over its preview and its
+    final, `test_video_pipeline_recompose_parts.py`), while one over an `extend` part
+    still is. EF-08: a library layer over a `local` part is laid too, so it is no longer
+    refused either."""
     from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
 
     local_clip = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(WORDS,))
@@ -457,9 +459,32 @@ def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> No
         VideoPartPlan(
             mode="local", seconds=5, segments=(_stretch(),), description="Tres.", effects=(SMOKE,)
         ),
+        VideoPartPlan(mode="extend", seconds=4, description="Cuatro.", text_layers=(WORDS,)),
     )
     assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)] == [
-        ("recipe_unavailable", 1, "text_layers"),
+        ("recipe_unavailable", 4, "text_layers"),
+    ]
+
+
+def test_an_edit_part_with_texts_and_smoke_stays_refused() -> None:
+    """m-25103284 composes over a `reference` part only: an «Igual al original» (`edit`)
+    part comes out at the reel's own size, so its texts and layers stay refused."""
+    from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
+
+    parent = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(
+            mode="edit",
+            seconds=4,
+            description="Dos.",
+            clip_video_keys=(f"uploads/{TENANT_ID}/reel.mp4",),
+            text_layers=(WORDS,),
+            effects=(SMOKE,),
+        ),
+    )
+    assert sorted((p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)) == [
+        ("recipe_unavailable", 2, "effects"),
+        ("recipe_unavailable", 2, "text_layers"),
     ]
 
 
@@ -583,7 +608,9 @@ def test_a_part_with_a_recipe_makes_no_part_and_charges_nothing() -> None:
     )
     parts, _, repo, ledger, dispatcher, router, parent = world(plan=plan)
     brief = repo.briefs[repo.drafts[parent].brief_id]
-    smoky = plan[1].model_copy(update={"effects": (SMOKE,)})
+    # m-25103284: smoke over a `reference` part is composed now; fast motion as an
+    # effect is still not made
+    smoky = plan[1].model_copy(update={"effects": (FAST,)})
     repo.briefs[repo.drafts[parent].brief_id] = brief.model_copy(
         update={"media": brief.media.model_copy(update={"parts": (plan[0], smoky)})}
     )

@@ -49,7 +49,7 @@ from qualify_creative.effects import (
     text_layers_problems,
     transition_problems,
 )
-from qualify_creative.enums import ContentKind
+from qualify_creative.enums import ContentFormat, ContentKind
 from qualify_creative.schemas import (
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
@@ -534,10 +534,12 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     are refused any more (a text's design is still checked: only the `scrim` is drawn,
     `unknown_layout`). EF-08 lays the library's recorded layers (`is_built_layer`: an
     entry of stage `compose` with an `asset`) over a `local` piece, so those uses are not
-    refused either. Still refused (`recipe_unavailable`) until the effects engine draws
-    them: any other effect (a Seedance template, `camara_rapida` as an effect, an unknown
-    one) and any effect on a piece that is not `local` (no compose runs after Seedance),
-    a text over a piece that is not `local`, a transition the join does not make
+    refused either. EF-14 composes them over a 9:16 `reference` Clip made by Seedance,
+    and m-25103284 over a `reference` PART too (a child is always 9:16): `recompose`.
+    Still refused (`recipe_unavailable`) until the effects engine draws them: any other
+    effect (a Seedance template, `camara_rapida` as an effect, an unknown one), any
+    effect or text over a piece that is neither `local` nor such a `reference` piece
+    (`edit`, `extend`, a Clip that is not 9:16), a transition the join does not make
     (`is_built_transition`: EF-16 draws `fundido`/`barrido` v2), stretches of an `edit`
     or `extend` piece (D4: an own video is never edited by Seedance; EF-11 lets a
     `reference` piece open on its first stretch, prepared — a `reference` PART with
@@ -549,17 +551,19 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
         stretches_wait_for_switch,
     )
     from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
-        seedance_compose_allowed,
+        seedance_composes,
     )
 
     found: list[RecipeProblem] = []
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
     references = _part_references(brief)
+    # a parent's parts are made as children, always 9:16 (`parts._child_brief`)
+    made_at = ContentFormat.REELS_9_16 if brief.kind is ContentKind.SHOT_VIDEO else brief.format
     for at, part in enumerate(recipe_of(brief)):
         number = None if in_clip else part.index
-        # EF-14: a normal 9:16 `reference` Clip made by Seedance is composed too (its
-        # preview and its 1080p final, `recompose`); a part made by Seedance is not yet
-        local = part.mode == "local" or (in_clip and seedance_compose_allowed(brief))
+        # EF-14: a 9:16 `reference` Clip made by Seedance is composed too (its preview and
+        # its 1080p final, `recompose`); m-25103284: so is a `reference` part
+        local = part.mode == "local" or seedance_composes(part.mode, made_at)
         unbuilt = tuple(use for use in part.effects if not (local and is_built_layer(use)))
         # EF-11: a `reference` piece opens on its first stretch, prepared
         # (`prepared_frame`); D4: never an `edit` (or `extend`) of own video. A

@@ -12,6 +12,9 @@
    (`part_final_media`) — no H.264 fit, no logo: Seedance 2.5 delivers 10-bit H.265 and
    the final join is its only re-encode. The part keeps showing its vista previa (the
    row's file does not change), so the preview's fingerprint does not change either.
+   m-25103284: a `reference` part with texts or layers gets its preview's frozen recipe
+   composed again over that 1080p (`composed_final`, `recompose`), and the join reads
+   that file instead (`raw_key`).
    Settling it opens the parent's `join_final` run (`parts.open_parent_join_final`).
 3. **The final join** (`join_final`, the worker's `join_final` phase, like VE-10a's
    join: background, one at a time, lease kept, fenced save): once EVERY part is
@@ -248,11 +251,18 @@ def final_parts(snapshot: PartsToJoin, tenant_id: UUID) -> tuple[PartPreview, ..
 
 
 def raw_key(part: PartPreview) -> str | None:
-    """The part's paid raw 1080p in the store (`raw_final.key`), or None. EF-06: a
+    """The file the final join reads for a part, or None: its paid raw 1080p in the
+    store (`raw_final.key`) — or, m-25103284, that 1080p with the preview's texts and
+    layers composed again (`composed_final.key`) when the part carries them. EF-06: a
     `local` part's own file — made at full size, nothing paid, nothing to wait for."""
     if is_local_part(part.params):
         return part.join_source or part.object_key
-    raw = (draft_state(part.params) or {}).get("raw_final")
+    block = draft_state(part.params) or {}
+    composed = block.get("composed_final")
+    key = composed.get("key") if isinstance(composed, Mapping) else None
+    if isinstance(key, str) and key:
+        return key
+    raw = block.get("raw_final")
     key = raw.get("key") if isinstance(raw, Mapping) else None
     return key if isinstance(key, str) and key else None
 
@@ -284,18 +294,33 @@ def join_final_fingerprint(
 
 
 def part_final_media(
-    asset: Any, block: Mapping[str, Any], raw: Mapping[str, Any], revision: int
+    asset: Any,
+    block: Mapping[str, Any],
+    raw: Mapping[str, Any],
+    revision: int,
+    *,
+    composed: Mapping[str, Any] | None = None,
+    compose: Mapping[str, Any] | None = None,
 ) -> MediaWrite:
     """A part's final, in place of its draft row: the SAME file as before (the vista
     previa the owner saw and the joined preview was made from) and the block `part_final`
     with the paid raw 1080p (`raw_final`, `part_final_key`) — nothing re-encoded, no
-    `final_sha256`: a part is never published nor reviewed on its own. Pure."""
+    `final_sha256`: a part is never published nor reviewed on its own. m-25103284: a part
+    with texts or layers also records its raw 1080p composed again (`composed`: key,
+    sha256, recipe — the file the final join reads, `part_final_key`) and the compose
+    block with the final's provenance (`compose`, as a Clip's final). Pure."""
     params = dict(asset.params or {})
+    if compose is not None:
+        params["compose"] = dict(compose)
+    final_key = composed.get("key") if composed is not None else raw.get("key")
+    draft = {key: value for key, value in dict(block).items() if key != "composed_final"}
+    if composed is not None:
+        draft["composed_final"] = dict(composed)
     params["draft"] = {
-        **dict(block),
+        **draft,
         "raw_final": dict(raw),
         "status": PART_FINAL,
-        "part_final_key": raw.get("key"),
+        "part_final_key": final_key,
         "final_revision": revision,
         "final_task_id": raw.get("task_id"),
         "final_cost_usd": raw.get("cost_usd"),
@@ -352,6 +377,12 @@ def _provenance(
                 "preview_key": part.object_key,
                 "clean_key": part.join_source,
                 "raw_final_key": raw.get("key"),
+                # m-25103284: the 1080p with the part's texts composed again, when it has
+                "composed_final_key": (
+                    block["composed_final"].get("key")
+                    if isinstance(block.get("composed_final"), Mapping)
+                    else None
+                ),
                 "raw_task_id": raw.get("task_id"),
                 "raw_model_id": raw.get("model_id") or block.get("model"),
                 "raw_resolution": raw.get("resolution"),

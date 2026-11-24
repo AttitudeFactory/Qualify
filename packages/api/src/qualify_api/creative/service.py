@@ -22,8 +22,10 @@ yet — when the brand kit has no ``template_asset_key`` there is nothing to ren
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -168,6 +170,30 @@ logger = logging.getLogger(__name__)
 #: terminal para auditarlos"). Its own logger, so it can be filtered or routed; the
 #: same facts are stored durably in `creative_usage_events`.
 cost_logger = logging.getLogger("qualify_api.creative.costs")
+
+#: m-25103284: how often a queued final restarts its `rendering_at` while it is made
+#: (well under `draft_mode.FINAL_STALE_SECONDS`, 20 min). Tests shorten it.
+FINAL_HEARTBEAT_EVERY_S = 60.0
+
+
+@contextmanager
+def _beating(beat: Callable[[], None], every_s: float) -> Iterator[None]:
+    """Call `beat` every `every_s` seconds on a daemon thread while the block runs; it
+    stops (and is waited for) when the block ends, so no beat lands after it."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(every_s):
+            beat()
+
+    thread = threading.Thread(target=loop, name="creative-final-beat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(max(every_s, 1.0) + 5.0)
+
 
 #: Stamped on every draft this service creates; provenance, per the hard architectural
 #: rule that every model-written artifact carries the pipeline that wrote it.
@@ -4695,18 +4721,50 @@ class ContentService:
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
         )
-        outcome = self._media.finalize(
-            tenant_id=tenant_id,
-            draft_id=draft_id,
-            brief=brief,
-            kit=kit,
-            asset=asset,
-            budget=BudgetContext(remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop),
-            revision=draft.revision,
-            on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
-        )
+        # m-25103284: a part's final composed again takes minutes; its `rendering_at` is
+        # stamped while it runs, so the screen never reads it as stuck
+        # (`FINAL_STALE_SECONDS`). The beat stops before the final is settled.
+        with _beating(self._rendering_stamp(tenant_id, asset.id), FINAL_HEARTBEAT_EVERY_S):
+            outcome = self._media.finalize(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                brief=brief,
+                kit=kit,
+                asset=asset,
+                budget=BudgetContext(
+                    remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop
+                ),
+                revision=draft.revision,
+                on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
+            )
         if not outcome.pending:
             self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, None, outcome)
+
+    def queued_final_composes(self, *, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> bool:
+        """m-25103284: whether this queued final is a part's raw 1080p composed again with
+        its preview's recipe (`recompose.part_final_composes`) — the creative worker runs
+        it off its main loop, its lease kept. False when the asset is gone."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            part_final_composes,
+        )
+
+        assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        asset = next((a for a in assets if a.id == asset_id), None)
+        return asset is not None and part_final_composes(asset.params)
+
+    def _rendering_stamp(self, tenant_id: UUID, asset_id: UUID) -> Callable[[], None]:
+        """A beat that restarts the final's `rendering_at` (as `_final_binding.keep_fresh`);
+        a write that fails is logged, never a reason to stop the final."""
+
+        def stamp() -> None:
+            try:
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id, asset_id=asset_id, changes={"rendering_at": time.time()}
+                )
+            except Exception:  # noqa: BLE001 — a sign of life, never the final
+                logger.warning("final of asset %s: rendering_at not renewed", asset_id)
+
+        return stamp
 
     def _final_binding(
         self, tenant_id: UUID, draft: DraftRecord, asset_id: UUID
@@ -4816,6 +4874,18 @@ class ContentService:
                         tenant_id, draft_id, error or "final_failed", (asset_id,)
                     )
                 return
+            except CheckpointError:
+                # m-25103284: the run's lease is gone (`fence`) — another pass owns the
+                # final now. Nothing is failed or refunded here: the run stays undone and
+                # the next pass finishes it from what is kept (the raw 1080p, a composed
+                # final already under its key: `_held_final`), never paying it again.
+                cost_logger.error(
+                    "draft %s final: lease lost before it was saved; %s USD spent, the "
+                    "next pass records the final from the kept file",
+                    draft_id,
+                    outcome.spent_usd,
+                )
+                raise
             except Exception:
                 logger.exception("final of draft %s: could not save it", draft_id)
         cost_logger.error(

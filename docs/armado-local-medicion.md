@@ -427,6 +427,40 @@ Por minuto de video, en amd64 y 1 CPU: **copia + tira de un 5K de 10 bits, 200 a
 ~170–180 s por minuto** (decodifica el original otra vez). En arm64 (producción) será más; el
 tiempo permitido (300 s + 20 s por segundo de video) no cambia y sobra.
 
+## Textos sobre el final de una parte hecha con Seedance (m-25103284, medido 2026-11-23)
+
+El final de una parte con textos o capas se compone directo sobre el 1080p que entrega
+Seedance 2.5 (H.265 de 10 bits), sin pasarlo antes a H.264, dentro del candado `heavy_video`.
+Harness: `deploy/measure/recompose-memory.sh` (caso nuevo `part_final_hevc10_3texts_3layers`,
+fuente sintética de 15 s, 1080×1920, 10 bits, retenida una sola vez en memoria), imagen
+`qualify-memtest:deps`, `--memory 768m --memory-swap 768m`, amd64 sin límite de CPU.
+
+| Caso | Anon pico MiB | RSS MiB | cgroup pico MiB | CPU s | Pared s | OOM |
+|---|---|---|---|---|---|---|
+| Final de una parte, H.265 10 bits, 3 textos + 3 capas | **467** | — | 631 | 221 | 176 | no |
+| Referencia EF-14: final de un Clip, H.264, 3 textos + 3 capas | 416 | 463 | 507 | 175 | 142 | no |
+
+La primera corrida de la parte (2026-11-23) dio 569 s de pared, pero coincidió con pruebas en la
+misma máquina; la cifra de la tabla es la de la máquina descargada (2026-11-24).
+
+Lectura: cabe en los 768m del worker (467 MiB anónimos). Son ~3 min en amd64 por 15 s y más en
+arm64 (sin medir), cerca del lease de 10 min. Por eso el final de una parte con textos corre fuera
+del bucle principal del worker, en el hilo de fondo de las uniones, con el lease renovado y
+`rendering_at` estampado mientras dura.
+
+Hilos del decodificador (`EF14_DECODE=<tipo>:<hilos>` en el harness; el código usa SLICE×2):
+
+| Decodificador | Anon pico MiB | cgroup pico MiB | CPU s | Pared s |
+|---|---|---|---|---|
+| SLICE×2 (el código), máquina descargada | 467 | 631 | 221 | 176 |
+| FRAME×2 | 469 | 580 | 245 | 190 |
+| AUTO×2 | 469 | 579 | 185 | 138 |
+| FRAME×4 | 490 | 602 | 340 | 281 |
+
+Decisión: no se cambia el código. AUTO×2 ahorra ~20 %, FRAME×2 y FRAME×4 no ayudan, y en un
+escritorio con carga variable esas diferencias son ruido. Ningún caso se acerca a 768m. Vale la
+pena repetirlo en arm64.
+
 ## Pendiente
 
 - **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el

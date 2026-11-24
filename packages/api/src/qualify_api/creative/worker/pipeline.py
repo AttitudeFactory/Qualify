@@ -581,6 +581,15 @@ class BackgroundJoins:
                     with preparing(run), lease_kept(self.store, run, halt=self._halt):
                         work(run)
                     completed = True
+                except LocalVideoWait as wait:
+                    # m-25103284: a part's final composed off the loop waits for a local
+                    # assembly holding the heavy-video gate — made on a later pass
+                    hold(run.draft_id, wait.retry_after_s)
+                    logger.info(
+                        "creative.pipeline.local_waits draft_id=%s reason=%s",
+                        run.draft_id,
+                        type(wait).__name__,
+                    )
                 except Exception as exc:
                     logger.error(
                         "creative.pipeline.preparation_failed draft_id=%s error_type=%s",
@@ -682,6 +691,16 @@ class PipelinePreparation:
             for item in runs:
                 if item["phase"] in _JOIN_PHASES and self.joins is not None and self.joins.busy():
                     continue  # one join at a time: this one waits for the next pass
+                queued_asset = _final_asset(item["phase"])
+                if (
+                    queued_asset is not None
+                    and self.joins is not None
+                    and self.joins.busy()
+                    and self._final_composes(tenant_id, item["draft_id"], queued_asset)
+                ):
+                    # m-25103284: one heavy job at a time — a part's composed final waits
+                    # for the next pass without being claimed (an ordinary final goes on)
+                    continue
                 run = self.store.acquire(
                     tenant_id, item["draft_id"], item["revision"], item["phase"]
                 )
@@ -711,6 +730,17 @@ class PipelinePreparation:
                     if run.phase in _JOIN_PHASES and self.joins is not None:
                         # the thread owns the run (and its release) from here on
                         handed = self.joins.start(run, self._join_run)
+                        continue
+                    if (
+                        asset_id is not None
+                        and self.joins is not None
+                        and self._final_composes(run.tenant_id, run.draft_id, asset_id)
+                    ):
+                        # m-25103284: a part's final composed again takes minutes (10-bit
+                        # H.265): off the loop, one heavy job at a time, its lease kept —
+                        # so `claim_round`, `recover` and the heartbeat keep running. Busy:
+                        # released not done, taken on a later pass
+                        handed = self.joins.start(run, self._final_run)
                         continue
                     with preparing(run):
                         if run.phase == "generation":
@@ -800,6 +830,24 @@ class PipelinePreparation:
                 run_join_final(self.service._media, run.tenant_id, run.draft_id)
             else:
                 self._join(run.tenant_id, run.draft_id)
+
+    def _final_composes(self, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> bool:
+        """Whether a queued final is a part's raw 1080p composed again (m-25103284)."""
+        check = getattr(self.service, "queued_final_composes", None)
+        if not callable(check):
+            return False
+        return bool(check(tenant_id=tenant_id, draft_id=draft_id, asset_id=asset_id))
+
+    def _final_run(self, run: Any) -> None:
+        """A queued final made on the background thread (m-25103284): its own tenant,
+        draft and asset, bound from the run, as the inline path makes it."""
+        asset_id = _final_asset(run.phase)
+        if asset_id is None:
+            return
+        self.service.run_queued_final(
+            tenant_id=run.tenant_id, draft_id=run.draft_id, asset_id=asset_id
+        )
+        self._settle_local(run)
 
     def _settle_local(self, run: Any) -> None:
         """Image/copy-only jobs finish in preparation; videos are settled by executors."""
