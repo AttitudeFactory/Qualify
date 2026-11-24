@@ -207,18 +207,12 @@ class RepoStore:
         return any(row.videos > 0 for (d, _), row in self.ledger.rows.items() if d == draft_id)
 
     def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
-        month = (self.today.year, self.today.month)
         live = [
             (draft_id, brief)
             for draft_id, brief in self._blocks()
             if brief.brand_id == brand_id
             and self.repo.drafts[draft_id].status != "failed"
             and not self._charged(draft_id)
-            and (
-                self.repo.drafts[draft_id].created_at.year,
-                self.repo.drafts[draft_id].created_at.month,
-            )
-            == month
             and self.repo.drafts[self.repo.parents[draft_id][0]].status
             not in ("approved", "staged", "published")
         ]
@@ -1204,10 +1198,10 @@ def test_ai_files_with_no_row_count_as_ai(key: str) -> None:
     assert ca.ai_stretches((segment,), {}, tenant_id=other) == ()
 
 
-def test_a_block_never_placed_of_another_month_or_of_an_approved_clip_owes_nothing() -> None:
-    """What the month owes: only this quota month's uncharged blocks of Clips not
-    approved yet. An old block (another month), or one under a Clip already approved,
-    never blocks a new one."""
+def test_what_blocks_owe_ends_with_their_clips_approval_not_with_the_month() -> None:
+    """What the month owes: every uncharged block of a Clip not approved yet, whatever
+    month it was made in (one made on the 31st and approved on the 1st still owes).
+    A block under a Clip already approved never blocks a new one."""
     ledger = InMemoryCreationsLedger()
     service, _, repo, store, _, clip_id = _wired(env=PRESENTER_ON, ledger=ledger)
     thirty = _presenter(script="a" * 450)
@@ -1215,12 +1209,10 @@ def test_a_block_never_placed_of_another_month_or_of_an_approved_clip_owes_nothi
         tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=thirty
     )
     assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (1, 30)
-    # another month: the block was made last month
+    # made last month (the 31st), its Clip still waiting: it still owes
     last_month = repo.drafts[old].created_at.replace(day=1) - timedelta(days=1)
     repo.drafts[old] = replace(repo.drafts[old], created_at=last_month)
-    assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (0, 0)
-    store.capped = False
-    service.create_block(tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=thirty)
+    assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (1, 30)
     # a Clip already approved: its unplaced block is never charged, so it owes nothing
     repo.drafts[clip_id] = replace(repo.drafts[clip_id], status=APPROVED)
     assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (0, 0)

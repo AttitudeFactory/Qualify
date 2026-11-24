@@ -373,10 +373,60 @@ def test_pending_seconds_are_the_brands_uncharged_live_blocks(
     run("UPDATE content_drafts SET status = 'approved' WHERE id = :c")
     assert owed() == (0, 0)
     run("UPDATE content_drafts SET status = 'generated' WHERE id = :c")
-    # made in another quota month (the business's own calendar month)
+    # made in another month, its Clip still waiting: it still owes (a block of the
+    # 31st approved on the 1st)
     run("UPDATE content_drafts SET created_at = created_at - interval '40 days' WHERE id = :b")
-    assert owed() == (0, 0)
-    run("UPDATE content_drafts SET created_at = now() WHERE id = :b")
     assert owed() == (1, ca.script_seconds("Hola, soy Ana."))
     run("UPDATE content_drafts SET status = 'failed' WHERE id = :b")
     assert owed() == (0, 0)
+
+
+def test_the_same_request_key_gives_the_same_block_one_after_the_other_and_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A double click or a retry of the screen: the same request key makes ONE block,
+    asked one after the other or by two threads at once — the second gets the first's
+    draft, never an error, never a second row."""
+    import threading
+
+    world = _world(monkeypatch)
+    tenant, user, clip = world["tenant"], world["user"], world["clip"]
+    service, _ = _service({ca.PRESENTER_SWITCH: "on"})
+
+    def ask(key: UUID) -> UUID:
+        return service.create_block(
+            tenant_id=tenant, user_id=user, clip_id=clip, request=_request(), request_key=key
+        )
+
+    def rows(key: UUID) -> int:
+        with tenant_session(tenant) as session:
+            return int(
+                session.scalar(
+                    text("SELECT count(*) FROM content_drafts WHERE request_key = :k"),
+                    {"k": key},
+                )
+            )
+
+    one_after = uuid4()
+    first = ask(one_after)
+    assert ask(one_after) == first and rows(one_after) == 1
+
+    at_once = uuid4()
+    start = threading.Barrier(2)
+    answers: list[UUID] = []
+    errors: list[BaseException] = []
+
+    def racer() -> None:
+        try:
+            start.wait()
+            answers.append(ask(at_once))
+        except BaseException as exc:  # noqa: BLE001 — the test reports it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=racer) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert errors == [] and len(answers) == 2
+    assert answers[0] == answers[1] and rows(at_once) == 1

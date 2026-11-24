@@ -556,36 +556,29 @@ class PostgresClipAvatarStore:
 
     def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
         """(blocks, script seconds) of the brand's live blocks whose seconds no
-        approval took yet — in every Clip of the brand: what the month still owes. Only
-        blocks of THIS quota month (the calendar month in the business's zone, as the
-        ledger's period) whose Clip is not approved yet: a block never placed, of another
-        month or of a Clip already approved (it was charged then, or never will be) owes
-        nothing; nor does one that failed or was taken out."""
+        approval took yet, whose Clip is not approved yet — in every Clip of the brand,
+        whatever month it was made in (a block made on the 31st and approved on the 1st
+        still owes). A block of a Clip already approved (charged then, or never placed:
+        never charged) owes nothing, nor does one that failed or was taken out; an old
+        one leaves with its Clip's approval or its retention."""
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
             rows = session.execute(
                 text("""
-                WITH z AS (
-                  SELECT COALESCE(NULLIF(
-                    (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
-                )
                 SELECT COALESCE(b.media->>'own_script', '') AS script
                 FROM content_drafts d
                 JOIN content_briefs b ON b.id = d.brief_id
-                JOIN content_drafts p ON p.tenant_id = d.tenant_id AND p.id = d.parent_draft_id,
-                     z
+                JOIN content_drafts p ON p.tenant_id = d.tenant_id AND p.id = d.parent_draft_id
                 WHERE d.brand_id = :brand
                   AND d.part_removed_at IS NULL AND d.status <> 'failed'
                   AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
                   AND p.status NOT IN ('approved', 'staged', 'published')
-                  AND d.created_at
-                      >= (date_trunc('month', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
                   AND NOT EXISTS (SELECT 1 FROM creation_charges c
                                   WHERE c.draft_id = d.id AND c.videos > 0)
             """),
-                {"brand": brand_id, "tenant": tenant_id},
+                {"brand": brand_id},
             ).all()
         return len(rows), sum(script_seconds(str(row.script)) for row in rows)
 
@@ -916,7 +909,10 @@ class ClipAvatarService:
         try:
             draft_id = self._made_in_one_go(
                 tenant_id,
-                # under the business's lock: two blocks asked at once never both fit
+                # under the business's lock: the same request already made (a double
+                # click, a retry of the screen) is that block; two blocks asked at once
+                # never both fit
+                lambda: self._made_already(tenant_id, request_key),
                 lambda: self._refuse_without_quota(tenant_id, clip.brand_id, seconds),
                 lambda: self._insert_and_charge(
                     tenant_id,
@@ -936,13 +932,32 @@ class ClipAvatarService:
         )
         return draft_id
 
+    def _made_already(self, tenant_id: UUID, request_key: UUID | None) -> None:
+        """The block this request key already made — read again under the business's
+        lock, after the first lookup: a concurrent ask with the same key that won the
+        lock has committed by now (`DuplicateDraftRequest`: its draft is the answer)."""
+        from qualify_api.creative.service import DuplicateDraftRequest  # noqa: PLC0415
+
+        if request_key is None:
+            return
+        existing = self._content.repository.draft_id_for_request(
+            tenant_id=tenant_id, request_key=request_key
+        )
+        if existing is not None:
+            raise DuplicateDraftRequest(existing)
+
     def _made_in_one_go(
-        self, tenant_id: UUID, check: Callable[[], None], make: Callable[[], UUID]
+        self,
+        tenant_id: UUID,
+        made_already: Callable[[], None],
+        check: Callable[[], None],
+        make: Callable[[], UUID],
     ) -> UUID:
         """The daily cap's count, the block's rows and its charge row in ONE
         transaction on Postgres (the count's lock serializes the business's blocks, so
-        two asked at once never both take the last place, nor the same slot); the
-        dispatch only after it commits. Anything refused writes nothing."""
+        two asked at once never both take the last place, nor the same slot, nor make
+        the same request twice); the dispatch only after it commits. Anything refused
+        writes nothing."""
         from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
 
         dispatcher = self._content.dispatcher
@@ -953,7 +968,10 @@ class ClipAvatarService:
             )
 
             with tenant_unit_of_work(tenant_id):
-                check_avatar_daily_cap(self._store, tenant_id=tenant_id)  # takes the lock
+                # the lock first: the same request key, then the cap
+                self._lock(tenant_id)
+                made_already()
+                check_avatar_daily_cap(self._store, tenant_id=tenant_id)
                 check()
                 draft_id = make()
                 if dispatcher is not None:
@@ -964,12 +982,25 @@ class ClipAvatarService:
                         ),
                     )
             return draft_id
+        made_already()
         check_avatar_daily_cap(self._store, tenant_id=tenant_id)
         check()
         draft_id = make()
         if dispatcher is not None:
             dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return draft_id
+
+    def _lock(self, tenant_id: UUID) -> None:
+        """The business's transaction lock (the daily cap's, `blocks_made_today` takes
+        it too: re-entrant within the transaction)."""
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('clip_avatar_cap'), hashtext(:t))"),
+                {"t": str(tenant_id)},
+            )
 
     def _insert_and_charge(
         self,
@@ -1016,13 +1047,26 @@ class ClipAvatarService:
         other integrity error (a foreign key, a check) goes up as it is."""
         from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
 
+        from qualify_api.creative.service import (  # noqa: PLC0415
+            DuplicateDraftRequest,
+            PostgresContentRepository,
+        )
+
+        repo = self._content.repository
+        # on Postgres the bare insert (no lookup of its own after a failure): the
+        # savepoint rolls back first, THEN the key is read, on a usable session
+        insert = (
+            repo._insert_brief_and_draft  # noqa: SLF001
+            if isinstance(repo, PostgresContentRepository)
+            else repo.insert_brief_and_draft
+        )
         last: IntegrityError | None = None
         for slot in slots:
             try:
-                # a savepoint per attempt: a taken slot (23505) never aborts the
+                # a savepoint per attempt: a unique violation (23505) never aborts the
                 # transaction of the cap, the charge and the dispatch around it
                 with self._savepoint(tenant_id):
-                    return self._content.repository.insert_brief_and_draft(
+                    return insert(
                         tenant_id=tenant_id,
                         user_id=user_id,
                         brief=brief,
@@ -1030,11 +1074,19 @@ class ClipAvatarService:
                         pipeline_version=pipeline_version,
                         parent_draft_id=clip_id,
                         part_index=slot,
-                        **keyed,
+                        request_key=keyed.get("request_key"),
                     )
             except IntegrityError as exc:
                 if not _slot_taken(exc):
                     raise
+                request_key = keyed.get("request_key")
+                if request_key is not None:
+                    # the request key's own index, not the slot's: its draft is the answer
+                    existing = repo.draft_id_for_request(
+                        tenant_id=tenant_id, request_key=request_key
+                    )
+                    if existing is not None:
+                        raise DuplicateDraftRequest(existing) from exc
                 last = exc
         assert last is not None
         raise ClipAvatarRefused("no_slot", NO_SLOT_TEXT, raw=str(last)) from last
