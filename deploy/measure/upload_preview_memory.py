@@ -100,11 +100,99 @@ def _probe(path: Path) -> dict:
     return json.loads(out)
 
 
+def _advise(copy: Path) -> dict:
+    """EF-20 phase 2 (m-25026599), mode `advice`: the placement advice the media-worker
+    runs on the settled copy — the REAL frame sampling (PyAV, 3 frames) and request build,
+    with a FAKE Anthropic client (no network: the container runs with `--network none`),
+    an in-memory ledger and store and the consumption sink switched off."""
+    import shutil
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    # the SDK the production client loads (`placement_advice.bounded_client`): imported
+    # here so its memory is in the step's peak, though the fake client never calls it
+    import anthropic  # noqa: F401
+    from qualify_api import claude_tools
+    from qualify_api.creative import placement_advice as adv
+    from qualify_api.creative import placement_ai as pa
+
+    claude_tools.configure_consumption_sink(lambda _record: None)
+
+    def fake_client(_key: str) -> SimpleNamespace:
+        def create(**_kwargs: object) -> SimpleNamespace:
+            answer = {
+                "subject": "producto",
+                "subject_bands": ["middle"],
+                "text_place": "bottom",
+                "logo_place": "top",
+                "reason": "El producto está en el centro.",
+            }
+            return SimpleNamespace(
+                id="msg_fake",
+                model="fake",
+                stop_reason="tool_use",
+                content=[SimpleNamespace(type="tool_use", name=pa.TOOL_NAME, input=answer)],
+                usage=SimpleNamespace(
+                    input_tokens=5200,
+                    output_tokens=400,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+            )
+
+        return SimpleNamespace(messages=SimpleNamespace(create=create))
+
+    class Ledger:
+        def reserve(self, **_kwargs: object):  # noqa: ANN202
+            return uuid4()
+
+        def settle(self, **_kwargs: object) -> None:
+            return None
+
+    class Store:
+        kept_advice = None
+
+        def kept(self, *_args: object):  # noqa: ANN202
+            return None
+
+        def keep(self, _tenant: object, _job: object, advice: object) -> bool:
+            Store.kept_advice = advice
+            return True
+
+    tenant = uuid4()
+    advisor = adv.PlacementAdvisor(
+        ledger=Ledger(),
+        store=Store(),
+        placer_factory=lambda guard: pa.VisionPlacer(
+            guard=guard, api_key="fake", client_factory=fake_client
+        ),
+        env={pa.PLACEMENT_SWITCH: "on"},
+    )
+    started = time.perf_counter()
+    outcome = advisor.advise(
+        tenant_id=tenant,
+        brand_id=uuid4(),
+        job_id=uuid4(),
+        source_key=f"t/{tenant}/uploads/{uuid4().hex}_v.mp4",
+        preview_key=f"t/{tenant}/uploads/previews/{uuid4()}/video.mp4",
+        fetch=lambda _t, _k, target: shutil.copyfile(copy, target),
+    )
+    advice = Store.kept_advice
+    return {
+        "outcome": outcome,
+        "wall_s": round(time.perf_counter() - started, 1),
+        "frames": [dict(f) for f in advice.frames] if advice is not None else [],
+    }
+
+
 def run(folder: Path, source: str, mode: str = "both") -> None:
     import resource  # Linux only
 
     from qualify_creative.video import upload_preview
 
+    advice_mode = mode == "advice"
+    if advice_mode:
+        mode = "both"  # the v2 job, then the advice on its copy
     src = folder / "src" / source
     out = folder / "preview" / f"{Path(source).stem}.{mode}.preview.mp4"
     strip = folder / "preview" / f"{Path(source).stem}.{mode}.strip.jpg"
@@ -132,8 +220,17 @@ def run(folder: Path, source: str, mode: str = "both") -> None:
     except Exception as exc:  # noqa: BLE001 — reported
         error = f"{type(exc).__name__}: {exc}"
     wall = time.perf_counter() - wall0
+    advice: dict = {}
+    if advice_mode and error is None and out.exists():
+        sampler.enter("advice")
+        try:
+            advice = _advise(out)
+        except Exception as exc:  # noqa: BLE001 — reported
+            advice = {"error": f"{type(exc).__name__}: {exc}"}
     sampler.enter("done")
     sampler.stop()
+    if advice_mode:
+        advice["anon_peak_mib"] = round(sampler.peaks.get("advice", {}).get("anon", 0))
     kids = resource.getrusage(resource.RUSAGE_CHILDREN)
     events: dict[str, int] = {}
     try:
@@ -167,7 +264,8 @@ def run(folder: Path, source: str, mode: str = "both") -> None:
             }
     result = {
         "source": source,
-        "mode": mode,
+        "mode": "advice" if advice_mode else mode,
+        "advice": advice,
         "strip": strip_facts,
         "version": upload_preview.UPLOAD_PREVIEW_VERSION,
         "source_size": [video["width"], video["height"]],
@@ -193,7 +291,9 @@ def main() -> None:
     parser.add_argument("step", choices=("make", "run", "sources"))
     parser.add_argument("folder", nargs="?", type=Path)
     parser.add_argument("source", nargs="?")
-    parser.add_argument("mode", nargs="?", default="both", choices=("both", "copy", "strip"))
+    parser.add_argument(
+        "mode", nargs="?", default="both", choices=("both", "copy", "strip", "advice")
+    )
     args = parser.parse_args()
     if args.step == "sources":
         print("\n".join(SOURCES))

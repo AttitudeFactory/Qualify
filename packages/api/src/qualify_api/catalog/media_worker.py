@@ -82,6 +82,11 @@ ED-11b (m-25029110): a v2 job's payload also names `strip_key` (`…/strip.jpg`,
 the frame strip (one 56 px frame a second, tiled) is a second output of the SAME FFmpeg
 run, PUT after the copy (`image/jpeg`); the result gains `strip_key` and `strip` (layout,
 tile size, bytes). A copy already in place gets the strip alone (no second 480p encode).
+EF-20 phase 2 (m-25026599): with `QUALIFY_VIDEO_PLACEMENT_AI` on, a settled copy is then
+read by `qualify_api.creative.placement_advice` (3 frames, one Claude Haiku call at most
+per try, Postgres-backed caps) and the advice — where the product is, the band the text
+would not cover it in — added to the job's `result` (`placement_advice`). Best effort: it
+never changes the job's outcome.
 
 **Reconciler** (at start, then every 24 h — rule 5 of the ADR 39 amendment), per tenant:
 (a) R2 folders under `gallery/{tenant}/` with no row (live or tombstoned) and no active
@@ -251,6 +256,21 @@ class UploadPreviewer(Protocol):
     ) -> None: ...
 
 
+class PlacementAdvisor(Protocol):
+    """`qualify_api.creative.placement_advice.PlacementAdvisor`'s shape (EF-20 phase 2)."""
+
+    def advise(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        job_id: UUID,
+        source_key: str,
+        preview_key: str,
+        fetch: Callable[[UUID, str, Path], None],
+    ) -> str: ...
+
+
 @dataclass(frozen=True)
 class _CopySpec:
     """How one kind of derived copy (`normalize_local`, `upload_preview`) is named: the
@@ -334,6 +354,7 @@ class MediaJobRunner:
         seasonal: SeasonalMediaJobHandler | None = None,
         local_normalizer: LocalSourceNormalizer | None = None,
         previewer: UploadPreviewer | None = None,
+        placement: PlacementAdvisor | None = None,
         clock: Callable[[], datetime] = _now,
         lease: timedelta = LEASE,
         max_attempts: int = MAX_ATTEMPTS,
@@ -345,6 +366,7 @@ class MediaJobRunner:
         self._seasonal = seasonal
         self._local_normalizer = local_normalizer
         self._previewer = previewer
+        self._placement = placement
         self._clock = clock
         self._lease = lease
         self._max_attempts = max_attempts
@@ -496,7 +518,7 @@ class MediaJobRunner:
         previewer = self._previewer
         if previewer is None:
             return self._fail(job, "previewer_unavailable", permanent=False)
-        return self._process_copy(
+        outcome = self._process_copy(
             job,
             _CopySpec(
                 target_field="preview_key",
@@ -516,6 +538,31 @@ class MediaJobRunner:
                 not fits_preview(made.width, made.height, made.rotation, made.bits)
             ),
         )
+        if outcome.status == STATUS_DONE and self._placement is not None:
+            self._advise_placement(job)
+        return outcome
+
+    def _advise_placement(self, job: ClaimedJob) -> None:
+        """EF-20 phase 2 (m-25026599): once the copy is settled, where the product is in
+        the video and the band the text would not cover it in — kept in this job's
+        `result` (`placement_advice`). Best effort: the job is already `done`; nothing
+        here can change it (`PlacementAdvisor.advise` never raises; this guards anyway)."""
+        placement = self._placement
+        if placement is None:
+            return
+        payload = job.payload or {}
+        try:
+            code = placement.advise(
+                tenant_id=job.tenant_id,
+                brand_id=job.brand_id,
+                job_id=job.id,
+                source_key=str(payload.get("source_key") or ""),
+                preview_key=str(payload.get("preview_key") or ""),
+                fetch=self._download,
+            )
+        except Exception as exc:  # noqa: BLE001 — never undoes the copy
+            code = f"error:{type(exc).__name__}"
+        logger.info("media_worker.placement_advice job=%s outcome=%s", job.id, code)
 
     # -- a derived copy of an owner's file (normalize_local, upload_preview) -----------
 
@@ -1501,6 +1548,10 @@ def production_runner() -> MediaJobRunner:
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
     from qualify_api.creative.composition import media_root  # noqa: PLC0415
+    from qualify_api.creative.placement_advice import (  # noqa: PLC0415
+        production_placement_advisor,
+    )
+    from qualify_api.creative.placement_ai import placement_enabled  # noqa: PLC0415
     from qualify_api.creative.seasonal_job import production_seasonal_handler  # noqa: PLC0415
 
     gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
@@ -1512,6 +1563,8 @@ def production_runner() -> MediaJobRunner:
         seasonal=production_seasonal_handler(gate),
         local_normalizer=FfmpegLocalSourceNormalizer(),
         previewer=FfmpegUploadPreviewer(),
+        # EF-20 phase 2 (m-25026599): only behind its switch (off by default)
+        placement=production_placement_advisor() if placement_enabled() else None,
     )
 
 
