@@ -427,6 +427,23 @@ Por minuto de video, en amd64 y 1 CPU: **copia + tira de un 5K de 10 bits, 200 a
 ~170–180 s por minuto** (decodifica el original otra vez). En arm64 (producción) será más; el
 tiempo permitido (300 s + 20 s por segundo de video) no cambia y sobra.
 
+## Textos sobre el final de una parte hecha con Seedance (m-25103284, medido 2026-11-23)
+
+El final de una parte con textos o capas se compone directo sobre el 1080p que entrega
+Seedance 2.5 (H.265 de 10 bits), sin pasarlo antes a H.264, dentro del candado `heavy_video`.
+Harness: `deploy/measure/recompose-memory.sh` (caso nuevo `part_final_hevc10_3texts_3layers`,
+fuente sintética de 15 s, 1080×1920, 10 bits, retenida una sola vez en memoria), imagen
+`qualify-memtest:deps`, `--memory 768m --memory-swap 768m`, amd64 sin límite de CPU.
+
+| Caso | Anon pico MiB | RSS MiB | cgroup pico MiB | CPU s | Pared s | OOM |
+|---|---|---|---|---|---|---|
+| Final de una parte, H.265 10 bits, 3 textos + 3 capas | **467** | 513 | 580 | 646 | 569 | no |
+| Referencia EF-14: final de un Clip, H.264, 3 textos + 3 capas | 416 | 463 | 507 | 175 | 142 | no |
+
+Lectura: cabe en los 768m del worker (467 MiB anónimos). El tiempo sí pesa: decodificar 10 bits
+cuesta casi 4 veces más que el H.264 del Clip (~9,5 min de pared para 15 s en amd64; en arm64 será
+más). Corre en el carril de finales, una parte a la vez, y nunca junto a una unión.
+
 ## Pendiente
 
 - **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el

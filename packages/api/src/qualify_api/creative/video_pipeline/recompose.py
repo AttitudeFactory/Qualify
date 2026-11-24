@@ -6,6 +6,17 @@ the owner's texts (`text_layers`) and the library's recorded layers (smoke, embe
 steam: `recipe.is_built_layer`) — the same compose step a `local` piece runs
 (`compose.compose_text_layers`, `qualify_creative.video.layer_overlay`), at cost 0.
 
+m-25103284: so may a `reference` PART of a video by parts (always 9:16: `parts.
+_child_brief`). Its preview is composed the same way, BEFORE its logo, so the file the
+join reads (`params.part.clean_key`, no logo) carries its texts too; its recipe's times
+are moved to where the join's kept interval starts (`kept_start`: an explicit trim of the
+plan), so a text sits where the owner put it in the joined video. Its 1080p final
+(`MediaProducer._final_video` with `media.part`) is composed over the paid raw 1080p with
+the preview's own text PNGs and kept beside it (`draft.composed_final`): the final join
+reads THAT file (`part_final.raw_key`), so the whole video carries every part's texts. A
+compose failing at a part's final fails that final with its raw 1080p kept — the same
+free retry as a Clip's final.
+
 1. **The preview.** `compose_recipe_of(brief, kit)` freezes what the compose needs — the
    texts, the layer uses at their library versions and the Brand Kit's typeface and
    palette (`render.video_text.brand_props`) — and `ClipComposer.draw` asks our render
@@ -45,9 +56,9 @@ never overlaps a join inside the worker's 768m (measured: 416 MiB anon for a 15 
 with 3 texts and 3 layers, `deploy/measure/recompose-memory.sh`).
 
 What is still refused before any row (`recipe.unbuilt_recipe_problems`): texts or layers
-over a PART made by Seedance (its final is joined by `part_final`/`part_join`, which do
-not compose yet), over an `edit` Clip (its size is the reel's, any aspect) or a Clip that
-is not 9:16, and any effect that is not a built layer. Pieces stamped
+over an `edit` or `extend` piece (its size is the reel's, any aspect; «Sigue a la
+anterior» continues the previous part's own vendor file), over a Clip that is not 9:16,
+and any effect that is not a built layer. Pieces stamped
 `effects_pipeline_version` 0 are never composed again (out of scope for EF-14).
 
 Cost: US$0 (our render service and PyAV); the price guard of the Seedance call is
@@ -103,20 +114,27 @@ FINAL_COMPOSE_FAILED_TEXT = (
 )
 
 
-def _loose_clip_part(brief: ContentBrief) -> Any | None:
+def _clip_part(brief: ContentBrief) -> Any | None:
+    """The one part of a Clip's recipe — a normal Clip's or a part's child's — or None."""
     from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
 
-    if brief.kind is not ContentKind.CLIP or brief.media.part is not None:
+    if brief.kind is not ContentKind.CLIP:
         return None
     parts = recipe_of(brief)
     return parts[0] if parts else None
 
 
+def seedance_composes(mode: str, fmt: ContentFormat) -> bool:
+    """Whether the compose runs over a piece of `mode` made by Seedance at `fmt`:
+    `reference` only, 9:16. Pure."""
+    return mode == "reference" and fmt in COMPOSE_FORMATS
+
+
 def seedance_compose_allowed(brief: ContentBrief) -> bool:
-    """Whether the compose runs over this piece made by Seedance: a normal Clip (no
-    parent), `reference` mode, 9:16. Pure."""
-    part = _loose_clip_part(brief)
-    return part is not None and part.mode == "reference" and brief.format in COMPOSE_FORMATS
+    """Whether the compose runs over this piece made by Seedance: a Clip — a normal one
+    or (m-25103284) a part of a video by parts — in `reference` mode, 9:16. Pure."""
+    part = _clip_part(brief)
+    return part is not None and seedance_composes(part.mode, brief.format)
 
 
 def _built_layers(effects: Sequence[EffectUse]) -> tuple[EffectUse, ...]:
@@ -129,7 +147,7 @@ def composes_over_seedance(brief: ContentBrief) -> bool:
     """A Clip made by Seedance that carries texts or library layers to compose. Pure."""
     if not seedance_compose_allowed(brief):
         return False
-    part = _loose_clip_part(brief)
+    part = _clip_part(brief)
     return bool(part.text_layers or _built_layers(part.effects))
 
 
@@ -185,14 +203,56 @@ def compose_recipe_of(brief: ContentBrief, kit: Any) -> ComposeRecipe | None:
         return None
     if brief.media.effects_pipeline_version < SEEDANCE_COMPOSE_EFFECTS_VERSION:
         return None  # out of scope: pieces from before the engine are made as they were
-    part = _loose_clip_part(brief)
+    part = _clip_part(brief)
+    shift = kept_start(brief)
     recipe = ComposeRecipe(
-        text_layers=tuple(part.text_layers),
-        effects=_built_layers(part.effects),
+        text_layers=tuple(_shifted_text(layer, shift) for layer in part.text_layers),
+        effects=tuple(_shifted_effect(use, shift) for use in _built_layers(part.effects)),
         brand=brand_props(kit),
         effects_pipeline_version=brief.media.effects_pipeline_version,
     )
     return None if recipe.empty else recipe
+
+
+def kept_start(brief: ContentBrief) -> float:
+    """m-25103284: where, in a part's own Seedance file, the interval the join keeps
+    starts (`part_join.part_span`: an explicit trim of the plan, VE-06). The recipe's
+    times are seconds of the part as it shows in the video, so they are moved by it. 0
+    for a normal Clip (its whole file is the piece) and for a part kept from its start.
+    Pure."""
+    part = brief.media.part
+    if part is None:
+        return 0.0
+    # part_join imports media, which imports this module lazily
+    from qualify_api.creative.part_join import part_span  # noqa: PLC0415
+
+    start, _ = part_span(
+        {
+            "part": {
+                "mode": part.mode,
+                "seconds": part.seconds,
+                "generation_seconds": part.generation_seconds,
+                "trim_start_s": part.trim_start_s,
+                "trim_end_s": part.trim_end_s,
+            }
+        }
+    )
+    return float(start)
+
+
+def _shifted_text(layer: VideoTextLayer, shift: float) -> VideoTextLayer:
+    if shift <= 0:
+        return layer
+    end = None if layer.end_s is None else round(layer.end_s + shift, 3)
+    return layer.model_copy(update={"start_s": round(layer.start_s + shift, 3), "end_s": end})
+
+
+def _shifted_effect(use: EffectUse, shift: float) -> EffectUse:
+    if shift <= 0 or use.start_s is None or use.end_s is None:
+        return use  # no times: over the whole file, the kept interval included
+    return use.model_copy(
+        update={"start_s": round(use.start_s + shift, 3), "end_s": round(use.end_s + shift, 3)}
+    )
 
 
 def stored_recipe(params: Mapping[str, Any] | None) -> ComposeRecipe | None:
@@ -625,8 +685,10 @@ __all__ = [
     "ComposedClip",
     "compose_recipe_of",
     "composes_over_seedance",
+    "kept_start",
     "nine_sixteen_size",
     "seedance_compose_allowed",
+    "seedance_composes",
     "stored_recipe",
     "stored_text_images",
     "text_images_params",
