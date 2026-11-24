@@ -18,6 +18,7 @@ from qualify_shared.db.admin import admin_session
 from sqlalchemy import text
 
 from qualify_api.ads.account_health import refresh_daily_account_health
+from qualify_api.ads.reference_facts import record_reference_facts
 from qualify_api.ads.results_service import poll_promotion_results
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,13 @@ async def tick(tenant_id: UUID, *, limit: int = 100) -> dict[str, int]:
     """One tenant per lease. A crash releases the PostgreSQL transaction advisory lock."""
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError("limit must be between one and five hundred")
-    counts = {"health_checked": 0, "health_blocked": 0, "checked": 0, "unavailable": 0}
+    counts = {
+        "health_checked": 0,
+        "health_blocked": 0,
+        "checked": 0,
+        "unavailable": 0,
+        "reference_facts": 0,
+    }
     # Dedicated administrative lease, not a data access shortcut. Observation helpers
     # open their own tenant sessions. A second replica skips instead of duplicating reads.
     with admin_session() as lease:
@@ -75,6 +82,8 @@ async def tick(tenant_id: UUID, *, limit: int = 100) -> dict[str, int]:
         counts["health_checked"] = len(health)
         counts["health_blocked"] = sum(not row.can_promote for row in health)
         counts.update(await poll_promotion_results(tenant_id=tenant_id, limit=limit))
+        # m-25091393: monthly per-business facts from the insights just stored; no Meta call.
+        counts["reference_facts"] = record_reference_facts(tenant_id=tenant_id)
     return counts | {"busy": 0}
 
 
