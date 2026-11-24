@@ -351,8 +351,53 @@ def test_at_most_two_calls_per_video_then_no_advice() -> None:
         assert _advise(_advisor(fake, ledger, store)) == f"{adv.OUTCOME_FALLBACK}:request_error"
     assert _advise(_advisor(fake, ledger, store)) == f"{adv.OUTCOME_FALLBACK}:guard_refused"
     assert len(fake.requests) == 2 and len(ledger.events) == 2
-    # nothing was billed: both reservations settled to zero
-    assert all(e["cost_usd"] == Decimal(0) for e in ledger.events.values())
+    # a request error may still have been billed: both reservations stay at the bound
+    assert all(e["cost_usd"] == pa.MAX_REQUEST_USD for e in ledger.events.values())
+    assert all(e["input_tokens"] == 0 for e in ledger.events.values())
+
+
+def _decision(**overrides: Any) -> pa.PlacementDecision:
+    values: dict[str, Any] = {
+        "text_place": "bottom",
+        "logo_place": "top",
+        "reason": "x",
+        "source": "fallback",
+        "fallback_reason": pa.FALLBACK_BAD_ANSWER,
+        "cost_usd": Decimal("0.0008"),
+        "provenance": {"input_tokens": 5_200, "output_tokens": 400},
+    }
+    values.update(overrides)
+    return pa.PlacementDecision(**values)
+
+
+@pytest.mark.parametrize(
+    ("decision", "settled"),
+    [
+        (_decision(), True),  # measured usage: settled to it
+        (_decision(source="model", fallback_reason=None), True),
+        (_decision(fallback_reason=pa.FALLBACK_REQUEST_ERROR), False),
+        (_decision(cost_usd=Decimal(0), provenance={}), False),  # nothing measured
+        (_decision(provenance={"input_tokens": 0, "output_tokens": 0}), False),
+    ],
+)
+def test_the_settle_never_undercounts(decision: pa.PlacementDecision, settled: bool) -> None:
+    ledger = MemoryLedger()
+    guard = adv.SourceCallGuard(
+        ledger=ledger, tenant_id=TENANT, brand_id=BRAND, source_key=SOURCE, fleet_cap=10
+    )
+    guard.charge(uuid4())
+    assert guard.settle(decision) is settled
+    (event,) = ledger.events.values()
+    assert event["cost_usd"] == (decision.cost_usd if settled else pa.MAX_REQUEST_USD)
+
+
+def test_the_production_client_waits_at_most_a_minute_and_retries_once() -> None:
+    client = adv.bounded_client("test-key")  # builds the client: no request is made
+    assert client.timeout == 60.0 and adv.CLIENT_TIMEOUT_S == 60.0
+    assert client.max_retries == 1
+    # and the media-worker's advisor builds its placer on it
+    placer = adv.production_placement_advisor().placer_factory(pa.InMemoryCallGuard())
+    assert placer._client_factory is adv.bounded_client
 
 
 def test_the_fleet_cap_refuses_before_the_call() -> None:
@@ -477,9 +522,7 @@ def test_the_reservation_locks_counts_and_books_the_bound() -> None:
         "scalars",
         "fleet",
         f"insert:{adv.PLACEMENT_USAGE_UNIT}:{pa.MAX_REQUEST_USD}",
-        "config",
-    ]
-    assert session.config.budget_spent_usd == Decimal("1.000000") + pa.MAX_REQUEST_USD
+    ]  # the platform pays: the brand's `creative_engine_config` is never read nor locked
 
 
 def test_the_second_call_takes_the_second_id_and_a_third_is_refused() -> None:
@@ -502,7 +545,7 @@ def test_a_full_fleet_refuses_without_a_reservation() -> None:
     assert not any(c.startswith("insert") for c in session.calls)
 
 
-def test_the_settle_moves_the_spend_by_the_difference_and_is_idempotent() -> None:
+def test_the_settle_sets_what_was_billed_and_is_idempotent() -> None:
     row = SimpleNamespace(cost_usd=pa.MAX_REQUEST_USD, input_tokens=0, output_tokens=0)
     session = RecordingSession(taken=[], row=row)
     ledger = _ledger(session)
@@ -516,10 +559,8 @@ def test_the_settle_moves_the_spend_by_the_difference_and_is_idempotent() -> Non
             output_tokens=400,
         )
     assert row.cost_usd == Decimal("0.000812") and row.input_tokens == 5_200
-    assert session.config.budget_spent_usd == Decimal("1.000000") - (
-        pa.MAX_REQUEST_USD - Decimal("0.000812")
-    )
-    assert session.calls.count("config") == 1  # the second settle moved nothing
+    assert row.output_tokens == 400
+    assert "config" not in session.calls  # the brand's dollar cap is never touched
 
 
 def test_the_window_is_the_last_24_hours() -> None:

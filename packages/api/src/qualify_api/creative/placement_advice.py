@@ -45,13 +45,17 @@ and retries:
 
 **Cost record.** The reservation IS the usage event (`unit = PLACEMENT_USAGE_UNIT`,
 provider `anthropic`, draft-less, paid by the platform): after the call it is SETTLED to
-what was billed (tokens and USD from the meter) and the brand's monthly spend
-(`creative_engine_config.budget_spent_usd`) moves by the difference. The call has no
-vendor task id; its idempotency key is the event id itself (uuid5 above) — a second
-settle of the same event changes nothing. A process that dies between the call and the
-settle leaves the reservation at the bound: an overcount of at most US$0.0021, never an
-undercount. The call is ALSO booked to the business's consumption ledger by
-`claude_tools` (feature `video-placement`), as every Claude call is.
+what was billed (tokens and USD from the meter) — only when usage was measured: a request
+error, or a call that measured nothing, leaves it at the bound. The platform pays the call
+(`paid_by=platform`), so the brand's own dollar cap
+(`creative_engine_config.budget_spent_usd`) is never touched: the event (`Numeric(12,6)`)
+is the only record of the cost. The call has no vendor task id; its idempotency key is the
+event id itself (uuid5 above) — a second settle of the same event changes nothing. A
+process that dies between the call and the settle leaves the reservation at the bound: an
+overcount of at most US$0.0021, never an undercount. The call is ALSO booked to the
+business's consumption ledger by `claude_tools` (feature `video-placement`), as every
+Claude call is; no report adds the two (the plan report and the cost alerts read
+`creative_usage_events`, the consumption summary reads `consumption_ledger`).
 
 Provenance in the advice: model id and revision, prompt version and fingerprint, the
 frames sent (time, size, sha256 prefix), cost and pricing table version, the source and
@@ -449,7 +453,6 @@ class PostgresPlacementLedger:
             )
             if booked is None:  # taken in between (cannot happen under the lock): refuse
                 raise pa.PlacementRefused("piece_cap", "reservation already taken")
-            _add_spend(session, orm, brand_id, pa.MAX_REQUEST_USD)
         return event_id
 
     def settle(
@@ -468,26 +471,11 @@ class PostgresPlacementLedger:
             row = session.get(orm.CreativeUsageEvent, event_id, with_for_update=True)
             if row is None:
                 return
-            delta = cost_usd - Decimal(row.cost_usd)
+            # the platform pays this call: `creative_engine_config.budget_spent_usd` (the
+            # brand's own dollar cap) is never touched — the event is the only record
             row.cost_usd = cost_usd
             row.input_tokens = int(input_tokens)
             row.output_tokens = int(output_tokens)
-            if delta:
-                _add_spend(session, orm, brand_id, delta)
-
-
-def _add_spend(session: Any, orm: Any, brand_id: UUID, delta: Decimal) -> None:
-    """The brand's monthly spend moves with the event (a brand without a config row has
-    no dollar cap to count against)."""
-    from sqlalchemy import select  # noqa: PLC0415
-
-    config = session.scalar(
-        select(orm.CreativeEngineConfig)
-        .where(orm.CreativeEngineConfig.brand_id == brand_id)
-        .with_for_update()
-    )
-    if config is not None:
-        config.budget_spent_usd = Decimal(config.budget_spent_usd) + delta
 
 
 @dataclass
@@ -515,18 +503,28 @@ class SourceCallGuard:
             )
         )
 
-    def settle(self, decision: pa.PlacementDecision) -> None:
+    def settle(self, decision: pa.PlacementDecision) -> bool:
+        """Set the reservation to the MEASURED usage; True when it did. A request error
+        (the call may have been billed with no answer read) or a call that measured no
+        usage leaves it at the bound: an overcount, never an undercount."""
         if not self.reserved:
-            return
+            return False
         prov = decision.provenance
+        input_tokens = int(prov.get("input_tokens") or 0)
+        output_tokens = int(prov.get("output_tokens") or 0)
+        if decision.fallback_reason == pa.FALLBACK_REQUEST_ERROR:
+            return False
+        if not (input_tokens or output_tokens) or decision.cost_usd <= 0:
+            return False
         self.ledger.settle(
             tenant_id=self.tenant_id,
             brand_id=self.brand_id,
             event_id=self.reserved[-1],
             cost_usd=decision.cost_usd,
-            input_tokens=int(prov.get("input_tokens") or 0),
-            output_tokens=int(prov.get("output_tokens") or 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
+        return True
 
 
 # --- where the advice is kept -------------------------------------------------------------
@@ -719,11 +717,28 @@ class PlacementAdvisor:
         return OUTCOME_MADE
 
 
+#: The `media-worker` runs one job at a time: a hung request must not hold the queue.
+#: 60 s and one retry at most (the measured call takes ~7 s).
+CLIENT_TIMEOUT_S = 60.0
+CLIENT_MAX_RETRIES = 1
+
+
+def bounded_client(api_key: str) -> Any:
+    """Anthropic with a bounded wait (`CLIENT_TIMEOUT_S`, `CLIENT_MAX_RETRIES`)."""
+    import anthropic  # noqa: PLC0415 — lazy, like `claude_tools.default_client`
+
+    return anthropic.Anthropic(
+        api_key=api_key, timeout=CLIENT_TIMEOUT_S, max_retries=CLIENT_MAX_RETRIES
+    )
+
+
 def production_placement_advisor() -> PlacementAdvisor:
-    """The `media-worker`'s advisor: Postgres guards, advice in the preview job."""
+    """The `media-worker`'s advisor: Postgres guards, advice in the preview job, a bounded
+    Anthropic client."""
     return PlacementAdvisor(
         ledger=PostgresPlacementLedger(AdminFleetCounter()),
         store=GalleryJobAdviceStore(),
+        placer_factory=lambda guard: pa.VisionPlacer(guard=guard, client_factory=bounded_client),
     )
 
 
@@ -731,6 +746,8 @@ __all__ = [
     "ADVICE_FIELD",
     "ADVICE_VERSION",
     "BAND_WORDS",
+    "CLIENT_MAX_RETRIES",
+    "CLIENT_TIMEOUT_S",
     "GUARD_LOCK_KEY",
     "PLACEMENT_USAGE_UNIT",
     "AdminFleetCounter",
@@ -744,6 +761,7 @@ __all__ = [
     "PostgresPlacementLedger",
     "SourceCallGuard",
     "advice_from_decision",
+    "bounded_client",
     "combine_advice",
     "covers_product",
     "fold_advice",

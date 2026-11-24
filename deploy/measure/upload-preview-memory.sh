@@ -10,6 +10,8 @@
 #
 # MODE (m-25029110, ED-11b): both (default: the copy + the frame strip from one decode, the
 # v2 job), copy (the v1 command, the copy alone) or strip (the strip alone, a kept copy).
+# advice (EF-20 phase 2, m-25026599): `both`, then the placement advice on the copy — real
+# frame sampling, a FAKE Anthropic client (the container has no network), its own peak.
 #
 # `run` prints `PREVIEW-RESULT {json}` (exit 137 = OOM, printed as `PREVIEW-OOM`).
 set -euo pipefail
