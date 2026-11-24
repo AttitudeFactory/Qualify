@@ -59,7 +59,17 @@ def draft_pending(params: Mapping[str, object] | None) -> bool:
 #: the same transaction. A pass that finishes the final from the kept file while the
 #: marker still names its task records the spend then — once per task id, never twice.
 #: A block whose `raw_final` names a task but no mark has that spend recorded already.
-#: task_id on the event arrives with m-25112161.
+#: m-25112161: the event now names its task too (`vendor_task_id`, unique per tenant,
+#: 0179) and a repeat adds no spend; the mark stays because it is what tells a raw
+#: file paid and NOT recorded from one recorded before the column existed (rows with
+#: no task id), so a pass never rebuilds — and counts twice — an older spend.
+#: Known limit (m-25112161): a raw T1 marked due that turns out unreadable is handed
+#: to the settle of the pass that pays T2 in its place (recorded on T1's key). If THAT
+#: settle is rolled back too (a second lost lease in a row), T1 is gone from the block —
+#: `on_raw_kept` already wrote T2 over it — and its spend stays only in the cost log.
+#: Keeping T1's record in the block until recorded would mean a second durable write
+#: path (`on_raw_kept` + the settle + the next pass's rebuild), not worth it for a case
+#: that needs two lost leases and an unreadable store object together.
 FINAL_USAGE_DUE = "final_usage_due"
 
 

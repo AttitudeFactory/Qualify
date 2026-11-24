@@ -89,6 +89,7 @@ from qualify_creative.schemas import (
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -525,6 +526,9 @@ class UsageWrite:
     pricing_table_version: str
     #: Pieces or seconds for a per-piece / per-second vendor (0 for token-priced calls).
     pieces: int = 0
+    #: m-25112161: the vendor's id of the task this row paid for (Seedance, OmniHuman).
+    #: Set → the row is written once per `(tenant, task)` and a repeat adds no spend.
+    vendor_task_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -846,7 +850,9 @@ class ContentRepository(Protocol):
         while the stored draft block still marks the task due (`FINAL_USAGE_DUE` ==
         `final_task_id`); `raw_usage` is dropped when the block names that task in its
         `raw_final` with no mark (another pass recorded it). The mark is cleared in the
-        same transaction that records that task's spend."""
+        same transaction that records that task's spend. m-25112161: a row naming a
+        vendor task adds a row and spend only the first time for its `(tenant, task)`;
+        a `held_usage` row of another task than `final_task_id` is recorded on that key."""
         ...
 
 
@@ -1432,8 +1438,8 @@ class PostgresContentRepository:
             ) or (new_status == DRAFTING):
                 # Record paid work, but neither a pending checkpoint nor a stale worker
                 # is a completed version of the current publication.
-                _add_usage(session, tenant_id, brand_id, draft_id, usage)
-                _add_spend(session, brand_id, spent_usd)
+                skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd - skipped)
                 return
             initial_partial = (
                 draft.status == DRAFTING and draft.revision == 1 and draft.active_version_id is None
@@ -1469,6 +1475,9 @@ class PostgresContentRepository:
                         if requires_ai_disclosure is not None
                         else draft.requires_ai_disclosure
                     ),
+                    # gross on purpose: what THIS version cost, all of it — a vendor task
+                    # recorded already (m-25112161) is not added to the budget again, but
+                    # it is still part of what made this version
                     spent_usd=spent_usd,
                     failure_reason=failure_reason,
                     failure_detail=failure_detail,
@@ -1480,8 +1489,8 @@ class PostgresContentRepository:
                 session.flush()
             else:
                 # A completed generation is immutable: retries cannot overwrite its history.
-                _add_usage(session, tenant_id, brand_id, draft_id, usage)
-                _add_spend(session, brand_id, spent_usd)
+                skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd - skipped)
                 return
             for write in variants:
                 session.add(
@@ -1496,7 +1505,7 @@ class PostgresContentRepository:
                         model_revision=write.model_revision,
                     )
                 )
-            _add_usage(session, tenant_id, brand_id, draft_id, usage)
+            skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
             if template_run is not None:
                 # The render job as Python saw it (0038) — written before the assets that
                 # reference it, and also when the run failed: the attempt is the evidence.
@@ -1597,7 +1606,7 @@ class PostgresContentRepository:
                                 partial.version_id = version.id
             if template_run is not None:
                 version.template_run_id = template_run.id
-            _add_spend(session, brand_id, spent_usd)
+            _add_spend(session, brand_id, spent_usd - skipped)
             if draft is not None and succeeded and (media or variants):
                 draft.preview_key = preview_of(media)
             if draft is not None and succeeded and requires_ai_disclosure is not None:
@@ -1975,7 +1984,16 @@ class PostgresContentRepository:
         `raw_usage` (paid by this pass) unless the row names that task in its
         `raw_final` with no mark — another pass recorded it (this run lost its claim and
         settles last). The mark goes in the same write that records the spend.
-        `spent_usd` includes `raw_usage`; `usage` is everything else this pass paid."""
+        `spent_usd` includes `raw_usage`; `usage` is everything else this pass paid.
+
+        m-25112161: every row naming a vendor task is written once per `(tenant, task)`
+        (0179); a repeat adds neither a row nor spend. A `held_usage` row of a task other
+        than `final_task_id` (an earlier raw file, due and then unreadable) is recorded on
+        that key alone — also when `final_task_id` is None (the raw file was lost and
+        the 1080p paid in its place never came back, so nothing names a new task): then
+        every held row naming a task is such a row. When the stored mark names a task
+        recorded that way, the mark goes with this write too (the block is never left
+        marking a spend that is in the table)."""
         with tenant_session(tenant_id) as session:
             row = session.get(
                 orm.ImageAsset,
@@ -1993,20 +2011,44 @@ class PostgresContentRepository:
                 and raw_final_task_id(stored_raw) == final_task_id
             )
             paid = () if recorded_before else tuple(raw_usage)
+            # m-25112161: a held row of ANOTHER task — a raw 1080p kept, still due, then
+            # unreadable, so this pass paid `final_task_id` in its place — has no mark
+            # left to gate it (the block names one task): it is recorded on its task id
+            # alone, whichever pass gets here, and a repeat adds nothing (0179)
+            lost = tuple(
+                h
+                for h in held_usage
+                if h.vendor_task_id is not None and h.vendor_task_id != final_task_id
+            )
             # a run that lost its claim leaves a held spend to the run that owns it now
-            held = tuple(held_usage) if ours and due else ()
+            held = (
+                tuple(h for h in held_usage if not any(h is other for other in lost))
+                if ours and due
+                else ()
+            )
             dropped = sum((u.cost_usd for u in raw_usage), Decimal(0)) if recorded_before else 0
             if recorded_before and raw_usage:
                 logger.info("final of asset %s: task %s recorded already", asset_id, final_task_id)
-            _add_usage(session, tenant_id, brand_id, draft_id, (*usage, *paid, *held))
+            skipped = _add_usage(
+                session, tenant_id, brand_id, draft_id, (*usage, *paid, *held, *lost)
+            )
             _add_spend(
                 session,
                 brand_id,
-                spent_usd - dropped + sum((h.cost_usd for h in held), Decimal(0)),
+                spent_usd
+                - dropped
+                - skipped
+                + sum((h.cost_usd for h in (*held, *lost)), Decimal(0)),
             )
             # the mark as it stands once this commits: gone when this write recorded the
-            # spend it named, else as stored (never revived from a stale in-memory block)
-            due_after = None if due and (paid or held) else stored.get(FINAL_USAGE_DUE)
+            # spend it named — its own task's (`paid`/`held`) or, m-25112161, a lost
+            # task's (written now or found on the key: recorded either way) — else as
+            # stored (never revived from a stale in-memory block)
+            mark = stored.get(FINAL_USAGE_DUE)
+            recorded_mark = (due and bool(paid or held)) or (
+                mark is not None and any(h.vendor_task_id == mark for h in lost)
+            )
+            due_after = None if recorded_mark else mark
             if row is None:
                 return
             if not ours:
@@ -2143,36 +2185,63 @@ def _drop_purged_generation(
                 brief_id=draft.brief_id,
             )
         )
-    _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
-    _add_spend(session, brand_id, spent_usd)
+    skipped = _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
+    _add_spend(session, brand_id, spent_usd - skipped)
     logger.info("generation of purged piece %s dropped", draft.id)
 
 
 def _add_usage(
     session: Any, tenant_id: UUID, brand_id: UUID, draft_id: UUID, usage: Sequence[UsageWrite]
-) -> None:
+) -> Decimal:
+    """The usage rows, and what of their cost was NOT written: a row naming a vendor task
+    already recorded for this tenant (m-25112161, the partial key of 0179) adds nothing,
+    so the caller takes the returned amount off the spend it adds to the budget."""
+    skipped = Decimal(0)
     for event in usage:
-        session.add(
-            orm.CreativeUsageEvent(
-                tenant_id=tenant_id,
-                brand_id=brand_id,
-                draft_id=draft_id,
-                provider=event.provider,
-                model_id=event.model_id,
-                unit=event.unit,
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                cache_read_tokens=event.cache_read_tokens,
-                cache_creation_tokens=event.cache_creation_tokens,
-                # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
-                # calls) and `occurred_at` NOT NULL with no server default.
-                pieces=event.pieces,
-                cost_usd=event.cost_usd,
-                paid_by=event.paid_by,
-                pricing_table_version=event.pricing_table_version,
-                occurred_at=datetime.now(UTC),
+        values = {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "draft_id": draft_id,
+            "provider": event.provider,
+            "model_id": event.model_id,
+            "unit": event.unit,
+            "input_tokens": event.input_tokens,
+            "output_tokens": event.output_tokens,
+            "cache_read_tokens": event.cache_read_tokens,
+            "cache_creation_tokens": event.cache_creation_tokens,
+            # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
+            # calls) and `occurred_at` NOT NULL with no server default.
+            "pieces": event.pieces,
+            "cost_usd": event.cost_usd,
+            "paid_by": event.paid_by,
+            "pricing_table_version": event.pricing_table_version,
+            "occurred_at": datetime.now(UTC),
+        }
+        if event.vendor_task_id is None:
+            session.add(orm.CreativeUsageEvent(**values))
+            continue
+        if session.scalar(_usage_once(values, event.vendor_task_id)) is None:
+            logger.info(
+                "usage of vendor task %s recorded already: %s USD not added again",
+                event.vendor_task_id,
+                event.cost_usd,
             )
+            skipped += event.cost_usd
+    return skipped
+
+
+def _usage_once(values: Mapping[str, Any], vendor_task_id: str) -> Any:
+    """`INSERT … ON CONFLICT (tenant_id, vendor_task_id) WHERE vendor_task_id IS NOT NULL
+    DO NOTHING RETURNING id` — the id when written, no row when the task was recorded."""
+    return (
+        pg_insert(orm.CreativeUsageEvent)
+        .values(**values, vendor_task_id=vendor_task_id)
+        .on_conflict_do_nothing(
+            index_elements=["tenant_id", "vendor_task_id"],
+            index_where=text("vendor_task_id IS NOT NULL"),
         )
+        .returning(orm.CreativeUsageEvent.id)
+    )
 
 
 def _add_spend(session: Any, brand_id: UUID, spent_usd: Decimal) -> None:
@@ -3650,6 +3719,7 @@ class ContentService:
                 # EF-06: a local video names its own table (v10, `local_video` 0.00)
                 pricing_table_version=item.pricing_table_version or self._pricing.version,
                 pieces=0 if item.unit == "token" else item.quantity,
+                vendor_task_id=item.vendor_task_id,
             )
             for item in items
         ]

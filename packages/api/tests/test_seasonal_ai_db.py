@@ -152,6 +152,7 @@ def test_a_paid_task_is_booked_once() -> None:
         row = session.get(orm.CreativeUsageEvent, usage_event_id(task))
         assert row is not None and row.draft_id is None and row.provider == "byteplus"
     assert row.unit == "seasonal_video_token"
+    assert row.vendor_task_id == task  # m-25112161: the booking names its Seedance task
     with tenant_session(TENANT) as session:  # the generator books its Seedance as `token`
         session.add(
             orm.CreativeUsageEvent(
