@@ -8,6 +8,11 @@ owner chose: `top`, `middle`, `bottom`) and `{subject}` (the piece's product). F
 part's own Seedance prompt — the same request, the same 480p draft and 1080p final as
 today, the same price guard and the same video seconds charged: an effect adds no call.
 
+The model (D5): a bench result holds on the model it ran on only. The producer checks,
+before the copy is paid (`MediaProducer.prepare_new_brief`) and again before the call
+(`_clip`), that every model the piece may be asked of is the measured one
+(`qualify_creative.effects.measured_on_model`); otherwise it is refused, nothing spent.
+
 What makes one buildable (`is_built_seedance_effect`, read by
 `recipe.unbuilt_recipe_problems` on every NEW request, before any row, charge or call):
 
@@ -114,6 +119,8 @@ class SeedanceEffect:
             "library_version": EFFECTS_LIBRARY_VERSION,
             "zone": self.zone,
             "line": self.line,
+            # D5: the model the bench measured it on (None while unmeasured)
+            "measured_model": self.entry.measured.model if self.entry.measured else None,
         }
 
 
@@ -121,8 +128,11 @@ def seedance_effect_of(
     brief: ContentBrief, library: EffectsLibrary | None = None
 ) -> SeedanceEffect | None:
     """The Seedance effect of a Clip (a normal one or a part's child), filled — or None
-    when it carries none. At most one per part (`too_many_ai_effects` refused it before);
-    the first is taken. Pure (the library is cached)."""
+    when it carries none the engine makes now (`is_built_seedance_effect`: the switch on,
+    a `reference` piece, the whole part). So a piece stored with one and remade («Otra
+    versión», a retry) after the switch went off is asked WITHOUT the line, never with a
+    half-checked effect. At most one per part (`too_many_ai_effects` refused it before);
+    the first is taken. Pure but for the switch (the library is cached)."""
     from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
 
     if brief.kind is not ContentKind.CLIP:
@@ -131,7 +141,7 @@ def seedance_effect_of(
     for part in recipe_of(brief)[:1]:
         for use in part.effects:
             entry = library.get(use.effect_id, use.version)
-            if entry is None or entry.stage != "seedance_prompt":
+            if entry is None or not is_built_seedance_effect(use, part.mode, library):
                 continue
             subject = effect_subject(brief.product_ref)
             return SeedanceEffect(

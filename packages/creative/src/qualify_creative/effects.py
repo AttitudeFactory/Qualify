@@ -64,6 +64,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qualify_creative.layer_spec.schema import catalog
+from qualify_creative.prompt_text import visual_text
 from qualify_creative.schemas import (
     EFFECT_ID_PATTERN,
     TEXT_LAYERS_MAX,
@@ -169,8 +170,9 @@ MEASURED_MIN_SUCCESSES_OF: tuple[int, int] = (2, 3)
 
 class Measured(BaseModel):
     """The paid bench's result for a «Con IA» effect (EF-12): successes of `n`, the
-    Wilson interval and the day it ran. Offered only when present AND over D5's bar
-    (`passes`)."""
+    Wilson interval, the day it ran and the Seedance `model` it ran on. Offered only when
+    present AND over D5's bar (`passes`), and asked only of that same model
+    (`measured_on_model`): a result on one model says nothing of another."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -179,6 +181,8 @@ class Measured(BaseModel):
     wilson_low: float = Field(ge=0, le=1)
     wilson_high: float = Field(ge=0, le=1)
     measured_on: date
+    #: The ModelArk model id the bench ran on (`dreamina-seedance-2-5-260628`, say).
+    model: str = Field(min_length=1, max_length=80)
 
     @model_validator(mode="after")
     def _coherent(self) -> Measured:
@@ -294,19 +298,38 @@ class EffectsLibrary(BaseModel):
     def has(self, effect_id: str) -> bool:
         return any(e.id == effect_id for e in self.entries)
 
-    def offered(self) -> tuple[EffectEntry, ...]:
+    def offered(self, *, model: str | None = None) -> tuple[EffectEntry, ...]:
         """What the screen may offer (D5), in the file's order — the same for every
-        business: categories only help the screen filter, they never hide an effect."""
-        return tuple(e for e in self.entries if e.offered and _clears_bench(e))
+        business: categories only help the screen filter, they never hide an effect.
+        `model`: the Seedance model the piece will be asked of — a «Con IA» effect
+        measured on another one is left out (None: not known here, not filtered; the
+        producer checks it again before anything is paid)."""
+        return tuple(e for e in self.entries if e.offered and _clears_bench(e, model))
 
 
-def _clears_bench(entry: EffectEntry) -> bool:
+def _clears_bench(entry: EffectEntry, model: str | None = None) -> bool:
     """EF-13: a «Con IA» effect reaches a screen only with a bench result over D5's bar —
     the validator already refuses an offered one without it; this keeps `offered()`
-    honest even for an entry built around the validator (`model_construct`)."""
+    honest even for an entry built around the validator (`model_construct`) — and, given
+    a `model`, only when it was measured on that model."""
     if entry.stage != "seedance_prompt":
         return True
+    return measured_on_model(entry, model) if model is not None else _passes(entry)
+
+
+def _passes(entry: EffectEntry) -> bool:
     return entry.measured is not None and entry.measured.passes
+
+
+def measured_on_model(entry: EffectEntry, model: str | None) -> bool:
+    """Whether a «Con IA» `entry` was measured over D5's bar ON `model` — the Seedance
+    model it is about to be asked of (EF-13). A non-Seedance entry: True. Pure."""
+    if entry.stage != "seedance_prompt":
+        return True
+    measured = entry.measured
+    return (
+        measured is not None and measured.passes and model is not None and (measured.model == model)
+    )
 
 
 # -- «objeto en una zona del cuadro» (EF-13, m-25026589) ------------------------------------
@@ -327,19 +350,31 @@ _SUBJECT_MAX_CHARS = 80
 
 #: EF-13 copy the screen shows for a «Con IA» effect (`qualify-copy-es`): its tag, and the
 #: line that says what the part will cost of the plan's video seconds.
-AI_EFFECT_COST_NOTE = "Con IA: gasta segundos de video"
-AI_EFFECT_COST_LINE = "Esta parte gastará {s} segundos de video de tu plan."
+#: The effect itself costs nothing extra: what uses the plan's seconds is that the part is
+#: made with AI (UX review, 2026-11-24).
+AI_EFFECT_COST_NOTE = "Hecho con IA: usa segundos de video de tu plan"
+AI_EFFECT_COST_LINE = "Esta parte usa {seconds} de video cuando la apruebes."
+
+
+def seconds_label(seconds: int) -> str:
+    """«1 segundo» / «5 segundos»: the same rule as the screen's `seconds_label`
+    (`Qualify/creative_vm.py`), which this package cannot import."""
+    return "1 segundo" if seconds == 1 else f"{seconds} segundos"
 
 
 def ai_effect_cost_text(seconds: int) -> str:
     """`AI_EFFECT_COST_LINE` for a part of `seconds` (whole seconds, as the plan counts)."""
-    return AI_EFFECT_COST_LINE.format(s=int(seconds))
+    return AI_EFFECT_COST_LINE.format(seconds=seconds_label(int(seconds)))
 
 
 def effect_subject(product: str | None) -> str:
-    """What `{subject}` says: the piece's product name in quotes (no quotes or braces of
-    its own, at most `_SUBJECT_MAX_CHARS`), else `DEFAULT_EFFECT_SUBJECT`. Pure."""
-    name = " ".join((product or "").replace('"', " ").replace("{", " ").replace("}", " ").split())
+    """What `{subject}` says: the piece's product name in quotes (no emoji — `visual_text`,
+    as every prompt text —, no quotes or braces of its own, at most `_SUBJECT_MAX_CHARS`),
+    else `DEFAULT_EFFECT_SUBJECT`. Pure."""
+    text = visual_text(product or "")
+    for mark in ('"', "{", "}"):
+        text = text.replace(mark, " ")
+    name = " ".join(text.split())
     if not name:
         return DEFAULT_EFFECT_SUBJECT
     if len(name) > _SUBJECT_MAX_CHARS:
@@ -700,32 +735,34 @@ __all__ = [
     "AI_EFFECT_COST_LINE",
     "AI_EFFECT_COST_NOTE",
     "DEFAULT_EFFECT_SUBJECT",
+    "EFFECTS_LIBRARY_VERSION",
+    "EFFECT_CATEGORIES",
+    "EffectCategory",
+    "EffectEntry",
+    "EffectsLibrary",
+    "LAYER_LOOP_FILE",
     "MEASURED_MIN_N",
     "MEASURED_MIN_SUCCESSES_OF",
+    "Measured",
+    "MissingPreviewAsset",
+    "NotALibraryLayer",
     "NotASeedanceEffect",
+    "ParamSpec",
+    "RecipeProblem",
     "SEEDANCE_EFFECT_FILL_VERSION",
     "ZONE_WORDS",
     "ai_effect_cost_text",
     "effect_subject",
-    "effect_zone",
-    "seedance_effect_line",
-    "EFFECTS_LIBRARY_VERSION",
-    "EFFECT_CATEGORIES",
-    "EffectCategory",
-    "LAYER_LOOP_FILE",
-    "EffectEntry",
-    "EffectsLibrary",
-    "Measured",
-    "MissingPreviewAsset",
-    "NotALibraryLayer",
-    "ParamSpec",
-    "RecipeProblem",
     "effect_use_problems",
+    "effect_zone",
     "layer_loop_file",
     "load_effects",
+    "measured_on_model",
     "parse_library",
-    "preview_file",
     "part_effect_problems",
+    "preview_file",
+    "seconds_label",
+    "seedance_effect_line",
     "text_layer_problems",
     "text_layers_problems",
     "transition_problems",

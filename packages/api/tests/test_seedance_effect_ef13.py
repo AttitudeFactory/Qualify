@@ -3,15 +3,17 @@ frame». Offline: the Seedance fakes of `test_creative_seedance_draft.py`; nothi
 
 Criteria covered here: the prompt carries the template and the provenance keeps
 `effect_id`, version and `prompt_version`; no `seed` is sent and the returned one is kept;
-an effect without a bench result over D5's bar is never offered; the price guard runs
-before the call. Plus the switch `QUALIFY_SEEDANCE_EFFECTS` (off = as on main)."""
+an effect without a bench result over D5's bar — on the model it is asked of — is never
+offered; the price guard runs before the call and the seconds are charged as today; the
+line is budgeted with the prompt, so a piece it does not fit in is refused before the
+copy. Plus the switch `QUALIFY_SEEDANCE_EFFECTS` (off = as on main)."""
 
 from __future__ import annotations
 
-import copy
 import json
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -19,23 +21,29 @@ from pydantic import ValidationError
 from qualify_creative.effects import (
     AI_EFFECT_COST_NOTE,
     DEFAULT_EFFECT_SUBJECT,
+    EffectsLibrary,
     Measured,
     ai_effect_cost_text,
     effect_subject,
     load_effects,
+    measured_on_model,
     parse_library,
     preview_file,
     seedance_effect_line,
 )
 from qualify_creative.enums import FailureReason
-from qualify_creative.router import BudgetContext
+from qualify_creative.pricing import JsonPricingTable
+from qualify_creative.router import BudgetContext, CreativeRouter
 from qualify_creative.schemas import EffectUse, PartRef
 
+from qualify_api.creative import media as media_module
+from qualify_api.creative.brand_references import BrandReferenceError
 from qualify_api.creative.media import (
     AI_EFFECT_DOES_NOT_FIT_TEXT,
-    _PromptOverBudget,
-    _with_effect_line,
+    AI_EFFECT_MODEL_TEXT,
+    MediaProducer,
 )
+from qualify_api.creative.video_pipeline import seedance_effect as effect_module
 from qualify_api.creative.video_pipeline.recipe import (
     RecipeRefused,
     refuse_unbuilt_recipe,
@@ -49,9 +57,17 @@ from qualify_api.creative.video_pipeline.seedance_effect import (
     seedance_effects_on,
 )
 
-from .test_creative_media_byteplus import COPY, TENANT_ID, _kit
+from .test_creative_media_byteplus import (
+    COPY,
+    SEEDANCE_MODEL,
+    TENANT_ID,
+    FakeSeedance,
+    KeysByProvider,
+    _kit,
+)
 from .test_creative_seedance_draft import (
     BUDGET,
+    DRAFT_MODEL,
     DraftSeedance,
     RecordingFitter,
     _clip,
@@ -69,18 +85,66 @@ def _use(effect_id: str = "humo_denso", **params: object) -> EffectUse:
     return EffectUse(effect_id=effect_id, version=1, params=params)
 
 
+def _bench_json(successes: int = 4, n: int = 4, model: str = DRAFT_MODEL) -> dict[str, Any]:
+    return {
+        "successes": successes,
+        "n": n,
+        "wilson_low": 0.1,
+        "wilson_high": 0.9,
+        "measured_on": "2026-11-24",
+        "model": model,
+    }
+
+
+def _measured_library(
+    root: Path, *, successes: int = 4, n: int = 4, model: str = DRAFT_MODEL
+) -> EffectsLibrary:
+    """The v5 library with `humo_denso` and `brasas` OFFERED, measured on `model`, each
+    with an example file under `root`: a library as EF-12 would leave it (v6)."""
+    raw = json.loads((DATA / "v5.json").read_text(encoding="utf-8"))
+    for entry in raw["entries"]:
+        if entry["id"] in ("humo_denso", "brasas"):
+            preview = f"effects/{entry['id']}/v1/ejemplo.mp4"
+            file = preview_file(preview, root)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(b"mp4")
+            entry.update(
+                offered=True,
+                preview_asset=preview,
+                measured=_bench_json(successes, n, model),
+            )
+    for entry in raw["entries"]:  # the layers' loops, as packaged
+        if entry.get("preview_asset"):
+            file = preview_file(entry["preview_asset"], root)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            if not file.exists():
+                file.write_bytes(b"webm")
+    return parse_library(raw, assets_root=root)
+
+
 @pytest.fixture
 def switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(SEEDANCE_EFFECTS_SWITCH, "on")
 
 
-# -- D5: the bench's bar and what a screen may offer -----------------------------------------
+def _serve(monkeypatch: pytest.MonkeyPatch, library: EffectsLibrary) -> None:
+    """The producer and the gate read `library` instead of the packaged one."""
+    monkeypatch.setattr(effect_module, "load_effects", lambda *_: library)
+
+
+@pytest.fixture
+def measured(switch_on: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> EffectsLibrary:
+    """Switch on, `humo_denso`/`brasas` measured on the 2.5 draft model."""
+    library = _measured_library(tmp_path)
+    _serve(monkeypatch, library)
+    return library
+
+
+# -- D5: the bench's bar, its model and what a screen may offer --------------------------------
 
 
 def _bench(successes: int, n: int) -> Measured:
-    return Measured(
-        successes=successes, n=n, wilson_low=0.1, wilson_high=0.9, measured_on="2026-11-24"
-    )
+    return Measured.model_validate(_bench_json(successes, n))
 
 
 @pytest.mark.parametrize(
@@ -93,41 +157,42 @@ def test_d5_bar_is_two_of_three_with_at_least_four_tries(
     assert _bench(successes, n).passes is passes
 
 
-def _offered_entry(root: Path, successes: int, n: int) -> dict:
-    raw = json.loads((DATA / "v5.json").read_text(encoding="utf-8"))
-    entry = copy.deepcopy(next(e for e in raw["entries"] if e["id"] == "humo_denso"))
-    preview = "effects/humo_denso/v1/ejemplo.mp4"
-    file = preview_file(preview, root)
-    file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_bytes(b"mp4")
-    entry.update(
-        offered=True,
-        preview_asset=preview,
-        measured={
-            "successes": successes,
-            "n": n,
-            "wilson_low": 0.1,
-            "wilson_high": 0.9,
-            "measured_on": "2026-11-24",
-        },
-    )
-    return {"version": 5, "entries": [entry]}
+def test_a_measurement_names_the_model_it_ran_on() -> None:
+    bench = _bench_json()
+    del bench["model"]
+    with pytest.raises(ValidationError, match="model"):
+        Measured.model_validate(bench)
 
 
 def test_an_effect_measured_under_the_bar_cannot_be_offered(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="2/3"):
-        parse_library(_offered_entry(tmp_path, 2, 4), assets_root=tmp_path)
+        _measured_library(tmp_path, successes=2, n=4)
     with pytest.raises(ValidationError, match="2/3"):
-        parse_library(_offered_entry(tmp_path, 3, 3), assets_root=tmp_path)  # n < 4
-    library = parse_library(_offered_entry(tmp_path, 3, 4), assets_root=tmp_path)
-    assert [e.id for e in library.offered()] == ["humo_denso"]
+        _measured_library(tmp_path, successes=3, n=3)  # n < 4
+    library = _measured_library(tmp_path, successes=3, n=4)
+    assert {"humo_denso", "brasas"} <= {e.id for e in library.offered()}
+
+
+def test_an_effect_is_offered_only_for_the_model_it_was_measured_on(tmp_path: Path) -> None:
+    library = _measured_library(tmp_path)
+    ai = {e.id for e in library.offered(model=DRAFT_MODEL) if e.stage == "seedance_prompt"}
+    assert ai == {"humo_denso", "brasas"}
+    other = library.offered(model=SEEDANCE_MODEL)
+    assert not any(e.stage == "seedance_prompt" for e in other)
+    assert "texto" in {e.id for e in other}  # the rest is untouched
+    entry = library.get("humo_denso", 1)
+    assert entry is not None
+    assert measured_on_model(entry, DRAFT_MODEL)
+    assert not measured_on_model(entry, SEEDANCE_MODEL)
+    assert not measured_on_model(entry, None)
 
 
 def test_offered_never_lists_an_effect_under_the_bar_even_built_around_the_validator(
     tmp_path: Path,
 ) -> None:
-    library = parse_library(_offered_entry(tmp_path, 3, 4), assets_root=tmp_path)
-    (entry,) = library.entries
+    library = _measured_library(tmp_path)
+    entry = library.get("humo_denso", 1)
+    assert entry is not None
     weak = entry.model_construct(**{**dict(entry), "measured": _bench(1, 4)})
     unmeasured = entry.model_construct(**{**dict(entry), "measured": None})
     for bad in (weak, unmeasured):
@@ -142,8 +207,7 @@ def test_no_library_offers_an_unmeasured_seedance_effect(version: str) -> None:
     library = load_effects(version)
     for entry in library.entries:
         if entry.stage == "seedance_prompt":
-            assert entry.measured is None or entry.measured.passes
-            assert entry.offered is False
+            assert entry.measured is None and entry.offered is False
     assert not any(e.stage == "seedance_prompt" for e in library.offered())
 
 
@@ -175,12 +239,15 @@ def test_the_template_is_filled_with_the_zone_and_the_product() -> None:
 def test_the_subject_is_the_product_or_a_neutral_default() -> None:
     assert effect_subject(None) == DEFAULT_EFFECT_SUBJECT
     assert effect_subject('  Pan "de" {bono} ') == '"Pan de bono"'
+    assert effect_subject("Smash 🍔 doble 🔥") == '"Smash doble"'
+    assert effect_subject("🍔") == DEFAULT_EFFECT_SUBJECT
     assert len(effect_subject("a " * 100)) <= 82
 
 
 def test_the_cost_copy_is_spanish_and_counts_whole_seconds() -> None:
-    assert AI_EFFECT_COST_NOTE == "Con IA: gasta segundos de video"
-    assert ai_effect_cost_text(5) == "Esta parte gastará 5 segundos de video de tu plan."
+    assert AI_EFFECT_COST_NOTE == "Hecho con IA: usa segundos de video de tu plan"
+    assert ai_effect_cost_text(5) == "Esta parte usa 5 segundos de video cuando la apruebes."
+    assert ai_effect_cost_text(1) == "Esta parte usa 1 segundo de video cuando la apruebes."
 
 
 # -- the switch and the gate -------------------------------------------------------------------
@@ -216,21 +283,38 @@ def test_switch_on_builds_it_only_on_a_reference_piece_over_the_whole_part(
     assert not is_built_seedance_effect(EffectUse(effect_id="humo_capa", version=1), "reference")
 
 
+def test_the_effect_is_read_only_where_it_is_built(
+    measured: EffectsLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert seedance_effect_of(_clip(effects=(_use(),))) is not None
+    spanned = EffectUse(effect_id="humo_denso", version=1, start_s=0.0, end_s=2.0)
+    assert seedance_effect_of(_clip(effects=(spanned,))) is None
+    monkeypatch.setenv(SEEDANCE_EFFECTS_SWITCH, "off")
+    assert seedance_effect_of(_clip(effects=(_use(),))) is None
+
+
 # -- the prompt, the seed and the provenance --------------------------------------------------
 
 
-def test_a_clip_with_the_effect_asks_it_in_its_prompt_sends_no_seed_and_keeps_provenance() -> None:
-    seedance, draft_id = DraftSeedance(), uuid4()
-    brief = _clip(effects=(_use(zone="middle"),))
-    outcome = _producer(_store(), seedance, RecordingFitter()).produce(
-        tenant_id=TENANT_ID, draft_id=draft_id, brief=brief, kit=_kit(), copy=COPY, budget=BUDGET
+def _produce(producer: MediaProducer, brief: Any, budget: BudgetContext = BUDGET) -> Any:
+    return producer.produce(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit(), copy=COPY, budget=budget
+    )
+
+
+def test_a_clip_with_the_effect_asks_it_in_its_prompt_sends_no_seed_and_keeps_provenance(
+    measured: EffectsLibrary,
+) -> None:
+    seedance = DraftSeedance()
+    outcome = _produce(
+        _producer(_store(), seedance, RecordingFitter()), _clip(effects=(_use(zone="middle"),))
     )
 
     assert outcome.failure is None, outcome.detail
     (request,) = seedance.requests
     prompt = str(request.params["prompt"])
-    entry = load_effects().get("humo_denso", 1)
-    assert entry is not None and entry.prompt_template is not None
+    entry = measured.get("humo_denso", 1)
+    assert entry is not None
     expected = seedance_effect_line(entry, _use(zone="middle"), subject=effect_subject(None))
     assert prompt.endswith(" " + expected)
     assert "seed" not in request.params  # never sent
@@ -243,11 +327,25 @@ def test_a_clip_with_the_effect_asks_it_in_its_prompt_sends_no_seed_and_keeps_pr
     assert block["prompt_version"] == "efecto-humo_denso-v1"
     assert block["zone"] == "middle" and block["line"] == expected
     assert block["fill_version"] == 1 and block["library_version"] == "v5"
+    assert block["measured_model"] == DRAFT_MODEL
     # its final (the draft's own task) carries the same provenance
     assert video.params["draft"][SEEDANCE_EFFECT_PARAMS_KEY] == block
 
 
-def test_the_final_of_an_effect_comes_from_the_draft_with_no_prompt_and_no_seed() -> None:
+def test_the_seconds_and_cost_are_charged_as_without_the_effect(measured: EffectsLibrary) -> None:
+    plain = _produce(_producer(_store(), DraftSeedance(), RecordingFitter()), _clip())
+    with_effect = _produce(
+        _producer(_store(), DraftSeedance(), RecordingFitter()), _clip(effects=(_use(),))
+    )
+    assert plain.failure is None and with_effect.failure is None
+    assert [(u.unit, u.quantity, u.cost_usd) for u in with_effect.usage] == [
+        (u.unit, u.quantity, u.cost_usd) for u in plain.usage
+    ]
+
+
+def test_the_final_of_an_effect_comes_from_the_draft_with_no_prompt_and_no_seed(
+    measured: EffectsLibrary,
+) -> None:
     store, seedance, fitter, draft_id = _store(), DraftSeedance(), RecordingFitter(), uuid4()
     producer = _producer(store, seedance, fitter)
     brief = _clip(effects=(_use(),))
@@ -266,54 +364,168 @@ def test_the_final_of_an_effect_comes_from_the_draft_with_no_prompt_and_no_seed(
     assert outcome.media.params["resolution"] == "1080p"
 
 
-def test_a_part_with_the_effect_asks_it_too() -> None:
+def test_another_version_after_the_switch_went_off_has_no_line(
+    measured: EffectsLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Otra versión» / a retry of a piece stored with an effect, once the switch is off:
+    asked as on main — no line, no provenance."""
+    monkeypatch.setenv(SEEDANCE_EFFECTS_SWITCH, "off")
+    seedance = DraftSeedance()
+    outcome = _produce(_producer(_store(), seedance, RecordingFitter()), _clip(effects=(_use(),)))
+    assert outcome.failure is None
+    entry = measured.get("humo_denso", 1)
+    assert entry is not None and entry.prompt_template is not None
+    assert "Dense grey smoke" not in str(seedance.requests[0].params["prompt"])
+    (video,) = outcome.media
+    assert SEEDANCE_EFFECT_PARAMS_KEY not in video.params
+
+
+def test_a_part_with_the_effect_asks_it_too(measured: EffectsLibrary) -> None:
     part = PartRef(index=1, mode="reference", seconds=5, effects=(_use("brasas"),))
     brief = _clip(part=part, duration_seconds=5)
     effect = seedance_effect_of(brief)
     assert effect is not None and effect.entry.id == "brasas"
     assert effect.provenance["prompt_version"] == "efecto-brasas-v1"
+    prompt = media_module._part_prompt(brief=brief, kit=_kit(), images=0, model=DRAFT_MODEL)
+    assert prompt.endswith(effect.line)
 
 
-def test_a_clip_without_an_effect_is_asked_as_on_main() -> None:
+def test_a_clip_without_an_effect_is_asked_as_on_main(measured: EffectsLibrary) -> None:
     seedance = DraftSeedance()
-    outcome = _producer(_store(), seedance, RecordingFitter()).produce(
-        tenant_id=TENANT_ID, draft_id=uuid4(), brief=_clip(), kit=_kit(), copy=COPY, budget=BUDGET
-    )
+    outcome = _produce(_producer(_store(), seedance, RecordingFitter()), _clip())
     (video,) = outcome.media
     assert SEEDANCE_EFFECT_PARAMS_KEY not in video.params
     assert SEEDANCE_EFFECT_PARAMS_KEY not in video.params["draft"]
     assert seedance_effect_of(_clip()) is None
 
 
-def test_the_price_guard_runs_before_the_effect_is_asked() -> None:
+def test_the_price_guard_runs_before_the_effect_is_asked(measured: EffectsLibrary) -> None:
     """Criterion (rule 7): the effect's request goes through the same router pre-flight —
     a budget under the estimate blocks it before ModelArk is called, nothing spent."""
     seedance = DraftSeedance()
-    outcome = _producer(_store(), seedance, RecordingFitter()).produce(
-        tenant_id=TENANT_ID,
-        draft_id=uuid4(),
-        brief=_clip(effects=(_use(),)),
-        kit=_kit(),
-        copy=COPY,
+    outcome = _produce(
+        _producer(_store(), seedance, RecordingFitter()),
+        _clip(effects=(_use(),)),
         budget=BudgetContext(remaining_usd=Decimal("0.01")),
     )
     assert outcome.failure == FailureReason.BUDGET_EXCEEDED.value
     assert seedance.requests == []
 
 
-def test_the_line_is_never_trimmed_it_fits_whole_or_nothing_is_asked() -> None:
-    assert _with_effect_line("base", "line", None) == "base line"
-    assert _with_effect_line("base", "line", 9) == "base line"
-    with pytest.raises(_PromptOverBudget) as over:
-        _with_effect_line("base", "line", 8)
-    assert over.value.detail == AI_EFFECT_DOES_NOT_FIT_TEXT
-    with pytest.raises(_PromptOverBudget):
-        _with_effect_line("palabra " * 999, "una dos", None)
+# -- D5: the model it is asked of ---------------------------------------------------------------
 
 
-def test_the_compose_ignores_a_seedance_effect(switch_on: None) -> None:
+def test_an_effect_measured_on_another_model_is_refused_before_the_copy_and_the_call(
+    switch_on: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _serve(monkeypatch, _measured_library(tmp_path, model="dreamina-seedance-2-0-260128"))
+    seedance = DraftSeedance()
+    producer = _producer(_store(), seedance, RecordingFitter())
+    brief = _clip(effects=(_use(),))
+    with pytest.raises(BrandReferenceError) as refused:
+        producer.prepare_new_brief(brief, _kit())  # before the copy is paid
+    assert str(refused.value) == AI_EFFECT_MODEL_TEXT
+    outcome = _produce(producer, brief)
+    assert outcome.detail == AI_EFFECT_MODEL_TEXT
+    assert seedance.requests == []
+
+
+# -- the line inside the budget ------------------------------------------------------------------
+
+
+def _capped_producer(seedance: FakeSeedance) -> MediaProducer:
+    """Seedance 1.0 (`seedance-1-0-pro-250528`): a character cap, no draft mode."""
+    pricing = JsonPricingTable("v5")
+    return MediaProducer(
+        store=_store(),
+        router=CreativeRouter({"seedance": seedance}, pricing, KeysByProvider()),
+        credentials=KeysByProvider(),
+        pricing=pricing,
+        download=lambda url: b"mp4",
+        seedance_model=SEEDANCE_MODEL,
+    )
+
+
+@pytest.fixture
+def measured_on_1_0(
+    switch_on: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> EffectsLibrary:
+    library = _measured_library(tmp_path, model=SEEDANCE_MODEL)
+    _serve(monkeypatch, library)
+    return library
+
+
+def test_on_a_capped_model_the_owners_words_are_trimmed_never_the_effect(
+    measured_on_1_0: EffectsLibrary,
+) -> None:
+    seedance = FakeSeedance()
+    brief = _clip(effects=(_use(),), prompt_compiler_version=1)
+    brief = brief.model_copy(update={"topic": "Smash doble con papas y salsa " * 150})
+    producer = _capped_producer(seedance)
+    producer.prepare_new_brief(brief, _kit())  # fits: nothing refused before the copy
+
+    outcome = _produce(producer, brief)
+
+    assert outcome.failure is None, outcome.detail
+    prompt = str(seedance.requests[0].params["prompt"])
+    entry = measured_on_1_0.get("humo_denso", 1)
+    assert entry is not None
+    assert prompt.endswith(seedance_effect_line(entry, _use(), subject=effect_subject(None)))
+    assert len(prompt) <= media_module.MAX_PROMPT_CHARS
+    (video,) = outcome.media
+    assert video.params["prompt_trims"]  # the topic was cut to make room
+
+
+def test_a_prompt_at_its_limit_is_refused_before_the_copy_and_never_asked(
+    measured_on_1_0: EffectsLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner's words at their least and the line still does not fit: refused in the
+    check before the copy is paid (`prepare_new_brief`), and — were it reached — before
+    the call, never sent with a cut template."""
+    monkeypatch.setattr(media_module, "MAX_PROMPT_CHARS", 400)
+    seedance = FakeSeedance()
+    producer = _capped_producer(seedance)
+    brief = _clip(effects=(_use(),), prompt_compiler_version=1)
+    with pytest.raises(BrandReferenceError) as refused:
+        producer.prepare_new_brief(brief, _kit())
+    assert str(refused.value) == AI_EFFECT_DOES_NOT_FIT_TEXT
+    outcome = _produce(producer, brief)
+    assert outcome.detail == AI_EFFECT_DOES_NOT_FIT_TEXT
+    assert seedance.requests == []
+
+
+def test_the_compose_ignores_a_seedance_effect(measured: EffectsLibrary) -> None:
     """EF-14's compose lays only the library's layers: a Seedance template is in the
     prompt, never laid again over the clip."""
     from qualify_api.creative.video_pipeline.recompose import compose_recipe_of
 
     assert compose_recipe_of(_clip(effects=(_use(),)), _kit()) is None
+
+
+def test_the_copy_check_counts_the_effect_line(
+    measured: EffectsLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`copy_overage` (before the selector and the video are paid) compiles the same
+    prompt the call sends — the line included: a copy that fits without the effect but
+    not with it is sent back to be shortened."""
+    producer = _producer(_store(), DraftSeedance(), RecordingFitter())
+    plain = _clip(prompt_compiler_version=1)
+    with_effect = _clip(effects=(_use(),), prompt_compiler_version=1)
+    base = media_module.prompt_words(
+        media_module.clip_prompt(
+            brief=plain,
+            kit=_kit(),
+            first_frame=True,
+            last_frame=False,
+            images=0,
+            videos=0,
+            audios=0,
+            copy=COPY,
+            model=DRAFT_MODEL,
+        )
+    )
+    monkeypatch.setattr(media_module, "VIDEO_PROMPT_MAX_WORDS", base + 2)
+    payload = COPY.model_dump()
+    assert producer.copy_overage(plain, _kit(), None, payload)[0] == 0
+    over, note = producer.copy_overage(with_effect, _kit(), None, payload)
+    assert over > 0 and note

@@ -108,6 +108,7 @@ from qualify_creative.compose import (
     subtitle_layer,
     text_layer,
 )
+from qualify_creative.effects import measured_on_model
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
@@ -3807,7 +3808,82 @@ class MediaProducer:
         return "creative-v2-brand9" if self._reference_compiler_version >= 9 else "creative-v1"
 
     def prepare_new_brief(self, brief: ContentBrief, kit: BrandKit) -> ContentBrief:
-        """Stamp only a new creation; existing frozen briefs keep their paid contract."""
+        """Stamp only a new creation; existing frozen briefs keep their paid contract.
+        EF-13: a Seedance effect is checked here too, before the copy is paid
+        (`_preflight_seedance_effect`)."""
+        current = self._stamp_new_brief(brief, kit)
+        self._preflight_seedance_effect(current, kit)
+        return current
+
+    def _ai_effect_models(self, brief: ContentBrief) -> set[str]:
+        """EF-13: every Seedance model `_clip` may ask this piece of — the reference model
+        when it has references (a normal Clip may get them later from the brand
+        resources), else the prepared frame's model (own stretches) or the adapter's."""
+        from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+            uses_prepared_frame,
+        )
+
+        media = brief.media
+        in_part = media.part is not None
+        reference = self._seedance_reference_model or ""
+        if media.clip_has_references:
+            return {reference}
+        try:
+            plain = (
+                self._prepared_frame_model(in_part)
+                if uses_prepared_frame(brief)
+                else self._seedance_model
+            )
+        except _MediaFailed:
+            plain = ""
+        # a normal Clip may become a reference task once its brand resources are chosen
+        return {plain} if in_part or not reference else {plain, reference}
+
+    def _preflight_seedance_effect(self, brief: ContentBrief, kit: BrandKit) -> None:
+        """EF-13, before the copy is paid: a Seedance effect the piece will ask must have
+        been measured on EVERY model it may be asked of (D5), and its line must fit, whole,
+        beside the owner's words with the longest copy the prompt can carry, on each of
+        them. Either failure is `BrandReferenceError` (its detail Spanish), nothing spent."""
+        from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+            seedance_effect_of,
+        )
+
+        effect = seedance_effect_of(brief)
+        if effect is None:
+            return
+        models = self._ai_effect_models(brief)
+        if not all(measured_on_model(effect.entry, model) for model in models):
+            raise BrandReferenceError(AI_EFFECT_MODEL_TEXT)
+        media = brief.media
+        try:
+            for model in sorted(models):
+                if media.part is not None:
+                    _part_prompt(
+                        brief=brief,
+                        kit=kit,
+                        images=len(media.clip_image_keys) if media.clip_has_references else 0,
+                        model=model,
+                    )
+                    continue
+                copies = _WORST_CASE_CLIP_COPIES if media.prompt_compiler_version >= 1 else (None,)
+                for worst_copy in copies:
+                    clip_prompt(
+                        brief=brief,
+                        kit=kit,
+                        first_frame=bool(media.clip_first_frame_key),
+                        last_frame=bool(media.clip_last_frame_key),
+                        images=len(media.clip_image_keys),
+                        videos=len(media.clip_video_keys),
+                        audios=len(media.clip_audio_keys),
+                        copy=worst_copy,
+                        image_roles=media.clip_image_roles,
+                        model=model,
+                    )
+        except _PromptOverBudget as exc:
+            raise BrandReferenceError(exc.detail) from exc
+
+    def _stamp_new_brief(self, brief: ContentBrief, kit: BrandKit) -> ContentBrief:
+        """`prepare_new_brief`'s stamping (before EF-13 the whole method)."""
         if self._reference_compiler_version < 9:
             return brief
         roles = brief.media.product_image_roles or tuple(
@@ -5890,6 +5966,17 @@ class MediaProducer:
             params["resolution"] = resolution
             if draft:
                 params["draft"] = True
+            asked_on = str(params.get("model") or self._seedance_model)
+            if ai_effect is not None and not measured_on_model(ai_effect.entry, asked_on):
+                # EF-13 (D5): a bench result holds on its own model only — refused before
+                # the call (`prepare_new_brief` refused it before the copy already)
+                raise _MediaFailed(
+                    FailureReason.PART_FAILED.value
+                    if part is not None
+                    else FailureReason.INVALID_PARAMETERS.value,
+                    AI_EFFECT_MODEL_TEXT,
+                    raw=f"effect {ai_effect.entry.id} not measured on {asked_on}",
+                )
             reports: list[dict[str, Any]] = []
             collecting = _PROMPT_REPORTS.set(reports)
             try:
@@ -5919,12 +6006,6 @@ class MediaProducer:
                 )
             finally:
                 _PROMPT_REPORTS.reset(collecting)
-            if ai_effect is not None:
-                prompt = _with_effect_line(
-                    prompt,
-                    ai_effect.line,
-                    _video_budget(brief, str(params.get("model") or self._seedance_model)),
-                )
             report = reports[-1] if reports else {}
             prompt_provenance.clear()
             prompt_provenance.update(
@@ -8343,6 +8424,9 @@ def _budgeted_report(
     if clean:
         texts = [visual_text(value) for value in texts]
     originals = list(texts)
+    # EF-13: a Seedance effect's line, last and whole (never reworded, cleaned or cut)
+    holder = _EFFECT_SUFFIX.get()
+    suffix = holder.pop() if holder else ""
 
     def render() -> str:
         parts: list[str] = []
@@ -8352,6 +8436,8 @@ def _budgeted_report(
                     parts.append(f"{line.before}{text}{line.after}")
             elif text:
                 parts.append(text)
+        if suffix:
+            parts.append(suffix)
         return " ".join(parts)
 
     prompt = render()
@@ -8359,8 +8445,10 @@ def _budgeted_report(
         words = prompt_words(prompt)
         if words > VIDEO_PROMPT_MAX_WORDS:
             raise _PromptOverBudget(
-                f"Hay demasiado texto para este video: tiene {words} palabras y admite hasta "
-                f"{VIDEO_PROMPT_MAX_WORDS}. Acorta lo que escribiste y vuelve a intentarlo.",
+                AI_EFFECT_DOES_NOT_FIT_TEXT
+                if suffix
+                else f"Hay demasiado texto para este video: tiene {words} palabras y admite "
+                f"hasta {VIDEO_PROMPT_MAX_WORDS}. Acorta lo que escribiste y vuelve a intentarlo.",
                 needed=words,
                 budget=VIDEO_PROMPT_MAX_WORDS,
                 unit="words",
@@ -8388,6 +8476,10 @@ def _budgeted_report(
         for i, line in flexible.items()
         if texts[i] != originals[i]
     )
+    if suffix and len(prompt) > budget:
+        # EF-13: the owner's words are at their least and the effect still does not fit:
+        # never cut the template (it would ask for something else than what was measured)
+        raise _PromptOverBudget(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=len(prompt), budget=budget)
     if strict and len(prompt) > budget:
         raise _PromptOverBudget(
             f"Hay demasiado texto para esta pieza: necesita {len(prompt)} caracteres y admite "
@@ -8439,33 +8531,51 @@ def _video_budget(brief: ContentBrief, model: str | None) -> int | None:
     return _base_budget()  # `main`'s 2,500 while compiling a brief frozen on it
 
 
-#: EF-13: what the owner reads when the chosen «Con IA» effect does not fit in the video's
-#: instructions (a model with a character cap): nothing was asked of Seedance.
+#: EF-13: what the owner reads when the chosen «Con IA» effect does not fit beside the
+#: owner's own words. The prompt is compiled with the effect's line inside its budget
+#: everywhere — the checks before the copy is paid included (`prepare_new_brief`,
+#: `copy_overage`, the brand references' preflight) —, so it says no spend.
 AI_EFFECT_DOES_NOT_FIT_TEXT = (
-    "El efecto con IA no cabe en las indicaciones de este video. Acorta lo que escribiste "
-    "o quita el efecto, y vuelve a intentarlo."
+    "El efecto no cabe junto a lo que escribiste para esta parte. Acorta la descripción "
+    "o quita el efecto. No se gastó nada."
+)
+#: EF-13 (D5): the effect was measured on a Seedance model other than the one this piece
+#: would be made with. Refused before anything is paid.
+AI_EFFECT_MODEL_TEXT = (
+    "Este efecto todavía no está disponible para este video. Quita el efecto y vuelve a "
+    "intentarlo. No se gastó nada."
+)
+
+#: EF-13: the Seedance effect's line the video prompt being compiled ends with — a
+#: one-shot holder (`_budgeted_report` takes it), set by `_asks_seedance_effect` around
+#: `clip_prompt` and `_part_prompt`, so every caller (the call itself and every check
+#: before it) budgets the same prompt.
+_EFFECT_SUFFIX: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "_EFFECT_SUFFIX", default=None
 )
 
 
-def _with_effect_line(prompt: str, line: str, budget: int | None) -> str:
-    """EF-13: `prompt` with a Seedance effect's line at its end, whole — never trimmed,
-    because a cut template asks for something else than what was measured. With no
-    character budget (Seedance 2.x) the only ceiling is `VIDEO_PROMPT_MAX_WORDS`; with
-    one, the line must fit in it. Over either: `_PromptOverBudget`, before any call."""
-    joined = f"{prompt} {line}" if prompt else line
-    if budget is None:
-        words = prompt_words(joined)
-        if words > VIDEO_PROMPT_MAX_WORDS:
-            raise _PromptOverBudget(
-                AI_EFFECT_DOES_NOT_FIT_TEXT,
-                needed=words,
-                budget=VIDEO_PROMPT_MAX_WORDS,
-                unit="words",
-            )
-        return joined
-    if len(joined) > budget:
-        raise _PromptOverBudget(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=len(joined), budget=budget)
-    return joined
+def _asks_seedance_effect(fn: Callable[..., str]) -> Callable[..., str]:
+    """A video prompt function whose brief may carry a Seedance effect (EF-13): its line
+    is compiled INSIDE the budget, at the end, whole — the owner's own words are trimmed
+    first (a capped model) and a prompt that still does not fit is refused
+    (`AI_EFFECT_DOES_NOT_FIT_TEXT`), never sent with a cut template."""
+
+    @functools.wraps(fn)
+    def compile_(*args: Any, **kwargs: Any) -> str:
+        from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+            seedance_effect_of,
+        )
+
+        brief = kwargs.get("brief", args[0] if args else None)
+        effect = seedance_effect_of(brief) if isinstance(brief, ContentBrief) else None
+        token = _EFFECT_SUFFIX.set([effect.line] if effect is not None else None)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _EFFECT_SUFFIX.reset(token)
+
+    return compile_
 
 
 def _selective_references(refs: Sequence[BrandReference]) -> bool:
@@ -9169,6 +9279,7 @@ def _over_budget_error(
     )
 
 
+@_asks_seedance_effect
 @_compiled_for
 def clip_prompt(
     *,
@@ -10614,6 +10725,7 @@ def _part_product(brief: ContentBrief) -> str:
     return _quoted(product, 120) if product else ""
 
 
+@_asks_seedance_effect
 def _part_prompt(
     *,
     brief: ContentBrief,
