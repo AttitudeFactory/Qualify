@@ -5,6 +5,7 @@ settling opens no `join` on its Clip (only a video by parts joins). No vendor is
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,7 +13,7 @@ import pytest
 from qualify_creative.enums import ContentFormat, ContentKind
 from qualify_creative.schemas import ContentBrief, MediaInputs, SourceSegment
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from qualify_api.creative import clip_avatar as ca
 from qualify_api.creative import models as orm
@@ -208,3 +209,160 @@ def test_a_block_settling_opens_no_join_on_its_clip(monkeypatch: pytest.MonkeyPa
             {"c": world["clip"]},
         )
     assert runs == 0
+
+
+# ---------------------------------------------------------------------------
+# review of 9ffa7eee: the queue finds the block's reservation; Deivid 2026-11-24: the
+# daily cap of 3 blocks per business, counted by Postgres
+
+
+def _service(env: dict[str, str]) -> tuple[ca.ClipAvatarService, Any]:
+    from qualify_creative.pricing import JsonPricingTable
+    from qualify_creative.router import CreativeRouter
+
+    from qualify_api.creative.composition import DbBrandKitReader, DbVoiceProfileReader
+    from qualify_api.creative.creations import PostgresCreationsLedger
+    from qualify_api.creative.queue_dispatch import QueueDispatcher
+    from qualify_api.creative.service import ContentService
+
+    pricing = JsonPricingTable("v1")
+    content = ContentService(
+        router=CreativeRouter(
+            {"anthropic": base.FakeCopyAdapter()}, pricing, base.StaticKeyResolver()
+        ),
+        pricing=pricing,
+        credentials=base.StaticKeyResolver(),
+        brand_service=DbBrandKitReader(),
+        voice_service=DbVoiceProfileReader(),
+        creations=PostgresCreationsLedger(),
+    )
+    content.dispatcher = QueueDispatcher(content.repository, pricing_version=pricing.version)
+    return ca.ClipAvatarService(content, env=env), content
+
+
+def _request() -> ca.AvatarBlockRequest:
+    return ca.AvatarBlockRequest(
+        kind="presenter", script="Hola, soy Ana.", avatar_prompt="Mujer sonriente"
+    )
+
+
+def test_the_queue_finds_a_blocks_reservation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of 9ffa7eee (blocking): without its charge row the queue refused every
+    block («generation reservation is no longer active») after Seedream and Seed Speech
+    were paid. The job is claimed as the worker claims it and goes through the real
+    `PipelineExecutor._validate_reservation`. No vendor is called."""
+    from qualify_api.creative.worker.executor import JobContext
+    from qualify_api.creative.worker.pipeline import PipelineExecutor
+
+    world = _world(monkeypatch)
+    tenant = world["tenant"]
+    service, content = _service({ca.PRESENTER_SWITCH: "on"})
+    block = service.create_block(
+        tenant_id=tenant, user_id=world["user"], clip_id=world["clip"], request=_request()
+    )
+    # claimed as the worker claims it (setup only: the table's owner, as the queue tests)
+    owner = create_engine(os.environ["QUALIFY_MIGRATION_DSN"])
+    with owner.begin() as connection:
+        job = connection.execute(
+            text("""
+            UPDATE creative_jobs SET status = 'claimed', claim_token = 7,
+                claimed_by = 'test-worker', lease_until = now() + interval '5 minutes'
+            WHERE draft_id = :b RETURNING id, kind, revision, position, vendor_model, charge_id
+        """),
+            {"b": block},
+        ).one()
+    owner.dispose()
+    with tenant_session(tenant) as session:
+        charge = session.execute(
+            text("SELECT status, request_kind, weight FROM creation_charges WHERE id = :c"),
+            {"c": job.charge_id},
+        ).one()
+    assert (charge.status, charge.request_kind, charge.weight) == (
+        "charged",
+        "clip_avatar_block",
+        0,
+    )
+    context = JobContext(
+        job_id=job.id,
+        tenant_id=tenant,
+        draft_id=block,
+        kind=job.kind,
+        revision=job.revision,
+        position=job.position,
+        vendor_model=job.vendor_model,
+        lane="now",
+        vendor_priority=0,
+        deadline=None,
+        claim_token=7,
+    )
+    executor = PipelineExecutor(content, None, None, "omnihuman")
+    executor._validate_reservation(context)
+    # the control: what 9ffa7eee left (no charge row) is refused by the same check
+    owner = create_engine(os.environ["QUALIFY_MIGRATION_DSN"])
+    with owner.begin() as connection:
+        connection.execute(
+            text("UPDATE creative_jobs SET charge_id = NULL WHERE id = :j"), {"j": job.id}
+        )
+    owner.dispose()
+    with pytest.raises(ValueError, match="reservation is no longer active"):
+        executor._validate_reservation(context)
+
+
+def test_the_daily_cap_is_three_blocks_of_the_business_own_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = _world(monkeypatch)  # its block was made today: it counts
+    tenant, user, clip = world["tenant"], world["user"], world["clip"]
+    service, _ = _service({ca.PRESENTER_SWITCH: "on"})
+    store = ca.PostgresClipAvatarStore()
+    assert store.blocks_made_today(tenant_id=tenant) == 1
+    for _ in range(ca.AVATAR_DAILY_CAP - 1):
+        service.create_block(tenant_id=tenant, user_id=user, clip_id=clip, request=_request())
+    with tenant_session(tenant) as session:
+        jobs_before = session.scalar(text("SELECT count(*) FROM creative_jobs"))
+    with pytest.raises(ca.AvatarDailyCapReached):
+        service.create_block(tenant_id=tenant, user_id=user, clip_id=clip, request=_request())
+    with tenant_session(tenant) as session:
+        assert session.scalar(text("SELECT count(*) FROM creative_jobs")) == jobs_before
+        # one that failed before anything was paid (no usage with a cost) frees its place
+        session.execute(
+            text("UPDATE content_drafts SET status = 'failed' WHERE id = :b"),
+            {"b": world["block"]},
+        )
+    assert store.blocks_made_today(tenant_id=tenant) == ca.AVATAR_DAILY_CAP - 1
+    service.create_block(tenant_id=tenant, user_id=user, clip_id=clip, request=_request())
+    assert store.blocks_made_today(tenant_id=tenant) == ca.AVATAR_DAILY_CAP
+    # another business is not affected
+    other_world = _world(monkeypatch)
+    assert store.blocks_made_today(tenant_id=other_world["tenant"]) == 1
+    # the business's next day frees the cap
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "UPDATE content_drafts SET created_at = created_at - interval '1 day' "
+                "WHERE parent_draft_id = :c"
+            ),
+            {"c": clip},
+        )
+    assert store.blocks_made_today(tenant_id=tenant) == 0
+
+
+def test_pending_seconds_are_the_brands_uncharged_live_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = _world(monkeypatch)
+    store = ca.PostgresClipAvatarStore()
+    with tenant_session(world["tenant"]) as session:
+        brand = session.scalar(
+            text("SELECT brand_id FROM content_drafts WHERE id = :c"), {"c": world["clip"]}
+        )
+    assert store.pending_block_seconds(tenant_id=world["tenant"], brand_id=brand) == (
+        1,
+        ca.script_seconds("Hola, soy Ana."),
+    )
+    with tenant_session(world["tenant"]) as session:
+        session.execute(
+            text("UPDATE content_drafts SET status = 'failed' WHERE id = :b"),
+            {"b": world["block"]},
+        )
+    assert store.pending_block_seconds(tenant_id=world["tenant"], brand_id=brand) == (0, 0)

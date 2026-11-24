@@ -5764,7 +5764,8 @@ class MediaProducer:
         """m-25112920: the recipe's stretches (videos and photos) that are files of the
         generator, with their provenance — which are AI imagery, which are avatar blocks
         ({} for none: only the owner's own files, nothing looked up). None: there is such
-        a file and no lookup wired — never made without knowing its «hecho con IA»."""
+        a file and no lookup wired, or the lookup failed — never made without knowing
+        its «hecho con IA» (the outcome says so; nothing raises)."""
         from qualify_api.creative.clip_avatar import is_generated_file  # noqa: PLC0415
         from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
 
@@ -5780,7 +5781,11 @@ class MediaProducer:
             return {}
         if self._clip_avatar_sources is None:
             return None
-        return self._clip_avatar_sources(tenant_id, keys)
+        try:
+            return self._clip_avatar_sources(tenant_id, keys)
+        except Exception:  # noqa: BLE001 — the database down: fail closed, never raise
+            logger.warning("generator files of a local recipe not looked up", exc_info=True)
+            return None
 
     def _clip(
         self,

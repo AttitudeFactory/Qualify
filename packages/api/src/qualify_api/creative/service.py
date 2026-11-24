@@ -4187,6 +4187,8 @@ class ContentService:
         # the piece's videos are counted — all or nothing; without enough videos left
         # (`NotEnoughCreations`) nothing is written and the piece waits as it was
         charge_id = self._charge_videos(tenant_id, record)
+        # m-25112920: the seconds of the Clip's avatar blocks, each once, on its own row
+        blocks = self._charge_clip_blocks(tenant_id, record, charge_id)
         try:
             self._repo.set_approved(
                 tenant_id=tenant_id,
@@ -4204,6 +4206,11 @@ class ContentService:
                     draft_id=draft_id,
                     revision=record.revision,
                 )
+            for block in blocks:
+                if self._creations is not None:
+                    self._creations.uncharge_videos(
+                        tenant_id=tenant_id, draft_id=block.draft_id, revision=block.revision
+                    )
             raise
         # the operator's verdict, on the generation's Langfuse trace (plan §8)
         review.score_approval(
@@ -4504,35 +4511,56 @@ class ContentService:
             price = weight_for(brief)
         except CreationNotOffered:
             return 0, 0
-        videos, seconds = price.videos, price.video_seconds
-        if record.parent_draft_id is None and brief.kind is ContentKind.CLIP:
-            # m-25112920: a `local` Clip's avatar blocks are counted at its approval
-            # (D3 still holds for the owner's own stretches: they use nothing)
-            block_videos, block_seconds = self._clip_avatar_charge(tenant_id, record.id, brief)
-            videos, seconds = videos + block_videos, seconds + block_seconds
-        return videos, seconds
+        return price.videos, price.video_seconds
 
-    def _clip_avatar_charge(
-        self, tenant_id: UUID, clip_id: UUID, brief: ContentBrief
-    ) -> tuple[int, int]:
-        """(videos, seconds) of the Clip's own avatar blocks its recipe plays; (0, 0)
-        without blocks — no lookup at all unless a stretch can be one."""
+    def _clip_avatar_charges(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
+        """m-25112920: the `VideoCharge` of each avatar block of this Clip its recipe
+        plays and no approval charged yet — on the BLOCK's own charge row, so approving
+        another version of the Clip never charges it twice. Empty without blocks, for
+        anything but a top-level Clip, or without a quota; no lookup at all unless a
+        stretch can be a block. (D3 still holds for the owner's own stretches.)"""
+        if self._creations is None or record.parent_draft_id is not None:
+            return ()
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None or brief.kind is not ContentKind.CLIP:
+            return ()
         from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
-            clip_block_charge,
+            clip_block_charges,
             db_generated_sources,
         )
 
         resolver = self._clip_avatar_sources
         if resolver is None:
             if not isinstance(self._repo, PostgresContentRepository):
-                return 0, 0
+                return ()
             resolver = db_generated_sources
-        return clip_block_charge(
+        return clip_block_charges(
             tenant_id=tenant_id,
-            clip_id=clip_id,
+            clip_id=record.id,
             brief=brief,
             sources=lambda keys: resolver(tenant_id, keys),
         )
+
+    def _charge_clip_blocks(
+        self, tenant_id: UUID, record: DraftRecord, clip_charge: UUID | None
+    ) -> tuple[Any, ...]:
+        """Charge the Clip's uncharged avatar blocks with its approval, all or nothing;
+        when the month cannot pay them, what the Clip's own approval charged is undone
+        too (`NotEnoughCreations`, nothing written). The blocks charged now."""
+        charges = self._clip_avatar_charges(tenant_id, record)
+        if not charges or self._creations is None:
+            return ()
+        try:
+            self._creations.charge_videos_many(
+                tenant_id=tenant_id, brand_id=record.brand_id, charges=charges
+            )
+        except Exception:
+            if clip_charge is not None:
+                self._creations.uncharge_videos(
+                    tenant_id=tenant_id, draft_id=record.id, revision=record.revision
+                )
+            raise
+        return charges
 
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
@@ -4569,6 +4597,10 @@ class ContentService:
         elif record.status != GENERATED:
             return None
         videos, seconds = self._videos_of(tenant_id, record)
+        # m-25112920: the Clip's avatar blocks no approval charged yet, as `approve`
+        blocks = self._clip_avatar_charges(tenant_id, record)
+        videos += sum(block.videos for block in blocks)
+        seconds += sum(block.seconds for block in blocks)
         if not videos:
             return None
         balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)

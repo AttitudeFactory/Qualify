@@ -25,11 +25,18 @@ Deivid's decisions (2026-11-24), all enforced here or where named:
   voice track, before OmniHuman (the expensive call) is ordered.
 - **Model.** OmniHuman 1.5 (`AVATAR_BLOCK_REQ_KEY`): the producer refuses a block before
   any spend if the platform's OmniHuman is another one.
-- **Quota.** A block takes nothing when it is made (`weight_for` → 0); its seconds are
-  counted from the month's video when the CLIP is approved (`block_charge`, read by
-  `ContentService._videos_of`). Its creation is refused when the month cannot pay its
-  seconds plus those of the Clip's other blocks (`NotEnoughCreations`): no paid call
-  without quota.
+- **Quota.** A block takes nothing when it is made: its charge row is written at weight
+  0 (`weight_for` → 0), as `create_draft` writes one for every piece — the queue reads
+  the generation's reservation from it. Its seconds are counted from the month's video
+  when the CLIP is approved (`clip_block_charges`, charged by `ContentService.approve`)
+  on the BLOCK's own row, so approving another version of the Clip never charges it
+  again. Its creation is refused when the month cannot pay its seconds plus those of
+  every uncharged live block of the brand, in any Clip (`NotEnoughCreations`): no paid
+  call without quota.
+- **Daily cap.** Deivid, 2026-11-24: at most `AVATAR_DAILY_CAP` (3) blocks a day per
+  business, its own day (`check_avatar_daily_cap`, modelled on EF-15's local cap);
+  every block created counts, approved or not, except one that failed before anything
+  was paid. Checked before any row or paid call, under the business's lock.
 - **Switches.** `QUALIFY_CLIP_AVATAR_PRESENTER` and `QUALIFY_CLIP_AVATAR_ANIMATED`, off
   everywhere (`.env.example`, `deploy/.env.prod.example`). The server refuses to create —
   or place — a block whose kind is switched off (`ClipAvatarRefused`, code
@@ -98,12 +105,19 @@ AVATAR_BLOCK_REQ_KEY = OMNIHUMAN_15
 #: its unique `(tenant_id, parent_draft_id, part_index)` index. A Clip lasts 60 s at most,
 #: so two 30 s blocks already fill it.
 AVATAR_BLOCK_SLOTS = 6
+#: Deivid, 2026-11-24: a business creates at most 3 avatar blocks a day (its own day,
+#: as the local cap of EF-15). Every block created counts, approved or not; one that
+#: failed before anything was paid does not (`ClipAvatarStore.blocks_made_today`).
+AVATAR_DAILY_CAP = 3
+#: The stable code of that refusal (screens read it, never the text).
+AVATAR_DAILY_CAP_CODE = "avatar_daily_cap_reached"
 #: Provenance of this module's rules (the block's recipe stretch and the assembly's
 #: block record). A change of rule is a new version.
 CLIP_AVATAR_VERSION = 1
 
 # -- what the owner reads (Spanish, `qualify-copy-es`; the screen is m-25112921) ---------
 
+DAILY_CAP_TEXT = "Ya creaste 3 avatares hoy. Mañana puedes crear más."
 SWITCHED_OFF_TEXT = "Por ahora no puedes agregar este avatar a tu video."
 TOO_LONG_TEXT = "Lo que dice el avatar dura más de 30 segundos. Acórtalo y vuelve a intentarlo."
 CLIP_NOT_LOCAL_TEXT = "Solo puedes agregar un avatar a un video armado con tus fotos y videos."
@@ -138,6 +152,29 @@ class ClipAvatarRefused(ValueError):
         super().__init__(raw or code)
         self.code = code
         self.owner_message = owner_message
+
+
+class AvatarDailyCapReached(ClipAvatarRefused):
+    """Today's avatar blocks of this business are spent: nothing read past the count,
+    written, charged or paid. `used` today's blocks, `cap` the cap."""
+
+    def __init__(self, *, used: int, cap: int = AVATAR_DAILY_CAP) -> None:
+        super().__init__(
+            AVATAR_DAILY_CAP_CODE, DAILY_CAP_TEXT, raw=f"{used} avatar blocks today, cap {cap}"
+        )
+        self.used = used
+        self.cap = cap
+
+
+def check_avatar_daily_cap(store: Any, *, tenant_id: UUID, asking: int = 1) -> None:
+    """Refuse `asking` new blocks when they do not fit in today's cap (the model is
+    `local_cap.check_local_daily_cap`). A store that cannot count is not capped."""
+    counter = getattr(store, "blocks_made_today", None)
+    if counter is None or asking < 1:
+        return
+    used = int(counter(tenant_id=tenant_id))
+    if used + asking > AVATAR_DAILY_CAP:
+        raise AvatarDailyCapReached(used=used)
 
 
 def switch_on(value: str | None) -> bool:
@@ -386,6 +423,9 @@ class GeneratedSource:
     block: bool = True
     #: AI imagery, read from what made it (`asset_is_ai`).
     ai_generated: bool = True
+    #: A block whose seconds a Clip's approval already took (its own charge row, at its
+    #: revision, has videos): never charged again, whatever Clip version is approved.
+    charged: bool = False
 
     def ai_provenance(self, segment: int) -> dict[str, Any]:
         """The Clip asset's record of an AI stretch: the label's evidence."""
@@ -424,6 +464,10 @@ class ClipAvatarStore(Protocol):
     def generated_sources(
         self, *, tenant_id: UUID, keys: Sequence[str]
     ) -> dict[str, GeneratedSource]: ...
+
+    def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]: ...
+
+    def blocks_made_today(self, *, tenant_id: UUID) -> int: ...
 
 
 def _block_kind(kind: str) -> str:
@@ -487,6 +531,61 @@ class PostgresClipAvatarStore:
             for row in rows
         )
 
+    def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
+        """(blocks, script seconds) of the brand's live blocks whose seconds no
+        approval took yet — in every Clip of the brand: what the month already owes. A
+        block that failed or was taken out owes nothing."""
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text("""
+                SELECT COALESCE(b.media->>'own_script', '') AS script
+                FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
+                WHERE d.brand_id = :brand AND d.parent_draft_id IS NOT NULL
+                  AND d.part_removed_at IS NULL AND d.status <> 'failed'
+                  AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
+                  AND NOT EXISTS (SELECT 1 FROM creation_charges c
+                                  WHERE c.draft_id = d.id AND c.videos > 0)
+            """),
+                {"brand": brand_id},
+            ).all()
+        return len(rows), sum(script_seconds(str(row.script)) for row in rows)
+
+    def blocks_made_today(self, *, tenant_id: UUID) -> int:
+        """The business's blocks created today (its own day, `tenants.timezone`, empty
+        → UTC — the day of `local_cap`), approved or not; one that failed BEFORE anything
+        was paid (no usage row with a cost) does not count. Under a unit of work it first
+        takes this business's transaction lock, so two blocks asked at once are counted
+        one after the other."""
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('clip_avatar_cap'), hashtext(:t))"),
+                {"t": str(tenant_id)},
+            )
+            counted = session.scalar(
+                text("""
+                WITH z AS (
+                  SELECT COALESCE(NULLIF(
+                    (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
+                )
+                SELECT count(*) FROM content_drafts d
+                JOIN content_briefs b ON b.id = d.brief_id, z
+                WHERE COALESCE((b.media->>'clip_avatar_block')::boolean, false)
+                  AND d.created_at
+                      >= (date_trunc('day', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
+                  AND NOT (d.status = 'failed' AND NOT EXISTS (
+                        SELECT 1 FROM creative_usage_events u
+                        WHERE u.draft_id = d.id AND u.cost_usd > 0))
+            """),
+                {"tenant": tenant_id},
+            )
+            return int(counted or 0)
+
     def block_video(self, *, tenant_id: UUID, block_id: UUID) -> BlockVideo | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
@@ -530,7 +629,10 @@ class PostgresClipAvatarStore:
                        a.params->'ai_generated' AS params_ai,
                        d.id AS block_id, d.parent_draft_id, d.revision, d.pipeline_version,
                        d.requires_ai_disclosure, b.kind,
-                       COALESCE((b.media->>'clip_avatar_block')::boolean, false) AS block
+                       COALESCE((b.media->>'clip_avatar_block')::boolean, false) AS block,
+                       EXISTS (SELECT 1 FROM creation_charges c
+                               WHERE c.draft_id = d.id AND c.revision = d.revision
+                                 AND c.videos > 0) AS charged
                 FROM image_assets a
                 JOIN content_drafts d ON d.id = a.draft_id
                 JOIN content_briefs b ON b.id = d.brief_id
@@ -570,6 +672,7 @@ class PostgresClipAvatarStore:
                 pipeline_version=str(row.pipeline_version or ""),
                 block=block,
                 ai_generated=ai,
+                charged=bool(row.charged),
             )
         return found
 
@@ -702,7 +805,7 @@ class ClipAvatarService:
         if clip.status not in _CLIP_READY:
             raise ClipAvatarRefused("clip_not_ready", CLIP_NOT_READY_TEXT)
         blocks = self._store.blocks_of(tenant_id=tenant_id, clip_id=clip_id)
-        self._refuse_without_quota(tenant_id, clip.brand_id, blocks, seconds)
+        self._refuse_without_quota(tenant_id, clip.brand_id, seconds)
         avatar_key = (
             self._brand_avatar_key(tenant_id, clip.brand_id) if request.use_brand_avatar else None
         )
@@ -718,17 +821,84 @@ class ClipAvatarService:
         if not slots:
             raise ClipAvatarRefused("no_slot", NO_SLOT_TEXT)
         try:
-            draft_id = self._insert(
-                tenant_id, user_id, clip_id, stamped, voice_version, pipeline_version, slots, keyed
+            draft_id = self._made_in_one_go(
+                tenant_id,
+                lambda: self._insert_and_charge(
+                    tenant_id,
+                    user_id,
+                    clip,
+                    stamped,
+                    voice_version,
+                    pipeline_version,
+                    slots,
+                    keyed,
+                ),
             )
         except DuplicateDraftRequest as duplicate:
             return duplicate.draft_id
         logger.info(
             "clip %s: avatar block %s (%s, ~%ss) created", clip_id, draft_id, request.kind, seconds
         )
+        return draft_id
+
+    def _made_in_one_go(self, tenant_id: UUID, make: Callable[[], UUID]) -> UUID:
+        """The daily cap's count, the block's rows and its charge row in ONE
+        transaction on Postgres (the count's lock serializes the business's blocks, so
+        two asked at once never both take the last place, nor the same slot); the
+        dispatch only after it commits. Anything refused writes nothing."""
+        from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
+
         dispatcher = self._content.dispatcher
+        if isinstance(self._content.repository, PostgresContentRepository):
+            from qualify_shared.db.session import (  # noqa: PLC0415
+                after_tenant_commit,
+                tenant_unit_of_work,
+            )
+
+            with tenant_unit_of_work(tenant_id):
+                check_avatar_daily_cap(self._store, tenant_id=tenant_id)
+                draft_id = make()
+                if dispatcher is not None:
+                    after_tenant_commit(
+                        tenant_id,
+                        lambda: dispatcher.dispatch_generation(
+                            tenant_id=tenant_id, draft_id=draft_id
+                        ),
+                    )
+            return draft_id
+        check_avatar_daily_cap(self._store, tenant_id=tenant_id)
+        draft_id = make()
         if dispatcher is not None:
             dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
+        return draft_id
+
+    def _insert_and_charge(
+        self,
+        tenant_id: UUID,
+        user_id: UUID,
+        clip: ClipRow,
+        brief: ContentBrief,
+        voice_version: int,
+        pipeline_version: str,
+        slots: list[int],
+        keyed: dict[str, UUID],
+    ) -> UUID:
+        """The block's draft and, as `create_draft` writes for every piece, its charge
+        row of revision 1 — weight 0 (`weight_for` of a block): nothing is taken from
+        the month, but the queue finds the generation's reservation
+        (`PipelineExecutor._validate_reservation`) and refuses none of its paid calls."""
+        draft_id = self._insert(
+            tenant_id, user_id, clip.id, brief, voice_version, pipeline_version, slots, keyed
+        )
+        creations = self._content.creations
+        if creations is not None:
+            creations.charge(
+                tenant_id=tenant_id,
+                brand_id=clip.brand_id,
+                draft_id=draft_id,
+                revision=1,
+                price=weight_for(brief),
+            )
         return draft_id
 
     def _insert(
@@ -743,7 +913,8 @@ class ClipAvatarService:
         keyed: dict[str, UUID],
     ) -> UUID:
         """Into the first free slot; a slot taken meanwhile by a concurrent block (the
-        unique index of 0119) moves to the next one."""
+        unique index of 0119, outside the business's lock) moves to the next one. Any
+        other integrity error (a foreign key, a check) goes up as it is."""
         from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
 
         last: IntegrityError | None = None
@@ -760,6 +931,8 @@ class ClipAvatarService:
                     **keyed,
                 )
             except IntegrityError as exc:
+                if not _slot_taken(exc):
+                    raise
                 last = exc
         assert last is not None
         raise ClipAvatarRefused("no_slot", NO_SLOT_TEXT, raw=str(last)) from last
@@ -783,20 +956,21 @@ class ClipAvatarService:
             raise ClipAvatarRefused("clip_not_ready", CLIP_NOT_READY_TEXT, raw="purged")
         return clip, brief
 
-    def _refuse_without_quota(
-        self, tenant_id: UUID, brand_id: UUID, blocks: Sequence[BlockRow], seconds: int
-    ) -> None:
-        """No paid call without quota: the month must be able to pay, at the Clip's
-        approval, this block and the Clip's other live blocks."""
+    def _refuse_without_quota(self, tenant_id: UUID, brand_id: UUID, seconds: int) -> None:
+        """No paid call without quota: the month must be able to pay, at approval, this
+        block and EVERY live block of the brand not charged yet — in any of its Clips —,
+        so blocks are never piled up past the balance."""
         creations = self._content.creations
         if creations is None:
             return
-        live = [block for block in blocks if not block.removed]
+        pending, pending_seconds = self._store.pending_block_seconds(
+            tenant_id=tenant_id, brand_id=brand_id
+        )
         balance = creations.balance(tenant_id=tenant_id, brand_id=brand_id)
         if balance.video_in_seconds:
-            needed = seconds + sum(block.script_seconds for block in live)
+            needed = seconds + pending_seconds
         else:
-            needed = 1 + len(live)
+            needed = 1 + pending
         short = balance.video_shortfall(needed)
         if short is not None:
             raise short
@@ -819,6 +993,8 @@ class ClipAvatarService:
             validate_recipe,
         )
 
+        if not any_block_enabled(self._env):  # both off: refused before any read
+            raise ClipAvatarRefused("switched_off", SWITCHED_OFF_TEXT)
         block = next(
             (
                 b
@@ -937,13 +1113,14 @@ class ClipAvatarService:
     # -- approval ------------------------------------------------------------------------
 
     def block_charge(self, *, tenant_id: UUID, clip_id: UUID, brief: ContentBrief) -> int:
-        """The month's video seconds approving the Clip uses for its blocks."""
-        return clip_block_charge(
+        """The month's video seconds approving the Clip still uses for its blocks."""
+        charges = clip_block_charges(
             tenant_id=tenant_id,
             clip_id=clip_id,
             brief=brief,
             sources=lambda keys: self._store.generated_sources(tenant_id=tenant_id, keys=keys),
-        )[1]
+        )
+        return sum(charge.seconds for charge in charges)
 
 
 #: A Clip a block can be added to: shown to the owner, its copy written (a block carries
@@ -951,27 +1128,49 @@ class ClipAvatarService:
 _CLIP_READY = frozenset({"generated", "rejected"})
 
 
-def clip_block_charge(
+def clip_block_charges(
     *,
     tenant_id: UUID,
     clip_id: UUID,
     brief: ContentBrief,
     sources: Callable[[Sequence[str]], Mapping[str, GeneratedSource]],
-) -> tuple[int, int]:
-    """(videos, seconds) approving the Clip `clip_id` uses for the blocks its recipe
-    plays — (0, 0) for anything that is not a `local` Clip with blocks of its own (a
-    block of another video is refused by the assembly, never charged here). Only keys a
-    block can have are looked up (`is_generated_file`)."""
+) -> tuple[Any, ...]:
+    """What approving the Clip `clip_id` charges for the blocks its recipe plays: one
+    `VideoCharge` per block of its own whose seconds no approval took yet, on the
+    BLOCK's own charge row (its draft and revision) — so approving another version of
+    the Clip never charges a block twice (the row's unique key, and `charged`). Empty
+    for anything that is not a `local` Clip with blocks of its own (a block of another
+    video is refused by the assembly, never charged here). Only keys a block can have
+    are looked up (`is_generated_file`)."""
+    from qualify_api.creative.creations import VideoCharge  # noqa: PLC0415
     from qualify_api.creative.video_pipeline.local import is_local_recipe  # noqa: PLC0415
 
     if not is_local_recipe(brief):
-        return 0, 0
+        return ()
     segments = brief.media.segments
     keys = [s.key for s in segments if s.kind == "video" and is_generated_file(tenant_id, s.key)]
     if not keys:
-        return 0, 0
-    own = [s for s in block_stretches(segments, sources(keys)) if s.source.clip_id == clip_id]
-    return len(own), charged_seconds(own)
+        return ()
+    charges: dict[UUID, Any] = {}
+    for stretch in block_stretches(segments, sources(keys)):
+        source = stretch.source
+        if source.clip_id != clip_id or source.charged or source.block_id in charges:
+            continue
+        charges[source.block_id] = VideoCharge(
+            draft_id=source.block_id,
+            revision=source.revision,
+            videos=1,
+            seconds=charged_seconds((stretch,)),
+        )
+    return tuple(charges.values())
+
+
+def _slot_taken(exc: BaseException) -> bool:
+    """A unique violation (SQLSTATE 23505): the slot of 0119's unique index was taken.
+    A foreign key, a check or anything else is not."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code == "23505"
 
 
 __all__ = [
@@ -1004,7 +1203,11 @@ __all__ = [
     "ai_stretches",
     "asset_is_ai",
     "charged_seconds",
-    "clip_block_charge",
+    "AVATAR_DAILY_CAP",
+    "AVATAR_DAILY_CAP_CODE",
+    "AvatarDailyCapReached",
+    "check_avatar_daily_cap",
+    "clip_block_charges",
     "db_generated_sources",
     "is_generated_file",
     "refuse_if_off",

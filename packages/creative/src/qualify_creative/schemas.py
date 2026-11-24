@@ -1509,8 +1509,9 @@ class MediaInputs(BaseModel):
     #: Server-owned (m-25112920, ADR 50 amendment [PROPUESTO]): this avatar brief is a
     #: BLOCK of a Clip — a child `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` draft under the
     #: Clip (`parent_draft_id`), whose talking video enters the Clip's recipe as a video
-    #: stretch. Only `qualify_api.creative.clip_avatar` sets it; `create_draft` resets
-    #: what a caller sends. Kept in `content_briefs.media` (no migration); False for
+    #: stretch. Only `qualify_api.creative.clip_avatar` sets it; `create_draft` refuses a
+    #: brief that carries it (`check_part_link`: a block never exists loose). Kept in
+    #: `content_briefs.media` (no migration); False for
     #: every brief stored before it, which reads exactly as it did.
     clip_avatar_block: bool = False
     #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved

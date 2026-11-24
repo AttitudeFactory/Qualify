@@ -9,6 +9,7 @@ dicts and the videos are tiny files encoded here."""
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -111,6 +112,12 @@ def _local_clip(*segments: SourceSegment) -> ContentBrief:
 # doubles: a repository with children, the store read from it
 
 
+class _UniqueViolation(Exception):
+    """What psycopg puts under a unique violation: SQLSTATE 23505."""
+
+    sqlstate = "23505"
+
+
 class BlockRepo(InMemoryRepository):
     """`InMemoryRepository` with what Postgres does for children: a parent and a slot
     (unique per parent, as migration 0119's index), a request key, a new brief."""
@@ -139,7 +146,7 @@ class BlockRepo(InMemoryRepository):
         if request_key is not None and request_key in self.keys:
             raise DuplicateDraftRequest(self.keys[request_key])
         if parent_draft_id is not None and (parent_draft_id, part_index) in self.parents.values():
-            raise IntegrityError("slot taken", {}, Exception("uq_content_drafts_part"))
+            raise IntegrityError("slot taken", {}, _UniqueViolation())
         self.inserts += 1
         draft_id = super().insert_brief_and_draft(
             tenant_id=tenant_id,
@@ -178,6 +185,46 @@ class RepoStore:
         self.repo = repo
         self.videos = videos if videos is not None else {}
         self.reads = 0
+        #: the month's ledger (what `charged` reads), set by `_wired`
+        self.ledger: InMemoryCreationsLedger | None = None
+        #: «today» for the daily cap (the business's own day)
+        self.today = datetime.now(UTC).date()
+        #: drafts that failed before anything was paid
+        self.unpaid_failures: set[UUID] = set()
+        #: False: count nothing (a test about something else makes more than 3)
+        self.capped = True
+
+    def _blocks(self) -> list[tuple[UUID, ContentBrief]]:
+        return [
+            (draft_id, self.repo.briefs[self.repo.drafts[draft_id].brief_id])
+            for draft_id in self.repo.parents
+            if ca.block_kind_of(self.repo.briefs[self.repo.drafts[draft_id].brief_id])
+        ]
+
+    def _charged(self, draft_id: UUID) -> bool:
+        if self.ledger is None:
+            return False
+        return any(row.videos > 0 for (d, _), row in self.ledger.rows.items() if d == draft_id)
+
+    def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
+        live = [
+            (draft_id, brief)
+            for draft_id, brief in self._blocks()
+            if brief.brand_id == brand_id
+            and self.repo.drafts[draft_id].status != "failed"
+            and not self._charged(draft_id)
+        ]
+        return len(live), sum(ca.script_seconds(b.media.own_script) for _, b in live)
+
+    def blocks_made_today(self, *, tenant_id: UUID) -> int:
+        if not self.capped:
+            return 0
+        return sum(
+            1
+            for draft_id, _ in self._blocks()
+            if self.repo.drafts[draft_id].created_at.date() == self.today
+            and draft_id not in self.unpaid_failures
+        )
 
     def clip(self, *, tenant_id: UUID, clip_id: UUID) -> ca.ClipRow | None:
         self.reads += 1
@@ -219,8 +266,12 @@ class RepoStore:
         found = {}
         for block_id, video in self.videos.items():
             if video.object_key in keys:
-                found[video.object_key] = _source(
-                    video.object_key, block_id, self.repo.parents[block_id][0], video.seconds
+                found[video.object_key] = replace(
+                    _source(
+                        video.object_key, block_id, self.repo.parents[block_id][0], video.seconds
+                    ),
+                    revision=self.repo.drafts[block_id].revision,
+                    charged=self._charged(block_id),
                 )
         return found
 
@@ -288,6 +339,7 @@ def _wired(
         clip_avatar_sources=sources
         or (lambda tenant, keys: store.generated_sources(tenant_id=tenant, keys=keys)),
     )
+    store.ledger = ledger
     clip_id = repo.seed_draft(clip or _local_clip(), status=clip_status)
     repo.inserts = 0  # the Clip itself
     service = ca.ClipAvatarService(
@@ -480,7 +532,8 @@ def test_a_block_is_never_a_block_of_a_block() -> None:
 
 
 def test_a_clip_has_at_most_six_slots() -> None:
-    service, _, repo, _, _, clip_id = _wired(env=BOTH_ON)
+    service, _, repo, store, _, clip_id = _wired(env=BOTH_ON)
+    store.capped = False  # six blocks over days: the daily cap is another test
     for _ in range(ca.AVATAR_BLOCK_SLOTS):
         service.create_block(
             tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
@@ -912,3 +965,148 @@ def test_an_asset_is_ai_by_its_own_record_then_its_vendor_then_its_draft(
         ca.asset_is_ai(provider=provider, params_ai=params_ai, draft_requires_disclosure=draft)
         is expected
     )
+
+
+# ---------------------------------------------------------------------------
+# review of 9ffa7eee: the charge row, each block charged once, the brand's pending
+# blocks; Deivid 2026-11-24: 3 blocks a day per business
+
+
+def test_a_block_is_born_with_its_charge_row_of_weight_0() -> None:
+    """As `create_draft` writes for every piece: the queue reads the generation's
+    reservation from it (`PipelineExecutor._validate_reservation`); nothing is taken."""
+    ledger = InMemoryCreationsLedger()
+    service, _, _, _, _, clip_id = _wired(env=PRESENTER_ON, ledger=ledger)
+    before = ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID)
+    block = service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+    row = ledger.rows[(block, 1)]
+    assert row.price.request_kind == REQUEST_CLIP_AVATAR_BLOCK and row.price.weight == 0
+    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID) == before
+
+
+def _approvable(
+    service: ca.ClipAvatarService,
+    content: ContentService,
+    repo: BlockRepo,
+    store: RepoStore,
+    clip_id: UUID,
+) -> UUID:
+    """The Clip playing one made block (4.2 s), with a text to approve: its variant."""
+    from qualify_api.creative.service import VariantRecord
+
+    _, key = _made_block(service, repo, store, clip_id)
+    clip = _local_clip(
+        SourceSegment(key=key, start_s=0, end_s=4.2, speed=1.0),
+        SourceSegment(key=OWN_VIDEO, start_s=0, end_s=4.0, speed=2.0),
+    )
+    repo.replace_brief(tenant_id=TENANT_ID, draft_id=clip_id, user_id=USER_ID, brief=clip)
+    variant = uuid4()
+    repo.variants[variant] = VariantRecord(
+        id=variant,
+        draft_id=clip_id,
+        ordinal=1,
+        copy=copy_dict(),
+        edited_copy=None,
+        fidelity={"passed": True},
+        model_id="claude",
+        model_revision="r",
+    )
+    return variant
+
+
+def test_a_block_is_charged_once_whatever_clip_version_is_approved() -> None:
+    """Approve, reject, approve another version: the block's 5 s are taken once — on
+    the block's own row, which the second approval finds charged."""
+    ledger = InMemoryCreationsLedger()
+    service, content, repo, store, _, clip_id = _wired(env=PRESENTER_ON, ledger=ledger)
+    variant = _approvable(service, content, repo, store, clip_id)
+    start = ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).videos_left
+    content.approve(tenant_id=TENANT_ID, draft_id=clip_id, variant_id=variant, user_id=USER_ID)
+    assert start - ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).videos_left == 5
+    # another version of the Clip, approved again
+    repo.drafts[clip_id] = replace(
+        repo.drafts[clip_id], status=GENERATED, revision=repo.drafts[clip_id].revision + 1
+    )
+    assert content.approval_videos(tenant_id=TENANT_ID, draft_id=clip_id) is None
+    content.approve(tenant_id=TENANT_ID, draft_id=clip_id, variant_id=variant, user_id=USER_ID)
+    assert start - ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).videos_left == 5
+
+
+def test_a_new_block_owes_with_the_brands_blocks_in_other_clips() -> None:
+    """The seconds already promised in ANOTHER Clip of the brand count: blocks are never
+    piled up past the month's balance."""
+    ledger = InMemoryCreationsLedger()
+    service, _, repo, _, _, clip_id = _wired(env=PRESENTER_ON, ledger=ledger)
+    other_clip = repo.seed_draft(_local_clip(), status=GENERATED)
+    thirty = _presenter(script="a" * 450)
+    left = ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).videos_left
+    assert 30 <= left < 60
+    service.create_block(tenant_id=TENANT_ID, user_id=USER_ID, clip_id=other_clip, request=thirty)
+    made = repo.inserts
+    with pytest.raises(NotEnoughCreations):
+        service.create_block(tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=thirty)
+    assert repo.inserts == made
+
+
+def test_the_fourth_block_of_the_day_is_refused_before_any_paid_call() -> None:
+    service, _, repo, _, dispatcher, clip_id = _wired(env=PRESENTER_ON)
+    for _ in range(ca.AVATAR_DAILY_CAP):
+        service.create_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+        )
+    made, dispatched = repo.inserts, len(dispatcher.calls)
+    with pytest.raises(ca.AvatarDailyCapReached) as refused:
+        service.create_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+        )
+    assert refused.value.code == ca.AVATAR_DAILY_CAP_CODE == "avatar_daily_cap_reached"
+    assert refused.value.owner_message == "Ya creaste 3 avatares hoy. Mañana puedes crear más."
+    # nothing written, nothing dispatched: no Seedream, Seed Speech or OmniHuman call
+    assert repo.inserts == made and len(dispatcher.calls) == dispatched
+
+
+def test_a_block_that_failed_before_paying_does_not_count_and_tomorrow_frees_the_cap() -> None:
+    service, _, _, store, _, clip_id = _wired(env=PRESENTER_ON)
+    store.capped = True
+    blocks = [
+        service.create_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+        )
+        for _ in range(ca.AVATAR_DAILY_CAP)
+    ]
+    store.unpaid_failures.add(blocks[0])  # failed before anything was paid
+    service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+    with pytest.raises(ca.AvatarDailyCapReached):
+        service.create_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+        )
+    store.today = store.today + timedelta(days=1)  # the business's next day
+    service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+
+
+def test_place_refuses_before_any_read_with_both_switches_off() -> None:
+    service, _, _, store, _, clip_id = _wired(env={})
+    store.reads = 0
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        service.place_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, block_id=uuid4(), at=0
+        )
+    assert refused.value.code == "switched_off" and store.reads == 0
+
+
+def test_only_a_taken_slot_moves_to_the_next_one() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    class Orig(Exception):
+        def __init__(self, sqlstate: str) -> None:
+            super().__init__(sqlstate)
+            self.sqlstate = sqlstate
+
+    assert ca._slot_taken(IntegrityError("x", {}, Orig("23505")))
+    assert not ca._slot_taken(IntegrityError("x", {}, Orig("23503")))  # a foreign key

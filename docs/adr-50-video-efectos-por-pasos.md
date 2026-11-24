@@ -301,8 +301,10 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 
 **Cupo y gasto (enmienda a D3 solo para los bloques).**
 
-- Crear el bloque no descuenta nada. Sus segundos se descuentan del cupo de video del mes cuando se aprueba el Clip, como un clip de Seedance.
-- El servidor rechaza crear el bloque si el mes no alcanza para sus segundos y los de los otros bloques del Clip: no hay llamada de pago sin cupo.
+- Crear el bloque no descuenta nada: escribe su fila de cobro en cero, como cualquier pieza, y con ella la cola encuentra la reserva de la generación.
+- Sus segundos se descuentan del cupo de video del mes cuando se aprueba el Clip, como un clip de Seedance. El cobro queda en la fila del propio bloque, así que aprobar otra versión del Clip no lo vuelve a cobrar.
+- El servidor rechaza crear el bloque si el mes no alcanza para sus segundos y los de **todos** los bloques de la marca que aún no se cobraron, en cualquiera de sus Clips: no hay llamada de pago sin cupo.
+- **Tope diario (decisión de Deivid, 2026-11-24):** un negocio crea como máximo 3 bloques al día, en su propio día (zona horaria del negocio, como el tope de videos con fotos y videos propios). Cuentan todos los bloques creados ese día, aprobados o no. No cuenta uno que falló antes de pagar nada. El cuarto se rechaza antes de escribir nada y de cualquier llamada de pago: «Ya creaste 3 avatares hoy. Mañana puedes crear más.»
 - Máximo 30 s por bloque. Se rechaza al crearlo, con el largo estimado del guion, y otra vez con la voz real, antes de pedir OmniHuman.
 - Las fotos y los videos propios del dueño siguen sin descontar nada (D3).
 
