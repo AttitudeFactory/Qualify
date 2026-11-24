@@ -5660,6 +5660,15 @@ class MediaProducer:
         # are settled first, before any cut or spend (the service made the frame before
         # the copy was paid: read back here, the same bytes)
         prepared = self._prepared_opening_frame(tenant_id, draft_id, brief, save)
+        # EF-13 (m-25026589): a measured Seedance template the owner chose — «an object in
+        # a zone of the frame» — is one more line of this same prompt (the gate let it
+        # through only with `QUALIFY_SEEDANCE_EFFECTS` on); read off the brief as stored
+        from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+            SEEDANCE_EFFECT_PARAMS_KEY,
+            seedance_effect_of,
+        )
+
+        ai_effect = seedance_effect_of(brief)
         window: PartWindow | None = None
         extend_source: dict[str, Any] | None = None
         if part is not None:
@@ -5910,6 +5919,12 @@ class MediaProducer:
                 )
             finally:
                 _PROMPT_REPORTS.reset(collecting)
+            if ai_effect is not None:
+                prompt = _with_effect_line(
+                    prompt,
+                    ai_effect.line,
+                    _video_budget(brief, str(params.get("model") or self._seedance_model)),
+                )
             report = reports[-1] if reports else {}
             prompt_provenance.clear()
             prompt_provenance.update(
@@ -5973,6 +5988,13 @@ class MediaProducer:
                     "recortes": "; ".join(
                         f"{trim['line']}: {trim['kept']} de {trim['chars']}"
                         for trim in report.get("trims", ())
+                    ),
+                    # EF-13: the Seedance effect asked in this prompt
+                    "efecto con IA": (
+                        f"{ai_effect.entry.id} v{ai_effect.entry.version} · "
+                        f"{ai_effect.entry.prompt_version} · zona {ai_effect.zone}"
+                        if ai_effect is not None
+                        else "ninguno"
                     ),
                 },
             )
@@ -6225,6 +6247,12 @@ class MediaProducer:
                             if contact_sheet is not None
                             else {}
                         ),
+                        # EF-13: which Seedance effect the prompt asked (rule 6)
+                        **(
+                            {SEEDANCE_EFFECT_PARAMS_KEY: ai_effect.provenance}
+                            if ai_effect is not None
+                            else {}
+                        ),
                     },
                     payload,
                     model_id=result.model_id,
@@ -6232,6 +6260,12 @@ class MediaProducer:
                     seconds=media.duration_seconds,
                     cost_usd=cost,
                     finish=FINISH_CLIP,
+                    # EF-13: the final (the draft's own task) keeps the effect's provenance
+                    **(
+                        {SEEDANCE_EFFECT_PARAMS_KEY: ai_effect.provenance}
+                        if ai_effect is not None
+                        else {}
+                    ),
                     # §1 #12: the final reads the mode from here, not from the brief
                     reference_mode=media.clip_reference_mode,
                     # risk 7: the worker's raw provider file, for «Sigue a la anterior»
@@ -8403,6 +8437,35 @@ def _video_budget(brief: ContentBrief, model: str | None) -> int | None:
     if brief.media.prompt_compiler_version >= 1:
         return MAX_PROMPT_CHARS
     return _base_budget()  # `main`'s 2,500 while compiling a brief frozen on it
+
+
+#: EF-13: what the owner reads when the chosen «Con IA» effect does not fit in the video's
+#: instructions (a model with a character cap): nothing was asked of Seedance.
+AI_EFFECT_DOES_NOT_FIT_TEXT = (
+    "El efecto con IA no cabe en las indicaciones de este video. Acorta lo que escribiste "
+    "o quita el efecto, y vuelve a intentarlo."
+)
+
+
+def _with_effect_line(prompt: str, line: str, budget: int | None) -> str:
+    """EF-13: `prompt` with a Seedance effect's line at its end, whole — never trimmed,
+    because a cut template asks for something else than what was measured. With no
+    character budget (Seedance 2.x) the only ceiling is `VIDEO_PROMPT_MAX_WORDS`; with
+    one, the line must fit in it. Over either: `_PromptOverBudget`, before any call."""
+    joined = f"{prompt} {line}" if prompt else line
+    if budget is None:
+        words = prompt_words(joined)
+        if words > VIDEO_PROMPT_MAX_WORDS:
+            raise _PromptOverBudget(
+                AI_EFFECT_DOES_NOT_FIT_TEXT,
+                needed=words,
+                budget=VIDEO_PROMPT_MAX_WORDS,
+                unit="words",
+            )
+        return joined
+    if len(joined) > budget:
+        raise _PromptOverBudget(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=len(joined), budget=budget)
+    return joined
 
 
 def _selective_references(refs: Sequence[BrandReference]) -> bool:

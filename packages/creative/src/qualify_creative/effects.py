@@ -160,9 +160,17 @@ class ParamSpec(BaseModel):
         return self.min <= float(value) <= self.max
 
 
+#: ADR 50 D5: a «Con IA» effect is offered only when the paid bench (EF-12) measured it
+#: at a success rate of at least `MEASURED_MIN_SUCCESSES_OF` = 2 of 3, over at least
+#: `MEASURED_MIN_N` = 4 tries. Kept as a pair of integers so 2/3 is exact (never 0.666…).
+MEASURED_MIN_N = 4
+MEASURED_MIN_SUCCESSES_OF: tuple[int, int] = (2, 3)
+
+
 class Measured(BaseModel):
     """The paid bench's result for a «Con IA» effect (EF-12): successes of `n`, the
-    Wilson interval and the day it ran. Offered only when present (D5)."""
+    Wilson interval and the day it ran. Offered only when present AND over D5's bar
+    (`passes`)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -177,6 +185,13 @@ class Measured(BaseModel):
         if self.successes > self.n or self.wilson_low > self.wilson_high:
             raise ValueError("a measurement has successes ≤ n and low ≤ high")
         return self
+
+    @property
+    def passes(self) -> bool:
+        """D5's bar (EF-13): at least `MEASURED_MIN_N` tries and a success rate of at
+        least 2/3 (`MEASURED_MIN_SUCCESSES_OF`), compared in integers."""
+        num, den = MEASURED_MIN_SUCCESSES_OF
+        return self.n >= MEASURED_MIN_N and self.successes * den >= num * self.n
 
 
 class EffectEntry(BaseModel):
@@ -227,6 +242,10 @@ class EffectEntry(BaseModel):
                 raise ValueError("a Seedance effect's prompt fills {zone} and {subject}")
             if self.offered and self.measured is None:
                 raise ValueError("D5: a Seedance effect is offered only once measured")
+            if self.offered and self.measured is not None and not self.measured.passes:
+                raise ValueError(
+                    "D5: a Seedance effect is offered only when measured at ≥ 2/3 with n ≥ 4"
+                )
         elif self.prompt_version is not None or self.prompt_template is not None:
             raise ValueError("only a Seedance effect has a prompt")
         elif self.measured is not None:
@@ -278,7 +297,80 @@ class EffectsLibrary(BaseModel):
     def offered(self) -> tuple[EffectEntry, ...]:
         """What the screen may offer (D5), in the file's order — the same for every
         business: categories only help the screen filter, they never hide an effect."""
-        return tuple(e for e in self.entries if e.offered)
+        return tuple(e for e in self.entries if e.offered and _clears_bench(e))
+
+
+def _clears_bench(entry: EffectEntry) -> bool:
+    """EF-13: a «Con IA» effect reaches a screen only with a bench result over D5's bar —
+    the validator already refuses an offered one without it; this keeps `offered()`
+    honest even for an entry built around the validator (`model_construct`)."""
+    if entry.stage != "seedance_prompt":
+        return True
+    return entry.measured is not None and entry.measured.passes
+
+
+# -- «objeto en una zona del cuadro» (EF-13, m-25026589) ------------------------------------
+
+#: The version of how a Seedance template is FILLED (`seedance_effect_line`): the words a
+#: zone becomes and the subject when the piece names no product. The template itself is
+#: versioned by its entry (`prompt_version`); both go into the provenance, so the paid
+#: bench (EF-12) and production fill a template the same way, and a change of either is
+#: a new version.
+SEEDANCE_EFFECT_FILL_VERSION = 1
+#: Where in the frame (`zone` param: the three bands of the frame, `top`/`middle`/
+#: `bottom`, as a video text's `place`), in the words «in the {zone} of the frame» takes.
+ZONE_WORDS: dict[str, str] = {"top": "upper third", "middle": "middle", "bottom": "lower third"}
+#: `{subject}` when the piece names no product.
+DEFAULT_EFFECT_SUBJECT = "the main subject of the shot"
+#: The longest product name put into `{subject}` (the rest of the prompt carries it whole).
+_SUBJECT_MAX_CHARS = 80
+
+#: EF-13 copy the screen shows for a «Con IA» effect (`qualify-copy-es`): its tag, and the
+#: line that says what the part will cost of the plan's video seconds.
+AI_EFFECT_COST_NOTE = "Con IA: gasta segundos de video"
+AI_EFFECT_COST_LINE = "Esta parte gastará {s} segundos de video de tu plan."
+
+
+def ai_effect_cost_text(seconds: int) -> str:
+    """`AI_EFFECT_COST_LINE` for a part of `seconds` (whole seconds, as the plan counts)."""
+    return AI_EFFECT_COST_LINE.format(s=int(seconds))
+
+
+def effect_subject(product: str | None) -> str:
+    """What `{subject}` says: the piece's product name in quotes (no quotes or braces of
+    its own, at most `_SUBJECT_MAX_CHARS`), else `DEFAULT_EFFECT_SUBJECT`. Pure."""
+    name = " ".join((product or "").replace('"', " ").replace("{", " ").replace("}", " ").split())
+    if not name:
+        return DEFAULT_EFFECT_SUBJECT
+    if len(name) > _SUBJECT_MAX_CHARS:
+        name = name[:_SUBJECT_MAX_CHARS].rsplit(" ", 1)[0] or name[:_SUBJECT_MAX_CHARS]
+    return f'"{name}"'
+
+
+def effect_zone(entry: EffectEntry, use: EffectUse) -> str:
+    """The zone the owner chose for `use` (its `zone` param), else the entry's default."""
+    spec = entry.params.get("zone")
+    chosen = use.param_values.get("zone")
+    if isinstance(chosen, str) and (spec is None or spec.accepts(chosen)):
+        return chosen
+    if spec is not None and isinstance(spec.default, str):
+        return spec.default
+    return "middle"
+
+
+class NotASeedanceEffect(ValueError):
+    """`seedance_effect_line` was asked to fill an entry that is not a Seedance template."""
+
+
+def seedance_effect_line(entry: EffectEntry, use: EffectUse, *, subject: str) -> str:
+    """The line a Seedance template adds to the part's prompt (EF-13): its
+    `prompt_template` with `{zone}` in `ZONE_WORDS` and `{subject}` as given
+    (`effect_subject`). The one place a template is filled — production and the paid
+    bench call it alike. Pure."""
+    if entry.stage != "seedance_prompt" or not entry.prompt_template:
+        raise NotASeedanceEffect(f"{entry.id} v{entry.version} is not a Seedance template")
+    zone = ZONE_WORDS.get(effect_zone(entry, use), ZONE_WORDS["middle"])
+    return entry.prompt_template.replace("{zone}", zone).replace("{subject}", subject)
 
 
 def preview_file(preview_asset: str, assets_root: Path | None = None) -> Path:
@@ -605,6 +697,18 @@ def transition_problems(
 
 
 __all__ = [
+    "AI_EFFECT_COST_LINE",
+    "AI_EFFECT_COST_NOTE",
+    "DEFAULT_EFFECT_SUBJECT",
+    "MEASURED_MIN_N",
+    "MEASURED_MIN_SUCCESSES_OF",
+    "NotASeedanceEffect",
+    "SEEDANCE_EFFECT_FILL_VERSION",
+    "ZONE_WORDS",
+    "ai_effect_cost_text",
+    "effect_subject",
+    "effect_zone",
+    "seedance_effect_line",
     "EFFECTS_LIBRARY_VERSION",
     "EFFECT_CATEGORIES",
     "EffectCategory",
