@@ -109,6 +109,9 @@ def _advise(copy: Path) -> dict:
     from types import SimpleNamespace
     from uuid import uuid4
 
+    # the SDK the production client loads (`placement_advice.bounded_client`): imported
+    # here so its memory is in the step's peak, though the fake client never calls it
+    import anthropic  # noqa: F401
     from qualify_api import claude_tools
     from qualify_api.creative import placement_advice as adv
     from qualify_api.creative import placement_ai as pa

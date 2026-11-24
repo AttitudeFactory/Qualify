@@ -200,15 +200,19 @@ def test_covers_product_is_the_band_being_one_the_product_occupies() -> None:
         (
             ("middle", "bottom"),
             "top",
-            "El producto se ve en el centro y abajo. Pon el texto arriba para no taparlo.",
+            "Tu producto se ve en el medio y abajo. Pon el texto arriba para no taparlo.",
         ),
-        (("top",), "bottom", "El producto se ve arriba. Pon el texto abajo para no taparlo."),
+        (("top",), "bottom", "Tu producto se ve arriba. Pon el texto abajo para no taparlo."),
         (
             ("top", "middle", "bottom"),
             "bottom",
-            "El producto ocupa casi todo el video. Pon el texto abajo, donde lo tapa menos.",
+            "Tu producto ocupa casi todo el video. Pon el texto abajo, donde lo tapa menos.",
         ),
-        ((), "bottom", "No vimos un producto que el texto pueda tapar."),
+        (
+            (),
+            "bottom",
+            "No vimos tu producto en el video: puedes poner el texto donde quieras.",
+        ),
     ],
 )
 def test_the_reason_is_plain_spanish_built_from_the_bands(
@@ -225,7 +229,7 @@ def _advice(**overrides: Any) -> adv.PlacementAdvice:
         "subject_bands": ("middle", "bottom"),
         "recommended_text_band": "top",
         "recommended_logo_band": "bottom",
-        "reason_es": "El producto se ve en el centro y abajo. Pon el texto arriba para no taparlo.",
+        "reason_es": "Tu producto se ve en el medio y abajo. Pon el texto arriba para no taparlo.",
         "model": pa.MODEL_ID,
         "model_revision": REVISION,
         "prompt_version": pa.PLACEMENT_PROMPT_VERSION,
@@ -241,12 +245,29 @@ def _advice(**overrides: Any) -> adv.PlacementAdvice:
 
 def test_the_warning_shows_only_when_the_chosen_band_covers_the_product() -> None:
     advice = _advice()
-    assert advice.warning("bottom") == "El texto puede tapar el producto. Se ve mejor arriba."
+    assert advice.warning("bottom") == "Aquí el texto puede tapar tu producto. Arriba no lo tapa."
     assert advice.warning("middle") is not None
     assert advice.warning("top") is None  # the recommended band
+    middle = _advice(subject_bands=("top",), recommended_text_band="middle")
+    assert middle.warning("top") == (
+        "Aquí el texto puede tapar tu producto. En el medio no lo tapa."
+    )
     full = _advice(subject_bands=("top", "middle", "bottom"), recommended_text_band="bottom")
     assert full.warning("bottom") is None  # covers least: no warning on the recommendation
-    assert full.warning("top") == "El texto puede tapar el producto. Se ve mejor abajo."
+    assert full.warning("top") == "Aquí el texto puede tapar tu producto. Abajo lo tapa menos."
+
+
+@pytest.mark.parametrize(
+    ("band", "label"),
+    [
+        ("top", "Poner el texto arriba"),
+        ("middle", "Poner el texto en el medio"),
+        ("bottom", "Poner el texto abajo"),
+    ],
+)
+def test_the_button_names_the_band(band: str, label: str) -> None:
+    assert adv.use_band_text(band) == label
+    assert _advice(recommended_text_band=band).to_params()["use_band_text"] == label
 
 
 def test_the_contract_round_trips_and_refuses_a_broken_one() -> None:
@@ -261,6 +282,7 @@ def test_the_contract_round_trips_and_refuses_a_broken_one() -> None:
         "recommended_text_band",
         "recommended_logo_band",
         "reason_es",
+        "use_band_text",
         "model",
         "model_revision",
         "prompt_version",
@@ -315,7 +337,7 @@ def test_a_video_gets_its_advice_once_with_its_provenance_and_cost() -> None:
     assert advice.recommended_text_band == "top"
     # the only free band: the logo shares it with the text rather than cover the product
     assert advice.recommended_logo_band == "top"
-    assert advice.reason_es.startswith("El producto se ve en el centro y abajo.")
+    assert advice.reason_es.startswith("Tu producto se ve en el medio y abajo.")
     assert advice.model == pa.MODEL_ID and advice.model_revision == REVISION
     assert advice.prompt_version == pa.PLACEMENT_PROMPT_VERSION
     assert len(advice.frames) == 3 and advice.made_at == NOW

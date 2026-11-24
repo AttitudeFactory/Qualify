@@ -86,7 +86,7 @@ def _advice(source: str) -> adv.PlacementAdvice:
         subject_bands=("middle", "bottom"),
         recommended_text_band="top",
         recommended_logo_band="top",
-        reason_es="El producto se ve en el centro y abajo. Pon el texto arriba para no taparlo.",
+        reason_es="Tu producto se ve en el medio y abajo. Pon el texto arriba para no taparlo.",
         model=pa.MODEL_ID,
         prompt_version=pa.PLACEMENT_PROMPT_VERSION,
         frames=({"at_s": 1.0, "width": 270, "height": 480, "sha256": "ab" * 8},),
@@ -133,6 +133,10 @@ def test_two_reservations_per_video_then_piece_cap() -> None:
 
 
 def test_concurrent_reservations_respect_the_fleet_cap() -> None:
+    # The fleet cap counts EVERY business's placement rows in `qualify_test`: the cap is
+    # read here as «what is there now + 1». Locally this can fail if another run writes
+    # placement rows into the same `qualify_test` at the same time (pytest in parallel,
+    # two worktrees); CI runs it alone on its own database.
     tenant, brand = _business()
     other_tenant, other_brand = _business()
     counter = adv.AdminFleetCounter()

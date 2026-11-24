@@ -95,7 +95,8 @@ _USAGE_NAMESPACE = UUID("6f1c2b7e-3d5a-4e8f-9a20-25026599a002")
 _SOURCE_NAMESPACE = UUID("6f1c2b7e-3d5a-4e8f-9a20-25026599a003")
 
 #: How the warning names each band (Spanish, `qualify-copy-es`).
-BAND_WORDS: Mapping[str, str] = {"top": "arriba", "middle": "en el centro", "bottom": "abajo"}
+#: The editor's own options read «Arriba / En el medio / Abajo».
+BAND_WORDS: Mapping[str, str] = {"top": "arriba", "middle": "en el medio", "bottom": "abajo"}
 
 #: What `PlacementAdvisor.advise` answers (logged by the worker; never shown to the owner).
 OUTCOME_OFF = "off"
@@ -134,11 +135,26 @@ def reason_text(subject_bands: Sequence[str], text_band: str) -> str:
     covered = _bands(subject_bands)
     where = BAND_WORDS.get(text_band, "")
     if not covered:
-        return "No vimos un producto que el texto pueda tapar."
-    if len(covered) == len(VIDEO_TEXT_PLACES):
-        return f"El producto ocupa casi todo el video. Pon el texto {where}, donde lo tapa menos."
+        return "No vimos tu producto en el video: puedes poner el texto donde quieras."
+    if _fills_frame(covered):
+        return f"Tu producto ocupa casi todo el video. Pon el texto {where}, donde lo tapa menos."
     seen = _join([BAND_WORDS[b] for b in covered])
-    return f"El producto se ve {seen}. Pon el texto {where} para no taparlo."
+    return f"Tu producto se ve {seen}. Pon el texto {where} para no taparlo."
+
+
+def _fills_frame(subject_bands: Iterable[str]) -> bool:
+    return len(_bands(subject_bands)) == len(VIDEO_TEXT_PLACES)
+
+
+def _capitalized(band: str) -> str:
+    words = BAND_WORDS.get(band, "")
+    return words[:1].upper() + words[1:]
+
+
+def use_band_text(band: str) -> str:
+    """The label of the warning's button, which puts the text in `band` («Usar esta
+    posición»): «Poner el texto arriba / en el medio / abajo»."""
+    return f"Poner el texto {BAND_WORDS.get(band, '')}"
 
 
 def warning_text(advice: PlacementAdvice, chosen_band: str) -> str | None:
@@ -149,8 +165,10 @@ def warning_text(advice: PlacementAdvice, chosen_band: str) -> str | None:
         return None
     if not covers_product(advice.subject_bands, chosen_band):
         return None
-    better = BAND_WORDS.get(advice.recommended_text_band, "")
-    return f"El texto puede tapar el producto. Se ve mejor {better}."
+    better = _capitalized(advice.recommended_text_band)
+    if _fills_frame(advice.subject_bands):
+        return f"Aquí el texto puede tapar tu producto. {better} lo tapa menos."
+    return f"Aquí el texto puede tapar tu producto. {better} no lo tapa."
 
 
 @dataclass(frozen=True)
@@ -191,6 +209,8 @@ class PlacementAdvice:
             "recommended_text_band": self.recommended_text_band,
             "recommended_logo_band": self.recommended_logo_band,
             "reason_es": self.reason_es,
+            # the warning's button («Usar esta posición»), worded for the recommended band
+            "use_band_text": use_band_text(self.recommended_text_band),
             "model": self.model,
             "model_revision": self.model_revision,
             "prompt_version": self.prompt_version,
@@ -771,5 +791,6 @@ __all__ = [
     "reason_text",
     "source_piece_id",
     "usage_event_id",
+    "use_band_text",
     "warning_text",
 ]
