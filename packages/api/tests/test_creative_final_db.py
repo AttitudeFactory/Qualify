@@ -235,25 +235,51 @@ def test_only_the_draft_videos_are_read_and_a_failure_keeps_the_raw_final() -> N
     assert asset.params["draft"]["raw_final"] == raw
 
 
+def _budget(brand_id: UUID) -> Decimal:
+    """The brand's spent budget, its config row made on first read (none by default)."""
+    with tenant_session(TENANT_F) as session:
+        config = session.scalars(
+            select(creative.CreativeEngineConfig).where(
+                creative.CreativeEngineConfig.brand_id == brand_id
+            )
+        ).first()
+        if config is None:
+            config = creative.CreativeEngineConfig(
+                tenant_id=TENANT_F,
+                brand_id=brand_id,
+                monthly_budget_cap_usd=Decimal("100"),
+                budget_spent_usd=Decimal("0"),
+            )
+            session.add(config)
+            session.flush()
+        return Decimal(config.budget_spent_usd)
+
+
+def _held_final(draft_id: UUID, raw: dict[str, str]) -> MediaWrite:
+    final = _video(TENANT_F, draft_id, "clip-final.mp4", "final")
+    block = {**final.params["draft"], "raw_final": raw, FINAL_USAGE_DUE: raw["task_id"]}
+    return MediaWrite(**{**final.__dict__, "params": {**final.params, "draft": block}})
+
+
+def _raw(draft_id: UUID, task: str) -> dict[str, str]:
+    key = f"t/{TENANT_F}/generated/{draft_id}/r1/clip-final-raw-{task}.mp4"
+    return {"key": key, "task_id": task, "cost_usd": "2.84"}
+
+
 def test_a_held_raw_final_spend_is_recorded_once_while_its_task_is_due() -> None:
     """m-25111780: the pass that paid the 1080p lost its lease (its settle rolled back);
     the raw file stayed in the block marked due. The next settle records its spend once
-    and clears the mark in the same write; a later settle of the same task adds none."""
+    — event and budget — and clears the mark in the same write; a later settle of the
+    same task adds none."""
     repo = PostgresContentRepository()
     brand_id, draft_id, asset_id = _draft_with_video(repo)
-    raw = {
-        "key": f"t/{TENANT_F}/generated/{draft_id}/r1/clip-final-raw.mp4",
-        "task_id": "cgt-final",
-        "cost_usd": "2.84",
-    }
+    budget = _budget(brand_id)
+    raw = _raw(draft_id, "cgt-final")
     repo.set_video_draft(
         tenant_id=TENANT_F,
         asset_id=asset_id,
         changes={"status": DRAFT_RENDERING, "raw_final": raw, FINAL_USAGE_DUE: "cgt-final"},
     )
-    final = _video(TENANT_F, draft_id, "clip-final.mp4", "final")
-    block = {**final.params["draft"], "raw_final": raw, FINAL_USAGE_DUE: "cgt-final"}
-    final = MediaWrite(**{**final.__dict__, "params": {**final.params, "draft": block}})
 
     def settle() -> None:
         repo.settle_final(
@@ -261,7 +287,7 @@ def test_a_held_raw_final_spend_is_recorded_once_while_its_task_is_due() -> None
             draft_id=draft_id,
             brand_id=brand_id,
             asset_id=asset_id,
-            media=final,
+            media=_held_final(draft_id, raw),
             error=None,
             usage=(),
             spent_usd=Decimal("0"),
@@ -275,11 +301,89 @@ def test_a_held_raw_final_spend_is_recorded_once_while_its_task_is_due() -> None
     assert asset.params["draft"]["status"] == "final"
     assert FINAL_USAGE_DUE not in asset.params["draft"]
     assert [row.cost_usd for row in _usage_rows(draft_id)] == [Decimal("2.84")]
+    assert _budget(brand_id) - budget == Decimal("2.84")
 
     settle()  # a slower pass with the same kept file: nothing more
     (asset,) = repo.media_for(tenant_id=TENANT_F, draft_id=draft_id)
     assert FINAL_USAGE_DUE not in asset.params["draft"]
     assert len(_usage_rows(draft_id)) == 1
+    assert _budget(brand_id) - budget == Decimal("2.84")
+
+
+def test_a_late_settle_that_lost_its_claim_records_its_raw_spend_once() -> None:
+    """Review of 4160220e: run A paid T1 and lost its claim to a new order. If A settles
+    while T1 is still due, A records it and clears the mark; if the new run recorded T1
+    first (no mark, `raw_final` naming T1), A records nothing more."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo)
+    budget = _budget(brand_id)
+    raw = _raw(draft_id, "cgt-a")
+
+    def late_a() -> None:
+        repo.settle_final(
+            tenant_id=TENANT_F,
+            draft_id=draft_id,
+            brand_id=brand_id,
+            asset_id=asset_id,
+            media=_held_final(draft_id, raw),
+            error=None,
+            usage=(),
+            spent_usd=Decimal("2.84"),
+            claim="claim-a",
+            draft_changes={"raw_final": raw},
+            final_task_id="cgt-a",
+            raw_usage=(_usage("2.84"),),
+        )
+
+    # ordered again: claim gone, T1 still due — A records it and clears the mark
+    repo.set_video_draft(
+        tenant_id=TENANT_F,
+        asset_id=asset_id,
+        changes={
+            "status": DRAFT_RENDERING,
+            "claim": None,
+            "raw_final": raw,
+            FINAL_USAGE_DUE: "cgt-a",
+        },
+    )
+    late_a()
+    (asset,) = repo.media_for(tenant_id=TENANT_F, draft_id=draft_id)
+    assert asset.params["draft"]["status"] == DRAFT_RENDERING  # not A's to write
+    assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert len(_usage_rows(draft_id)) == 1 and _budget(brand_id) - budget == Decimal("2.84")
+
+    # A again, as if the new run had recorded T1 first: nothing more, budget unchanged
+    late_a()
+    assert len(_usage_rows(draft_id)) == 1 and _budget(brand_id) - budget == Decimal("2.84")
+
+
+def test_a_mark_naming_another_task_is_kept() -> None:
+    """The settle of task T2 never touches a mark naming another task."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo)
+    repo.set_video_draft(
+        tenant_id=TENANT_F,
+        asset_id=asset_id,
+        changes={"status": DRAFT_RENDERING, FINAL_USAGE_DUE: "cgt-other"},
+    )
+    raw = _raw(draft_id, "cgt-two")
+    repo.settle_final(
+        tenant_id=TENANT_F,
+        draft_id=draft_id,
+        brand_id=brand_id,
+        asset_id=asset_id,
+        media=None,
+        error="No se pudo recodificar.",
+        usage=(),
+        spent_usd=Decimal("0"),
+        draft_changes={"raw_final": raw},
+        held_usage=(_usage("2.84"),),
+        final_task_id="cgt-two",
+    )
+    (asset,) = repo.media_for(tenant_id=TENANT_F, draft_id=draft_id)
+    assert asset.params["draft"][FINAL_USAGE_DUE] == "cgt-other"
+    assert asset.params["draft"]["raw_final"] == raw
+    assert _usage_rows(draft_id) == []
 
 
 # -- review round 4 (m-24820142) --------------------------------------------------------

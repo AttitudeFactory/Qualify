@@ -112,16 +112,24 @@ class FinalRepository(InMemoryRepository):
         draft_changes=None,  # noqa: ANN001
         held_usage=(),  # noqa: ANN001
         final_task_id=None,  # noqa: ANN001
+        raw_usage=(),  # noqa: ANN001
     ):  # noqa: ANN201
         # as `PostgresRepository.settle_final` (m-25111780): a held spend only while the
-        # stored block marks its task due, the mark gone with the write that records it
+        # stored block marks its task due; this pass's raw spend unless the block names the
+        # task with no mark (recorded already); the mark gone with the write recording it
         stored = self._block(asset_id)
         ours = claim is None or self._held(asset_id, claim)
         due = final_task_id is not None and stored.get(FINAL_USAGE_DUE) == final_task_id
+        stored_raw = stored.get("raw_final") or {}
+        recorded_before = (
+            final_task_id is not None and not due and stored_raw.get("task_id") == final_task_id
+        )
+        paid = () if recorded_before else tuple(raw_usage)
         held = tuple(held_usage) if ours and due else ()
-        self.usage.extend((*usage, *held))
-        self.spend_added += spent_usd + sum((h.cost_usd for h in held), Decimal(0))
-        due_after = None if due and (usage or held) else stored.get(FINAL_USAGE_DUE)
+        self.usage.extend((*usage, *paid, *held))
+        dropped = sum((u.cost_usd for u in raw_usage), Decimal(0)) if recorded_before else 0
+        self.spend_added += spent_usd - dropped + sum((h.cost_usd for h in held), Decimal(0))
+        due_after = None if due and (paid or held) else stored.get(FINAL_USAGE_DUE)
 
         def marked(block: dict[str, Any]) -> dict[str, Any]:
             block = {k: v for k, v in block.items() if k != FINAL_USAGE_DUE}
@@ -811,6 +819,7 @@ class KeptRawFinals(FakeFinals):
                 },
             ),
             usage=usage,
+            raw_usage=usage,
             held_usage=held,
             draft_changes={"raw_final": dict(_RAW_FINAL)},
         )
@@ -902,6 +911,33 @@ def test_the_normal_final_records_its_raw_spend_once_and_clears_the_mark() -> No
 
     (event,) = repo.usage[events:]
     assert event.cost_usd == Decimal("2.84") and len(finals.calls) == 1
+    block = draft_state(repo.media[draft_id][0].params)
+    assert block["status"] == DRAFT_FINAL and FINAL_USAGE_DUE not in block
+
+
+def test_a_run_that_lost_its_claim_and_settles_after_the_new_run_records_nothing_more() -> None:
+    """Review of 4160220e: A pays T1 (raw kept, marked due) and outlives its claim; the
+    final is ordered again and B finishes the kept file FIRST, recording T1 and clearing
+    the mark. A's late settle (not its claim any more) must not record T1 again."""
+    service, repo, _, draft_id, variant_id, finals = _setup(finals=KeptRawFinals())
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    events, spent = len(repo.usage), repo.spend_added
+    settle = repo.settle_final
+
+    def b_settles_first(**kwargs: Any) -> None:
+        repo.settle_final = settle  # type: ignore[method-assign]
+        asset_id = kwargs["asset_id"]
+        repo.set_video_draft(tenant_id=TENANT_ID, asset_id=asset_id, changes={"claim": None})
+        service.run_queued_final(tenant_id=TENANT_ID, draft_id=draft_id, asset_id=asset_id)
+        settle(**kwargs)  # A, late
+
+    repo.settle_final = b_settles_first  # type: ignore[method-assign]
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert len(finals.calls) == 2  # A paid, B reused the kept file
+    (event,) = repo.usage[events:]
+    assert event.cost_usd == Decimal("2.84")
+    assert repo.spend_added - spent == Decimal("2.84")
     block = draft_state(repo.media[draft_id][0].params)
     assert block["status"] == DRAFT_FINAL and FINAL_USAGE_DUE not in block
 

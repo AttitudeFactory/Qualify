@@ -838,11 +838,15 @@ class ContentRepository(Protocol):
         draft_changes: Mapping[str, object] | None = None,
         held_usage: tuple[UsageWrite, ...] = (),
         final_task_id: str | None = None,
+        raw_usage: tuple[UsageWrite, ...] = (),
     ) -> None:
-        """m-25111780: `held_usage` is the spend of the raw 1080p `final_task_id` an
-        earlier pass paid for — recorded only while the stored draft block still marks
-        it due (`FINAL_USAGE_DUE` == `final_task_id`); the mark is cleared in the same
-        transaction that records that task's spend (`usage` paid now, or `held_usage`)."""
+        """m-25111780: `raw_usage` is what THIS pass paid for the raw 1080p
+        `final_task_id` (apart from `usage`, always recorded; `spent_usd` covers both),
+        `held_usage` what an earlier pass paid for it. `held_usage` is recorded only
+        while the stored draft block still marks the task due (`FINAL_USAGE_DUE` ==
+        `final_task_id`); `raw_usage` is dropped when the block names that task in its
+        `raw_final` with no mark (another pass recorded it). The mark is cleared in the
+        same transaction that records that task's spend."""
         ...
 
 
@@ -1956,6 +1960,7 @@ class PostgresContentRepository:
         draft_changes: Mapping[str, object] | None = None,
         held_usage: tuple[UsageWrite, ...] = (),
         final_task_id: str | None = None,
+        raw_usage: tuple[UsageWrite, ...] = (),
     ) -> None:
         """One transaction: the final's spend (also when it failed — the money went
         either way) and either the final in place of its draft, in the SAME row every
@@ -1964,24 +1969,44 @@ class PostgresContentRepository:
         meanwhile belongs to its new run); the spend is recorded either way. A failure
         keeps `draft_changes` in the draft block (the paid raw final a retry reuses).
 
-        m-25111780: `held_usage` (a raw 1080p an earlier pass paid for, whose settle was
-        rolled back) is recorded only while the row — read locked — still marks
-        `final_task_id` due; the mark goes in the same write, so that task's spend is
-        recorded exactly once whichever pass gets here."""
+        m-25111780: the raw 1080p `final_task_id` is recorded exactly once whichever
+        pass gets here, decided on the row read locked: `held_usage` (paid by an earlier
+        pass whose settle was rolled back) only while the row still marks the task due;
+        `raw_usage` (paid by this pass) unless the row names that task in its
+        `raw_final` with no mark — another pass recorded it (this run lost its claim and
+        settles last). The mark goes in the same write that records the spend.
+        `spent_usd` includes `raw_usage`; `usage` is everything else this pass paid."""
         with tenant_session(tenant_id) as session:
             row = session.get(
-                orm.ImageAsset, asset_id, with_for_update=claim is not None or bool(held_usage)
+                orm.ImageAsset,
+                asset_id,
+                with_for_update=claim is not None or bool(held_usage or raw_usage),
             )
             stored = dict((row.params or {}).get("draft") or {}) if row is not None else {}
             ours = row is not None and (claim is None or _final_held_by(stored, claim))
+            stored_raw = stored.get("raw_final")
             due = final_task_id is not None and stored.get(FINAL_USAGE_DUE) == final_task_id
+            recorded_before = (
+                final_task_id is not None
+                and not due
+                and isinstance(stored_raw, Mapping)
+                and raw_final_task_id(stored_raw) == final_task_id
+            )
+            paid = () if recorded_before else tuple(raw_usage)
             # a run that lost its claim leaves a held spend to the run that owns it now
             held = tuple(held_usage) if ours and due else ()
-            _add_usage(session, tenant_id, brand_id, draft_id, (*usage, *held))
-            _add_spend(session, brand_id, spent_usd + sum((h.cost_usd for h in held), Decimal(0)))
+            dropped = sum((u.cost_usd for u in raw_usage), Decimal(0)) if recorded_before else 0
+            if recorded_before and raw_usage:
+                logger.info("final of asset %s: task %s recorded already", asset_id, final_task_id)
+            _add_usage(session, tenant_id, brand_id, draft_id, (*usage, *paid, *held))
+            _add_spend(
+                session,
+                brand_id,
+                spent_usd - dropped + sum((h.cost_usd for h in held), Decimal(0)),
+            )
             # the mark as it stands once this commits: gone when this write recorded the
             # spend it named, else as stored (never revived from a stale in-memory block)
-            due_after = None if due and (usage or held) else stored.get(FINAL_USAGE_DUE)
+            due_after = None if due and (paid or held) else stored.get(FINAL_USAGE_DUE)
             if row is None:
                 return
             if not ours:
@@ -4887,8 +4912,14 @@ class ContentService:
         """The final (or its failure) and its spend in one write — and when that write
         fails, the spend again with the video marked failed: money spent is never lost
         silently."""
-        usage = tuple(self._media_usage(outcome.usage))
-        for item in usage:
+        # m-25111780: what paid this pass's raw 1080p goes apart (`raw_usage`): the
+        # repository drops it when another pass already recorded that task
+        raw_paid = tuple(outcome.raw_usage)
+        usage = tuple(
+            self._media_usage([u for u in outcome.usage if not any(u is paid for paid in raw_paid)])
+        )
+        raw_usage = tuple(self._media_usage(raw_paid))
+        for item in (*usage, *raw_usage):
             cost_logger.info(
                 "draft %s final: %s %s %s USD",
                 draft_id,
@@ -4932,6 +4963,7 @@ class ContentService:
                     draft_changes=outcome.draft_changes,
                     held_usage=held,
                     final_task_id=final_task_id,
+                    raw_usage=raw_usage,
                 )
                 if media is None:
                     # the vendor failed it, or it could not be saved: no final for the

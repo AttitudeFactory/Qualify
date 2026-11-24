@@ -232,6 +232,7 @@ def test_a_kept_raw_final_whose_spend_is_due_hands_it_to_the_settle_once() -> No
     heard: list[dict[str, Any]] = []
     paid = _finalize_hearing(producer, asset, draft_id, heard)
     assert paid.media is not None and paid.held_usage == () and _finals(seedance) == 1
+    assert paid.raw_usage == paid.usage  # what paid THIS raw file, apart
     (raw,) = heard
     assert raw["pricing_table_version"] == "v5"  # the table its cost came from
 
@@ -254,6 +255,39 @@ def test_a_kept_raw_final_whose_spend_is_due_hands_it_to_the_settle_once() -> No
         producer, replace(asset, params={**asset.params, "draft": recorded}), draft_id, []
     )
     assert quiet.media is not None and quiet.held_usage == () and quiet.usage == ()
+
+
+def test_an_unreadable_raw_final_still_due_is_logged_as_not_recorded(caplog) -> None:  # noqa: ANN001
+    """Review of 4160220e: a raw file marked due that cannot be read is paid again (a new
+    task takes over the block's one mark); the first task's spend cannot be recorded
+    idempotently until the event carries its task id (m-25112161) — the cost log says so,
+    and the new payment is handed as this pass's own raw spend."""
+    import logging
+
+    store, seedance, draft_id = _locked(), DraftSeedance(), uuid4()
+    producer = _producer(store, seedance, RecordingFitter())
+    (draft,) = producer.produce(
+        tenant_id=TENANT_ID, draft_id=draft_id, brief=_clip(), kit=_kit(), copy=COPY, budget=BUDGET
+    ).media
+    asset = _ordered(_record(draft), "1" * 32)
+    lost = {
+        "key": f"t/{TENANT_ID}/generated/{draft_id}/r1/gone-final-raw.mp4",
+        "task_id": "cgt-old",
+        "cost_usd": "2.00",
+        "model_id": "dreamina-seedance-2-5-260628",
+    }
+    block = {**asset.params["draft"], "raw_final": lost, FINAL_USAGE_DUE: "cgt-old"}
+
+    with caplog.at_level(logging.ERROR, logger="qualify_api.creative.costs"):
+        again = _finalize_hearing(
+            producer, replace(asset, params={**asset.params, "draft": block}), draft_id, []
+        )
+
+    assert again.media is not None and _finals(seedance) == 1
+    assert again.held_usage == () and again.raw_usage == again.usage and len(again.usage) == 1
+    assert any(
+        "cgt-old" in r.getMessage() and "NOT recorded" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_the_raw_final_is_recorded_before_the_re_encode_and_rides_on_success() -> None:

@@ -58,6 +58,8 @@ def draft_pending(params: Mapping[str, object] | None) -> bool:
 #: kept (before the final is settled), cleared by the settle that records that spend in
 #: the same transaction. A pass that finishes the final from the kept file while the
 #: marker still names its task records the spend then — once per task id, never twice.
+#: A block whose `raw_final` names a task but no mark has that spend recorded already.
+#: task_id on the event arrives with m-25112161.
 FINAL_USAGE_DUE = "final_usage_due"
 
 
