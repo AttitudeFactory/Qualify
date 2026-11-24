@@ -125,10 +125,30 @@ class FinalRepository(InMemoryRepository):
             final_task_id is not None and not due and stored_raw.get("task_id") == final_task_id
         )
         paid = () if recorded_before else tuple(raw_usage)
-        held = tuple(held_usage) if ours and due else ()
-        self.usage.extend((*usage, *paid, *held))
+        # m-25112161: a held row of another task goes on its task id alone, and a row
+        # whose task is recorded already adds nothing (the partial key of 0179)
+        lost = tuple(
+            h
+            for h in held_usage
+            if h.vendor_task_id is not None and h.vendor_task_id != final_task_id
+        )
+        held = (
+            tuple(h for h in held_usage if not any(h is other for other in lost))
+            if ours and due
+            else ()
+        )
+        recorded = {getattr(u, "vendor_task_id", None) for u in self.usage} - {None}
+        skipped = Decimal(0)
+        for row in (*usage, *paid, *held, *lost):
+            if row.vendor_task_id is not None and row.vendor_task_id in recorded:
+                skipped += row.cost_usd
+                continue
+            recorded.add(row.vendor_task_id)
+            self.usage.append(row)
         dropped = sum((u.cost_usd for u in raw_usage), Decimal(0)) if recorded_before else 0
-        self.spend_added += spent_usd - dropped + sum((h.cost_usd for h in held), Decimal(0))
+        self.spend_added += (
+            spent_usd - dropped - skipped + sum((h.cost_usd for h in (*held, *lost)), Decimal(0))
+        )
         due_after = None if due and (paid or held) else stored.get(FINAL_USAGE_DUE)
 
         def marked(block: dict[str, Any]) -> dict[str, Any]:
@@ -789,6 +809,7 @@ class KeptRawFinals(FakeFinals):
             quantity=5,
             cost_usd=Decimal(str(_RAW_FINAL["cost_usd"])),
             output_tokens=108900,
+            vendor_task_id=str(_RAW_FINAL["task_id"]),
         )
         if block.get("raw_final") is None:
             assert on_raw_kept is not None
@@ -861,6 +882,7 @@ def test_a_raw_final_paid_by_a_pass_that_lost_its_lease_is_recorded_once_by_the_
     (event,) = repo.usage[events:]
     assert event.cost_usd == Decimal("2.84") and event.model_id == _RAW_FINAL["model_id"]
     assert event.output_tokens == 108900 and event.pieces == 5
+    assert event.vendor_task_id == "cgt-final"  # m-25112161: the row names its task
     assert repo.spend_added - spent == Decimal("2.84")
     assert block["final_task_id"] == "cgt-final" and FINAL_USAGE_DUE not in block
 

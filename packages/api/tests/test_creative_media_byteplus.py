@@ -408,6 +408,8 @@ def test_a_seedance_video_starts_on_a_seedream_frame_and_records_both_costs() ->
     assert frame_cost.cost_usd == Decimal("0.035")
     # 102,960 tokens × USD 2.5 / M
     assert (video_cost.unit, video_cost.cost_usd) == ("second", Decimal("0.257400"))
+    # m-25112161: the Seedance row names its task; Seedream's (synchronous) names none
+    assert (frame_cost.vendor_task_id, video_cost.vendor_task_id) == (None, "cgt-1")
 
 
 def test_a_generated_script_over_the_cap_is_shortened_before_seedance_speaks_it() -> None:
@@ -1155,6 +1157,8 @@ def test_the_presenter_is_composed_voiced_and_animated_with_a_public_voice() -> 
         ("seed_speech", "character"),
         ("omnihuman", "second"),
     ]
+    # m-25112161: OmniHuman's row names its task; Seed Speech is synchronous (no task id)
+    assert [u.vendor_task_id for u in outcome.usage] == [None, None, "7392"]
     # the real v5 rate: USD 30 per million characters
     expected = Decimal(len(COPY.script)) * Decimal(30) / Decimal(1_000_000)
     assert outcome.usage[1].cost_usd == expected.quantize(Decimal("0.000001"))

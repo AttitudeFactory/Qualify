@@ -59,7 +59,10 @@ def draft_pending(params: Mapping[str, object] | None) -> bool:
 #: the same transaction. A pass that finishes the final from the kept file while the
 #: marker still names its task records the spend then — once per task id, never twice.
 #: A block whose `raw_final` names a task but no mark has that spend recorded already.
-#: task_id on the event arrives with m-25112161.
+#: m-25112161: the event now names its task too (`vendor_task_id`, unique per tenant,
+#: 0179) and a repeat adds no spend; the mark stays because it is what tells a raw
+#: file paid and NOT recorded from one recorded before the column existed (rows with
+#: no task id), so a pass never rebuilds — and counts twice — an older spend.
 FINAL_USAGE_DUE = "final_usage_due"
 
 

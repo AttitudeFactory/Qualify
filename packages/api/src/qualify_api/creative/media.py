@@ -476,6 +476,16 @@ class MediaUsage:
     #: (EF-06: a local video is priced by `video_pipeline.local.LOCAL_PRICING_VERSION`).
     #: None = the service's table.
     pricing_table_version: str | None = None
+    #: m-25112161: the vendor's id of the task this call paid for (Seedance's `cgt-…`,
+    #: OmniHuman's `task_id`), so its usage event is written once per task. None for a
+    #: call without one (Claude, Seedream, Seed Speech, Remotion, the local video).
+    vendor_task_id: str | None = None
+
+
+def vendor_task_of(payload: object) -> str | None:
+    """The vendor task id a Seedance or OmniHuman result carries in its payload."""
+    task = payload.get("task_id") if isinstance(payload, Mapping) else None
+    return str(task) if task else None
 
 
 @dataclass(frozen=True)
@@ -623,6 +633,7 @@ def _held_raw_usage(
             cost_usd=cost,
             output_tokens=tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0,
             pricing_table_version=version if isinstance(version, str) and version else None,
+            vendor_task_id=task,
         )
     )
 
@@ -3229,15 +3240,16 @@ class MediaProducer:
                 lost = raw_final_task_id(raw)
                 if lost is not None and block.get(FINAL_USAGE_DUE) == lost:
                     # m-25111780: its spend was still due, and the 1080p paid next takes
-                    # over the mark (one task per block): this spend is not recorded.
-                    # m-25112161 (task id on the event) records it idempotently.
-                    _COST_LOGGER.error(
+                    # over the mark (one task per block). m-25112161: it goes with this
+                    # pass's settle anyway, on its own task id (written once per task)
+                    _COST_LOGGER.warning(
                         "draft %s final: raw final %s unreadable while its %s USD were "
-                        "still due; that spend is NOT recorded",
+                        "still due; recorded with this pass on its task id",
                         draft_id,
                         lost,
                         raw.get("cost_usd"),
                     )
+                    _held_raw_usage(block, raw, held)
                 raw = None
             else:
                 # m-25111780: paid by an earlier pass — its spend, if still due
@@ -3617,6 +3629,7 @@ class MediaProducer:
                 quantity=math.ceil(result.usage.media_seconds),
                 cost_usd=cost,
                 output_tokens=tokens,
+                vendor_task_id=vendor_task_of(payload),
             )
         )
         return cost
@@ -7747,6 +7760,7 @@ class MediaProducer:
                     int(payload.get("resolution") or self._omnihuman_resolution),
                     billed,
                 ),
+                vendor_task_id=vendor_task_of(payload),
             )
         )
         video = self._download(str(result.media_url))
