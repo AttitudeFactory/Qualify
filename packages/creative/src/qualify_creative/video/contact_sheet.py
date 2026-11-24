@@ -52,8 +52,10 @@ from qualify_creative.video.upright import upright_image
 
 #: Bump with any change to how the times are picked or the pictures are made.
 #: v2: one pass, frames from a grid, a time budget with an even fallback. v3: the even
-#: fallback seeks to each time; frames always distinct, the last near the end.
-CONTACT_SHEET_VERSION = "contact-sheet-3"
+#: fallback seeks to each time; frames always distinct, the last near the end. v4: the
+#: even fallback's roles and targets follow its frames' time order (start first, end
+#: last), and an end frame read far from the end is stored as `reached`.
+CONTACT_SHEET_VERSION = "contact-sheet-4"
 #: How many frames a sheet has (the ticket: «6 cuadros»).
 SHEET_FRAMES = 6
 #: The longest video read (a video by parts lasts up to a few minutes).
@@ -76,6 +78,10 @@ SCAN_BUDGET_S = 10.0
 #: The even fallback's own budget for its seeks (a GOP's decode each, at most one per
 #: frame of the sheet); past it, the frames still missing are read from keyframes only.
 EVEN_BUDGET_S = 10.0
+#: The even fallback's end frame counts as the END only within this of its time: 1 s,
+#: or a tenth of the video when longer (a keyframe a GOP before the end still shows it).
+END_SLACK_S = 1.0
+END_SLACK_SHARE = 0.1
 #: Each frame fits inside this box (portrait), never upscaled.
 CELL_BOX = (360, 640)
 #: The one-row sheet's height, and the gap between its frames.
@@ -84,7 +90,9 @@ STRIP_GAP = 8
 STRIP_BACKGROUND = (17, 17, 17)
 JPEG_QUALITY = 85
 
-Role = Literal["start", "cut", "fill", "end"]
+#: `reached`: the even fallback's farthest frame when the end's seek ran out of budget
+#: far from the end (`_evenly`) — a frame of the video, not its end.
+Role = Literal["start", "cut", "fill", "end", "reached"]
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,8 @@ class ContactSheet:
             "grid_s": GRID_S,
             "scan_budget_s": SCAN_BUDGET_S,
             "even_budget_s": EVEN_BUDGET_S,
+            "end_slack_s": END_SLACK_S,
+            "end_slack_share": END_SLACK_SHARE,
             "decode_threads": DECODE_THREADS,
             "cell_box": list(CELL_BOX),
             "strip_height": STRIP_HEIGHT,
@@ -463,6 +473,15 @@ def _demuxed_seconds(source: str | os.PathLike[str], origin_s: float) -> float |
     return end
 
 
+#: Who keeps a frame two times share in the even fallback: the start, then a true end.
+_RANK: dict[str, int] = {"start": 2, "end": 1, "cut": 0, "fill": 0, "reached": 0}
+
+
+def _end_slack(duration_s: float) -> float:
+    """How far before its time the even fallback's end frame may be and still be the end."""
+    return max(END_SLACK_S, END_SLACK_SHARE * duration_s)
+
+
 def _evenly(
     source: str | os.PathLike[str],
     over: _OverBudget,
@@ -476,7 +495,17 @@ def _evenly(
     else a seek to it (`_sought`, the end's time first so it is the exact one); never the
     frame of another time. With the budget spent, a time may get the keyframe before it:
     two times on the same keyframe keep one frame (the nearer time), so the sheet has
-    fewer frames, never a repeated one. Time order."""
+    fewer frames, never a repeated one.
+
+    Time order, with each frame's own target and role: a time whose frame is at or
+    before the frame of an earlier time is dropped (a keyframe read for a fill never goes
+    before the start's exact frame), except that the start, then a true end, keep their
+    frame over a fill's. So the start is always the first frame, the end the last, and the
+    targets grow with the times. The end's frame is the END only within `_end_slack` of
+    its time: a spent budget can stop the end's seek far from it (one keyframe, a few
+    seconds decoded of a 40 s video). That frame is stored as `reached` and the sheet has
+    no `end`: the owner sees it as one more frame with its own second, so a sheet that
+    stops short shows it by its seconds, never by calling an early frame the end."""
     duration = over.duration_s or _demuxed_seconds(source, over.origin_s) or over.reached_s
     targets = pick_times([ShotSpan(0, 0.0, duration)], duration, count)
     kept = list(over.grid)
@@ -493,20 +522,25 @@ def _evenly(
         from qualify_creative.video._source import NoVideoStream  # noqa: PLC0415
 
         raise NoVideoStream("the video has no decodable frames")
-    # one frame per instant: of two times on the same frame, the nearer keeps it
-    best: dict[float, tuple[float, Role, _Still]] = {}
+    # in the targets' order, each frame later than the one before: roles and targets
+    # travel with their frames, so both follow the frames' time order
+    picked: list[tuple[float, Role, _Still]] = []
     for target_s, role in targets:
         still = answers.get(target_s)
         if still is None:
             continue
-        held = best.get(still.time_s)
-        if held is None or abs(still.time_s - target_s) < abs(still.time_s - held[0]):
-            best[still.time_s] = (target_s, role, still)
+        if role == "end" and target_s - still.time_s > _end_slack(duration):
+            role = "reached"  # the farthest frame read, not the video's end
+        while (
+            picked and still.time_s <= picked[-1][2].time_s and _RANK[role] > _RANK[picked[-1][1]]
+        ):
+            picked.pop()  # the start, then a true end, keep their own frame over a fill's
+        if picked and still.time_s <= picked[-1][2].time_s:
+            continue  # a repeat or out of order: the earlier time keeps its frame
+        picked.append((target_s, role, still))
     frames = [
         SheetFrame(index, role, round(target_s, 4), s.time_s, s.jpeg, s.width, s.height)
-        for index, (target_s, role, s) in enumerate(
-            sorted(best.values(), key=lambda b: b[2].time_s)
-        )
+        for index, (target_s, role, s) in enumerate(picked)
     ]
     return frames, duration
 
