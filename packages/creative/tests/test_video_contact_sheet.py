@@ -309,8 +309,8 @@ def test_even_with_a_clock_spent_mid_gop_keeps_the_end(gop_2s: Path) -> None:
 
 
 def test_even_with_one_keyframe_and_no_budget_gives_one_frame(tmp_path: Path) -> None:
-    """One keyframe at the start and no budget: every time lands on it — one frame, the
-    nearest time's (documented: fewer frames, never a repeat)."""
+    """One keyframe at the start and no budget: every time lands on it — one frame, kept
+    by the start by rank (documented: fewer frames, never a repeat)."""
     from qualify_creative.video.contact_sheet import _evenly
 
     video = _write(tmp_path / "one.mp4", SECONDS, ONE_KEYFRAME)

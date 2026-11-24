@@ -494,8 +494,8 @@ def _evenly(
     answered by its OWN frame — one the pass already kept within `GRID_S` after it, or
     else a seek to it (`_sought`, the end's time first so it is the exact one); never the
     frame of another time. With the budget spent, a time may get the keyframe before it:
-    two times on the same keyframe keep one frame (the nearer time), so the sheet has
-    fewer frames, never a repeated one.
+    two times on the same keyframe keep one frame (the start, then a true end, else the
+    earlier time), so the sheet has fewer frames, never a repeated one.
 
     Time order, with each frame's own target and role: a time whose frame is at or
     before the frame of an earlier time is dropped (a keyframe read for a fill never goes
@@ -529,6 +529,8 @@ def _evenly(
         still = answers.get(target_s)
         if still is None:
             continue
+        # also with the whole budget, when the container's length outruns the last video
+        # frame by more than the slack (a longer audio track, a wrong header): wanted
         if role == "end" and target_s - still.time_s > _end_slack(duration):
             role = "reached"  # the farthest frame read, not the video's end
         while (
