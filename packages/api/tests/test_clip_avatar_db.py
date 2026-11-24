@@ -360,9 +360,23 @@ def test_pending_seconds_are_the_brands_uncharged_live_blocks(
         1,
         ca.script_seconds("Hola, soy Ana."),
     )
-    with tenant_session(world["tenant"]) as session:
-        session.execute(
-            text("UPDATE content_drafts SET status = 'failed' WHERE id = :b"),
-            {"b": world["block"]},
-        )
-    assert store.pending_block_seconds(tenant_id=world["tenant"], brand_id=brand) == (0, 0)
+    tenant = world["tenant"]
+
+    def owed() -> tuple[int, int]:
+        return store.pending_block_seconds(tenant_id=tenant, brand_id=brand)
+
+    def run(sql: str) -> None:
+        with tenant_session(tenant) as session:
+            session.execute(text(sql), {"b": world["block"], "c": world["clip"]})
+
+    # its Clip approved: it was charged then, or never will be — it owes nothing
+    run("UPDATE content_drafts SET status = 'approved' WHERE id = :c")
+    assert owed() == (0, 0)
+    run("UPDATE content_drafts SET status = 'generated' WHERE id = :c")
+    # made in another quota month (the business's own calendar month)
+    run("UPDATE content_drafts SET created_at = created_at - interval '40 days' WHERE id = :b")
+    assert owed() == (0, 0)
+    run("UPDATE content_drafts SET created_at = now() WHERE id = :b")
+    assert owed() == (1, ca.script_seconds("Hola, soy Ana."))
+    run("UPDATE content_drafts SET status = 'failed' WHERE id = :b")
+    assert owed() == (0, 0)

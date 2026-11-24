@@ -59,14 +59,15 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from qualify_creative.adapters.byteplus_omnihuman import OMNIHUMAN_15
-from qualify_creative.creations import own_script_seconds, weight_for
+from qualify_creative.creations import CHARS_PER_SECOND, own_script_seconds, weight_for
 from qualify_creative.enums import (
     AvatarSource,
     ContentFormat,
@@ -117,31 +118,47 @@ CLIP_AVATAR_VERSION = 1
 
 # -- what the owner reads (Spanish, `qualify-copy-es`; the screen is m-25112921) ---------
 
-DAILY_CAP_TEXT = "Ya creaste 3 avatares hoy. Mañana puedes crear más."
-SWITCHED_OFF_TEXT = "Por ahora no puedes agregar este avatar a tu video."
-TOO_LONG_TEXT = "Lo que dice el avatar dura más de 30 segundos. Acórtalo y vuelve a intentarlo."
+DAILY_CAP_TEXT = (
+    f"Ya creaste {AVATAR_DAILY_CAP} avatares hoy. Mañana puedes crear más. "
+    "Tu video queda guardado como está."
+)
+SWITCHED_OFF_TEXT = "Este tipo de avatar todavía no está disponible. Tu video queda como está."
+#: How many short sentences fit in a block: 30 s × `CHARS_PER_SECOND` (15) = 450
+#: characters read aloud; a short sentence is about 60 characters (10-12 words), so
+#: 450 // 60 = 7.
+SHORT_SENTENCE_CHARS = 60
+SENTENCES_PER_BLOCK = int(AVATAR_BLOCK_MAX_SECONDS * CHARS_PER_SECOND) // SHORT_SENTENCE_CHARS
+TOO_LONG_TEXT = (
+    "Lo que dice el avatar dura más de 30 segundos. Déjalo en unas "
+    f"{SENTENCES_PER_BLOCK} frases cortas y vuelve a intentarlo."
+)
 CLIP_NOT_LOCAL_TEXT = "Solo puedes agregar un avatar a un video armado con tus fotos y videos."
 CLIP_NOT_READY_TEXT = "Espera a que tu video esté listo para agregarle un avatar."
-NO_SLOT_TEXT = "Tu video ya tiene todos los avatares que puede llevar."
+NO_SLOT_TEXT = "Tu video ya tiene el máximo de avatares. Si quieres otro, quita uno."
 NO_BRAND_AVATAR_TEXT = (
-    "Tu marca todavía no tiene su avatar. Créalo en tu identidad de marca o describe uno."
+    "Tu marca todavía no tiene su avatar. Créalo en Tu marca, o describe aquí cómo "
+    "quieres que se vea."
 )
 BLOCK_NOT_READY_TEXT = "El avatar todavía no está listo. Espera un momento y vuelve a intentarlo."
 ALREADY_PLACED_TEXT = "Este avatar ya está en tu video."
 #: The assembly's refusals (`video_pipeline.local`): a stretch of a block at another
 #: speed, or a block of another video.
 SPEED_TEXT = (
-    "El avatar solo puede ir a velocidad normal, para que se escuche su voz. Quítale la "
-    "cámara rápida y vuelve a crear el video."
+    "El avatar tiene que ir en velocidad Normal para que se escuche su voz. Ponle "
+    "Velocidad: Normal a esa parte y vuelve a crear el video."
 )
-ELSEWHERE_TEXT = "Uno de los avatares es de otro video. Quítalo y vuelve a crear el video."
+ELSEWHERE_TEXT = "Uno de los avatares no pertenece a este video. Quítalo y agrégalo de nuevo."
 #: A block that came out longer than 30 s (the voice read slower than estimated):
-#: refused by the producer before OmniHuman is ordered.
+#: refused by the producer before OmniHuman is ordered. The presenter and the voice were
+#: already paid, so the block still counts for today's cap (Deivid's rule).
 BLOCK_TOO_LONG_TEXT = (
-    "Lo que dice el avatar quedó de más de 30 segundos. Acórtalo y vuelve a intentarlo."
+    "Al leerlo en voz alta, lo que dice el avatar pasó de 30 segundos. Acórtalo un poco y "
+    f"vuelve a intentarlo. Este intento cuenta para tus {AVATAR_DAILY_CAP} avatares de hoy."
 )
 #: The platform's OmniHuman is not 1.5: ours to fix, refused before any spend.
-BLOCK_MODEL_TEXT = "Por ahora no podemos crear este avatar. Inténtalo más tarde."
+BLOCK_MODEL_TEXT = (
+    "Por ahora no podemos crear este avatar. Inténtalo más tarde. No se gastó nada de tu plan."
+)
 
 
 class ClipAvatarRefused(ValueError):
@@ -423,14 +440,20 @@ class GeneratedSource:
     block: bool = True
     #: AI imagery, read from what made it (`asset_is_ai`).
     ai_generated: bool = True
+    #: False: no asset row says what made this file (`ai_stretches`' fail-safe): its
+    #: `provider` says why it counts as AI (`unknown_generated`, `brand_avatar`).
+    recorded: bool = True
     #: A block whose seconds a Clip's approval already took (its own charge row, at its
     #: revision, has videos): never charged again, whatever Clip version is approved.
     charged: bool = False
 
     def ai_provenance(self, segment: int) -> dict[str, Any]:
         """The Clip asset's record of an AI stretch: the label's evidence."""
+        if not self.recorded:
+            return {"segment": segment, "provenance": self.provider, "object_key": self.object_key}
         return {
             "segment": segment,
+            "provenance": "asset",
             "draft_id": str(self.block_id),
             "asset_id": str(self.asset_id),
             "provider": self.provider,
@@ -533,23 +556,36 @@ class PostgresClipAvatarStore:
 
     def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
         """(blocks, script seconds) of the brand's live blocks whose seconds no
-        approval took yet — in every Clip of the brand: what the month already owes. A
-        block that failed or was taken out owes nothing."""
+        approval took yet — in every Clip of the brand: what the month still owes. Only
+        blocks of THIS quota month (the calendar month in the business's zone, as the
+        ledger's period) whose Clip is not approved yet: a block never placed, of another
+        month or of a Clip already approved (it was charged then, or never will be) owes
+        nothing; nor does one that failed or was taken out."""
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
             rows = session.execute(
                 text("""
+                WITH z AS (
+                  SELECT COALESCE(NULLIF(
+                    (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
+                )
                 SELECT COALESCE(b.media->>'own_script', '') AS script
-                FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
-                WHERE d.brand_id = :brand AND d.parent_draft_id IS NOT NULL
+                FROM content_drafts d
+                JOIN content_briefs b ON b.id = d.brief_id
+                JOIN content_drafts p ON p.tenant_id = d.tenant_id AND p.id = d.parent_draft_id,
+                     z
+                WHERE d.brand_id = :brand
                   AND d.part_removed_at IS NULL AND d.status <> 'failed'
                   AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
+                  AND p.status NOT IN ('approved', 'staged', 'published')
+                  AND d.created_at
+                      >= (date_trunc('month', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
                   AND NOT EXISTS (SELECT 1 FROM creation_charges c
                                   WHERE c.draft_id = d.id AND c.videos > 0)
             """),
-                {"brand": brand_id},
+                {"brand": brand_id, "tenant": tenant_id},
             ).all()
         return len(rows), sum(script_seconds(str(row.script)) for row in rows)
 
@@ -704,16 +740,74 @@ def block_stretches(
 
 
 def ai_stretches(
-    segments: Sequence[SourceSegment], sources: Mapping[str, GeneratedSource]
+    segments: Sequence[SourceSegment],
+    sources: Mapping[str, GeneratedSource],
+    *,
+    tenant_id: UUID | None = None,
 ) -> tuple[BlockStretch, ...]:
-    """The recipe's stretches (videos or photos) whose file is AI imagery — Seedance,
-    Seedream, OmniHuman…, read from the asset that made it —, in order. Deivid,
-    2026-11-24: one is enough for the composed video's «hecho con IA», with the avatar
-    switches on or off."""
-    return tuple(
-        BlockStretch(index=index, segment=segment, source=sources[segment.key])
-        for index, segment in enumerate(segments)
-        if segment.key in sources and sources[segment.key].ai_generated
+    """The recipe's stretches (videos or photos) whose file is AI imagery, in order.
+    Deivid, 2026-11-24: one is enough for the composed video's «hecho con IA», with the
+    avatar switches on or off. The label FAILS SAFE (review of 66850d75):
+
+    - a file of the generator with an asset row: what the asset says (`asset_is_ai`);
+    - a file of the generator with NO row (a Seedance 480p preview whose row the final
+      replaced, a poster, a Seedream presenter, a checkpoint): AI, recorded as
+      `unknown_generated` — failing the Clip would be worse for the owner;
+    - the brand's avatar (`t/{t}/brand/{b}/avatar/…`, drawn by Seedream): AI.
+
+    Anything else `owned_by` accepts is the owner's own: uploads, the Galería (photos and
+    videos the business uploaded — the Galería holds no generated piece), the brand's
+    logos and files, the normalized copies of the owner's videos, reel windows."""
+    found: list[BlockStretch] = []
+    for index, segment in enumerate(segments):
+        source = sources.get(segment.key)
+        if source is None and tenant_id is not None:
+            if is_generated_file(tenant_id, segment.key):
+                source = _unrecorded(segment.key, UNKNOWN_GENERATED)
+            elif is_brand_avatar_file(tenant_id, segment.key):
+                source = _unrecorded(segment.key, BRAND_AVATAR)
+        if source is not None and source.ai_generated:
+            found.append(BlockStretch(index=index, segment=segment, source=source))
+    return tuple(found)
+
+
+#: `ai_sources` provenance of an AI stretch with no asset row to read.
+UNKNOWN_GENERATED = "unknown_generated"
+BRAND_AVATAR = "brand_avatar"
+
+
+def is_brand_avatar_file(tenant_id: UUID, key: str) -> bool:
+    """The brand's «avatar animado» (`brand_avatar.avatar_object_key`:
+    `t/{tenant}/brand/{brand}/avatar/{uuid}.jpg`), which Seedream draws — AI imagery.
+    The brand's other files (logos, brandboard, kept pictures) are the owner's."""
+    parts = key.split("/")
+    return (
+        len(parts) >= 6
+        and parts[0] == "t"
+        and parts[1] == str(tenant_id)
+        and parts[2] == "brand"
+        and parts[4] == "avatar"
+    )
+
+
+def _unrecorded(key: str, provider: str) -> GeneratedSource:
+    """An AI file with no asset row to read: its provenance says why it counts."""
+    nothing = UUID(int=0)
+    return GeneratedSource(
+        object_key=key,
+        block_id=nothing,
+        clip_id=None,
+        kind=provider,
+        revision=0,
+        asset_id=nothing,
+        provider=provider,
+        model_id="",
+        model_revision=None,
+        seconds=0.0,
+        pipeline_version="",
+        block=False,
+        ai_generated=True,
+        recorded=False,
     )
 
 
@@ -805,7 +899,6 @@ class ClipAvatarService:
         if clip.status not in _CLIP_READY:
             raise ClipAvatarRefused("clip_not_ready", CLIP_NOT_READY_TEXT)
         blocks = self._store.blocks_of(tenant_id=tenant_id, clip_id=clip_id)
-        self._refuse_without_quota(tenant_id, clip.brand_id, seconds)
         avatar_key = (
             self._brand_avatar_key(tenant_id, clip.brand_id) if request.use_brand_avatar else None
         )
@@ -823,6 +916,8 @@ class ClipAvatarService:
         try:
             draft_id = self._made_in_one_go(
                 tenant_id,
+                # under the business's lock: two blocks asked at once never both fit
+                lambda: self._refuse_without_quota(tenant_id, clip.brand_id, seconds),
                 lambda: self._insert_and_charge(
                     tenant_id,
                     user_id,
@@ -841,7 +936,9 @@ class ClipAvatarService:
         )
         return draft_id
 
-    def _made_in_one_go(self, tenant_id: UUID, make: Callable[[], UUID]) -> UUID:
+    def _made_in_one_go(
+        self, tenant_id: UUID, check: Callable[[], None], make: Callable[[], UUID]
+    ) -> UUID:
         """The daily cap's count, the block's rows and its charge row in ONE
         transaction on Postgres (the count's lock serializes the business's blocks, so
         two asked at once never both take the last place, nor the same slot); the
@@ -856,7 +953,8 @@ class ClipAvatarService:
             )
 
             with tenant_unit_of_work(tenant_id):
-                check_avatar_daily_cap(self._store, tenant_id=tenant_id)
+                check_avatar_daily_cap(self._store, tenant_id=tenant_id)  # takes the lock
+                check()
                 draft_id = make()
                 if dispatcher is not None:
                     after_tenant_commit(
@@ -867,6 +965,7 @@ class ClipAvatarService:
                     )
             return draft_id
         check_avatar_daily_cap(self._store, tenant_id=tenant_id)
+        check()
         draft_id = make()
         if dispatcher is not None:
             dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
@@ -920,22 +1019,38 @@ class ClipAvatarService:
         last: IntegrityError | None = None
         for slot in slots:
             try:
-                return self._content.repository.insert_brief_and_draft(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    brief=brief,
-                    voice_profile_version=voice_version,
-                    pipeline_version=pipeline_version,
-                    parent_draft_id=clip_id,
-                    part_index=slot,
-                    **keyed,
-                )
+                # a savepoint per attempt: a taken slot (23505) never aborts the
+                # transaction of the cap, the charge and the dispatch around it
+                with self._savepoint(tenant_id):
+                    return self._content.repository.insert_brief_and_draft(
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        brief=brief,
+                        voice_profile_version=voice_version,
+                        pipeline_version=pipeline_version,
+                        parent_draft_id=clip_id,
+                        part_index=slot,
+                        **keyed,
+                    )
             except IntegrityError as exc:
                 if not _slot_taken(exc):
                     raise
                 last = exc
         assert last is not None
         raise ClipAvatarRefused("no_slot", NO_SLOT_TEXT, raw=str(last)) from last
+
+    @contextmanager
+    def _savepoint(self, tenant_id: UUID) -> Iterator[None]:
+        """`begin_nested` on the unit of work's session (Postgres); nothing elsewhere."""
+        from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
+
+        if not isinstance(self._content.repository, PostgresContentRepository):
+            yield
+            return
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session, session.begin_nested():
+            yield
 
     def _clip(self, tenant_id: UUID, clip_id: UUID) -> tuple[ClipRow, ContentBrief]:
         """The Clip and its brief: a top-level `local` Clip of this business (RLS), its
@@ -1200,7 +1315,10 @@ __all__ = [
     "block_segment",
     "block_stretches",
     "AI_PROVIDERS",
+    "BRAND_AVATAR",
+    "UNKNOWN_GENERATED",
     "ai_stretches",
+    "is_brand_avatar_file",
     "asset_is_ai",
     "charged_seconds",
     "AVATAR_DAILY_CAP",

@@ -301,6 +301,8 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - Se lee de lo que se hizo (§3), en el asset del generador que dio ese archivo, nunca por la ruta. Primero cuenta lo que el propio asset anotó (`params.ai_generated`, que escriben el armado local, la unión y el final por partes). Después, su proveedor, si es un proveedor de generación (Seedance, Seedream, OmniHuman). Por último, `requires_ai_disclosure` de su borrador, que se calcula de lo que ese borrador hizo.
 - Solo se buscan los archivos que guardó el generador. Las fotos y los videos que subió el dueño, los de la Galería y las ventanas de reels son suyos: no se buscan y no cuentan como IA.
 - Un Clip solo con fotos y videos propios sigue en `False`.
+- **La etiqueta falla hacia el lado seguro.** Un archivo que guardó el generador y no tiene fila en `image_assets` cuenta como IA: por ejemplo, la vista previa 480p de Seedance cuya fila pisó el final, un póster o el presentador de Seedream. Queda en `ai_sources` como `unknown_generated`. Hacer fallar el Clip sería peor para el dueño.
+- El avatar de la marca (`t/{negocio}/brand/{marca}/avatar/…`) lo dibuja Seedream: si entra como tramo, cuenta como IA (`brand_avatar`). Los logos y demás archivos de la marca, la Galería (solo guarda lo que sube el negocio), las copias normalizadas de los videos del dueño y las ventanas de reels son del dueño.
 - Cada tramo de IA queda en `params.local.ai_sources` del asset del Clip: borrador, asset, proveedor y modelo.
 - Si hay archivos del generador en la receta y el armado no puede consultarlos, el Clip no se arma: nunca sale sin saber si lleva la etiqueta.
 - Antes de este cambio, un Clip con un video de Seedance elegido por el dueño salía `False`. Ahora sale `True` a propósito.
@@ -309,7 +311,7 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 
 - Crear el bloque no descuenta nada: escribe su fila de cobro en cero, como cualquier pieza, y con ella la cola encuentra la reserva de la generación.
 - Sus segundos se descuentan del cupo de video del mes cuando se aprueba el Clip, como un clip de Seedance. El cobro queda en la fila del propio bloque, así que aprobar otra versión del Clip no lo vuelve a cobrar.
-- El servidor rechaza crear el bloque si el mes no alcanza para sus segundos y los de **todos** los bloques de la marca que aún no se cobraron, en cualquiera de sus Clips: no hay llamada de pago sin cupo.
+- El servidor rechaza crear el bloque si el mes no alcanza para sus segundos y los de **todos** los bloques de la marca que aún no se cobraron: no hay llamada de pago sin cupo. Cuentan los bloques del mes de cupo en curso cuyo Clip todavía no se aprobó, en cualquier Clip de la marca. Un bloque que nunca se colocó deja de contar al aprobarse su Clip o al pasar el mes.
 - **Tope diario (decisión de Deivid, 2026-11-24):** un negocio crea como máximo 3 bloques al día, en su propio día (zona horaria del negocio, como el tope de videos con fotos y videos propios). Cuentan todos los bloques creados ese día, aprobados o no. No cuenta uno que falló antes de pagar nada. El cuarto se rechaza antes de escribir nada y de cualquier llamada de pago: «Ya creaste 3 avatares hoy. Mañana puedes crear más.»
 - Máximo 30 s por bloque. Se rechaza al crearlo, con el largo estimado del guion, y otra vez con la voz real, antes de pedir OmniHuman.
 - Las fotos y los videos propios del dueño siguen sin descontar nada (D3).

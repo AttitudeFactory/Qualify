@@ -59,7 +59,8 @@ as it is). Instagram's «hecho con IA» is read from what was made, not from the
 (m-25112920, ADR 50 §9, Deivid 2026-11-24): the video is `ai_generated=True` as soon as
 ONE stretch's file is AI imagery — a Seedance or Seedream piece of the generator the
 owner chose, an avatar block OmniHuman made —, read from the asset that made it
-(`clip_avatar.asset_is_ai`), whatever the avatar switches say; each such stretch is in
+(`clip_avatar.asset_is_ai`; a generator file with no asset row, or the brand's avatar,
+counts as AI: the label fails safe), whatever the avatar switches say; each such stretch is in
 `params.local.ai_sources`. Only the owner's own photos and videos: `ai_generated=False`.
 An avatar block (`clip_avatar`) is also in `params.local.avatar_blocks`, and its
 stretch must be its own Clip's and play at ×1 (its voice), else nothing is read.
@@ -860,8 +861,9 @@ def produce_local(
             return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
     # ADR 50 §9 (Deivid, 2026-11-24): «hecho con IA» read from what was made — ONE
     # stretch whose file is AI imagery (Seedance, Seedream, OmniHuman) makes the whole
-    # video AI, with the avatar switches on or off
-    made_by_ai = ai_stretches(part.segments, generated_sources or {})
+    # video AI, with the avatar switches on or off; a generator file with no asset row and
+    # the brand's avatar count as AI too (fail safe, `clip_avatar.ai_stretches`)
+    made_by_ai = ai_stretches(part.segments, generated_sources or {}, tenant_id=tenant_id)
     ai_generated = bool(made_by_ai)
     try:
         with (

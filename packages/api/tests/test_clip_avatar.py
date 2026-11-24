@@ -207,12 +207,20 @@ class RepoStore:
         return any(row.videos > 0 for (d, _), row in self.ledger.rows.items() if d == draft_id)
 
     def pending_block_seconds(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
+        month = (self.today.year, self.today.month)
         live = [
             (draft_id, brief)
             for draft_id, brief in self._blocks()
             if brief.brand_id == brand_id
             and self.repo.drafts[draft_id].status != "failed"
             and not self._charged(draft_id)
+            and (
+                self.repo.drafts[draft_id].created_at.year,
+                self.repo.drafts[draft_id].created_at.month,
+            )
+            == month
+            and self.repo.drafts[self.repo.parents[draft_id][0]].status
+            not in ("approved", "staged", "published")
         ]
         return len(live), sum(ca.script_seconds(b.media.own_script) for _, b in live)
 
@@ -1062,7 +1070,9 @@ def test_the_fourth_block_of_the_day_is_refused_before_any_paid_call() -> None:
             tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
         )
     assert refused.value.code == ca.AVATAR_DAILY_CAP_CODE == "avatar_daily_cap_reached"
-    assert refused.value.owner_message == "Ya creaste 3 avatares hoy. Mañana puedes crear más."
+    assert refused.value.owner_message == (
+        "Ya creaste 3 avatares hoy. Mañana puedes crear más. Tu video queda guardado como está."
+    )
     # nothing written, nothing dispatched: no Seedream, Seed Speech or OmniHuman call
     assert repo.inserts == made and len(dispatcher.calls) == dispatched
 
@@ -1110,3 +1120,166 @@ def test_only_a_taken_slot_moves_to_the_next_one() -> None:
 
     assert ca._slot_taken(IntegrityError("x", {}, Orig("23505")))
     assert not ca._slot_taken(IntegrityError("x", {}, Orig("23503")))  # a foreign key
+
+
+# ---------------------------------------------------------------------------
+# review of 66850d75: the label fails safe; the brand's avatar is AI; what the month owes;
+# what a failed approval undoes
+
+
+def test_a_generator_file_with_no_asset_row_counts_as_ai(
+    queue_on: None, assembly_files: dict[str, bytes]
+) -> None:
+    """A Seedance 480p preview the owner chose, whose `image_assets` row the 1080p final
+    replaced when the piece was approved: the lookup finds nothing for it. It counts as
+    AI (`unknown_generated`) — never as the owner's own, never a failed Clip."""
+    preview = f"t/{TENANT_ID}/generated/{uuid4()}/r1/video-draft.mp4"
+    outcome, _, looked = _assemble(
+        _local_clip(SourceSegment(key=preview, start_s=0, end_s=4.0, speed=1.0)),
+        {**assembly_files, preview: _video_with_sound_bytes(4.0, 1.5)},
+        clip_id=uuid4(),
+        sources={},  # the final's row has another key: nothing found for the preview
+    )
+    assert outcome.failure is None, outcome.detail
+    assert looked == [[preview]]
+    (video,) = outcome.media
+    assert video.ai_generated is True
+    assert video.params["local"]["ai_sources"] == [
+        {"segment": 0, "provenance": ca.UNKNOWN_GENERATED, "object_key": preview}
+    ]
+
+
+def test_the_brands_avatar_as_a_stretch_counts_as_ai(
+    queue_on: None, assembly_files: dict[str, bytes]
+) -> None:
+    """The brand's «avatar animado» is drawn by Seedream (`brand_avatar`)."""
+    avatar = f"t/{TENANT_ID}/brand/{BRAND_ID}/avatar/{uuid4().hex}.jpg"
+    outcome, _, looked = _assemble(
+        _local_clip(
+            SourceSegment(key=OWN_VIDEO, start_s=0, end_s=4.0, speed=1.0),
+            SourceSegment(key=avatar, start_s=0, end_s=1.5, kind="photo"),
+        ),
+        {**assembly_files, avatar: _png_bytes()},
+        clip_id=uuid4(),
+        sources={},
+    )
+    assert outcome.failure is None, outcome.detail
+    assert looked == []  # not a generator file: nothing is looked up
+    assert outcome.media[0].ai_generated is True
+    (record,) = outcome.media[0].params["local"]["ai_sources"]
+    assert record == {"segment": 1, "provenance": ca.BRAND_AVATAR, "object_key": avatar}
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        f"uploads/{TENANT_ID}/mi-cocina.mp4",  # an upload
+        f"gallery/{TENANT_ID}/{UUID(int=7)}/video.mp4",  # the Galería: the owner's own
+        f"t/{TENANT_ID}/brand/{BRAND_ID}/logo/main.png",  # the brand's logo
+        f"t/{TENANT_ID}/brand/{BRAND_ID}/kept/profile/abc.jpg",  # a kept profile picture
+        f"t/{TENANT_ID}/normalized/{UUID(int=8)}/video.mp4",  # a normalized own video
+        f"reel-windows/{TENANT_ID}/{UUID(int=9)}/window.mp4",  # a reel window
+    ],
+)
+def test_the_owners_own_files_never_count_as_ai(key: str) -> None:
+    segment = SourceSegment(key=key, start_s=0, end_s=1.5, kind="photo")
+    assert ca.ai_stretches((segment,), {}, tenant_id=TENANT_ID) == ()
+    assert not ca.is_generated_file(TENANT_ID, key)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        f"t/{TENANT_ID}/generated/{UUID(int=1)}/r1/presenter.jpg",
+        f"generated/{TENANT_ID}/{UUID(int=1)}/first-frame.jpg",
+        f"t/{TENANT_ID}/brand/{BRAND_ID}/avatar/a.jpg",
+    ],
+)
+def test_ai_files_with_no_row_count_as_ai(key: str) -> None:
+    segment = SourceSegment(key=key, start_s=0, end_s=1.5, kind="photo")
+    (stretch,) = ca.ai_stretches((segment,), {}, tenant_id=TENANT_ID)
+    assert stretch.source.recorded is False
+    # another business's file is never this one's (and `owned_by` refuses it before)
+    other = UUID("0b0b0000-0000-4000-8000-0000000000ef")
+    assert ca.ai_stretches((segment,), {}, tenant_id=other) == ()
+
+
+def test_a_block_never_placed_of_another_month_or_of_an_approved_clip_owes_nothing() -> None:
+    """What the month owes: only this quota month's uncharged blocks of Clips not
+    approved yet. An old block (another month), or one under a Clip already approved,
+    never blocks a new one."""
+    ledger = InMemoryCreationsLedger()
+    service, _, repo, store, _, clip_id = _wired(env=PRESENTER_ON, ledger=ledger)
+    thirty = _presenter(script="a" * 450)
+    old = service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=thirty
+    )
+    assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (1, 30)
+    # another month: the block was made last month
+    last_month = repo.drafts[old].created_at.replace(day=1) - timedelta(days=1)
+    repo.drafts[old] = replace(repo.drafts[old], created_at=last_month)
+    assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (0, 0)
+    store.capped = False
+    service.create_block(tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=thirty)
+    # a Clip already approved: its unplaced block is never charged, so it owes nothing
+    repo.drafts[clip_id] = replace(repo.drafts[clip_id], status=APPROVED)
+    assert store.pending_block_seconds(tenant_id=TENANT_ID, brand_id=BRAND_ID) == (0, 0)
+    other_clip = repo.seed_draft(_local_clip(), status=GENERATED)
+    service.create_block(tenant_id=TENANT_ID, user_id=USER_ID, clip_id=other_clip, request=thirty)
+
+
+class _FailingApproval(Exception):
+    pass
+
+
+def test_a_failed_approval_undoes_only_the_blocks_it_charged() -> None:
+    """Two blocks in the Clip; one was already charged (by an approval of another
+    version). The approval charges the other, then fails to write: only the one it
+    charged is given back — the earlier charge stays."""
+    ledger = InMemoryCreationsLedger()
+    service, content, repo, store, _, clip_id = _wired(env=PRESENTER_ON, ledger=ledger)
+    first, first_key = _made_block(service, repo, store, clip_id)
+    second, second_key = _made_block(service, repo, store, clip_id)
+    clip = _local_clip(
+        SourceSegment(key=first_key, start_s=0, end_s=4.2, speed=1.0),
+        SourceSegment(key=second_key, start_s=0, end_s=4.2, speed=1.0),
+    )
+    repo.replace_brief(tenant_id=TENANT_ID, draft_id=clip_id, user_id=USER_ID, brief=clip)
+    from qualify_api.creative.creations import VideoCharge
+    from qualify_api.creative.service import VariantRecord
+
+    # the first block was charged by an earlier approval
+    assert ledger.charged_videos_many(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=(VideoCharge(first, 1, 1, 5),)
+    ) == [VideoCharge(first, 1, 1, 5)]
+    variant = uuid4()
+    repo.variants[variant] = VariantRecord(
+        id=variant,
+        draft_id=clip_id,
+        ordinal=1,
+        copy=copy_dict(),
+        edited_copy=None,
+        fidelity={"passed": True},
+        model_id="claude",
+        model_revision="r",
+    )
+    before = ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).videos_left
+
+    def refuse(**_: Any) -> None:
+        raise _FailingApproval
+
+    repo.set_approved = refuse  # type: ignore[method-assign]
+    with pytest.raises(_FailingApproval):
+        content.approve(tenant_id=TENANT_ID, draft_id=clip_id, variant_id=variant, user_id=USER_ID)
+    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).videos_left == before
+    assert ledger.rows[(first, 1)].videos == 1  # the earlier charge stays
+    assert ledger.rows[(second, 1)].videos == 0  # this approval's charge undone
+
+
+def test_the_texts_follow_the_cap_and_the_sentence_count() -> None:
+    assert ca.SENTENCES_PER_BLOCK == 7  # 30 s × 15 characters / 60 per short sentence
+    assert "unas 7 frases cortas" in ca.TOO_LONG_TEXT
+    assert f"tus {ca.AVATAR_DAILY_CAP} avatares de hoy" in ca.BLOCK_TOO_LONG_TEXT
+    assert ca.DAILY_CAP_TEXT.startswith(f"Ya creaste {ca.AVATAR_DAILY_CAP} avatares hoy.")
+    assert ca.BLOCK_MODEL_TEXT.endswith("No se gastó nada de tu plan.")
+    assert "Velocidad: Normal" in ca.SPEED_TEXT and "cámara rápida" not in ca.SPEED_TEXT

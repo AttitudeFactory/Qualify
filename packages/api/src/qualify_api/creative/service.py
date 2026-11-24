@@ -4546,12 +4546,14 @@ class ContentService:
     ) -> tuple[Any, ...]:
         """Charge the Clip's uncharged avatar blocks with its approval, all or nothing;
         when the month cannot pay them, what the Clip's own approval charged is undone
-        too (`NotEnoughCreations`, nothing written). The blocks charged now."""
+        too (`NotEnoughCreations`, nothing written). Only the blocks THIS call charged
+        (`charged_videos_many`) — what a failed approval undoes; a block another approval
+        charged meanwhile is never undone here."""
         charges = self._clip_avatar_charges(tenant_id, record)
         if not charges or self._creations is None:
             return ()
         try:
-            self._creations.charge_videos_many(
+            charged = self._creations.charged_videos_many(
                 tenant_id=tenant_id, brand_id=record.brand_id, charges=charges
             )
         except Exception:
@@ -4560,7 +4562,7 @@ class ContentService:
                     tenant_id=tenant_id, draft_id=record.id, revision=record.revision
                 )
             raise
-        return charges
+        return tuple(charged)
 
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
