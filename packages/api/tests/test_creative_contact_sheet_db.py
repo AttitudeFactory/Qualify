@@ -74,12 +74,24 @@ def test_the_parent_shows_its_joined_previews_sheet_to_its_own_business_db(world
     # another business reads nothing (RLS)
     assert reader.read(tenant_id=uuid4(), draft_id=parent) is None
 
-    # a purged piece offers no sheet
+    # a purged piece offers no sheet. Purged as retention purges it: the video WITH its
+    # parts (a video purged alone, parts left, is a retention candidate whatever its
+    # dates — it would leak into `test_creative_retention_db`'s discovery), and put back
+    # afterwards: the database is shared by the whole `db` run
+    family = "id = :p OR parent_draft_id = :p"
     with tenant_session(tenant) as session:
         session.execute(
-            text("UPDATE content_drafts SET media_purged_at = now() WHERE id = :p"), {"p": parent}
+            text(f"UPDATE content_drafts SET media_purged_at = now() WHERE {family}"),
+            {"p": parent},
         )
-    assert reader.read(tenant_id=tenant, draft_id=parent) is None
+    try:
+        assert reader.read(tenant_id=tenant, draft_id=parent) is None
+    finally:
+        with tenant_session(tenant) as session:
+            session.execute(
+                text(f"UPDATE content_drafts SET media_purged_at = NULL WHERE {family}"),
+                {"p": parent},
+            )
 
 
 def test_only_the_visible_versions_sheet_is_offered_db(world) -> None:  # noqa: ANN001, F811
