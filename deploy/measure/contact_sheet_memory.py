@@ -15,15 +15,28 @@ The sources are named `…_cuts5s.mp4`: a file left by an earlier version of thi
 (whose noise made no cut the detector sees) is never reused. `shots` counts the shots the
 pass found (3 for 15 s); it is 1 when the pass ran past its budget (`cuts: "even"`: the
 cuts were dropped, not missed). Measured 2026-11-23: 15 s → 3 shots, `detected`.
+
+Under the creative-worker's cap (Docker; the image has no `psutil`, so RSS comes from
+`/proc`, plus the cgroup's `anon` peak, `memory.peak` and `ru_maxrss` on Linux):
+
+    python contact_sheet_memory.py make <dir> [SECONDS...]   # sources only, own container
+    python contact_sheet_memory.py chain <ef14-dir> [CASE]   # EF-14 compose, then the sheet
+
+`chain` runs `recompose_memory.py run` (EF-14's 1080p final compose, `final_3texts_3layers`
+by default, sources from `recompose-memory.sh make`) with the sheet as the compose's
+`contact_sheet` hook, as production calls it: after the encoder, the composed bytes held.
+Its `EF14-RESULT` carries a `sheet` step; `EF18-CHAIN {json}` adds the sheet's own time.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 
 def _make(path: Path, seconds: int, size: tuple[int, int] = (1080, 1920)) -> None:
@@ -52,18 +65,57 @@ def _make(path: Path, seconds: int, size: tuple[int, int] = (1080, 1920)) -> Non
             sink.mux(packet)
 
 
+CGROUP = Path("/sys/fs/cgroup")
+
+
+def _rss() -> int:
+    """The process' resident set: `psutil` when installed (Windows), else `/proc`."""
+    try:
+        import psutil
+    except ImportError:
+        with open("/proc/self/statm") as handle:
+            return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    return int(psutil.Process().memory_info().rss)
+
+
+def _anon() -> int:
+    """The cgroup's unreclaimable memory (`anon` of `memory.stat`); 0 outside a cgroup v2."""
+    try:
+        for line in (CGROUP / "memory.stat").read_text().splitlines():
+            key, value = line.split()
+            if key == "anon":
+                return int(value)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def _cgroup_peak() -> int:
+    try:
+        return int((CGROUP / "memory.peak").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _ru_maxrss_mib() -> int | None:
+    try:
+        import resource
+    except ImportError:  # Windows
+        return None
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+
+
 def _measure(path: Path) -> dict[str, object]:
-    import psutil
     from qualify_creative.video.contact_sheet import make_contact_sheet
 
-    process = psutil.Process()
-    baseline = process.memory_info().rss
-    peak = [baseline]
+    baseline, anon_baseline = _rss(), _anon()
+    peak, anon_peak = [baseline], [anon_baseline]
     done = threading.Event()
 
     def sample() -> None:
         while not done.is_set():
-            peak[0] = max(peak[0], process.memory_info().rss)
+            peak[0] = max(peak[0], _rss())
+            anon_peak[0] = max(anon_peak[0], _anon())
             time.sleep(0.01)
 
     sampler = threading.Thread(target=sample)
@@ -81,6 +133,10 @@ def _measure(path: Path) -> dict[str, object]:
         "rss_baseline_mib": round(baseline / mib),
         "rss_peak_mib": round(peak[0] / mib),
         "rss_delta_mib": round((peak[0] - baseline) / mib),
+        "anon_baseline_mib": round(anon_baseline / mib),
+        "anon_peak_mib": round(anon_peak[0] / mib),
+        "cgroup_peak_mib": round(_cgroup_peak() / mib) or None,
+        "ru_maxrss_mib": _ru_maxrss_mib(),
         "shots": sheet.shots,
         "frames": len(sheet.frames),
         "cuts": sheet.cuts,
@@ -91,14 +147,56 @@ def _measure(path: Path) -> dict[str, object]:
     }
 
 
+def chain(folder: Path, case: str) -> None:
+    """EF-14's compose with the sheet as its `contact_sheet` hook, in one process."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import recompose_memory as compose_case
+    from qualify_api.creative.contact_sheet import keep_contact_sheet
+    from qualify_api.creative.video_pipeline.recompose import ClipComposer
+
+    samplers: list[Any] = []
+
+    class Captured(compose_case.base.Sampler):  # type: ignore[name-defined, misc]
+        def __init__(self) -> None:
+            super().__init__()
+            samplers.append(self)
+
+    compose_case.base.Sampler = Captured
+    original = ClipComposer.compose
+    timing: dict[str, object] = {}
+
+    def sheet(path: Path) -> Any:
+        samplers[0].enter("sheet")
+        wall0 = time.perf_counter()
+        made = keep_contact_sheet(path, lambda name, data: name, source={"stage": "final"})
+        timing["sheet_wall_s"] = round(time.perf_counter() - wall0, 2)
+        timing["sheet"] = None if made is None else {k: made.get(k) for k in ("shots", "cuts")}
+        samplers[0].enter("compose")
+        return made
+
+    def compose(self: ClipComposer, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("contact_sheet", sheet)
+        return original(self, *args, **kwargs)
+
+    ClipComposer.compose = compose  # type: ignore[method-assign]
+    compose_case.run(folder, case)
+    print("EF18-CHAIN " + json.dumps(timing), flush=True)
+
+
 def main() -> None:
-    folder = Path(sys.argv[1])
+    if sys.argv[1] == "chain":
+        chain(Path(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else "final_3texts_3layers")
+        return
+    make_only = sys.argv[1] == "make"
+    first = 2 if make_only else 1
+    folder = Path(sys.argv[first])
     folder.mkdir(parents=True, exist_ok=True)
-    for seconds in [int(s) for s in sys.argv[2:]] or [15, 60]:
+    for seconds in [int(s) for s in sys.argv[first + 1 :]] or [15, 60]:
         path = folder / f"composed_1080x1920_{seconds}_cuts5s.mp4"
         if not path.exists():
             _make(path, seconds)
-        print("EF18-RESULT " + json.dumps(_measure(path)), flush=True)
+        if not make_only:
+            print("EF18-RESULT " + json.dumps(_measure(path)), flush=True)
 
 
 if __name__ == "__main__":
