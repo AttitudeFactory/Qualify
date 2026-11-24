@@ -919,8 +919,18 @@ def check_part_link(
 ) -> None:
     """VE-08 (criterion 6): a child's brief names its part (`media.part`) exactly when the
     draft has a parent, and the part's index is the draft's `part_index` — a part never
-    exists loose, and a loose piece never carries a part."""
+    exists loose, and a loose piece never carries a part.
+
+    m-25112920: an avatar block of a Clip (`media.clip_avatar_block`, an avatar kind) is
+    the other child: always under its Clip, in a slot (`part_index`), never with a part —
+    and a block is never created loose."""
     part = brief.media.part
+    if brief.media.clip_avatar_block:
+        if part is not None or not brief.kind.is_video:
+            raise ValueError("an avatar block of a Clip is an avatar, never a part")
+        if parent_draft_id is None or part_index is None:
+            raise ValueError("an avatar block of a Clip lives under its Clip, in a slot")
+        return
     if (part is None) != (parent_draft_id is None) or (parent_draft_id is None) != (
         part_index is None
     ):
@@ -2429,8 +2439,13 @@ class ContentService:
         creations: CreationsLedger | None = None,
         progress: Callable[[UUID, UUID], None] | None = None,
         vendor_tasks: VendorTaskStore | None = None,
+        clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
     ) -> None:
         self._media = media
+        #: m-25112920: which stretches of a Clip's recipe are its avatar blocks' videos
+        #: (`clip_avatar.db_block_sources` on Postgres when None) — what approving the
+        #: Clip charges of the month's video seconds.
+        self._clip_avatar_sources = clip_avatar_sources
         #: The vendor tasks a generation created, kept by id (m-24852154): None = a
         #: task that outlives the wait cannot be resumed (tests, scripts).
         self._vendor_tasks = vendor_tasks
@@ -4489,7 +4504,35 @@ class ContentService:
             price = weight_for(brief)
         except CreationNotOffered:
             return 0, 0
-        return price.videos, price.video_seconds
+        videos, seconds = price.videos, price.video_seconds
+        if record.parent_draft_id is None and brief.kind is ContentKind.CLIP:
+            # m-25112920: a `local` Clip's avatar blocks are counted at its approval
+            # (D3 still holds for the owner's own stretches: they use nothing)
+            block_videos, block_seconds = self._clip_avatar_charge(tenant_id, record.id, brief)
+            videos, seconds = videos + block_videos, seconds + block_seconds
+        return videos, seconds
+
+    def _clip_avatar_charge(
+        self, tenant_id: UUID, clip_id: UUID, brief: ContentBrief
+    ) -> tuple[int, int]:
+        """(videos, seconds) of the Clip's own avatar blocks its recipe plays; (0, 0)
+        without blocks — no lookup at all unless a stretch can be one."""
+        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            clip_block_charge,
+            db_block_sources,
+        )
+
+        resolver = self._clip_avatar_sources
+        if resolver is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return 0, 0
+            resolver = db_block_sources
+        return clip_block_charge(
+            tenant_id=tenant_id,
+            clip_id=clip_id,
+            brief=brief,
+            sources=lambda keys: resolver(tenant_id, keys),
+        )
 
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
@@ -5231,6 +5274,13 @@ class ContentService:
         if regenerate:
             # before the FSM, the charge and the dispatch: nothing is written
             self._refuse_own_media(tenant_id=tenant_id, draft_id=draft_id, brief_id=record.brief_id)
+            if record.parent_draft_id is not None:
+                stored = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+                if stored is not None and stored.media.clip_avatar_block:
+                    # m-25112920: a Clip's avatar block is paid OmniHuman with no charge of
+                    # its own — never made again here, past the quota check of
+                    # `clip_avatar.create_block` (a new block is asked for instead)
+                    raise ValueError("an avatar block of a Clip is not made again on its own")
         if regenerate and record.status == REJECTED:
             # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
             # Applying REJECT again is not a legal edge (rejected → rejected) and used to

@@ -83,6 +83,7 @@ from qualify_api.creative.brand_fonts import DbBrandFontFiles
 from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
+from qualify_api.creative.clip_avatar import db_block_sources
 from qualify_api.creative.creations import PostgresCreationsLedger
 from qualify_api.creative.dispatch import InlineDispatcher, record_progress
 from qualify_api.creative.gallery_media import DbGalleryMedia
@@ -478,6 +479,8 @@ def production_content_service() -> ContentService:
             previous_parts=_previous_parts(),
             # EF-06 + EF-05: a `local` video's texts, drawn by the same render service
             render_client=render_client,
+            # m-25112920: which stretches of a `local` Clip are its avatar blocks' videos
+            clip_avatar_sources=db_block_sources,
         ),
     )
     service.dispatcher = (

@@ -56,7 +56,10 @@ layers, `effect_layers` (each use's `TimedEffectLayer.params()`: effect, version
 intensity, zone, span, the loop's sha256, cost 0) with `steps["layer_compose"]`. The
 asset carries no `draft` block (there is no Seedance final to order: it is publishable
 as it is) and `ai_generated=False` — Instagram's «hecho con IA» is read from what was
-made, not from the kind.
+made, not from the kind. m-25112920 (ADR 50 amendment `[PROPUESTO]`): a Clip whose
+recipe plays one of its avatar blocks (`clip_avatar`, a talking video OmniHuman made)
+is `ai_generated=True`, each block recorded in `params.local.avatar_blocks`; a block's
+stretch must be its own Clip's and play at ×1 (its voice), else nothing is read.
 
 Idempotent: a retried preparation renders again into the same revision's keys and the
 service rewrites the same revision's assets; the charge is one zero row per revision.
@@ -67,7 +70,7 @@ from __future__ import annotations
 import io
 import logging
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -79,6 +82,7 @@ from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
+from qualify_api.creative.clip_avatar import block_stretches, stretch_problem
 from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
 from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
@@ -780,6 +784,7 @@ def produce_local(
     lease_store: Any = None,
     brand: Any = None,
     render_client: Any = None,
+    avatar_blocks: Mapping[str, Any] | None = None,
 ) -> MediaOutcome:
     """The `local` Clip of `brief` as the producer's outcome — never raises for the
     owner's files: the outcome carries the failure. `allowed` is False outside the
@@ -790,7 +795,11 @@ def produce_local(
     preparing and speeding up a minute of 1080×1920 can outlast it, and a lost lease
     would throw the video away at the final write and make it again on every pass.
     `lease_store` is the `PipelineStore` (a test's double). `brand` and `render_client`
-    draw the recipe's texts (`render_local_part`), inside the same kept lease."""
+    draw the recipe's texts (`render_local_part`), inside the same kept lease.
+
+    `avatar_blocks` (m-25112920) maps the recipe's stretch keys that are avatar blocks'
+    videos to their `clip_avatar.BlockSource` (the caller's lookup, `MediaProducer`);
+    None or empty: no block, exactly as before."""
     part_ref = brief.media.part
     in_part = part_ref is not None
     failed_text = LOCAL_PART_FAILED_TEXT if in_part else LOCAL_SOURCE_FAILED_TEXT
@@ -826,6 +835,24 @@ def produce_local(
                 else failed_text
             ),
         )
+    # m-25112920: the avatar blocks the recipe plays — each its own Clip's (a part, or
+    # another Clip, never takes one) and at ×1, so its voice is heard; refused before
+    # anything is read
+    blocks = block_stretches(part.segments, avatar_blocks or {})
+    for stretch in blocks:
+        problem = stretch_problem(stretch, draft_id)
+        if problem is not None:
+            code, owner_text = problem
+            logger.warning(
+                "draft %s: avatar block %s refused before any read: %s",
+                draft_id,
+                stretch.source.block_id,
+                code,
+            )
+            return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
+    # ADR 50 amendment [PROPUESTO]: «hecho con IA» read from what was made — a stretch
+    # OmniHuman made makes the whole video AI
+    ai_generated = bool(blocks)
     try:
         with (
             # m-25042483: never alongside a part join — with one in flight this raises
@@ -866,7 +893,7 @@ def produce_local(
         "duration_seconds": round(made.seconds, 3),
         "resolution": f"{made.height}p",
         "reference_mode": "local",
-        "ai_generated": False,
+        "ai_generated": ai_generated,
         "local": {
             "recipe_version": LOCAL_RECIPE_VERSION,
             "recipe_contract": RECIPE_CONTRACT_VERSION,
@@ -891,6 +918,9 @@ def produce_local(
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers
+    if blocks:
+        # m-25112920: each block played — its draft, revision, asset, model and length
+        params["local"]["avatar_blocks"] = [s.source.provenance(s.index) for s in blocks]
     if made.text_layers is not None:
         # EF-05's provenance: design, pixel revisions, fade chosen and applied, hashes
         params["local"]["text_layers"] = made.text_layers
@@ -907,7 +937,7 @@ def produce_local(
         model_id=LOCAL_MODEL_ID,
         provider=LOCAL_PROVIDER,
         content_type=MP4,
-        ai_generated=False,
+        ai_generated=ai_generated,
         params=params,
     )
     usage = MediaUsage(
