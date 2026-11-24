@@ -167,8 +167,15 @@ def test_new_creation_and_regeneration_callers_stamp_before_charge_and_share_quo
     )
     brief = _brief(ContentKind.STATIC_FLYER, carousel=True, product_keys=keys)
     draft_id, brief_id = uuid4(), uuid4()
+    # as `DraftRecord`, which always carries `parent_draft_id` (None: not a part, not a
+    # Clip's avatar block — what `reject(regenerate=True)` reads, m-25112920)
     record = SimpleNamespace(
-        id=draft_id, brief_id=brief_id, brand_id=brief.brand_id, revision=1, status=GENERATED
+        id=draft_id,
+        brief_id=brief_id,
+        brand_id=brief.brand_id,
+        revision=1,
+        status=GENERATED,
+        parent_draft_id=None,
     )
     events = []
 
