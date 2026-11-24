@@ -466,6 +466,28 @@ def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> No
     ]
 
 
+def test_an_edit_part_with_texts_and_smoke_stays_refused() -> None:
+    """m-25103284 composes over a `reference` part only: an «Igual al original» (`edit`)
+    part comes out at the reel's own size, so its texts and layers stay refused."""
+    from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
+
+    parent = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(
+            mode="edit",
+            seconds=4,
+            description="Dos.",
+            clip_video_keys=(f"uploads/{TENANT_ID}/reel.mp4",),
+            text_layers=(WORDS,),
+            effects=(SMOKE,),
+        ),
+    )
+    assert sorted((p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)) == [
+        ("recipe_unavailable", 2, "effects"),
+        ("recipe_unavailable", 2, "text_layers"),
+    ]
+
+
 def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -33,6 +33,7 @@ NAME="ef14-run-$$"
 trap 'docker rm -f "$NAME" "ef14-make-$$" >/dev/null 2>&1 || true' EXIT
 PY=(-e PYTHONPATH=/app/packages/api/src:/app/packages/shared/src:/app/packages/creative/src
   -e QUALIFY_DEPLOY_ENV=production -e LANGFUSE_PUBLIC_KEY= -e LANGFUSE_SECRET_KEY=
+  -e "EF14_DECODE=${EF14_DECODE:-}"
   -v "$HOST_ROOT/packages:/app/packages:ro" -v "$HOST_ROOT/deploy/measure:/measure:ro")
 
 case "$STEP" in

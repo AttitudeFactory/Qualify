@@ -440,9 +440,23 @@ fuente sintética de 15 s, 1080×1920, 10 bits, retenida una sola vez en memoria
 | Final de una parte, H.265 10 bits, 3 textos + 3 capas | **467** | 513 | 580 | 646 | 569 | no |
 | Referencia EF-14: final de un Clip, H.264, 3 textos + 3 capas | 416 | 463 | 507 | 175 | 142 | no |
 
-Lectura: cabe en los 768m del worker (467 MiB anónimos). El tiempo sí pesa: decodificar 10 bits
-cuesta casi 4 veces más que el H.264 del Clip (~9,5 min de pared para 15 s en amd64; en arm64 será
-más). Corre en el carril de finales, una parte a la vez, y nunca junto a una unión.
+Lectura: cabe en los 768m del worker (467 MiB anónimos). El tiempo sí pesa, y por eso el final de
+una parte con textos corre fuera del bucle principal del worker, en el hilo de fondo de las
+uniones, con el lease renovado y `rendering_at` estampado mientras dura.
+
+Hilos del decodificador (`EF14_DECODE=<tipo>:<hilos>` en el harness; el código usa SLICE×2, que
+no reparte un H.265 de una sola porción). Corridas del mismo caso, 2026-11-23/24:
+
+| Decodificador | Anon pico MiB | cgroup pico MiB | CPU s | Pared s |
+|---|---|---|---|---|
+| SLICE×2 (el código) | 467 | 580 | 646 | 569 |
+| FRAME×2 | 469 | 580 | 245 | 190 |
+| AUTO×2 | 469 | 579 | 185 | 138 |
+| FRAME×4 | 490 | 602 | 340 | 281 |
+
+Cuidado: la corrida de SLICE×2 coincidió con pruebas en la misma máquina y las de FRAME/AUTO no,
+así que la diferencia de tiempo está exagerada. Falta repetir SLICE×2 en la máquina descargada
+antes de cambiar el código. Ningún caso se acerca a 768m.
 
 ## Pendiente
 

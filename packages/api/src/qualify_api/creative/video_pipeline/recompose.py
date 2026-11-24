@@ -274,6 +274,15 @@ def stored_recipe(params: Mapping[str, Any] | None) -> ComposeRecipe | None:
     return recipe
 
 
+def part_final_composes(params: Mapping[str, Any] | None) -> bool:
+    """m-25103284: whether this asset's final is a PART's raw 1080p composed again with a
+    frozen recipe — minutes of decoding Seedance's 10-bit H.265 (measured ~9.5 min for
+    15 s on amd64), so the creative worker runs it off its main loop with the lease kept
+    (`worker.pipeline.BackgroundJoins`) instead of inline. Pure."""
+    data = params or {}
+    return isinstance(data.get("part"), Mapping) and stored_recipe(data) is not None
+
+
 def text_images_params(
     drawn: Sequence[Any], keep: Callable[[int, bytes], str | None]
 ) -> list[dict[str, Any]] | None:
@@ -687,6 +696,7 @@ __all__ = [
     "composes_over_seedance",
     "kept_start",
     "nine_sixteen_size",
+    "part_final_composes",
     "seedance_compose_allowed",
     "seedance_composes",
     "stored_recipe",

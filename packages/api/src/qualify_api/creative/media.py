@@ -3351,7 +3351,6 @@ class MediaProducer:
         costs the vendor nothing."""
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             FINAL_COMPOSE_FAILED_TEXT,
-            heavy_gate,
             nine_sixteen_size,
             wait_if_heavy_video_busy,
         )
@@ -3361,6 +3360,7 @@ class MediaProducer:
         held = self._held_final(tenant_id, asset, save.key_for(name), raw)
         if held is not None:
             data, compose = held
+            compose["final"] = {**dict(compose.get("final") or {}), "part": True}
             key = save.key_for(name)
         else:
             # the pass that composes waits for a part join before reading the raw 1080p
@@ -3380,32 +3380,22 @@ class MediaProducer:
                 raise _MediaFailed(
                     FailureReason.PROVIDER_ERROR.value, FINAL_COMPOSE_FAILED_TEXT, raw=str(exc)
                 ) from exc
+            prepare: Callable[[bytes], bytes] | None = None
             if cut is not None:
-                try:
-                    with heavy_gate():
-                        video = (
-                            self._require_fitter()
-                            .fit(
-                                video,
-                                size=cut,
-                                keep_audio=True,
-                                max_seconds=3600.0,
-                                x264=DETAIL_X264,
-                            )
-                            .data
-                        )
-                except CheckpointError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — the raw 1080p is kept: free retry
-                    raise _MediaFailed(
-                        FailureReason.PROVIDER_ERROR.value,
-                        FINAL_COMPOSE_FAILED_TEXT,
-                        raw=f"{type(exc).__name__}: {exc}",
-                    ) from exc
+                fitter = self._require_fitter()
+
+                def prepare(data: bytes) -> bytes:
+                    # the cut and the compose in ONE heavy-video gate (`_recompose_final`)
+                    return fitter.fit(
+                        data, size=cut, keep_audio=True, max_seconds=3600.0, x264=DETAIL_X264
+                    ).data
+
                 size = cut
             width, height = size or (0, 0)
             source = FittedVideo(data=video, width=width, height=height, duration_sec=0.0)
-            composed, made = self._recompose_final(tenant_id, draft_id, asset, source, raw)
+            composed, made = self._recompose_final(
+                tenant_id, draft_id, asset, source, raw, prepare=prepare
+            )
             data = composed.data
             key = save(name, data, MP4)
             compose = dict(made or {})
@@ -5421,6 +5411,8 @@ class MediaProducer:
         asset: Any,
         fitted: FittedVideo,
         raw: Mapping[str, Any],
+        *,
+        prepare: Callable[[bytes], bytes] | None = None,
     ) -> tuple[FittedVideo, dict[str, Any] | None]:
         """EF-14: the preview's frozen recipe (`params["compose"]`, never the brief as it
         reads today) composed again over the fitted 1080p final, with the preview's own
@@ -5429,7 +5421,9 @@ class MediaProducer:
         are missing (a piece from before they were kept). Inside the heavy-video gate:
         with a part join in flight `LocalAssemblyWait` — the final waits for a later
         pass, its raw 1080p kept, never paid again. A failure fails the final; the raw
-        1080p stays kept, so the retry costs nothing more."""
+        1080p stays kept, so the retry costs nothing more. `prepare` (m-25103284: a
+        part's cut to 9:16) runs on the video inside the SAME gate, before the compose,
+        so a join never slips in between."""
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_PARAMS_KEY,
             FINAL_COMPOSE_FAILED_TEXT,
@@ -5450,7 +5444,8 @@ class MediaProducer:
         try:
             composer = self._composer()
             with heavy_gate():
-                made = composer.compose(fitted.data, recipe, drawn=drawn, stage="final")
+                source = prepare(fitted.data) if prepare is not None else fitted.data
+                made = composer.compose(source, recipe, drawn=drawn, stage="final")
         except CheckpointError:
             raise  # the heavy-video gate is taken: a later pass, nothing paid again
         except Exception as exc:  # noqa: BLE001 — the raw final is kept: a free retry
