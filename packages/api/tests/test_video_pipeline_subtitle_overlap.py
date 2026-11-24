@@ -68,7 +68,16 @@ def _problems(exc: RecipeRefused) -> list[tuple[str, int | None, str]]:
 
 
 def test_the_code_is_appended_and_the_text_is_plain_spanish() -> None:
-    assert RECIPE_REFUSALS[-1] == "text_bottom_with_subtitles"
+    # appended after its predecessors; ED-13 (m-25029108) appended six more after it
+    assert RECIPE_REFUSALS[-7:] == (
+        "text_bottom_with_subtitles",
+        "unknown_text_motion",
+        "typewriter_text_too_long",
+        "bad_text_box_color",
+        "bad_text_color",
+        "unknown_text_size",
+        "text_too_long_for_large",
+    )
     assert TEXT_BOTTOM_WITH_SUBTITLES_TEXT == (
         "Abajo se ven los subtítulos y tu texto se taparía. "
         "Elige otra posición o apaga los subtítulos."

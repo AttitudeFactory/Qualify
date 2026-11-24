@@ -277,6 +277,7 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "speed": _speed_value(item),
                 "speed_tag": f"×{_speed_value(item)}" if speed_of(item) > 1 else "",
                 "place": "",
+                "warn": "",
                 # ED-03: laid end to end to the hundredth, from the same running sum, so
                 # a block always ends exactly where the next one starts (no gap)
                 "start": exact(at),
@@ -302,7 +303,9 @@ def _overlay_names(item: dict[str, Any]) -> tuple[str, str, str]:
 
 def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> list[dict[str, str]]:
     """The «Textos» (``kind="text"``) or «Efectos» (``"effect"``) track as rendered rows.
-    ED-04: ``lane`` is the row of «Efectos» an effect sits on ("0" for the first)."""
+    ED-04: ``lane`` is the row of «Efectos» an effect sits on ("0" for the first).
+    ED-13: ``warn`` "1" = the block is in a clash (two texts in one place at once): it
+    shows the warning tone; its name stays «Texto «…», de … a …»."""
     rows: list[dict[str, str]] = []
     for item in overlays:
         if item["kind"] != kind:
@@ -330,6 +333,9 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "length": exact(round(end, 2) - round(start, 2)),
                 # ED-04: the row of «Efectos» it sits on (0 for a text)
                 "lane": str(int(item.get("lane") or 0)),
+                "warn": "1" if item.get("warn") else "",
+                # ED-13 (A1): its times change only here, with its two handles
+                "handles": "1",
                 "start_handle": f"Inicio de {label}",
                 "end_handle": f"Final de {label}",
                 "has_start": "1",

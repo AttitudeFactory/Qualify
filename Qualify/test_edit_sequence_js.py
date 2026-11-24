@@ -39,8 +39,9 @@ def _run(body: str) -> object:
         f"const seq = {sequence};\n"
         f"console.log(JSON.stringify((() => {{ {body} }})()));\n"
     )
+    # through stdin: a long script overflows Windows' command line (WinError 206)
     out = subprocess.run(
-        [_NODE, "-e", script], capture_output=True, text=True, timeout=30, check=True
+        [_NODE], input=script, capture_output=True, text=True, timeout=30, check=True
     )
     return json.loads(out.stdout)
 
@@ -316,6 +317,74 @@ def test_a_sequence_that_was_playing_plays_again_after_the_measure() -> None:
         "  core.resumeIfPlaying(player(false), false)];"
     )
     assert got == [[1, False], [0, True], 1, [3, 3], False, False, False]
+
+
+def test_text_motions_match_the_python_mirror() -> None:
+    """ED-13 (m-25029108): `edit-sequence-core.js` `textFrame` draws each moment of a
+    text's entrance and exit like `editor_preview_contract.text_frame` (the contract's
+    curves, a third of its time at most, «Letra por letra» by letters on the final
+    video's clock: whitespace collapsed, the spaces line breaks eat left out)."""
+    from . import editor_preview_contract as contract
+
+    texts = ("2×1 hoy en shawarma", "  Pan   fresco 🌯 hoy ")
+    cases = []
+    for motion_in in contract.VIDEO_TEXT_MOTIONS_IN:
+        for motion_out in contract.VIDEO_TEXT_MOTIONS_OUT:
+            for fade, start, end in ((0.5, 2.0, 6.0), (1.0, 0.0, 1.2), (0.3, 1.0, 9.0)):
+                for reduced in (False, True):
+                    for text, breaks in ((texts[0], 0), (texts[0], 2), (texts[1], 1)):
+                        cases.append(
+                            {
+                                "text": text,
+                                "breaks": breaks,
+                                "start": start,
+                                "end": end,
+                                "fade": fade,
+                                "motion_in": motion_in,
+                                "motion_out": motion_out,
+                                "reduced": reduced,
+                            }
+                        )
+    times = [0.0, 0.05, 0.1, 0.2, 0.33, 0.4, 0.5, 0.9, 1.0, 1.1, 1.19, 2.0, 3.3, 5.8, 8.9, 9.5]
+    got = _run(
+        f"const cases = {json.dumps(cases)}; const times = {json.dumps(times)};"
+        " return cases.map(c => times.map(t => {"
+        "  const f = core.textFrame(c, c.start + t, c.reduced);"
+        "  return [f.a, f.dy, f.s, f.chars]; }));"
+    )
+    for case, rows in zip(cases, got, strict=True):  # type: ignore[arg-type]
+        for t, (a, dy, s, chars) in zip(times, rows, strict=True):
+            mine = contract.text_frame(
+                t,
+                case["end"] - case["start"],
+                text=case["text"],
+                fade_s=case["fade"],
+                motion_in=case["motion_in"],
+                motion_out=case["motion_out"],
+                reduced=case["reduced"],
+                breaks=case["breaks"],
+            )
+            assert (a, dy, s) == pytest.approx((mine.alpha, mine.dy, mine.scale), abs=2e-4), (
+                case,
+                t,
+            )
+            assert chars == mine.chars, (case, t)
+    # the characters typed are the render's: whitespace collapsed, by code point
+    typed = _run(
+        f"return [core.typedChars({json.dumps(texts[0])}),"
+        f" core.typedChars({json.dumps(texts[1])})];"
+    )
+    assert typed == [contract.typed_chars(texts[0]), contract.typed_chars(texts[1])]
+
+
+def test_the_preview_animates_texts_on_the_clock_and_no_fixed_fade_is_left() -> None:
+    script = (_ASSETS / "edit-preview.js").read_text(encoding="utf-8")
+    assert "core().textFrame(timed, t, still)" in script
+    assert 'setProperty("--q-a"' in script and "showMotion: seqShowMotion" in script
+    css = (_ASSETS / "qualify-creative.css").read_text(encoding="utf-8")
+    assert "transition: opacity 0.5s linear" not in css  # bug E: the fixed 0,5 s is gone
+    assert "opacity: var(--q-a, 1)" in css
+    subprocess.run([_NODE, "--check", str(_ASSETS / "choice-radio.js")], check=True, timeout=30)
 
 
 def test_the_preview_resumes_after_a_measure_and_never_fights_a_pause() -> None:

@@ -1012,7 +1012,8 @@ def test_the_fade_the_owner_chose_reaches_the_compose_as_is(
         return real(video, out, layers, brand, **kw)
 
     monkeypatch.setattr(compose, "compose_text_layers", spy)
-    chosen, default = _words(fade_s=0.8), _words(place="bottom")
+    # 3 s on screen: the 0.8 s fade fits in a third of it (m-25029108)
+    chosen, default = _words(fade_s=0.8, end_s=3.0), _words(place="bottom")
     outcome = _produce(_texts(chosen, default), ReadingStore(sources), _render_service())
     assert outcome.failure is None, outcome.detail
     ((top, bottom),) = seen

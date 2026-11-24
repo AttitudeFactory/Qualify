@@ -14,8 +14,7 @@ def _snap(**changes: object) -> dict[str, object]:
         "rotate": 0,
         "effects": [],
         "speed": 10,
-        "text": "",
-        "place": "bottom",
+        "texts": [],
     }
     return {**base, **changes}
 
@@ -73,7 +72,7 @@ def test_fixed_words() -> None:
     # Deivid 2026-11-17: one side panel with tabs; «Cortar» where the marker is
     assert [name for _f, _i, name in vm.FLOW_TABS] == [
         "¿Con qué lo armamos?",
-        "Texto",
+        "Texto en pantalla",  # ED-13 (Deivid): the tab's name
         "Efecto",
         "Pedir una idea",
     ]
@@ -85,7 +84,9 @@ def test_fixed_words() -> None:
     assert vm.too_close_text(0.5) == "Muy cerca del borde: mueve el marcador al menos ½ s."
     assert vm.too_close_text(2 / 3) == "Muy cerca del borde: mueve el marcador al menos 0,7 s."
     assert vm.PARTS_LINK == "Armar mi video por partes"
-    assert vm.TEXT_TITLE == "Texto sobre el video"
+    assert vm.TEXT_TITLE == "Texto en pantalla"  # ED-13: the tab and the panel
+    assert ("text", "type", "Texto en pantalla") in vm.FLOW_TABS
+    assert vm.EDITOR_ACTIONS["text"] == (("Editar texto", "pencil"), ("Quitar", "trash-2"))
     assert list(vm.TEXT_PLACES.values()) == ["Arriba", "En el medio", "Abajo"]
     assert vm.FREE == "Gratis"
     assert vm.SPEED_TITLE == "Velocidad"
@@ -214,13 +215,33 @@ def test_change_messages() -> None:
         "Cambiaste el efecto de tu video."
     )
     assert vm.change_message(_snap(), _snap(speed=20)) == "Cambiaste la velocidad de tu video."
-    assert vm.change_message(_snap(), _snap(text="Hola")) == "Cambiaste el texto de tu video."
-    assert vm.change_message(_snap(), _snap(place="top")) == "Cambiaste el lugar del texto."
-    # the place with the text kept at the same time: the line names the place
-    assert vm.change_message(_snap(), _snap(place="top", text="Hola")) == (
+    assert vm.change_message(_snap(), _snap()) == ""
+
+
+def _texted(**changes: object) -> dict[str, object]:
+    """A snapshot with one written text (ED-13), `changes` on it."""
+    text = {"uid": "t1", "text": "Hola", "place": "bottom", "start": 0.0, "end": 8.0}
+    return vm.snapshot(start=0, end=8, rotate=0, effects=[], speed=10, texts=[{**text, **changes}])
+
+
+def test_text_change_messages() -> None:
+    """ED-13 (m-25029108): the texts' live lines — one put, one taken out, and what
+    changed in one."""
+    empty = vm.snapshot(start=0, end=8, rotate=0, effects=[], speed=10)
+    assert vm.change_message(empty, _texted()) == "Pusiste un texto."
+    assert vm.change_message(_texted(), empty) == "Quitaste un texto de tu video."
+    assert vm.change_message(_texted(), _texted(text="Chao")) == ("Cambiaste el texto de tu video.")
+    assert vm.change_message(_texted(), _texted(place="top")) == "Cambiaste el lugar del texto."
+    # the place with the words kept at the same time: the line names the place
+    assert vm.change_message(_texted(), _texted(place="top", text="Chao")) == (
         "Cambiaste el lugar del texto."
     )
-    assert vm.change_message(_snap(), _snap()) == ""
+    assert vm.change_message(_texted(), _texted(fade=0.8)) == (
+        "Cambiaste cuánto tarda en entrar y salir el texto."
+    )
+    assert vm.change_message(_texted(), _texted(start=2.0)) == "Cambiaste cuándo sale el texto."
+    # a text being typed and still empty is not a text yet
+    assert vm.change_message(empty, _texted(text="  ")) == ""
 
 
 def test_there_is_no_undo_stack_any_more() -> None:
@@ -368,38 +389,46 @@ def test_the_blocks_read_as_the_proposal_says() -> None:
     assert rows[0]["name"] == "Foto 1 de 3, se ve 2 s"
 
 
+def _texts(*uses: dict[str, object], total: float = 12.0) -> list[dict[str, object]]:
+    """ED-13: `clip_texts_vm`'s timeline rows of these texts over `total` s of photos."""
+    from . import clip_texts_vm
+
+    media = [{"id": "f", "key": "f", "kind": "photo", "dur": total}]
+    resolved = clip_texts_vm.resolve_text_uses(list(uses), media)
+    return clip_texts_vm.timeline_text_overlays(resolved)
+
+
 def test_texts_and_effects_on_the_timeline() -> None:
     rows = vm.timeline_overlays(
-        text=" 2×1 hoy ",
-        place="top",
-        text_start=0.0,
-        text_end=-1.0,
-        total=12.0,
+        texts=_texts({"uid": "t1", "text": " 2×1 hoy ", "place": "top", "end": -1}),
         effect_uses=[
             {"uid": "u1", "effect_id": "vapor_capa", "start": 3.0, "end": 12.0, "lane": 0},
             {"uid": "u2", "effect_id": "camara_rapida", "start": 0.0, "end": 12.0, "lane": 0},
         ],
     )
-    text, vapor = rows
-    assert (text["id"], text["label"], text["start"], text["end"]) == ("texto-1", "2×1 hoy", 0, 12)
+    text, vapor = rows  # the texts first
+    assert (text["id"], text["label"], text["start"], text["end"]) == ("texto-t1", "2×1 hoy", 0, 12)
     # «Cámara rápida» is the video's «Velocidad», never a block (D-T3)
     assert (vapor["id"], vapor["start"], vapor["end"]) == ("efecto-u1", 3.0, 12.0)
-    assert vm.timeline_overlays(text="", place="top", text_start=0, text_end=-1, total=5) == []
+    assert vm.timeline_overlays(texts=_texts({"uid": "t1", "text": ""})) == []
 
 
 def test_the_address_names_a_block_by_its_place() -> None:
     media = _media()
     overlays = vm.timeline_overlays(
-        text="Hola",
-        place="bottom",
-        text_start=0,
-        text_end=-1,
-        total=24,
+        texts=_texts(
+            {"uid": "t2", "text": "Pide al 300", "start": 20, "end": -1},
+            {"uid": "t1", "text": "Hola", "start": 0, "end": 4},
+            total=24,
+        ),
         effect_uses=[{"uid": "u1", "effect_id": "vapor_capa", "start": 0.0, "end": 24.0}],
     )
     assert vm.block_slug(media, overlays, "v1.mp4") == "video-2"
     assert vm.block_slug(media, overlays, "f1.jpg") == "foto-1"
-    assert vm.block_slug(media, overlays, "texto-1") == "texto-1"
+    # ED-13: the texts are numbered in time order, whatever their ids
+    assert vm.block_slug(media, overlays, "texto-t1") == "texto-1"
+    assert vm.block_slug(media, overlays, "texto-t2") == "texto-2"
+    assert vm.block_from_slug(media, overlays, "texto-2") == "texto-t2"
     assert vm.block_slug(media, overlays, "efecto-u1") == "efecto-1"
     assert vm.block_from_slug(media, overlays, "video-2") == "v1.mp4"
     assert vm.block_from_slug(media, overlays, "efecto-1") == "efecto-u1"
@@ -468,17 +497,15 @@ def test_moved_text_and_effects_carry_their_seconds() -> None:
 
 
 def test_timeline_changes_say_what_changed() -> None:
-    base = vm.snapshot(
-        start=0, end=10, rotate=0, effects=["vapor_capa"], speed=10, text="a", place="top"
-    )
-    assert base["order"] == [] and base["text_end"] == -1.0 and "effect_times" not in base
+    base = vm.snapshot(start=0, end=10, rotate=0, effects=["vapor_capa"], speed=10)
+    assert base["order"] == [] and base["texts"] == [] and "effect_times" not in base
+    assert "text" not in base and "text_end" not in base  # ED-13: no one text any more
     moved = {**base, "order": ["b", "a"]}
     assert vm.change_message(base, moved) == "Cambiaste el orden de tu video."
-    timed = {**base, "text_start": 2.0}
-    assert vm.change_message(base, timed) == "Cambiaste cuándo sale el texto."
     assert vm.effect_time_line("vapor_capa") == "Cambiaste cuándo sale Vapor."
     assert vm.effect_removed_line("vapor_capa") == "Quitaste Vapor."
-    assert vm.TEXT_REMOVED_LINE == "Quitaste el texto de tu video."
+    assert vm.TEXT_REMOVED_LINE == "Quitaste un texto de tu video."
+    assert not hasattr(vm, "TEXT_ID")  # ED-13: each text is `texto-<uid>`
 
 
 # -- «Cortar» where the marker is (Deivid 2026-11-17) -------------------------------------
@@ -717,6 +744,27 @@ def test_a9_before_crear_and_as_a_refusal() -> None:
     assert vm.source_too_long(0, 60.04) and not vm.source_too_long(0, 60.02)
 
 
+def test_a_text_under_the_subtitles_is_refused_in_the_screens_words() -> None:
+    """ED-13 (Deivid 2026-11-23): the server refuses a text «Abajo» with the subtitles on
+    (`text_bottom_with_subtitles`, field `text_layers`); the screen says the same words
+    its panel says, from the one constant."""
+    from typing import get_args
+
+    from . import clip_texts_vm
+    from . import editor_preview_contract as contract
+
+    code: contract.RecipeProblem = "text_bottom_with_subtitles"
+    assert code in get_args(contract.RecipeProblem)
+    assert clip_texts_vm.SUBTITLES_CODE == code
+    assert vm.refusal_line([code]) == clip_texts_vm.SUBTITLES_BOTTOM_LINE
+    assert vm.refusal_line(["texts_overlap", code]) == clip_texts_vm.SUBTITLES_BOTTOM_LINE
+    assert clip_texts_vm.SUBTITLES_BOTTOM_LINE == (
+        "Abajo se ven los subtítulos y tu texto se taparía. Elige otra posición o apaga los "
+        "subtítulos."
+    )
+    assert vm.refusal_line(["texts_overlap"]) == vm.RECIPE_REFUSED  # as before
+
+
 def test_each_piece_carries_its_own_speed() -> None:
     """Deivid 2026-11-19 («Por pedazo»): ×10 on piece 2 changes only its
     `SourceSegment.speed`; an older `[start, end]` piece takes the stretch's speed."""
@@ -771,7 +819,7 @@ def test_piece_speed_reasons_read_the_whole_video() -> None:
 
 
 def test_the_snapshot_keeps_each_pieces_speed() -> None:
-    without = vm.snapshot(start=0, end=10, rotate=0, effects=[], speed=10, text="", place="b")
+    without = vm.snapshot(start=0, end=10, rotate=0, effects=[], speed=10)
     assert "files" not in without  # no «Deshacer»: the Clip's files are not kept
     pieces = vm.snapshot(
         start=0,
@@ -779,8 +827,6 @@ def test_the_snapshot_keeps_each_pieces_speed() -> None:
         rotate=0,
         effects=[],
         speed=10,
-        text="",
-        place="bottom",
         pieces=[[0, 4, 1], [4, 10, 10]],
     )
     assert pieces["pieces"] == [[0.0, 4.0, 1.0], [4.0, 10.0, 10.0]]

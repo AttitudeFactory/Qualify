@@ -40,6 +40,27 @@ def _measured(seconds: float = 20.0, width: int = 1080, height: int = 1920) -> C
     return state
 
 
+def _put_text(state: CreativeState, text: str, *, done: bool = True) -> str:
+    """ED-13: «+ Texto» (from the marker to the end), typed, the field left and —
+    with `done` — «Listo». The text's block id (`texto-t1`)."""
+    CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    assert uid, state.clip_text_add_reason
+    CreativeState.set_clip_text_value.fn(state, uid, text)
+    CreativeState.commit_clip_text.fn(state, uid, text)
+    if done:
+        CreativeState.done_clip_block.fn(state)
+    return f"texto-{uid}"
+
+
+def _text_at(state: CreativeState, start: float, end: float, text: str = "2×1") -> None:
+    """One text with its own seconds (`end` -1 = to the end)."""
+    state.clip_text_uses = [
+        {"uid": "t1", "text": text, "place": "bottom", "start": start, "end": end,
+         "blocks": [], "fade": 0.5}
+    ]  # fmt: skip
+
+
 # -- the switch -----------------------------------------------------------------------------
 
 
@@ -299,16 +320,24 @@ def test_the_live_line_has_no_timer_and_ends_with_the_step(editor_on: None) -> N
 
 def test_text_is_kept_when_the_field_is_left(editor_on: None) -> None:
     state = _measured()
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    assert state.clip_edit_text_shown == "2×1 hoy"
+    CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    # Deivid 2026-11-20: text 1 starts EMPTY — the generated hook is never copied
+    assert state.clip_text_panel_row["text"] == ""
+    CreativeState.set_clip_text_value.fn(state, uid, "2×1 hoy")
+    assert state.clip_seq_texts[0]["text"] == "2×1 hoy"  # the preview follows
     assert state.clip_edit_notice == ""  # typing is not a change yet
-    CreativeState.commit_clip_overlay_text.fn(state, "")
+    CreativeState.commit_clip_text.fn(state, uid, "")
+    assert state.clip_edit_notice == "Pusiste un texto."
+    CreativeState.set_clip_text_value.fn(state, uid, "2×1 mañana")
+    CreativeState.commit_clip_text.fn(state, uid, "")
     assert state.clip_edit_notice == "Cambiaste el texto de tu video."
-    # the place while typing a new text: the line names the place
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 mañana")
-    CreativeState.set_clip_text_place.fn(state, "top")
+    # the place while typing: the line names the place
+    CreativeState.set_clip_text_value.fn(state, uid, "2×1 pasado")
+    CreativeState.set_clip_text_place.fn(state, uid, "top")
     assert state.clip_edit_notice == "Cambiaste el lugar del texto."
-    assert (state.clip_text_place, state.clip_overlay_text) == ("top", "2×1 mañana")
+    (use,) = state.clip_text_uses
+    assert (use["place"], use["text"]) == ("top", "2×1 pasado")
 
 
 def test_effects_offer_only_what_exists(editor_on: None) -> None:
@@ -414,8 +443,7 @@ def test_media_inputs_read_the_recipe_and_still_read_an_old_edit_recipe(
 
     state = _measured(20.0)
     CreativeState.toggle_clip_effect.fn(state, "camara_rapida")
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
+    _put_text(state, "2×1 hoy")
     media = state._clip_media()
     inputs = MediaInputs.model_validate(media)
     assert inputs.clip_reference_mode == "local"
@@ -727,8 +755,7 @@ def test_siguiente_untouched_leaves_ed02s_recipe(editor_on: None) -> None:
     from . import editor_preview_contract as contract
 
     state = _timeline_state()
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
+    _put_text(state, "2×1 hoy")  # «+ Texto» with the marker at 0:00: the whole video
     expected = clip_editor_vm.recipe_of(
         video_key=_KEY,
         start=0.0,
@@ -742,7 +769,9 @@ def test_siguiente_untouched_leaves_ed02s_recipe(editor_on: None) -> None:
     )
     data = contract.to_dict(expected)
     media = state._clip_edit_media()
-    assert (media["segments"], media["text_layers"]) == (data["segments"], data["text_layers"])
+    # ED-13 (contract): a text put in the editor leaves with a fade («Desaparece»)
+    texts = [{**t, "motion_out": "fade"} for t in data["text_layers"]]  # type: ignore[union-attr]
+    assert (media["segments"], media["text_layers"]) == (data["segments"], texts)
     # B6: every block of the timeline, in its order — the photo held 2 s, the own video
     # 0–15 s, the second video 0–8 s — and the text from 0 to the end (ED-02's)
     shown = [(s["key"], s["start_s"], s["end_s"], s.get("kind")) for s in data["segments"]]
@@ -820,27 +849,33 @@ def test_the_keyboard_moves_a_block_one_place(editor_on: None) -> None:
 
 def test_a_text_slides_in_time_and_the_recipe_carries_it(editor_on: None) -> None:
     state = _timeline_state()
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
+    block = _put_text(state, "2×1 hoy")
+    assert block == "texto-t1"
     text = state.clip_tl_text_rows[0]
     assert (text["start"], text["length"]) == ("0", "25")
     # a text covering the whole video cannot move; shorten it first (±½ s on its end)
     for _ in range(10):
-        CreativeState.nudge_clip_block.fn(state, "texto-1", "end", -0.5)
+        CreativeState.nudge_clip_block.fn(state, block, "end", -0.5)
     assert state.clip_tl_text_rows[0]["length"] == "20"
-    CreativeState.drop_clip_block.fn(state, "texto-1", "time", 3.3)
+    CreativeState.drop_clip_block.fn(state, block, "time", 3.3)
     text = state.clip_tl_text_rows[0]
     assert (text["start"], text["length"]) == ("3.5", "20")
     assert state.clip_edit_notice == "Cambiaste cuándo sale el texto."
     layer = state._clip_edit_media()["text_layers"][0]  # type: ignore[index]
     assert (layer["start_s"], layer["end_s"]) == (3.5, 23.5)
-    CreativeState.clip_block_key.fn(state, "texto-1", "", "ArrowRight")
+    # ←/→ on the text: ½ s
+    CreativeState.clip_block_key.fn(state, block, "", "ArrowRight")
     assert state.clip_tl_text_rows[0]["start"] == "4"
+    CreativeState.clip_block_key.fn(state, block, "", "ArrowLeft")
+    assert state.clip_tl_text_rows[0]["start"] == "3.5"
+    # «Editar texto» puts the focus in its field
+    CreativeState.select_clip_block.fn(state, block)
+    edit = _scripts(CreativeState.clip_block_action.fn(state, "Editar texto"))
+    assert "getElementById('clip-text-field')" in edit
     # «Quitar» takes it away, and the line says so
-    CreativeState.select_clip_block.fn(state, "texto-1")
     CreativeState.clip_block_action.fn(state, "Quitar")
-    assert state.clip_tl_text_rows == []
-    assert state.clip_edit_notice == "Quitaste el texto de tu video."
+    assert state.clip_tl_text_rows == [] and state.clip_text_uses == []
+    assert state.clip_edit_notice == "Quitaste un texto de tu video."
 
 
 def test_quitar_keeps_its_line_after_the_address_walks_back(editor_on: None) -> None:
@@ -848,25 +883,26 @@ def test_quitar_keeps_its_line_after_the_address_walks_back(editor_on: None) -> 
     reaches `reconcile_reel_editor_route` with the same step and no `?bloque=` — the
     line stays."""
     state = _timeline_state()
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    CreativeState.select_clip_block.fn(state, "texto-1")
+    block = _put_text(state, "2×1 hoy")
+    CreativeState.select_clip_block.fn(state, block)
     step = state.create_step_n
+    # the address names it by its place among the texts: «texto-1»
     CreativeState.reconcile_reel_editor_route.fn(state, f"?paso={step}&bloque=texto-1")
+    assert state.clip_edit_block == block
     CreativeState.clip_block_action.fn(state, "Quitar")
-    assert state.clip_edit_notice == "Quitaste el texto de tu video."
+    assert state.clip_edit_notice == "Quitaste un texto de tu video."
     CreativeState.reconcile_reel_editor_route.fn(state, f"?paso={step}")
-    assert state.clip_edit_notice == "Quitaste el texto de tu video."
+    assert state.clip_edit_notice == "Quitaste un texto de tu video."
     assert state.create_step_n == step
     assert state.clip_tl_text_rows == []
 
 
 def test_listo_after_editing_a_text_keeps_its_line(editor_on: None) -> None:
     state = _timeline_state()
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    CreativeState.select_clip_block.fn(state, "texto-1")
-    CreativeState.clip_block_key.fn(state, "texto-1", "", "ArrowRight")
+    block = _put_text(state, "2×1 hoy")
+    CreativeState.select_clip_block.fn(state, block)
+    CreativeState.nudge_clip_block.fn(state, block, "end", -0.5)  # it can move now
+    CreativeState.clip_block_key.fn(state, block, "", "ArrowRight")
     notice = state.clip_edit_notice
     assert notice != ""
     step = state.create_step_n
@@ -889,9 +925,8 @@ def test_listo_and_quitar_put_the_focus_where_the_owner_goes_on(editor_on: None)
     removed = _scripts(CreativeState.clip_block_action.fn(state, "Quitar"))
     assert f'focusAfter("{_KEY}")' in removed
     # «Quitar» on the only text: no block after it in «Textos» — «+»
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    CreativeState.select_clip_block.fn(state, "texto-1")
+    block = _put_text(state, "2×1 hoy")
+    CreativeState.select_clip_block.fn(state, block)
     removed = _scripts(CreativeState.clip_block_action.fn(state, "Quitar"))
     assert 'focusAfter("")' in removed
 
@@ -1084,18 +1119,20 @@ def test_agregar_opens_one_flow_at_a_time(editor_on: None) -> None:
     CreativeState.open_clip_flow.fn(state, "idea")
     assert state.clip_tl_flow == "idea"
     assert CreativeState.open_clip_flow.fn(state, "nope") == []
-    # «+ Texto»: typed and left, the text starts where the playhead rests; the panel
-    # stays on «Texto» (Deivid 2026-11-17: one panel with tabs)
+    # «+ Texto»: a text from where the playhead rests to the end; typed and left, the
+    # panel stays on «Texto en pantalla» (Deivid 2026-11-17: one panel with tabs)
     CreativeState.hear_clip_time.fn(state, 4.2, "pause")
-    CreativeState.open_clip_flow.fn(state, "text")
-    CreativeState.set_clip_overlay_text.fn(state, "Hola")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
+    _put_text(state, "Hola", done=False)
     assert state.clip_tl_text_rows[0]["start"] == "4"
+    assert state.clip_tl_text_rows[0]["length"] == "21"  # to the end (25 s)
     assert state.clip_tl_flow == "text" and state.clip_flow_drawer_open
-    # with a text there, «+ Texto» opens the same tab (to edit it)
+    # «+ Texto» again: a second text, from the marker
     CreativeState.done_clip_block.fn(state)
     CreativeState.open_clip_flow.fn(state, "text")
-    assert state.clip_tl_flow == "text"
+    assert state.clip_tl_flow == "text" and state._clip_text_current() == "t2"
+    # left empty, it is not kept
+    CreativeState.done_clip_block.fn(state)
+    assert [u["uid"] for u in state.clip_text_uses] == ["t1"]
     # Deivid 2026-11-16: a flow opens in the side panel with its own history entry (no
     # word in the address), so the phone's «atrás» closes the panel first, same step
     CreativeState.done_clip_block.fn(state)
@@ -1267,8 +1304,8 @@ def test_the_text_place_control_is_never_cut(editor_on: None) -> None:
 
     from . import clip_editor_view
 
-    rendered = str(clip_editor_view._text_block().render())
-    assert clip_editor_view.TEXT_PLACE_CLASS == "q-seg-fill"
+    # ED-13: the control lives in «Texto en pantalla»'s panel (`ui.text_panel`)
+    rendered = str(clip_editor_view._text_panel().render())
     assert "q-seg-fill" in rendered
     css = (Path(__file__).resolve().parent.parent / "assets" / "qualify.css").read_text(
         encoding="utf-8"
@@ -1405,15 +1442,15 @@ def test_a_handle_stays_inside_the_video_and_its_minute(editor_on: None) -> None
 
 def test_a_shorter_video_cuts_a_text_past_its_end_and_says_so(editor_on: None) -> None:
     state = _measured(20.0)  # 0:00–0:15
-    CreativeState.set_clip_overlay_text.fn(state, "2×1")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    state.clip_text_start, state.clip_text_end = 5.0, 14.0
+    _text_at(state, 5.0, 14.0)
     CreativeState.drop_clip_block.fn(state, _KEY, "end", 8.0)
-    assert (state.clip_text_start, state.clip_text_end) == (5.0, -1.0)  # to the new end
+    (use,) = state.clip_text_uses
+    assert (use["start"], use["end"]) == (5.0, -1.0)  # to the new end
     assert state.clip_edit_notice == ("Recortaste el video 1. El texto ahora termina con tu video.")
     # kept so: lengthening the video again does not bring the old end back
     CreativeState.drop_clip_block.fn(state, _KEY, "end", 15.0)
-    assert (state.clip_text_start, state.clip_text_end) == (5.0, -1.0)
+    (use,) = state.clip_text_uses
+    assert (use["start"], use["end"]) == (5.0, -1.0)
 
 
 def test_cortar_is_off_with_eight_blocks(editor_on: None) -> None:
@@ -1654,11 +1691,11 @@ def test_a_texts_and_an_effects_handles_land_on_the_half_second(editor_on: None)
     """Review ED-03: a text's or an effect's handle dragged is put on the ½ s magnet on
     the server too (as a whole block's «time»): the timeline and the preview agree."""
     state = _timeline_state()  # 25 s
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    CreativeState.drop_clip_block.fn(state, "texto-1", "start", 3.3)
-    CreativeState.drop_clip_block.fn(state, "texto-1", "end", 12.74)
-    assert (state.clip_text_start, state.clip_text_end) == (3.5, 12.5)
+    block = _put_text(state, "2×1 hoy")
+    CreativeState.drop_clip_block.fn(state, block, "start", 3.3)
+    CreativeState.drop_clip_block.fn(state, block, "end", 12.74)
+    (use,) = state.clip_text_uses
+    assert (use["start"], use["end"], use["blocks"]) == (3.5, 12.5, [])
     texts = state._clip_sequence().texts
     assert (texts[0].start, texts[0].end) == (3.5, 12.5)
     CreativeState.add_clip_effect.fn(state, "vapor_capa")
@@ -1675,11 +1712,9 @@ def test_a_texts_and_an_effects_handles_land_on_the_half_second(editor_on: None)
 def test_a_shorter_video_keeps_a_cut_text_on_the_half_second(editor_on: None) -> None:
     """`_clip_fit_overlays` puts a text that starts past the new end on the ½ s too."""
     state = _measured(20.0)  # 0:00–0:15
-    CreativeState.set_clip_overlay_text.fn(state, "2×1")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    state.clip_text_start, state.clip_text_end = 12.0, -1.0
+    _text_at(state, 12.0, -1.0)
     CreativeState.drop_clip_block.fn(state, _KEY, "end", 7.3)  # 7,3 s: the text from 6
-    assert state.clip_text_start == 6.0
+    assert state.clip_text_uses[0]["start"] == 6.0
 
 
 def test_the_last_trim_wins_over_the_stretch_kept_before_a_speed_up(editor_on: None) -> None:

@@ -5498,7 +5498,9 @@ class MediaProducer:
             wait_for_render_or_give_up,
         )
 
-        recipe = compose_recipe_of(brief, kit)
+        # ED-13: the texts in the Brand Kit's own font file when it holds a usable one,
+        # by the same rules as a local Clip (`_video_text_brand`)
+        recipe = compose_recipe_of(brief, self._video_text_brand(tenant_id, brief, kit))
         if recipe is None:
             return None
         run = current_preparation()
@@ -5561,6 +5563,7 @@ class MediaProducer:
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_NOT_ADDED,
             COMPOSE_NOT_ADDED_TEXT,
+            font_params,
             heavy_gate,
             nine_sixteen_size,
             text_images_params,
@@ -5611,6 +5614,9 @@ class MediaProducer:
             # EF-18: lifted to the asset's `params["contact_sheet"]` by `_clip`, with the
             # key the composed file is kept under
             params[CONTACT_SHEET_PARAMS_KEY] = dict(made.contact_sheet)
+        font = font_params(recipe)
+        if font is not None:  # ED-13: a text the final draws again uses the same file
+            params["font"] = font
         return made.data, made.poster or thumbnail, made.width, made.height, params
 
     def _held_final(
@@ -5663,6 +5669,7 @@ class MediaProducer:
             COMPOSE_PARAMS_KEY,
             FINAL_COMPOSE_FAILED_TEXT,
             heavy_gate,
+            stored_font,
             stored_recipe,
             stored_text_images,
         )
@@ -5671,11 +5678,13 @@ class MediaProducer:
         if recipe is None:
             return fitted, None
         block = dict((asset.params or {}).get(COMPOSE_PARAMS_KEY) or {})
-        drawn = stored_text_images(
-            block,
-            recipe,
-            lambda key: self._store.read(key) if owned_by(tenant_id, key) else None,
-        )
+
+        def read(key: str) -> bytes | None:
+            return self._store.read(key) if owned_by(tenant_id, key) else None
+
+        drawn = stored_text_images(block, recipe, read)
+        # ED-13: the preview's font file, so a text drawn again here is in the same face
+        recipe = stored_font(block, recipe, read)
         try:
             composer = self._composer()
             with heavy_gate():
@@ -5736,9 +5745,44 @@ class MediaProducer:
             allowed=allowed,
             # the worker's preparation: its lease is kept alive while the video is made
             run=run,
-            brand=kit,
+            # ED-13: the texts in the Brand Kit's own font file when it holds a usable one
+            brand=self._video_text_brand(tenant_id, brief, kit),
             render_client=self._render_client,
         )
+
+    def _video_text_brand(self, tenant_id: UUID, brief: ContentBrief, kit: BrandKit) -> Any:
+        """ED-13 (m-25029108): `kit` with the font file its video texts are drawn in
+        (`render.video_text.BrandText`) — only the kit's own file, checked to be a font
+        FreeType draws; anything else (no file, unreadable, not a font) leaves the family to
+        the render service, as before, never failing the piece. A rejected file is recorded
+        with the texts (`font_file_rejected`)."""
+        from qualify_creative.render.video_text import BrandText, TextFont  # noqa: PLC0415
+
+        from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
+
+        try:  # only a video with texts reads the font
+            texts = any(part.text_layers for part in recipe_of(brief))
+        except Exception:  # noqa: BLE001 — the local step reports a bad recipe itself
+            texts = False
+        if self._brand_fonts is None or not texts:
+            return kit
+        brand_id = brief.brand_id
+        try:
+            key = self._brand_fonts(tenant_id=tenant_id, brand_id=brand_id)
+        except Exception as exc:  # the kit's assets unreadable: the family draws
+            logger.warning("brand font unreadable for %s: %s", brand_id, type(exc).__name__)
+            return kit
+        if not key:
+            return kit
+        try:
+            data = self._store.read(key)
+        except Exception as exc:  # R2 down, a missing object
+            logger.warning("brand font %s unreadable: %s", key, type(exc).__name__)
+            return BrandText(kit, None, font_rejected=True)
+        if not font_usable(data):
+            logger.warning("brand font %s is not a font FreeType can draw", key)
+            return BrandText(kit, None, font_rejected=True)
+        return BrandText(kit, TextFont.of(data, key=key))
 
     def _clip(
         self,

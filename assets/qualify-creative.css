@@ -973,7 +973,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    white text, no outline nor text shadow, over a black gradient 0 → 75 % across 45 % of
    the height of its side; inside the 9:16 safe zone (x 64–1016, y 270–1536 of
    1080×1920: 5.93 %, 14.06 % and 20 %); bold, 112 px → 76 px of 1080 (10.37 → 7.04 cqw).
-   The catalog has no middle for `scrim`: «En el medio» centres the same gradient. */
+   The catalog has no middle for `scrim`: «En el medio» centres the same gradient.
+   ED-13 (m-25029108, Deivid 2026-11-24 «que siempre esté centrado»): CENTRED — every line
+   and the box — as the final video draws it (`layout.ts` `centred`), in the brand's typography (`--q-text-font`, set on the
+   editor's preview from the Brand Kit; the page's title typography without one). */
 .q-edit-preview__text {
   position: absolute;
   left: 0;
@@ -984,20 +987,91 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   padding-inline: 5.93%;
   pointer-events: none;
 }
-.q-edit-preview__text[data-place="top"] {
+/* The text block: its two lines share one cell (the whole one, and the one «Letra por
+   letra» fills), and it is what a slide or a zoom moves (centred on it). */
+.q-edit-preview__text-box {
+  display: grid;
+  /* never wider than the safe zone (Deivid 2026-11-24): an `auto` column grew to the
+     widest word, so every line wrapped past the right margin */
+  grid-template-columns: minmax(0, max-content);
+  /* the column in the middle of the box: «Franja» is wider than its text (Deivid 2026-11-24) */
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  transform-origin: center;
+}
+.q-edit-preview__text-box > * { grid-area: 1 / 1; }
+/* ED-13 C: «Franja», «Recuadro de tu color» and «Sin fondo» — the same text block as
+   `scrim`, only what is behind it changes (the contract's px at 1080 wide: the box hugs
+   the text by 48 px = 4.44cqw, its corners 24 px = 2.22cqw). The text's top sits at the
+   safe zone's top (270/1920 = 14.06 % of the height), its bottom at 384/1920 = 20 %. */
+.q-edit-preview__text[data-layout="band"],
+.q-edit-preview__text[data-layout="brand_fill"],
+.q-edit-preview__text[data-layout="shadow"] {
+  height: auto;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: none;
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="top"] {
+  top: 14.06%;
+  bottom: auto;
+  align-items: flex-start;
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="bottom"] {
+  top: auto;
+  bottom: 20%;
+  align-items: flex-end;
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="middle"] {
+  top: 0;
+  bottom: 0;
+  align-items: center;
+}
+.q-edit-preview__text[data-layout="band"] { padding-inline: 0; }
+.q-edit-preview__text[data-layout="band"][data-place="top"] { top: calc(14.06% - 4.44cqw); }
+.q-edit-preview__text[data-layout="band"][data-place="bottom"] { bottom: calc(20% - 4.44cqw); }
+.q-edit-preview__text[data-layout="band"] .q-edit-preview__text-box {
+  width: 100%;
+  max-width: none;
+  padding: 4.44cqw 5.93cqw;
+  background: var(--q-text-bg, #111111);
+}
+.q-edit-preview__text[data-layout="brand_fill"] .q-edit-preview__text-box {
+  margin: -4.44cqw;
+  padding: 4.44cqw;
+  max-width: calc(100% + 8.88cqw);
+  border-radius: 2.22cqw;
+  background: var(--q-text-bg, #0f766e);
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"]) .q-edit-preview__text-line {
+  color: var(--q-text-ink, white);
+}
+/* «Sin fondo» (Deivid 2026-11-23): only the letters, clean — no shadow, no outline — in the
+   colour the owner picked (round 3, `--q-text-ink` from `text_color`), white without one */
+.q-edit-preview__text[data-layout="shadow"] .q-edit-preview__text-line {
+  color: var(--q-text-ink, white);
+  text-shadow: none;
+}
+/* The gradient by place is `scrim`'s («Sombra») ONLY (Deivid 2026-11-23): «Franja»,
+   «Recuadro de tu color» and «Sin fondo» never get it. Scoped with `:not(…)` — (0,3,0),
+   so it can never win over the backgrounds' own rules above again by coming later, as
+   the old (0,2,0) `[data-place]` rules did: they repainted the dark gradient (and its
+   45 % height and padding) behind the other three. A text without a layout is `scrim`. */
+.q-edit-preview__text:not([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="top"] {
   top: 0;
   height: 45%;
   align-items: flex-start;
   padding-top: 14.06%;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.6) 60%, transparent);
 }
-.q-edit-preview__text[data-place="middle"] {
+.q-edit-preview__text:not([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="middle"] {
   top: 27.5%;
   height: 45%;
   align-items: center;
   background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.6) 30%, rgba(0, 0, 0, 0.75) 50%, rgba(0, 0, 0, 0.6) 70%, transparent);
 }
-.q-edit-preview__text[data-place="bottom"] {
+.q-edit-preview__text:not([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="bottom"] {
   bottom: 0;
   height: 45%;
   align-items: flex-end;
@@ -1007,15 +1081,24 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-edit-preview__text-line {
   margin: 0;
   max-width: 100%;
-  font-family: var(--heading-font-family, inherit);
+  font-family: var(--q-text-font, var(--heading-font-family, inherit));
   font-size: 10.37cqw;
   font-weight: 700;
   line-height: 1.15;
   text-align: center;
   color: white;
-  overflow-wrap: break-word;
+  /* a word wider than the screen breaks inside the box instead of spilling out; the
+     panel says why the final video refuses it (`text-fit.js`) */
+  overflow-wrap: anywhere;
 }
 .q-edit-preview__text[data-long="true"] .q-edit-preview__text-line { font-size: 7.04cqw; }
+/* ED-13 round 4 (Deivid 2026-11-23: «3 tamaños»): «Pequeña» ×0.75 and «Grande» ×1.25 of
+   both title sizes (112/76 px of 1080 → 84/57 and 140/95), as the final video's
+   `layout.ts` `SIZE_SCALE`; «Mediana» keeps the sizes above. */
+.q-edit-preview__text[data-size="small"] .q-edit-preview__text-line { font-size: 7.78cqw; }
+.q-edit-preview__text[data-size="small"][data-long="true"] .q-edit-preview__text-line { font-size: 5.28cqw; }
+.q-edit-preview__text[data-size="large"] .q-edit-preview__text-line { font-size: 12.96cqw; }
+.q-edit-preview__text[data-size="large"][data-long="true"] .q-edit-preview__text-line { font-size: 8.8cqw; }
 .q-edit-preview__play {
   z-index: 4;
   top: 50%;
@@ -1139,6 +1222,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl__block[data-tl-block="text"] { border-color: var(--gray-a7); background: var(--gray-a3); color: var(--gray-12); }
 .q-tl__block[data-tl-block="effect"] { border-style: dashed; border-color: var(--accent-a7); background: var(--accent-a3); }
 .q-tl__block[aria-pressed="true"] { border: 2px solid var(--accent-9); }
+/* ED-13: a text in a clash (two in one place at once) — the design system's warn tone */
+.q-tl__block[data-tl-warn="1"] { border: 2px solid var(--amber-9); background: var(--amber-a3); color: var(--amber-12); }
 .q-tl__block:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
 .q-tl__icon { display: inline-flex; flex: none; }
 .q-tl__aa { font-weight: 700; }
@@ -1438,17 +1523,82 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-edit-seq .q-edit-seq__layer { visibility: hidden; }
 .q-edit-seq .q-edit-seq__layer[data-on] { visibility: visible; }
 .q-edit-seq .q-edit-seq__overlay:not([data-on]) { display: none; }
-/* B6 (m-25048789): a text appears as the final video draws it — its alpha from 0 to 1 in
-   0.5 s (EF-05's default `fade_s`, the one the editor sends), and leaves at once. Kept in
-   the layout while off so the fade can run; no fade with reduced motion. */
+/* ED-13 D (m-25029108; replaces B6's fixed 0,5 s transition): a text enters and leaves
+   as the final video draws it — `assets/edit-preview.js` computes, on the clock, its
+   alpha (`--q-a`), how far down it is (`--q-dy`, a share of the 9:16 frame's height =
+   16/9 of its width) and its scale (`--q-s`) with the contract's curves and its own
+   `fade` (`edit-sequence-core.js` `textFrame`), so it is right paused and while dragging
+   too. Kept in the layout while off. With prefers-reduced-motion the script sends only
+   the alpha. «Letra por letra»: `data-typing` hides the whole line and shows the one the
+   script lays out a span per character, the letters not typed yet hidden. */
 .q-edit-seq .q-edit-seq__overlay[data-seq-text]:not([data-on]) {
-  display: block; opacity: 0; visibility: hidden; transition: none;
+  display: flex; opacity: 0; visibility: hidden;
 }
 .q-edit-seq .q-edit-seq__overlay[data-seq-text][data-on] {
-  opacity: 1; visibility: visible; transition: opacity 0.5s linear;
+  opacity: var(--q-a, 1); visibility: visible;
 }
+.q-edit-seq [data-seq-text] .q-edit-preview__text-box {
+  transform: translateY(calc(var(--q-dy, 0) * 177.78cqw)) scale(var(--q-s, 1));
+}
+.q-edit-preview .q-edit-seq__type { visibility: hidden; }
+.q-edit-seq [data-seq-text][data-typing] .q-edit-seq__full { visibility: hidden; }
+.q-edit-seq [data-seq-text][data-on][data-typing] .q-edit-seq__type { visibility: visible; }
+/* ED-13 C/D: the text panel's choices, two by two (`ui.text_panel`) */
+.q-text-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  width: 100%;
+}
+/* Every section of the text panel folds (Deivid 2026-11-23, round 3): Radix's accordion,
+   as Crear's. Its header is a ≥ 44 px button — the title in the accent (it reads as a
+   control), what is chosen under it in grey, the chevron that turns when it opens —
+   and what opens keeps the panel's own text colour (Radix paints it in the accent).
+   Reflex names the accordion's parts without Radix Themes' `rt-` prefix. */
+.q-text-acc { width: 100%; }
+.q-text-acc .AccordionTrigger {
+  min-height: 44px;
+  gap: var(--space-3);
+  text-align: left;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.q-text-acc .AccordionTrigger:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+.q-text-acc__head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.q-text-acc__title { font-size: var(--font-size-2); font-weight: 500; }
+.q-text-acc__summary { font-size: var(--font-size-1); color: var(--gray-11); overflow-wrap: anywhere; }
+.q-text-acc .AccordionChevron { flex: none; }
+.q-text-acc .AccordionContent { color: var(--gray-12); }
+/* The box's colour (Deivid 2026-11-23): the campaign picker's round swatches (`.q-swatch`,
+   `qualify.css`) at a 44 px target, 8 px apart; the chosen one is ringed (`.q-swatch--on`)
+   and checked in the letters' colour. */
+.q-text-colors { display: flex; flex-wrap: wrap; gap: 8px; }
+.q-swatch.q-swatch--box {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 1px var(--gray-a7);
+}
+.q-swatch.q-swatch--box.q-swatch--on {
+  box-shadow: inset 0 0 0 1px var(--gray-a7), 0 0 0 2px var(--color-panel-solid, var(--gray-1)), 0 0 0 4px var(--accent-9);
+}
+/* «Listo» stays at hand on a phone while the text's panel scrolls: fixed at its foot,
+   over the page's bottom bar (the save bar's sticky pattern). */
+@media (max-width: 767px) {
+  .q-text-panel__done {
+    position: sticky;
+    bottom: calc(var(--q-bottom-bar-h, 0px) + var(--space-2) + env(safe-area-inset-bottom, 0px));
+    z-index: 2;
+    padding-block: var(--space-2);
+    background: var(--color-panel-solid);
+  }
+}
+/* «Ver cómo se mueve»: only where nothing moves by itself */
+.q-text-show-motion { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .q-edit-seq .q-edit-seq__overlay[data-seq-text][data-on] { transition: none; }
+  .q-text-show-motion { display: inline-flex; }
 }
 /* Each block carries its own turn — the video's AND the photo's (both share the
    centred base above: top/left 50% and translate(-50%, -50%)). */
@@ -1627,3 +1777,14 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-tl__item--settle,
   .q-tl__item--return { transition: none; }
 }
+
+/* ED-13 (Deivid 2026-11-24): «palabra demasiado larga» under the text's field, filled by
+   `assets/text-fit.js` with the final video's criterion; empty = not shown */
+.q-text-fit-note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-1);
+  color: var(--amber-11);
+  overflow-wrap: anywhere;
+}
+.q-text-fit-note:empty { display: none; }

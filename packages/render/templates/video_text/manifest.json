@@ -1,29 +1,38 @@
 {
   "id": "video_text",
-  "version": 1,
+  "version": 2,
   "name": "Texto del dueño sobre un video",
   "niche": [],
   "serves_angles": ["video_text_overlay"],
   "inputs": {
     "text":           {"type": "string", "max": 120},
     "place":          {"type": "string", "enum": ["top", "middle", "bottom"]},
-    "layout_id":      {"type": "string", "enum": ["scrim"]},
+    "layout_id":      {"type": "string", "enum": ["scrim", "band", "brand_fill", "shadow"]},
     "layout_version": {"type": "number", "min": 1},
+    "box_color":      {"type": "string", "max": 7, "optional": true},
+    "text_color":     {"type": "string", "max": 7, "optional": true},
+    "text_size":      {"type": "string", "enum": ["small", "medium", "large"], "optional": true},
     "brand":          {"type": "brand_kit"}
   },
   "outputs": {
-    "overlay": {"kind": "still", "width": 1080, "height": 1920, "composition": "video-text-v1--overlay", "format": "9:16"}
+    "overlay":  {"kind": "still", "width": 1080, "height": 1920, "composition": "video-text-v2--overlay", "format": "9:16"},
+    "backdrop": {"kind": "still", "width": 1080, "height": 1920, "composition": "video-text-v2--backdrop", "format": "9:16"},
+    "letters":  {"kind": "still", "width": 1080, "height": 1920, "composition": "video-text-v2--letters", "format": "9:16"}
   },
   "cost_model": {"seconds_per_still": 3.0},
   "video_text": {
     "overlay_revision": 1,
     "overlay_revision_doc": "Bump with ANY change to src/templates/video_text/* that can move a pixel of the overlay. The layer_still engine it reuses (engine.ts, LayerStill.tsx's Scrim and TextBlocks, the font loading) is pinned by layer_still's own layer_catalog.engine_revision, echoed as report.engine_revision; Python puts BOTH in the job id.",
-    "source": "EF-05 (m-25026573): the owner's text over a video, drawn with ADR 49's scrim (layer_still catalog, format 9:16) on a transparent canvas",
+    "source": "ED-13 (m-25029108): v1's text block (EF-05) on four closed backgrounds — scrim, band, brand_fill, shadow (clean white letters, no text shadow) —, band and brand_fill in the colour the owner picked (texts.box_color, #RRGGBB, letters white or #111111 by contrast) and, for «Letra por letra», the backdrop and the letters as separate ports with every character's box in the letters' report",
     "image_template": "layer_still@1",
     "format": "9:16",
-    "layouts": ["scrim"],
+    "layouts": ["scrim", "band", "brand_fill", "shadow"],
     "title_lines": 7,
     "cover_steps": [0.45, 0.5, 0.55, 0.6, 0.65],
-    "middle_center_y": 960
+    "middle_center_y": 960,
+    "band": {"pad": 48, "color": "#111111", "ink": "#FFFFFF"},
+    "box": {"pad": 48, "radius": 24, "color": "accent"},
+    "box_ink": {"light": "#FFFFFF", "dark": "#111111"},
+    "shadow_ink": "#FFFFFF"
   }
 }
