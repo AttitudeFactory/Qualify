@@ -6031,7 +6031,12 @@ class MediaProducer:
         # EF-18: the composed preview's contact sheet, tied to the file the owner sees
         sheet = compose_params.pop(CONTACT_SHEET_PARAMS_KEY, None) if compose_params else None
         contact_sheet = shown_contact_sheet(
-            sheet, video_key, clean_key=clean_key, logo_laid=logo_laid
+            sheet,
+            video_key,
+            # m-25103284: a part is composed BEFORE its logo, so its clean file carries
+            # the texts too — the sheet shows what the owner sees, logo laid or not
+            clean_key=None if part is not None else clean_key,
+            logo_laid=logo_laid,
         )
         return [
             MediaWrite(

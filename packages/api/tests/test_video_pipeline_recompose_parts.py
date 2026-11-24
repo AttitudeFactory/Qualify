@@ -610,3 +610,36 @@ def test_a_parts_boxes_scale_between_its_preview_and_its_final(tmp_path: Path) -
             shown,
             back,
         )
+
+
+# ---------------------------------------------------------------------------
+# EF-18 (#788): the part's contact sheet, with its texts composed before the logo
+
+
+@pytest.mark.parametrize("logo_fails", [False, True], ids=["logo_laid", "logo_failed"])
+def test_a_parts_contact_sheet_follows_the_file_the_owner_sees(
+    tmp_path: Path, logo_fails: bool
+) -> None:
+    """A part is composed BEFORE its logo, so its clean file carries the texts: the sheet
+    (made from the composed file) is tied to the shown file whether the logo was laid
+    or not; the part's final makes no sheet of its own."""
+    from qualify_api.creative.contact_sheet import contact_sheet_of
+
+    from .test_video_pipeline_recompose import _sheet_video
+
+    composer = FakeComposer()
+    composer.sheet_video = _sheet_video(tmp_path)
+    producer, _, _, fitter = _part_producer(composer)
+    fitter.fail_overlay = logo_fails
+    draft_id, brief = uuid4(), _part_brief(text_layers=(WORDS,))
+    (draft,) = _produce(producer, brief, draft_id).media
+
+    assert draft.params["logo"] is (not logo_fails)
+    block = draft.params["contact_sheet"]
+    assert block["source"]["object_key"] == draft.object_key
+    assert contact_sheet_of(draft.object_key, draft.params) is not None
+    if logo_fails:
+        assert draft.object_key == draft.params["part"]["clean_key"]  # composed, shown
+
+    final = _final(producer, brief, _with_attempt(draft, "a1"), draft_id)
+    assert final.failure is None and composer.sheet_hooks[-1] is None
