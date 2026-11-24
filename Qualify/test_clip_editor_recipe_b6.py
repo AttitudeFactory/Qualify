@@ -86,15 +86,26 @@ def _editor() -> CreativeState:
     CreativeState.report_clip_source.fn(state, _OWN, 20.0, 1080, 1920)
     CreativeState.report_clip_media.fn(state, _SECOND, 8.0, 1080, 1920)
     CreativeState.set_clip_block_speed.fn(state, _OWN, "2")
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
-    CreativeState.set_clip_text_place.fn(state, "top")
-    state.clip_text_start, state.clip_text_end = 3.0, 15.0
+    # ED-13: one text «Arriba» with its own seconds (dragged there)
+    state.clip_text_uses = [_text(3.0, 15.0)]
     # ED-04: Vapor is a block with its own seconds (dragged there)
     state.clip_effect_uses = [
         {"uid": "u1", "effect_id": "vapor_capa", "start": 4.0, "end": 9.0, "lane": 0, "blocks": []}
     ]
     return state
+
+
+def _text(start: float, end: float) -> dict[str, object]:
+    """«2×1 hoy» «Arriba» with its own seconds (`end` -1 = to the end)."""
+    return {
+        "uid": "t1",
+        "text": "2×1 hoy",
+        "place": "top",
+        "start": start,
+        "end": end,
+        "blocks": [],
+        "fade": 0.5,
+    }
 
 
 async def _crear(state: CreativeState) -> list[object]:
@@ -174,7 +185,7 @@ async def test_an_untouched_text_and_effect_cover_the_whole_video(
     seen: list[ContentBrief] = []
     monkeypatch.setattr(module, "submit_brief", _backend_create(seen))
     state = _editor()
-    state.clip_text_start, state.clip_text_end = 0.0, -1.0
+    state.clip_text_uses = [_text(0.0, -1.0)]
     # untouched: on every block of the video (as «+ Efecto» puts it with nothing chosen)
     state.clip_effect_uses = []
     CreativeState.add_clip_effect.fn(state, "vapor_capa")
@@ -274,8 +285,12 @@ def test_a_video_not_measured_yet_waits_and_one_that_cannot_be_read_says_so(
 def test_a_text_alone_has_nothing_to_go_over(editor_on: None) -> None:
     state = CreativeState()
     state.choose_category("clip")
-    CreativeState.set_clip_overlay_text.fn(state, "2×1 hoy")
-    CreativeState.commit_clip_overlay_text.fn(state, "")
+    # ED-13: «+ Texto» puts nothing without a photo or a video, and says why
+    CreativeState.open_clip_flow.fn(state, "text")
+    assert state.clip_text_uses == [] and not state.clip_text_panel_on
+    assert state.clip_text_add_reason == clip_editor_vm.NEEDS_MEDIA
+    # a text kept while its photos and videos left: it has nothing to go over
+    state.clip_text_uses = [_text(0.0, -1.0)]
     assert state.clip_edit_problem == [clip_editor_vm.NEEDS_MEDIA, "warn"]
     assert state._clip_edit_media() == {}  # nothing of the editor goes out
 

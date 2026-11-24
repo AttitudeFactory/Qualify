@@ -127,6 +127,15 @@ def test_recipe_refusals_are_pinned() -> None:
         "segment_source_too_long",
         "transitions_longer_than_part",
         "text_bottom_with_subtitles",
+        # ED-13 (m-25029108), appended
+        "unknown_text_motion",
+        "typewriter_text_too_long",
+        "bad_text_box_color",
+        # ED-13 round 3, appended
+        "bad_text_color",
+        # ED-13 round 4, appended
+        "unknown_text_size",
+        "text_too_long_for_large",
     )
 
 
@@ -436,6 +445,91 @@ def test_a_local_part_with_a_stretch_of_own_video_is_valid() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ED-13 (m-25029108): a text's entrance and exit, closed
+
+
+def test_a_video_text_moves_in_closed_ways_and_a_stored_one_reads_as_before() -> None:
+    from qualify_creative import schemas
+
+    stored = VideoTextLayer.model_validate({"text": "Hoy", "place": "top", "fade_s": 0.5})
+    assert (stored.motion_in, stored.motion_out) == ("fade", "none")
+    for motion_in in schemas.VIDEO_TEXT_MOTIONS_IN:
+        for motion_out in schemas.VIDEO_TEXT_MOTIONS_OUT:
+            layer = VideoTextLayer(text="Hoy", motion_in=motion_in, motion_out=motion_out)
+            assert VideoTextLayer.model_validate_json(layer.model_dump_json()) == layer
+    for bad in ({"motion_in": "spin"}, {"motion_out": "typewriter"}, {"motion_in": None}):
+        with pytest.raises(ValidationError) as caught:
+            VideoTextLayer.model_validate({"text": "Hoy", **bad})
+        assert [e["type"] for e in caught.value.errors()] == ["unknown_text_motion"]
+    # «Letra por letra»: up to 40 characters (the trimmed text), never more
+    limit = schemas.VIDEO_TEXT_TYPEWRITER_MAX_CHARS
+    assert VideoTextLayer(text=" " + "x" * limit + " ", motion_in="typewriter")
+    with pytest.raises(ValidationError) as caught:
+        VideoTextLayer(text="x" * (limit + 1), motion_in="typewriter")
+    assert [e["type"] for e in caught.value.errors()] == ["typewriter_text_too_long"]
+    assert VideoTextLayer(text="x" * (limit + 1), motion_in="zoom")
+    # the contract's numbers
+    assert schemas.VIDEO_TEXT_SLIDE_FRACTION == 0.05 and schemas.VIDEO_TEXT_ZOOM_FROM == 0.9
+    assert schemas.VIDEO_TEXT_TYPEWRITER_S_PER_CHAR == 0.06
+    assert schemas.VIDEO_TEXT_MOTION_MAX_SHARE == pytest.approx(1 / 3)
+
+
+def test_a_video_text_box_colour_is_a_capital_hex_kept_only_when_picked() -> None:
+    """ED-13 (Deivid, 2026-11-23): «Franja» / «Recuadro de tu color» in the owner's colour —
+    `#RRGGBB` in capitals or refused (`bad_text_box_color`); not dumped while None, so a
+    stored text keeps its shape; it counts only on `band` / `brand_fill`."""
+    from qualify_creative import schemas
+
+    plain = VideoTextLayer(text="Hoy", layout_id="band", layout_version=3)
+    assert plain.box_color is None and "box_color" not in plain.model_dump(mode="json")
+    picked = VideoTextLayer(text="Hoy", layout_id="band", layout_version=3, box_color="#FFE600")
+    assert picked.model_dump(mode="json")["box_color"] == "#FFE600"
+    assert VideoTextLayer.model_validate_json(picked.model_dump_json()) == picked
+    assert list(VideoTextLayer.model_fields)[-3:] == ["box_color", "text_color", "text_size"]
+    assert picked.effective_box_color == "#FFE600"
+    fill = VideoTextLayer(text="Hoy", layout_id="brand_fill", layout_version=3, box_color="#111111")
+    assert fill.effective_box_color == "#111111"
+    for layout in ("scrim", "shadow"):
+        ignored = VideoTextLayer(
+            text="Hoy", layout_id=layout, layout_version=3, box_color="#FFE600"
+        )
+        assert ignored.effective_box_color is None
+    assert VideoTextLayer(text="Hoy", box_color="#FFE600").effective_box_color is None
+    for bad in ("#ffe600", "#FFF", "red", "#FFE6001A", 0xFFE600, ""):
+        with pytest.raises(ValidationError) as caught:
+            VideoTextLayer.model_validate({"text": "Hoy", "box_color": bad})
+        assert [e["type"] for e in caught.value.errors()] == ["bad_text_box_color"]
+    assert schemas.VIDEO_TEXT_BOX_COLOR_LAYOUTS == ("band", "brand_fill")
+    assert (schemas.VIDEO_TEXT_INK_LIGHT, schemas.VIDEO_TEXT_INK_DARK) == ("#FFFFFF", "#111111")
+    assert not hasattr(schemas, "VIDEO_TEXT_SHADOW")
+
+
+def test_a_video_text_letters_colour_counts_only_without_a_background() -> None:
+    """ED-13 round 3 (Deivid, 2026-11-23): «Sin fondo»'s letters in the owner's colour —
+    `#RRGGBB` in capitals or refused (`bad_text_color`); not dumped while None; it counts
+    only on `shadow`."""
+    from qualify_creative import schemas
+
+    plain = VideoTextLayer(text="Hoy", layout_id="shadow", layout_version=3)
+    assert plain.text_color is None and "text_color" not in plain.model_dump(mode="json")
+    picked = VideoTextLayer(text="Hoy", layout_id="shadow", layout_version=3, text_color="#111111")
+    assert picked.model_dump(mode="json")["text_color"] == "#111111"
+    assert VideoTextLayer.model_validate_json(picked.model_dump_json()) == picked
+    assert picked.effective_text_color == "#111111"
+    for layout in ("scrim", "band", "brand_fill"):
+        ignored = VideoTextLayer(
+            text="Hoy", layout_id=layout, layout_version=3, text_color="#111111"
+        )
+        assert ignored.effective_text_color is None
+    assert VideoTextLayer(text="Hoy", text_color="#111111").effective_text_color is None
+    for bad in ("#111", "#2563eb", "black", "#1111111A", 0x111111, ""):
+        with pytest.raises(ValidationError) as caught:
+            VideoTextLayer.model_validate({"text": "Hoy", "text_color": bad})
+        assert [e["type"] for e in caught.value.errors()] == ["bad_text_color"]
+    assert schemas.VIDEO_TEXT_TEXT_COLOR_LAYOUTS == ("shadow",)
+
+
+# ---------------------------------------------------------------------------
 # D1: the video text names an ADR 49 design, never a style of its own
 
 
@@ -449,12 +543,20 @@ def test_a_video_text_names_its_design_with_both_fields() -> None:
     assert text_layer_problems(VideoTextLayer(text="Hola"), part=1) == ()
     with pytest.raises(ValidationError, match="layout"):
         VideoTextLayer(text="Hola", layout_id=LayoutId.BAND)
-    # EF-05: a design the video's text layer does not draw (band, plate…) is refused too
+    # ED-13 (m-25029108): the four backgrounds the video's text layer draws are accepted —
+    # `shadow` («Sin fondo») is no ADR 49 design and names the catalog version all the same
+    for layout_id in (LayoutId.SCRIM, LayoutId.BAND, LayoutId.BRAND_FILL, "shadow"):
+        layer = VideoTextLayer(text="Hola", layout_id=layout_id, layout_version=LAYOUT_VERSION)
+        assert text_layer_problems(layer, part=1) == (), layout_id
+        assert VideoTextLayer.model_validate_json(layer.model_dump_json()) == layer
+    # a design the video's text layer does not draw (plate, photo_only…), or a stale
+    # version — of `shadow` too — is refused
     for layout_id, version in (
         (LayoutId.PHOTO_ONLY, LAYOUT_VERSION),
         (LayoutId.BAND, 99),
-        (LayoutId.BAND, LAYOUT_VERSION),
+        ("shadow", 99),
         (LayoutId.PLATE, LAYOUT_VERSION),
+        (LayoutId.INFO_CARD, LAYOUT_VERSION),
     ):
         layer = VideoTextLayer(text="Hola", layout_id=layout_id, layout_version=version)
         problems = text_layer_problems(layer, part=2)

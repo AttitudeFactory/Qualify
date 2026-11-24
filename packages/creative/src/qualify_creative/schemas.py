@@ -16,7 +16,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Literal, NamedTuple, get_args
+from typing import Annotated, Any, Literal, NamedTuple, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -24,10 +24,12 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -721,6 +723,16 @@ RecipeRefusal = Literal[
     "transitions_longer_than_part",  # a part shorter than the transitions eating into it
     # m-25026592 (decision 2026-11-23): appended, never reordered
     "text_bottom_with_subtitles",  # a Clip's subtitles on and an owner's text at the bottom
+    # ED-13 (m-25029108): appended, never reordered
+    "unknown_text_motion",  # a text's entrance or exit animation is not one of the closed ones
+    "typewriter_text_too_long",  # «Letra por letra» on a text over the typewriter's limit
+    # ED-13 (m-25029108): appended, never reordered
+    "bad_text_box_color",  # a text's background colour is not a `#RRGGBB` hex in capitals
+    # ED-13 round 3 (m-25029108): appended, never reordered
+    "bad_text_color",  # a text's letters colour is not a `#RRGGBB` hex in capitals
+    # ED-13 round 4 (m-25029108): appended, never reordered
+    "unknown_text_size",  # a text's size is not «Pequeña», «Mediana» or «Grande»
+    "text_too_long_for_large",  # «Grande» on a text over `VIDEO_TEXT_LARGE_MAX_CHARS`
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -746,6 +758,70 @@ SegmentKind = Literal["video", "photo"]
 SEGMENT_KINDS: tuple[str, ...] = get_args(SegmentKind)
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
+#: ED-13 (m-25029108; Deivid, 2026-11-23): the backgrounds a video text is drawn on — the
+#: SAME text block in all four, only what is behind it changes (ADR 50 D1, amended):
+#: `scrim` «Sombra» (the default, None), `band` «Franja» (a full-width strip hugging the
+#: text, the fixed dark neutral `VIDEO_TEXT_BAND_COLOR`), `brand_fill` «Recuadro de tu
+#: color» (a rounded box just behind the letters, `palette.accent`) and `shadow`
+#: «Sin fondo» (clean white letters: no shadow, no outline — Deivid, 2026-11-23).
+#: `shadow` is not an ADR 49 design: it names the catalog version like the other three.
+VideoTextLayoutId = LayoutId | Literal["shadow"]
+VIDEO_TEXT_LAYOUTS: tuple[str, ...] = ("scrim", "band", "brand_fill", "shadow")
+#: `band`/`brand_fill`: the margin around the text block, px of the 1080-wide canvas, and the
+#: box's corner radius (`brand_fill` only).
+VIDEO_TEXT_BOX_PAD_PX = 48
+VIDEO_TEXT_BOX_RADIUS_PX = 24
+#: ED-13: how a text enters («Aparece», «Sube», «Crece», «Letra por letra») and leaves
+#: («Desaparece», «Baja», «Se encoge», «De golpe»). The type's defaults are what a text
+#: stored before them looks like (fades in, cut at the end); the editor writes `fade`/`fade`.
+VideoTextMotionIn = Literal["fade", "slide", "zoom", "typewriter"]
+VideoTextMotionOut = Literal["none", "fade", "slide", "zoom"]
+VIDEO_TEXT_MOTIONS_IN: tuple[str, ...] = get_args(VideoTextMotionIn)
+VIDEO_TEXT_MOTIONS_OUT: tuple[str, ...] = get_args(VideoTextMotionOut)
+#: `slide`: how far the text travels, as a fraction of the 1920-high canvas (96 px) — it
+#: enters from below rising and leaves going down, wherever it is.
+VIDEO_TEXT_SLIDE_FRACTION = 0.05
+#: `zoom`: the scale it enters from (and leaves to), centred on the text block.
+VIDEO_TEXT_ZOOM_FROM = 0.9
+#: `typewriter` («Letra por letra», entrance only): texts up to this many characters, each
+#: character appearing after this many seconds (the whole text within a third of its time).
+VIDEO_TEXT_TYPEWRITER_MAX_CHARS = 40
+VIDEO_TEXT_TYPEWRITER_S_PER_CHAR = 0.06
+#: Each animation takes at most this share of the text's time on screen.
+VIDEO_TEXT_MOTION_MAX_SHARE = 1 / 3
+#: `band` («Franja»; Deivid, 2026-11-23: «oscura y neutra»): a FIXED near-black strip with
+#: white letters, whatever the brand — never `palette.surface`, which is white on brands
+#: like Polette (the strip came out white). White on #111111 is 18.9:1 (≥ 4.5).
+VIDEO_TEXT_BAND_COLOR = "#111111"
+VIDEO_TEXT_BAND_INK = "#FFFFFF"
+#: ED-13 (Deivid, 2026-11-23): the owner may pick the colour of «Franja» and «Recuadro de tu
+#: color» (`VideoTextLayer.box_color`, a `#RRGGBB` hex in capitals; None = the default,
+#: `VIDEO_TEXT_BAND_COLOR` / `palette.accent`). Only those two backgrounds take it.
+VIDEO_TEXT_BOX_COLOR_PATTERN = r"^#[0-9A-F]{6}$"
+_BOX_COLOR = re.compile(VIDEO_TEXT_BOX_COLOR_PATTERN)
+VIDEO_TEXT_BOX_COLOR_LAYOUTS: tuple[str, ...] = ("band", "brand_fill")
+#: ED-13 round 3 (Deivid, 2026-11-23): with «Sin fondo» the owner picks the letters' colour
+#: (`VideoTextLayer.text_color`, the same `#RRGGBB` in capitals; None = white). Only
+#: `shadow` takes it: the other backgrounds choose their letters for contrast.
+VIDEO_TEXT_TEXT_COLOR_PATTERN = VIDEO_TEXT_BOX_COLOR_PATTERN
+VIDEO_TEXT_TEXT_COLOR_LAYOUTS: tuple[str, ...] = ("shadow",)
+#: On a colour the owner picked, the letters are white or near-black, whichever contrasts
+#: more (the render's `layout.ts` `boxInk`, mirrored by the screen's
+#: `editor_preview_contract.box_ink`; both read `packages/render/server/box-ink-vectors.json`).
+VIDEO_TEXT_INK_LIGHT = "#FFFFFF"
+VIDEO_TEXT_INK_DARK = "#111111"
+#: ED-13 round 4 (Deivid, 2026-11-23: «3 tamaños»): the letters' size the owner picks —
+#: «Pequeña», «Mediana» (the default: every text stored before it) and «Grande». Each one
+#: scales the catalog's 9:16 title range (112 → 76 px) by its factor; the safe zone, the
+#: width and the lines allowed do not change. The render's `layout.ts` `SIZE_SCALE` and the
+#: screen's `editor_preview_contract` copy these, pinned by the parity test.
+VideoTextSize = Literal["small", "medium", "large"]
+VIDEO_TEXT_SIZES: tuple[str, ...] = get_args(VideoTextSize)
+VIDEO_TEXT_SIZE_SCALE: dict[str, float] = {"small": 0.75, "medium": 1.0, "large": 1.25}
+#: «Grande» takes texts up to this many characters (Deivid, 2026-11-23, option A: longer,
+#: «Grande» is off and says why) — measured with the render's own layout on the widest
+#: bold faces, three places, four backgrounds (ADR 50 §2.3).
+VIDEO_TEXT_LARGE_MAX_CHARS = 40
 #: How fast a stretch plays (D-T3: «Cámara rápida» is this speed): 1 = as recorded, up
 #: to 30×. The SAME bounds as `qualify_creative.video.speed.MIN_SPEED`/`MAX_SPEED`, which
 #: applies it (EF-04) — copied, not imported: importing `video` pulls PyAV and the whole
@@ -855,13 +931,93 @@ class VideoTextLayer(BaseModel):
     place: VideoTextPlace = "bottom"
     start_s: float = Field(default=0.0, ge=0)
     end_s: float | None = Field(default=None, gt=0)
-    layout_id: LayoutId | None = None
+    #: ED-13: `VideoTextLayoutId` — an ADR 49 design or `shadow` («Sin fondo»).
+    layout_id: VideoTextLayoutId | None = None
     layout_version: int | None = Field(default=None, ge=1)
     #: EF-05: the fade in the owner chose (`VIDEO_TEXT_FADE_MIN_S`-`VIDEO_TEXT_FADE_MAX_S`);
-    #: a stored text without it reads as `VIDEO_TEXT_FADE_DEFAULT_S`.
+    #: a stored text without it reads as `VIDEO_TEXT_FADE_DEFAULT_S`. ED-13: how long its
+    #: entrance and its exit take («Tarda en entrar y salir»; «Letra por letra» times its own).
     fade_s: float = Field(
         default=VIDEO_TEXT_FADE_DEFAULT_S, ge=VIDEO_TEXT_FADE_MIN_S, le=VIDEO_TEXT_FADE_MAX_S
     )
+    #: ED-13 (m-25029108): how it enters and leaves. Defaults = a text stored before them.
+    motion_in: VideoTextMotionIn = "fade"
+    motion_out: VideoTextMotionOut = "none"
+    #: ED-13 (m-25029108; Deivid, 2026-11-23): the colour the owner picked for «Franja» /
+    #: «Recuadro de tu color» (`VIDEO_TEXT_BOX_COLOR_PATTERN`); None = that background's
+    #: default. Ignored with `scrim`/`shadow`. Not serialized while None, so a stored text
+    #: keeps its shape (and every digest over it).
+    box_color: str | None = None
+    #: ED-13 round 3 (Deivid, 2026-11-23): the letters' colour the owner picked for «Sin
+    #: fondo» (`VIDEO_TEXT_TEXT_COLOR_PATTERN`); None = white. Ignored with the other
+    #: backgrounds. Not serialized while None, as `box_color`.
+    text_color: str | None = None
+    #: ED-13 round 4 (Deivid, 2026-11-23): the letters' size (`VIDEO_TEXT_SIZES`); «Mediana»
+    #: is what every text looked like before. Not serialized while `medium`, as `box_color`.
+    text_size: VideoTextSize = "medium"
+
+    @field_validator("text_size", mode="before")
+    @classmethod
+    def _known_size(cls, value: object) -> object:
+        if value not in VIDEO_TEXT_SIZES:
+            raise PydanticCustomError(
+                "unknown_text_size", "a text's size is one of {known}", {"known": VIDEO_TEXT_SIZES}
+            )
+        return value
+
+    @field_validator("box_color", mode="before")
+    @classmethod
+    def _box_color_hex(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not _BOX_COLOR.match(value):
+            raise PydanticCustomError(
+                "bad_text_box_color", "a text's background colour is a #RRGGBB hex in capitals"
+            )
+        return value
+
+    @field_validator("text_color", mode="before")
+    @classmethod
+    def _text_color_hex(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not _BOX_COLOR.match(value):
+            raise PydanticCustomError(
+                "bad_text_color", "a text's letters colour is a #RRGGBB hex in capitals"
+            )
+        return value
+
+    @model_serializer(mode="wrap")
+    def _without_unset_box_color(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict):
+            if self.box_color is None:
+                data.pop("box_color", None)
+            if self.text_color is None:
+                data.pop("text_color", None)
+            if self.text_size == "medium":
+                data.pop("text_size", None)
+        return data
+
+    @property
+    def effective_box_color(self) -> str | None:
+        """`box_color` where it counts (`band`, `brand_fill`); None elsewhere."""
+        return self.box_color if self.layout_id in VIDEO_TEXT_BOX_COLOR_LAYOUTS else None
+
+    @property
+    def effective_text_color(self) -> str | None:
+        """`text_color` where it counts (`shadow`, «Sin fondo»); None elsewhere."""
+        return self.text_color if self.layout_id in VIDEO_TEXT_TEXT_COLOR_LAYOUTS else None
+
+    @field_validator("motion_in", "motion_out", mode="before")
+    @classmethod
+    def _known_motion(cls, value: object, info: ValidationInfo) -> object:
+        known = VIDEO_TEXT_MOTIONS_IN if info.field_name == "motion_in" else VIDEO_TEXT_MOTIONS_OUT
+        if value not in known:
+            raise PydanticCustomError(
+                "unknown_text_motion", "a text moves in one of {known}", {"known": known}
+            )
+        return value
 
     @model_validator(mode="after")
     def _coherent(self) -> VideoTextLayer:
@@ -871,6 +1027,21 @@ class VideoTextLayer(BaseModel):
             raise ValueError("a video text's design names its layout and its version")
         if self.end_s is not None and self.end_s <= self.start_s:
             raise ValueError("a video's text disappears after it appears")
+        if (
+            self.motion_in == "typewriter"
+            and len(self.text.strip()) > VIDEO_TEXT_TYPEWRITER_MAX_CHARS
+        ):
+            raise PydanticCustomError(
+                "typewriter_text_too_long",
+                "«Letra por letra» takes texts up to {limit} characters",
+                {"limit": VIDEO_TEXT_TYPEWRITER_MAX_CHARS},
+            )
+        if self.text_size == "large" and len(self.text.strip()) > VIDEO_TEXT_LARGE_MAX_CHARS:
+            raise PydanticCustomError(
+                "text_too_long_for_large",
+                "«Grande» takes texts up to {limit} characters",
+                {"limit": VIDEO_TEXT_LARGE_MAX_CHARS},
+            )
         return self
 
 

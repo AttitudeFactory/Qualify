@@ -159,6 +159,7 @@ __all__ = [
     "piece_archive",
     "list_drafts",
     "load_kit_form",
+    "clip_text_look",
     "load_voice_screen",
     "propose_voice",
     "recipe_options",
@@ -1640,3 +1641,37 @@ def voice_options(tenant_id: UUID | None, brand_id: UUID | None) -> list[dict[st
         except Exception as exc:  # noqa: BLE001 — the public voices still serve
             logger.warning("brand voice clone unreadable: %s", type(exc).__name__)
     return [own, *public_voices()] if own else public_voices()
+
+
+@dataclasses.dataclass(frozen=True)
+class ClipTextLook:
+    """ED-13 (m-25029108) B: what the texts of «Arma tu video» are drawn in — the Brand
+    Kit's typography (`font_name`, and the `/r2media` path of its uploaded font file, ""
+    without one) and its palette (accent, text, surface, in order)."""
+
+    font_name: str = ""
+    font_path: str = ""
+    palette: tuple[str, ...] = ()
+
+
+def clip_text_look(tenant_id: UUID, brand_id: UUID) -> ClipTextLook:
+    """The brand's typography and colours for the editor's preview. A font file whose
+    view cannot be issued (Redis down) leaves the family name alone."""
+    from qualify_api.creative.brand_kit_store import FONT  # noqa: PLC0415
+
+    from .r2_media import issue_view_path  # noqa: PLC0415 — the screens' view paths
+
+    kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
+    # the render's order (`brand_fonts._SLOT_ORDER`, `BrandKit.typeface`): heading, then body
+    name = kit.typeface if kit is not None else ""
+    palette = tuple(kit.palette_rgb) if kit is not None else ()
+    path = ""
+    assets = BrandKitStore().list_assets(tenant_id=tenant_id, brand_id=brand_id)
+    fonts = {a.slot: a for a in assets if a.kind == FONT}
+    font = fonts.get("heading") or fonts.get("body")
+    if font is not None:
+        try:
+            path = issue_view_path(tenant_id, font.object_key, "font", font.content_type or None)
+        except Exception as exc:  # noqa: BLE001 — the family name still serves
+            logger.warning("brand font view not issued: %s", type(exc).__name__)
+    return ClipTextLook(font_name=name, font_path=path, palette=palette)

@@ -78,7 +78,11 @@ class PreviewOverlay:
     `start <= t < end`. A text has `text`/`place`; an effect its `effect_id`, its
     loop (`url` "" = not drawn: the file does not exist yet) and its `opacity` — ED-04
     (m-25026627): the library's default intensity, which with the «screen» blend is
-    what the final video's compose does (humo 0,6, brasas 0,5, vapor 0,5)."""
+    what the final video's compose does (humo 0,6, brasas 0,5, vapor 0,5).
+
+    ED-13 (m-25029108): a text also carries how it is drawn and moves — its `layout`
+    (`contract.VIDEO_TEXT_LAYOUTS`), `fade` (s), `motion_in` / `motion_out` — so the
+    preview's script animates it on the same clock (`edit-sequence-core.js` `textFrame`)."""
 
     kind: str  # "text" | "effect"
     start: float
@@ -90,6 +94,16 @@ class PreviewOverlay:
     url: str = ""
     blend: str = "screen"
     opacity: float = 1.0
+    layout: str = contract.TEXT_LAYOUT_ID
+    fade: float = contract.VIDEO_TEXT_FADE_DEFAULT_S
+    motion_in: str = contract.VIDEO_TEXT_MOTION_IN_DEFAULT
+    motion_out: str = contract.VIDEO_TEXT_MOTION_OUT_DEFAULT
+    #: ED-13: the colour picked for «Franja» / «Recuadro de tu color» ("" = the default).
+    box_color: str = ""
+    #: ED-13 round 3: «Sin fondo»'s letters' colour ("" = white).
+    text_color: str = ""
+    #: ED-13 round 4: the letters' size («Mediana» = what the preview always drew).
+    size: str = contract.VIDEO_TEXT_SIZE_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -256,6 +270,13 @@ def from_recipe(
             end=_r(total if layer.end_s is None else min(float(layer.end_s), total)),
             text=layer.text.strip(),
             place=layer.place,
+            layout=layer.layout_id or contract.TEXT_LAYOUT_ID,
+            fade=float(layer.fade_s),
+            motion_in=layer.motion_in,
+            motion_out=layer.motion_out,
+            box_color=layer.box_color or "",
+            text_color=layer.text_color or "",
+            size=layer.text_size,
         )
         for layer in recipe.text_layers
         if layer.text.strip()
@@ -327,6 +348,15 @@ def from_timeline(
                     end=end,
                     text=str(item["label"]),
                     place=str(item.get("place") or "bottom"),
+                    layout=str(item.get("layout") or contract.TEXT_LAYOUT_ID),
+                    fade=float(item.get("fade") or contract.VIDEO_TEXT_FADE_DEFAULT_S),
+                    motion_in=str(item.get("motion_in") or contract.VIDEO_TEXT_MOTION_IN_DEFAULT),
+                    motion_out=str(
+                        item.get("motion_out") or contract.VIDEO_TEXT_MOTION_OUT_DEFAULT
+                    ),
+                    box_color=str(item.get("box_color") or ""),
+                    text_color=str(item.get("text_color") or ""),
+                    size=str(item.get("size") or contract.VIDEO_TEXT_SIZE_DEFAULT),
                 )
             )
         else:

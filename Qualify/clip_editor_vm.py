@@ -92,7 +92,7 @@ FLOW_QUESTIONS = {
 #: name, the others their icon (`.q-source-seg`, the name in `aria-label`/`title`).
 FLOW_TABS: tuple[tuple[str, str, str], ...] = (
     (FLOW_MEDIA, "image-plus", "¿Con qué lo armamos?"),
-    (FLOW_TEXT, "type", "Texto"),
+    (FLOW_TEXT, "type", "Texto en pantalla"),
     (FLOW_EFFECT, "sparkles", "Efecto"),
     (FLOW_IDEA, "lightbulb", "Pedir una idea"),
 )
@@ -130,7 +130,9 @@ IDEA_EXAMPLE = "Ej.: «Promoción de 2×1 los martes»."
 
 # -- «Efectos» -----------------------------------------------------------------------------
 
-TEXT_TITLE = "Texto sobre el video"
+#: ED-13 (m-25029108, Deivid): the tab and the panel are «Texto en pantalla» (its other
+#: words live in `clip_texts_vm`); the track's row still says «Textos».
+TEXT_TITLE = "Texto en pantalla"
 TEXT_EXAMPLE = "Ej.: 2×1 solo este fin de semana"
 TEXT_PLACES = {"top": "Arriba", "middle": "En el medio", "bottom": "Abajo"}
 TEXT_PLACE_LABEL = "Dónde va el texto"
@@ -572,11 +574,24 @@ _CHANGE_LINES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("rotate",), "Giraste tu video."),
     (("effects",), "Cambiaste el efecto de tu video."),
     (("speed",), "Cambiaste la velocidad de tu video."),
-    # the place first: choosing it also keeps the text being typed (one line says it)
-    (("place",), "Cambiaste el lugar del texto."),
-    (("text",), "Cambiaste el texto de tu video."),
 )
 SNAPSHOT_FIELDS: tuple[str, ...] = tuple(f for fields, _ in _CHANGE_LINES for f in fields)
+
+
+def _text_snap(use: Mapping[str, object]) -> dict[str, object]:
+    """One written text as a snapshot keeps it (its seconds as resolved now)."""
+    return {
+        "uid": str(use.get("uid") or ""),
+        "text": str(use.get("text") or "").strip(),
+        "place": str(use.get("place") or ""),
+        "start": round(float(use.get("start") or 0.0), 2),  # type: ignore[arg-type]
+        "end": round(float(use.get("end") or 0.0), 2),  # type: ignore[arg-type]
+        "fade": round(float(use.get("fade") or 0.0), 1),  # type: ignore[arg-type]
+        # ED-13 C/D: its background and how it enters and leaves
+        "layout": str(use.get("layout") or ""),
+        "motion_in": str(use.get("motion_in") or ""),
+        "motion_out": str(use.get("motion_out") or ""),
+    }
 
 
 def snapshot(
@@ -586,17 +601,15 @@ def snapshot(
     rotate: int,
     effects: Sequence[str],
     speed: int,
-    text: str,
-    place: str,
     order: Sequence[str] = (),
-    text_start: float = 0.0,
-    text_end: float = -1.0,
+    texts: Sequence[Mapping[str, object]] = (),
     pieces: Sequence[Sequence[float]] = (),
 ) -> dict[str, object]:
     """The editor's choices as one plain value: two of them, before and after a change,
     give the live line (`change_message`). ED-10: the order of «Fotos y videos»
-    (`order`, the files' keys) and when the text shows (`text_end` -1 = to the end; the
-    effects' own lines are said where they change, ED-04). «Cortar»: the
+    (`order`, the files' keys); ED-13 (m-25029108): the written texts (`texts`, the
+    `clip_texts_vm` uses at their seconds now — one being typed and still empty is not a
+    text yet); the effects' own lines are said where they change (ED-04). «Cortar»: the
     own video's `pieces` (`[start, end, speed]` of the source each, in the video's order;
     empty = one piece, the stretch `start`-`end`)."""
     return {
@@ -605,11 +618,8 @@ def snapshot(
         "rotate": int(rotate),
         "effects": list(effects),
         "speed": int(speed),
-        "text": str(text),
-        "place": str(place),
         "order": [str(key) for key in order],
-        "text_start": float(text_start),
-        "text_end": float(text_end),
+        "texts": [_text_snap(use) for use in texts if str(use.get("text") or "").strip()],
         # `[start, end, speed]` each (ED-03: the speed is the piece's own)
         "pieces": [[float(x) for x in piece] for piece in pieces],
     }
@@ -619,8 +629,46 @@ FAST_ON_LINE = "Pusiste tu video más rápido."
 FAST_OFF_LINE = "Volviste tu video a la velocidad normal."
 #: ED-10: the order changed (the screen says which block, `timeline_vm.moved_text`).
 ORDER_LINE = "Cambiaste el orden de tu video."
+#: ED-13: the texts' lines (`_texts_line`).
+TEXT_PUT_LINE = "Pusiste un texto."
+TEXT_REMOVED_LINE = "Quitaste un texto de tu video."
+TEXT_CHANGED_LINE = "Cambiaste el texto de tu video."
+TEXT_PLACE_LINE = "Cambiaste el lugar del texto."
+TEXT_FADE_LINE = "Cambiaste cuánto tarda en entrar y salir el texto."
 TEXT_TIME_LINE = "Cambiaste cuándo sale el texto."
-TEXT_REMOVED_LINE = "Quitaste el texto de tu video."
+#: ED-13 C/D (Deivid 2026-11-23): its background, and how it enters and leaves.
+TEXT_LAYOUT_LINE = "Cambiaste el fondo de las letras."
+TEXT_MOTION_LINE = "Cambiaste cómo entra y sale el texto."
+
+
+def _texts_line(before: Sequence[object], after: Sequence[object]) -> str:
+    """The live line for the written texts ("" = they did not change): one more is put,
+    one less is taken out; else the first text that changed says what — its place (a
+    place chosen while typing keeps the words too: one line says it), its words, its
+    fade, its seconds."""
+    was = [dict(t) for t in before if isinstance(t, Mapping)]
+    now = [dict(t) for t in after if isinstance(t, Mapping)]
+    if len(now) > len(was):
+        return TEXT_PUT_LINE
+    if len(now) < len(was):
+        return TEXT_REMOVED_LINE
+    old = {str(t.get("uid")): t for t in was}
+    for text in now:
+        prior = old.get(str(text.get("uid")))
+        if prior is None or prior == text:
+            continue
+        for field, line in (
+            ("place", TEXT_PLACE_LINE),
+            ("text", TEXT_CHANGED_LINE),
+            ("fade", TEXT_FADE_LINE),
+            ("layout", TEXT_LAYOUT_LINE),
+            ("motion_in", TEXT_MOTION_LINE),
+            ("motion_out", TEXT_MOTION_LINE),
+        ):
+            if prior.get(field) != text.get(field):
+                return line
+        return TEXT_TIME_LINE
+    return ""
 
 
 def _effect_label(effect_id: str) -> str:
@@ -666,12 +714,10 @@ def change_message(before: Mapping[str, object], after: Mapping[str, object]) ->
             return line
     if before.get("order", []) != after.get("order", []):
         return ORDER_LINE
-    if (before.get("text_start", 0.0), before.get("text_end", -1.0)) != (
-        after.get("text_start", 0.0),
-        after.get("text_end", -1.0),
-    ):
-        return TEXT_TIME_LINE
-    return ""
+    return _texts_line(
+        list(before.get("texts") or []),  # type: ignore[call-overload]
+        list(after.get("texts") or []),  # type: ignore[call-overload]
+    )
 
 
 # -- which screen and which video ----------------------------------------------------------
@@ -750,8 +796,8 @@ def recipe_of(
     rotate: int,
     effects: Sequence[str],
     speed: int,
-    text: str,
-    place: str,
+    text: str = "",
+    place: str = "bottom",
     text_start: float = 0.0,
     text_end: float | None = None,
     pieces: Sequence[Sequence[float]] = (),
@@ -763,9 +809,11 @@ def recipe_of(
     backend makes no such effect (B6 m-25048789: it would refuse the Clip as
     `recipe_unavailable`). An unset stretch is left out.
 
-    ED-10: when the owner moved the text on the timeline, its seconds of the final video
-    (`text_start`/`text_end`); untouched, the recipe is exactly ED-02's (the text from 0
-    with no end).
+    ED-10: ONE text (`text`, `place`, its seconds `text_start`/`text_end`); untouched,
+    the recipe is exactly ED-02's (the text from 0 with no end). ED-13 (m-25029108): the
+    editor gives no text here — its up to 3 texts go on with
+    `clip_texts_vm.with_texts(recipe_of(...), text_layers_for_recipe(...))`, which a test
+    pins equal to this one text over the whole video.
 
     «Cortar» (Deivid 2026-11-17): the own video cut in `pieces` is one `SourceSegment`
     per piece, in the video's order — the same `key`, each with its own `start_s`/`end_s`
@@ -968,6 +1016,7 @@ def recipe_problem(
     waiting: bool = False,
     not_in_video: bool = False,
     speed_offered: bool = True,
+    texts_line: str = "",
 ) -> tuple[str, str]:
     """B6 (m-25048789): why «Crear» cannot make the editor's video yet — `(words, tone)`,
     ("", "") when it can. Said in the editor before «Crear» and by «Crear» itself, with
@@ -976,7 +1025,9 @@ def recipe_problem(
     `unmeasured`: the timeline's videos whose length the browser has not read (their
     stretch is a guess); `waiting`: …and it is still reading them (`CUT_WAITING`, info),
     else it cannot (`LENGTH_UNKNOWN`). `not_in_video`: the Clip also holds what only an
-    AI reads (a reference image, an audio) — it would not come out."""
+    AI reads (a reference image, an audio) — it would not come out. `texts_line`: what
+    stops the texts (ED-13, `clip_texts_vm.texts_problem`: two in one place at once, or
+    more than 3) — it stops «Siguiente» too."""
     has_overlay = bool(recipe.text_layers or recipe.effects)
     if not recipe.segments:
         return (NEEDS_MEDIA, "warn") if has_overlay else ("", "")
@@ -993,6 +1044,8 @@ def recipe_problem(
     effects_line = effects_problem(recipe.effects)
     if effects_line:
         return effects_line, "warn"
+    if texts_line:
+        return texts_line, "warn"
     if not_in_video:
         return NOT_IN_VIDEO, "warn"
     return "", ""
@@ -1029,10 +1082,32 @@ def refusal_line(
     """The backend's refusal of the editor's video (`RecipeRefused` codes), in the owner's
     words: the length with its seconds (`local_length_out_of_range`, `duration_s`; what
     to change read from the editor's `segments`), the queue off (`local_unavailable`),
-    a stretch over 1 minute of its video (`segment_source_too_long`, A9's words),
-    anything else the generic line."""
+    a stretch over 1 minute of its video (`segment_source_too_long`, A9's words), a text
+    «Abajo» under the subtitles (ED-13, `text_bottom_with_subtitles`: the screen's own
+    words, `clip_texts_vm.SUBTITLES_BOTTOM_LINE`), a text's motion the server does not
+    know or «Letra por letra» over 40 characters (ED-13, `unknown_text_motion`,
+    `typewriter_text_too_long`), a text's background colour it refused (ED-13,
+    `bad_text_box_color`) or its letters' colour (round 3, `bad_text_color`), anything else
+    the generic line."""
+    from . import clip_texts_vm  # noqa: PLC0415 — it imports this module
+
     if "local_unavailable" in codes:
         return LOCAL_UNAVAILABLE
+    if clip_texts_vm.SUBTITLES_CODE in codes:
+        return clip_texts_vm.SUBTITLES_BOTTOM_LINE
+    # ED-13: how a text enters and leaves
+    if clip_texts_vm.TYPEWRITER_CODE in codes:
+        return clip_texts_vm.TYPEWRITER_TOO_LONG_LINE
+    if clip_texts_vm.MOTION_CODE in codes:
+        return clip_texts_vm.MOTION_REFUSED_LINE
+    if clip_texts_vm.BOX_COLOR_CODE in codes:
+        return clip_texts_vm.BOX_COLOR_REFUSED_LINE
+    if clip_texts_vm.TEXT_COLOR_CODE in codes:  # round 3: «Sin fondo»'s letters
+        return clip_texts_vm.TEXT_COLOR_REFUSED_LINE
+    if clip_texts_vm.LARGE_CODE in codes:  # round 4: «Grande» on a long text
+        return clip_texts_vm.LARGE_REFUSED_LINE
+    if clip_texts_vm.SIZE_CODE in codes:  # round 4: a size that is not one of the three
+        return clip_texts_vm.SIZE_REFUSED_LINE
     if "segment_source_too_long" in codes:
         return SOURCE_TOO_LONG_REFUSED
     if "local_length_out_of_range" in codes and duration_s is not None:
@@ -1047,18 +1122,18 @@ def refusal_line(
 BLOCK_PARAM = "bloque"
 #: How long a photo shows on the timeline (D-T1 = A; 2 s is the hypothesis of §3.1).
 PHOTO_SECONDS = 2.0
-#: The text's block id (one text today; ED-13 brings up to three).
-TEXT_ID = "texto-1"
 #: An effect's block id is this plus its library id (`efecto-vapor_capa`).
 EFFECT_ID_PREFIX = "efecto-"
 #: The chosen block's bar in the editor: only what works on this screen today. «Girar»
 #: of a photo and «Duración» (ED-14) come with their tickets; «Cortar» (where the
 #: marker is), «Girar» and «Velocidad» of the video are in its panel (one place each).
+#: ED-13: a text's bar is «Editar texto» (to its field) · «Quitar».
 REMOVE = "Quitar"
+TEXT_EDIT = "Editar texto"
 EDITOR_ACTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "video": ((REMOVE, "trash-2"),),
     "photo": ((REMOVE, "trash-2"),),
-    "text": ((REMOVE, "trash-2"),),
+    "text": ((TEXT_EDIT, "pencil"), (REMOVE, "trash-2")),
     "effect": ((REMOVE, "trash-2"),),
 }
 #: «Velocidad» of the editor's video: «Normal» or one of «Cámara rápida»'s speeds.
@@ -1480,8 +1555,8 @@ def media_total(media: Sequence[Mapping[str, object]]) -> float:
 
 
 def _span(start: float, end: float | None, total: float) -> tuple[float, float]:
-    """A text's or effect's seconds inside the video (an open end runs to the end; one
-    the video no longer reaches is cut to its end, never under 1 s — §3.5)."""
+    """An effect's seconds inside the video (an open end runs to the end; one the video
+    no longer reaches is cut to its end, never under 1 s — §3.5)."""
     finish = total if end is None or end < 0 else min(float(end), total)
     begin = min(max(float(start), 0.0), max(finish - contract.SEGMENT_MIN_SECONDS, 0.0))
     return begin, max(finish, begin)
@@ -1489,31 +1564,16 @@ def _span(start: float, end: float | None, total: float) -> tuple[float, float]:
 
 def timeline_overlays(
     *,
-    text: str,
-    place: str,
-    text_start: float,
-    text_end: float,
-    total: float,
+    texts: Sequence[Mapping[str, object]] = (),
     effect_uses: Sequence[Mapping[str, object]] = (),
 ) -> list[dict[str, object]]:
-    """«Textos» and «Efectos» on the timeline (`ui.timeline_vm`'s raw overlays): the
-    text (from 0:00 to the end unless the owner moved it) and, ED-04 (m-25026627), the
-    effects as blocks (`resolve_effect_uses`: already at their seconds), one block each —
-    the same effect may be there several times — on its row (`lane`), with its preview
-    opacity. «Cámara rápida» is the video's «Velocidad», never a block (D-T3)."""
-    rows: list[dict[str, object]] = []
-    if text.strip():
-        start, end = _span(text_start, None if text_end < 0 else text_end, total)
-        rows.append(
-            {
-                "id": TEXT_ID,
-                "kind": "text",
-                "label": text.strip(),
-                "start": start,
-                "end": end,
-                "place": place,
-            }
-        )
+    """«Textos» and «Efectos» on the timeline (`ui.timeline_vm`'s raw overlays), the
+    texts first: ED-13 (m-25029108) `texts` are `clip_texts_vm.timeline_text_overlays`
+    (up to 3, at their seconds, in time order) and, ED-04 (m-25026627), the effects as
+    blocks (`resolve_effect_uses`: already at their seconds), one block each — the same
+    effect may be there several times — on its row (`lane`), with its preview opacity.
+    «Cámara rápida» is the video's «Velocidad», never a block (D-T3)."""
+    rows: list[dict[str, object]] = [dict(text) for text in texts]
     ordered = sorted(
         effect_uses,
         key=lambda u: (int(u.get("lane") or 0), float(u.get("start") or 0)),  # type: ignore[call-overload, arg-type]

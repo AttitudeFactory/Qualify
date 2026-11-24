@@ -20,7 +20,16 @@ import stickerManifestV1 from '../templates/sticker/manifest.v1.json';
 import {CELL, SHEET, StickerPreview, StickerSheet, type StickerProps} from './templates/sticker/Sticker';
 import {FIXTURE_PHOTO, FixturePhoto} from './templates/layer_still/FixturePhoto';
 import {LayerStill, PORTS as LAYER_PORTS, layerStillMetadata, type LayerStillProps} from './templates/layer_still/LayerStill';
-import {OVERLAY as VIDEO_TEXT_OVERLAY, VideoText, videoTextMetadata, type VideoTextProps} from './templates/video_text/VideoText';
+import {
+  OVERLAY as VIDEO_TEXT_OVERLAY,
+  PORTS_V2 as VIDEO_TEXT_PORTS_V2,
+  VIDEO_TEXT_V2,
+  VideoText,
+  videoTextMetadata,
+  videoTextMetadataV2,
+  type VideoTextPort,
+  type VideoTextProps,
+} from './templates/video_text/VideoText';
 import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
 import {
   FPS as SEASONAL_VIDEO_FPS,
@@ -132,6 +141,25 @@ const videoTextDefaults: VideoTextProps = {
   texts: {text: 'Pan recién horneado todos los días', place: 'bottom', layout_id: 'scrim', layout_version: 3},
 };
 
+// ED-13 (m-25029108): `video_text` v2 — the same text block on four backgrounds, the brand's
+// own font file, and the `backdrop`/`letters` ports «Letra por letra» lays apart. v1 stays.
+const videoTextV2Compositions = (): React.ReactNode[] =>
+  (Object.entries(VIDEO_TEXT_PORTS_V2) as [VideoTextPort, PortSpec][]).map(([port, spec]) => (
+    <Still
+      key={spec.composition}
+      id={spec.composition}
+      component={VIDEO_TEXT_V2[port]}
+      width={spec.width}
+      height={spec.height}
+      defaultProps={{
+        ...videoTextDefaults,
+        meta: {templateId: 'video_text', version: 2, port},
+        texts: {...videoTextDefaults.texts, layout_id: 'brand_fill'},
+      }}
+      calculateMetadata={videoTextMetadataV2}
+    />
+  ));
+
 type PromoManifest = typeof promoManifest | typeof promoManifestV1;
 type PortSpec = {kind: string; width: number; height: number; composition: string};
 
@@ -213,6 +241,7 @@ export const RemotionRoot: React.FC = () => {
         defaultProps={videoTextDefaults}
         calculateMetadata={videoTextMetadata}
       />
+      {videoTextV2Compositions()}
       <Still
         id="layer-still-fixture-photo"
         component={FixturePhoto}

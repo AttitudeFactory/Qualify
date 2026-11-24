@@ -321,14 +321,34 @@ def _time_trigger(on_time: object) -> rx.Component:
 
 
 def _seq_text(row: rx.Var) -> rx.Component:
-    """A text of the sequence: hidden until the script marks it on (`data-on`)."""
+    """A text of the sequence: hidden until the script marks it on (`data-on`). ED-13:
+    drawn over its own background (`data-layout`: `scrim`, `band`, `brand_fill`,
+    `shadow`), the box in the brand's colour with legible letters (`--q-text-bg`,
+    `--q-text-ink`), the smaller title size past 32 characters (`data-long`), scaled by
+    the owner's size (`data-size`, round 4); the script
+    animates it through `--q-a`, `--q-dy` and `--q-s`. «Letra por letra»: the script
+    lays the whole text out, a span per character, in the empty `[data-seq-type]` line laid
+    over the whole one (which keeps the box its final size, hidden meanwhile) and shows the
+    letters typed so far on the final video's clock — React never renders children there,
+    so the two never fight."""
     return rx.box(
-        rx.el.p(row["text"], class_name="q-edit-preview__text-line"),
+        rx.box(
+            rx.el.p(row["text"], class_name="q-edit-preview__text-line q-edit-seq__full"),
+            rx.el.p(
+                class_name="q-edit-preview__text-line q-edit-seq__type",
+                aria_hidden="true",
+                custom_attrs={"data-seq-type": ""},
+            ),
+            class_name="q-edit-preview__text-box",
+        ),
         class_name="q-edit-preview__text q-edit-seq__overlay",
+        style={"--q-text-bg": row["bg"], "--q-text-ink": row["ink"]},
         custom_attrs={
             "data-place": row["place"],
-            "data-layout": "scrim",
-            "data-long": "false",
+            "data-layout": row["layout"],
+            "data-long": row["long"],
+            # ED-13 round 4: «Pequeña» / «Mediana» / «Grande» scale both title sizes
+            "data-size": row["size"],
             "data-seq-text": row["index"],
         },
     )

@@ -648,9 +648,9 @@ def text_layer_problems(
     or Clip's `[0, length]` in seconds of its own output, None = not checked —
     (`span_outside_part`), and, D1, a design it names is one of the current catalog's
     (`layer_spec`, `layout_version`) that exists in 9:16 with a title slot — the text is
-    that slot — and that the video's text layer draws (EF-05: `video_text` v1 draws only
-    `scrim`, `render.video_text.SUPPORTED_LAYOUTS`) (`unknown_layout`). `field` names it
-    in the problems (`text_layers[1]`)."""
+    that slot — and that the video's text layer draws (`render.video_text.SUPPORTED_LAYOUTS`:
+    ED-13's four backgrounds, `shadow` naming only the catalog version) (`unknown_layout`).
+    `field` names it in the problems (`text_layers[1]`)."""
     if layer is None:
         return ()
     found: list[RecipeProblem] = []
@@ -661,14 +661,16 @@ def text_layer_problems(
     from qualify_creative.render.video_text import SUPPORTED_LAYOUTS  # noqa: PLC0415
 
     data = catalog()
-    layout = data["layouts"].get(layer.layout_id.value, {})
-    title = (layout.get("slots", {}).get("title") or {}).get("9:16")
+    layout_id = str(layer.layout_id)
+    # ED-13: `shadow` («Sin fondo») is no ADR 49 design: it only names the catalog version
+    layout = data["layouts"].get(layout_id, {}) if layout_id != "shadow" else None
+    title = (layout.get("slots", {}).get("title") or {}).get("9:16") if layout is not None else True
     if (
         layer.layout_version != data["layout_version"]
-        or "9:16" not in layout.get("formats", ())
+        or (layout is not None and "9:16" not in layout.get("formats", ()))
         or not title
-        # EF-05: only a design the video's text layer draws (`video_text` v1: the scrim)
-        or layer.layout_id.value not in SUPPORTED_LAYOUTS
+        # EF-05/ED-13: only a background the video's text layer draws (SUPPORTED_LAYOUTS)
+        or layout_id not in SUPPORTED_LAYOUTS
     ):
         found.append(RecipeProblem(code="unknown_layout", part=part, field=f"{field}.layout_id"))
     return tuple(found)

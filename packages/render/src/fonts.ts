@@ -138,7 +138,21 @@ export const useBrandFonts = (
 export const resolveBrandFamilies = async (
   headingFamily: string | undefined,
   bodyFamily: string | undefined,
+  headingFile?: string,
 ): Promise<{heading: string; body: string}> => {
+  const fromFile = async (url: string): Promise<string> => {
+    type Got = {family: string} | {error: string} | {timedOut: true};
+    const got = await withTimeout<Got>(
+      loadFileFace(url).then(
+        (f) => ({family: f}),
+        (e: unknown) => ({error: String(e)}),
+      ),
+      {timedOut: true},
+    );
+    if ('timedOut' in got) throw new Error(`the brand's font file did not load within ${FONT_TIMEOUT_MS / 1000} s (timeout)`);
+    if ('error' in got) throw new Error(`the brand's font file failed to load: ${got.error}`);
+    return got.family;
+  };
   const strict = async (family: string | undefined, fallback: string): Promise<string> => {
     const entry = findGoogleFont(family);
     if (!entry) return fallback;
@@ -154,8 +168,39 @@ export const resolveBrandFamilies = async (
     if ('error' in got) throw new Error(`font '${entry.fontFamily}' failed to load: ${got.error}`);
     return got.family;
   };
-  const [heading, body] = await Promise.all([strict(headingFamily, FALLBACK_HEADING), strict(bodyFamily, FALLBACK_BODY)]);
+  const [heading, body] = await Promise.all([
+    headingFile ? fromFile(headingFile) : strict(headingFamily, FALLBACK_HEADING),
+    strict(bodyFamily, FALLBACK_BODY),
+  ]);
   return {heading, body};
+};
+
+/**
+ * ED-13 (m-25029108): the Brand Kit's own font file (an asset URL, `brand.fontFiles.heading`)
+ * as a FontFace whose family is `QualifyBrandHeading-<hash of the URL>` — one name per file,
+ * so two brands rendered in the same browser tab never share a face. Rejects when the file
+ * does not load (Python checked it is a font FreeType draws before sending it): the caller
+ * fails the render rather than silently drawing another face.
+ */
+export const FILE_HEADING = 'QualifyBrandHeading';
+const fileFaces = new Map<string, Promise<string>>();
+const hashOf = (s: string): string => {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(8, '0');
+};
+export const fileFamilyOf = (url: string): string => `${FILE_HEADING}-${hashOf(url)}`;
+export const loadFileFace = (url: string): Promise<string> => {
+  const cached = fileFaces.get(url);
+  if (cached) return cached;
+  const family = fileFamilyOf(url);
+  const p = new FontFace(family, `url(${JSON.stringify(url)})`).load().then((face) => {
+    document.fonts.add(face);
+    return family;
+  });
+  p.catch(() => fileFaces.delete(url));
+  fileFaces.set(url, p);
+  return p;
 };
 
 const NOT_LOADED = '\u0000font-not-loaded';
@@ -165,14 +210,24 @@ const NOT_LOADED = '\u0000font-not-loaded';
  * but then fails to load here fails the render (dependency_failed) instead of silently drawing
  * a different face than the one the boxes were sized for.
  */
-export const useExactFamilies = (families: {heading: string; body: string} | null | undefined): Fonts => {
+export const useExactFamilies = (
+  families: {heading: string; body: string} | null | undefined,
+  headingFile?: string,
+): Fonts => {
   const heading = families?.heading ?? FALLBACK_HEADING;
   const body = families?.body ?? FALLBACK_BODY;
   const [handle] = useState(() =>
     delayRender(`measured fonts: ${heading} / ${body}`, {timeoutInMilliseconds: FONT_TIMEOUT_MS + 10_000}),
   );
   useEffect(() => {
-    const need = (f: string, fallback: string) => (f === fallback ? Promise.resolve(f) : loadFamily(f, NOT_LOADED));
+    // ED-13: a face measured from the brand's own file is registered again from that file
+    // (the frame may be drawn in another tab than the one calculateMetadata measured in)
+    const need = (f: string, fallback: string) =>
+      f === fallback
+        ? Promise.resolve(f)
+        : headingFile && f === fileFamilyOf(headingFile)
+          ? loadFileFace(headingFile).catch(() => NOT_LOADED)
+          : loadFamily(f, NOT_LOADED);
     Promise.all([need(heading, FALLBACK_HEADING), need(body, FALLBACK_BODY)]).then((got) => {
       if (got.includes(NOT_LOADED)) {
         cancelRender(new Error(`font '${got[0] === NOT_LOADED ? heading : body}' measured but failed to load for drawing`));
@@ -180,6 +235,6 @@ export const useExactFamilies = (families: {heading: string; body: string} | nul
       }
       continueRender(handle);
     });
-  }, [heading, body, handle]);
+  }, [heading, body, headingFile, handle]);
   return {heading: `"${heading}", ${GENERIC}`, body: `"${body}", ${GENERIC}`};
 };
