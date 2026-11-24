@@ -603,3 +603,66 @@ def test_a_strip_key_outside_the_tenants_copies_is_refused(
     outcome = _runner(gate, previewer, tmp_path).process(_strip_job(strip=strip))
     assert outcome.status == STATUS_FAILED and row.last_error_code == "payload_invalid"
     assert gate.reads == [] and gate.puts == [] and previewer.calls == []
+
+
+# --- EF-20 phase 2 (m-25026599): the placement advice after the copy ----------------------
+
+
+class Advisor:
+    """`placement_advice.PlacementAdvisor`'s double: records each call, reads the copy
+    through the worker's own `fetch` into `scratch`."""
+
+    def __init__(self, scratch: Path, error: Exception | None = None) -> None:
+        self.scratch = scratch
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+        self.read: list[bytes] = []
+
+    def advise(self, **kwargs: Any) -> str:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        target = self.scratch / "advice-read.mp4"
+        kwargs["fetch"](kwargs["tenant_id"], kwargs["preview_key"], target)
+        self.read.append(target.read_bytes())
+        return "made"
+
+
+def _advised_runner(gate: Gate, advisor: Advisor, root: Path) -> MediaJobRunner:
+    return MediaJobRunner(
+        gate=gate,  # type: ignore[arg-type]
+        staging_root=root,
+        normalizer=None,  # type: ignore[arg-type]
+        previewer=Previewer(),
+        placement=advisor,
+        clock=lambda: NOW,
+    )
+
+
+def test_a_settled_copy_is_then_advised_on_from_the_copy_itself(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    gate, advisor = Gate({SOURCE_KEY: b"5k"}), Advisor(tmp_path)
+    job = _job()
+    assert _advised_runner(gate, advisor, tmp_path).process(job).status == STATUS_DONE
+    (call,) = advisor.calls
+    assert call["tenant_id"] == TENANT and call["brand_id"] == job.brand_id
+    assert call["job_id"] == job.id
+    assert call["source_key"] == SOURCE_KEY and call["preview_key"] == TARGET_KEY
+    assert advisor.read == [b"preview:5k"]  # the light copy, not the original
+
+
+def test_an_advice_that_fails_never_undoes_the_copy(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    gate, advisor = Gate({SOURCE_KEY: b"5k"}), Advisor(tmp_path, error=RuntimeError("boom"))
+    assert _advised_runner(gate, advisor, tmp_path).process(_job()).status == STATUS_DONE
+    assert row.status == STATUS_DONE and len(advisor.calls) == 1
+
+
+def test_a_failed_copy_is_not_advised_on(
+    tmp_path: Path, row: SimpleNamespace, made: dict[str, SourceHeader]
+) -> None:
+    gate, advisor = Gate({}), Advisor(tmp_path)  # the original is gone
+    assert _advised_runner(gate, advisor, tmp_path).process(_job()).status == STATUS_FAILED
+    assert advisor.calls == []

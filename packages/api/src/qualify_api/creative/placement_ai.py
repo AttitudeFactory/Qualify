@@ -23,9 +23,10 @@ Guards, as in the reel analysis:
   (`qualify_creative/pricing_data/v10.json`, entry `claude-haiku-5-5`, unchanged).
 - **per piece and per fleet:** an injected `CallGuard` counts the call BEFORE it is made
   (`charge`): at most `MAX_CALLS_PER_PIECE` per piece and `fleet_daily()` a day for every
-  business together. `InMemoryCallGuard` is the one for tests and evals; phase 2 brings
-  the Postgres-backed one (a counter under an advisory lock, like the reel analysis'
-  `FLEET_LOCK_KEY`), since several worker processes share the daily cap.
+  business together. `InMemoryCallGuard` is the one for tests and evals; phase 2's
+  Postgres-backed one is `placement_advice.SourceCallGuard` over
+  `PostgresPlacementLedger` (reservations in `creative_usage_events` under an advisory
+  lock), since several worker processes share the daily cap.
 - **per run (optional):** a `DollarMeter` (`budget`) reserves the worst case of the turn
   and settles it with what was billed — the eval's hard ceiling.
 

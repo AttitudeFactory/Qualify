@@ -193,3 +193,8 @@ Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, 
   - El servidor **nunca mueve** el texto ni el logo por su cuenta.
   - Devuelve las franjas del producto, la posición recomendada para el texto y para el logo, si la posición elegida por el dueño tapa el producto, y el motivo en español.
   - La pantalla muestra el aviso con «Usar esta posición».
+- **Fase 2 construida (2026-11-24, sin llamadas reales, todo con dobles):** `packages/api/src/qualify_api/creative/placement_advice.py`.
+  - Se calcula una vez por video que el dueño sube al generador, sobre su copia liviana de 480p (ED-09), justo después de que el `media-worker` la termina. Va detrás de `QUALIFY_VIDEO_PLACEMENT_AI` (apagado). Si falla, no hay aviso y la pieza sigue igual.
+  - El aviso queda en el `result` del trabajo `upload_preview` de ese video (`placement_advice`), sin migración. La pantalla lo lee con `placement_advice_for(tenant_id, claves)` y decide sola si la franja elegida tapa el producto (`covers_product`).
+  - Guardas en Postgres: cada llamada se reserva en `creative_usage_events` (unidad `video_placement_token`) antes de hacerse, al tope de US$0,0021, bajo un candado de aviso. Hasta 2 llamadas por video y 1.500 al día para toda la flota (el conteo de la flota es un solo número leído por `admin_session` en el `media-worker`). Después de la llamada la reserva se ajusta a lo cobrado.
+  - El `media-worker` lee el mismo archivo de entorno que la app (`ANTHROPIC_API_KEY`); sin la llave no hay aviso (`no_key`). Para encenderlo basta con `QUALIFY_VIDEO_PLACEMENT_AI=on` y reiniciar el `media-worker`.
