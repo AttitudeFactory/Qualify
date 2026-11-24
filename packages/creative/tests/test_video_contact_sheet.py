@@ -141,9 +141,38 @@ def test_the_same_file_gives_the_same_sheet(three_shots: Path) -> None:
 
 def test_the_provenance_names_the_process(three_shots: Path) -> None:
     params = make_contact_sheet(three_shots).params()
-    assert params["version"] == "contact-sheet-1"
+    assert params["version"] == "contact-sheet-2"
     assert params["detector"] and params["frames_wanted"] == SHEET_FRAMES
-    assert params["shots"] == 3
+    assert params["shots"] == 3 and params["cuts"] == "detected"
+    assert params["av_version"] == av.__version__
+    import PIL
+
+    assert params["pillow_version"] == PIL.__version__
+    assert params["decode_threads"] <= 2
+
+
+def test_the_shots_are_the_detectors(three_shots: Path) -> None:
+    """The one pass finds the same cuts as `shots.detect_shots` on the same file."""
+    from qualify_creative.video.shots import detect_shots
+
+    sheet = make_contact_sheet(three_shots)
+    cuts = [f.target_s for f in sheet.frames if f.role == "cut"]
+    expected = [round(s.start_s + 0.5, 4) for s in detect_shots(three_shots)[1:]]
+    assert cuts == expected
+
+
+def test_a_pass_over_its_budget_spreads_the_frames_evenly(three_shots: Path) -> None:
+    """A slow pass is dropped: six frames spread evenly over the length, from what it
+    kept and the keyframes after it."""
+    ticks = iter(float(n) for n in range(10_000))
+    sheet = make_contact_sheet(three_shots, budget_s=2.5, clock=lambda: next(ticks))
+    assert sheet.cuts == "even" and sheet.params()["cuts"] == "even"
+    assert len(sheet.frames) == SHEET_FRAMES
+    assert all(f.role in ("start", "fill", "end") for f in sheet.frames)
+    assert abs(sheet.duration_s - 6.0) < 0.1
+    for frame in sheet.frames:
+        band = _rgb(frame.jpeg)[LAYER_ROWS[0] + 4 : LAYER_ROWS[1] - 4]
+        assert np.abs(band - np.array(LAYER)).mean() < 20
 
 
 def test_an_unreadable_file_raises(tmp_path: Path) -> None:

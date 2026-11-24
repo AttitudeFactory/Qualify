@@ -704,11 +704,19 @@ def _contact_sheet(save: Any, path: Path, key: str) -> dict[str, Any] | None:
     optional = getattr(save, "optional", None)
     if not callable(optional):
         return None
-    return keep_contact_sheet(
-        path,
-        lambda name, data: optional(name, data, JPEG),
-        source={"stage": "local", "object_key": key, "revision": getattr(save, "revision", None)},
-    )
+    try:
+        return keep_contact_sheet(
+            path,
+            lambda name, data: optional(name, data, JPEG),
+            source={
+                "stage": "local",
+                "object_key": key,
+                "revision": getattr(save, "revision", None),
+            },
+        )
+    except Exception:  # noqa: BLE001 — never the piece: it goes on without its sheet
+        logger.warning("local video contact sheet failed: left out", exc_info=True)
+        return None
 
 
 def _keep_video(save: Any, store: Any, tenant_id: UUID, path: Path) -> str:

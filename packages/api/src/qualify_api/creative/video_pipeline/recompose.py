@@ -464,6 +464,20 @@ def _poster(path: Path) -> bytes | None:
     return None
 
 
+def _sheet_of(
+    hook: Callable[[Path], Mapping[str, Any] | None] | None, path: Path
+) -> Mapping[str, Any] | None:
+    """EF-18: the contact sheet hook run on the composed file — whatever it raises, the
+    composed clip (paid for) goes on without a sheet."""
+    if hook is None:
+        return None
+    try:
+        return hook(path)
+    except Exception:  # noqa: BLE001 — a review aid never costs the clip its texts
+        logger.warning("composed clip contact sheet failed: left out", exc_info=True)
+        return None
+
+
 class ClipComposer:
     """Draws a recipe's texts (our render service) and lays them, with its layers, over a
     clip (PyAV). `render_client`: a `RemotionRenderClient` or a no-argument factory; None
@@ -583,7 +597,7 @@ class ClipComposer:
                 raise self._ours(exc) from exc
             data = out.read_bytes()
             poster = _poster(out)
-            sheet = contact_sheet(out) if contact_sheet is not None else None
+            sheet = _sheet_of(contact_sheet, out)
         if layers:
             params["effect_layers"] = {
                 "compose_version": layer_overlay.LAYER_COMPOSE_VERSION,

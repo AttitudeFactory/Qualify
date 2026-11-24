@@ -1560,8 +1560,8 @@ def test_a_local_clip_keeps_a_six_frame_contact_sheet_with_its_texts_on(
     assert plain.failure is None and composed.failure is None, composed.detail
     (write,) = composed.media
     block = write.params["contact_sheet"]
-    assert block["version"] == "contact-sheet-1" and block["cost_usd"] == "0"
-    assert block["reviewed_by"] == "owner"
+    assert block["version"] == "contact-sheet-2" and block["cost_usd"] == "0"
+    assert block["review"] == "owner_only"
     assert len(block["frames"]) == 6
     assert block["source"]["stage"] == "local"
     assert block["source"]["object_key"] == write.object_key
@@ -1617,6 +1617,32 @@ def test_a_contact_sheet_that_cannot_be_made_leaves_the_piece_as_it_is(
     assert outcome.failure is None, outcome.detail
     (write,) = outcome.media
     assert CONTACT_SHEET_PARAMS_KEY not in write.params
+    assert not any("/contact-" in key for key in store.files)
+
+
+@pytest.mark.parametrize("how", ["hook_raises", "import_fails"])
+def test_a_failing_sheet_never_fails_the_local_video(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Whatever the sheet does — its keeper raising, or its module not importing — the
+    local Clip comes out as without EF-18: the same composed video, no sheet."""
+    import sys
+
+    if how == "hook_raises":
+
+        def broken(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("the sheet blew up")
+
+        monkeypatch.setattr(local, "keep_contact_sheet", broken)
+    else:
+        monkeypatch.setitem(sys.modules, "qualify_creative.video.contact_sheet", None)
+    store = ReadingStore(sources)
+    outcome = _produce(_texts(_words()), store, _render_service())
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert "contact_sheet" not in write.params
+    assert write.params["local"]["text_layers"]  # the texts are laid
+    assert len(_decoded(store.files[write.object_key])) == 105
     assert not any("/contact-" in key for key in store.files)
 
 

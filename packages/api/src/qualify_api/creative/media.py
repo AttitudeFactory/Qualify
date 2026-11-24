@@ -210,7 +210,7 @@ from qualify_api.creative.brand_references import (
 from qualify_api.creative.contact_sheet import (
     CONTACT_SHEET_PARAMS_KEY,
     keep_contact_sheet,
-    with_source_key,
+    shown_contact_sheet,
 )
 from qualify_api.creative.part_extend import (
     EXTEND_MANIFEST,
@@ -5919,11 +5919,11 @@ class MediaProducer:
         thumbnail_key = (
             save.optional("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
         )
-        # EF-18: the composed preview's contact sheet, tied to the file the owner sees —
-        # only when that file IS the composed one (not the clean file a failed logo shows)
+        # EF-18: the composed preview's contact sheet, tied to the file the owner sees
         sheet = compose_params.pop(CONTACT_SHEET_PARAMS_KEY, None) if compose_params else None
-        composed_shown = clean_key is None or logo_laid
-        contact_sheet = with_source_key(sheet, video_key) if composed_shown else None
+        contact_sheet = shown_contact_sheet(
+            sheet, video_key, clean_key=clean_key, logo_laid=logo_laid
+        )
         return [
             MediaWrite(
                 position=0,

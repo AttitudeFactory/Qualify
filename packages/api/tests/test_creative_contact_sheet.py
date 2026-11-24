@@ -60,8 +60,8 @@ def test_the_block_records_where_the_frames_come_from(video: Path) -> None:
     bucket = Bucket()
     block = keep_contact_sheet(video, bucket.keep, source={"stage": "local", "object_key": KEY})
     assert block is not None
-    assert block["version"] == "contact-sheet-1" and block["cost_usd"] == "0"
-    assert block["reviewed_by"] == "owner"  # D8: no AI looks at it
+    assert block["version"] == "contact-sheet-2" and block["cost_usd"] == "0"
+    assert block["review"] == "owner_only"  # D8: no AI looks at it
     assert block["source"]["stage"] == "local" and block["source"]["object_key"] == KEY
     assert len(block["source"]["sha256"]) == 64
     assert len(block["frames"]) == 6
@@ -103,7 +103,7 @@ def test_the_screen_reads_the_sheet_of_the_video_it_shows(video: Path) -> None:
     view = contact_sheet_of(KEY, {"contact_sheet": _block(video)})
     assert view is not None and view.video_key == KEY
     assert len(view.frames) == 6 and view.sheet_key.endswith("contact-sheet.jpg")
-    assert view.version == "contact-sheet-1"
+    assert view.version == "contact-sheet-2"
     assert view.title == CONTACT_SHEET_TITLE and view.help == CONTACT_SHEET_HELP
     assert [f.time_s for f in view.frames] == sorted(f.time_s for f in view.frames)
 
@@ -118,6 +118,35 @@ def test_a_sheet_of_another_file_is_not_offered(video: Path) -> None:
     broken = _block(video)
     broken["frames"][2] = {"time_s": 1.0}
     assert contact_sheet_of(KEY, {"contact_sheet": broken}) is None
+
+
+def test_a_module_that_does_not_import_leaves_the_sheet_out(
+    video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "qualify_creative.video.contact_sheet", None)
+    assert keep_contact_sheet(video, Bucket().keep, source={"stage": "local"}) is None
+
+
+def test_a_path_that_is_no_path_leaves_the_sheet_out() -> None:
+    assert keep_contact_sheet(object(), Bucket().keep, source={}) is None  # type: ignore[arg-type]
+
+
+def test_the_sheet_is_not_offered_when_the_clean_file_is_shown(video: Path) -> None:
+    """A part whose logo could not be laid shows its clean file (no texts): the sheet,
+    made from the composed file, is not offered; otherwise it is tied to the file shown."""
+    from qualify_api.creative.contact_sheet import shown_contact_sheet
+
+    block = _block(video, key=None)
+    clean = "t/tenant/generated/draft/r1/clip.mp4"
+    assert shown_contact_sheet(block, clean, clean_key=clean, logo_laid=False) is None
+    shown = "t/tenant/generated/draft/r1/clip-logo.mp4"
+    laid = shown_contact_sheet(block, shown, clean_key=clean, logo_laid=True)
+    assert laid is not None and laid["source"]["object_key"] == shown
+    plain = shown_contact_sheet(block, KEY, clean_key=None, logo_laid=False)
+    assert plain is not None and contact_sheet_of(KEY, {"contact_sheet": plain}) is not None
+    assert shown_contact_sheet(None, KEY, clean_key=None, logo_laid=True) is None
 
 
 def test_the_texts_the_owner_reads_are_spanish_without_english_words() -> None:

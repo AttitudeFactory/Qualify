@@ -9,6 +9,7 @@ the same place relative to the frame — are measured with real PyAV in
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -213,11 +214,11 @@ class FakeComposer:
                 "x", failure=FailureReason.RENDER_ERROR.value, code="compose_failed"
             )
         size = (1080, 1920) if stage == "final" else (480, 854)
-        # EF-18: the hook gets a real video when the test gives one (the bytes here are not)
-        sheet = (
-            contact_sheet(self.sheet_video)
-            if contact_sheet is not None and self.sheet_video is not None
-            else None
+        # EF-18: the hook runs as `ClipComposer.compose` runs it (`_sheet_of`), on a real
+        # video when the test gives one (the bytes here are not), else on a missing file
+        sheet = recompose._sheet_of(
+            contact_sheet,
+            self.sheet_video if self.sheet_video is not None else Path("missing.mp4"),
         )
         return ComposedClip(
             data=b"composed-" + video,
@@ -690,8 +691,43 @@ def test_the_composed_preview_keeps_its_contact_sheet_and_the_final_does_not_reu
     assert contact_sheet_of(final.media.object_key, final.media.params) is None
 
 
-def test_a_preview_whose_sheet_is_not_made_is_kept_without_it() -> None:
-    composer = FakeComposer()  # no real video: the hook is never run
-    _, _, _, _, _, draft = _draft_and_final_inputs(composer, text_layers=(WORDS,))
+def _composed_without_sheet(draft: Any, store: Any) -> None:
+    """The preview as it is without EF-18: composed, its recipe frozen, no sheet."""
+    assert "contact_sheet" not in draft.params
+    assert draft.params["compose"]["recipe"]["text_layers"]
+    assert "contact_sheet" not in draft.params["compose"]
+    assert store.files[draft.object_key].startswith(b"composed-")
+    assert not any("/contact-" in key for key in store.files)
+
+
+def test_a_preview_whose_file_is_no_video_is_kept_without_a_sheet() -> None:
+    """The hook RUNS (on a file it cannot read) and the composed preview goes on."""
+    composer = FakeComposer()
+    _, store, _, _, _, draft = _draft_and_final_inputs(composer, text_layers=(WORDS,))
     assert composer.sheet_hooks[0] is not None
-    assert "contact_sheet" not in draft.params and draft.params["compose"]
+    _composed_without_sheet(draft, store)
+
+
+@pytest.mark.parametrize("how", ["hook_raises", "import_fails"])
+def test_a_failing_sheet_never_costs_the_paid_clip_its_texts(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Whatever the sheet does — its keeper raising, or its module not importing — the
+    Seedance preview keeps its texts and layers, exactly as without EF-18."""
+    import sys
+
+    from qualify_api.creative import media
+
+    if how == "hook_raises":
+
+        def broken(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("the sheet blew up")
+
+        monkeypatch.setattr(media, "keep_contact_sheet", broken)
+    else:
+        monkeypatch.setitem(sys.modules, "qualify_creative.video.contact_sheet", None)
+    composer = FakeComposer()
+    composer.sheet_video = _sheet_video(tmp_path)
+    _, store, _, _, _, draft = _draft_and_final_inputs(composer, text_layers=(WORDS,))
+    assert composer.sheet_hooks[0] is not None
+    _composed_without_sheet(draft, store)

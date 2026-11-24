@@ -82,10 +82,12 @@ def keep_contact_sheet(
     `params["contact_sheet"]` — or None when it could not be made or kept (logged; the
     piece goes on without it). `source` says where the video comes from (`stage`, and
     `object_key`, `revision` or `fingerprint` when known); its sha256 is added here."""
-    from qualify_creative.video.contact_sheet import make_contact_sheet  # noqa: PLC0415
-
-    path = Path(video)
+    # everything inside the try: the hook runs inside a paid clip's compose and must
+    # never raise — not even for an import or a path that fails
     try:
+        from qualify_creative.video.contact_sheet import make_contact_sheet  # noqa: PLC0415
+
+        path = Path(video)
         sheet = make_contact_sheet(path)
         frames: list[dict[str, Any]] = []
         for frame in sheet.frames:
@@ -108,23 +110,23 @@ def keep_contact_sheet(
         if not strip_key:
             logger.warning("contact sheet not kept: left out")
             return None
-        video_sha256 = _file_sha256(path)
+        return {
+            **sheet.params(),
+            "source": {**dict(source), "sha256": _file_sha256(path)},
+            "frames": frames,
+            "sheet": {
+                "key": strip_key,
+                "width": sheet.strip_size[0],
+                "height": sheet.strip_size[1],
+                "sha256": _sha256(sheet.strip),
+            },
+            # D8: only the owner reviews it, no AI — not a record that he already did
+            "review": "owner_only",
+            "cost_usd": "0",
+        }
     except Exception:  # noqa: BLE001 — a review aid never fails the piece
         logger.warning("contact sheet not made: left out", exc_info=True)
         return None
-    return {
-        **sheet.params(),
-        "source": {**dict(source), "sha256": video_sha256},
-        "frames": frames,
-        "sheet": {
-            "key": strip_key,
-            "width": sheet.strip_size[0],
-            "height": sheet.strip_size[1],
-            "sha256": _sha256(sheet.strip),
-        },
-        "reviewed_by": "owner",  # D8: no AI review
-        "cost_usd": "0",
-    }
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,21 @@ def with_source_key(block: dict[str, Any] | None, object_key: str) -> dict[str, 
     return {**block, "source": {**dict(block.get("source") or {}), "object_key": object_key}}
 
 
+def shown_contact_sheet(
+    block: dict[str, Any] | None,
+    video_key: str,
+    *,
+    clean_key: str | None,
+    logo_laid: bool,
+) -> dict[str, Any] | None:
+    """A Seedance preview's sheet as its asset records it: tied to `video_key`, the file
+    the owner sees — only when that file IS the composed one. A part whose logo could not
+    be laid shows its clean file (`clean_key`, without texts): its sheet, made from the
+    composed file, is not offered. Pure."""
+    composed_shown = clean_key is None or logo_laid
+    return with_source_key(block, video_key) if composed_shown else None
+
+
 class DbContactSheets:
     """The sheet of a draft's visible video, read through the tenant door (RLS)."""
 
@@ -239,5 +256,6 @@ __all__ = [
     "SheetFrameView",
     "contact_sheet_of",
     "keep_contact_sheet",
+    "shown_contact_sheet",
     "with_source_key",
 ]
