@@ -229,9 +229,11 @@ from . import trace
 from .draft_mode import (
     DRAFT_EXPIRED_TEXT,
     DRAFT_READY,
+    FINAL_USAGE_DUE,
     draft_expired,
     draft_state,
     kept_raw_final,
+    raw_final_task_id,
 )
 from .gallery_media import (
     GALLERY_ASSEMBLY_VERSION,
@@ -247,6 +249,8 @@ if TYPE_CHECKING:
     from .part_join import PartJoinStore
 
 logger = logging.getLogger(__name__)
+#: The cost log the service writes too (`service.cost_logger`).
+_COST_LOGGER = logging.getLogger("qualify_api.creative.costs")
 
 REMOTION = "remotion"
 #: ByteDance's talking presenter (§ 2026-10-16): two more router links, two more keys.
@@ -566,10 +570,61 @@ class FinalOutcome:
     #: m-24852154: the final's task outlived this run's wait — still `rendering`, its
     #: task recorded; a retry resumes it instead of ordering (and paying) another.
     pending: bool = False
+    #: m-25111780: the spend of a raw 1080p an EARLIER pass paid for and kept, whose
+    #: settle never landed (its lease was lost: the block still names its task in
+    #: `FINAL_USAGE_DUE`). Not part of `spent_usd`: the settle records it only while the
+    #: stored block still says it is due, in the same transaction that clears the mark.
+    held_usage: tuple[MediaUsage, ...] = ()
+    #: m-25111780: the rows of `usage` that paid THIS pass's raw 1080p (its
+    #: `draft_changes["raw_final"]` task). The settle drops them when another pass already
+    #: recorded that task's spend (a run that lost its claim, settling last).
+    raw_usage: tuple[MediaUsage, ...] = ()
 
     @property
     def spent_usd(self) -> Decimal:
         return sum((u.cost_usd for u in self.usage), Decimal(0))
+
+
+def _held_raw_usage(
+    block: Mapping[str, Any], raw: Mapping[str, Any], held: list[MediaUsage] | None
+) -> None:
+    """m-25111780: the usage row of a raw 1080p an earlier pass paid for, appended to
+    `held` when the draft block still marks its spend as not recorded
+    (`FINAL_USAGE_DUE` == its task id) — from what the raw record kept: provider, model,
+    seconds, tokens and cost. Nothing when the mark is absent (recorded already, or a
+    block from before the mark existed: never a guess that could count it twice) or the
+    record lacks its cost or model."""
+    task = raw_final_task_id(raw)
+    if held is None or task is None or block.get(FINAL_USAGE_DUE) != task:
+        return
+    try:
+        cost: Decimal | None = Decimal(str(raw.get("cost_usd")))
+    except ArithmeticError:
+        cost = None
+    model_id = raw.get("model_id")
+    if cost is None or not cost.is_finite() or not isinstance(model_id, str) or not model_id:
+        logger.warning("raw final %s: its spend cannot be rebuilt from the kept record", task)
+        return
+    seconds = raw.get("billed_seconds")
+    if seconds is None:  # a raw record kept before it said what was billed
+        seconds = raw.get("duration_seconds")
+    tokens = raw.get("tokens")
+    version = raw.get("pricing_table_version")
+    held.append(
+        MediaUsage(
+            provider=str(raw.get("provider") or "seedance"),
+            model_id=model_id,
+            unit="second",
+            quantity=(
+                math.ceil(seconds)
+                if isinstance(seconds, int | float) and not isinstance(seconds, bool)
+                else 0
+            ),
+            cost_usd=cost,
+            output_tokens=tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0,
+            pricing_table_version=version if isinstance(version, str) and version else None,
+        )
+    )
 
 
 def _attempt_tag(block: Mapping[str, Any]) -> str:
@@ -3017,6 +3072,9 @@ class MediaProducer:
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=DRAFT_EXPIRED_TEXT
             )
         kept: dict[str, Any] = {}
+        # m-25111780: a raw 1080p paid by an earlier pass whose spend is still due
+        held: list[MediaUsage] = []
+        paid_raw: list[MediaUsage] = []
         token = _TASK_RUN.set(_TaskRun(vendor_tasks) if vendor_tasks is not None else None)
         try:
             media = self._final_video(
@@ -3031,14 +3089,24 @@ class MediaProducer:
                 revision,
                 kept,
                 on_raw_kept,
+                held,
+                paid_raw,
             )
         except (_MediaPending, GenerationDeferred) as exc:
             logger.warning("final of draft %s waits for its vendor: %s", draft_id, exc)
-            return FinalOutcome(usage=tuple(usage), pending=True, draft_changes=kept or None)
+            return FinalOutcome(
+                usage=tuple(usage),
+                pending=True,
+                draft_changes=kept or None,
+                held_usage=tuple(held),
+                raw_usage=tuple(paid_raw),
+            )
         except _MediaFailed as exc:
             logger.warning("final of draft %s failed: %s", draft_id, exc.raw or exc.detail)
             return FinalOutcome(
                 usage=tuple(usage),
+                held_usage=tuple(held),
+                raw_usage=tuple(paid_raw),
                 failure=exc.failure,
                 detail=exc.detail,
                 draft_changes=(
@@ -3053,6 +3121,8 @@ class MediaProducer:
             logger.warning("final of draft %s failed: %s", draft_id, exc)
             return FinalOutcome(
                 usage=tuple(usage),
+                held_usage=tuple(held),
+                raw_usage=tuple(paid_raw),
                 failure=FailureReason.PROVIDER_ERROR.value,
                 detail=ark_failure_text(f"{type(exc).__name__}: {exc}"),
                 draft_changes=kept or None,
@@ -3061,7 +3131,13 @@ class MediaProducer:
             _TASK_RUN.reset(token)
         # the raw file rides along on success too: when writing the final in place fails,
         # the failure the service writes instead still keeps it for the retry
-        return FinalOutcome(media=media, usage=tuple(usage), draft_changes=kept or None)
+        return FinalOutcome(
+            media=media,
+            usage=tuple(usage),
+            draft_changes=kept or None,
+            held_usage=tuple(held),
+            raw_usage=tuple(paid_raw),
+        )
 
     def _final_video(
         self,
@@ -3076,6 +3152,8 @@ class MediaProducer:
         revision: int,
         kept: dict[str, Any],
         on_raw_kept: RawFinalKept | None,
+        held: list[MediaUsage] | None = None,
+        paid_raw: list[MediaUsage] | None = None,
     ) -> MediaWrite:
         """The final's file, fitted. Everything the fitter lays is read BEFORE the 1080p
         is paid for, and the raw 1080p is saved as soon as it is downloaded, recorded in
@@ -3141,17 +3219,37 @@ class MediaProducer:
             # part's final — never read whole into memory, never paid again (m-25103284:
             # read only when its texts must be composed over it and are not kept yet)
             kept["raw_final"] = raw
+            _held_raw_usage(block, raw, held)  # m-25111780: its spend, if still due
             return self._part_final(tenant_id, draft_id, asset, block, raw, revision, save, None)
         if raw is not None:
             try:
                 video = self._store.read(str(raw["key"]))
             except Exception as exc:  # noqa: BLE001 — gone from the store: paid again
                 logger.warning("final of %s: raw final unreadable: %s", draft_id, exc)
+                lost = raw_final_task_id(raw)
+                if lost is not None and block.get(FINAL_USAGE_DUE) == lost:
+                    # m-25111780: its spend was still due, and the 1080p paid next takes
+                    # over the mark (one task per block): this spend is not recorded.
+                    # m-25112161 (task id on the event) records it idempotently.
+                    _COST_LOGGER.error(
+                        "draft %s final: raw final %s unreadable while its %s USD were "
+                        "still due; that spend is NOT recorded",
+                        draft_id,
+                        lost,
+                        raw.get("cost_usd"),
+                    )
                 raw = None
+            else:
+                # m-25111780: paid by an earlier pass — its spend, if still due
+                _held_raw_usage(block, raw, held)
         if raw is None or video is None:
+            before = len(usage)
             raw, video = self._paid_final(
                 tenant_id, draft_id, brief, block, model, ratio, budget, usage, save, stem
             )
+            if paid_raw is not None:
+                # m-25111780: the rows that pay THIS raw file (`FinalOutcome.raw_usage`)
+                paid_raw.extend(usage[before:])
             if raw.get("key") and on_raw_kept is not None:
                 try:
                     on_raw_kept(raw)
@@ -3489,6 +3587,10 @@ class MediaProducer:
             "model_id": result.model_id,
             "provider": result.provider,
             "model_revision": result.model_revision,
+            # m-25111780: the seconds billed and the table its cost was read from, so a
+            # spend recorded by a later pass is the same row this one would write
+            "billed_seconds": math.ceil(result.usage.media_seconds),
+            "pricing_table_version": self._pricing.version,
         }
         return raw, video
 
