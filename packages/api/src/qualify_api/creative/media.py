@@ -207,6 +207,11 @@ from qualify_api.creative.brand_references import (
     resolve_brand_references,
     snapshot_brand_references,
 )
+from qualify_api.creative.contact_sheet import (
+    CONTACT_SHEET_PARAMS_KEY,
+    keep_contact_sheet,
+    shown_contact_sheet,
+)
 from qualify_api.creative.part_extend import (
     EXTEND_MANIFEST,
     EXTEND_SOURCE_MAX_S,
@@ -5264,7 +5269,18 @@ class MediaProducer:
                     if cut is not None
                     else video
                 )
-                made = composer.compose(source, recipe, drawn=drawn, stage="preview")
+                made = composer.compose(
+                    source,
+                    recipe,
+                    drawn=drawn,
+                    stage="preview",
+                    # EF-18: the composed preview's contact sheet, inside the gate
+                    contact_sheet=lambda path: keep_contact_sheet(
+                        path,
+                        lambda name, data: save.optional(name, data, JPEG),
+                        source={"stage": "preview", "revision": save.revision},
+                    ),
+                )
         except CheckpointError:
             raise  # the heavy-video gate is taken: the queue retries, nothing lost
         except Exception as exc:  # noqa: BLE001 — the clip is paid for: never lose it
@@ -5280,6 +5296,10 @@ class MediaProducer:
         )
         if texts is not None:
             params["texts"] = texts
+        if made.contact_sheet is not None:
+            # EF-18: lifted to the asset's `params["contact_sheet"]` by `_clip`, with the
+            # key the composed file is kept under
+            params[CONTACT_SHEET_PARAMS_KEY] = dict(made.contact_sheet)
         return made.data, made.poster or thumbnail, made.width, made.height, params
 
     def _held_final(
@@ -5899,6 +5919,11 @@ class MediaProducer:
         thumbnail_key = (
             save.optional("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
         )
+        # EF-18: the composed preview's contact sheet, tied to the file the owner sees
+        sheet = compose_params.pop(CONTACT_SHEET_PARAMS_KEY, None) if compose_params else None
+        contact_sheet = shown_contact_sheet(
+            sheet, video_key, clean_key=clean_key, logo_laid=logo_laid
+        )
         return [
             MediaWrite(
                 position=0,
@@ -5979,6 +6004,11 @@ class MediaProducer:
                         "model_revision": result.model_revision,
                         # EF-14: the frozen recipe its final is composed again with
                         **({"compose": compose_params} if compose_params else {}),
+                        **(
+                            {CONTACT_SHEET_PARAMS_KEY: contact_sheet}
+                            if contact_sheet is not None
+                            else {}
+                        ),
                     },
                     payload,
                     model_id=result.model_id,

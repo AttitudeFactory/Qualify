@@ -440,6 +440,9 @@ class ComposedClip:
     height: int
     poster: bytes | None
     params: Mapping[str, Any]
+    #: EF-18: the composed video's contact sheet block (`contact_sheet.keep_contact_
+    #: sheet`), when the caller asked for it and it was kept; None otherwise
+    contact_sheet: Mapping[str, Any] | None = None
 
 
 def _sha256(data: bytes) -> str:
@@ -459,6 +462,20 @@ def _poster(path: Path) -> bytes | None:
     except Exception:  # noqa: BLE001 — a thumbnail is a nicety, never the piece
         logger.warning("composed clip poster not made", exc_info=True)
     return None
+
+
+def _sheet_of(
+    hook: Callable[[Path], Mapping[str, Any] | None] | None, path: Path
+) -> Mapping[str, Any] | None:
+    """EF-18: the contact sheet hook run on the composed file — whatever it raises, the
+    composed clip (paid for) goes on without a sheet."""
+    if hook is None:
+        return None
+    try:
+        return hook(path)
+    except Exception:  # noqa: BLE001 — a review aid never costs the clip its texts
+        logger.warning("composed clip contact sheet failed: left out", exc_info=True)
+        return None
 
 
 class ClipComposer:
@@ -517,11 +534,16 @@ class ClipComposer:
         *,
         drawn: Sequence[Any] | None = None,
         stage: str,
+        contact_sheet: Callable[[Path], Mapping[str, Any] | None] | None = None,
     ) -> ComposedClip:
         """`recipe` laid over `video` (already 9:16 within the overlay's tolerance): the
         layers under the texts in one pass. `drawn`: the texts `draw` made (None = drawn
         now). `stage`: `preview` or `final` (provenance). Writes only to a temporary
-        folder; `video` is never touched. Raises `ClipComposeFailed`."""
+        folder; `video` is never touched. Raises `ClipComposeFailed`.
+
+        `contact_sheet` (EF-18): called with the composed file while it is on disk (and
+        the caller's heavy-video gate held); what it returns is `ComposedClip.
+        contact_sheet`. It must not raise (`contact_sheet.keep_contact_sheet` does not)."""
         from qualify_creative.effects import NotALibraryLayer, load_effects  # noqa: PLC0415
         from qualify_creative.video import layer_overlay  # noqa: PLC0415
         from qualify_creative.video.layer_overlay import TimedEffectLayer  # noqa: PLC0415
@@ -575,6 +597,7 @@ class ClipComposer:
                 raise self._ours(exc) from exc
             data = out.read_bytes()
             poster = _poster(out)
+            sheet = _sheet_of(contact_sheet, out)
         if layers:
             params["effect_layers"] = {
                 "compose_version": layer_overlay.LAYER_COMPOSE_VERSION,
@@ -597,6 +620,7 @@ class ClipComposer:
                 "cost_usd": "0.00",
                 **params,
             },
+            contact_sheet=sheet,
         )
 
     @staticmethod
