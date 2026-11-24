@@ -53,6 +53,20 @@ def draft_pending(params: Mapping[str, object] | None) -> bool:
     return not final_confirmed(params, object_key=block.get("final_object_key"))
 
 
+#: m-25111780: the vendor task id of a paid raw 1080p (`raw_final.task_id`) whose spend
+#: is not in `creative_usage_events` yet. Written with the raw file the moment it is
+#: kept (before the final is settled), cleared by the settle that records that spend in
+#: the same transaction. A pass that finishes the final from the kept file while the
+#: marker still names its task records the spend then — once per task id, never twice.
+FINAL_USAGE_DUE = "final_usage_due"
+
+
+def raw_final_task_id(raw: Mapping[str, Any] | None) -> str | None:
+    """The vendor task id of a raw 1080p record, or None when it did not come back."""
+    task = (raw or {}).get("task_id")
+    return task if isinstance(task, str) and task else None
+
+
 def kept_raw_final(block: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
     """The paid 1080p final a failed finish left in the store (`raw_final`, with its
     `key` and provenance), or None: a retry finishes it instead of paying again."""

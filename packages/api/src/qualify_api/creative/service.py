@@ -111,9 +111,11 @@ from qualify_api.creative.draft_mode import (
     DRAFT_READY,
     DRAFT_RENDERING,
     FINAL_NOT_ORDERED_TEXT,
+    FINAL_USAGE_DUE,
     draft_expired,
     draft_state,
     final_retryable,
+    raw_final_task_id,
 )
 from qualify_api.creative.fsm import (
     APPROVED,
@@ -834,7 +836,14 @@ class ContentRepository(Protocol):
         spent_usd: Decimal,
         claim: str | None = None,
         draft_changes: Mapping[str, object] | None = None,
-    ) -> None: ...
+        held_usage: tuple[UsageWrite, ...] = (),
+        final_task_id: str | None = None,
+    ) -> None:
+        """m-25111780: `held_usage` is the spend of the raw 1080p `final_task_id` an
+        earlier pass paid for — recorded only while the stored draft block still marks
+        it due (`FINAL_USAGE_DUE` == `final_task_id`); the mark is cleared in the same
+        transaction that records that task's spend (`usage` paid now, or `held_usage`)."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -1945,33 +1954,51 @@ class PostgresContentRepository:
         spent_usd: Decimal,
         claim: str | None = None,
         draft_changes: Mapping[str, object] | None = None,
+        held_usage: tuple[UsageWrite, ...] = (),
+        final_task_id: str | None = None,
     ) -> None:
         """One transaction: the final's spend (also when it failed — the money went
         either way) and either the final in place of its draft, in the SAME row every
         reader already reads, or the draft marked failed with why. With `claim`, the
         row is written only while that claim still holds it (a final ordered again
         meanwhile belongs to its new run); the spend is recorded either way. A failure
-        keeps `draft_changes` in the draft block (the paid raw final a retry reuses)."""
+        keeps `draft_changes` in the draft block (the paid raw final a retry reuses).
+
+        m-25111780: `held_usage` (a raw 1080p an earlier pass paid for, whose settle was
+        rolled back) is recorded only while the row — read locked — still marks
+        `final_task_id` due; the mark goes in the same write, so that task's spend is
+        recorded exactly once whichever pass gets here."""
         with tenant_session(tenant_id) as session:
-            _add_usage(session, tenant_id, brand_id, draft_id, usage)
-            _add_spend(session, brand_id, spent_usd)
-            row = session.get(orm.ImageAsset, asset_id, with_for_update=claim is not None)
+            row = session.get(
+                orm.ImageAsset, asset_id, with_for_update=claim is not None or bool(held_usage)
+            )
+            stored = dict((row.params or {}).get("draft") or {}) if row is not None else {}
+            ours = row is not None and (claim is None or _final_held_by(stored, claim))
+            due = final_task_id is not None and stored.get(FINAL_USAGE_DUE) == final_task_id
+            # a run that lost its claim leaves a held spend to the run that owns it now
+            held = tuple(held_usage) if ours and due else ()
+            _add_usage(session, tenant_id, brand_id, draft_id, (*usage, *held))
+            _add_spend(session, brand_id, spent_usd + sum((h.cost_usd for h in held), Decimal(0)))
+            # the mark as it stands once this commits: gone when this write recorded the
+            # spend it named, else as stored (never revived from a stale in-memory block)
+            due_after = None if due and (usage or held) else stored.get(FINAL_USAGE_DUE)
             if row is None:
                 return
-            if claim is not None and not _final_held_by(
-                dict((row.params or {}).get("draft") or {}), claim
-            ):
+            if not ours:
                 logger.warning("final of asset %s settled after it was ordered again", asset_id)
+                if due_after != stored.get(FINAL_USAGE_DUE):
+                    # the new run would find the raw file still marked due: recorded here
+                    row.params = _with_usage_due(dict(row.params or {}), due_after)
                 return
             if media is None:
                 params = dict(row.params or {})
                 params["draft"] = {
-                    **dict(params.get("draft") or {}),
+                    **stored,
                     **dict(draft_changes or {}),
                     "status": DRAFT_FAILED,
                     "error": error,
                 }
-                row.params = params
+                row.params = _with_usage_due(params, due_after)
                 return
             row.media_url = media.media_url
             row.object_key = media.object_key
@@ -1980,7 +2007,7 @@ class PostgresContentRepository:
             row.height = media.height
             row.model_id = media.model_id
             row.provider = media.provider
-            row.params = dict(media.params)
+            row.params = _with_usage_due(dict(media.params), due_after)
             row.content_type = media.content_type
             row.updated_at = datetime.now(UTC)
             session.flush()
@@ -2156,6 +2183,18 @@ def _final_claimable(block: Mapping[str, Any], attempt: str | None) -> bool:
 
 def _final_held_by(block: Mapping[str, Any], claim: str) -> bool:
     return block.get("status") == DRAFT_RENDERING and block.get("claim") == claim
+
+
+def _with_usage_due(params: dict[str, Any], due: object) -> dict[str, Any]:
+    """`params` whose draft block carries `due` as its `FINAL_USAGE_DUE` (m-25111780),
+    the key dropped when None; params without a draft block are returned as they are."""
+    block = params.get("draft")
+    if not isinstance(block, Mapping):
+        return params
+    block = {key: value for key, value in block.items() if key != FINAL_USAGE_DUE}
+    if due is not None:
+        block[FINAL_USAGE_DUE] = due
+    return {**params, "draft": block}
 
 
 def preview_of(media: tuple[MediaWrite, ...]) -> str | None:
@@ -4795,12 +4834,21 @@ class ContentService:
         final whose last write never lands — the process died, the database was down —
         is finished by the next try from the saved file instead of being paid again.
         Never raises: when this write fails, the outcome still carries the raw file
-        (`FinalOutcome.draft_changes`) to the final write."""
+        (`FinalOutcome.draft_changes`) to the final write. m-25111780: it also marks the
+        raw file's spend as not recorded yet (`FINAL_USAGE_DUE`, its task id) — the
+        settle that records it clears the mark in the same transaction, and a later pass
+        that finishes the final from this file records it while the mark stands."""
 
         def record(raw: Mapping[str, Any]) -> None:
+            task = raw_final_task_id(raw)
             try:
                 self._repo.set_video_draft(
-                    tenant_id=tenant_id, asset_id=asset_id, changes={"raw_final": dict(raw)}
+                    tenant_id=tenant_id,
+                    asset_id=asset_id,
+                    changes={
+                        "raw_final": dict(raw),
+                        **({FINAL_USAGE_DUE: task} if task is not None else {}),
+                    },
                 )
             except Exception:
                 logger.exception("final of asset %s: raw final not recorded yet", asset_id)
@@ -4848,6 +4896,22 @@ class ContentService:
                 item.model_id,
                 item.cost_usd,
             )
+        # m-25111780: a raw 1080p an earlier pass paid for, its settle rolled back (lease
+        # lost): its spend goes with this settle, once — the repository records it only
+        # while the row still marks that task due
+        held = tuple(self._media_usage(outcome.held_usage))
+        raw = (outcome.draft_changes or {}).get("raw_final")
+        final_task_id = raw_final_task_id(raw) if isinstance(raw, Mapping) else None
+        for item in held:
+            cost_logger.info(
+                "draft %s final: %s %s %s USD paid by an earlier pass (task %s), recorded "
+                "now if still due",
+                draft_id,
+                item.provider,
+                item.model_id,
+                item.cost_usd,
+                final_task_id,
+            )
         first_error = None if outcome.media is not None else outcome.detail
         writes: tuple[tuple[MediaWrite | None, str | None], ...] = (
             (outcome.media, first_error),
@@ -4866,6 +4930,8 @@ class ContentService:
                     spent_usd=outcome.spent_usd,
                     claim=claim,
                     draft_changes=outcome.draft_changes,
+                    held_usage=held,
+                    final_task_id=final_task_id,
                 )
                 if media is None:
                     # the vendor failed it, or it could not be saved: no final for the

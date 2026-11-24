@@ -20,10 +20,12 @@ from qualify_api.creative.draft_mode import (
     DRAFT_RENDERING,
     FINAL_NOT_ORDERED_TEXT,
     FINAL_STALE_SECONDS,
+    FINAL_USAGE_DUE,
     draft_state,
 )
 from qualify_api.creative.fsm import APPROVED, InvalidTransition
 from qualify_api.creative.media import FinalOutcome, MediaUsage, MediaWrite
+from qualify_api.creative.queue_dispatch import CheckpointError
 from qualify_api.creative.service import (
     ContentService,
     DraftExpired,
@@ -108,16 +110,31 @@ class FinalRepository(InMemoryRepository):
         spent_usd,  # noqa: ANN001
         claim=None,  # noqa: ANN001
         draft_changes=None,  # noqa: ANN001
+        held_usage=(),  # noqa: ANN001
+        final_task_id=None,  # noqa: ANN001
     ):  # noqa: ANN201
-        self.usage.extend(usage)
-        self.spend_added += spent_usd
-        if claim is not None and not self._held(asset_id, claim):
+        # as `PostgresRepository.settle_final` (m-25111780): a held spend only while the
+        # stored block marks its task due, the mark gone with the write that records it
+        stored = self._block(asset_id)
+        ours = claim is None or self._held(asset_id, claim)
+        due = final_task_id is not None and stored.get(FINAL_USAGE_DUE) == final_task_id
+        held = tuple(held_usage) if ours and due else ()
+        self.usage.extend((*usage, *held))
+        self.spend_added += spent_usd + sum((h.cost_usd for h in held), Decimal(0))
+        due_after = None if due and (usage or held) else stored.get(FINAL_USAGE_DUE)
+
+        def marked(block: dict[str, Any]) -> dict[str, Any]:
+            block = {k: v for k, v in block.items() if k != FINAL_USAGE_DUE}
+            return block if due_after is None else {**block, FINAL_USAGE_DUE: due_after}
+
+        if not ours:
+            if due_after != stored.get(FINAL_USAGE_DUE):
+                self._replace_block(asset_id, marked(stored))
             return
         if media is None:
-            self.set_video_draft(
-                tenant_id=tenant_id,
-                asset_id=asset_id,
-                changes={**(draft_changes or {}), "status": DRAFT_FAILED, "error": error},
+            self._replace_block(
+                asset_id,
+                marked({**stored, **(draft_changes or {}), "status": DRAFT_FAILED, "error": error}),
             )
             return
         self.media[draft_id] = [
@@ -127,12 +144,21 @@ class FinalRepository(InMemoryRepository):
                 object_key=media.object_key,
                 width=media.width,
                 height=media.height,
-                params=media.params,
+                params={**media.params, "draft": marked(dict(media.params.get("draft") or {}))},
             )
             if item.id == asset_id
             else item
             for item in self.media[draft_id]
         ]
+
+    def _replace_block(self, asset_id: UUID, block: dict[str, Any]) -> None:
+        for draft_id, items in self.media.items():
+            self.media[draft_id] = [
+                replace(item, params={**(item.params or {}), "draft": block})
+                if item.id == asset_id
+                else item
+                for item in items
+            ]
 
 
 class FinalDispatcher(RecordingDispatcher):
@@ -723,3 +749,185 @@ def test_retry_refuses_a_user_cancelled_final_without_a_free_generation() -> Non
     with pytest.raises(InvalidTransition, match="Cancelamos tu video"):
         service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
     assert dispatcher.finals == []
+
+
+# -- m-25111780: the spend of a raw 1080p whose settle lost its lease ----------------------
+
+_RAW_FINAL = {
+    "key": "t/x/clip-final-raw.mp4",
+    "task_id": "cgt-final",
+    "cost_usd": "2.84",
+    "model_id": "dreamina-seedance-2-5-260628",
+    "provider": "seedance",
+    "duration_seconds": 5,
+    "tokens": 108900,
+}
+
+
+class KeptRawFinals(FakeFinals):
+    """`MediaProducer.finalize`'s contract around a kept raw 1080p: the first pass pays it
+    (`usage`) and hears it kept at once (`on_raw_kept`); a pass that finds it in the block
+    pays nothing and hands its spend as `held_usage` while the block marks it due."""
+
+    def finalize(self, *, asset, on_raw_kept=None, **_: Any) -> FinalOutcome:  # noqa: ANN001
+        self.calls.append(asset)
+        block = dict(draft_state(asset.params) or {})
+        usage: tuple[MediaUsage, ...] = ()
+        held: tuple[MediaUsage, ...] = ()
+        paid = MediaUsage(
+            provider="seedance",
+            model_id=str(_RAW_FINAL["model_id"]),
+            unit="second",
+            quantity=5,
+            cost_usd=Decimal(str(_RAW_FINAL["cost_usd"])),
+            output_tokens=108900,
+        )
+        if block.get("raw_final") is None:
+            assert on_raw_kept is not None
+            on_raw_kept(dict(_RAW_FINAL))
+            usage = (paid,)
+        elif block.get(FINAL_USAGE_DUE) == _RAW_FINAL["task_id"]:
+            held = (paid,)
+        return FinalOutcome(
+            media=MediaWrite(
+                position=asset.position,
+                media_type="video",
+                media_url="t/x/final.mp4",
+                object_key="t/x/final.mp4",
+                width=1080,
+                height=1920,
+                aspect_ratio="9:16",
+                model_id=str(_RAW_FINAL["model_id"]),
+                provider="seedance",
+                params={
+                    **asset.params,
+                    "draft": {
+                        **block,
+                        "raw_final": dict(_RAW_FINAL),
+                        "status": DRAFT_FINAL,
+                        "final_task_id": _RAW_FINAL["task_id"],
+                        "final_cost_usd": _RAW_FINAL["cost_usd"],
+                    },
+                },
+            ),
+            usage=usage,
+            held_usage=held,
+            draft_changes={"raw_final": dict(_RAW_FINAL)},
+        )
+
+
+def _lease_lost_once(repo: FinalRepository) -> None:
+    """The first settle fails its fence (`CheckpointError`): nothing it would write lands."""
+    settle = repo.settle_final
+    calls = {"n": 0}
+
+    def fenced(**kwargs: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise CheckpointError("lease lost")
+        settle(**kwargs)
+
+    repo.settle_final = fenced  # type: ignore[method-assign]
+
+
+def test_a_raw_final_paid_by_a_pass_that_lost_its_lease_is_recorded_once_by_the_next() -> None:
+    service, repo, _, draft_id, variant_id, finals = _setup(finals=KeptRawFinals())
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    events, spent = len(repo.usage), repo.spend_added
+    _lease_lost_once(repo)
+
+    with pytest.raises(CheckpointError):
+        service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    # paid and kept, its settle rolled back: no event yet, the block marks it due
+    (video,) = repo.media[draft_id]
+    assert len(repo.usage) == events
+    assert draft_state(video.params)[FINAL_USAGE_DUE] == "cgt-final"
+
+    service.run_queued_final(tenant_id=TENANT_ID, draft_id=draft_id, asset_id=video.id)
+
+    (video,) = repo.media[draft_id]
+    block = draft_state(video.params)
+    assert len(finals.calls) == 2 and block["status"] == DRAFT_FINAL
+    (event,) = repo.usage[events:]
+    assert event.cost_usd == Decimal("2.84") and event.model_id == _RAW_FINAL["model_id"]
+    assert event.output_tokens == 108900 and event.pieces == 5
+    assert repo.spend_added - spent == Decimal("2.84")
+    assert block["final_task_id"] == "cgt-final" and FINAL_USAGE_DUE not in block
+
+
+def test_a_raw_final_whose_spend_is_recorded_is_never_recorded_again() -> None:
+    service, repo, _, draft_id, variant_id, finals = _setup(finals=KeptRawFinals())
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    _lease_lost_once(repo)
+    with pytest.raises(CheckpointError):
+        service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    (video,) = repo.media[draft_id]
+    stale = finals.finalize(asset=video)  # what a second pass read with the mark standing
+    service.run_queued_final(tenant_id=TENANT_ID, draft_id=draft_id, asset_id=video.id)
+    events, spent = len(repo.usage), repo.spend_added
+
+    # that slower pass settles too: the row no longer marks the task due
+    brand_id = repo.drafts[draft_id].brand_id
+    service._settle_final(TENANT_ID, draft_id, brand_id, video.id, None, stale)
+
+    assert stale.held_usage and len(repo.usage) == events and repo.spend_added == spent
+    # nor does its stale in-memory block bring the mark back
+    assert FINAL_USAGE_DUE not in draft_state(repo.media[draft_id][0].params)
+
+
+def test_a_raw_final_kept_before_the_mark_existed_is_not_counted_again() -> None:
+    """A block from before m-25111780 (raw kept, no mark): its spend may already be in
+    the table — the retry records nothing rather than guess."""
+    service, repo, _, draft_id, variant_id, _ = _setup(finals=KeptRawFinals())
+    (video,) = repo.media[draft_id]
+    repo.set_video_draft(
+        tenant_id=TENANT_ID, asset_id=video.id, changes={"raw_final": dict(_RAW_FINAL)}
+    )
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    events = len(repo.usage)
+
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert _status(repo, draft_id) == DRAFT_FINAL and len(repo.usage) == events
+
+
+def test_the_normal_final_records_its_raw_spend_once_and_clears_the_mark() -> None:
+    service, repo, _, draft_id, variant_id, finals = _setup(finals=KeptRawFinals())
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    events = len(repo.usage)
+
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    (event,) = repo.usage[events:]
+    assert event.cost_usd == Decimal("2.84") and len(finals.calls) == 1
+    block = draft_state(repo.media[draft_id][0].params)
+    assert block["status"] == DRAFT_FINAL and FINAL_USAGE_DUE not in block
+
+
+def test_a_paid_final_settled_after_it_was_ordered_again_clears_the_mark_it_recorded() -> None:
+    """Its claim lost to a new order: the spend is recorded here, and the new run that
+    finishes the same kept file records nothing more."""
+    service, repo, _, draft_id, variant_id, finals = _setup(finals=KeptRawFinals())
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    events = len(repo.usage)
+    settle = repo.settle_final
+
+    def reordered_meanwhile(**kwargs: Any) -> None:
+        repo.set_video_draft(
+            tenant_id=TENANT_ID, asset_id=kwargs["asset_id"], changes={"claim": None}
+        )
+        repo.settle_final = settle  # type: ignore[method-assign]
+        settle(**kwargs)
+
+    repo.settle_final = reordered_meanwhile  # type: ignore[method-assign]
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    (video,) = repo.media[draft_id]
+    assert FINAL_USAGE_DUE not in draft_state(video.params)
+
+    service.run_queued_final(tenant_id=TENANT_ID, draft_id=draft_id, asset_id=video.id)
+
+    (event,) = repo.usage[events:]
+    assert event.cost_usd == Decimal("2.84") and len(finals.calls) == 2
+    assert _status(repo, draft_id) == DRAFT_FINAL

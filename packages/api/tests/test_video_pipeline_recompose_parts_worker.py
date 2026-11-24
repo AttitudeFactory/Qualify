@@ -269,6 +269,7 @@ def test_a_lease_lost_when_the_final_is_saved_fails_nothing_and_refunds_nothing(
         media=SimpleNamespace(object_key="k"),
         detail=None,
         usage=(),
+        held_usage=(),
         spent_usd=0,
         draft_changes={"raw_final": {"key": "raw"}},
     )

@@ -18,7 +18,7 @@ from qualify_creative.enums import ContentFormat, ContentKind, FailureReason, Sl
 from qualify_creative.schemas import CarouselSlide, SlideSource
 from qualify_creative.video import FittedVideo
 
-from qualify_api.creative.draft_mode import draft_expired, kept_raw_final
+from qualify_api.creative.draft_mode import FINAL_USAGE_DUE, draft_expired, kept_raw_final
 from qualify_api.creative.media import SCENE_SIZES, SEEDANCE_RATIOS, MediaProducer
 
 from .test_creative_media_byteplus import BUDGET, COPY, TENANT_ID, _brief, _kit, _seedance_brief
@@ -217,6 +217,43 @@ def _finalize_hearing(
         revision=1,
         on_raw_kept=lambda raw: heard.append(dict(raw)),
     )
+
+
+def test_a_kept_raw_final_whose_spend_is_due_hands_it_to_the_settle_once() -> None:
+    """m-25111780: the pass that paid the 1080p lost its lease before settling; the next
+    pass finishes the kept file without paying and hands its spend (`held_usage`) — only
+    while the block marks its task due."""
+    store, seedance, draft_id = _locked(), DraftSeedance(), uuid4()
+    producer = _producer(store, seedance, RecordingFitter())
+    (draft,) = producer.produce(
+        tenant_id=TENANT_ID, draft_id=draft_id, brief=_clip(), kit=_kit(), copy=COPY, budget=BUDGET
+    ).media
+    asset = _ordered(_record(draft), "1" * 32)
+    heard: list[dict[str, Any]] = []
+    paid = _finalize_hearing(producer, asset, draft_id, heard)
+    assert paid.media is not None and paid.held_usage == () and _finals(seedance) == 1
+    (raw,) = heard
+    assert raw["pricing_table_version"] == "v5"  # the table its cost came from
+
+    due = {**asset.params["draft"], "raw_final": raw, FINAL_USAGE_DUE: raw["task_id"]}
+    again = _finalize_hearing(
+        producer, replace(asset, params={**asset.params, "draft": due}), draft_id, []
+    )
+
+    assert again.media is not None and _finals(seedance) == 1 and again.usage == ()
+    (held,) = again.held_usage
+    (spent,) = paid.usage
+    # the same row the paying pass would have written, naming its table
+    assert replace(held, pricing_table_version=None) == spent
+    assert held.pricing_table_version == "v5"
+    assert again.draft_changes == {"raw_final": raw}  # the settle keys it by its task id
+
+    # recorded already (no mark), or a block from before the mark: nothing handed
+    recorded = {**asset.params["draft"], "raw_final": raw}
+    quiet = _finalize_hearing(
+        producer, replace(asset, params={**asset.params, "draft": recorded}), draft_id, []
+    )
+    assert quiet.media is not None and quiet.held_usage == () and quiet.usage == ()
 
 
 def test_the_raw_final_is_recorded_before_the_re_encode_and_rides_on_success() -> None:
