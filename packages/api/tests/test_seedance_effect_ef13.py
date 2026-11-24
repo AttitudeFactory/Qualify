@@ -613,3 +613,14 @@ def test_a_remake_the_producer_would_refuse_has_no_price(method: str) -> None:
     service._media = SimpleNamespace(prepare_new_brief=refuse)
     service._brand = SimpleNamespace(kit=lambda **_: _kit())
     assert getattr(service, method)(tenant_id=TENANT_ID, draft_id=uuid4()) is None
+
+
+def test_the_worst_case_preflight_says_the_effect_does_not_fit() -> None:
+    """`_over_budget_error` keeps the effect's own text when its line is the cause, rather
+    than the generic «demasiado texto»."""
+    cause = media_module._EffectDoesNotFit(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=10, budget=5)
+    try:
+        raise BrandReferenceError(cause.detail) from cause
+    except BrandReferenceError as exc:
+        error = media_module._over_budget_error(_clip(effects=(_use(),)), exc, refs=(), logos=0)
+    assert str(error) == AI_EFFECT_DOES_NOT_FIT_TEXT

@@ -9300,6 +9300,11 @@ def _over_budget_error(
     when several were chosen; shorten the «Datos clave» or the resources' notes. Never empty
     notes or a scene that does not exist. Any other refusal keeps its own text."""
     cause = exc.__cause__
+    if isinstance(cause, _EffectDoesNotFit):
+        # EF-13: the Seedance effect's line is what does not fit — say so, not «shorten»
+        return BrandReferenceError(
+            ai_effect_does_not_fit_text(part=brief.media.part is not None, spent=False)
+        )
     if not isinstance(cause, _PromptOverBudget) or isinstance(cause, _TalkingOverBudget):
         return exc
     excess, unit = cause.needed - cause.budget, cause.unit
