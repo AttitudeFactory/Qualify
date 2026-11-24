@@ -69,6 +69,7 @@ import itertools
 import json
 import logging
 import math
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -108,6 +109,7 @@ from qualify_creative.compose import (
     subtitle_layer,
     text_layer,
 )
+from qualify_creative.effects import measured_on_model
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
@@ -207,6 +209,11 @@ from qualify_api.creative.brand_references import (
     resolve_brand_references,
     snapshot_brand_references,
 )
+from qualify_api.creative.contact_sheet import (
+    CONTACT_SHEET_PARAMS_KEY,
+    keep_contact_sheet,
+    shown_contact_sheet,
+)
 from qualify_api.creative.part_extend import (
     EXTEND_MANIFEST,
     EXTEND_SOURCE_MAX_S,
@@ -224,9 +231,11 @@ from . import trace
 from .draft_mode import (
     DRAFT_EXPIRED_TEXT,
     DRAFT_READY,
+    FINAL_USAGE_DUE,
     draft_expired,
     draft_state,
     kept_raw_final,
+    raw_final_task_id,
 )
 from .gallery_media import (
     GALLERY_ASSEMBLY_VERSION,
@@ -242,6 +251,8 @@ if TYPE_CHECKING:
     from .part_join import PartJoinStore
 
 logger = logging.getLogger(__name__)
+#: The cost log the service writes too (`service.cost_logger`).
+_COST_LOGGER = logging.getLogger("qualify_api.creative.costs")
 
 REMOTION = "remotion"
 #: ByteDance's talking presenter (§ 2026-10-16): two more router links, two more keys.
@@ -467,6 +478,27 @@ class MediaUsage:
     #: (EF-06: a local video is priced by `video_pipeline.local.LOCAL_PRICING_VERSION`).
     #: None = the service's table.
     pricing_table_version: str | None = None
+    #: m-25112161: the vendor's id of the task this call paid for (Seedance's `cgt-…`,
+    #: OmniHuman's `task_id`), so its usage event is written once per task. None for a
+    #: call without one (Claude, Seedream, Seed Speech, Remotion, the local video).
+    vendor_task_id: str | None = None
+
+
+def vendor_task_of(payload: object) -> str | None:
+    """The vendor task id a Seedance or OmniHuman result carries in its payload."""
+    task = payload.get("task_id") if isinstance(payload, Mapping) else None
+    return str(task) if task else None
+
+
+#: The task id in an `OmniHumanTimeout`'s text as the router keeps it (`Hop.reason` is
+#: "<Exception>: <message>", and every timeout message says "OmniHuman task <id> …").
+_TIMED_OUT_TASK = re.compile(r"OmniHumanTimeout\b.*?\btask (\S+)")
+
+
+def timed_out_task(raw: str | None) -> str | None:
+    """The OmniHuman task an `OmniHumanTimeout` named (m-25112161), or None."""
+    found = _TIMED_OUT_TASK.search(raw or "")
+    return found.group(1) if found else None
 
 
 @dataclass(frozen=True)
@@ -561,10 +593,62 @@ class FinalOutcome:
     #: m-24852154: the final's task outlived this run's wait — still `rendering`, its
     #: task recorded; a retry resumes it instead of ordering (and paying) another.
     pending: bool = False
+    #: m-25111780: the spend of a raw 1080p an EARLIER pass paid for and kept, whose
+    #: settle never landed (its lease was lost: the block still names its task in
+    #: `FINAL_USAGE_DUE`). Not part of `spent_usd`: the settle records it only while the
+    #: stored block still says it is due, in the same transaction that clears the mark.
+    held_usage: tuple[MediaUsage, ...] = ()
+    #: m-25111780: the rows of `usage` that paid THIS pass's raw 1080p (its
+    #: `draft_changes["raw_final"]` task). The settle drops them when another pass already
+    #: recorded that task's spend (a run that lost its claim, settling last).
+    raw_usage: tuple[MediaUsage, ...] = ()
 
     @property
     def spent_usd(self) -> Decimal:
         return sum((u.cost_usd for u in self.usage), Decimal(0))
+
+
+def _held_raw_usage(
+    block: Mapping[str, Any], raw: Mapping[str, Any], held: list[MediaUsage] | None
+) -> None:
+    """m-25111780: the usage row of a raw 1080p an earlier pass paid for, appended to
+    `held` when the draft block still marks its spend as not recorded
+    (`FINAL_USAGE_DUE` == its task id) — from what the raw record kept: provider, model,
+    seconds, tokens and cost. Nothing when the mark is absent (recorded already, or a
+    block from before the mark existed: never a guess that could count it twice) or the
+    record lacks its cost or model."""
+    task = raw_final_task_id(raw)
+    if held is None or task is None or block.get(FINAL_USAGE_DUE) != task:
+        return
+    try:
+        cost: Decimal | None = Decimal(str(raw.get("cost_usd")))
+    except ArithmeticError:
+        cost = None
+    model_id = raw.get("model_id")
+    if cost is None or not cost.is_finite() or not isinstance(model_id, str) or not model_id:
+        logger.warning("raw final %s: its spend cannot be rebuilt from the kept record", task)
+        return
+    seconds = raw.get("billed_seconds")
+    if seconds is None:  # a raw record kept before it said what was billed
+        seconds = raw.get("duration_seconds")
+    tokens = raw.get("tokens")
+    version = raw.get("pricing_table_version")
+    held.append(
+        MediaUsage(
+            provider=str(raw.get("provider") or "seedance"),
+            model_id=model_id,
+            unit="second",
+            quantity=(
+                math.ceil(seconds)
+                if isinstance(seconds, int | float) and not isinstance(seconds, bool)
+                else 0
+            ),
+            cost_usd=cost,
+            output_tokens=tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0,
+            pricing_table_version=version if isinstance(version, str) and version else None,
+            vendor_task_id=task,
+        )
+    )
 
 
 def _attempt_tag(block: Mapping[str, Any]) -> str:
@@ -3012,6 +3096,9 @@ class MediaProducer:
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=DRAFT_EXPIRED_TEXT
             )
         kept: dict[str, Any] = {}
+        # m-25111780: a raw 1080p paid by an earlier pass whose spend is still due
+        held: list[MediaUsage] = []
+        paid_raw: list[MediaUsage] = []
         token = _TASK_RUN.set(_TaskRun(vendor_tasks) if vendor_tasks is not None else None)
         try:
             media = self._final_video(
@@ -3026,14 +3113,24 @@ class MediaProducer:
                 revision,
                 kept,
                 on_raw_kept,
+                held,
+                paid_raw,
             )
         except (_MediaPending, GenerationDeferred) as exc:
             logger.warning("final of draft %s waits for its vendor: %s", draft_id, exc)
-            return FinalOutcome(usage=tuple(usage), pending=True, draft_changes=kept or None)
+            return FinalOutcome(
+                usage=tuple(usage),
+                pending=True,
+                draft_changes=kept or None,
+                held_usage=tuple(held),
+                raw_usage=tuple(paid_raw),
+            )
         except _MediaFailed as exc:
             logger.warning("final of draft %s failed: %s", draft_id, exc.raw or exc.detail)
             return FinalOutcome(
                 usage=tuple(usage),
+                held_usage=tuple(held),
+                raw_usage=tuple(paid_raw),
                 failure=exc.failure,
                 detail=exc.detail,
                 draft_changes=(
@@ -3048,6 +3145,8 @@ class MediaProducer:
             logger.warning("final of draft %s failed: %s", draft_id, exc)
             return FinalOutcome(
                 usage=tuple(usage),
+                held_usage=tuple(held),
+                raw_usage=tuple(paid_raw),
                 failure=FailureReason.PROVIDER_ERROR.value,
                 detail=ark_failure_text(f"{type(exc).__name__}: {exc}"),
                 draft_changes=kept or None,
@@ -3056,7 +3155,13 @@ class MediaProducer:
             _TASK_RUN.reset(token)
         # the raw file rides along on success too: when writing the final in place fails,
         # the failure the service writes instead still keeps it for the retry
-        return FinalOutcome(media=media, usage=tuple(usage), draft_changes=kept or None)
+        return FinalOutcome(
+            media=media,
+            usage=tuple(usage),
+            draft_changes=kept or None,
+            held_usage=tuple(held),
+            raw_usage=tuple(paid_raw),
+        )
 
     def _final_video(
         self,
@@ -3071,6 +3176,8 @@ class MediaProducer:
         revision: int,
         kept: dict[str, Any],
         on_raw_kept: RawFinalKept | None,
+        held: list[MediaUsage] | None = None,
+        paid_raw: list[MediaUsage] | None = None,
     ) -> MediaWrite:
         """The final's file, fitted. Everything the fitter lays is read BEFORE the 1080p
         is paid for, and the raw 1080p is saved as soon as it is downloaded, recorded in
@@ -3133,19 +3240,41 @@ class MediaProducer:
         video: bytes | None = None
         if part and raw is not None and _object_held(self._store, tenant_id, str(raw["key"])):
             # a retry after the part's last write never landed: the kept 1080p IS the
-            # part's final — never read whole into memory, never paid again
+            # part's final — never read whole into memory, never paid again (m-25103284:
+            # read only when its texts must be composed over it and are not kept yet)
             kept["raw_final"] = raw
-            return self._part_final(asset, block, raw, revision)
+            _held_raw_usage(block, raw, held)  # m-25111780: its spend, if still due
+            return self._part_final(tenant_id, draft_id, asset, block, raw, revision, save, None)
         if raw is not None:
             try:
                 video = self._store.read(str(raw["key"]))
             except Exception as exc:  # noqa: BLE001 — gone from the store: paid again
                 logger.warning("final of %s: raw final unreadable: %s", draft_id, exc)
+                lost = raw_final_task_id(raw)
+                if lost is not None and block.get(FINAL_USAGE_DUE) == lost:
+                    # m-25111780: its spend was still due, and the 1080p paid next takes
+                    # over the mark (one task per block). m-25112161: it goes with this
+                    # pass's settle anyway, on its own task id (written once per task)
+                    _COST_LOGGER.warning(
+                        "draft %s final: raw final %s unreadable while its %s USD were "
+                        "still due; recorded with this pass on its task id",
+                        draft_id,
+                        lost,
+                        raw.get("cost_usd"),
+                    )
+                    _held_raw_usage(block, raw, held)
                 raw = None
+            else:
+                # m-25111780: paid by an earlier pass — its spend, if still due
+                _held_raw_usage(block, raw, held)
         if raw is None or video is None:
+            before = len(usage)
             raw, video = self._paid_final(
                 tenant_id, draft_id, brief, block, model, ratio, budget, usage, save, stem
             )
+            if paid_raw is not None:
+                # m-25111780: the rows that pay THIS raw file (`FinalOutcome.raw_usage`)
+                paid_raw.extend(usage[before:])
             if raw.get("key") and on_raw_kept is not None:
                 try:
                     on_raw_kept(raw)
@@ -3161,7 +3290,7 @@ class MediaProducer:
                 from qualify_api.creative.part_final import PART_FINAL_NOT_KEPT_TEXT  # noqa: PLC0415
 
                 raise _MediaFailed(FailureReason.PROVIDER_ERROR.value, PART_FINAL_NOT_KEPT_TEXT)
-            return self._part_final(asset, block, raw, revision)
+            return self._part_final(tenant_id, draft_id, asset, block, raw, revision, save, video)
         resolution = str(raw.get("resolution") or seedance_family(model).draft_final_resolution)
 
         # 2.5's 1080p is 10-bit H.265, which browsers and Instagram may not play: the
@@ -3304,13 +3433,108 @@ class MediaProducer:
             params=params,
         )
 
-    @staticmethod
     def _part_final(
-        asset: Any, block: Mapping[str, Any], raw: Mapping[str, Any], revision: int
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        asset: Any,
+        block: Mapping[str, Any],
+        raw: Mapping[str, Any],
+        revision: int,
+        save: _Saver,
+        video: bytes | None,
     ) -> MediaWrite:
+        """VE-10b: a part's final is its paid raw 1080p, kept as it came. m-25103284: a
+        part whose preview froze a recipe (`params["compose"]`) gets that recipe composed
+        again over its raw 1080p (`_composed_part_final`), kept under its own key per
+        order; the final join reads that file (`part_final.raw_key`)."""
         from qualify_api.creative.part_final import part_final_media  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.recompose import stored_recipe  # noqa: PLC0415
 
-        return part_final_media(asset, block, raw, revision)
+        if stored_recipe(asset.params) is None:
+            return part_final_media(asset, block, raw, revision)
+        composed, compose = self._composed_part_final(
+            tenant_id, draft_id, asset, block, raw, save, video
+        )
+        return part_final_media(asset, block, raw, revision, composed=composed, compose=compose)
+
+    def _composed_part_final(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        asset: Any,
+        block: Mapping[str, Any],
+        raw: Mapping[str, Any],
+        save: _Saver,
+        video: bytes | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """m-25103284: the part's raw 1080p with the preview's frozen recipe composed again
+        (`_recompose_final`: the preview's own text PNGs, checked by sha256; inside the
+        heavy-video gate), kept under `{stem}-final-{attempt}.mp4` — `(composed_final,
+        compose block)`. Idempotent: a composed file already kept under this order's key
+        is taken as it is (`_held_final`), before any read, gate or encode; the raw 1080p
+        is never paid again (it is the `raw_final` the caller already holds). Cut to 9:16
+        first only when the vendor's size is off it (`recompose.nine_sixteen_size`). A
+        compose that fails fails the part's final with its raw 1080p kept: the retry
+        costs the vendor nothing."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            FINAL_COMPOSE_FAILED_TEXT,
+            nine_sixteen_size,
+            wait_if_heavy_video_busy,
+        )
+
+        stem = Path(str(asset.object_key or "video.mp4")).stem
+        name = f"{stem}-final-{_attempt_tag(block)}.mp4"
+        held = self._held_final(tenant_id, asset, save.key_for(name), raw)
+        if held is not None:
+            data, compose = held
+            compose["final"] = {**dict(compose.get("final") or {}), "part": True}
+            key = save.key_for(name)
+        else:
+            # the pass that composes waits for a part join before reading the raw 1080p
+            wait_if_heavy_video_busy()
+            if video is None:
+                if not owned_by(tenant_id, str(raw["key"])):
+                    raise _MediaFailed(
+                        FailureReason.PROVIDER_ERROR.value,
+                        FINAL_COMPOSE_FAILED_TEXT,
+                        raw="the raw final is not this business's file",
+                    )
+                video = self._store.read(str(raw["key"]))
+            size = _video_dimensions(video)
+            try:
+                cut = nine_sixteen_size(*size) if size is not None else None
+            except ValueError as exc:
+                raise _MediaFailed(
+                    FailureReason.PROVIDER_ERROR.value, FINAL_COMPOSE_FAILED_TEXT, raw=str(exc)
+                ) from exc
+            prepare: Callable[[bytes], bytes] | None = None
+            if cut is not None:
+                fitter = self._require_fitter()
+
+                def prepare(data: bytes) -> bytes:
+                    # the cut and the compose in ONE heavy-video gate (`_recompose_final`)
+                    return fitter.fit(
+                        data, size=cut, keep_audio=True, max_seconds=3600.0, x264=DETAIL_X264
+                    ).data
+
+                size = cut
+            width, height = size or (0, 0)
+            source = FittedVideo(data=video, width=width, height=height, duration_sec=0.0)
+            composed, made = self._recompose_final(
+                tenant_id, draft_id, asset, source, raw, prepare=prepare
+            )
+            data = composed.data
+            key = save(name, data, MP4)
+            compose = dict(made or {})
+            compose["final"] = {**dict(compose.get("final") or {}), "part": True}
+        final = compose.get("final") if isinstance(compose.get("final"), Mapping) else {}
+        return {
+            "key": key,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "recipe_sha256": final.get("recipe_sha256"),
+            "from_raw_final_key": raw.get("key"),
+        }, compose
 
     def _paid_final(
         self,
@@ -3388,6 +3612,10 @@ class MediaProducer:
             "model_id": result.model_id,
             "provider": result.provider,
             "model_revision": result.model_revision,
+            # m-25111780: the seconds billed and the table its cost was read from, so a
+            # spend recorded by a later pass is the same row this one would write
+            "billed_seconds": math.ceil(result.usage.media_seconds),
+            "pricing_table_version": self._pricing.version,
         }
         return raw, video
 
@@ -3414,6 +3642,7 @@ class MediaProducer:
                 quantity=math.ceil(result.usage.media_seconds),
                 cost_usd=cost,
                 output_tokens=tokens,
+                vendor_task_id=vendor_task_of(payload),
             )
         )
         return cost
@@ -3604,7 +3833,94 @@ class MediaProducer:
         return "creative-v2-brand9" if self._reference_compiler_version >= 9 else "creative-v1"
 
     def prepare_new_brief(self, brief: ContentBrief, kit: BrandKit) -> ContentBrief:
-        """Stamp only a new creation; existing frozen briefs keep their paid contract."""
+        """Stamp only a new creation; existing frozen briefs keep their paid contract.
+        EF-13: a Seedance effect is checked here too, before the copy is paid
+        (`_preflight_seedance_effect`)."""
+        current = self._stamp_new_brief(brief, kit)
+        self._preflight_seedance_effect(current, kit)
+        return current
+
+    def _ai_effect_models(self, brief: ContentBrief) -> set[str]:
+        """EF-13: every Seedance model `_clip` may ask this piece of — the reference model
+        when it has references (a normal Clip may get them later from the brand
+        resources), else the prepared frame's model (own stretches) or the adapter's."""
+        from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+            uses_prepared_frame,
+        )
+
+        media = brief.media
+        in_part = media.part is not None
+        reference = self._seedance_reference_model or ""
+        if media.clip_has_references:
+            return {reference}
+        try:
+            plain = (
+                self._prepared_frame_model(in_part)
+                if uses_prepared_frame(brief)
+                else self._seedance_model
+            )
+        except _MediaFailed:
+            plain = ""
+        # a normal Clip may become a reference task once its brand resources are chosen
+        return {plain} if in_part or not reference else {plain, reference}
+
+    def _preflight_seedance_effect(self, brief: ContentBrief, kit: BrandKit) -> None:
+        """EF-13, before the copy is paid: a Seedance effect the piece will ask must have
+        been measured on EVERY model it may be asked of (D5), and its line must fit, whole,
+        beside the owner's words with the longest copy the prompt can carry, on each of
+        them. Either failure is `BrandReferenceError` (its detail Spanish), nothing spent."""
+        from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+            seedance_effect_of,
+        )
+
+        effect = seedance_effect_of(brief)
+        if effect is None:
+            return
+        models = self._ai_effect_models(brief)
+        if not all(measured_on_model(effect.entry, model) for model in models):
+            raise BrandReferenceError(ai_effect_model_text(spent=False))
+        from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+            uses_prepared_frame,
+        )
+
+        media = brief.media
+        references = media.clip_has_references
+        try:
+            for model in sorted(models):
+                if media.part is not None:
+                    # as `_clip` compiles it: the photos only with references, and the
+                    # prepared frame named «Image 1» when it travels among them
+                    _part_prompt(
+                        brief=brief,
+                        kit=kit,
+                        images=len(media.clip_image_keys) if references else 0,
+                        model=model,
+                        opening_frame=references and uses_prepared_frame(brief),
+                    )
+                    continue
+                copies = _WORST_CASE_CLIP_COPIES if media.prompt_compiler_version >= 1 else (None,)
+                for worst_copy in copies:
+                    clip_prompt(
+                        brief=brief,
+                        kit=kit,
+                        first_frame=bool(media.clip_first_frame_key),
+                        last_frame=bool(media.clip_last_frame_key),
+                        images=len(media.clip_image_keys),
+                        videos=len(media.clip_video_keys),
+                        audios=len(media.clip_audio_keys),
+                        copy=worst_copy,
+                        image_roles=media.clip_image_roles,
+                        model=model,
+                    )
+        except _EffectDoesNotFit as exc:
+            raise BrandReferenceError(
+                ai_effect_does_not_fit_text(part=media.part is not None, spent=False)
+            ) from exc
+        except _PromptOverBudget as exc:
+            raise BrandReferenceError(exc.detail) from exc
+
+    def _stamp_new_brief(self, brief: ContentBrief, kit: BrandKit) -> ContentBrief:
+        """`prepare_new_brief`'s stamping (before EF-13 the whole method)."""
         if self._reference_compiler_version < 9:
             return brief
         roles = brief.media.product_image_roles or tuple(
@@ -5182,7 +5498,9 @@ class MediaProducer:
             wait_for_render_or_give_up,
         )
 
-        recipe = compose_recipe_of(brief, kit)
+        # ED-13: the texts in the Brand Kit's own font file when it holds a usable one,
+        # by the same rules as a local Clip (`_video_text_brand`)
+        recipe = compose_recipe_of(brief, self._video_text_brand(tenant_id, brief, kit))
         if recipe is None:
             return None
         run = current_preparation()
@@ -5245,6 +5563,7 @@ class MediaProducer:
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_NOT_ADDED,
             COMPOSE_NOT_ADDED_TEXT,
+            font_params,
             heavy_gate,
             nine_sixteen_size,
             text_images_params,
@@ -5264,7 +5583,18 @@ class MediaProducer:
                     if cut is not None
                     else video
                 )
-                made = composer.compose(source, recipe, drawn=drawn, stage="preview")
+                made = composer.compose(
+                    source,
+                    recipe,
+                    drawn=drawn,
+                    stage="preview",
+                    # EF-18: the composed preview's contact sheet, inside the gate
+                    contact_sheet=lambda path: keep_contact_sheet(
+                        path,
+                        lambda name, data: save.optional(name, data, JPEG),
+                        source={"stage": "preview", "revision": save.revision},
+                    ),
+                )
         except CheckpointError:
             raise  # the heavy-video gate is taken: the queue retries, nothing lost
         except Exception as exc:  # noqa: BLE001 — the clip is paid for: never lose it
@@ -5280,6 +5610,13 @@ class MediaProducer:
         )
         if texts is not None:
             params["texts"] = texts
+        if made.contact_sheet is not None:
+            # EF-18: lifted to the asset's `params["contact_sheet"]` by `_clip`, with the
+            # key the composed file is kept under
+            params[CONTACT_SHEET_PARAMS_KEY] = dict(made.contact_sheet)
+        font = font_params(recipe)
+        if font is not None:  # ED-13: a text the final draws again uses the same file
+            params["font"] = font
         return made.data, made.poster or thumbnail, made.width, made.height, params
 
     def _held_final(
@@ -5315,6 +5652,8 @@ class MediaProducer:
         asset: Any,
         fitted: FittedVideo,
         raw: Mapping[str, Any],
+        *,
+        prepare: Callable[[bytes], bytes] | None = None,
     ) -> tuple[FittedVideo, dict[str, Any] | None]:
         """EF-14: the preview's frozen recipe (`params["compose"]`, never the brief as it
         reads today) composed again over the fitted 1080p final, with the preview's own
@@ -5323,11 +5662,14 @@ class MediaProducer:
         are missing (a piece from before they were kept). Inside the heavy-video gate:
         with a part join in flight `LocalAssemblyWait` — the final waits for a later
         pass, its raw 1080p kept, never paid again. A failure fails the final; the raw
-        1080p stays kept, so the retry costs nothing more."""
+        1080p stays kept, so the retry costs nothing more. `prepare` (m-25103284: a
+        part's cut to 9:16) runs on the video inside the SAME gate, before the compose,
+        so a join never slips in between."""
         from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
             COMPOSE_PARAMS_KEY,
             FINAL_COMPOSE_FAILED_TEXT,
             heavy_gate,
+            stored_font,
             stored_recipe,
             stored_text_images,
         )
@@ -5336,15 +5678,18 @@ class MediaProducer:
         if recipe is None:
             return fitted, None
         block = dict((asset.params or {}).get(COMPOSE_PARAMS_KEY) or {})
-        drawn = stored_text_images(
-            block,
-            recipe,
-            lambda key: self._store.read(key) if owned_by(tenant_id, key) else None,
-        )
+
+        def read(key: str) -> bytes | None:
+            return self._store.read(key) if owned_by(tenant_id, key) else None
+
+        drawn = stored_text_images(block, recipe, read)
+        # ED-13: the preview's font file, so a text drawn again here is in the same face
+        recipe = stored_font(block, recipe, read)
         try:
             composer = self._composer()
             with heavy_gate():
-                made = composer.compose(fitted.data, recipe, drawn=drawn, stage="final")
+                source = prepare(fitted.data) if prepare is not None else fitted.data
+                made = composer.compose(source, recipe, drawn=drawn, stage="final")
         except CheckpointError:
             raise  # the heavy-video gate is taken: a later pass, nothing paid again
         except Exception as exc:  # noqa: BLE001 — the raw final is kept: a free retry
@@ -5400,9 +5745,44 @@ class MediaProducer:
             allowed=allowed,
             # the worker's preparation: its lease is kept alive while the video is made
             run=run,
-            brand=kit,
+            # ED-13: the texts in the Brand Kit's own font file when it holds a usable one
+            brand=self._video_text_brand(tenant_id, brief, kit),
             render_client=self._render_client,
         )
+
+    def _video_text_brand(self, tenant_id: UUID, brief: ContentBrief, kit: BrandKit) -> Any:
+        """ED-13 (m-25029108): `kit` with the font file its video texts are drawn in
+        (`render.video_text.BrandText`) — only the kit's own file, checked to be a font
+        FreeType draws; anything else (no file, unreadable, not a font) leaves the family to
+        the render service, as before, never failing the piece. A rejected file is recorded
+        with the texts (`font_file_rejected`)."""
+        from qualify_creative.render.video_text import BrandText, TextFont  # noqa: PLC0415
+
+        from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
+
+        try:  # only a video with texts reads the font
+            texts = any(part.text_layers for part in recipe_of(brief))
+        except Exception:  # noqa: BLE001 — the local step reports a bad recipe itself
+            texts = False
+        if self._brand_fonts is None or not texts:
+            return kit
+        brand_id = brief.brand_id
+        try:
+            key = self._brand_fonts(tenant_id=tenant_id, brand_id=brand_id)
+        except Exception as exc:  # the kit's assets unreadable: the family draws
+            logger.warning("brand font unreadable for %s: %s", brand_id, type(exc).__name__)
+            return kit
+        if not key:
+            return kit
+        try:
+            data = self._store.read(key)
+        except Exception as exc:  # R2 down, a missing object
+            logger.warning("brand font %s unreadable: %s", key, type(exc).__name__)
+            return BrandText(kit, None, font_rejected=True)
+        if not font_usable(data):
+            logger.warning("brand font %s is not a font FreeType can draw", key)
+            return BrandText(kit, None, font_rejected=True)
+        return BrandText(kit, TextFont.of(data, key=key))
 
     def _clip(
         self,
@@ -5437,6 +5817,15 @@ class MediaProducer:
         # are settled first, before any cut or spend (the service made the frame before
         # the copy was paid: read back here, the same bytes)
         prepared = self._prepared_opening_frame(tenant_id, draft_id, brief, save)
+        # EF-13 (m-25026589): a measured Seedance template the owner chose — «an object in
+        # a zone of the frame» — is one more line of this same prompt (the gate let it
+        # through only with `QUALIFY_SEEDANCE_EFFECTS` on); read off the brief as stored
+        from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+            SEEDANCE_EFFECT_PARAMS_KEY,
+            seedance_effect_of,
+        )
+
+        ai_effect = seedance_effect_of(brief)
         window: PartWindow | None = None
         extend_source: dict[str, Any] | None = None
         if part is not None:
@@ -5502,8 +5891,9 @@ class MediaProducer:
         )
         # EF-14 (m-25026592): the owner's texts and layers over the clip — drawn by our
         # render service HERE, before anything is paid (a text that does not fit costs
-        # nothing), laid after the logo and the subtitles, frozen for the final
-        composing = self._seedance_compose(brief, kit, tenant_id, save) if part is None else None
+        # nothing), laid after the logo and the subtitles, frozen for the final.
+        # m-25103284: a `reference` part's too, laid BEFORE its logo (below)
+        composing = self._seedance_compose(brief, kit, tenant_id, save)
         fitter = (
             self._require_fitter()
             if logo is not None or subtitled or composing is not None
@@ -5657,6 +6047,18 @@ class MediaProducer:
             params["resolution"] = resolution
             if draft:
                 params["draft"] = True
+            asked_on = str(params.get("model") or self._seedance_model)
+            if ai_effect is not None and not measured_on_model(ai_effect.entry, asked_on):
+                # EF-13 (D5): a bench result holds on its own model only — refused before
+                # the call (`prepare_new_brief` refused it before the copy already)
+                raise _MediaFailed(
+                    FailureReason.PART_FAILED.value
+                    if part is not None
+                    else FailureReason.INVALID_PARAMETERS.value,
+                    # inside the production: the copy was paid and is given back
+                    ai_effect_model_text(spent=True),
+                    raw=f"effect {ai_effect.entry.id} not measured on {asked_on}",
+                )
             reports: list[dict[str, Any]] = []
             collecting = _PROMPT_REPORTS.set(reports)
             try:
@@ -5684,6 +6086,14 @@ class MediaProducer:
                         model=str(params.get("model") or self._seedance_model),
                     )
                 )
+            except _EffectDoesNotFit as exc:
+                # EF-13: inside the production the copy was paid and is given back
+                raise _PromptOverBudget(
+                    ai_effect_does_not_fit_text(part=part is not None, spent=True),
+                    needed=exc.needed,
+                    budget=exc.budget,
+                    unit=exc.unit,
+                ) from exc
             finally:
                 _PROMPT_REPORTS.reset(collecting)
             report = reports[-1] if reports else {}
@@ -5749,6 +6159,13 @@ class MediaProducer:
                     "recortes": "; ".join(
                         f"{trim['line']}: {trim['kept']} de {trim['chars']}"
                         for trim in report.get("trims", ())
+                    ),
+                    # EF-13: the Seedance effect asked in this prompt
+                    "efecto con IA": (
+                        f"{ai_effect.entry.id} v{ai_effect.entry.version} · "
+                        f"{ai_effect.entry.prompt_version} · zona {ai_effect.zone}"
+                        if ai_effect is not None
+                        else "ninguno"
                     ),
                 },
             )
@@ -5846,6 +6263,14 @@ class MediaProducer:
         thumbnail = first
         logo_laid = False
         clean_key: str | None = None
+        compose_params: dict[str, Any] | None = None
+        if part is not None and composing is not None and fitter is not None:
+            # m-25103284: a part's texts and layers go on BEFORE its logo, so the file
+            # the join reads (`clean_key`, without the logo it lays once) carries them
+            video, composed_poster, width, height, compose_params = self._compose_clip(
+                draft_id, fitter, video, (width, height), composing, None, warnings, save
+            )
+            thumbnail = composed_poster or first
         if fitter is not None and logo is not None:
             if part is not None:
                 # VE-10a: the part's file WITHOUT the logo is kept as it came: the join
@@ -5868,7 +6293,7 @@ class MediaProducer:
                     ) from exc
                 logger.warning("clip %s: logo not laid: %s", draft_id, type(exc).__name__)
             else:
-                video, thumbnail = fitted.data, fitted.poster or first
+                video, thumbnail = fitted.data, fitted.poster or thumbnail
                 logo_laid = True
         cues: list[dict[str, Any]] = []
         if fitter is not None and subtitled:
@@ -5885,8 +6310,7 @@ class MediaProducer:
                 cues = []
             else:
                 video, thumbnail = fitted.data, fitted.poster or thumbnail
-        compose_params: dict[str, Any] | None = None
-        if composing is not None and fitter is not None:
+        if part is None and composing is not None and fitter is not None:
             video, thumbnail, width, height, compose_params = self._compose_clip(
                 draft_id, fitter, video, (width, height), composing, thumbnail, warnings, save
             )
@@ -5898,6 +6322,16 @@ class MediaProducer:
             video_key = clean_key  # the logo could not be laid: the clean file is shown
         thumbnail_key = (
             save.optional("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
+        )
+        # EF-18: the composed preview's contact sheet, tied to the file the owner sees
+        sheet = compose_params.pop(CONTACT_SHEET_PARAMS_KEY, None) if compose_params else None
+        contact_sheet = shown_contact_sheet(
+            sheet,
+            video_key,
+            # m-25103284: a part is composed BEFORE its logo, so its clean file carries
+            # the texts too — the sheet shows what the owner sees, logo laid or not
+            clean_key=None if part is not None else clean_key,
+            logo_laid=logo_laid,
         )
         return [
             MediaWrite(
@@ -5979,6 +6413,17 @@ class MediaProducer:
                         "model_revision": result.model_revision,
                         # EF-14: the frozen recipe its final is composed again with
                         **({"compose": compose_params} if compose_params else {}),
+                        **(
+                            {CONTACT_SHEET_PARAMS_KEY: contact_sheet}
+                            if contact_sheet is not None
+                            else {}
+                        ),
+                        # EF-13: which Seedance effect the prompt asked (rule 6)
+                        **(
+                            {SEEDANCE_EFFECT_PARAMS_KEY: ai_effect.provenance}
+                            if ai_effect is not None
+                            else {}
+                        ),
                     },
                     payload,
                     model_id=result.model_id,
@@ -5986,6 +6431,12 @@ class MediaProducer:
                     seconds=media.duration_seconds,
                     cost_usd=cost,
                     finish=FINISH_CLIP,
+                    # EF-13: the final (the draft's own task) keeps the effect's provenance
+                    **(
+                        {SEEDANCE_EFFECT_PARAMS_KEY: ai_effect.provenance}
+                        if ai_effect is not None
+                        else {}
+                    ),
                     # §1 #12: the final reads the mode from here, not from the brief
                     reference_mode=media.clip_reference_mode,
                     # risk 7: the worker's raw provider file, for «Sigue a la anterior»
@@ -7470,7 +7921,12 @@ class MediaProducer:
         except _MediaFailed as exc:
             if "OmniHumanTimeout" in (exc.raw or ""):
                 # the window closed but the render goes on — and is billed when it ends:
-                # record what it will cost, so the budget is not blind to it
+                # record what it will cost, so the budget is not blind to it.
+                # m-25112161: on the task it names, so the row a success writes for that
+                # same task (a later wait by `RESUME_TASK_PARAM`) hits the key and adds
+                # nothing. Today this path runs only WITHOUT a vendor-task binding (with
+                # one `_run` raises `_MediaPending` first), so nothing records the id
+                # to resume it — the key is the guard for the day something does.
                 usage.append(
                     MediaUsage(
                         provider=OMNIHUMAN,
@@ -7483,6 +7939,7 @@ class MediaProducer:
                             self._omnihuman_resolution,
                             billed,
                         ),
+                        vendor_task_id=timed_out_task(exc.raw),
                     )
                 )
                 logger.warning("omnihuman timed out, billed render recorded: %s", exc.raw)
@@ -7501,6 +7958,7 @@ class MediaProducer:
                     int(payload.get("resolution") or self._omnihuman_resolution),
                     billed,
                 ),
+                vendor_task_id=vendor_task_of(payload),
             )
         )
         video = self._download(str(result.media_url))
@@ -8063,6 +8521,9 @@ def _budgeted_report(
     if clean:
         texts = [visual_text(value) for value in texts]
     originals = list(texts)
+    # EF-13: a Seedance effect's line, last and whole (never reworded, cleaned or cut)
+    holder = _EFFECT_SUFFIX.get()
+    suffix = holder.pop() if holder else ""
 
     def render() -> str:
         parts: list[str] = []
@@ -8072,15 +8533,24 @@ def _budgeted_report(
                     parts.append(f"{line.before}{text}{line.after}")
             elif text:
                 parts.append(text)
+        if suffix:
+            parts.append(suffix)
         return " ".join(parts)
 
     prompt = render()
     if budget is None:
         words = prompt_words(prompt)
         if words > VIDEO_PROMPT_MAX_WORDS:
+            if suffix:
+                raise _EffectDoesNotFit(
+                    AI_EFFECT_DOES_NOT_FIT_TEXT,
+                    needed=words,
+                    budget=VIDEO_PROMPT_MAX_WORDS,
+                    unit="words",
+                )
             raise _PromptOverBudget(
-                f"Hay demasiado texto para este video: tiene {words} palabras y admite hasta "
-                f"{VIDEO_PROMPT_MAX_WORDS}. Acorta lo que escribiste y vuelve a intentarlo.",
+                f"Hay demasiado texto para este video: tiene {words} palabras y admite "
+                f"hasta {VIDEO_PROMPT_MAX_WORDS}. Acorta lo que escribiste y vuelve a intentarlo.",
                 needed=words,
                 budget=VIDEO_PROMPT_MAX_WORDS,
                 unit="words",
@@ -8091,7 +8561,10 @@ def _budgeted_report(
         i: line for i, line in enumerate(lines) if isinstance(line, _Flex) and not line.protected
     }
     ranks = sorted({line.rank for line in flexible.values()})
-    for to_floor, order in ((True, ranks), (False, ranks[::-1])):
+    # EF-13: with a Seedance effect the owner's words never go below their floors — an
+    # effect over a topic or shots cut to nothing is not what the owner asked for
+    passes = ((True, ranks),) if suffix else ((True, ranks), (False, ranks[::-1]))
+    for to_floor, order in passes:
         for rank in order:
             group = [i for i, line in flexible.items() if line.rank == rank]
             while len(prompt) > budget:
@@ -8108,6 +8581,10 @@ def _budgeted_report(
         for i, line in flexible.items()
         if texts[i] != originals[i]
     )
+    if suffix and len(prompt) > budget:
+        # EF-13: the owner's words are at their least and the effect still does not fit:
+        # never cut the template (it would ask for something else than what was measured)
+        raise _EffectDoesNotFit(AI_EFFECT_DOES_NOT_FIT_TEXT, needed=len(prompt), budget=budget)
     if strict and len(prompt) > budget:
         raise _PromptOverBudget(
             f"Hay demasiado texto para esta pieza: necesita {len(prompt)} caracteres y admite "
@@ -8157,6 +8634,76 @@ def _video_budget(brief: ContentBrief, model: str | None) -> int | None:
     if brief.media.prompt_compiler_version >= 1:
         return MAX_PROMPT_CHARS
     return _base_budget()  # `main`'s 2,500 while compiling a brief frozen on it
+
+
+#: EF-13: how a refusal of a «Con IA» effect ends — before anything is paid (the checks
+#: before the copy: `prepare_new_brief`, the brand references' preflight), or inside the
+#: production, where the copy was paid and the creations are given back (the refund).
+_NOTHING_SPENT = "No se gastó nada."
+_GIVEN_BACK = "Te devolvimos lo que usaste."
+
+
+def ai_effect_does_not_fit_text(*, part: bool, spent: bool) -> str:
+    """EF-13: the chosen «Con IA» effect does not fit beside the owner's own words (the
+    prompt is compiled with its line inside the budget everywhere, so the checks before
+    the copy see it first: `spent` False there)."""
+    where = "esta parte" if part else "este video"
+    return (
+        f"El efecto no cabe junto a lo que escribiste para {where}. Acorta la descripción "
+        f"o quita el efecto. {_GIVEN_BACK if spent else _NOTHING_SPENT}"
+    )
+
+
+def ai_effect_model_text(*, spent: bool) -> str:
+    """EF-13 (D5): the effect was measured on a Seedance model other than the one this
+    piece would be made with (UX review, 2026-11-24)."""
+    return (
+        "Este efecto no se puede usar en este video. Quítalo o elige otro, y vuelve a "
+        f"intentarlo. {_GIVEN_BACK if spent else _NOTHING_SPENT}"
+    )
+
+
+#: The texts of a refusal before anything is paid — a Clip's (what `_budgeted_report`
+#: raises; a caller that knows the piece is a part, or that the copy was paid, rewords it).
+AI_EFFECT_DOES_NOT_FIT_TEXT = ai_effect_does_not_fit_text(part=False, spent=False)
+AI_EFFECT_MODEL_TEXT = ai_effect_model_text(spent=False)
+
+
+class _EffectDoesNotFit(_PromptOverBudget):
+    """EF-13: the prompt does not fit because of the Seedance effect's line — with the
+    owner's words at their floors (a capped model) or over the word ceiling (2.x)."""
+
+
+#: EF-13: the Seedance effect's line the video prompt being compiled ends with — a
+#: one-shot holder (`_budgeted_report` takes it), set by `_asks_seedance_effect` around
+#: `clip_prompt` and `_part_prompt`, so every caller (the call itself and every check
+#: before it) budgets the same prompt.
+_EFFECT_SUFFIX: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "_EFFECT_SUFFIX", default=None
+)
+
+
+def _asks_seedance_effect(fn: Callable[..., str]) -> Callable[..., str]:
+    """A video prompt function whose brief may carry a Seedance effect (EF-13): its line
+    is compiled INSIDE the budget, at the end, whole — the owner's own words are trimmed
+    first (a capped model) and a prompt that still does not fit is refused
+    (`AI_EFFECT_DOES_NOT_FIT_TEXT`), never sent with a cut template."""
+
+    @functools.wraps(fn)
+    def compile_(*args: Any, **kwargs: Any) -> str:
+        from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+            seedance_effect_of,
+        )
+
+        brief = kwargs.get("brief", args[0] if args else None)
+        effect = seedance_effect_of(brief) if isinstance(brief, ContentBrief) else None
+        token = _EFFECT_SUFFIX.set([effect.line] if effect is not None else None)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _EFFECT_SUFFIX.reset(token)
+
+    return compile_
 
 
 def _selective_references(refs: Sequence[BrandReference]) -> bool:
@@ -8829,6 +9376,11 @@ def _over_budget_error(
     when several were chosen; shorten the «Datos clave» or the resources' notes. Never empty
     notes or a scene that does not exist. Any other refusal keeps its own text."""
     cause = exc.__cause__
+    if isinstance(cause, _EffectDoesNotFit):
+        # EF-13: the Seedance effect's line is what does not fit — say so, not «shorten»
+        return BrandReferenceError(
+            ai_effect_does_not_fit_text(part=brief.media.part is not None, spent=False)
+        )
     if not isinstance(cause, _PromptOverBudget) or isinstance(cause, _TalkingOverBudget):
         return exc
     excess, unit = cause.needed - cause.budget, cause.unit
@@ -8860,6 +9412,7 @@ def _over_budget_error(
     )
 
 
+@_asks_seedance_effect
 @_compiled_for
 def clip_prompt(
     *,
@@ -10305,6 +10858,7 @@ def _part_product(brief: ContentBrief) -> str:
     return _quoted(product, 120) if product else ""
 
 
+@_asks_seedance_effect
 def _part_prompt(
     *,
     brief: ContentBrief,

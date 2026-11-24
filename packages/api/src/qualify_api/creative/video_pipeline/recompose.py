@@ -6,6 +6,17 @@ the owner's texts (`text_layers`) and the library's recorded layers (smoke, embe
 steam: `recipe.is_built_layer`) — the same compose step a `local` piece runs
 (`compose.compose_text_layers`, `qualify_creative.video.layer_overlay`), at cost 0.
 
+m-25103284: so may a `reference` PART of a video by parts (always 9:16: `parts.
+_child_brief`). Its preview is composed the same way, BEFORE its logo, so the file the
+join reads (`params.part.clean_key`, no logo) carries its texts too; its recipe's times
+are moved to where the join's kept interval starts (`kept_start`: an explicit trim of the
+plan), so a text sits where the owner put it in the joined video. Its 1080p final
+(`MediaProducer._final_video` with `media.part`) is composed over the paid raw 1080p with
+the preview's own text PNGs and kept beside it (`draft.composed_final`): the final join
+reads THAT file (`part_final.raw_key`), so the whole video carries every part's texts. A
+compose failing at a part's final fails that final with its raw 1080p kept — the same
+free retry as a Clip's final.
+
 1. **The preview.** `compose_recipe_of(brief, kit)` freezes what the compose needs — the
    texts, the layer uses at their library versions and the Brand Kit's typeface and
    palette (`render.video_text.brand_props`) — and `ClipComposer.draw` asks our render
@@ -33,6 +44,14 @@ steam: `recipe.is_built_layer`) — the same compose step a `local` piece runs
    key already kept takes the file as it is (`reused`) BEFORE any fit, subtitle or
    compose, and the raw 1080p is never paid twice (`raw_final`). A compose that fails
    fails the final with the raw 1080p kept, so «Reintentar» costs the vendor nothing.
+3. **The font file** (ED-13, m-25029108). As for a local Clip, the producer hands the
+   Brand Kit's own font file when it holds one FreeType draws (`_video_text_brand`:
+   `render.video_text.BrandText`); the recipe names it in its brand (`fontFiles.heading`
+   = `asset://<sha256>`, so it is in the digest — a recipe without one hashes as before)
+   and keeps where it lies (`params["compose"]["font"]`: key + sha256, `font_params`).
+   The final reads it back (`stored_font`, checked by sha256 and FreeType) so a text it
+   draws again is in the preview's face; a file that is rejected, or gone by the final,
+   lets the family draw, recorded as `font_file_rejected` — never a failed piece.
 
 Where it runs. Only in the creative worker (`process.is_worker_process`): elsewhere the
 compose fails closed — the preview keeps its clip with the warning, the final fails with
@@ -45,9 +64,9 @@ never overlaps a join inside the worker's 768m (measured: 416 MiB anon for a 15 
 with 3 texts and 3 layers, `deploy/measure/recompose-memory.sh`).
 
 What is still refused before any row (`recipe.unbuilt_recipe_problems`): texts or layers
-over a PART made by Seedance (its final is joined by `part_final`/`part_join`, which do
-not compose yet), over an `edit` Clip (its size is the reel's, any aspect) or a Clip that
-is not 9:16, and any effect that is not a built layer. Pieces stamped
+over an `edit` or `extend` piece (its size is the reel's, any aspect; «Sigue a la
+anterior» continues the previous part's own vendor file), over a Clip that is not 9:16,
+and any effect that is not a built layer. Pieces stamped
 `effects_pipeline_version` 0 are never composed again (out of scope for EF-14).
 
 Cost: US$0 (our render service and PyAV); the price guard of the Seedance call is
@@ -62,7 +81,7 @@ import logging
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -103,20 +122,27 @@ FINAL_COMPOSE_FAILED_TEXT = (
 )
 
 
-def _loose_clip_part(brief: ContentBrief) -> Any | None:
+def _clip_part(brief: ContentBrief) -> Any | None:
+    """The one part of a Clip's recipe — a normal Clip's or a part's child's — or None."""
     from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
 
-    if brief.kind is not ContentKind.CLIP or brief.media.part is not None:
+    if brief.kind is not ContentKind.CLIP:
         return None
     parts = recipe_of(brief)
     return parts[0] if parts else None
 
 
+def seedance_composes(mode: str, fmt: ContentFormat) -> bool:
+    """Whether the compose runs over a piece of `mode` made by Seedance at `fmt`:
+    `reference` only, 9:16. Pure."""
+    return mode == "reference" and fmt in COMPOSE_FORMATS
+
+
 def seedance_compose_allowed(brief: ContentBrief) -> bool:
-    """Whether the compose runs over this piece made by Seedance: a normal Clip (no
-    parent), `reference` mode, 9:16. Pure."""
-    part = _loose_clip_part(brief)
-    return part is not None and part.mode == "reference" and brief.format in COMPOSE_FORMATS
+    """Whether the compose runs over this piece made by Seedance: a Clip — a normal one
+    or (m-25103284) a part of a video by parts — in `reference` mode, 9:16. Pure."""
+    part = _clip_part(brief)
+    return part is not None and seedance_composes(part.mode, brief.format)
 
 
 def _built_layers(effects: Sequence[EffectUse]) -> tuple[EffectUse, ...]:
@@ -129,7 +155,7 @@ def composes_over_seedance(brief: ContentBrief) -> bool:
     """A Clip made by Seedance that carries texts or library layers to compose. Pure."""
     if not seedance_compose_allowed(brief):
         return False
-    part = _loose_clip_part(brief)
+    part = _clip_part(brief)
     return bool(part.text_layers or _built_layers(part.effects))
 
 
@@ -144,14 +170,60 @@ class ComposeRecipe:
     effects: tuple[EffectUse, ...] = ()
     brand: Mapping[str, Any] = field(default_factory=dict)
     effects_pipeline_version: int = SEEDANCE_COMPOSE_EFFECTS_VERSION
+    #: ED-13 (m-25029108): the Brand Kit's own font file the texts are drawn in
+    #: (`render.font_asset.TextFont`) — never frozen itself: the brand names it by its
+    #: sha256 (`fontFiles.heading`, so it is in the digest) and the bytes stay beside the
+    #: piece (`font_params` / `stored_font`). None = the family draws.
+    font: Any = field(default=None, compare=False, repr=False)
+    #: The kit held a file FreeType cannot draw: its family drew, recorded with the texts.
+    font_rejected: bool = field(default=False, compare=False)
 
     @property
     def empty(self) -> bool:
         return not self.text_layers and not self.effects
 
+    @property
+    def font_ref(self) -> str | None:
+        """The `asset://<sha256>` of the font file the texts were frozen with, or None."""
+        files = self.brand.get("fontFiles") if isinstance(self.brand, Mapping) else None
+        ref = files.get("heading") if isinstance(files, Mapping) else None
+        return str(ref) if ref else None
+
+    def text_brand(self, *, drawing: bool = True) -> Any:
+        """What the compose step draws the texts with: the frozen brand and, when the
+        recipe names a font file, its bytes (`render.video_text.BrandText`) — exactly as
+        a local Clip hands it. Named but not at hand (the file is gone by the final):
+        when a text must be drawn (`drawing`) its family draws, recorded as
+        `font_file_rejected`; the piece never fails for it."""
+        from qualify_creative.render.video_text import BrandText  # noqa: PLC0415
+
+        font = self.font if self.font is not None and self.font.ref == self.font_ref else None
+        missing = drawing and font is None and self.font_ref is not None
+        if font is None and not self.font_rejected and not missing:
+            return dict(self.brand)
+        return BrandText(dict(self.brand), font, font_rejected=self.font_rejected or missing)
+
     def to_params(self) -> dict[str, Any]:
+        # ED-13 (m-25029108): a text's animations are written only when the owner chose
+        # other than the type's defaults, so a recipe frozen before them keeps its digest
+        # (`box_color` / `text_color` None are never even dumped: `VideoTextLayer`'s
+        # serializer drops them)
+        unchosen = {
+            "motion_in": "fade",
+            "motion_out": "none",
+            "box_color": None,
+            "text_color": None,
+            "text_size": "medium",
+        }
         return {
-            "text_layers": [layer.model_dump(mode="json") for layer in self.text_layers],
+            "text_layers": [
+                {
+                    k: v
+                    for k, v in layer.model_dump(mode="json").items()
+                    if k not in unchosen or v != unchosen[k]
+                }
+                for layer in self.text_layers
+            ],
             "effects": [use.model_dump(mode="json") for use in self.effects],
             "brand": dict(self.brand),
             "effects_pipeline_version": self.effects_pipeline_version,
@@ -178,21 +250,111 @@ class ComposeRecipe:
 
 def compose_recipe_of(brief: ContentBrief, kit: Any) -> ComposeRecipe | None:
     """The recipe to compose over this piece's Seedance clip, or None (nothing to compose,
-    or a piece the compose does not run over). Pure but for the cached effects library."""
-    from qualify_creative.render.video_text import brand_props  # noqa: PLC0415
+    or a piece the compose does not run over). Pure but for the cached effects library.
+
+    ED-13: `kit` may be a `render.video_text.BrandText` (the producer's
+    `_video_text_brand`, as for a local Clip): its font file is named in the brand
+    (`fontFiles.heading`, so its sha256 is in the digest) and carried for the drawing; a
+    rejected file leaves the family, recorded. A plain kit freezes exactly as before."""
+    from qualify_creative.render.video_text import brand_props, heading_font_of  # noqa: PLC0415
 
     if not seedance_compose_allowed(brief):
         return None
     if brief.media.effects_pipeline_version < SEEDANCE_COMPOSE_EFFECTS_VERSION:
         return None  # out of scope: pieces from before the engine are made as they were
-    part = _loose_clip_part(brief)
+    part = _clip_part(brief)
+    shift = kept_start(brief)
     recipe = ComposeRecipe(
-        text_layers=tuple(part.text_layers),
-        effects=_built_layers(part.effects),
+        text_layers=tuple(_shifted_text(layer, shift) for layer in part.text_layers),
+        effects=tuple(_shifted_effect(use, shift) for use in _built_layers(part.effects)),
         brand=brand_props(kit),
         effects_pipeline_version=brief.media.effects_pipeline_version,
+        font=heading_font_of(kit),
+        font_rejected=getattr(kit, "font_rejected", False) is True,
     )
     return None if recipe.empty else recipe
+
+
+def kept_start(brief: ContentBrief) -> float:
+    """m-25103284: where, in a part's own Seedance file, the interval the join keeps
+    starts (`part_join.part_span`: an explicit trim of the plan, VE-06). The recipe's
+    times are seconds of the part as it shows in the video, so they are moved by it. 0
+    for a normal Clip (its whole file is the piece) and for a part kept from its start.
+    Pure."""
+    part = brief.media.part
+    if part is None:
+        return 0.0
+    # part_join imports media, which imports this module lazily
+    from qualify_api.creative.part_join import part_span  # noqa: PLC0415
+
+    start, _ = part_span(
+        {
+            "part": {
+                "mode": part.mode,
+                "seconds": part.seconds,
+                "generation_seconds": part.generation_seconds,
+                "trim_start_s": part.trim_start_s,
+                "trim_end_s": part.trim_end_s,
+            }
+        }
+    )
+    return float(start)
+
+
+def _shifted_text(layer: VideoTextLayer, shift: float) -> VideoTextLayer:
+    if shift <= 0:
+        return layer
+    end = None if layer.end_s is None else round(layer.end_s + shift, 3)
+    return layer.model_copy(update={"start_s": round(layer.start_s + shift, 3), "end_s": end})
+
+
+def _shifted_effect(use: EffectUse, shift: float) -> EffectUse:
+    if shift <= 0 or use.start_s is None or use.end_s is None:
+        return use  # no times: over the whole file, the kept interval included
+    return use.model_copy(
+        update={"start_s": round(use.start_s + shift, 3), "end_s": round(use.end_s + shift, 3)}
+    )
+
+
+def font_params(recipe: ComposeRecipe) -> dict[str, Any] | None:
+    """ED-13: where the font file of `recipe` is kept (the Brand Kit's own object: its key
+    and sha256) — `params["compose"]["font"]`, read back by `stored_font` for the final.
+    None when the texts are not drawn in a file."""
+    font = recipe.font
+    if font is None or not font.key or font.ref != recipe.font_ref:
+        return None
+    return {"key": str(font.key), "sha256": str(font.sha256)}
+
+
+def stored_font(
+    block: Mapping[str, Any], recipe: ComposeRecipe, read: Callable[[str], bytes | None]
+) -> ComposeRecipe:
+    """ED-13: `recipe` (read back by `stored_recipe`) with the font file its texts were
+    frozen with (`params["compose"]["font"]`), read back and checked by sha256 against
+    the brand's `fontFiles.heading` and again by FreeType — so a text the final draws
+    again is drawn in the preview's face. The recipe as it is when it names no file, or
+    when the file is gone, altered or unreadable (`text_brand` then lets the family
+    draw, recorded); never raises. `read(key)` returns None for a key that is not the
+    business's."""
+    from qualify_creative.compose import font_usable  # noqa: PLC0415
+    from qualify_creative.render.font_asset import TextFont  # noqa: PLC0415
+
+    ref = recipe.font_ref
+    entry = block.get("font")
+    if ref is None or not isinstance(entry, Mapping) or not isinstance(entry.get("key"), str):
+        return recipe
+    if ref != f"asset://{entry.get('sha256')}":
+        return recipe
+    try:
+        data = read(entry["key"])
+    except Exception:  # noqa: BLE001 — gone or unreadable: the family draws, recorded
+        logger.warning("compose font %s unreadable: its family draws", entry.get("key"))
+        return recipe
+    if not data or hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+        return recipe
+    if not font_usable(data):
+        return recipe
+    return replace(recipe, font=TextFont.of(data, key=entry["key"]))
 
 
 def stored_recipe(params: Mapping[str, Any] | None) -> ComposeRecipe | None:
@@ -212,6 +374,15 @@ def stored_recipe(params: Mapping[str, Any] | None) -> ComposeRecipe | None:
     if recipe.empty or recipe.effects_pipeline_version < SEEDANCE_COMPOSE_EFFECTS_VERSION:
         return None
     return recipe
+
+
+def part_final_composes(params: Mapping[str, Any] | None) -> bool:
+    """m-25103284: whether this asset's final is a PART's raw 1080p composed again with a
+    frozen recipe — minutes of decoding Seedance's 10-bit H.265 (measured ~3 min for
+    15 s on amd64), so the creative worker runs it off its main loop with the lease kept
+    (`worker.pipeline.BackgroundJoins`) instead of inline. Pure."""
+    data = params or {}
+    return isinstance(data.get("part"), Mapping) and stored_recipe(data) is not None
 
 
 def text_images_params(
@@ -440,6 +611,9 @@ class ComposedClip:
     height: int
     poster: bytes | None
     params: Mapping[str, Any]
+    #: EF-18: the composed video's contact sheet block (`contact_sheet.keep_contact_
+    #: sheet`), when the caller asked for it and it was kept; None otherwise
+    contact_sheet: Mapping[str, Any] | None = None
 
 
 def _sha256(data: bytes) -> str:
@@ -459,6 +633,20 @@ def _poster(path: Path) -> bytes | None:
     except Exception:  # noqa: BLE001 — a thumbnail is a nicety, never the piece
         logger.warning("composed clip poster not made", exc_info=True)
     return None
+
+
+def _sheet_of(
+    hook: Callable[[Path], Mapping[str, Any] | None] | None, path: Path
+) -> Mapping[str, Any] | None:
+    """EF-18: the contact sheet hook run on the composed file — whatever it raises, the
+    composed clip (paid for) goes on without a sheet."""
+    if hook is None:
+        return None
+    try:
+        return hook(path)
+    except Exception:  # noqa: BLE001 — a review aid never costs the clip its texts
+        logger.warning("composed clip contact sheet failed: left out", exc_info=True)
+        return None
 
 
 class ClipComposer:
@@ -488,7 +676,9 @@ class ClipComposer:
         )
 
         try:
-            return draw_text_layers(recipe.text_layers, recipe.brand, render_client=self._client())
+            return draw_text_layers(
+                recipe.text_layers, recipe.text_brand(), render_client=self._client()
+            )
         except TextLayerRefused as exc:
             raise ClipComposeFailed(
                 exc.owner_message,
@@ -517,11 +707,16 @@ class ClipComposer:
         *,
         drawn: Sequence[Any] | None = None,
         stage: str,
+        contact_sheet: Callable[[Path], Mapping[str, Any] | None] | None = None,
     ) -> ComposedClip:
         """`recipe` laid over `video` (already 9:16 within the overlay's tolerance): the
         layers under the texts in one pass. `drawn`: the texts `draw` made (None = drawn
         now). `stage`: `preview` or `final` (provenance). Writes only to a temporary
-        folder; `video` is never touched. Raises `ClipComposeFailed`."""
+        folder; `video` is never touched. Raises `ClipComposeFailed`.
+
+        `contact_sheet` (EF-18): called with the composed file while it is on disk (and
+        the caller's heavy-video gate held); what it returns is `ComposedClip.
+        contact_sheet`. It must not raise (`contact_sheet.keep_contact_sheet` does not)."""
         from qualify_creative.effects import NotALibraryLayer, load_effects  # noqa: PLC0415
         from qualify_creative.video import layer_overlay  # noqa: PLC0415
         from qualify_creative.video.layer_overlay import TimedEffectLayer  # noqa: PLC0415
@@ -530,10 +725,18 @@ class ClipComposer:
         from qualify_api.creative.video_pipeline.compose import (  # noqa: PLC0415
             ComposeUnavailable,
             TextLayerRefused,
+            _typed_ready,
             compose_text_layers,
         )
 
+        given = drawn is not None
         images = tuple(drawn) if drawn is not None else self.draw(recipe)
+        # ED-13: a text kept from the preview is laid as drawn; only one drawn here (none
+        # given, or «Letra por letra» needing its letters apart) needs the font at hand
+        redraws = not given or any(
+            layer.motion_in == "typewriter" and not _typed_ready(image)
+            for layer, image in zip(recipe.text_layers, images, strict=False)
+        )
         library = load_effects()
         try:
             layers = []
@@ -558,7 +761,7 @@ class ClipComposer:
                         src,
                         out,
                         recipe.text_layers,
-                        recipe.brand,
+                        recipe.text_brand(drawing=redraws),
                         render_client=self._client(),
                         effect_layers=tuple(layers),
                         drawn_images=images,
@@ -575,6 +778,7 @@ class ClipComposer:
                 raise self._ours(exc) from exc
             data = out.read_bytes()
             poster = _poster(out)
+            sheet = _sheet_of(contact_sheet, out)
         if layers:
             params["effect_layers"] = {
                 "compose_version": layer_overlay.LAYER_COMPOSE_VERSION,
@@ -597,6 +801,7 @@ class ClipComposer:
                 "cost_usd": "0.00",
                 **params,
             },
+            contact_sheet=sheet,
         )
 
     @staticmethod
@@ -625,8 +830,13 @@ __all__ = [
     "ComposedClip",
     "compose_recipe_of",
     "composes_over_seedance",
+    "kept_start",
+    "font_params",
     "nine_sixteen_size",
+    "part_final_composes",
     "seedance_compose_allowed",
+    "seedance_composes",
+    "stored_font",
     "stored_recipe",
     "stored_text_images",
     "text_images_params",

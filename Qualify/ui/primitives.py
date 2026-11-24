@@ -865,6 +865,7 @@ def choice_card(
     disabled: rx.Var[bool] | bool = False,
     padding: str = "1rem 1.25rem",
     checked: rx.Var[bool] | bool | None = None,
+    soft_off: rx.Var[bool] | None = None,
     **props: Any,
 ) -> rx.Component:
     """A card that is a choice: a real ``<button>`` (§8 — never a box with ``on_click``)
@@ -877,7 +878,10 @@ def choice_card(
     next to the title. Put the check mark the kit draws
     in the corner with ``choice_card_check()`` when the ring alone would be too quiet.
     ``checked``: what ``aria-checked`` says when it differs from the ring (a tile drawn
-    on while it is still loading is not chosen yet); ``None`` = ``selected``."""
+    on while it is still loading is not chosen yet); ``None`` = ``selected``.
+    ``soft_off`` (ED-13): drawn off and `aria-disabled`, yet still focusable and
+    clickable — the handler refuses it and a visible line nearby says why (like «Abajo»
+    with the subtitles)."""
     is_disabled = disabled
     on = rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card")
     class_name = (
@@ -890,6 +894,9 @@ def choice_card(
         if isinstance(is_disabled, rx.Var)
         else ("true" if is_disabled else "false")
     )
+    if soft_off is not None:
+        class_name = rx.cond(soft_off, "q-choice-card q-choice-card--off", on)
+        aria_disabled = rx.cond(soft_off, "true", "false")
     return rx.el.button(
         *children,
         type="button",

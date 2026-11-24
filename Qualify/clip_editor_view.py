@@ -18,6 +18,13 @@ Top to bottom (the proposal `.claude/epica-efectos-propuesta-linea-de-tiempo.md`
   the own video is trimmed or lengthened inside its video with its two handles on the
   timeline (finger, mouse, ←/→), free.
 
+ED-13 (m-25029108): «+ Texto» puts a text from the marker to the end and opens its
+panel «Texto en pantalla» (`ui.text_panel`) in the side panel — up to 3 texts, each in
+its own seconds and place; two in one place at once
+(or one «Abajo» under the subtitles) show the warning and stop «Siguiente». Deivid
+2026-11-23: its times change only on the timeline; its panel picks its background and
+how it enters and leaves; the preview draws it in the brand's typography and colours.
+
 ED-04 (m-25026627): every effect put is a block of «Efectos», moved and trimmed like a
 text; «Efectos» has rows that come and go on their own (Deivid 2026-11-20), and an effect
 goes from one to another by dragging it up or down (↑/↓ on it with the keyboard).
@@ -39,7 +46,7 @@ from __future__ import annotations
 import reflex as rx
 
 from . import clip_editor_vm as vm
-from . import editor_preview_contract as contract
+from . import clip_texts_vm
 from .creative_state import CreativeState
 from .parts_start_state import PartsStartState
 from .parts_start_view import parts_start_card
@@ -57,6 +64,7 @@ from .ui.primitives import (
     dropzone,
     tone_badge,
 )
+from .ui.text_panel import text_panel
 from .ui.timeline import (
     timeline,
     timeline_actions,
@@ -100,7 +108,16 @@ def _preview() -> rx.Component:
             S.clip_seq_resolve,
             rx.box(display="none", on_mount=S.resolve_clip_preview),
         ),
+        _brand_font(),
         class_name="q-edit__preview",
+        # ED-13 B: the texts in the brand's typography (`.q-edit-preview__text-line`)
+        style={
+            clip_texts_vm.FONT_VAR: rx.cond(
+                S.clip_text_font_family != "",
+                S.clip_text_font_family,
+                "var(--heading-font-family, inherit)",
+            )
+        },
     )
 
 
@@ -148,47 +165,61 @@ def _idea() -> rx.Component:
     )
 
 
-# -- the text (its flow and its block's panel) ----------------------------------------------
+# -- «Texto en pantalla» (ED-13 m-25029108) ------------------------------------------------
 
 
-#: The text's «Arriba · En el medio · Abajo»: fills its row, never cut (assets/qualify.css).
-TEXT_PLACE_CLASS = "q-seg-fill"
+def _text_panel() -> rx.Component:
+    """The text's panel (`ui.text_panel`), on `clip_text_panel_row`: in the side panel
+    while «+ Texto» puts it, or under the timeline when its block is chosen (A1, Deivid
+    2026-11-23: its times change on the timeline; no «¿En qué partes va?»)."""
+    row = S.clip_text_panel_row
+    return text_panel(
+        row,
+        on_text=lambda value: S.set_clip_text_value(row["uid"], value),
+        on_text_commit=lambda value: S.commit_clip_text(row["uid"], value),
+        on_place=S.set_clip_text_place,
+        on_fade_step=S.step_clip_text_fade,
+        on_layout=S.set_clip_text_layout,
+        on_motion_in=S.set_clip_text_motion_in,
+        on_motion_out=S.set_clip_text_motion_out,
+        on_show_motion=S.show_clip_text_motion,
+        on_done=S.done_clip_block,
+        warning=S.clip_text_warning,
+        colors=S.clip_text_color_rows,
+        on_color=S.set_clip_text_box_color,
+        on_text_color=S.set_clip_text_text_color,
+        on_size=S.set_clip_text_size,
+    )
 
 
-def _text_block() -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            rx.el.label(vm.TEXT_TITLE, html_for="clip-edit-text", class_name="q-field-label"),
-            tone_badge(vm.FREE, "ok"),
-            spacing="2",
-            align="center",
+def _text_tab() -> rx.Component:
+    """«Texto en pantalla» in the side panel: the panel of the text «+ Texto» just put;
+    none could be put (no photo or video yet, or 3 texts already): why, and what to
+    do."""
+    return rx.cond(
+        S.clip_text_panel_on,
+        _text_panel(),
+        rx.text(S.clip_text_add_reason, size="2", color=T.TEXT_MUTED, role="status"),
+    )
+
+
+def _brand_font() -> rx.Component:
+    """ED-13 B: the brand's typography for the preview's texts — its uploaded file as
+    `@font-face` (built by Var concatenation: the CSS braces would read as Var
+    placeholders), else its family's Google Fonts stylesheet; nothing without one."""
+    head = rx.Var.create(
+        f'@font-face {{ font-family: "{clip_texts_vm.BRAND_FONT_FAMILY}"; src: url("'
+    ).to(str)
+    tail = rx.Var.create('"); font-display: swap; }').to(str)
+    return rx.fragment(
+        rx.cond(
+            S.clip_brand_font_path != "",
+            rx.el.style(head + BACKEND_BASE + S.clip_brand_font_path + tail),
         ),
-        rx.input(
-            value=S.clip_overlay_text,
-            on_change=S.set_clip_overlay_text,
-            on_blur=S.commit_clip_overlay_text,
-            id="clip-edit-text",
-            max_length=contract.VIDEO_TEXT_MAX,
-            size="3",
-            width="100%",
+        rx.cond(
+            S.clip_text_font_css_url != "",
+            rx.el.link(rel="stylesheet", href=S.clip_text_font_css_url),
         ),
-        # the example under the field, like «Idea»'s (never a placeholder)
-        rx.text(vm.TEXT_EXAMPLE, size="1", color=T.TEXT_MUTED),
-        rx.segmented_control.root(
-            *(
-                rx.segmented_control.item(label, value=place, min_height="44px")
-                for place, label in vm.TEXT_PLACES.items()
-            ),
-            value=S.clip_text_place,
-            on_change=S.set_clip_text_place,
-            size="2",
-            aria_label=vm.TEXT_PLACE_LABEL,
-            # whole inside the side panel at 375 and 1280 px (`.q-seg-fill`)
-            class_name=TEXT_PLACE_CLASS,
-        ),
-        spacing="2",
-        width="100%",
-        align_items="start",
     )
 
 
@@ -514,21 +545,25 @@ def _block_extra() -> rx.Component:
                 ),
             ),
         ),
-        ("text", _text_block()),
         rx.fragment(),
     )
 
 
 def _block_panel() -> rx.Component:
     row = S.clip_tl_chosen
-    return timeline_panel(
-        row,
-        on_nudge=S.nudge_clip_block,
-        on_done=S.done_clip_block,
-        extra=_block_extra(),
-        # a text's and an effect's times move with ±½ s; a video is cut with «Cortar»
-        # (Deivid 2026-11-17: no «Desde/Hasta»); a photo's length is ED-14's
-        nudges=(row["kind"] == "text") | (row["kind"] == "effect"),
+    # ED-13: a text's panel is «Texto en pantalla»'s own (its field, place, times, fade)
+    return rx.cond(
+        S.clip_text_panel_on,
+        _text_panel(),
+        timeline_panel(
+            row,
+            on_nudge=S.nudge_clip_block,
+            on_done=S.done_clip_block,
+            extra=_block_extra(),
+            # an effect's times move with ±½ s; a video is cut with «Cortar» (Deivid
+            # 2026-11-17: no «Desde/Hasta»); a photo's length is ED-14's
+            nudges=row["kind"] == "effect",
+        ),
     )
 
 
@@ -594,15 +629,16 @@ def _flow_drawer(media_body: rx.Component) -> rx.Component:
             S.clip_tl_flow != "",
             rx.vstack(
                 _flow_tabs(),
-                # the first tab's name is its question already: no second line for it
+                # the first tab's name is its question already, and «Texto en pantalla»
+                # has its own title and help: no second line for them
                 rx.cond(
-                    S.clip_tl_flow != vm.FLOW_MEDIA,
+                    (S.clip_tl_flow != vm.FLOW_MEDIA) & (S.clip_tl_flow != vm.FLOW_TEXT),
                     rx.heading(_flow_question(), as_="h3", size="3"),
                 ),
                 rx.match(
                     S.clip_tl_flow,
                     (vm.FLOW_MEDIA, media_body),
-                    (vm.FLOW_TEXT, _text_block()),
+                    (vm.FLOW_TEXT, _text_tab()),
                     (vm.FLOW_EFFECT, _effects()),
                     (vm.FLOW_IDEA, _idea()),
                     rx.fragment(),
@@ -709,7 +745,8 @@ def _timeline_body() -> rx.Component:
             on_action=S.clip_block_action,
             label=S.clip_tl_chosen_label,
             actions=vm.EDITOR_ACTIONS,
-            add_off={"media": S.clip_tl_full},
+            # ED-13 (criterion 2): «Texto» off with 3 texts, said above the «+»
+            add_off={"media": S.clip_tl_full, "text": S.clip_text_full},
             add_note=S.clip_tl_add_note,
         ),
         bar_below=True,

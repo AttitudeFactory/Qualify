@@ -1,0 +1,22 @@
+{
+  "doc": "ED-13 (m-25029108): the letters on a background colour the owner picked for «Franja» / «Recuadro de tu color» — white or near-black, whichever has the higher WCAG 2 contrast (a tie is white). The SAME vectors are checked by the render (layout.ts `boxInk`, server/video-text.test.mjs) and by the screen's mirror (Qualify/editor_preview_contract.py `box_ink`, its tests and packages/api/tests/test_editor_contract_parity.py).",
+  "light": "#FFFFFF",
+  "dark": "#111111",
+  "vectors": [
+    ["#111111", "#FFFFFF"],
+    ["#000000", "#FFFFFF"],
+    ["#FFFFFF", "#111111"],
+    ["#FFE600", "#111111"],
+    ["#0F766E", "#FFFFFF"],
+    ["#F4C2C2", "#111111"],
+    ["#5A2A27", "#FFFFFF"],
+    ["#E11D48", "#FFFFFF"],
+    ["#2563EB", "#FFFFFF"],
+    ["#22C55E", "#111111"],
+    ["#F97316", "#111111"],
+    ["#777777", "#FFFFFF"],
+    ["#767676", "#FFFFFF"],
+    ["#7A7A7A", "#111111"],
+    ["#808080", "#111111"]
+  ]
+}

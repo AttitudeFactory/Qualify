@@ -35,6 +35,11 @@ import local_video_memory as base  # noqa: E402 — the sibling harness: sampler
 SOURCES: tuple[base.Clip, ...] = (
     base.Clip("seedance_final_1080x1920_15.mp4", (1080, 1920), 15, "libx264", 12_000_000),
     base.Clip("seedance_preview_486x864_15.mp4", (486, 864), 15, "libx264", 2_000_000),
+    # m-25103284: a part's final is composed straight over Seedance 2.5's raw 1080p,
+    # 10-bit H.265 as the vendor delivers it (no H.264 fit before)
+    base.Clip(
+        "seedance_raw_1080x1920_15_hevc10.mp4", (1080, 1920), 15, "libx265", 12_000_000, bits=10
+    ),
 )
 #: name → (source, texts, layers)
 CASES: dict[str, tuple[str, int, int]] = {
@@ -42,8 +47,31 @@ CASES: dict[str, tuple[str, int, int]] = {
     "final_3texts": ("seedance_final_1080x1920_15.mp4", 3, 0),
     "final_3layers": ("seedance_final_1080x1920_15.mp4", 0, 3),
     "preview_3texts_3layers": ("seedance_preview_486x864_15.mp4", 3, 3),
+    "part_final_hevc10_3texts_3layers": ("seedance_raw_1080x1920_15_hevc10.mp4", 3, 3),
 }
+#: m-25103284: the part's final holds its raw 1080p ONCE (`_composed_part_final`: no fit)
+SINGLE_COPY = frozenset({"part_final_hevc10_3texts_3layers"})
 LAYERS = ("humo_capa", "brasas_capa", "vapor_capa")
+
+
+def _decoder_override() -> str | None:
+    """m-25103284: `EF14_DECODE=<TYPE>:<threads>` (e.g. `FRAME:2`, `AUTO:4`) replaces the
+    compose's decoder threading (`text_overlay.bound_decoder`, SLICE x2 in the code) for
+    this run — to measure whether more threads shorten a 10-bit H.265 final. Unset: the
+    code's own setting."""
+    spec = os.environ.get("EF14_DECODE", "").strip()
+    if not spec:
+        return None
+    kind, _, threads = spec.partition(":")
+    from qualify_creative.video import layer_overlay, text_overlay
+
+    def bound(stream: Any, threads_: int = int(threads or 2)) -> None:
+        stream.codec_context.thread_count = threads_
+        stream.codec_context.thread_type = kind.upper()
+
+    text_overlay.bound_decoder = bound
+    layer_overlay.bound_decoder = bound
+    return spec
 
 
 def make(folder: Path) -> None:
@@ -60,6 +88,7 @@ def run(folder: Path, case: str) -> None:
     wall0 = time.perf_counter()
     usage0 = resource.getrusage(resource.RUSAGE_SELF)
     source, texts, layers = CASES[case]
+    decode = _decoder_override()
     from qualify_api.creative.video_pipeline.recompose import ClipComposer, ComposeRecipe
     from qualify_creative.schemas import EffectUse, VideoTextLayer
 
@@ -69,7 +98,8 @@ def run(folder: Path, case: str) -> None:
     }
     sampler.enter("read")
     raw = (folder / source).read_bytes()
-    fitted = bytes(raw)  # the raw 1080p and the fitted one, both held as in `_final_video`
+    # the raw 1080p and the fitted one, both held as in `_final_video` (a part: once)
+    fitted = raw if case in SINGLE_COPY else bytes(raw)
     places = ("top", "middle", "bottom")
     recipe = ComposeRecipe(
         text_layers=tuple(
@@ -96,6 +126,7 @@ def run(folder: Path, case: str) -> None:
     peaks = sampler.rounded()
     result = {
         "case": case,
+        "decode": decode or "SLICE:2 (code)",
         "platform": os.uname().machine,
         "source_mib": round(len(raw) / 2**20, 1),
         "texts": texts,

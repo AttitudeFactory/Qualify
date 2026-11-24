@@ -438,9 +438,11 @@ def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) 
 
 def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> None:
     """EF-06 + EF-05: the texts of a `local` Clip or a `local` part are drawn over the
-    built video, so they are no longer `recipe_unavailable`; a text over a part that is
-    NOT `local` (Seedance) still is. EF-08: a library layer over a `local` part is laid
-    too, so it is no longer refused either."""
+    built video, so they are no longer `recipe_unavailable`; m-25103284: neither is a
+    text over a `reference` part made by Seedance (composed over its preview and its
+    final, `test_video_pipeline_recompose_parts.py`), while one over an `extend` part
+    still is. EF-08: a library layer over a `local` part is laid too, so it is no longer
+    refused either."""
     from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
 
     local_clip = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(WORDS,))
@@ -457,24 +459,47 @@ def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> No
         VideoPartPlan(
             mode="local", seconds=5, segments=(_stretch(),), description="Tres.", effects=(SMOKE,)
         ),
+        VideoPartPlan(mode="extend", seconds=4, description="Cuatro.", text_layers=(WORDS,)),
     )
     assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)] == [
-        ("recipe_unavailable", 1, "text_layers"),
+        ("recipe_unavailable", 4, "text_layers"),
+    ]
+
+
+def test_an_edit_part_with_texts_and_smoke_stays_refused() -> None:
+    """m-25103284 composes over a `reference` part only: an «Igual al original» (`edit`)
+    part comes out at the reel's own size, so its texts and layers stay refused."""
+    from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
+
+    parent = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(
+            mode="edit",
+            seconds=4,
+            description="Dos.",
+            clip_video_keys=(f"uploads/{TENANT_ID}/reel.mp4",),
+            text_layers=(WORDS,),
+            effects=(SMOKE,),
+        ),
+    )
+    assert sorted((p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)) == [
+        ("recipe_unavailable", 2, "effects"),
+        ("recipe_unavailable", 2, "text_layers"),
     ]
 
 
 def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """EF-05 draws only the `scrim` over a video: a `local` Clip whose text asks for the
-    band is refused as `unknown_layout` on that text — before any row or charge — and not
-    as `recipe_unavailable`."""
+    """A video text draws ED-13's four backgrounds (m-25029108): a `local` Clip whose text
+    asks for another ADR 49 design (the plate) is refused as `unknown_layout` on that text —
+    before any row or charge — and not as `recipe_unavailable`."""
     from qualify_creative.layer_spec import LayoutId
 
     from qualify_api.creative.queue_dispatch import SWITCH
 
     monkeypatch.setenv(SWITCH, "queue")
-    band = VideoTextLayer(text="Hola", layout_id=LayoutId.BAND, layout_version=LAYOUT_VERSION)
+    band = VideoTextLayer(text="Hola", layout_id=LayoutId.PLATE, layout_version=LAYOUT_VERSION)
     brief = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(band,))
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     with pytest.raises(RecipeRefused) as refused:
@@ -483,11 +508,14 @@ def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
         ("unknown_layout", None, "text_layers[0].layout_id")
     ]
     assert repo.drafts == {} and dispatcher.calls == []
-    # the scrim, at the catalog's version, goes on
-    scrim = band.model_copy(update={"layout_id": LayoutId.SCRIM})
-    ok = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(scrim,))
-    draft = service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=ok, user_id=USER_ID)
-    assert draft in repo.drafts
+    # the four backgrounds, at the catalog's version, go on
+    for layout_id in (LayoutId.SCRIM, LayoutId.BAND, LayoutId.BRAND_FILL, "shadow"):
+        fine = band.model_copy(update={"layout_id": layout_id})
+        ok = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(fine,))
+        draft = service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=ok, user_id=USER_ID
+        )
+        assert draft in repo.drafts
 
 
 def test_a_parent_with_an_unbuilt_recipe_is_refused_but_an_offered_plan_may_be_saved(
@@ -583,7 +611,9 @@ def test_a_part_with_a_recipe_makes_no_part_and_charges_nothing() -> None:
     )
     parts, _, repo, ledger, dispatcher, router, parent = world(plan=plan)
     brief = repo.briefs[repo.drafts[parent].brief_id]
-    smoky = plan[1].model_copy(update={"effects": (SMOKE,)})
+    # m-25103284: smoke over a `reference` part is composed now; fast motion as an
+    # effect is still not made
+    smoky = plan[1].model_copy(update={"effects": (FAST,)})
     repo.briefs[repo.drafts[parent].brief_id] = brief.model_copy(
         update={"media": brief.media.model_copy(update={"parts": (plan[0], smoky)})}
     )

@@ -308,7 +308,9 @@
        failed, shows its picture (or a card with its name) for its time — and, if it
        failed, `PREVIEW_BROKEN` — and the sequence goes on.
      - Texts and effects (`[data-seq-start]`/`[data-seq-end]`) get `data-on` while
-       `start <= t < end`.
+       `start <= t < end`. ED-13: a text's entrance and exit are drawn from the same `t`
+       (`seqPaintText`: `--q-a`, `--q-dy`, `--q-s`, «Letra por letra»), and
+       `seq.showMotion` plays a chosen motion once.
      - The time is written every frame (`requestAnimationFrame`) into the preview's
        «{t} de {total}» and the linked timeline's playhead (the `[data-q-timeline]` in the
        same `[data-edit-sync]` box): DOM only. The screen hears the time only on a pause
@@ -450,6 +452,79 @@
     }
   }
 
+  /* ED-13 (m-25029108): a text's entrance and exit on the clock — its alpha, how far
+     down and how big (`core().textFrame`, the contract's curves and the text's own
+     `fade`), as CSS variables on the overlay; «Letra por letra» lays the whole text out
+     in its `[data-seq-type]` line, a span per character (React renders nothing there),
+     so the lines never reflow while typing, and shows the letters typed so far. Paused
+     or dragged, the same `t` gives the same look. */
+  function seqPaintText(el, text, t, on, still) {
+    var line = el.querySelector("[data-seq-type]");
+    var typed = on && text && text.motion_in === "typewriter" && line ? seqTypeLayout(line, text) : null;
+    var timed = typed ? Object.assign({}, text, { breaks: typed.breaks }) : text;
+    var frame = on && text ? core().textFrame(timed, t, still) : { a: 0, dy: 0, s: 1, chars: -1 };
+    var a = String(frame.a);
+    var dy = String(frame.dy);
+    var s = String(frame.s);
+    if (el.style.getPropertyValue("--q-a") !== a) el.style.setProperty("--q-a", a);
+    if (el.style.getPropertyValue("--q-dy") !== dy) el.style.setProperty("--q-dy", dy);
+    if (el.style.getPropertyValue("--q-s") !== s) el.style.setProperty("--q-s", s);
+    var typing = frame.chars >= 0;
+    if (typing !== el.hasAttribute("data-typing")) el.toggleAttribute("data-typing", typing);
+    if (typed) {
+      // the render's letters (`letter_boxes`): every character but a space a line break
+      // eats; letter i shows once `chars` > i
+      var n = 0;
+      for (var i = 0; i < typed.spans.length; i++) {
+        var show = typing && !typed.eaten[i] && n < frame.chars;
+        if (!typed.eaten[i]) n += 1;
+        var vis = show ? "" : "hidden";
+        if (typed.spans[i].style.visibility !== vis) typed.spans[i].style.visibility = vis;
+      }
+    }
+  }
+
+  /* «Letra por letra»: the `[data-seq-type]` line holds the text as the render types it
+     (`core().typedChars`), one span per character, laid out like the whole line it covers.
+     The spaces where the browser breaks the line are not letters in the final video (the
+     render reports no box for them): `eaten` marks them and `breaks` counts them, so the
+     clock splits the typing time between the same letters. Cached per text and size (a
+     late font that rewraps the line changes its height). */
+  function seqTypeLayout(line, text) {
+    var chars = core().typedChars(text.text);
+    var key = chars.join("");
+    if (line.__qTypeKey !== key) {
+      line.textContent = "";
+      chars.forEach(function (ch) {
+        var span = document.createElement("span");
+        span.textContent = ch;
+        span.style.visibility = "hidden";
+        line.appendChild(span);
+      });
+      line.__qTypeKey = key;
+      line.__qTypeSize = "";
+    }
+    var spans = line.children;
+    var size = line.clientWidth + "x" + line.clientHeight;
+    if (line.__qTypeSize !== size || !line.__qTypeEaten) {
+      var eaten = [];
+      var breaks = 0;
+      for (var i = 0; i < spans.length; i++) {
+        var broke =
+          spans[i].textContent === " " &&
+          i > 0 &&
+          i + 1 < spans.length &&
+          spans[i + 1].offsetTop > spans[i - 1].offsetTop + 1;
+        eaten.push(broke);
+        if (broke) breaks += 1;
+      }
+      line.__qTypeEaten = eaten;
+      line.__qTypeBreaks = breaks;
+      line.__qTypeSize = size;
+    }
+    return { spans: spans, eaten: line.__qTypeEaten, breaks: line.__qTypeBreaks };
+  }
+
   function seqPaint(host) {
     var st = seqState(host);
     var c = core();
@@ -459,11 +534,13 @@
     if (out && out.textContent !== text) out.textContent = text;
     var texts = c.activeAt(st.seq.texts, st.t);
     var effects = c.activeAt(st.seq.effects, st.t);
-    Array.prototype.forEach.call(host.querySelectorAll("[data-seq-text]"), function (el) {
-      var on = texts.indexOf(parseInt(el.getAttribute("data-seq-text"), 10)) >= 0;
-      if (on !== el.hasAttribute("data-on")) el.toggleAttribute("data-on", on);
-    });
     var still = reducedMotion();
+    Array.prototype.forEach.call(host.querySelectorAll("[data-seq-text]"), function (el) {
+      var index = parseInt(el.getAttribute("data-seq-text"), 10);
+      var on = texts.indexOf(index) >= 0;
+      if (on !== el.hasAttribute("data-on")) el.toggleAttribute("data-on", on);
+      seqPaintText(el, (st.seq.texts || [])[index], st.t, on, still);
+    });
     Array.prototype.forEach.call(host.querySelectorAll("[data-seq-effect]"), function (el) {
       var on = effects.indexOf(parseInt(el.getAttribute("data-seq-effect"), 10)) >= 0;
       if (on !== el.hasAttribute("data-on")) el.toggleAttribute("data-on", on);
@@ -680,6 +757,14 @@
     } else {
       st.t = Math.min(st.t + dt, block.out_end);
     }
+    // ED-13: a motion shown once (`showMotion`) stops where it ends
+    if (st.stopAt && st.t >= st.stopAt) {
+      st.stopAt = 0;
+      seqPaint(host);
+      seqPause(host);
+      st.raf = 0;
+      return;
+    }
     if (st.t >= block.out_end - SEQ_END_SLACK) {
       var step = c.advance(st.seq, block.out_end, 0);
       st.t = step.t; // the next block's start, or 0:00 after the last
@@ -717,6 +802,7 @@
     var st = seqState(host);
     var was = st.playing;
     st.playing = false;
+    st.stopAt = 0;
     var video = seqActiveVideo(host);
     seqStopWaiting(st);
     if (video && !video.paused) video.pause();
@@ -820,8 +906,25 @@
 
   /* «reproducir desde t». */
   function seqPlayFrom(host, t) {
+    seqState(host).stopAt = 0;
     seqGoTo(host, t);
     seqPlay(host);
+  }
+
+  /* ED-13 (m-25029108): a text's chosen entrance or exit, shown once — from `from` to
+     `to` (0,3 s around it) and paused there. Never by itself with prefers-reduced-motion:
+     there the panel's «Ver cómo se mueve» asks for it (`force`). The new look reaches
+     the page a moment after the choice, so it starts once the sequence has it. */
+  function seqShowMotion(host, from, to, force) {
+    if (!force && reducedMotion()) return;
+    window.setTimeout(function () {
+      if (!host.isConnected) return;
+      var st = seqState(host);
+      seqLoad(host);
+      seqGoTo(host, from);
+      seqPlay(host);
+      st.stopAt = Math.max(Number(to) || 0, Number(from) || 0);
+    }, 120);
   }
 
   function seqAttach(host) {
@@ -1074,6 +1177,7 @@
       showHandle: seqShowHandle,
       showSource: seqShowSource,
       playFrom: seqPlayFrom,
+      showMotion: seqShowMotion,
       pause: seqPause,
       time: function (host) {
         return seqState(host).t;

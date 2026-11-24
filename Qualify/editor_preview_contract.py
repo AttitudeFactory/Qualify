@@ -41,6 +41,60 @@ TEXT_LAYERS_MAX = 3
 VIDEO_TEXT_FADE_MIN_S = 0.3
 VIDEO_TEXT_FADE_MAX_S = 1.0
 VIDEO_TEXT_FADE_DEFAULT_S = 0.5
+#: ED-13 (m-25029108): how a text enters and leaves (the recipe's `motion_in` /
+#: `motion_out`). The schema's defaults are what a text stored before them looked like
+#: (it fades in, it leaves at once); the EDITOR puts new texts with `fade` / `fade`.
+VideoTextMotionIn = Literal["fade", "slide", "zoom", "typewriter"]
+VideoTextMotionOut = Literal["none", "fade", "slide", "zoom"]
+VIDEO_TEXT_MOTIONS_IN: tuple[str, ...] = get_args(VideoTextMotionIn)
+VIDEO_TEXT_MOTIONS_OUT: tuple[str, ...] = get_args(VideoTextMotionOut)
+VIDEO_TEXT_MOTION_IN_DEFAULT = "fade"
+VIDEO_TEXT_MOTION_OUT_DEFAULT = "none"
+#: `slide` moves the text this share of the canvas' height (1920 → 96 px), from below.
+VIDEO_TEXT_SLIDE_FRACTION = 0.05
+#: `zoom` grows from (and shrinks to) this scale, centred on the text's block.
+VIDEO_TEXT_ZOOM_FROM = 0.9
+#: «Letra por letra» only for texts this short, at this many seconds per character.
+VIDEO_TEXT_TYPEWRITER_MAX_CHARS = 40
+VIDEO_TEXT_TYPEWRITER_S_PER_CHAR = 0.06
+#: An entrance (or an exit) takes at most this share of the time the text shows.
+VIDEO_TEXT_MOTION_MAX_SHARE = 1 / 3
+#: ED-13: the backgrounds a text is drawn over — the image catalog's `scrim`, `band` and
+#: `brand_fill` (same `layout_version`) plus `shadow` (no background, a strong shadow).
+VideoTextLayoutId = Literal["scrim", "band", "brand_fill", "shadow"]
+VIDEO_TEXT_LAYOUTS: tuple[str, ...] = get_args(VideoTextLayoutId)
+#: `band` and `brand_fill` hug the text block by this much (px of the 1080-wide canvas);
+#: `brand_fill`'s corners are this round.
+VIDEO_TEXT_BOX_PAD_PX = 48
+VIDEO_TEXT_BOX_RADIUS_PX = 24
+#: `shadow` («Sin fondo», Deivid 2026-11-23): only the letters, white and clean — no text
+#: shadow, no outline.
+#: `band` («Franja», «oscura y neutra»): a fixed near-black strip with white letters,
+#: whatever the brand — never the palette's surface (white on some brands).
+VIDEO_TEXT_BAND_COLOR = "#111111"
+VIDEO_TEXT_BAND_INK = "#FFFFFF"
+#: ED-13 (Deivid 2026-11-23): the colour the owner picks for «Franja» / «Recuadro de tu
+#: color» (`VideoTextLayer.box_color`): a `#RRGGBB` hex in capitals; None = the default.
+VIDEO_TEXT_BOX_COLOR_PATTERN = r"^#[0-9A-F]{6}$"
+_BOX_COLOR = re.compile(VIDEO_TEXT_BOX_COLOR_PATTERN)
+VIDEO_TEXT_BOX_COLOR_LAYOUTS: tuple[str, ...] = ("band", "brand_fill")
+#: ED-13 round 3 (Deivid 2026-11-23): the letters' colour the owner picks for «Sin fondo»
+#: (`VideoTextLayer.text_color`): the same `#RRGGBB` in capitals; None = white.
+VIDEO_TEXT_TEXT_COLOR_PATTERN = VIDEO_TEXT_BOX_COLOR_PATTERN
+VIDEO_TEXT_TEXT_COLOR_LAYOUTS: tuple[str, ...] = ("shadow",)
+#: On a picked colour the letters are white or near-black, whichever contrasts more
+#: (`box_ink`, the render's `layout.ts` `boxInk`).
+VIDEO_TEXT_INK_LIGHT = "#FFFFFF"
+VIDEO_TEXT_INK_DARK = "#111111"
+#: ED-13 round 4 (Deivid 2026-11-23: «3 tamaños»): the letters' size the owner picks
+#: (`VideoTextLayer.text_size`), each scaling the catalog's 9:16 title range (112 → 76 px);
+#: «Mediana» (`medium`) is the default, what every text looked like before. «Grande» takes
+#: texts up to `VIDEO_TEXT_LARGE_MAX_CHARS` characters (longer, it is off and says why).
+VideoTextSize = Literal["small", "medium", "large"]
+VIDEO_TEXT_SIZES: tuple[str, ...] = get_args(VideoTextSize)
+VIDEO_TEXT_SIZE_DEFAULT = "medium"
+VIDEO_TEXT_SIZE_SCALE: dict[str, float] = {"small": 0.75, "medium": 1.0, "large": 1.25}
+VIDEO_TEXT_LARGE_MAX_CHARS = 40
 #: ED-15 (D-T1): a still photo among the stretches shows 1 to 5 s, from 0, at speed 1.
 PHOTO_SECONDS_MIN = 1.0
 PHOTO_SECONDS_MAX = 5.0
@@ -103,6 +157,17 @@ RecipeProblem = Literal[
     "too_many_texts",
     "texts_overlap",
     "effect_uses_overlap",
+    "text_bottom_with_subtitles",
+    # ED-13 (m-25029108): appended, never reordered
+    "unknown_text_motion",
+    "typewriter_text_too_long",
+    # ED-13 (m-25029108): appended, never reordered
+    "bad_text_box_color",
+    # ED-13 round 3 (m-25029108): appended, never reordered
+    "bad_text_color",
+    # ED-13 round 4 (m-25029108): appended, never reordered
+    "unknown_text_size",
+    "text_too_long_for_large",
 ]
 
 
@@ -141,7 +206,15 @@ class VideoTextLayer:
     parts are reordered. A `start_s` None arriving in JSON is read as 0.0.
     `layout_id`/`layout_version` name the layer_spec catalog design it is drawn with
     (EF-02, ADR 49 D1): both or neither. `fade_s`: how long it takes to appear (EF-05,
-    `VIDEO_TEXT_FADE_MIN_S`-`VIDEO_TEXT_FADE_MAX_S`); missing in JSON = the default."""
+    `VIDEO_TEXT_FADE_MIN_S`-`VIDEO_TEXT_FADE_MAX_S`); missing in JSON = the default.
+    ED-13: `motion_in` / `motion_out` — how it enters and leaves (`VIDEO_TEXT_MOTIONS_IN`
+    / `_OUT`), each taking `fade_s` (at most a third of its time on screen; «Letra por
+    letra» its own length); missing in JSON = the schema's defaults. `layout_id` is one of
+    `VIDEO_TEXT_LAYOUTS`. `box_color`: the colour the owner picked for `band` /
+    `brand_fill` (`#RRGGBB`, None = the default; written only when there is one).
+    `text_color`: the letters' colour the owner picked for `shadow` (`#RRGGBB`, None =
+    white; written only when there is one). `text_size`: the letters' size
+    (`VIDEO_TEXT_SIZES`; written only when not `medium`)."""
 
     text: str
     place: str = "bottom"
@@ -150,6 +223,11 @@ class VideoTextLayer:
     layout_id: str | None = None
     layout_version: int | None = None
     fade_s: float = VIDEO_TEXT_FADE_DEFAULT_S
+    motion_in: str = VIDEO_TEXT_MOTION_IN_DEFAULT
+    motion_out: str = VIDEO_TEXT_MOTION_OUT_DEFAULT
+    box_color: str | None = None
+    text_color: str | None = None
+    text_size: str = VIDEO_TEXT_SIZE_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -279,6 +357,245 @@ def text_design(place: str) -> PreviewTextDesign:
 def text_is_long(text: str) -> bool:
     """Past `scrim`'s 32 characters the preview draws the title at its minimum size."""
     return len(text.strip()) > TITLE_MAX_CHARS
+
+
+# -- ED-13 (m-25029108): backgrounds and motions, mirrored for the preview ---------------------
+
+#: `packages/render/src/props.ts` `DEFAULT_*`: a brand without (valid) colours.
+PALETTE_DEFAULT_ACCENT = "#0F766E"
+PALETTE_DEFAULT_TEXT = "#FFFFFF"
+PALETTE_DEFAULT_SURFACE = "#F8FAFC"
+#: WCAG 2's ratio the text reaches on its background (`engine.ts` `TEXT_MIN`).
+TEXT_MIN_CONTRAST = 4.5
+_COLOR = re.compile(r"^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class TextPalette:
+    """The brand's three colours as the render reads them (`props.ts` `paletteOf`: the
+    kit's palette in order — accent, text, surface — each its default when missing)."""
+
+    accent: str = PALETTE_DEFAULT_ACCENT
+    text: str = PALETTE_DEFAULT_TEXT
+    surface: str = PALETTE_DEFAULT_SURFACE
+
+
+def is_color(value: object) -> bool:
+    return isinstance(value, str) and bool(_COLOR.match(value.strip()))
+
+
+def palette_of(colors: Sequence[str]) -> TextPalette:
+    """`paletteOf`: the kit's first three colours, a default for any that is not one."""
+    picked = [str(c).strip() for c in list(colors)[:3]]
+    picked += [""] * (3 - len(picked))
+    accent, text, surface = picked
+    return TextPalette(
+        accent=accent if is_color(accent) else PALETTE_DEFAULT_ACCENT,
+        text=text if is_color(text) else PALETTE_DEFAULT_TEXT,
+        surface=surface if is_color(surface) else PALETTE_DEFAULT_SURFACE,
+    )
+
+
+def _rgb(color: str) -> tuple[int, int, int]:
+    s = color.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    s = s[:6]
+    return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
+
+def opaque(color: str) -> str:
+    """`engine.ts` `opaque`: `#rgb` / `#rrggbb` / `#rrggbbaa` → `#RRGGBB`."""
+    s = color.strip().lstrip("#")
+    if len(s) in (3, 4):
+        s = "".join(ch * 2 for ch in s[:3])
+    return "#" + s[:6].upper()
+
+
+def _channel(value: int) -> float:
+    c = value / 255
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def luminance(color: str) -> float:
+    r, g, b = _rgb(color)
+    return 0.2126 * _channel(r) + 0.7152 * _channel(g) + 0.0722 * _channel(b)
+
+
+def contrast(a: str, b: str) -> float:
+    """WCAG 2 contrast ratio, 1-21 (`engine.ts` `contrast`)."""
+    la, lb = luminance(a), luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def text_color_on(background: str, palette: TextPalette) -> tuple[str, float]:
+    """`engine.ts` `textColorOn`: the first of the brand's text colour, white, near-black
+    and black that reaches 4.5:1 on `background` — the colour and its ratio."""
+    candidates = (palette.text, "#FFFFFF", "#111111", "#000000")
+    for color in candidates:
+        ratio = contrast(color, background)
+        if ratio >= TEXT_MIN_CONTRAST:
+            return color, ratio
+    best = max(candidates, key=lambda c: contrast(c, background))
+    return best, contrast(best, background)
+
+
+def is_box_color(value: object) -> bool:
+    """A colour the owner may pick for a text's box: `#RRGGBB` in capitals."""
+    return isinstance(value, str) and bool(_BOX_COLOR.match(value))
+
+
+def box_ink(background: str) -> str:
+    """`layout.ts` `boxInk`: the letters on a colour the owner picked — white or
+    near-black, whichever has the higher contrast (a tie is white)."""
+    light, dark = VIDEO_TEXT_INK_LIGHT, VIDEO_TEXT_INK_DARK
+    return light if contrast(light, background) >= contrast(dark, background) else dark
+
+
+def text_box_colors(
+    layout: str, palette: TextPalette, box_color: str | None = None
+) -> tuple[str, str]:
+    """What a text is drawn over and in: `(background, ink)`. `band` on the fixed dark
+    neutral `VIDEO_TEXT_BAND_COLOR` with `VIDEO_TEXT_BAND_INK` letters (whatever the brand),
+    `brand_fill` on its accent with the ink `text_color_on` picks; on either, a colour the
+    owner picked (`box_color`) with `box_ink`'s letters. `scrim` and `shadow` have no box of
+    their own and white letters (`("", "#FFFFFF")`), whatever `box_color` says."""
+    if layout not in VIDEO_TEXT_BOX_COLOR_LAYOUTS:
+        return "", "#FFFFFF"
+    if is_box_color(box_color):
+        picked = str(box_color)
+        return picked, box_ink(picked)
+    if layout == "band":
+        return VIDEO_TEXT_BAND_COLOR, VIDEO_TEXT_BAND_INK
+    background = opaque(palette.accent)
+    return background, text_color_on(background, palette)[0]
+
+
+def default_box_color(layout: str, palette: TextPalette) -> str:
+    """The colour `layout`'s box has when the owner picks none ("" = it has no box)."""
+    return text_box_colors(layout, palette)[0]
+
+
+def typewriter_fits(text: str) -> bool:
+    """«Letra por letra» takes texts of up to `VIDEO_TEXT_TYPEWRITER_MAX_CHARS`."""
+    return len(text.strip()) <= VIDEO_TEXT_TYPEWRITER_MAX_CHARS
+
+
+def large_fits(text: str) -> bool:
+    """«Grande» takes texts of up to `VIDEO_TEXT_LARGE_MAX_CHARS` (ED-13 round 4)."""
+    return len(text.strip()) <= VIDEO_TEXT_LARGE_MAX_CHARS
+
+
+def motion_seconds(fade_s: float, visible_s: float) -> float:
+    """How long an entrance or an exit takes: `fade_s`, at most a third of the time the
+    text shows."""
+    return max(min(float(fade_s), float(visible_s) * VIDEO_TEXT_MOTION_MAX_SHARE), 0.0)
+
+
+def typewriter_seconds(text: str, visible_s: float) -> float:
+    """«Letra por letra»'s own length: 0,06 s per character, at most a third of its time."""
+    return max(
+        min(
+            len(text.strip()) * VIDEO_TEXT_TYPEWRITER_S_PER_CHAR,
+            float(visible_s) * VIDEO_TEXT_MOTION_MAX_SHARE,
+        ),
+        0.0,
+    )
+
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def typed_chars(text: str) -> list[str]:
+    """The characters «Letra por letra» types, as the render lays them: trimmed, every
+    whitespace run one space, by code point (`layout.ts` `resolveVideoText`)."""
+    return list(_WHITESPACE.sub(" ", text.strip()))
+
+
+def motion_is_cut(fade_s: float, visible_s: float) -> bool:
+    """The animation is shorter than chosen, so the text can be read."""
+    return motion_seconds(fade_s, visible_s) < float(fade_s) - 1e-6
+
+
+def ease_in(p: float) -> float:
+    """The entrance's curve for position and scale: `1 - (1 - p)^3`."""
+    p = min(max(float(p), 0.0), 1.0)
+    return 1 - (1 - p) ** 3
+
+
+def ease_out(p: float) -> float:
+    """The exit's curve for position and scale: `p^3`."""
+    p = min(max(float(p), 0.0), 1.0)
+    return p**3
+
+
+@dataclass(frozen=True)
+class TextFrame:
+    """A text's look at one moment: its alpha (0-1), how far down it is (a share of the
+    canvas' height), its scale and how many characters show (-1 = all)."""
+
+    alpha: float = 1.0
+    dy: float = 0.0
+    scale: float = 1.0
+    chars: int = -1
+
+
+def text_frame(
+    into_s: float,
+    visible_s: float,
+    *,
+    text: str = "",
+    fade_s: float = VIDEO_TEXT_FADE_DEFAULT_S,
+    motion_in: str = VIDEO_TEXT_MOTION_IN_DEFAULT,
+    motion_out: str = VIDEO_TEXT_MOTION_OUT_DEFAULT,
+    reduced: bool = False,
+    breaks: int = 0,
+) -> TextFrame:
+    """The text `into_s` seconds after it appears, shown `visible_s` seconds: the
+    contract's curves (alpha linear; position and scale `ease_in` / `ease_out`).
+    `assets/edit-sequence-core.js` `textFrame` is the same (a node test keeps them
+    equal). «Letra por letra» shows its letters in order, each at once (the box fades
+    in over min(0,2 s, its length d)), on the final video's clock (`video_pipeline.compose`
+    + `text_overlay.LetterReveal`): its n letters are `typed_chars` less the spaces the
+    `breaks` line breaks eat, and letter i appears at `i * d / n` (the first at once);
+    `chars` counts those letters. `reduced` (prefers-reduced-motion): only the alpha,
+    every character at once."""
+    t, visible = float(into_s), max(float(visible_s), 0.0)
+    if t < 0 or t >= visible:
+        return TextFrame(alpha=0.0, chars=0)
+    typing = motion_in == "typewriter"
+    if typing and not reduced:
+        d_in = typewriter_seconds(text, visible)
+    else:
+        d_in = motion_seconds(fade_s, visible)
+    d_out = 0.0 if motion_out == "none" else motion_seconds(fade_s, visible)
+    alpha, dy, scale, chars = 1.0, 0.0, 1.0, -1
+    if d_in > 0 and t < d_in:
+        p = t / d_in
+        if typing and not reduced:
+            letters = max(len(typed_chars(text)) - max(int(breaks), 0), 1)
+            step = d_in / letters
+            chars = min(letters, int(math.floor(t / step + 1e-6)) + 1) if step > 0 else letters
+            alpha = min(t / min(0.2, d_in), 1.0)
+        else:
+            alpha = p
+            if not reduced and motion_in == "slide":
+                dy = (1 - ease_in(p)) * VIDEO_TEXT_SLIDE_FRACTION
+            if not reduced and motion_in == "zoom":
+                scale = VIDEO_TEXT_ZOOM_FROM + (1 - VIDEO_TEXT_ZOOM_FROM) * ease_in(p)
+    if d_out > 0 and t > visible - d_out:
+        q = (t - (visible - d_out)) / d_out
+        alpha = min(alpha, 1 - q)
+        if not reduced and motion_out == "slide":
+            dy = ease_out(q) * VIDEO_TEXT_SLIDE_FRACTION
+        if not reduced and motion_out == "zoom":
+            scale = 1 - (1 - VIDEO_TEXT_ZOOM_FROM) * ease_out(q)
+    return TextFrame(
+        alpha=round(min(max(alpha, 0.0), 1.0), 4),
+        dy=round(dy, 4),
+        scale=round(scale, 4),
+        chars=chars,
+    )
 
 
 #: Cámara rápida's id (EF-02 `effects_data/v1.json`). PROVISIONAL decision, to align
@@ -523,8 +840,25 @@ def recipe_problems(recipe: PartRecipe) -> list[str]:
         has_id, has_version = bool(layer.layout_id), layer.layout_version is not None
         if has_id != has_version or (has_version and (layer.layout_version or 0) < 1):
             problems.append("bad_text_layout")
+        if has_id and layer.layout_id not in VIDEO_TEXT_LAYOUTS:
+            problems.append("bad_text_layout")  # the backend's `unknown_layout`
         if not VIDEO_TEXT_FADE_MIN_S <= layer.fade_s <= VIDEO_TEXT_FADE_MAX_S:
             problems.append("bad_text_fade")
+        if (
+            layer.motion_in not in VIDEO_TEXT_MOTIONS_IN
+            or layer.motion_out not in VIDEO_TEXT_MOTIONS_OUT
+        ):
+            problems.append("unknown_text_motion")
+        if layer.motion_in == "typewriter" and not typewriter_fits(layer.text):
+            problems.append("typewriter_text_too_long")
+        if layer.box_color is not None and not is_box_color(layer.box_color):
+            problems.append("bad_text_box_color")
+        if layer.text_color is not None and not is_box_color(layer.text_color):
+            problems.append("bad_text_color")
+        if layer.text_size not in VIDEO_TEXT_SIZES:
+            problems.append("unknown_text_size")
+        elif layer.text_size == "large" and not large_fits(layer.text):
+            problems.append("text_too_long_for_large")
     if any(_overlaps(spans) for spans in texts_at.values()):
         problems.append("texts_overlap")
     return list(dict.fromkeys(problems))
@@ -561,6 +895,19 @@ def _layer_dict(layer: VideoTextLayer) -> dict[str, object]:
     # without a choice keeps v1's exact shape (as a video stretch writes no `kind`, ED-15)
     if _round(layer.fade_s) != VIDEO_TEXT_FADE_DEFAULT_S:
         data["fade_s"] = _round(layer.fade_s)
+    # ED-13: the same for how it enters and leaves (the schema's defaults are left out)
+    if layer.motion_in != VIDEO_TEXT_MOTION_IN_DEFAULT:
+        data["motion_in"] = layer.motion_in
+    if layer.motion_out != VIDEO_TEXT_MOTION_OUT_DEFAULT:
+        data["motion_out"] = layer.motion_out
+    # ED-13: the colour the owner picked, only when there is one
+    if layer.box_color is not None:
+        data["box_color"] = layer.box_color
+    if layer.text_color is not None:
+        data["text_color"] = layer.text_color
+    # ED-13 round 4: the size, only when not «Mediana»
+    if layer.text_size != VIDEO_TEXT_SIZE_DEFAULT:
+        data["text_size"] = layer.text_size
     return data
 
 
@@ -666,6 +1013,15 @@ def _layer_of(raw: object) -> VideoTextLayer:
         fade_s=_round(
             _num(raw.get("fade_s") if raw.get("fade_s") is not None else VIDEO_TEXT_FADE_DEFAULT_S)
         ),
+        # ED-13: a text stored before them enters with a fade and leaves at once
+        motion_in=str(raw.get("motion_in") or VIDEO_TEXT_MOTION_IN_DEFAULT),
+        motion_out=str(raw.get("motion_out") or VIDEO_TEXT_MOTION_OUT_DEFAULT),
+        # ED-13: a text without a picked colour has its background's default
+        box_color=str(raw["box_color"]) if raw.get("box_color") is not None else None,
+        # ED-13 round 3: «Sin fondo» without a picked colour has white letters
+        text_color=str(raw["text_color"]) if raw.get("text_color") is not None else None,
+        # ED-13 round 4: a text stored before the size was chosen is «Mediana»
+        text_size=str(raw.get("text_size") or VIDEO_TEXT_SIZE_DEFAULT),
     )
 
 

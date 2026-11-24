@@ -6,7 +6,10 @@
 # local-normalize-memory.sh (run its `make` first: this one derives the 112 s sources).
 #
 #   deploy/measure/upload-preview-memory.sh make            # the 112 s sources
-#   deploy/measure/upload-preview-memory.sh run SOURCE      # capped, fresh container
+#   deploy/measure/upload-preview-memory.sh run SOURCE [MODE]   # capped, fresh container
+#
+# MODE (m-25029110, ED-11b): both (default: the copy + the frame strip from one decode, the
+# v2 job), copy (the v1 command, the copy alone) or strip (the strip alone, a kept copy).
 #
 # `run` prints `PREVIEW-RESULT {json}` (exit 137 = OOM, printed as `PREVIEW-OOM`).
 set -euo pipefail

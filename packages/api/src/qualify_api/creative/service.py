@@ -22,8 +22,10 @@ yet — when the brand kit has no ``template_asset_key`` there is nothing to ren
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -87,6 +89,7 @@ from qualify_creative.schemas import (
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -109,9 +112,11 @@ from qualify_api.creative.draft_mode import (
     DRAFT_READY,
     DRAFT_RENDERING,
     FINAL_NOT_ORDERED_TEXT,
+    FINAL_USAGE_DUE,
     draft_expired,
     draft_state,
     final_retryable,
+    raw_final_task_id,
 )
 from qualify_api.creative.fsm import (
     APPROVED,
@@ -168,6 +173,30 @@ logger = logging.getLogger(__name__)
 #: terminal para auditarlos"). Its own logger, so it can be filtered or routed; the
 #: same facts are stored durably in `creative_usage_events`.
 cost_logger = logging.getLogger("qualify_api.creative.costs")
+
+#: m-25103284: how often a queued final restarts its `rendering_at` while it is made
+#: (well under `draft_mode.FINAL_STALE_SECONDS`, 20 min). Tests shorten it.
+FINAL_HEARTBEAT_EVERY_S = 60.0
+
+
+@contextmanager
+def _beating(beat: Callable[[], None], every_s: float) -> Iterator[None]:
+    """Call `beat` every `every_s` seconds on a daemon thread while the block runs; it
+    stops (and is waited for) when the block ends, so no beat lands after it."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(every_s):
+            beat()
+
+    thread = threading.Thread(target=loop, name="creative-final-beat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(max(every_s, 1.0) + 5.0)
+
 
 #: Stamped on every draft this service creates; provenance, per the hard architectural
 #: rule that every model-written artifact carries the pipeline that wrote it.
@@ -497,6 +526,9 @@ class UsageWrite:
     pricing_table_version: str
     #: Pieces or seconds for a per-piece / per-second vendor (0 for token-priced calls).
     pieces: int = 0
+    #: m-25112161: the vendor's id of the task this row paid for (Seedance, OmniHuman).
+    #: Set → the row is written once per `(tenant, task)` and a repeat adds no spend.
+    vendor_task_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -808,7 +840,20 @@ class ContentRepository(Protocol):
         spent_usd: Decimal,
         claim: str | None = None,
         draft_changes: Mapping[str, object] | None = None,
-    ) -> None: ...
+        held_usage: tuple[UsageWrite, ...] = (),
+        final_task_id: str | None = None,
+        raw_usage: tuple[UsageWrite, ...] = (),
+    ) -> None:
+        """m-25111780: `raw_usage` is what THIS pass paid for the raw 1080p
+        `final_task_id` (apart from `usage`, always recorded; `spent_usd` covers both),
+        `held_usage` what an earlier pass paid for it. `held_usage` is recorded only
+        while the stored draft block still marks the task due (`FINAL_USAGE_DUE` ==
+        `final_task_id`); `raw_usage` is dropped when the block names that task in its
+        `raw_final` with no mark (another pass recorded it). The mark is cleared in the
+        same transaction that records that task's spend. m-25112161: a row naming a
+        vendor task adds a row and spend only the first time for its `(tenant, task)`;
+        a `held_usage` row of another task than `final_task_id` is recorded on that key."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -1393,8 +1438,8 @@ class PostgresContentRepository:
             ) or (new_status == DRAFTING):
                 # Record paid work, but neither a pending checkpoint nor a stale worker
                 # is a completed version of the current publication.
-                _add_usage(session, tenant_id, brand_id, draft_id, usage)
-                _add_spend(session, brand_id, spent_usd)
+                skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd - skipped)
                 return
             initial_partial = (
                 draft.status == DRAFTING and draft.revision == 1 and draft.active_version_id is None
@@ -1430,6 +1475,9 @@ class PostgresContentRepository:
                         if requires_ai_disclosure is not None
                         else draft.requires_ai_disclosure
                     ),
+                    # gross on purpose: what THIS version cost, all of it — a vendor task
+                    # recorded already (m-25112161) is not added to the budget again, but
+                    # it is still part of what made this version
                     spent_usd=spent_usd,
                     failure_reason=failure_reason,
                     failure_detail=failure_detail,
@@ -1441,8 +1489,8 @@ class PostgresContentRepository:
                 session.flush()
             else:
                 # A completed generation is immutable: retries cannot overwrite its history.
-                _add_usage(session, tenant_id, brand_id, draft_id, usage)
-                _add_spend(session, brand_id, spent_usd)
+                skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd - skipped)
                 return
             for write in variants:
                 session.add(
@@ -1457,7 +1505,7 @@ class PostgresContentRepository:
                         model_revision=write.model_revision,
                     )
                 )
-            _add_usage(session, tenant_id, brand_id, draft_id, usage)
+            skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
             if template_run is not None:
                 # The render job as Python saw it (0038) — written before the assets that
                 # reference it, and also when the run failed: the attempt is the evidence.
@@ -1558,7 +1606,7 @@ class PostgresContentRepository:
                                 partial.version_id = version.id
             if template_run is not None:
                 version.template_run_id = template_run.id
-            _add_spend(session, brand_id, spent_usd)
+            _add_spend(session, brand_id, spent_usd - skipped)
             if draft is not None and succeeded and (media or variants):
                 draft.preview_key = preview_of(media)
             if draft is not None and succeeded and requires_ai_disclosure is not None:
@@ -1919,33 +1967,105 @@ class PostgresContentRepository:
         spent_usd: Decimal,
         claim: str | None = None,
         draft_changes: Mapping[str, object] | None = None,
+        held_usage: tuple[UsageWrite, ...] = (),
+        final_task_id: str | None = None,
+        raw_usage: tuple[UsageWrite, ...] = (),
     ) -> None:
         """One transaction: the final's spend (also when it failed — the money went
         either way) and either the final in place of its draft, in the SAME row every
         reader already reads, or the draft marked failed with why. With `claim`, the
         row is written only while that claim still holds it (a final ordered again
         meanwhile belongs to its new run); the spend is recorded either way. A failure
-        keeps `draft_changes` in the draft block (the paid raw final a retry reuses)."""
+        keeps `draft_changes` in the draft block (the paid raw final a retry reuses).
+
+        m-25111780: the raw 1080p `final_task_id` is recorded exactly once whichever
+        pass gets here, decided on the row read locked: `held_usage` (paid by an earlier
+        pass whose settle was rolled back) only while the row still marks the task due;
+        `raw_usage` (paid by this pass) unless the row names that task in its
+        `raw_final` with no mark — another pass recorded it (this run lost its claim and
+        settles last). The mark goes in the same write that records the spend.
+        `spent_usd` includes `raw_usage`; `usage` is everything else this pass paid.
+
+        m-25112161: every row naming a vendor task is written once per `(tenant, task)`
+        (0179); a repeat adds neither a row nor spend. A `held_usage` row of a task other
+        than `final_task_id` (an earlier raw file, due and then unreadable) is recorded on
+        that key alone — also when `final_task_id` is None (the raw file was lost and
+        the 1080p paid in its place never came back, so nothing names a new task): then
+        every held row naming a task is such a row. When the stored mark names a task
+        recorded that way, the mark goes with this write too (the block is never left
+        marking a spend that is in the table)."""
         with tenant_session(tenant_id) as session:
-            _add_usage(session, tenant_id, brand_id, draft_id, usage)
-            _add_spend(session, brand_id, spent_usd)
-            row = session.get(orm.ImageAsset, asset_id, with_for_update=claim is not None)
+            row = session.get(
+                orm.ImageAsset,
+                asset_id,
+                with_for_update=claim is not None or bool(held_usage or raw_usage),
+            )
+            stored = dict((row.params or {}).get("draft") or {}) if row is not None else {}
+            ours = row is not None and (claim is None or _final_held_by(stored, claim))
+            stored_raw = stored.get("raw_final")
+            due = final_task_id is not None and stored.get(FINAL_USAGE_DUE) == final_task_id
+            recorded_before = (
+                final_task_id is not None
+                and not due
+                and isinstance(stored_raw, Mapping)
+                and raw_final_task_id(stored_raw) == final_task_id
+            )
+            paid = () if recorded_before else tuple(raw_usage)
+            # m-25112161: a held row of ANOTHER task — a raw 1080p kept, still due, then
+            # unreadable, so this pass paid `final_task_id` in its place — has no mark
+            # left to gate it (the block names one task): it is recorded on its task id
+            # alone, whichever pass gets here, and a repeat adds nothing (0179)
+            lost = tuple(
+                h
+                for h in held_usage
+                if h.vendor_task_id is not None and h.vendor_task_id != final_task_id
+            )
+            # a run that lost its claim leaves a held spend to the run that owns it now
+            held = (
+                tuple(h for h in held_usage if not any(h is other for other in lost))
+                if ours and due
+                else ()
+            )
+            dropped = sum((u.cost_usd for u in raw_usage), Decimal(0)) if recorded_before else 0
+            if recorded_before and raw_usage:
+                logger.info("final of asset %s: task %s recorded already", asset_id, final_task_id)
+            skipped = _add_usage(
+                session, tenant_id, brand_id, draft_id, (*usage, *paid, *held, *lost)
+            )
+            _add_spend(
+                session,
+                brand_id,
+                spent_usd
+                - dropped
+                - skipped
+                + sum((h.cost_usd for h in (*held, *lost)), Decimal(0)),
+            )
+            # the mark as it stands once this commits: gone when this write recorded the
+            # spend it named — its own task's (`paid`/`held`) or, m-25112161, a lost
+            # task's (written now or found on the key: recorded either way) — else as
+            # stored (never revived from a stale in-memory block)
+            mark = stored.get(FINAL_USAGE_DUE)
+            recorded_mark = (due and bool(paid or held)) or (
+                mark is not None and any(h.vendor_task_id == mark for h in lost)
+            )
+            due_after = None if recorded_mark else mark
             if row is None:
                 return
-            if claim is not None and not _final_held_by(
-                dict((row.params or {}).get("draft") or {}), claim
-            ):
+            if not ours:
                 logger.warning("final of asset %s settled after it was ordered again", asset_id)
+                if due_after != stored.get(FINAL_USAGE_DUE):
+                    # the new run would find the raw file still marked due: recorded here
+                    row.params = _with_usage_due(dict(row.params or {}), due_after)
                 return
             if media is None:
                 params = dict(row.params or {})
                 params["draft"] = {
-                    **dict(params.get("draft") or {}),
+                    **stored,
                     **dict(draft_changes or {}),
                     "status": DRAFT_FAILED,
                     "error": error,
                 }
-                row.params = params
+                row.params = _with_usage_due(params, due_after)
                 return
             row.media_url = media.media_url
             row.object_key = media.object_key
@@ -1954,7 +2074,7 @@ class PostgresContentRepository:
             row.height = media.height
             row.model_id = media.model_id
             row.provider = media.provider
-            row.params = dict(media.params)
+            row.params = _with_usage_due(dict(media.params), due_after)
             row.content_type = media.content_type
             row.updated_at = datetime.now(UTC)
             session.flush()
@@ -2065,36 +2185,63 @@ def _drop_purged_generation(
                 brief_id=draft.brief_id,
             )
         )
-    _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
-    _add_spend(session, brand_id, spent_usd)
+    skipped = _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
+    _add_spend(session, brand_id, spent_usd - skipped)
     logger.info("generation of purged piece %s dropped", draft.id)
 
 
 def _add_usage(
     session: Any, tenant_id: UUID, brand_id: UUID, draft_id: UUID, usage: Sequence[UsageWrite]
-) -> None:
+) -> Decimal:
+    """The usage rows, and what of their cost was NOT written: a row naming a vendor task
+    already recorded for this tenant (m-25112161, the partial key of 0179) adds nothing,
+    so the caller takes the returned amount off the spend it adds to the budget."""
+    skipped = Decimal(0)
     for event in usage:
-        session.add(
-            orm.CreativeUsageEvent(
-                tenant_id=tenant_id,
-                brand_id=brand_id,
-                draft_id=draft_id,
-                provider=event.provider,
-                model_id=event.model_id,
-                unit=event.unit,
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                cache_read_tokens=event.cache_read_tokens,
-                cache_creation_tokens=event.cache_creation_tokens,
-                # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
-                # calls) and `occurred_at` NOT NULL with no server default.
-                pieces=event.pieces,
-                cost_usd=event.cost_usd,
-                paid_by=event.paid_by,
-                pricing_table_version=event.pricing_table_version,
-                occurred_at=datetime.now(UTC),
+        values = {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "draft_id": draft_id,
+            "provider": event.provider,
+            "model_id": event.model_id,
+            "unit": event.unit,
+            "input_tokens": event.input_tokens,
+            "output_tokens": event.output_tokens,
+            "cache_read_tokens": event.cache_read_tokens,
+            "cache_creation_tokens": event.cache_creation_tokens,
+            # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
+            # calls) and `occurred_at` NOT NULL with no server default.
+            "pieces": event.pieces,
+            "cost_usd": event.cost_usd,
+            "paid_by": event.paid_by,
+            "pricing_table_version": event.pricing_table_version,
+            "occurred_at": datetime.now(UTC),
+        }
+        if event.vendor_task_id is None:
+            session.add(orm.CreativeUsageEvent(**values))
+            continue
+        if session.scalar(_usage_once(values, event.vendor_task_id)) is None:
+            logger.info(
+                "usage of vendor task %s recorded already: %s USD not added again",
+                event.vendor_task_id,
+                event.cost_usd,
             )
+            skipped += event.cost_usd
+    return skipped
+
+
+def _usage_once(values: Mapping[str, Any], vendor_task_id: str) -> Any:
+    """`INSERT … ON CONFLICT (tenant_id, vendor_task_id) WHERE vendor_task_id IS NOT NULL
+    DO NOTHING RETURNING id` — the id when written, no row when the task was recorded."""
+    return (
+        pg_insert(orm.CreativeUsageEvent)
+        .values(**values, vendor_task_id=vendor_task_id)
+        .on_conflict_do_nothing(
+            index_elements=["tenant_id", "vendor_task_id"],
+            index_where=text("vendor_task_id IS NOT NULL"),
         )
+        .returning(orm.CreativeUsageEvent.id)
+    )
 
 
 def _add_spend(session: Any, brand_id: UUID, spent_usd: Decimal) -> None:
@@ -2130,6 +2277,18 @@ def _final_claimable(block: Mapping[str, Any], attempt: str | None) -> bool:
 
 def _final_held_by(block: Mapping[str, Any], claim: str) -> bool:
     return block.get("status") == DRAFT_RENDERING and block.get("claim") == claim
+
+
+def _with_usage_due(params: dict[str, Any], due: object) -> dict[str, Any]:
+    """`params` whose draft block carries `due` as its `FINAL_USAGE_DUE` (m-25111780),
+    the key dropped when None; params without a draft block are returned as they are."""
+    block = params.get("draft")
+    if not isinstance(block, Mapping):
+        return params
+    block = {key: value for key, value in block.items() if key != FINAL_USAGE_DUE}
+    if due is not None:
+        block[FINAL_USAGE_DUE] = due
+    return {**params, "draft": block}
 
 
 def preview_of(media: tuple[MediaWrite, ...]) -> str | None:
@@ -2518,6 +2677,8 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return None
+        from qualify_api.creative.brand_references import BrandReferenceError  # noqa: PLC0415
+
         try:
             prepare_new = getattr(self._media, "prepare_new_brief", None)
             if callable(prepare_new):
@@ -2526,6 +2687,10 @@ class ContentService:
                     brief = prepare_new(brief, kit)
             return weight_for(brief)
         except CreationNotOffered:
+            return None
+        except BrandReferenceError:
+            # EF-13: a remake the producer would refuse before the copy (an effect
+            # that no longer fits or was not measured on the model) has no price
             return None
 
     def regeneration_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
@@ -2540,6 +2705,8 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return None
+        from qualify_api.creative.brand_references import BrandReferenceError  # noqa: PLC0415
+
         try:
             prepare_new = getattr(self._media, "prepare_new_brief", None)
             if callable(prepare_new):
@@ -2548,6 +2715,10 @@ class ContentService:
                     brief = prepare_new(brief, kit)
             return weight_for(brief, redo=True)
         except CreationNotOffered:
+            return None
+        except BrandReferenceError:
+            # EF-13: a remake the producer would refuse before the copy (an effect
+            # that no longer fits or was not measured on the model) has no price
             return None
 
     def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
@@ -3560,6 +3731,7 @@ class ContentService:
                 # EF-06: a local video names its own table (v10, `local_video` 0.00)
                 pricing_table_version=item.pricing_table_version or self._pricing.version,
                 pieces=0 if item.unit == "token" else item.quantity,
+                vendor_task_id=item.vendor_task_id,
             )
             for item in items
         ]
@@ -4695,18 +4867,50 @@ class ContentService:
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
         )
-        outcome = self._media.finalize(
-            tenant_id=tenant_id,
-            draft_id=draft_id,
-            brief=brief,
-            kit=kit,
-            asset=asset,
-            budget=BudgetContext(remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop),
-            revision=draft.revision,
-            on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
-        )
+        # m-25103284: a part's final composed again takes minutes; its `rendering_at` is
+        # stamped while it runs, so the screen never reads it as stuck
+        # (`FINAL_STALE_SECONDS`). The beat stops before the final is settled.
+        with _beating(self._rendering_stamp(tenant_id, asset.id), FINAL_HEARTBEAT_EVERY_S):
+            outcome = self._media.finalize(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                brief=brief,
+                kit=kit,
+                asset=asset,
+                budget=BudgetContext(
+                    remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop
+                ),
+                revision=draft.revision,
+                on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
+            )
         if not outcome.pending:
             self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, None, outcome)
+
+    def queued_final_composes(self, *, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> bool:
+        """m-25103284: whether this queued final is a part's raw 1080p composed again with
+        its preview's recipe (`recompose.part_final_composes`) — the creative worker runs
+        it off its main loop, its lease kept. False when the asset is gone."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            part_final_composes,
+        )
+
+        assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        asset = next((a for a in assets if a.id == asset_id), None)
+        return asset is not None and part_final_composes(asset.params)
+
+    def _rendering_stamp(self, tenant_id: UUID, asset_id: UUID) -> Callable[[], None]:
+        """A beat that restarts the final's `rendering_at` (as `_final_binding.keep_fresh`);
+        a write that fails is logged, never a reason to stop the final."""
+
+        def stamp() -> None:
+            try:
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id, asset_id=asset_id, changes={"rendering_at": time.time()}
+                )
+            except Exception:  # noqa: BLE001 — a sign of life, never the final
+                logger.warning("final of asset %s: rendering_at not renewed", asset_id)
+
+        return stamp
 
     def _final_binding(
         self, tenant_id: UUID, draft: DraftRecord, asset_id: UUID
@@ -4737,12 +4941,21 @@ class ContentService:
         final whose last write never lands — the process died, the database was down —
         is finished by the next try from the saved file instead of being paid again.
         Never raises: when this write fails, the outcome still carries the raw file
-        (`FinalOutcome.draft_changes`) to the final write."""
+        (`FinalOutcome.draft_changes`) to the final write. m-25111780: it also marks the
+        raw file's spend as not recorded yet (`FINAL_USAGE_DUE`, its task id) — the
+        settle that records it clears the mark in the same transaction, and a later pass
+        that finishes the final from this file records it while the mark stands."""
 
         def record(raw: Mapping[str, Any]) -> None:
+            task = raw_final_task_id(raw)
             try:
                 self._repo.set_video_draft(
-                    tenant_id=tenant_id, asset_id=asset_id, changes={"raw_final": dict(raw)}
+                    tenant_id=tenant_id,
+                    asset_id=asset_id,
+                    changes={
+                        "raw_final": dict(raw),
+                        **({FINAL_USAGE_DUE: task} if task is not None else {}),
+                    },
                 )
             except Exception:
                 logger.exception("final of asset %s: raw final not recorded yet", asset_id)
@@ -4781,14 +4994,36 @@ class ContentService:
         """The final (or its failure) and its spend in one write — and when that write
         fails, the spend again with the video marked failed: money spent is never lost
         silently."""
-        usage = tuple(self._media_usage(outcome.usage))
-        for item in usage:
+        # m-25111780: what paid this pass's raw 1080p goes apart (`raw_usage`): the
+        # repository drops it when another pass already recorded that task
+        raw_paid = tuple(outcome.raw_usage)
+        usage = tuple(
+            self._media_usage([u for u in outcome.usage if not any(u is paid for paid in raw_paid)])
+        )
+        raw_usage = tuple(self._media_usage(raw_paid))
+        for item in (*usage, *raw_usage):
             cost_logger.info(
                 "draft %s final: %s %s %s USD",
                 draft_id,
                 item.provider,
                 item.model_id,
                 item.cost_usd,
+            )
+        # m-25111780: a raw 1080p an earlier pass paid for, its settle rolled back (lease
+        # lost): its spend goes with this settle, once — the repository records it only
+        # while the row still marks that task due
+        held = tuple(self._media_usage(outcome.held_usage))
+        raw = (outcome.draft_changes or {}).get("raw_final")
+        final_task_id = raw_final_task_id(raw) if isinstance(raw, Mapping) else None
+        for item in held:
+            cost_logger.info(
+                "draft %s final: %s %s %s USD paid by an earlier pass (task %s), recorded "
+                "now if still due",
+                draft_id,
+                item.provider,
+                item.model_id,
+                item.cost_usd,
+                final_task_id,
             )
         first_error = None if outcome.media is not None else outcome.detail
         writes: tuple[tuple[MediaWrite | None, str | None], ...] = (
@@ -4808,6 +5043,9 @@ class ContentService:
                     spent_usd=outcome.spent_usd,
                     claim=claim,
                     draft_changes=outcome.draft_changes,
+                    held_usage=held,
+                    final_task_id=final_task_id,
+                    raw_usage=raw_usage,
                 )
                 if media is None:
                     # the vendor failed it, or it could not be saved: no final for the
@@ -4816,6 +5054,18 @@ class ContentService:
                         tenant_id, draft_id, error or "final_failed", (asset_id,)
                     )
                 return
+            except CheckpointError:
+                # m-25103284: the run's lease is gone (`fence`) — another pass owns the
+                # final now. Nothing is failed or refunded here: the run stays undone and
+                # the next pass finishes it from what is kept (the raw 1080p, a composed
+                # final already under its key: `_held_final`), never paying it again.
+                cost_logger.error(
+                    "draft %s final: lease lost before it was saved; %s USD spent, the "
+                    "next pass records the final from the kept file",
+                    draft_id,
+                    outcome.spent_usd,
+                )
+                raise
             except Exception:
                 logger.exception("final of draft %s: could not save it", draft_id)
         cost_logger.error(

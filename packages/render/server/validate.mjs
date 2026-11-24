@@ -117,6 +117,11 @@ export const validateProps = (manifest, props, ports = undefined) => {
         }
         if (v.palette !== undefined && !Array.isArray(v.palette)) problems.push('brand.palette: expected string[]');
         if (v.fonts !== undefined && !isObj(v.fonts)) problems.push('brand.fonts: expected object');
+        // ED-13: the brand's own font files, by role, as asset references
+        if (v.fontFiles !== undefined && v.fontFiles !== null) {
+          if (!isObj(v.fontFiles)) problems.push('brand.fontFiles: expected object');
+          else for (const [role, ref] of Object.entries(v.fontFiles)) assetRefProblems(ref, `brand.fontFiles.${role}`, problems);
+        }
         if (v.logo !== undefined && v.logo !== null) assetRefProblems(v.logo, 'brand.logo', problems);
         break;
       }
