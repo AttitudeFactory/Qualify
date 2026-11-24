@@ -1529,3 +1529,164 @@ def test_the_sound_stays_in_sync_under_the_texts(
     _, samples = _sound_of(data)
     assert abs(_click_s(samples) - 1.0) <= 1 / 30
     assert abs(samples.shape[1] - 6.5 * 48_000) <= 2048
+
+
+# ---------------------------------------------------------------------------
+# EF-18 (m-25026598): the contact sheet of the composed video, kept with the piece
+
+
+def _sheet_pixels(store: Any, block: dict[str, Any]) -> list[Any]:
+    import numpy as np
+
+    out = []
+    for frame in block["frames"]:
+        with Image.open(io.BytesIO(store.files[frame["key"]])) as image:
+            out.append(np.asarray(image.convert("RGB"), dtype=np.int16))
+    return out
+
+
+def test_a_local_clip_keeps_a_six_frame_contact_sheet_with_its_texts_on(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """The sheet is taken from the composed file: six frames, kept in the piece's folder,
+    tied to the video it was made from, with the text in every frame that shows it."""
+    import hashlib
+
+    from qualify_api.creative.contact_sheet import contact_sheet_of
+
+    plain_store, texts_store = ReadingStore(sources), ReadingStore(sources)
+    plain = _produce(_texts(), plain_store, _render_service())
+    composed = _produce(_texts(_words(end_s=None)), texts_store, _render_service())
+    assert plain.failure is None and composed.failure is None, composed.detail
+    (write,) = composed.media
+    block = write.params["contact_sheet"]
+    assert block["version"] == "contact-sheet-3" and block["cost_usd"] == "0"
+    assert block["review"] == "owner_only"
+    assert len(block["frames"]) == 6
+    assert block["source"]["stage"] == "local"
+    assert block["source"]["object_key"] == write.object_key
+    kept_video = texts_store.files[write.object_key]
+    assert block["source"]["sha256"] == hashlib.sha256(kept_video).hexdigest()
+    folder = write.object_key.rsplit("/", 1)[0]
+    for number, frame in enumerate(block["frames"], start=1):
+        assert frame["key"] == f"{folder}/contact-{number}.jpg"
+        assert frame["key"] in texts_store.files and frame["time_s"] >= 0
+    assert block["sheet"]["key"] == f"{folder}/contact-sheet.jpg"
+    view = contact_sheet_of(write.object_key, write.params)
+    assert view is not None and len(view.frames) == 6
+    # «con la capa encima»: every frame differs from the same clip's without the text
+    (bare,) = plain.media
+    with_texts = _sheet_pixels(texts_store, block)
+    without = _sheet_pixels(plain_store, bare.params["contact_sheet"])
+    assert all(abs(a - b).mean() > 1.0 for a, b in zip(with_texts, without, strict=True))
+
+
+def test_a_retried_local_clip_keeps_one_contact_sheet(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    store = ReadingStore(sources)
+    producer = _producer(store, ExplodingByteplus(), render_client=_render_service())
+    draft_id, brief = uuid4(), _texts(_words())
+    blocks = []
+    for _ in range(2):
+        outcome = producer.produce(
+            tenant_id=TENANT_ID,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_branded_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        )
+        blocks.append(outcome.media[0].params["contact_sheet"])
+    assert blocks[0] == blocks[1]
+    # six frames and the sheet, once
+    assert len([key for key in store.files if "/contact-" in key]) == 7
+
+
+def test_a_contact_sheet_that_cannot_be_made_leaves_the_piece_as_it_is(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("decoder gone")
+
+    monkeypatch.setattr("qualify_creative.video.contact_sheet.make_contact_sheet", broken)
+    store = ReadingStore(sources)
+    outcome = _produce(_texts(_words()), store, _render_service())
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert CONTACT_SHEET_PARAMS_KEY not in write.params
+    assert not any("/contact-" in key for key in store.files)
+
+
+@pytest.mark.parametrize("how", ["hook_raises", "import_fails"])
+def test_a_failing_sheet_never_fails_the_local_video(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Whatever the sheet does — its keeper raising, or its module not importing — the
+    local Clip comes out as without EF-18: the same composed video, no sheet."""
+    import sys
+
+    if how == "hook_raises":
+
+        def broken(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("the sheet blew up")
+
+        monkeypatch.setattr(local, "keep_contact_sheet", broken)
+    else:
+        monkeypatch.setitem(sys.modules, "qualify_creative.video.contact_sheet", None)
+    store = ReadingStore(sources)
+    outcome = _produce(_texts(_words()), store, _render_service())
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert "contact_sheet" not in write.params
+    assert write.params["local"]["text_layers"]  # the texts are laid
+    assert len(_decoded(store.files[write.object_key])) == 105
+    assert not any("/contact-" in key for key in store.files)
+
+
+def _real_joined(parts: tuple[PartPreview, ...], store: ReadingStore, parent_id: UUID) -> Any:
+    snapshot = PartsToJoin(parent_id=parent_id, revision=1, planned=len(parts), parts=parts)
+    video = _video_bytes(3.0)
+
+    def joiner(clips: Any, *, out: Path, size: Any, overlay: Any) -> Any:
+        out.write_bytes(video)
+        return SimpleNamespace(path=out, frames=90, poster=None)
+
+    return join_preview(store, _Joins(snapshot), TENANT_ID, parent_id, joiner=joiner)
+
+
+def test_the_joined_preview_keeps_its_contact_sheet_once() -> None:
+    """«Tu video completo»: the joined preview's sheet lives beside it, named by the
+    join's fingerprint; a run that finds the join already kept makes the same sheet
+    from that file — the same keys, nothing duplicated."""
+    from qualify_api.creative.contact_sheet import contact_sheet_of
+
+    parts = (_part(1, mode="local"), _part(2, mode="local"))
+    store = ReadingStore({p.object_key: b"mp4" for p in parts if p.object_key})
+    parent_id = uuid4()
+    first = _real_joined(parts, store, parent_id)
+    assert first is not None
+    block = first.params["contact_sheet"]
+    fingerprint = first.params["draft"]["fingerprint"]
+    assert block["source"] == {
+        "stage": "join",
+        "object_key": first.object_key,
+        "fingerprint": fingerprint,
+        "sha256": block["source"]["sha256"],
+    }
+    folder = f"t/{TENANT_ID}/generated/{parent_id}"
+    assert [f["key"] for f in block["frames"]] == [
+        f"{folder}/join-{fingerprint}-contact-{n}.jpg" for n in range(1, 7)
+    ]
+    assert contact_sheet_of(first.object_key, first.params) is not None
+    files = dict(store.files)
+    again = _real_joined(parts, store, parent_id)  # the join is held: reused
+    assert again is not None and again.params["contact_sheet"] == block
+    assert store.files == files
+
+
+def test_a_join_whose_file_is_no_video_has_no_sheet_but_is_joined() -> None:
+    write = _joined((_part(1, mode="local"), _part(2, mode="local")))
+    assert write is not None and "contact_sheet" not in write.params

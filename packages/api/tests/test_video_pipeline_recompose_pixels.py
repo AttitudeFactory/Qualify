@@ -162,3 +162,54 @@ def test_recompose_layer_sits_at_the_same_relative_place(tmp_path: Path) -> None
     assert abs(seen[1] - made[1] * sy) <= TOLERANCE_PX, (seen, made)
     assert final.params["effect_layers"]["layers"][0]["effect_id"] == "humo_capa"
     assert final.params["cost_usd"] == "0.00"
+
+
+def test_the_contact_sheet_hook_runs_on_the_composed_file(tmp_path: Path) -> None:
+    """EF-18: the real composer runs the hook on its composed file while it is on disk,
+    and the sheet's frames carry the texts laid over the clip."""
+    from qualify_api.creative.contact_sheet import keep_contact_sheet
+
+    texts = (VideoTextLayer(text="Shawarma mixto", place="top", fade_s=0.3),)
+    recipe = ComposeRecipe(text_layers=texts, brand={"palette": [], "fonts": {}})
+    composer = ClipComposer(render_client=object())
+    kept: dict[str, bytes] = {}
+    seen: list[bytes] = []
+
+    def hook(path: Path) -> Any:
+        seen.append(path.read_bytes())
+        return keep_contact_sheet(
+            path, lambda name, data: kept.setdefault(name, data) and name, source={}
+        )
+
+    made = composer.compose(
+        _video(tmp_path / "clip.mp4", (486, 864), 40),
+        recipe,
+        drawn=_drawn(TOP),
+        stage="preview",
+        contact_sheet=hook,
+    )
+    assert seen == [made.data]  # the composed file, as kept
+    assert made.contact_sheet is not None and len(made.contact_sheet["frames"]) == 6
+    assert len(kept) == 7
+    # the text (bright) is in the last frame of the sheet, over a dark clip
+    with Image.open(io.BytesIO(kept["contact-6.jpg"])) as picture:
+        luma = np.asarray(picture.convert("L"), dtype=np.float32)
+    assert luma.max() > 150
+
+
+def test_a_contact_sheet_hook_that_raises_leaves_the_composed_clip(tmp_path: Path) -> None:
+    texts = (VideoTextLayer(text="Shawarma mixto", place="top", fade_s=0.3),)
+    recipe = ComposeRecipe(text_layers=texts, brand={"palette": [], "fonts": {}})
+    composer = ClipComposer(render_client=object())
+
+    def hook(path: Path) -> Any:
+        raise RuntimeError("the sheet blew up")
+
+    made = composer.compose(
+        _video(tmp_path / "clip.mp4", (486, 864), 40),
+        recipe,
+        drawn=_drawn(TOP),
+        stage="preview",
+        contact_sheet=hook,
+    )
+    assert made.contact_sheet is None and made.data and made.params["text_layers"]
