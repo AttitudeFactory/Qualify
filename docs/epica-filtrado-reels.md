@@ -97,6 +97,21 @@ rubro en test 0,941 / 0,906 (v2: 0,894 / 0,847), sin regresión, USD 0,4287. Exc
 «Viajes y estilo de vida» 0,57 / 0,43 (n = 7, todo lauratuttman). El país por IA pasa a
 `referentes-review-4` en RF-12. #806 fusionado (main 9407a6a6); #807 fusionado (main ee64050b, migración 0182).
 
+**RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
+ni llamadas pagadas; se recalcula al leer, desde `public_reels` y `creators` (globales).
+«En ascenso»: `lift` de `creators/metrics.py` (cm-1) ≥ 2,0 (el mismo `LIFT_HIGHLIGHT` de
+«x2 sobre su media»), con la mediana de ≥ 3 reels medibles de la cuenta en 90 días. Ojo:
+la cifra «xN sobre su media» de hoy usa otra mediana (reels de la corrida, ~30 días, sin
+madurez), así que puede no coincidir con la insignia; para que coincidan, la pantalla
+muestra `provenance.value`.
+«Top 10 % de tu rubro»: vistas ≥ percentil 90 de los reels medibles de 90 días de las
+cuentas del mismo `creators.rubro`; muestra mínima 30 reels de ≥ 3 cuentas; sin rubro (o
+`otro`) nunca hay insignia; la pantalla debe pasar los rubros de la marca
+(`DiscoverySeed.niches`) para que «tu rubro» sea cierto: solo se otorga en esos, y una
+marca sin rubro conocido no recibe ninguna. Cada insignia lleva su procedencia (reel,
+`rb-1`, `cm-1`, ventana, muestra, umbral).
+La pantalla (RF-13) llama `reel_badges.badges_for_reviewed(...)` junto a `reviewed_reels`.
+
 Descartadas: RF-06 «Competencia del sector» (decisión 1), RF-08 «Buscar por producto»
 (decisión 2), RF-03 (fusionada en RF-01).
 
