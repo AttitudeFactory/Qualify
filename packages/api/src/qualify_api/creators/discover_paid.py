@@ -33,6 +33,10 @@ button and this module searches TikTok — paying — for more.
   `MONTHLY_CAP_TEXT` and no call is made. An uncapped business («Lecturas sin límite»,
   `vendors.uncapped`, m-24956180) skips this budget as it skips the Creators one; its
   credits are still booked.
+- **Inside the business's cap, on purpose** (Deivid, 2026-11-25, option 1): the 50/200
+  counts against the same 150/600 as every other read, so a day of many searches can
+  leave less room for the Monday ideas run (`referentes/reel_schedule.py`). A two-way
+  door: taking this feature out of the gate's cap is a code change, no migration.
 - **Idempotent: the same search is never paid twice in a week.** Every answer is kept in
   the shared `vendor_payloads` (`SEARCH_TTL`, 7 days) under its path and parameters —
   the same cache the Referentes search uses — and asked first: the same search again
@@ -497,6 +501,7 @@ class MemoryPaidSearchPool:
         self.repository.upsert_creators(facts)
         self.repository.record_sightings(sightings)
         regions = {claim.key: claim for claim in claims}
+        sighted = {(s.network, s.handle) for s in sightings}
         for fact in facts:
             stored = self.repository.creator(fact.network, fact.handle) or fact
             region = regions.get((fact.network, fact.handle))
@@ -518,7 +523,8 @@ class MemoryPaidSearchPool:
                 account = replace(
                     account, region_code=known.region_code, region_source=known.region_source
                 )
-            times = self.discover.seen_times.get(account.key, 0) + 1
+            # like `creator_sightings.times + 1` on a repeat: only a sighting counts
+            times = self.discover.seen_times.get(account.key, 0) + (account.key in sighted)
             self.discover.add(account, seen_times=times)
 
 
@@ -607,6 +613,7 @@ def search_more_accounts(
         return _search(
             tenant_id=tenant_id,
             brand_id=brand_id,
+            requested_by=requested_by,
             query=query,
             region=region,
             filters=filters,
@@ -623,6 +630,7 @@ def _search(
     *,
     tenant_id: UUID,
     brand_id: UUID,
+    requested_by: UUID,
     query: str,
     region: str,
     filters: DiscoverFilters,
@@ -649,6 +657,8 @@ def _search(
     #: Answers paid for but not written to `vendor_payloads` (the write failed): still
     #: used for the accounts, never cited as provenance.
     unstored: set[UUID] = set()
+    #: Answers paid for in this call (not served from the cache).
+    paid: set[UUID] = set()
 
     def keep(
         params: dict[str, str], payload: dict[str, Any], *, status: int, credits_charged: int
@@ -723,6 +733,7 @@ def _search(
                 charged = _credits_charged(payload)
                 credits += charged
                 entry = keep(params, payload, status=200, credits_charged=charged)
+                paid.add(entry.id)
             kept.append(entry)
             if entry.status != 200:
                 break
@@ -743,8 +754,18 @@ def _search(
             http.close()
 
     answered = [e for e in kept if e.status == 200]
-    facts, sightings = accounts_from_pages(
+    facts, _ = accounts_from_pages(
         [e.payload for e in answered],
+        query=query,
+        region_code=region,
+        seen_at=now,
+    )
+    # A sighting counts what a search PAID to see now: an answer served from the cache
+    # was already counted when it was paid, so a repeat (any business) never raises
+    # `creator_sightings.times`, which RF-07a ranks by. The accounts and their region are
+    # still written from every page — both writes are idempotent merges.
+    _, sightings = accounts_from_pages(
+        [e.payload for e in answered if e.id in paid],
         query=query,
         region_code=region,
         seen_at=now,
@@ -766,8 +787,11 @@ def _search(
     status: SearchStatus = "searched" if credits else "cached"
     message = None if facts else NO_NEW_TEXT
     logger.info(
-        "discover paid: tenant=%s query=%r status=%s credits=%s accounts=%s version=%s",
+        "discover paid: tenant=%s brand=%s requested_by=%s query=%r status=%s credits=%s "
+        "accounts=%s version=%s",
         tenant_id,
+        brand_id,
+        requested_by,
         query,
         status,
         credits,

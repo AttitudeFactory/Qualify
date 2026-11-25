@@ -142,6 +142,18 @@ Todas son puertas de dos vías (constantes y presupuestos). Medición: `vendor_u
 (`reels_list`, `reels_transcript`, `profile`, `referentes_search`), `brand_reel_runs.cost_usd`
 y Langfuse.
 
+### RF-07b: búsqueda pagada de cuentas nuevas
+
+Decisión de Deivid (2026-11-25, opción 1): el presupuesto propio de la búsqueda (50 créditos
+al día y 200 al mes por negocio, en su zona horaria) cuenta **dentro** del tope general del
+negocio (150/600). La puerta medida reserva cada crédito en ese tope antes de llamar. Se mide
+con su propia feature, `discover_accounts_search` (migración 0184), para leerla aparte de
+las demás. Por eso un día de muchas búsquedas puede dejar menos cupo para la corrida
+semanal de ideas de los lunes. Es una puerta de dos vías: sacar la feature del tope general
+es un cambio de código, sin migración. Cada búsqueda cuesta 1 crédito (≈ USD 0,0019), 2 como
+máximo, y repetirla en la misma semana cuesta 0 porque la respuesta queda en
+`vendor_payloads`. Código: `qualify_api.creators.discover_paid`.
+
 ## Restricciones y cuidados
 
 - Toda lectura pagada pasa por `referentes/reel_runs.py` y `reel_schedule.py`. ScrapeCreators con

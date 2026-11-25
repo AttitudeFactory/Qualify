@@ -540,3 +540,37 @@ def test_an_unreadable_pool_pays_nothing() -> None:
     outcome = world.search(tenant, brand, vendor)
     assert outcome.status == "unavailable" and outcome.credits == 0
     assert vendor.requests == [] and _ledger().of(tenant) == []
+
+
+def test_a_cached_repeat_never_counts_as_a_new_sighting() -> None:
+    world = World()
+    tenant, brand = world.business()
+    vendor = Vendor()
+    first = world.search(tenant, brand, vendor)
+    times = {key: world.discover.seen_times[key] for key in first.found}
+    assert set(times.values()) == {1}
+    other, other_brand = world.business()
+    for who, which in ((tenant, brand), (other, other_brand)):
+        again = world.search(who, which, vendor)
+        assert (again.status, again.credits) == ("cached", 0)
+    assert {key: world.discover.seen_times[key] for key in first.found} == times
+
+
+def test_the_log_names_who_clicked(caplog: pytest.LogCaptureFixture) -> None:
+    world = World()
+    tenant, brand = world.business()
+    owner = uuid4()
+    with caplog.at_level("INFO", logger=dp.__name__):
+        dp.search_more_accounts(
+            tenant_id=tenant,
+            brand_id=brand,
+            requested_by=owner,
+            network="tiktok",
+            rubro="food_drink",
+            filters=DiscoverFilters(),
+            store=world.discover,
+            pool=world.pool,
+            client=Vendor().client(),
+            zone=BOGOTA,
+        )
+    assert any(f"requested_by={owner}" in r.getMessage() for r in caplog.records)

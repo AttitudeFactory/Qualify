@@ -185,6 +185,13 @@ def test_search_books_keeps_and_lists_with_provenance_then_repeats_for_free() ->
     second = _search(tenant, brand, vendor, city=city, region=region)
     assert (second.status, second.credits) == ("cached", 0)
     assert len(vendor.requests) == 1 and len(_events(tenant)) == 1
+    # the repeat was served from the kept answer: it is not a new sighting
+    with tenant_session(tenant) as session:
+        times = session.execute(
+            text("SELECT times FROM creator_sightings WHERE handle = ANY(:h)"),
+            {"h": handles},
+        ).scalars()
+        assert set(times) == {1}
 
 
 def test_two_businesses_budgets_are_their_own() -> None:
