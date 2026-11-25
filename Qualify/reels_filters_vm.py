@@ -28,7 +28,6 @@ from qualify_api.referentes.reviewed_reels import (
     DURATION_UNDER_15,
     KIND_COMPETENCIA,
     KIND_REFERENTE,
-    MORE_REVIEWED_TITLE,
     NETWORKS,
     ReelFilters,
 )
@@ -114,19 +113,11 @@ NO_IDEAS_LEFT = (
     "para tener más ideas."
 )
 NO_IDEAS_LEFT_ACTION = "Elegir cuentas"
-#: The filters leave no idea, but «Más reels revisados» has some (UX review 7).
-IDEAS_NONE_FILTERED = (
-    "Ninguna idea coincide con estos filtros. Mira «Más reels revisados», aquí abajo."
-)
-
-#: The second list (`reviewed_reels.MORE_REVIEWED_TITLE`, exact, ticket m-25119458), its
-#: line (UX review 5: why its cards have no «Hacer uno parecido») and its next-page button.
-MORE_TITLE = MORE_REVIEWED_TITLE
-MORE_BODY = (
-    "Más reels de tu producto o tu categoría para que saques ideas. Estos son solo para "
-    "mirar: no se pueden copiar con «Hacer uno parecido»."
-)
-MORE_BUTTON = "Ver más reels"
+#: RF-13 (m-25120327, Deivid 2026-11-25): one list under the bar — the ideas first, then
+#: the other reels the check kept, with no heading over either — `LIST_PAGE` at a time;
+#: «Ver más» brings the next `LIST_PAGE`. Only the ideas keep «Hacer uno parecido».
+LIST_PAGE = 16
+MORE_BUTTON = "Ver más"
 MORE_BUSY = "Cargando…"
 #: A reel of the second list could not be read (Postgres down while paging).
 MORE_ERROR = "No pudimos traer más reels. Inténtalo de nuevo."
@@ -338,6 +329,31 @@ def chips(choice: FilterChoice, options: Sequence[dict[str, str]] = ()) -> list[
 # --------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class FirstPage:
+    """The reviewed reels that fill the first `LIST_PAGE` after the ideas, whether more
+    exist, and the offset «Ver más» reads from next."""
+
+    more: list[dict[str, str]]
+    has_more: bool
+    next_offset: int
+
+
+def first_page(
+    ideas: int,
+    more: Sequence[dict[str, str]],
+    *,
+    has_more: bool,
+    page: int = LIST_PAGE,
+) -> FirstPage:
+    """RF-13: the first page of the one list is `ideas` ideas and then as many reviewed
+    reels (`more`, read from offset 0, at least `page` of them) as fit in `page`; what
+    is left over waits for «Ver más», which reads `page` more from `next_offset`."""
+    room = max(0, page - max(0, ideas))
+    shown = list(more[:room])
+    return FirstPage(shown, has_more or len(more) > room, len(shown))
+
+
 def only_competitors(choice: FilterChoice, accounts: Mapping[str, str]) -> bool:
     """The filters reach competitor accounts only: «Competidores» chosen, or every chosen
     account is a `competencia` one (`accounts` is `accounts_by_key`'s)."""
@@ -416,14 +432,12 @@ __all__ = [
     "EMPTY_NONE",
     "EMPTY_NO_COMPETITORS",
     "EMPTY_NO_IDEAS",
-    "IDEAS_NONE_FILTERED",
     "KIND_LABEL",
     "KIND_OPTIONS",
-    "MORE_BODY",
+    "LIST_PAGE",
     "MORE_BUSY",
     "MORE_BUTTON",
     "MORE_ERROR",
-    "MORE_TITLE",
     "NETWORK_LABEL",
     "NETWORK_OPTIONS",
     "NO_ACCOUNTS_OPTION",
@@ -436,6 +450,7 @@ __all__ = [
     "RESET_LABEL",
     "SOME_ACCOUNTS",
     "EmptyMessage",
+    "FirstPage",
     "FilterChoice",
     "account_key",
     "account_options",
@@ -443,6 +458,7 @@ __all__ = [
     "chips",
     "clear_accounts",
     "empty_message",
+    "first_page",
     "known_accounts",
     "only_competitors",
     "parse_account_key",

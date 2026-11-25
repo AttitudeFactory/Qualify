@@ -43,7 +43,8 @@ PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY) + " marcados"
 BUTTON_LABEL = "Tus competidores: {n} de " + str(rivals.MAX_WEEKLY) + " los revisamos cada lunes"
 BUTTON_LABEL_READING = "Tus competidores: estamos leyendo sus reels"
 #: A manual read ended while the drawer was closed (a toast; open, the row says it).
-TOAST_DONE = "Listo: los reels de {account} ya están en «Más reels revisados»."
+#: RF-13 (m-25120327): the list has no «Más reels revisados» heading any more.
+TOAST_DONE = "Listo: los reels de {account} ya están en tus ideas."
 TOAST_FAILED = "No pudimos leer los reels de {account}. Inténtalo de nuevo en unos minutos."
 #: More than 6 ticked (exact, `competitors.TOO_MANY_TEXT`).
 TOO_MANY = rivals.TOO_MANY_TEXT

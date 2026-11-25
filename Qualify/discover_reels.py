@@ -17,9 +17,15 @@ being prepared and, from the browser (`_ticker`), reads the view again — free 
 
 RF-02 (m-25119460): a filter bar over the ideas — «Canal», «Tipo de cuenta», «Cuenta» (one
 or several), «Duración» and «Restablecer filtros» (`reels_filters_vm`); desktop dropdowns
-in a sticky bar, phone chips that open a sheet from the bottom. Changing a filter is one
+in the bar, phone chips that open a sheet from the bottom. Changing a filter is one
 more read of what is stored (RF-01's `reviewed_reels`): it never queues a run, never marks
-the brand, never pays. Under the ideas, «Más reels revisados», paged.
+the brand, never pays.
+
+RF-13 (m-25120327, Deivid 2026-11-25): the bar is drawn with the system's pieces only —
+Radix buttons, popovers and `drawer` under the global Liquid Glass skin, no box behind
+it — and under it there is ONE list with no heading: the ideas first, then the other
+reels the check kept (RF-01's second list), `LIST_PAGE` at a time; «Ver más» brings the
+next `LIST_PAGE`. Only the ideas offer «Hacer uno parecido».
 
 RF-05 (m-25119465), option A chosen by Deivid on 2026-11-25: «Tus competidores» at the end
 of the bar opens a drawer (`reels_competitors_vm`) — ticking a competitor saves the
@@ -44,7 +50,6 @@ from qualify_api.referentes import reels_ai
 from qualify_api.referentes.competitors import STATE_READING
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 from qualify_api.referentes.reviewed_reels import KIND_REFERENTE
-from qualify_api.referentes.reviewed_reels import PAGE_SIZE as MORE_PAGE_SIZE
 
 from . import (
     reel_wait_vm,
@@ -69,6 +74,7 @@ from .reels_filters_vm import (
     EMPTY_FILTERS,
     EMPTY_NO_COMPETITORS,
     EMPTY_NO_IDEAS,
+    LIST_PAGE,
     FilterChoice,
 )
 from .reels_ideas_vm import (
@@ -88,7 +94,6 @@ from .ui import (
     drawer,
     empty_state,
     loading_spinner,
-    section,
     signal_pill,
     skeleton_card,
 )
@@ -152,10 +157,14 @@ class DiscoverReelsState(rx.State):
     _accounts: dict[str, str] = {}
     #: Which axis' sheet is open on a phone ("" none).
     sheet: str = ""
+    #: The axis whose chip opened the last sheet — kept after it closes, so the focus
+    #: goes back to that chip (Escape, the backdrop, «Cerrar» or «Listo»; RF-13).
+    sheet_chip: str = ""
     #: A filtered read is in flight (the lists dim until it lands).
     filtering: bool = False
-    #: «Más reels revisados»: the pages read so far, whether a next one exists, the next
-    #: page's offset, and the «Ver más reels» read in flight / its error.
+    #: The reviewed reels after the ideas (RF-01's second list, RF-13's one list): the
+    #: ones shown so far, whether more exist, the offset «Ver más» reads from next, and
+    #: that read in flight / its error.
     more_reels: list[dict[str, str]] = []
     has_more: bool = False
     more_loading: bool = False
@@ -206,7 +215,9 @@ class DiscoverReelsState(rx.State):
             self._accounts = {}
             self.more_reels = []
             self.has_more = False
+            self._more_next = 0
             self.sheet = ""
+            self.sheet_chip = ""
             self.competitor_rows = []
             self.competitor_busy = ""
             self.competitor_error = ""
@@ -275,8 +286,10 @@ class DiscoverReelsState(rx.State):
 
     @rx.event
     def open_sheet(self, axis: str) -> None:
-        """A phone chip: open its axis' sheet."""
+        """A phone chip: open its axis' sheet (and remember the chip, for the focus)."""
         self.sheet = axis if axis in reels_filters_vm.AXES else ""
+        if self.sheet:
+            self.sheet_chip = self.sheet
 
     @rx.event
     def sheet_changed(self, is_open: bool) -> None:
@@ -384,8 +397,8 @@ class DiscoverReelsState(rx.State):
 
     @rx.event(background=True)
     async def load_more(self) -> None:
-        """«Ver más reels»: the next page of «Más reels revisados», same filters — what is
-        stored, free."""
+        """«Ver más»: the next `LIST_PAGE` reviewed reels of the one list, same filters —
+        what is stored, free."""
         async with self:
             # never while a filtered read is in flight: its list restarts the paging
             if self.more_loading or self.filtering or not self.has_more or not self._brand_id:
@@ -406,6 +419,7 @@ class DiscoverReelsState(rx.State):
                 brand_id,
                 filters=filters,
                 offset=offset,
+                limit=LIST_PAGE,
             )
         except Exception as exc:  # noqa: BLE001 — the button says it, the log keeps why
             logger.warning("more reviewed reels unreadable: %s: %s", type(exc).__name__, exc)
@@ -421,7 +435,7 @@ class DiscoverReelsState(rx.State):
             seen = {c.get("key") for c in self.more_reels}
             self.more_reels = [*self.more_reels, *(c for c in cards if c.get("key") not in seen)]
             self.has_more = has_more
-            self._more_next = offset + MORE_PAGE_SIZE
+            self._more_next = offset + LIST_PAGE
 
     def _show(self, shown: reels_ideas_vm.IdeasScreen) -> None:
         self.screen = shown.screen
@@ -434,12 +448,15 @@ class DiscoverReelsState(rx.State):
         self.waiting = shown.waiting
         self._read_at = time.time()
         self._cards = list(shown.cards)
-        # RF-02: the second list, its paging, and the accounts «Cuenta» offers — a chosen
-        # account the brand no longer offers is dropped from the bar
-        self.more_reels = list(shown.more_cards)
-        self.has_more = shown.has_more
+        # RF-13: the one list's first `LIST_PAGE` — the ideas, then the reviewed reels
+        # that fit after them; the rest waits for «Ver más». RF-02: the accounts
+        # «Cuenta» offers — a chosen account the brand no longer offers is dropped
+        ideas = sum(1 for c in self._cards if c.get("affinity") in reels_ai.FITS)
+        page = reels_filters_vm.first_page(ideas, shown.more_cards, has_more=shown.has_more)
+        self.more_reels = page.more
+        self.has_more = page.has_more
         self.more_error = ""
-        self._more_next = MORE_PAGE_SIZE
+        self._more_next = page.next_offset
         self._accounts = dict(shown.accounts)
         self.account_options = reels_filters_vm.account_options(shown.accounts)
         if shown.screen == SCREEN_IDEAS:
@@ -877,7 +894,7 @@ def _reel_media(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 class_name="q-dr-cover-img",
                 on_error=DiscoverReelsState.cover_failed(key),
             ),
-            # RF-02: «Más reels revisados» keeps no copy of its covers (their CDN link
+            # RF-02: a reviewed reel (not an idea) keeps no copy of its cover (its CDN link
             # lives ~4 days): the placeholder says so instead of looking broken
             rx.center(
                 rx.vstack(
@@ -1070,7 +1087,7 @@ def _reel_tile(reel: rx.Var[dict[str, str]], *, more: bool = False) -> rx.Compon
     """One idea as the «C» card (§ request 2026-10-15): the picture with how it does
     against its own account, who and how many views, what it is (format and hook), the
     rest folded into «Detalles», what its analysis saw, and «Hacer uno parecido».
-    `more` (RF-02): a reel of «Más reels revisados» — the same card without «Hacer uno
+    `more` (RF-02/RF-13): a reviewed reel after the ideas — the same card without «Hacer uno
     parecido» (its video was not kept) nor its line."""
     if more:
         foot: rx.Component = rx.fragment()
@@ -1219,7 +1236,7 @@ def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 # --------------------------------------------------------------------------------------
-# RF-02: the filter bar (m-25119460)
+# RF-02: the filter bar (m-25119460) — RF-13 (m-25120327): the system's pieces only
 # --------------------------------------------------------------------------------------
 
 #: The single-choice axes, in the bar's order around «Cuenta».
@@ -1229,6 +1246,15 @@ _STATE_VALUE = {
     AXIS_KIND: lambda: DiscoverReelsState.filter_kind,
     AXIS_DURATION: lambda: DiscoverReelsState.filter_duration,
 }
+#: The phone's chips and the desktop's dropdowns swap at Reflex's `xs` breakpoint
+#: (30em, 480 px): a phone gets the chips and their sheet, anything wider the dropdowns.
+_PHONE = rx.breakpoints(initial="flex", xs="none")
+_WIDE = rx.breakpoints(initial="none", xs="flex")
+#: The marks of an option (lucide, painted with the system's tokens): a radio is a ring
+#: that fills, a checkbox an empty square that gets its check — never an empty gap.
+_MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "square")}
+#: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
+_TARGET = "44px"
 
 
 def _option_row(
@@ -1239,25 +1265,53 @@ def _option_row(
     role: str,
     detail: str | rx.Var[str] | None = None,
 ) -> rx.Component:
-    """One option of a filter: a 44 px row with a check when chosen — a radio
-    (single-choice axes) or a checkbox («Cuenta»), read as such by a screen reader."""
-    return rx.el.button(
-        rx.box(
-            rx.cond(chosen, rx.icon("check", size=16), rx.fragment()),
-            class_name="q-rf-check",
+    """One option of a filter (and one competitor of RF-05's drawer): a 44 px `ghost`
+    Radix button (the skin's row button, §5.5) — a radio for the single-choice axes, a
+    checkbox for «Cuenta» and the competitors, read as such by a screen reader — with
+    its mark always drawn: the empty ring or square when it is not chosen (RF-13)."""
+    on, off = _MARKS[role]
+    return rx.button(
+        rx.icon(
+            rx.cond(chosen, on, off),
+            size=T.ICON_MD,
+            color=rx.cond(chosen, T.tone_color("accent", 11), T.TEXT_MUTED),
+            flex_shrink="0",
             aria_hidden="true",
         ),
         rx.vstack(
-            rx.text(label, size="2", weight=rx.cond(chosen, "medium", "regular")),
+            rx.text(
+                label,
+                size="2",
+                weight=rx.cond(chosen, "medium", "regular"),
+                color=T.TEXT_STRONG,
+            ),
             *([rx.text(detail, size="1", color=T.TEXT_MUTED)] if detail is not None else []),
             spacing="0",
             align_items="start",
+            min_width="0",
         ),
         type="button",
+        variant="ghost",
+        color_scheme="gray",
+        size="2",
         role=role,
         aria_checked=rx.cond(chosen, "true", "false"),
         on_click=on_click,
-        class_name="q-rf-option",
+        width="100%",
+        min_height=_TARGET,
+        height="auto",
+        margin="0",
+        padding="0.35rem 0.75rem",
+        box_sizing="border-box",
+        justify_content="flex-start",
+        text_align="start",
+        gap="0.6rem",
+    )
+
+
+def _options(*rows: rx.Component, role: str, label: str) -> rx.Component:
+    return rx.flex(
+        *rows, direction="column", spacing="1", width="100%", role=role, aria_label=label
     )
 
 
@@ -1274,18 +1328,13 @@ def _single_options(axis: str, *, close: bool) -> rx.Component:
             role="radio",
         )
         rows.append(rx.popover.close(row) if close else row)
-    return rx.box(
-        *rows,
-        role="radiogroup",
-        aria_label=AXIS_LABELS[axis],
-        class_name="q-rf-options",
-    )
+    return _options(*rows, role="radiogroup", label=AXIS_LABELS[axis])
 
 
 def _account_options() -> rx.Component:
     """«Todas» and every account the brand labelled (one or several, checkboxes)."""
     S = DiscoverReelsState
-    return rx.box(
+    return _options(
         _option_row(
             reels_filters_vm.ALL_LABELS[AXIS_ACCOUNT],
             S.filter_accounts.length() == 0,
@@ -1312,8 +1361,7 @@ def _account_options() -> rx.Component:
             ),
         ),
         role="group",
-        aria_label=AXIS_LABELS[AXIS_ACCOUNT],
-        class_name="q-rf-options",
+        label=AXIS_LABELS[AXIS_ACCOUNT],
     )
 
 
@@ -1328,72 +1376,108 @@ def _axis_on(axis: str) -> rx.Var[bool]:
     return _STATE_VALUE[axis]() != ""
 
 
-def _trigger_face(axis: str) -> list[rx.Component]:
-    """What a dropdown or a chip reads: «Canal» · «Todos» ▾."""
-    return [
-        rx.text(AXIS_LABELS[axis], size="2", color=T.TEXT_MUTED, as_="span"),
-        rx.text(_axis_value(axis), size="2", weight="medium", as_="span", class_name="q-rf-value"),
-        rx.icon("chevron-down", size=14, aria_hidden="true"),
-    ]
+def _filter_button(axis: str, **props: Any) -> rx.Component:
+    """What a dropdown or a chip reads — «Canal» · «Todos» ▾ — as a Radix button with
+    the skin: `soft` (the accent wash) while the axis narrows the list, `surface`
+    otherwise. It never overflows its row (RF-13: «Tipo de cuenta: Competidores» was cut
+    in a ~730 px panel): it may shrink to the row, and only the value then ends in «…»,
+    with the whole value in `title`."""
+    on = _axis_on(axis)
+    value = _axis_value(axis)
+    return rx.button(
+        rx.text(AXIS_LABELS[axis], size="2", weight="regular", color=T.TEXT_MUTED, as_="span"),
+        rx.text(
+            value,
+            size="2",
+            weight="medium",
+            as_="span",
+            truncate=True,
+            min_width="0",
+            color=rx.cond(on, T.tone_color("accent", 11), T.TEXT_STRONG),
+        ),
+        rx.icon("chevron-down", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
+        type="button",
+        variant=rx.cond(on, "soft", "surface"),
+        size="3",
+        min_height=_TARGET,
+        max_width="100%",
+        aria_label=AXIS_LABELS[axis] + ": " + value,
+        title=AXIS_LABELS[axis] + ": " + value,
+        **props,
+    )
 
 
 def _dropdown(axis: str) -> rx.Component:
-    """A desktop filter: a button that opens its options under it."""
+    """A desktop filter: a button that opens its options under it (Radix popover, the
+    skin's glass; Escape gives the focus back to the button)."""
     options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=True)
     return rx.popover.root(
-        rx.popover.trigger(
-            rx.el.button(
-                *_trigger_face(axis),
-                type="button",
-                class_name=rx.cond(_axis_on(axis), "q-rf-trigger q-rf-trigger--on", "q-rf-trigger"),
-                aria_label=AXIS_LABELS[axis] + ": " + _axis_value(axis),
-            ),
-        ),
+        rx.popover.trigger(_filter_button(axis)),
         rx.popover.content(
             options,
             side="bottom",
             align="start",
-            class_name="q-rf-pop",
+            size="1",
+            min_width="15rem",
+            max_height="22rem",
+            overflow_y="auto",
         ),
     )
 
 
+#: The phone's chips carry `data-sheet-chip="1"` on the one that opened the last sheet;
+#: closing the sheet (Escape, the backdrop, «Cerrar», «Listo» or a choice) gives the
+#: focus back to it (RF-13, UX of #810).
+SHEET_FOCUS_SCRIPT = (
+    "window.setTimeout(function () {"
+    "  var b = document.querySelector('[data-sheet-chip=\"1\"]');"
+    "  if (b && b.offsetParent !== null) { b.focus(); }"
+    "}, 0);"
+)
+
+
 def _chip(axis: str) -> rx.Component:
     """A phone filter: a chip that opens its sheet from the bottom."""
-    return rx.el.button(
-        *_trigger_face(axis),
-        type="button",
-        on_click=DiscoverReelsState.open_sheet(axis),
-        class_name=rx.cond(_axis_on(axis), "q-rf-chip q-rf-chip--on", "q-rf-chip"),
-        aria_label=AXIS_LABELS[axis] + ": " + _axis_value(axis),
+    S = DiscoverReelsState
+    return _filter_button(
+        axis,
+        on_click=S.open_sheet(axis),
         aria_haspopup="dialog",
+        aria_expanded=rx.cond(S.sheet == axis, "true", "false"),
+        custom_attrs={"data-sheet-chip": rx.cond(S.sheet_chip == axis, "1", "0")},
     )
 
 
-def _reset_button(*, chip: bool = False) -> rx.Component:
-    """«Restablecer filtros»: shown while some filter narrows the lists."""
+def _reset_button() -> rx.Component:
+    """«Restablecer filtros»: shown while some filter narrows the lists — a `ghost`
+    button of the skin, at the end of the filters."""
     return rx.cond(
         DiscoverReelsState.filters_on,
-        rx.el.button(
-            rx.icon("rotate-ccw", size=14, aria_hidden="true"),
-            rx.text(reels_filters_vm.RESET_LABEL, size="2", as_="span"),
+        rx.button(
+            rx.icon("rotate-ccw", size=T.ICON_SM, aria_hidden="true"),
+            reels_filters_vm.RESET_LABEL,
             type="button",
+            variant="ghost",
+            size="3",
+            min_height=_TARGET,
+            margin="0",
             on_click=DiscoverReelsState.reset_filters,
-            class_name="q-rf-chip q-rf-reset" if chip else "q-rf-trigger q-rf-reset",
         ),
     )
 
 
 def _sheet() -> rx.Component:
     """The phone's sheet of the chip that was tapped: its options, «Restablecer filtros»
-    and «Listo». A single-choice option closes it; «Cuenta» stays open to pick several."""
+    and «Listo». A single-choice option closes it; «Cuenta» stays open to pick several.
+    However it closes, the focus goes back to the chip that opened it."""
     S = DiscoverReelsState
     foot = rx.hstack(
         rx.button(
             reels_filters_vm.RESET_LABEL,
             variant="ghost",
             size="3",
-            min_height="44px",
+            min_height=_TARGET,
+            margin="0",
             on_click=S.reset_filters,
             disabled=~S.filters_on,
         ),
@@ -1401,7 +1485,7 @@ def _sheet() -> rx.Component:
         rx.button(
             reels_filters_vm.DONE_LABEL,
             size="3",
-            min_height="44px",
+            min_height=_TARGET,
             on_click=S.close_sheet,
         ),
         width="100%",
@@ -1421,17 +1505,19 @@ def _sheet() -> rx.Component:
         title=S.sheet_title,
         footer=foot,
         side="bottom",
+        on_close_auto_focus=rx.call_script(SHEET_FOCUS_SCRIPT).prevent_default,
     )
 
 
 def _filter_bar() -> rx.Component:
-    """RF-02's sticky bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
-    «Cuenta», «Duración» and «Restablecer filtros». On a desktop, dropdowns; at 640 px or
-    less, chips (wrapping onto a second row) that open a sheet from the bottom. Every change is
-    one more read of what is stored — never a paid call."""
+    """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
+    «Cuenta», «Duración» and «Restablecer filtros». From 480 px up, dropdowns; on a
+    phone, chips (wrapping onto a second row, none hidden) that open a sheet from the
+    bottom. Every change is one more read of what is stored — never a paid call. RF-13:
+    no box behind it, and only the system's pieces (Radix buttons, popovers, `drawer`)."""
     axes = (*_SINGLE_AXES, AXIS_ACCOUNT, AXIS_DURATION)
     return rx.box(
-        rx.box(
+        rx.flex(
             *(_dropdown(axis) for axis in axes),
             _reset_button(),
             # RF-05, option A: «Tus competidores» after the filters, set apart
@@ -1440,20 +1526,28 @@ def _filter_bar() -> rx.Component:
                 rx.separator(orientation="vertical", size="1"),
             ),
             _rivals_button(chip=False),
-            class_name="q-rf-row q-rf-desktop",
+            display=_WIDE,
+            wrap="wrap",
+            align="center",
+            spacing="2",
+            width="100%",
         ),
-        rx.box(
+        rx.flex(
             *(_chip(axis) for axis in axes),
-            _reset_button(chip=True),
+            _reset_button(),
             _rivals_button(chip=True),
-            class_name="q-rf-row q-rf-phone",
+            display=_PHONE,
+            wrap="wrap",
+            align="center",
+            spacing="2",
+            width="100%",
         ),
         _sheet(),
         _competitors_drawer(bottom=False),
         _competitors_drawer(bottom=True),
         role="search",
         aria_label=reels_filters_vm.BAR_LABEL,
-        class_name="q-rf-bar",
+        width="100%",
     )
 
 
@@ -1529,17 +1623,11 @@ def _empty_lists() -> rx.Component:
     )
 
 
-def _more() -> rx.Component:
-    """«Más reels revisados» (RF-01's second list): the other reels the product check
-    kept, paged with «Ver más reels»; covers may be gone (the placeholder says so)."""
+def _pager() -> rx.Component:
+    """«Ver más» under the one list (RF-13): the next `LIST_PAGE` reviewed reels, while
+    more exist; its error, when the read failed, above it."""
     S = DiscoverReelsState
-    grid = rx.box(
-        rx.foreach(S.more_reels, lambda reel: _reel_tile(reel, more=True)),
-        class_name="q-dr-grid",
-        role="list",
-        aria_label=reels_filters_vm.MORE_TITLE,
-    )
-    pager = rx.vstack(
+    return rx.vstack(
         rx.cond(S.more_error != "", callout(S.more_error, "error")),
         rx.cond(
             S.has_more,
@@ -1558,54 +1646,27 @@ def _more() -> rx.Component:
         width="100%",
         align="center",
     )
-    return rx.cond(
-        S.more_reels.length() > 0,
-        section(
-            reels_filters_vm.MORE_TITLE,
-            grid,
-            pager,
-            description=reels_filters_vm.MORE_BODY,
-        ),
-    )
 
 
 def _ideas() -> rx.Component:
-    """The stored ideas under the header that dates them — and, above them, the notice
-    of a newer run that failed: «No pudimos traer ideas nuevas», in the info tone (founder,
-    2026-11-04) — the ideas below are still true and there is nothing to fix.
-
-    RF-02: the filter bar over both lists; the ideas (RF-01's `ideas`, already filtered)
-    and «Más reels revisados» under them — or, when the filters leave nothing, the
-    message that says why and how to go back."""
+    """The notice of a newer run that failed — «No pudimos traer ideas nuevas», in the info
+    tone (founder, 2026-11-04): the ideas below are still true and there is nothing to
+    fix — then the filter bar and, under it, ONE list (RF-13, Deivid 2026-11-25): no
+    heading, the ideas first (with «Hacer uno parecido») and then the other reels the
+    check kept (without it), `LIST_PAGE` at a time with «Ver más» — or, when the filters
+    leave nothing, the message that says why and how to go back."""
     S = DiscoverReelsState
     grid = rx.box(
         rx.foreach(S.reels, _reel_tile),
+        rx.foreach(S.more_reels, lambda reel: _reel_tile(reel, more=True)),
         class_name="q-dr-grid",
         role="list",
         aria_label="Ideas para tus reels",
     )
-    ideas = rx.cond(
-        S.reels.length() > 0,
-        grid,
-        rx.text(
-            rx.cond(
-                S.filters_on,
-                reels_filters_vm.IDEAS_NONE_FILTERED,
-                reels_filters_vm.NO_IDEAS_LEFT,
-            ),
-            size="2",
-            color=T.TEXT_MUTED,
-        ),
-    )
     lists = rx.cond(
         S.empty_kind != "",
         _empty_lists(),
-        rx.vstack(
-            section(S.title, ideas, description=S.body),
-            _more(),
-            spacing="5",
-            width="100%",
-        ),
+        rx.vstack(grid, _pager(), spacing="4", width="100%"),
     )
     return rx.vstack(
         rx.cond(
@@ -1621,7 +1682,10 @@ def _ideas() -> rx.Component:
         rx.cond(S.competitors_reading, _ticker(S.refresh_competitors)),
         rx.box(
             lists,
-            class_name=rx.cond(S.filtering, "q-rf-lists q-rf-lists--busy", "q-rf-lists"),
+            # a filtered read in flight: the list dims and takes no clicks until it lands
+            opacity=rx.cond(S.filtering, "0.55", "1"),
+            pointer_events=rx.cond(S.filtering, "none", "auto"),
+            transition=f"opacity {T.DUR} {T.EASE}",
             aria_busy=rx.cond(S.filtering, "true", "false"),
             width="100%",
         ),
@@ -1678,7 +1742,7 @@ def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
             rx.cond(weekly, rx.fragment(), read_now),
             wrap="wrap",
             align="center",
-            gap="2",
+            spacing="2",
             width="100%",
         ),
         _read_state(row),
@@ -1690,8 +1754,8 @@ def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
 
 #: The bar's «Tus competidores» button (desktop) and chip (phone): the drawer gives the
 #: focus back to whichever of the two is on screen when it closes.
-RIVALS_BUTTON_ID = "q-rf-rivals"
-RIVALS_CHIP_ID = "q-rf-rivals-chip"
+RIVALS_BUTTON_ID = "reels-rivals"
+RIVALS_CHIP_ID = "reels-rivals-chip"
 RIVALS_FOCUS_SCRIPT = (
     "window.setTimeout(function () {"
     f" var ids = ['{RIVALS_BUTTON_ID}', '{RIVALS_CHIP_ID}'];"
@@ -1707,21 +1771,24 @@ def _rivals_button(*, chip: bool) -> rx.Component:
     """«Tus competidores» at the end of the bar (option A, Deivid 2026-11-25): opens the
     drawer — from the right on a desktop, from the bottom on a phone. While a manual read
     is in flight it shows the spinner instead of its icon. Not drawn for a brand that
-    marked no competitor (RF-02's empty message tells it how)."""
+    marked no competitor (RF-02's empty message tells it how). RF-13: a `surface` Radix
+    button of the skin, like the filters beside it."""
     S = DiscoverReelsState
     return rx.cond(
         S.competitor_rows.length() > 0,
-        rx.el.button(
+        rx.button(
             rx.cond(
                 S.competitors_reading,
                 loading_spinner("sm"),
-                rx.icon("users", size=14, aria_hidden="true"),
+                rx.icon("users", size=T.ICON_SM, aria_hidden="true"),
             ),
-            rx.text(reels_competitors_vm.PICKER_TITLE, size="2", as_="span"),
+            reels_competitors_vm.PICKER_TITLE,
             type="button",
             id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
             on_click=S.open_competitors(chip),
-            class_name="q-rf-chip" if chip else "q-rf-trigger",
+            variant="surface",
+            size="3",
+            min_height=_TARGET,
             aria_label=S.competitors_label,
             aria_haspopup="dialog",
             aria_expanded=rx.cond(S.competitors_open, "true", "false"),

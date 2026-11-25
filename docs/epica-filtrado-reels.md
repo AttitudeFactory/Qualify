@@ -112,6 +112,17 @@ en la enmienda RF-05 de `docs/adr-42-ideas-reels-costo.md`. **La pantalla espera
 (#810):** el selector y el botón van en `Qualify/discover_reels.py` cuando #810 esté en
 `main`.
 
+**RF-13 (m-25120327, 2026-11-25): la barra con las piezas de LiquidOS y una sola lista.**
+Pedido de Deivid tras la prueba en vivo. La barra, los desplegables, los chips, la hoja desde
+abajo y el cajón «Tus competidores» usan solo botones, popovers y el `drawer` del sistema, con
+el skin de Radix. Ya no hay reglas `.q-rf-*` ni recuadro de fondo detrás de la barra
+(`docs/design-system.md` §5.8). Debajo hay **una sola lista sin encabezados**: primero las
+ideas, con «Hacer uno parecido», y después los otros reels revisados, sin ese botón. Se
+muestran 16 (`LIST_PAGE`) y «Ver más» trae los 16 siguientes. Se quitaron «Ideas de hace N
+días», «Más reels revisados» y sus textos. Los textos de RF-05 que nombraban esa sección ahora
+dicen «tus ideas». Sigue sin haber llamadas pagadas: es la misma lectura de RF-01, con
+`limit=16`.
+
 Descartadas: RF-06 «Competencia del sector» (decisión 1), RF-08 «Buscar por producto»
 (decisión 2), RF-03 (fusionada en RF-01).
 

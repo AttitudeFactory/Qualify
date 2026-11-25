@@ -105,6 +105,16 @@ def test_a_read_that_ends_says_how_in_its_toast() -> None:
 
     assert vm.ended(before, row(rivals.STATE_READING)) == []
     assert vm.ended(before, row(rivals.STATE_DONE)) == [("ok", vm.TOAST_DONE.format(account=label))]
+    # RF-13: the list has no «Más reels revisados» heading any more — the words name it so
+    assert (
+        vm.TOAST_DONE.format(account=label) == "Listo: los reels de @rival7 ya están en tus ideas."
+    )
+    assert (
+        rivals.READING_TEXT == "Estamos leyendo sus reels. En unos minutos los verás en tus ideas."
+    )
+    assert rivals.DONE_TEXT == "Listo. Sus reels ya están en tus ideas."
+    for text in (vm.TOAST_DONE, rivals.READING_TEXT, rivals.DONE_TEXT):
+        assert "Más reels revisados" not in text
     assert vm.ended(before, row(rivals.STATE_FAILED)) == [
         ("error", vm.TOAST_FAILED.format(account=label))
     ]

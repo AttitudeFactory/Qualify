@@ -1091,24 +1091,29 @@ async def test_competitors_before_rf05_say_they_are_coming(world: _World) -> Non
     assert world.paid == []
 
 
-async def test_more_reviewed_reels_come_in_pages(world: _World) -> None:
-    """«Más reels revisados»: 12 per page, «Ver más reels» while `has_more`; free."""
+async def test_one_list_of_16_ideas_first_then_ver_mas(world: _World) -> None:
+    """RF-13 (Deivid, 2026-11-25): one list — the 2 ideas first, then 14 reviewed reels,
+    16 in all — and «Ver más» brings the next 16 while more exist; free."""
     from .discover_reels import DiscoverReelsState
 
     world.ok_run()
-    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(15)])
+    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(31)])
     state, proxy = _screen_state()
     await _open(proxy)
-    assert len(state.more_reels) == 12 and state.has_more
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert len(state.reels) + len(state.more_reels) == reels_filters_vm.LIST_PAGE == 16
+    assert state.more_reels[0]["id"] == "M00" and state.has_more
     # while a filtered read is in flight (Enter on the focused button) nothing is paged:
     # that read restarts the list and its offset
     state.filtering = True
     await DiscoverReelsState.load_more.fn(proxy)
-    assert len(state.more_reels) == 12 and world.reads == [True]
+    assert len(state.more_reels) == 14 and world.reads == [True]
     state.filtering = False
+    await DiscoverReelsState.load_more.fn(proxy)  # the next 16: from the 15th reviewed
+    assert len(state.more_reels) == 30 and state.has_more
     await DiscoverReelsState.load_more.fn(proxy)
-    assert len(state.more_reels) == 15 and not state.has_more
-    assert len({c["key"] for c in state.more_reels}) == 15
+    assert len(state.more_reels) == 31 and not state.has_more
+    assert [c["id"] for c in state.more_reels] == [f"M{n:02d}" for n in range(31)]  # none twice
     # a reel of the second list never offers «Hacer uno parecido» (its video was not kept)
     assert {c["can_replicate"] for c in state.more_reels} == {""}
     assert world.paid == [] and world.first_runs == []
@@ -1166,9 +1171,8 @@ async def test_a_business_never_sees_another_ones_reels_or_accounts(
     assert state.screen != rd.reels_ideas_vm.SCREEN_IDEAS
 
 
-def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
+def test_the_bar_has_every_filter_in_plain_spanish() -> None:
     import json
-    from pathlib import Path
 
     from .discover_reels import discover_view
 
@@ -1194,7 +1198,7 @@ def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
         "De 30 a 60 segundos",
         "Más de 60 segundos",
         "No hay reels con estos filtros. Prueba quitando alguno.",
-        "Más reels revisados",
+        "Ver más",
         "La imagen ya no está disponible",
     ):
         assert shown(text), text
@@ -1202,9 +1206,64 @@ def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
     assert "q-drawer--bottom" in rendered  # the phone's sheet from the bottom
     for gone in ("Ordenar", "Región", "Nicho", "Detractor", "Últimos"):
         assert not shown(gone), gone  # out of RF-02 (decision 2 and 3; RF-02b)
-    css = Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css"
-    rules = css.read_text(encoding="utf-8")
-    for selector in (".q-rf-chip {", ".q-rf-option {"):
-        block = rules[rules.index(selector) :]
-        assert "min-height: 44px" in block[: block.index("}")], selector
-    assert ".q-rf-desktop { display: none; }" in rules
+    # RF-13: no heading over the list, no line under it (Deivid, 2026-11-25)
+    for gone in (
+        "Más reels revisados",
+        "Pueden haber salido reels nuevos",
+        "Estos son solo para mirar",
+        "Ninguna idea coincide",
+    ):
+        assert not shown(gone), gone
+
+
+def test_the_bar_is_drawn_with_the_system_only() -> None:
+    """RF-13 (m-25120327): no `.q-rf-*` rule or class left — the bar, its dropdowns, the
+    chips, the sheet and the option rows are Radix pieces under the Liquid Glass skin
+    and the `drawer` primitive; no box behind the bar; 44 px targets; the unchecked boxes
+    and rings are drawn; the focus goes back to the chip that opened the sheet."""
+    import inspect
+    from pathlib import Path
+
+    from . import discover_reels
+
+    rendered = str(discover_reels.discover_view().render())
+    assets = Path(__file__).resolve().parent.parent / "assets"
+    for sheet in assets.glob("*.css"):
+        assert ".q-rf-" not in sheet.read_text(encoding="utf-8"), sheet.name
+    assert "q-rf-" not in rendered and "q-rf-" not in inspect.getsource(discover_reels)
+    bar = inspect.getsource(discover_reels._filter_bar)
+    for gone in ("background", "position", "sticky", "class_name", "rx.el.button"):
+        assert gone not in bar, gone  # no box behind it, nothing of its own
+    row = inspect.getsource(discover_reels._option_row)
+    assert 'variant="ghost"' in row and "min_height=_TARGET" in row and "role=role" in row
+    assert discover_reels._MARKS == {
+        "radio": ("circle-dot", "circle"),
+        "checkbox": ("square-check", "square"),  # an empty box when not chosen
+    }
+    assert discover_reels._TARGET == "44px"
+    button = inspect.getsource(discover_reels._filter_button)
+    assert "rx.button(" in button and "min_height=_TARGET" in button
+    assert "truncate=True" in button and 'max_width="100%"' in button  # never cut off
+    assert "data-sheet-chip" in rendered and "SHEET_FOCUS_SCRIPT" in inspect.getsource(
+        discover_reels._sheet
+    )
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "S.title" not in ideas and "S.body" not in ideas  # «Ideas de hace N días» gone
+    assert "section(" not in ideas and "_pager()" in ideas
+
+
+async def test_the_sheet_remembers_its_chip_for_the_focus(world: _World) -> None:
+    """Escape (or the backdrop, «Cerrar», «Listo») closes the sheet; the chip that
+    opened it stays marked so the focus goes back to it — and another business starts
+    with none marked."""
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    state.open_sheet("kind")
+    assert (state.sheet, state.sheet_chip) == ("kind", "kind")
+    state.sheet_changed(False)  # Escape
+    assert (state.sheet, state.sheet_chip) == ("", "kind")
+    state.open_sheet("nope")  # not an axis: nothing opens, the mark stays
+    assert (state.sheet, state.sheet_chip) == ("", "kind")
+    state._claim_cards("another-tenant")
+    assert state.sheet_chip == ""
