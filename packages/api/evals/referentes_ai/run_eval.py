@@ -180,6 +180,8 @@ def score_rubro_pais(
         for account in by_id[row["case"]]["accounts"]:
             if "rubro" not in account or (split and account.get("split") != split):
                 continue
+            if account.get("rubro_sin_evidencia"):
+                continue  # nothing in its texts supports a rubro (Deivid, 2026-11-25)
             account_id = f"{account['network']}:{account['handle']}"
             answer = row["answers"].get(account_id)
             if answer is None:
@@ -220,12 +222,49 @@ def score_rubro_pais(
     }
 
 
+def rescore(paths: list[Path]) -> int:
+    """Score the rubro / country again from SAVED results against the current gold —
+    no model call, no cost (the gold was corrected after the runs, 2026-11-25). Prints
+    the scores and writes `results/rescore-<stamp>.json`."""
+    cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))["cases"]
+    out: dict[str, Any] = {}
+    for path in paths:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        for name, agg in saved.items():
+            scores = {
+                split or "all": score_rubro_pais(cases, agg["runs"], split)
+                for split in ("dev", "test", None)
+            }
+            out[f"{path.name}/{name}"] = scores
+            for split, rp in scores.items():
+                classes = ", ".join(
+                    f"{k} {v['accuracy']} (n={v['n']})" for k, v in rp["rubro_per_class"].items()
+                )
+                print(
+                    f"{path.name} {name} {split:4} n={rp['n']:<4} rubro={rp['rubro_accuracy']} "
+                    f"pais_prec={rp['pais_precision']}\n    {classes}"
+                )
+    target = HERE / "results" / f"rescore-{datetime.now():%Y%m%d-%H%M%S}.json"
+    target.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"\nwrote {target}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--configs", nargs="*", default=list(CONFIGS))
+    parser.add_argument(
+        "--rescore",
+        nargs="+",
+        type=Path,
+        metavar="RESULTS_JSON",
+        help="re-score saved results against the current gold; calls no model",
+    )
     args = parser.parse_args()
+    if args.rescore:
+        return rescore(args.rescore)
     _load_env(args.env_file)
     api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
     if not api_key:

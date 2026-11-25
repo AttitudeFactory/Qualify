@@ -1,5 +1,5 @@
 {
- "_doc": "Gold labels for `qualify_api.referentes.ai.review_accounts`. Accounts are REAL: the ones the stored referentes searches found (brand_discovered_accounts, 2026-09-25), with the caption the search surfaced; except the four marked `synthetic` in the fine-dining case. fit: y = a real peer of the brand, n = not (a trap when it shares a word or topic), m = ambiguous, not scored. kinds: the accepted `tipo` answers ([] = kind not scored). rubro / pais / split (REFERENTES-RUBRO-001, m-25119461, 2026-11-25): LABELED BY AN AGENT (Claude), NOT BY A HUMAN - a human sample is still owed, starting with the accounts marked dudoso. rubro = a key of discovery_seed.NICHE_LABELS or otro: the account's own business or, for a creator or media page, the subject of what it publishes (teaching a tech skill = technology; schools, universities and course academies = education; general news, government, banks, police, parties, automotive = otro; sport shown as a spectacle and TV/radio entertainment = entertainment). pais = ISO alpha-2 only when the account's own bio, name, captions or place hashtags say where it is (a city or state of one country counts, e.g. Tachira or Maracaibo = VE; a currency like COP or a US street address with zip counts); language alone, a sponsor's country or a place merely visited do not; else ''. The same account in two brands carries the same labels. split: dev/test over UNIQUE accounts, stratified by rubro (within each rubro, ordered by sha256 of network:handle, alternating). dudoso = the agent's least sure labels, for the human review.",
+ "_doc": "Gold labels for `qualify_api.referentes.ai.review_accounts`. Accounts are REAL: the ones the stored referentes searches found (brand_discovered_accounts, 2026-09-25), with the caption the search surfaced; except the four marked `synthetic` in the fine-dining case. fit: y = a real peer of the brand, n = not (a trap when it shares a word or topic), m = ambiguous, not scored. kinds: the accepted `tipo` answers ([] = kind not scored). rubro / pais / split (REFERENTES-RUBRO-001, m-25119461, 2026-11-25): labeled by an agent (Claude); the RUBRO gold then had a human sample by Deivid (2026-11-25), who reviewed the rubro doubts and set the rules below; the PAIS gold is still agent-only (its doubts, marked dudoso, belong to RF-12). rubro = a key of discovery_seed.NICHE_LABELS or otro, by what the account IS (its business or its subject), not by one post. Deivid's rules (2026-11-25): whoever TEACHES programming or a technique (courses, tutorials, masterclasses) = education, even when the subject is technology; sport (NBA, football) = entertainment; news media = entertainment; government, banks, police, parties, automotive = otro. rubro_sin_evidencia = true: nothing in the account's texts supports a rubro; kept out of the rubro score. pais = ISO alpha-2 only when the account's own bio, name, captions or place hashtags say where it is (a city or state of one country counts, e.g. Tachira or Maracaibo = VE; a currency like COP or a US street address with zip counts); language alone, a sponsor's country or a place merely visited do not; else ''. The same account in two brands carries the same labels. split: dev/test over UNIQUE accounts, stratified by rubro (within each rubro, ordered by sha256 of network:handle, alternating). dudoso = the agent's least sure COUNTRY labels, still to be reviewed (RF-12).",
  "cases": [
   {
    "id": "smash-burger-tachira",
@@ -38,8 +38,7 @@
      ],
      "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -58,8 +57,7 @@
      ],
      "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -125,10 +123,9 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "travel_lifestyle",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -162,8 +159,7 @@
      ],
      "rubro": "travel_lifestyle",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -195,7 +191,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
      "split": "dev"
     },
@@ -212,7 +208,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
      "split": "dev"
     },
@@ -229,7 +225,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
      "split": "test"
     },
@@ -284,8 +280,7 @@
      ],
      "rubro": "technology",
      "pais": "VE",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -421,8 +416,7 @@
      ],
      "rubro": "entertainment",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -487,8 +481,7 @@
      "kinds": [],
      "rubro": "entertainment",
      "pais": "VE",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1055,7 +1048,7 @@
      "rubro": "technology",
      "pais": "",
      "split": "dev",
-     "dudoso": true
+     "rubro_sin_evidencia": true
     },
     {
      "network": "instagram",
@@ -1105,10 +1098,9 @@
      "kinds": [
       "medio"
      ],
-     "rubro": "otro",
+     "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1123,7 +1115,7 @@
      "kinds": [
       "medio"
      ],
-     "rubro": "otro",
+     "rubro": "entertainment",
      "pais": "",
      "split": "test"
     },
@@ -1191,7 +1183,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
      "split": "test"
     },
@@ -1208,10 +1200,9 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "VE",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1243,7 +1234,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "VE",
      "split": "test"
     },
@@ -1310,10 +1301,9 @@
       "creador",
       "marca"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1362,8 +1352,7 @@
      "kinds": [],
      "rubro": "entertainment",
      "pais": "VE",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1380,8 +1369,7 @@
      ],
      "rubro": "entertainment",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1494,10 +1482,9 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "travel_lifestyle",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1514,8 +1501,7 @@
      ],
      "rubro": "travel_lifestyle",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1565,10 +1551,9 @@
      "kinds": [
       "medio"
      ],
-     "rubro": "otro",
+     "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1600,7 +1585,7 @@
      "kinds": [
       "marca"
      ],
-     "rubro": "otro",
+     "rubro": "education",
      "pais": "VE",
      "split": "test"
     },
@@ -1652,7 +1637,7 @@
      "rubro": "travel_lifestyle",
      "pais": "VE",
      "split": "dev",
-     "dudoso": true
+     "rubro_sin_evidencia": true
     },
     {
      "network": "tiktok",
@@ -1804,8 +1789,7 @@
      ],
      "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1824,8 +1808,7 @@
      ],
      "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2417,8 +2400,7 @@
      ],
      "rubro": "technology",
      "pais": "VE",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2669,7 +2651,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
      "split": "dev"
     },
@@ -2686,7 +2668,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
      "split": "test"
     },
@@ -2703,10 +2685,9 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "travel_lifestyle",
      "pais": "",
-     "split": "test",
-     "dudoso": true
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -2738,7 +2719,7 @@
      "kinds": [
       "creador"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "VE",
      "split": "test"
     },
@@ -2756,10 +2737,9 @@
       "creador",
       "marca"
      ],
-     "rubro": "technology",
+     "rubro": "education",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2826,10 +2806,9 @@
      "kinds": [
       "medio"
      ],
-     "rubro": "otro",
+     "rubro": "entertainment",
      "pais": "",
-     "split": "dev",
-     "dudoso": true
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2844,7 +2823,7 @@
      "kinds": [
       "medio"
      ],
-     "rubro": "otro",
+     "rubro": "entertainment",
      "pais": "",
      "split": "test"
     },
@@ -2898,7 +2877,7 @@
      "rubro": "technology",
      "pais": "",
      "split": "dev",
-     "dudoso": true
+     "rubro_sin_evidencia": true
     }
    ]
   }

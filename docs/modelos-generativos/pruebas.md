@@ -129,6 +129,58 @@ Aun dando por buenos los cuatro discutibles (`phonecellven`, `diegolesrecomienda
 
 **Veredicto: NO PASA.** El rubro pasa el umbral (0,870 en test, media de dos corridas) y la revisión no empeoró, pero el país de la IA es inventado en ≈ 1 de cada 6 cuentas a las que les pone país. No se tocó el prompt.
 
+**Revisión humana del oro de rubro (Deivid, 2026-11-25) y nuevo puntaje sin gasto.** Deivid revisó los casos dudosos de rubro y fijó cinco reglas. Están escritas también en el `_doc` de `cases.json`:
+
+1. Quien **enseña** programación o una técnica (cursos, tutoriales, clases magistrales) es `education`, aunque el tema sea tecnología.
+2. El **deporte** (NBA, fútbol) es `entertainment`.
+3. Los **medios de noticias** son `entertainment`.
+4. El rubro sale de lo que la cuenta **es** (su negocio o su tema), no de lo que publica.
+5. Si no hay **evidencia**, la cuenta queda fuera del cálculo de rubro (`rubro_sin_evidencia`).
+
+**Cambios en el oro** (una cuenta puede aparecer en varias marcas):
+
+| Cuenta | Antes → ahora | Regla |
+|---|---|---|
+| `brujeriatech` (las dos redes), `leomarisreyes.dev`, `josegabrielarape`, `edtecnica`, `marjorihaddad` | `technology` → `education` | 1 |
+| `matsimultiservicios` (curso de programación automotriz con instructores) | `otro` → `education` | 1 |
+| `npr`, `un24tvoficial`, `bloombergbusiness` | `otro` → `entertainment` | 3 |
+| `lauratuttman` (las dos redes) | `technology` → `travel_lifestyle` en TikTok; Instagram ya lo era | 4 |
+| `trumpbyryan`, `stellar_908` | fuera del cálculo de rubro | 5 |
+
+- **Sin cambios:** `overtime` (las dos redes), `osmel_cuberos`, `venezuelahablacantando.9`, `trt_contigo` y `vip_phonecity`. Siguen como estaban, por decisión de Deivid.
+- **Sin aplicar:** la regla 3 a `instagram:technology`, una página de noticias de tecnología que sigue en `technology`. Lo decide Deivid.
+- Las 14 cuentas de rubro que revisó Deivid ya no llevan la marca `dudoso`. Las 10 dudosas de **país** la conservan: son de RF-12.
+
+**Nuevo puntaje.** Se calculó con las salidas ya guardadas de las dos corridas, con `run_eval.py --rescore`, sin ninguna llamada a Claude (USD 0). Resultado en `results/rescore-20261125-111923.json`. La muestra quedó en n = 161, porque salen las 3 apariciones sin evidencia.
+
+| Exactitud del rubro | Corrida 1 | Corrida 2 | Media | Umbral |
+|---|---|---|---|---|
+| **test** (n = 85) | 0,894 | 0,847 | **0,871** | ≥ 0,85 |
+| dev (n = 76) | 0,921 | 0,895 | 0,908 | — |
+| todo el set (n = 161) | 0,907 | 0,870 | 0,888 | — |
+
+Exactitud por clase en todo el set (corrida 1 / corrida 2):
+
+| Clase | n | Corrida 1 | Corrida 2 |
+|---|---|---|---|
+| `food_drink` | 48 | 0,98 | 0,98 |
+| `technology` | 44 | 0,95 | 0,91 |
+| `otro` | 13 | 0,92 | 0,92 |
+| `education` | 25 | 0,92 | 0,80 |
+| `entertainment` | 20 | 0,75 | 0,75 |
+| `travel_lifestyle` | 11 | 0,64 | 0,55 |
+
+En test, `travel_lifestyle` (n = 7) queda en 0,43 / 0,29, y `entertainment` (n = 10) en 0,80 / 0,80.
+
+**Lectura del nuevo puntaje:**
+
+- La media en test **pasa** el umbral de 0,85 (0,871), pero la corrida 2 sola queda debajo (0,847).
+- **No se cumple el criterio «ninguna clase por debajo de 0,7».** Falla `travel_lifestyle`.
+  - Casi todo ese error es `lauratuttman`. El oro dice viajes y estilo de vida (regla 4), pero el modelo la ve como `education` o `technology` por sus publicaciones de «aprende a programar».
+  - Es la regla 4, que el prompt no conoce: el prompt dice «para un creador o un medio, el rubro del contenido que publica».
+- En `entertainment`, el modelo pone `otro` o `technology` en los medios de noticias (`npr`, `bloombergbusiness`, `un24tvoficial`). Es la regla 3, que el prompt tampoco conoce.
+- Conclusión: el oro ya refleja las reglas de Deivid, pero el prompt `referentes-review-2` no. Escribir las reglas 1 a 4 en el prompt es trabajo de la versión `referentes-review-3`, junto con el país de RF-12, y hay que medirlo de nuevo con este mismo oro.
+
 **Decisión de Deivid (2026-11-25): el país sale solo de fuentes gratis.** Aplicada en el PR #807, en el commit «feat(creators): region from free sources only»:
 
 - `creators.region_code` sale solo de `profile`, `tiktok_region`, `reel_location` o `sightings`.
