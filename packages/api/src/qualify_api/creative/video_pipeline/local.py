@@ -196,12 +196,12 @@ LOCAL_TRANSITION_FAILED_TEXT = (
 #: by ux-designer 2026-11-17: «tomar … aunque lo aceleres» (the reel may last 9 s), «1
 #: minuto» (not compared with the reel's seconds), both ways out.
 LOCAL_SOURCE_TOO_LONG_TEXT = (
-    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
 )
 LOCAL_PART_SOURCE_TOO_LONG_TEXT = (
-    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear esta parte."
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear esta parte."
 )
 #: A part says «esta parte» where the whole piece says «tu video».
 _PART_TEXTS = {

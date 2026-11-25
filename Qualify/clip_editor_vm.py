@@ -167,7 +167,7 @@ def fast_too_short_line(seconds: float) -> str:
     """The warning when «Cámara rápida» leaves less than 3 s."""
     return (
         f"Tu video durará {contract.seconds_text(seconds)} s: muy poco para un reel. "
-        "Elige un pedazo más largo o una velocidad menor."
+        "Elige un bloque más largo o una velocidad menor."
     )
 
 
@@ -175,7 +175,7 @@ def fast_too_long_line(seconds: float) -> str:
     """The words when «Cámara rápida» leaves more than 60 s (EF-04 refuses past 60 s)."""
     return (
         f"Con esa velocidad tu video duraría {contract.seconds_text(seconds)} s: muy largo "
-        "para un reel. Elige una velocidad mayor o corta un pedazo más corto."
+        "para un reel. Elige una velocidad mayor o corta un bloque más corto."
     )
 
 
@@ -219,11 +219,11 @@ def speed_reasons(duration: float, *, known: bool = True) -> dict[str, str]:
 
 
 def piece_too_short_line(speed: int, seconds: float) -> str:
-    """Why a speed is off for a piece too short for it: «Con ×20 este pedazo duraría
+    """Why a speed is off for a piece too short for it: «Con ×20 este bloque duraría
     0,3 s: es muy poco.»."""
     shown = contract.seconds_text(seconds)
     return (
-        f"Con ×{int(speed)} este pedazo duraría {shown} s: es muy poco. Alárgalo o elige "
+        f"Con ×{int(speed)} este bloque duraría {shown} s: es muy poco. Alárgalo o elige "
         "una velocidad menor."
     )
 
@@ -367,7 +367,7 @@ FULL_LINE = f"{_FULL_NOW} Quita una para agregar otra."
 CUT_FULL = f"{_FULL_NOW} Quita una para cortar de nuevo."
 #: Fallback lines of `change_message` (the screen says which block: `cut_line`, …).
 CUT_DONE_LINE = "Cortaste tu video."
-PIECE_REMOVED_LINE = "Quitaste un pedazo de tu video."
+PIECE_REMOVED_LINE = "Quitaste un bloque de tu video."
 
 
 #: ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): beside the live line
@@ -413,14 +413,14 @@ SOURCE_SLACK_SECONDS = 0.03
 #: In the video's panel, where a handle stops and before «Crear» (UX review ED-03: the
 #: way out is right there, nothing to create again yet).
 SOURCE_TOO_LONG = (
-    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "pedazo más largo o pártelo en dos con «Cortar»."
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar»."
 )
 #: A9's own words (`LOCAL_SOURCE_TOO_LONG_TEXT` of `video_pipeline.local`; a test pins
 #: they agree), for the backend's refusal after «Crear».
 SOURCE_TOO_LONG_REFUSED = (
-    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
 )
 
 
@@ -463,19 +463,19 @@ def trim_value(value: float, bounds: tuple[float, float]) -> float:
 
 
 def too_short_text(speed: float) -> str:
-    """Why a handle stops before the piece gets too short: «El pedazo tiene que durar al
+    """Why a handle stops before the piece gets too short: «El bloque tiene que durar al
     menos 1 segundo.», or — sped up — «…al menos ½ s.» (of the final video)."""
     shown = trim_min_source(speed) / (float(speed) if float(speed or 0) > 0 else 1.0)
     if shown >= 1.0 - 1e-6:
         return TOO_SHORT
     text = "½" if abs(shown - 0.5) < 1e-6 else f"{shown:.1f}".replace(".", ",")
-    return f"El pedazo tiene que durar al menos {text} s."
+    return f"El bloque tiene que durar al menos {text} s."
 
 
 #: How close to a block's edge the marker may be and still cut it (seconds of the final
 #: video); a piece also keeps at least `contract.SEGMENT_MIN_SECONDS` of the source.
 CUT_EDGE_SECONDS = 0.5
-TOO_SHORT = "El pedazo tiene que durar al menos 1 s."
+TOO_SHORT = "El bloque tiene que durar al menos 1 s."
 CUT_WAITING = "Espera unos segundos: estamos leyendo cuánto dura tu video."
 #: Any refusal code (EF-03 «Preparar», PR #679) with no words of its own.
 REFUSAL_GENERIC = "No pudimos usar ese pedazo de tu video. Prueba con otro."
@@ -1025,7 +1025,7 @@ def length_out_of_range_line(seconds: float, *, fast: bool = False, video: bool 
     if seconds < LOCAL_MIN_SECONDS:
         line = f"Tu video dura {shown} s y necesita al menos 3 s. Agrega otra foto o video"
         return f"{line}, o baja la velocidad." if fast else f"{line}."
-    line = f"Tu video dura {shown} s y puede durar hasta 60 s. Quita alguna foto o pedazo de video"
+    line = f"Tu video dura {shown} s y puede durar hasta 60 s. Quita alguna foto o bloque de video"
     if fast:
         return f"{line}, o sube la velocidad."
     return f"{line}, o hazlo más rápido en «{SPEED_TITLE}»." if video else f"{line}."
