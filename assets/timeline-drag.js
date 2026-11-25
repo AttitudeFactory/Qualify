@@ -924,4 +924,58 @@
     trim = null;
     trimClear(t);
   }, true);
+
+  // m-25114465 (UX review): a text or an effect just added may land later in the video,
+  // out of view: once its block is drawn, the tracks (`.q-tl__scroller`) scroll SIDEWAYS
+  // so it is seen — the same `core.revealScroll` as after a trim. Only that axis: up and
+  // down is `__qTimeline.reveal`'s (`timeline.js`, with its `scroll-margin`); a desktop's
+  // tracks do not overflow, so nothing moves there. Smooth unless the owner asked for
+  // reduced motion. Waits up to ~1 s for the re-render. Called by the screen
+  // (`CreativeState`) as `window.__qTimelineRevealNew(id)`.
+  function reduceMotion() {
+    return !!(
+      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  function revealNew(id, tries) {
+    var left = tries === undefined ? 60 : tries;
+    var block = null;
+    var blocks = document.querySelectorAll("[data-q-timeline] [data-tl-block]");
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].getAttribute("data-tl-id") === id) block = blocks[i];
+    }
+    if (!block) {
+      if (left > 0) {
+        window.requestAnimationFrame(function () {
+          revealNew(id, left - 1);
+        });
+      }
+      return;
+    }
+    var root = block.closest("[data-q-timeline]");
+    var scroller = root ? root.querySelector(".q-tl__scroller") : null;
+    var max = scroller ? scroller.scrollWidth - scroller.clientWidth : 0;
+    if (!scroller || max <= 0) return;
+    var box = block.getBoundingClientRect();
+    var view = viewBox({ scroller: scroller, root: root });
+    var x = core().revealScroll({
+      scrollLeft: scroller.scrollLeft,
+      maxScroll: max,
+      viewLeft: view.left,
+      viewRight: view.right,
+      blockLeft: box.left,
+      blockRight: box.right,
+      edge: "start",
+      margin: 8,
+    });
+    if (x === scroller.scrollLeft) return;
+    if (scroller.scrollTo) {
+      scroller.scrollTo({ left: x, behavior: reduceMotion() ? "auto" : "smooth" });
+    } else {
+      scroller.scrollLeft = x;
+    }
+  }
+
+  window.__qTimelineRevealNew = revealNew;
 })();

@@ -1921,6 +1921,13 @@ class CreativeState(rx.State):
     #: The text the «Texto en pantalla» tab is putting now (the one «+ Texto» just
     #: put, its panel the one on screen), [] = none.
     _clip_text_put: list[str] = []
+    #: m-25114465: the text «+ Texto» just put, until its panel closes — its panel says
+    #: «Pusiste un texto de …» and, once written and let go, the tracks scroll to it.
+    _clip_text_fresh: str = ""
+    #: m-25114465: «Pusiste un texto de …» with the seconds it was put at (fixed then).
+    _clip_text_fresh_line: str = ""
+    #: m-25114465: that text's first save says no generic «Pusiste un texto.».
+    _clip_text_quiet: str = ""
     #: The editor before the first key of the text being typed: leaving the field says
     #: what changed (typing is not a change yet), {} = nothing typed.
     _clip_text_before: dict[str, Any] = {}
@@ -6782,6 +6789,9 @@ class CreativeState(rx.State):
             key, index = clip_editor_vm.piece_of(row["id"])
             row["mine"] = "1" if mine and key == mine else ""
             row["own"] = "1" if own and key == own else ""
+            # m-25114465 (live test): why a piece of the own video cannot be cut, from
+            # THIS block's facts
+            row["cut_note"] = self._clip_cut_note(key) if row["mine"] and not row["own"] else ""
             row["handles"] = ""
             if row["own"] and 0 <= index < len(pieces):
                 row.update(self._clip_handle_fields(pieces[index]))
@@ -6793,6 +6803,24 @@ class CreativeState(rx.State):
             *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
             *timeline_vm.overlay_blocks(overlays, "effect", total),  # type: ignore[arg-type]
         ]
+
+    def _clip_cut_note(self, key: str) -> str:
+        """m-25114465 (live test): the panel's line for a block of the own video that
+        cannot be cut now. «No pudimos mostrar tu video aquí…» (`PREVIEW_BROKEN`) only
+        when the browser really failed on THIS file (`clip_source_broken` for its key) or
+        its address could not be made (minted "" — a renewal that failed too, even for a
+        video measured before). Anything else (its address being made or renewed, its
+        length not read yet) is a wait (`CUT_WAITING`).
+
+        Before, the line followed `_clip_playable()` alone — whether the own video has a
+        minted `/r2media/` path right now —, which is also False while that path is being
+        RENEWED (a `-1` from the preview in sequence clears `clip_preview_for` to ask for
+        a new one): a video the browser had already measured and was playing read as
+        broken."""
+        failed = (self.clip_source_broken and self.clip_source_key == key) or (
+            is_r2_key(key) and self.clip_preview_for == key and not self.clip_preview_url
+        )
+        return clip_editor_vm.PREVIEW_BROKEN if failed else clip_editor_vm.CUT_WAITING
 
     def _clip_handle_fields(self, piece: tuple[float, float, float]) -> dict[str, str]:
         """ED-03: the trim handles of a piece of the own video — their ARIA range in
@@ -7464,6 +7492,8 @@ class CreativeState(rx.State):
         de deshacer»): there is no «Deshacer» any more — the snapshots only find the
         words of the line (`clip_editor_vm.change_message`)."""
         self._clip_notice_done()
+        # m-25114465: once any change of a text just put was said, its next save speaks
+        self._clip_text_quiet = ""
         after = self._clip_edit_snapshot()
         line = clip_editor_vm.change_message(before, after)
         if line:
@@ -7476,6 +7506,7 @@ class CreativeState(rx.State):
         self.clip_text_uses = []
         self.clip_text_error = ""
         self._clip_text_put = []
+        self._clip_text_fresh = self._clip_text_quiet = self._clip_text_fresh_line = ""
         self._clip_text_before = {}
         self.clip_effect_times = {}
         self.clip_media_seconds = {}
@@ -7898,9 +7929,13 @@ class CreativeState(rx.State):
         use = next((u for u in self._clip_text_resolved(media) if u["uid"] == uid), None)
         if use is None:
             return {}
-        return clip_texts_vm.text_panel_row(
+        row = clip_texts_vm.text_panel_row(
             use, media, subtitles=self._clip_subtitles_on(), palette=self.clip_brand_palette
         )
+        # m-25114465: said inside the (modal) panel, where a screen reader still hears it
+        # — the seconds it was PUT at, fixed then (it is said in the past tense)
+        row["added_line"] = self._clip_text_fresh_line if uid == self._clip_text_fresh else ""
+        return row
 
     @rx.var
     def clip_text_fade_s(self) -> float:
@@ -7940,12 +7975,19 @@ class CreativeState(rx.State):
         return self.clip_text_error or self._clip_text_problem()
 
     def _clip_text_new(self) -> str:
-        """«+ Texto» (the ticket): a text from the marker to the end of the video, EMPTY
-        (Deivid 2026-11-20: the generated hook is never copied in) — «Arriba» while the
-        subtitles take «Abajo». Its id, or "" when none fits (`clip_text_add_reason`)."""
+        """«+ Texto» (the ticket): an EMPTY text (Deivid 2026-11-20: the generated hook is
+        never copied in) in the first free gap of «Textos» (m-25114465,
+        `clip_texts_vm.text_from_playhead`: from the marker, else the earliest of the
+        video; with no gap, from the marker to the end) — «En el medio» while the
+        subtitles take «Abajo». Put away from the marker (on the ½ s magnet), the marker
+        goes to where it starts, so the preview shows it while it is typed; its panel says
+        its seconds (`clip_text_panel_row["added_line"]`, a polite live region inside the
+        modal panel); once written and let go, the timeline scrolls to its block
+        (`_clip_choose`). Its id, or "" when none fits (`clip_text_add_reason`)."""
+        media = self._clip_tl_media()
         uses, uid, why = clip_texts_vm.text_from_playhead(
             self.clip_text_uses,
-            self._clip_tl_media(),
+            media,
             playhead=self.clip_edit_playhead,
             place=clip_texts_vm.default_place(subtitles=self._clip_subtitles_on()),
         )
@@ -7955,6 +7997,18 @@ class CreativeState(rx.State):
         self._clip_text_put = [uid]
         self.clip_text_error = ""
         self._clip_text_before = {}
+        # m-25114465: just put — its panel says its seconds; its first save stays quiet
+        self._clip_text_fresh = uid
+        self._clip_text_quiet = uid
+        new = next(
+            (u for u in clip_texts_vm.resolve_text_uses(uses, media) if u["uid"] == uid), None
+        )
+        self._clip_text_fresh_line = ""
+        if new is not None:
+            start, end = float(new["start"]), float(new["end"])  # type: ignore[arg-type]
+            self._clip_text_fresh_line = clip_texts_vm.added_line(start, end)
+            if abs(start - timeline_vm.snap(self.clip_edit_playhead)) > 0.005:
+                self.clip_edit_playhead = start
         return uid
 
     def _clip_text_leave(self, old: str) -> None:
@@ -7966,13 +8020,23 @@ class CreativeState(rx.State):
             return
         if self._clip_text_before:
             before, self._clip_text_before = self._clip_text_before, {}
-            self._clip_edit_changed(before)
+            self._clip_text_said(before)
         kept = clip_texts_vm.drop_empty(self.clip_text_uses)
         if len(kept) != len(self.clip_text_uses):
             self.clip_text_uses = kept
         # leaving the tab ends the put
         self._clip_text_put = []
+        self._clip_text_fresh = self._clip_text_quiet = self._clip_text_fresh_line = ""
         self.clip_text_error = ""
+
+    def _clip_text_said(self, before: dict[str, object]) -> None:
+        """What typing changed, in the live line — but not the first save of a text
+        «+ Texto» just put (m-25114465): its panel already said «Pusiste un texto de …»,
+        so the generic «Pusiste un texto.» is not said twice. Later edits say theirs."""
+        if self._clip_text_quiet:
+            self._clip_text_quiet = ""
+            return
+        self._clip_edit_changed(before)
 
     def _clip_text_has(self, uid: str) -> bool:
         return any(str(u.get("uid")) == uid for u in self.clip_text_uses)
@@ -7998,7 +8062,7 @@ class CreativeState(rx.State):
         The side panel stays open on its tab (Deivid 2026-11-17)."""
         before, self._clip_text_before = self._clip_text_before, {}
         if before:
-            self._clip_edit_changed(before)
+            self._clip_text_said(before)
 
     @rx.event
     def set_clip_text_place(self, uid: str, place: str | list[str]) -> None:
@@ -8300,12 +8364,26 @@ class CreativeState(rx.State):
             clip_editor_vm.block_url_script(clip_editor_vm.BLOCK_PARAM, slug, flow=flow)
         )
 
+    def _clip_text_let_go(self, old: str, new: str) -> str:
+        """`old` is let go for `new` (`_clip_text_leave`: what typing changed is said, an
+        empty text goes, the put ends). m-25114465: when that closes the panel of a text
+        «+ Texto» just put — towards nothing chosen or a flow, never another block — and
+        the text was written and kept, its block (now drawn) to scroll the tracks to
+        sideways; else ""."""
+        fresh = self._clip_text_fresh
+        self._clip_text_leave(old)
+        closing = not new or clip_editor_vm.is_flow(new)
+        if closing and fresh and self._clip_text_has(fresh) and not self._clip_text_fresh:
+            return clip_texts_vm.text_block_id(fresh)
+        return ""
+
     def _clip_choose(self, block: str, *, keep_aim: bool = False) -> list[rx.event.EventSpec]:
         """One thing under the timeline at a time: a block (its panel) or a flow. ED-12
         review: leaving «Foto o video» for anything else lets its place go — what comes
         in next goes at the end, as before — unless the panel is closing (`keep_aim`:
         «Tu Galería»'s files still go in, then `jump_clip_preview` lets it go)."""
         self._clip_notice_done()
+        shown = ""  # m-25114465: a text just put, to scroll to once its panel closes
         media = clip_editor_vm.FLOW_MEDIA
         if (
             not keep_aim
@@ -8319,11 +8397,13 @@ class CreativeState(rx.State):
             self.clip_speed_refused = ""
             self.clip_effect_error = ""
             # ED-13: a text let go says what typing changed; left empty, it goes
-            self._clip_text_leave(self.clip_edit_block)
+            shown = self._clip_text_let_go(self.clip_edit_block, block)
         self.clip_edit_block = block
         events = [self._clip_block_url(block)]
         if block:
             events.append(rx.call_script(f"window.__qTimeline?.reveal({json.dumps(block)})"))
+        if shown:
+            events.append(rx.call_script(clip_editor_vm.reveal_new_script(shown)))
         return events
 
     @rx.event
@@ -8440,7 +8520,16 @@ class CreativeState(rx.State):
         if flow == clip_editor_vm.FLOW_TEXT and not self._clip_text_current():
             # ED-13: «+ Texto» puts an empty text from the marker to the end and
             # opens its panel (none fits: the tab says why, `clip_text_add_reason`)
-            if self._clip_text_new():
+            before_s = self.clip_edit_playhead
+            uid = self._clip_text_new()
+            if uid:
+                # m-25114465: put elsewhere than the marker, the preview goes there first
+                # (an empty text has no block yet: the timeline scrolls to it once it is
+                # written and its panel closes, `_clip_choose`)
+                if abs(self.clip_edit_playhead - before_s) > 0.005:
+                    events.append(
+                        rx.call_script(clip_editor_vm.jump_script(self.clip_edit_playhead))
+                    )
                 events.append(rx.call_script(clip_texts_vm.focus_field_script()))
         return events
 
@@ -8448,15 +8537,15 @@ class CreativeState(rx.State):
     def open_clip_flow(self, flow: str) -> list[Any]:
         """«Agregar» → «Foto o video», «Texto», «Efecto» or «Pedir una idea»: the ONE
         side panel opens on that tab (Deivid 2026-11-17). ED-13: «Texto» puts a new
-        text from the marker and opens its panel; with 3 texts it is off, and says
-        why. ED-12: with 8 photos or videos «Foto o video» is off, and says why."""
+        text from the marker and opens its panel; with 3 texts it is off. ED-12: with 8
+        photos or videos «Foto o video» is off. Why is said ONCE, by the note above
+        «Agregar» (`clip_tl_add_note`, the «+»'s `aria-describedby`) — m-25114465 (live
+        test): not again on the timeline's live line, where it read twice in a row."""
         if flow == clip_editor_vm.FLOW_MEDIA and clip_editor_vm.timeline_full(
             self._clip_tl_media()
         ):
-            self._clip_say(clip_editor_vm.FULL_LINE)
             return []
         if flow == clip_editor_vm.FLOW_TEXT and self.clip_text_full:
-            self._clip_say(clip_texts_vm.TEXTS_FULL)
             return []
         return self._clip_open_flow(flow)
 
@@ -8642,11 +8731,16 @@ class CreativeState(rx.State):
     @rx.var
     def clip_tl_add_note(self) -> str:
         """Said above «Agregar» while it cannot take more photos or videos, or (ED-13,
-        criterion 2) more texts."""
+        criterion 2) more texts. m-25114465 (live test): while the «Texto en pantalla»
+        tab SHOWS why no text goes in — open with no text of its own (`_text_tab`:
+        `clip_text_add_reason`) — the note leaves it out, so it is never on screen twice.
+        With that tab on a text (the 3rd just put), the note still says it: «Texto» is
+        off and something must say why."""
         lines = []
         if clip_editor_vm.timeline_full(self._clip_tl_media()):
             lines.append(clip_editor_vm.FULL_LINE)
-        if len(self.clip_text_uses) >= clip_texts_vm.TEXTS_MAX:
+        tab_says = self._clip_text_flow() and not self._clip_text_current()
+        if len(self.clip_text_uses) >= clip_texts_vm.TEXTS_MAX and not tab_says:
             lines.append(clip_texts_vm.TEXTS_FULL)
         return " ".join(lines)
 
@@ -9392,7 +9486,11 @@ class CreativeState(rx.State):
         block = self._clip_put_effect(effect_id, parts)
         if not block:
             return []
-        return self._clip_choose(block)
+        # m-25114465: the timeline scrolls to it (it may sit on a row out of view)
+        return [
+            *self._clip_choose(block),
+            rx.call_script(clip_editor_vm.reveal_new_script(block)),
+        ]
 
     # -- ED-04 m-25026627: the effects as blocks -------------------------------------------
 
@@ -10270,7 +10368,9 @@ class CreativeState(rx.State):
             self.media_drawer_open = False  # never two drawers
         # ED-10 (N3/N5): `?bloque=video-2` chooses that block of «Arma tu video»; an
         # address without it (the phone's «atrás») lets the chosen block go first
-        reveal = self._clip_block_from_address(params.get(clip_editor_vm.BLOCK_PARAM, [""])[0])
+        reveal, sideways = self._clip_block_from_address(
+            params.get(clip_editor_vm.BLOCK_PARAM, [""])[0]
+        )
         # a step reached through the history: the live line does not come back with it.
         # Only `?bloque=` changing (choosing or letting go a block — «Quitar», «Listo» walk
         # back through that entry) is the same step: the line stays.
@@ -10293,6 +10393,8 @@ class CreativeState(rx.State):
         self.create_resume_pending = False
         if reveal:
             events.append(rx.call_script(f"window.__qTimeline?.reveal({json.dumps(reveal)})"))
+        if sideways:  # m-25114465: «atrás» closed a text just put: the tracks go to it
+            events.append(rx.call_script(clip_editor_vm.reveal_new_script(sideways)))
         at = part_editor_vm.position(
             params.get("parte"),
             len(self._reel_plan) + int(self.reel_edit_open and self.reel_edit_new),
@@ -10339,24 +10441,33 @@ class CreativeState(rx.State):
             events.append(rx.call_script(_clear_part_query_script(params["parte"])))
         return events
 
-    def _clip_block_from_address(self, slug: str) -> str:
+    def _clip_block_from_address(self, slug: str) -> tuple[str, str]:
         """`?bloque=` read back (a reload, a deep link, «atrás»/«adelante»): the block it
         names is chosen; no word lets a chosen block go — and closes a flow «Agregar»
         opened in the side panel (with the media drawer it opened: «atrás» closes the
-        panels first). The id to bring into view ("" = none)."""
+        panels first). The id to bring into view ("" = none), and (m-25114465) the block
+        of a text «+ Texto» just put whose panel this closed, to scroll the tracks to
+        sideways ("" = none)."""
         if not self.clip_editor_shown:
-            return ""
+            return "", ""
         if not slug:
             if clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_MEDIA:
                 if self.media_drawer_open and self.media_drawer_target == MEDIA_DRAWER_CLIP:
                     self.media_drawer_open = False
                     self._stop_playing()
+            # m-25114465: as the other ways out — the put ends, an empty text goes
+            side = self._clip_text_let_go(self.clip_edit_block, "")
             self.clip_edit_block = ""
-            return ""
+            return "", side
         media, overlays, _total = self._clip_tl()
         block = clip_editor_vm.block_from_slug(media, overlays, slug)
+        side = (
+            self._clip_text_let_go(self.clip_edit_block, block)
+            if block != self.clip_edit_block
+            else ""
+        )
         self.clip_edit_block = block
-        return block
+        return block, side
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
     pop_create_step = enter_create_step

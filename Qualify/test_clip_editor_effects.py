@@ -877,3 +877,16 @@ def test_a_new_drag_keeps_its_own_blocks_when_an_old_one_cleans_up() -> None:
         preview.index("function stillFrame(el)") : preview.index("function seqPaint(host)")
     ]
     assert "el.currentSrc" in still and "el.__qStill === src" in still
+
+
+def test_a_new_effect_scrolls_the_tracks_sideways_to_its_block(editor_on: None) -> None:
+    """m-25114465: the block is chosen (`__qTimeline.reveal` moves up or down to its
+    panel) and the tracks scroll sideways to it (`__qTimelineRevealNew`)."""
+    state = _three()
+    CreativeState.open_clip_flow.fn(state, vm.FLOW_EFFECT)
+    events = CreativeState.add_clip_effect.fn(state, "humo_capa")
+    block = state.clip_edit_block
+    assert block.startswith(vm.EFFECT_ID_PREFIX)
+    scripts = str(events)
+    assert f'__qTimelineRevealNew("{block}")' in scripts
+    assert f'__qTimeline?.reveal("{block}")' in scripts

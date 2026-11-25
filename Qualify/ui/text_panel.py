@@ -79,6 +79,9 @@ LARGE_NOTE_ID = "clip-text-large-note"
 #: The line under the field that `assets/text-fit.js` fills when a word is wider than the
 #: screen (Deivid 2026-11-24); the field's `aria-describedby`.
 WIDE_NOTE_ID = "clip-text-wide-note"
+#: m-25114465: «Pusiste un texto de …» of a text «+ Texto» just put; also the field's
+#: `aria-describedby`, so it is read when the field takes the focus.
+ADDED_LINE_ID = vm.ADDED_LINE_ID
 #: Measures the text's words with the final video's criterion (`word_too_wide`).
 FIT_SCRIPT = "text-fit.js"
 #: «Si tu video es claro…» under the grid while «Sin fondo» is chosen.
@@ -561,7 +564,9 @@ def text_panel(
                 max_length=vm.TEXT_MAX_CHARS,
                 size="3",
                 width="100%",
-                aria_describedby=WIDE_NOTE_ID,
+                # m-25114465: «Pusiste un texto de …» is read when the field takes the
+                # focus (a live region that appears already filled is rarely heard)
+                aria_describedby=f"{WIDE_NOTE_ID} {ADDED_LINE_ID}",
             ),
             # a word wider than the screen: filled and shown by `text-fit.js` (React
             # renders no children here), with the final video's own criterion
@@ -581,6 +586,17 @@ def text_panel(
         ),
         # A1: when it shows, and where to change that (the timeline, below)
         rx.text(row["time_line"], size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+        # m-25114465: where «+ Texto» put it, said INSIDE the panel — the timeline's own
+        # `role=status` sits behind this modal (aria-hidden) and would not be heard. Read
+        # with the field (its `aria-describedby`); empty for an older text.
+        rx.text(
+            row["added_line"],
+            size="1",
+            color=T.TEXT_MUTED,
+            class_name="q-nums",
+            id=ADDED_LINE_ID,
+            aria_live="polite",
+        ),
         # every option folds (Deivid 2026-11-23, round 3); several may be open at once
         rx.accordion.root(
             *sections,

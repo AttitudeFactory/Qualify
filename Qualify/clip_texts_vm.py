@@ -398,6 +398,17 @@ def time_line(start: float, end: float) -> str:
     )
 
 
+#: m-25114465: the id of `added_line` in the panel (the field's `aria-describedby`).
+ADDED_LINE_ID = "clip-text-added"
+
+
+def added_line(start: float, end: float) -> str:
+    """m-25114465 (UX review): what the panel of a text «+ Texto» just put says, in a
+    polite live region inside the panel — its seconds, in the panel's own clock
+    (`time_line`)."""
+    return f"Pusiste un texto de {tl.clock(start)} a {tl.clock(end)}."
+
+
 DONE = "Listo"
 ADD = "+ Texto"
 EDIT = cevm.TEXT_EDIT
@@ -659,6 +670,13 @@ def latest_start(total: float) -> float:
     return max(math.floor((float(total) - MIN_S) / STEP_S + 1e-6) * STEP_S, 0.0)
 
 
+def _grid_inside(edge: float, other: float, *, up: bool) -> float:
+    """m-25114465: a new text's `edge` moved onto the ½ s grid — up for its start, down
+    for its end — when it still lasts 1 s up to `other` (its other edge); else as it is."""
+    grid = (math.ceil if up else math.floor)(round(float(edge) / STEP_S, 6)) * STEP_S
+    return round(grid, 2) if abs(float(other) - grid) >= MIN_S - 1e-6 else float(edge)
+
+
 def text_from_playhead(
     uses: Sequence[Mapping[str, object]],
     media: Sequence[Mapping[str, object]],
@@ -669,16 +687,32 @@ def text_from_playhead(
     fade: float = FADE_DEFAULT,
 ) -> tuple[list[dict[str, object]], str, str]:
     """The ticket's «+ Texto»: a text from the playhead (on the ½ s grid) to the end of
-    the video. `(uses, uid of the new one, "")`, or `(uses as they were, "", why not)`."""
+    the video. `(uses, uid of the new one, "")`, or `(uses as they were, "", why not)`.
+
+    m-25114465 (Deivid 2026-11-24, «si hay espacio solo se ponga ahí»): it lands in the
+    first free gap of «Textos» where 1 s fits (`timeline_vm.first_free_slot`: from the
+    playhead, else the earliest of the video) and lasts that gap — to the next text, or
+    open to the end —, never over another text. Its edges go on the ½ s grid inside the
+    gap (start rounded up, a closed end rounded down) while 1 s still fits; else they keep
+    the gap's own edge. With no such gap, the rule of before: from the playhead to the
+    end (a clash in one place says so, `clash_line`)."""
     why = add_reason(uses, media)
     current = [dict(u) for u in uses]
     if why:
         return current, "", why
     total = cevm.media_total(media)
     start = min(max(tl.snap(float(playhead)), 0.0), latest_start(total))
+    end = OPEN_END
+    taken = [(float(u["start"]), float(u["end"])) for u in resolve_text_uses(current, media)]  # type: ignore[arg-type]
+    slot = tl.first_free_slot([taken], total=total, playhead=start, least=MIN_S)
+    if slot is not None:
+        _row, start, gap_end = slot
+        start = _grid_inside(start, gap_end, up=True)
+        if gap_end < round(total, 2) - 0.005:
+            end = _grid_inside(gap_end, start, up=False)
     uid = new_text_uid(current)
     use = normalize_text_use(
-        {"uid": uid, "text": text, "place": place, "start": start, "end": OPEN_END, "fade": fade}
+        {"uid": uid, "text": text, "place": place, "start": start, "end": end, "fade": fade}
     )
     return [*current, use], uid, ""
 
@@ -1311,6 +1345,8 @@ def text_panel_row(
         "panel": f"{TITLE} · de {tl.clock(start)} a {tl.clock(end)}",
         "name": text_name(text, start, end) if text.strip() else TITLE,
         "time_line": time_line(start, end),
+        # m-25114465: «Pusiste un texto de …» for a text just put (the state fills it)
+        "added_line": "",
         "fade": fade_value(fade),
         "fade_text": fade_text(fade),
         "fade_value": fade_line(fade, fade_label) if fade_label else "",

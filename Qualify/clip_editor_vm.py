@@ -1421,6 +1421,13 @@ def jump_script(seconds: float) -> str:
     )
 
 
+def reveal_new_script(block_id: str) -> str:
+    """m-25114465 (UX review): the tracks scroll sideways to a text or effect just added,
+    once its block is drawn (`assets/timeline-drag.js` `__qTimelineRevealNew`; up and
+    down stays `__qTimeline.reveal`'s)."""
+    return f"window.__qTimelineRevealNew && window.__qTimelineRevealNew({json.dumps(block_id)})"
+
+
 def is_flow(block: str) -> bool:
     """Whether the panel holds a flow «Agregar» opened (`+media`), not a block."""
     return block.startswith(FLOW_MARK)
@@ -2115,13 +2122,16 @@ def pick_lane(
 ) -> int:
     """The row a new use of `span` goes on: `prefer` when it fits there, else the first
     one where it fits, else a new row (`lanes`) — two effects at the same time never
-    share a row."""
-    order = [prefer] if 0 <= prefer < lanes else []
-    order += [lane for lane in range(lanes) if lane not in order]
-    for lane in order:
-        if lane_fits(uses, span, lane):
-            return lane
-    return max(lanes, 0)
+    share a row. m-25114465: «the first one where it fits» is the shared rule of
+    `timeline_vm.first_free_row`, over every row of «Efectos»."""
+    if 0 <= prefer < lanes and lane_fits(uses, span, prefer):
+        return prefer
+    rows = [
+        [_use_span(u) for u in uses if int(u.get("lane") or 0) == lane]  # type: ignore[call-overload]
+        for lane in range(max(lanes, 0))
+    ]
+    row = timeline_vm.first_free_row(rows, span)
+    return max(lanes, 0) if row is None else row
 
 
 def effect_obstacles(
@@ -2140,17 +2150,9 @@ def effect_obstacles(
     ]
 
 
-def free_gaps(obstacles: Sequence[Sequence[float]], total: float) -> list[tuple[float, float]]:
-    """The free stretches of a row of a video of `total` s, around `obstacles`."""
-    gaps: list[tuple[float, float]] = []
-    at = 0.0
-    for a, b in sorted((float(a), float(b)) for a, b in obstacles):
-        if a > at + 1e-6:
-            gaps.append((at, min(a, float(total))))
-        at = max(at, b)
-    if float(total) > at + 1e-6:
-        gaps.append((at, float(total)))
-    return [(round(a, 2), round(b, 2)) for a, b in gaps if b - a > 1e-6]
+#: The free stretches of a row (m-25114465: moved to `timeline_vm`, shared with
+#: `first_free_slot`).
+free_gaps = timeline_vm.free_gaps
 
 
 def fit_in_gap(

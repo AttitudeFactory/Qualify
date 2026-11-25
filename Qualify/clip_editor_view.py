@@ -565,9 +565,10 @@ def _block_extra() -> rx.Component:
                 _own_video(),
                 rx.cond(
                     row["mine"] == "1",
-                    # the own video not measured yet, or one this browser cannot play
+                    # the own video not measured yet, or one this browser cannot play —
+                    # decided from THIS block's file (m-25114465, `_clip_cut_note`)
                     rx.text(
-                        rx.cond(S.clip_edit_video_playable, vm.CUT_WAITING, vm.PREVIEW_BROKEN),
+                        row["cut_note"],
                         size="2",
                         color=T.TEXT_MUTED,
                         role="status",
