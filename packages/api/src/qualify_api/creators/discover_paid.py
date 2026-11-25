@@ -46,11 +46,12 @@ button and this module searches TikTok — paying — for more.
   the first and then reads its kept answer. Two app processes racing on the same search
   in the same second could both pay it once — the app runs one process, and the gate
   still books and caps both.
-- **Every derived row says where it came from.** The accounts go to the global
-  `creators` (merged as the pool always merges, `repository._merge`) and each one gets a
-  `creator_sightings` row (kind `keyword`, the query, the region asked) — the provenance
-  RF-07a already reads; the country TikTok states per video is applied with
-  `region_rubro.apply_region` citing `vendor_payloads:<id>` (`region-free-1`). The
+- **Every derived row says where it came from.** The accounts of the pages paid in this
+  call go to the global `creators` (merged as the pool always merges,
+  `repository._merge`) and each one gets a `creator_sightings` row (kind `keyword`, the
+  query, the region asked) — the provenance RF-07a already reads. A page served from the
+  cache writes nothing: it was recorded when it was paid. The country TikTok states per
+  video is applied with `region_rubro.apply_region` citing `vendor_payloads:<id>` (`region-free-1`). The
   outcome carries the `vendor_payloads` ids and `PAID_SEARCH_VERSION`.
 - **Tenant isolation.** The only per-tenant tables touched are `vendor_usage_events`
   (written by the gate, read for the budget) and `brands` / `brand_account_labels`
@@ -641,10 +642,26 @@ def _search(
     zone_of: Callable[[UUID], ZoneInfo],
     now: datetime | None,
 ) -> PaidSearchOutcome:
+    def done(outcome: PaidSearchOutcome) -> PaidSearchOutcome:
+        """Every outcome of a search that got this far is logged with who clicked."""
+        logger.info(
+            "discover paid: tenant=%s brand=%s requested_by=%s query=%r status=%s "
+            "credits=%s accounts=%s version=%s",
+            tenant_id,
+            brand_id,
+            requested_by,
+            query,
+            outcome.status,
+            outcome.credits,
+            len(outcome.found),
+            PAID_SEARCH_VERSION,
+        )
+        return outcome
+
     def capped(status: SearchStatus, credits: int = 0) -> PaidSearchOutcome:
         where = zone if zone is not None or status == "daily_cap" else zone_of(tenant_id)
         text = cap_text(status, zone=where, now=now)
-        return PaidSearchOutcome(status, text, query, credits, page=_reread())
+        return done(PaidSearchOutcome(status, text, query, credits, page=_reread()))
 
     def _reread() -> DiscoverPage | None:
         try:
@@ -755,26 +772,21 @@ def _search(
 
     answered = [e for e in kept if e.status == 200]
     facts, _ = accounts_from_pages(
-        [e.payload for e in answered],
-        query=query,
-        region_code=region,
-        seen_at=now,
+        [e.payload for e in answered], query=query, region_code=region, seen_at=now
     )
-    # A sighting counts what a search PAID to see now: an answer served from the cache
-    # was already counted when it was paid, so a repeat (any business) never raises
-    # `creator_sightings.times`, which RF-07a ranks by. The accounts and their region are
-    # still written from every page — both writes are idempotent merges.
-    _, sightings = accounts_from_pages(
-        [e.payload for e in answered if e.id in paid],
-        query=query,
-        region_code=region,
-        seen_at=now,
+    # Only what this call PAID to see is written: an answer served from the cache was
+    # recorded when it was paid, so a repeat (any business) never raises
+    # `creator_sightings.times` (RF-07a ranks by it) nor rewrites an account's figures
+    # with an older answer stamped «seen now».
+    fresh = [e for e in answered if e.id in paid]
+    new_facts, sightings = accounts_from_pages(
+        [e.payload for e in fresh], query=query, region_code=region, seen_at=now
     )
     recorded = True
-    if facts:
-        cited = [e for e in answered if e.id not in unstored]
+    if new_facts:
+        cited = [e for e in fresh if e.id not in unstored]
         try:
-            pool.record(facts, sightings, region_claims(cited), now=now)
+            pool.record(new_facts, sightings, region_claims(cited), now=now)
         except Exception:  # noqa: BLE001 - the credits are spent; the answers stay kept
             logger.exception("discover paid: accounts of %r not recorded", query)
             recorded = False
@@ -783,22 +795,12 @@ def _search(
     ids = tuple(e.id for e in kept if e.id not in unstored)
     if not recorded or (failed is not None and not facts):
         status_failed: SearchStatus = failed or "error"
-        return PaidSearchOutcome(status_failed, UNAVAILABLE_TEXT, query, credits, (), page, ids)
+        return done(
+            PaidSearchOutcome(status_failed, UNAVAILABLE_TEXT, query, credits, (), page, ids)
+        )
     status: SearchStatus = "searched" if credits else "cached"
     message = None if facts else NO_NEW_TEXT
-    logger.info(
-        "discover paid: tenant=%s brand=%s requested_by=%s query=%r status=%s credits=%s "
-        "accounts=%s version=%s",
-        tenant_id,
-        brand_id,
-        requested_by,
-        query,
-        status,
-        credits,
-        len(facts),
-        PAID_SEARCH_VERSION,
-    )
-    return PaidSearchOutcome(status, message, query, credits, found, page, ids)
+    return done(PaidSearchOutcome(status, message, query, credits, found, page, ids))
 
 
 __all__ = [
