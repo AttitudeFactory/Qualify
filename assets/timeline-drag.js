@@ -99,14 +99,24 @@
       d.items = itemsOf(d.lane);
       d.from = d.to = d.items.indexOf(d.item);
       var origin = d.items.length ? d.items[0].getBoundingClientRect().left : 0;
-      d.widths = d.items.map(function (it) {
-        return it.getBoundingClientRect().width;
+      var boxes = d.items.map(function (it) {
+        return it.getBoundingClientRect();
       });
-      d.left0 = d.item.getBoundingClientRect().left - origin;
-      // the block stays inside the row: the blocks' own extent
+      // m-25114465 (review): each block's STEP on the row, not its drawn width — blocks
+      // laid over each other at their transitions would count each overlap twice
+      d.widths = core().stepWidths(
+        boxes.map(function (b) {
+          return b.left - origin;
+        }),
+        boxes.map(function (b) {
+          return b.width;
+        })
+      );
+      d.left0 = boxes[d.from] ? boxes[d.from].left - origin : 0;
+      // the block stays inside the row: the row's real span (the steps' sum)
       d.bound = {
         left: d.left0,
-        width: d.widths[d.from] || 0,
+        width: boxes[d.from] ? boxes[d.from].width : 0,
         span: d.widths.reduce(function (sum, w) {
           return sum + w;
         }, 0),
@@ -338,6 +348,7 @@
       done = true;
       observer.disconnect();
       clearTransforms(d);
+      remarkJoins(d.root);
     });
     // ED-04: an effect may land on another row, or be refused (the live line says
     // why): every row of «Efectos» and the live line are the screen's answer too
@@ -872,6 +883,14 @@
     if (next !== scroller.scrollLeft) scroller.scrollLeft = next;
   }
 
+  // m-25114465: a block trimmed to a new size moves its neighbours and the joins' points:
+  // which points sit under the chosen block's handles is measured again
+  // (`timeline.js` `markJoins`), never left as it was before the trim.
+  function remarkJoins(root) {
+    var tl = window.__qTimeline;
+    if (root && tl && tl.markJoins) tl.markJoins(root);
+  }
+
   function trimRelease(e) {
     var t = trim;
     if (!t || e.pointerId !== t.pointer) return;
@@ -891,6 +910,7 @@
       trimClear(t);
       window.requestAnimationFrame(function () {
         revealBlock(t);
+        remarkJoins(t.root);
       });
     });
     observer.observe(t.item, {
@@ -904,6 +924,7 @@
       observer.disconnect();
       trimClear(t);
       revealBlock(t); // the block is seen even when its new size came unnoticed
+      remarkJoins(t.root);
     }, GIVE_UP_MS);
     report(t.root, t.id, t.edge, t.value);
     // «Al soltar, reproduce el bloque»: from where it starts once the screen answered

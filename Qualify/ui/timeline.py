@@ -167,6 +167,7 @@ def _block(
     selected: rx.Var[str],
     on_select: Callable[[str], Any],
     thumb_base: rx.Var[str] | str = "",
+    overlap: bool = False,
 ) -> rx.Component:
     chosen = row["id"] == selected
     # ED-11: a video or a photo with a picture shows it under its name and seconds
@@ -227,8 +228,28 @@ def _block(
             "data-tl-warn": rx.cond(row["warn"] == "1", "1", "0"),
         },
     )
+    # m-25114465 («bloques enteros, encimados»): the start of a «Fotos y videos» block
+    # laid over the block before it — its transition in — marked with the transition's
+    # stripes (Deivid, option A: its icon goes on the join's point). Only a picture: the
+    # join's point says it in words (`_join`'s name), nothing here takes the focus or is
+    # read twice. The block's name and picture start after it (`data-tl-in`).
+    overlay = (
+        [
+            rx.cond(
+                row["join_kind"] != "",
+                rx.el.span(
+                    class_name="q-tl__overlap",
+                    aria_hidden="true",
+                    style={"--b-in": row["join_in"]},
+                ),
+            )
+        ]
+        if overlap
+        else []
+    )
     return rx.el.div(
         button,
+        *overlay,
         # a row may say it has no handles the screen moves yet (``handles`` "")
         rx.cond(
             chosen & (row["handles"] != ""),
@@ -239,9 +260,14 @@ def _block(
         ),
         role="listitem",
         class_name="q-tl__item",
-        style={"--b-start": row["start"], "--b-len": row["length"]},
+        style={
+            "--b-start": row["start"],
+            "--b-len": row["length"],
+            **({"--b-in": row["join_in"]} if overlap else {}),
+        },
         custom_attrs={
             "data-tl-chosen": rx.cond(chosen, "true", "false"),
+            **({"data-tl-in": rx.cond(row["join_kind"] != "", "1", "")} if overlap else {}),
             # ED-14: it starts / ends the track — that handle sits inside the block
             "data-tl-at-start": row["at_start"],
             "data-tl-at-end": row["at_end"],
@@ -257,8 +283,9 @@ def _lane(
     """One track. An empty one stays a blank row of the same height (no hint text); its
     accessible name says it is empty."""
     label = vm.TRACK_LABELS[track]
+    media = track == vm.TRACK_MEDIA
     return rx.el.div(
-        rx.foreach(rows, lambda row: _block(row, **block_props)),
+        rx.foreach(rows, lambda row: _block(row, overlap=media, **block_props)),
         role="list",
         aria_label=rx.cond(
             rows.length() > 0,  # type: ignore[attr-defined]
@@ -282,6 +309,221 @@ def _effect_lane(rows: Any, names: Any, **block_props: Any) -> rx.Component:
     )
 
 
+def _join(row: Any, on_join: Callable[[str], Any], selected: rx.Var[str]) -> rx.Component:
+    """m-25114465 «la unión»: the point between two blocks of «Fotos y videos», a button
+    named with its choice («Unión entre Video 1 y Foto 2: Corte»), centred on the overlap
+    of the two blocks (``row["at"]``, seconds) and riding the track's TOP edge, as
+    CapCut's transition button (`.q-tl__join`: absolute, it takes no room). While a block
+    touching it is chosen (the one after, the one before it in the recipe or on the track)
+    its trim handles sit right there and win: the point hides and leaves the tab order
+    (``data-join-off``); one a handle only reaches is dimmed by `assets/timeline.js`
+    (``data-join-near``). ``aria-expanded`` while its panel shows."""
+    off = (selected != "") & (
+        (row["id"] == selected) | (row["before"] == selected) | (row["beside"] == selected)
+    )
+    # Deivid (option A): a «Fundido» / «Barrido» point carries its icon, white on the
+    # accent, CapCut-like; a «Corte» point is empty. A picture only: the name says it
+    icon = rx.match(
+        row["kind"],
+        ("fundido", rx.icon("blend", size=12, class_name="q-tl__join-icon")),
+        ("barrido", rx.icon("arrow-left-right", size=12, class_name="q-tl__join-icon")),
+        rx.fragment(),
+    )
+    return rx.el.button(
+        rx.el.span(icon, class_name="q-tl__join-dot", aria_hidden="true"),
+        type="button",
+        class_name="q-tl__join",
+        on_click=on_join(row["id"]),
+        aria_label=row["name"],
+        title=row["name"],
+        aria_expanded=rx.cond(row["open"] == "1", "true", "false"),
+        style={"--j-at": row["at"]},
+        custom_attrs={
+            "data-join-kind": row["kind"],
+            "data-join-warn": row["warn"],
+            "data-join-id": row["id"],
+            "data-join-off": rx.cond(off, "1", ""),
+        },
+        tab_index=rx.cond(off, -1, 0),
+    )
+
+
+def _joins(joins: Rows, on_join: Callable[[str], Any], selected: rx.Var[str]) -> rx.Component:
+    """Every join, as a layer laid OVER «Fotos y videos» (Deivid 2026-11-26: «las pistas
+    se mueven hacia abajo, no me gusta» — no row of its own): absolute, no height, no
+    margin, so every track stays exactly where it was. Each point rides the track's top
+    edge (half of it in the gap above), its target 24 px wide (WCAG 2.5.8's minimum, ~12
+    px over each block at 375 px) and 44 px tall; the layer itself lets every other tap
+    through to the blocks."""
+    return rx.el.div(
+        rx.foreach(joins, lambda row: _join(row, on_join, selected)),
+        class_name="q-tl__joins",
+    )
+
+
+def _direction_item(way: Any) -> rx.Component:
+    """One of «← Izquierda · → Derecha · ↑ Arriba · ↓ Abajo»: its arrow (the way the
+    block moves in, `clip_joins_vm.DIRECTION_ICONS`) before its word."""
+    arrow = rx.match(
+        way["value"],
+        ("right", rx.icon("arrow-right", size=16, aria_hidden="true")),
+        ("up", rx.icon("arrow-up", size=16, aria_hidden="true")),
+        ("down", rx.icon("arrow-down", size=16, aria_hidden="true")),
+        rx.icon("arrow-left", size=16, aria_hidden="true"),
+    )
+    return rx.segmented_control.item(
+        rx.el.span(arrow, way["label"], class_name="q-tl-join-way"),
+        value=way["value"],
+        min_height="44px",
+        aria_label=way["label"],
+        title=way["label"],
+    )
+
+
+def timeline_join_panel(
+    row: Row,
+    choices: rx.Var[list[dict[str, str]]],
+    *,
+    on_change: Callable[[Any], Any],
+    on_done: Any,
+    help_text: str,
+    seconds: rx.Var[float] | float = 0.0,
+    seconds_min: rx.Var[float] | float = 0.0,
+    seconds_max: rx.Var[float] | float = 1.0,
+    seconds_step: float = 0.1,
+    on_seconds: Callable[[Any], Any] | None = None,
+    directions: rx.Var[list[dict[str, str]]] | None = None,
+    on_direction: Callable[[Any], Any] | None = None,
+) -> rx.Component:
+    """m-25114465: the open join's panel — its title («Unión entre el bloque 1 y el 2»),
+    ``help_text``, its choices on the kit's segmented menu («Corte · Fundido ·
+    Barrido», only those that fit: ``choices`` rows ``{value, label}``), why only
+    «Corte» when that is all (``row["why"]``), the server's warning when a block is too
+    short for its transitions (``row["problem"]``), how much longer the video takes to
+    be ready with the choice (``row["slower"]``) and «Listo»."""
+    return rx.el.div(
+        rx.text(row["title"], size="2", weight="bold"),
+        rx.text(help_text, size="1", color=T.TEXT_MUTED),
+        rx.box(
+            rx.segmented_control.root(
+                rx.foreach(
+                    choices,
+                    lambda choice: rx.segmented_control.item(
+                        choice["label"],
+                        value=choice["value"],
+                        min_height="44px",
+                        aria_label=choice["label"],
+                        title=choice["label"],
+                    ),
+                ),
+                value=row["kind"],
+                on_change=on_change,
+                size="2",
+                aria_label=row["title"],
+                class_name="q-source-seg q-tl-seg q-seg-fill",
+            ),
+            width="100%",
+            min_width="0",
+        ),
+        rx.cond(row["why"] != "", rx.text(row["why"], size="1", color=T.TEXT_MUTED)),
+        *(
+            [
+                # Deivid 2026-11-26: the duration on the same bar as a text's fade
+                # (`ui.text_panel._fade_row`): «Dura 0,5 s» over a Radix slider, 0,1 s a
+                # step, the arrows move it, named by its own words; never past what fits
+                rx.cond(
+                    row["has_seconds"] == "1",
+                    rx.el.div(
+                        rx.text(
+                            row["seconds_line"],
+                            size="2",
+                            weight="medium",
+                            class_name="q-nums",
+                            id="clip-join-seconds-line",
+                        ),
+                        rx.text(row["overlap_line"], size="1", color=T.TEXT_MUTED),
+                        rx.slider(
+                            default_value=[seconds],
+                            value=[seconds],
+                            min=seconds_min,
+                            max=seconds_max,
+                            step=seconds_step,
+                            on_change=on_seconds,
+                            size="2",
+                            width="100%",
+                            aria_label=row["seconds_label"],
+                            # «0,5 segundos»: `assets/timeline.js` puts it on the thumb
+                            # (Radix Themes passes no props to it)
+                            custom_attrs={"data-join-seconds": ""},
+                        ),
+                        class_name="q-tl-panel__field",
+                    ),
+                )
+            ]
+            if on_seconds is not None
+            else []
+        ),
+        *(
+            [
+                # a wipe's way: «Izquierda · Derecha · Arriba · Abajo», a named group on
+                # the kit's segmented menu (Radix radios: 44 px, the arrows move)
+                rx.cond(
+                    row["has_direction"] == "1",
+                    rx.el.div(
+                        rx.text(row["direction_title"], size="2", weight="medium"),
+                        rx.box(
+                            rx.segmented_control.root(
+                                rx.foreach(directions, _direction_item),
+                                value=row["direction"],
+                                on_change=on_direction,
+                                size="2",
+                                aria_label=row["direction_title"],
+                                class_name="q-source-seg q-tl-seg q-seg-fill",
+                            ),
+                            width="100%",
+                            min_width="0",
+                        ),
+                        class_name="q-tl-panel__field",
+                    ),
+                )
+            ]
+            if directions is not None and on_direction is not None
+            else []
+        ),
+        rx.cond(
+            row["problem"] != "",
+            rx.text(
+                row["problem"],
+                size="2",
+                weight="medium",
+                role="status",
+                class_name="q-tl-panel__warn",
+            ),
+        ),
+        rx.cond(
+            row["slower"] != "",
+            rx.hstack(
+                rx.icon("clock", size=T.ICON_SM, aria_hidden="true"),
+                rx.text(row["slower"], size="1"),
+                spacing="1",
+                align="center",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        rx.el.div(
+            rx.button(
+                vm.DONE_LABEL, type="button", on_click=on_done, class_name="q-tl-actions__btn"
+            ),
+            class_name="q-tl-panel__done",
+        ),
+        class_name="q-tl-panel",
+        tab_index=-1,
+        role="group",
+        aria_label=row["title"],
+        custom_attrs={"data-tl-join-panel": row["id"]},
+    )
+
+
 def timeline(
     *,
     media: Rows,
@@ -298,8 +540,14 @@ def timeline(
     effect_lanes: rx.Var[list[list[dict[str, str]]]] | None = None,
     effect_lane_names: rx.Var[list[dict[str, str]]] | None = None,
     thumb_base: rx.Var[str] | str = "",
+    joins: Rows | None = None,
+    on_join: Callable[[str], Any] | None = None,
 ) -> rx.Component:
     """The timeline of one video.
+
+    m-25114465: with ``joins`` (rows `{id, at, kind, name, open, warn}`) and ``on_join(id)``
+    a point sits on the line between every two blocks of «Fotos y videos» — «la unión»
+    (`_join`); tapped, the screen shows its panel (`timeline_join_panel`).
 
     ``media`` / ``texts`` / ``effects``: rows of `timeline_vm.media_blocks` /
     `overlay_blocks`; ``ticks``: `timeline_vm.ticks`; ``total``: the length in seconds
@@ -338,9 +586,11 @@ def timeline(
     ]
     names = rx.el.div(
         rx.el.span(class_name="q-tl__name q-tl__name--ruler"),
-        *(
-            rx.el.span(vm.TRACK_LABELS[track], class_name=f"q-tl__name q-tl__name--{track}")
-            for track in (vm.TRACK_MEDIA, vm.TRACK_TEXT)
+        rx.el.span(
+            vm.TRACK_LABELS[vm.TRACK_MEDIA], class_name=f"q-tl__name q-tl__name--{vm.TRACK_MEDIA}"
+        ),
+        rx.el.span(
+            vm.TRACK_LABELS[vm.TRACK_TEXT], class_name=f"q-tl__name q-tl__name--{vm.TRACK_TEXT}"
         ),
         *effect_names,
         class_name="q-tl__names",
@@ -373,10 +623,17 @@ def timeline(
         class_name="q-tl__scrub",
         aria_label=vm.PLAYHEAD_LABEL,
     )
+    media_lane = _lane(vm.TRACK_MEDIA, media, **block_props)
+    if joins is not None and on_join is not None:
+        # m-25114465: the joins lie over the media track — its box is the track's own
+        # height (`.q-tl__media`), so nothing below it moves
+        media_lane = rx.el.div(
+            media_lane, _joins(joins, on_join, selected), class_name="q-tl__media"
+        )
     canvas = rx.el.div(
         ruler,
         scrub,
-        _lane(vm.TRACK_MEDIA, media, **block_props),
+        media_lane,
         _lane(vm.TRACK_TEXT, texts, **block_props),
         effect_rows,
         rx.el.div(class_name="q-tl__head q-tl__head--move", aria_hidden="true"),

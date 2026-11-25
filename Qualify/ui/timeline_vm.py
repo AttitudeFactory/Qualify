@@ -22,7 +22,7 @@ the keyboard edits of §3.7 (½ s steps, 1 s minimum, no gaps).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 #: The magnet (§3.3): every edge lands on a half second.
@@ -192,9 +192,31 @@ def media_length(item: dict[str, Any]) -> float:
     return (float(item["src_end"]) - float(item["src_start"])) / speed_of(item)
 
 
+def tail_length(item: dict[str, Any]) -> float:
+    """Seconds the block's end overlaps the next block's transition (`tail_s`, m-25114465;
+    0 = a cut)."""
+    try:
+        return max(float(item.get("tail_s") or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def shown_length(item: dict[str, Any]) -> float:
+    """Seconds the block takes on the track: its length less its `tail_length` — the next
+    block starts where its transition starts (m-25114465)."""
+    return max(media_length(item) - tail_length(item), 0.0)
+
+
 def total_seconds(media: list[dict[str, Any]]) -> float:
-    """The video's length: the media track has no gaps, so it is the sum of its blocks."""
-    return sum(media_length(item) for item in media)
+    """The video's length: the media track has no gaps, so it is the sum of its blocks
+    (each less the transition into the next one, m-25114465)."""
+    return sum(shown_length(item) for item in media)
+
+
+def media_label(item: Mapping[str, Any], n: int) -> str:
+    """A «Fotos y videos» block's short name, as the track shows it: «Foto 2», «Video 1»
+    (`n`: its place on the track, from 1). The joins' words name blocks with it."""
+    return f"Foto {n}" if item.get("kind") == "photo" else f"Video {n}"
 
 
 def _media_name(item: dict[str, Any], n: int, m: int) -> tuple[str, str, str]:
@@ -226,6 +248,10 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
     m = len(media)
     for n, item in enumerate(media, start=1):
         length = media_length(item)
+        shown = shown_length(item)
+        # its own transition in (`join_s`, on the block that comes in: the block before it
+        # may be one of no length, skipped by the recipe — review)
+        join_in = max(float(item.get("join_s") or 0.0), 0.0) if item.get("join") else 0.0
         label, name, panel = _media_name(item, n, m)
         if item["kind"] == "photo":
             handles = {
@@ -280,9 +306,17 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "place": "",
                 "warn": "",
                 # ED-03: laid end to end to the hundredth, from the same running sum, so
-                # a block always ends exactly where the next one starts (no gap)
+                # a block always ends exactly where the next one starts (no gap).
+                # m-25114465 (Deivid 2026-11-26, «bloques enteros, encimados»): each
+                # block is drawn WHOLE; with a transition into the next one, that next
+                # block starts where it really starts (its end less the transition) and
+                # is drawn over this one's end — the overlap is the transition
                 "start": exact(at),
                 "length": exact(round(at + length, 2) - round(at, 2)),
+                # the seconds of its start laid over the block before (its transition
+                # in, "0" for a cut) and which transition it is (`join_kind`)
+                "join_in": exact(join_in),
+                "join_kind": str(item.get("join") or "") if join_in > 0 else "",
                 # ED-03: «Inicio de video 2» / «Final de video 2» (the noun in lower case)
                 "start_handle": f"Inicio de {label[:1].lower()}{label[1:]}",
                 "end_handle": f"Final de {label[:1].lower()}{label[1:]}",
@@ -297,7 +331,7 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 **handles,
             }
         )
-        at += length
+        at += shown
     return rows
 
 

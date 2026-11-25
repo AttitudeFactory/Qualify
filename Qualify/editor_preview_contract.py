@@ -104,6 +104,9 @@ SEGMENT_SPEED_MIN = 1.0
 SEGMENT_SPEED_MAX = 30.0
 EFFECT_ID_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
 _EFFECT_ID = re.compile(EFFECT_ID_PATTERN)
+#: The library's hard cut (`qualify_creative.schemas.CUT_EFFECT_ID`): a block's
+#: `transition_in` naming it is no transition (m-25114465).
+CUT_EFFECT_ID = "corte"
 
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
@@ -178,7 +181,12 @@ class SourceSegment:
     tuple = order in the video.
 
     ED-15: `kind` "photo" is a still photo in the same tuple, in its place among the
-    videos: from 0 to `end_s` = how long it shows (1-5 s), at speed 1."""
+    videos: from 0 to `end_s` = how long it shows (1-5 s), at speed 1.
+
+    m-25114465 (ADR 50 §10): `transition_in` is how this block blends with the block
+    BEFORE it in a normal Clip («la unión»): a library `transition` (`fundido` /
+    `barrido` v2) with no span of its own; None is «Corte» (never written, so a Clip with
+    only cuts keeps its exact shape). Never on the first block."""
 
     key: str
     start_s: float
@@ -186,6 +194,7 @@ class SourceSegment:
     speed: float = 1.0
     rotate: int = 0
     kind: str = "video"
+    transition_in: EffectUse | None = None
 
     @property
     def source_seconds(self) -> float:
@@ -911,6 +920,35 @@ def _layer_dict(layer: VideoTextLayer) -> dict[str, object]:
     return data
 
 
+def _transition_dict(use: EffectUse) -> dict[str, object]:
+    """A block's `transition_in` as the server reads it (m-25114465): its library entry
+    and parameters — no span (a join has none)."""
+    return {
+        "effect_id": use.effect_id,
+        "version": int(use.version),
+        "params": {name: _param(value) for name, value in use.params},
+    }
+
+
+def _transition_of(raw: object) -> EffectUse | None:
+    """`_transition_dict` back; None (a cut) for nothing or `corte`."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("a transition is an object")
+    effect_id = str(raw.get("effect_id") or "")
+    if not effect_id or effect_id == CUT_EFFECT_ID:
+        return None
+    params = raw.get("params") or {}
+    if not isinstance(params, Mapping):
+        raise ValueError("a transition's params are an object")
+    return EffectUse(
+        effect_id=effect_id,
+        version=int(_num(raw.get("version", 1))),
+        params=tuple(sorted((str(k), _param(v)) for k, v in params.items())),
+    )
+
+
 def to_dict(recipe: PartRecipe) -> dict[str, object]:
     """The recipe as JSON-ready data, in EF-02's shape (seconds rounded to 0.01). ED-15:
     `text_layers` carries every text; `text_layer` (the first, or None) stays for v1
@@ -937,6 +975,13 @@ def to_dict(recipe: PartRecipe) -> dict[str, object]:
                 "rotate": int(segment.rotate),
                 # a video's stretch keeps v1's exact shape (no `kind`: video by default)
                 **({} if segment.kind == "video" else {"kind": segment.kind}),
+                # m-25114465: the join into this block, last — and only when it blends (a
+                # cut is no key: the digest of a Clip with only cuts does not change)
+                **(
+                    {}
+                    if segment.transition_in is None
+                    else {"transition_in": _transition_dict(segment.transition_in)}
+                ),
             }
             for segment in recipe.segments
         ],
@@ -983,6 +1028,7 @@ def from_dict(data: Mapping[str, object]) -> PartRecipe:
                 speed=_round(_num(item.get("speed", 1.0))),
                 rotate=int(_num(item.get("rotate", 0))),
                 kind=str(item.get("kind") or "video"),
+                transition_in=_transition_of(item.get("transition_in")),
             )
         )
     layer_raw = data.get("text_layer")

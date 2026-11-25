@@ -37,6 +37,7 @@ def test_field_names_are_ef02s() -> None:
         "speed",
         "rotate",
         "kind",  # ED-15
+        "transition_in",  # m-25114465: the join into this block, always last
     ]
     assert list(c.VideoTextLayer.__dataclass_fields__) == [
         "text",

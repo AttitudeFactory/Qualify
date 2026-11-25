@@ -66,6 +66,12 @@ class PreviewBlock:
     speed: float = 1.0
     rotate: int = 0
     dur: float = 0.0
+    #: m-25114465: how it comes in over the block before it — "" a cut, "fade" or
+    #: "wipe" (the server's `DRAWN_TRANSITIONS`) for `join_s` seconds, a wipe towards
+    #: `join_dir`. The preview only approximates it (`edit-sequence-core.js` `joinFrame`).
+    join: str = ""
+    join_s: float = 0.0
+    join_dir: str = ""
 
     @property
     def seconds(self) -> float:
@@ -165,10 +171,19 @@ def _url(key: str, sources: Mapping[str, Any]) -> str:
 
 
 def _lay_out(raw: Sequence[dict[str, Any]]) -> tuple[PreviewBlock, ...]:
-    """Place raw blocks end to end from 0:00 (the track never has gaps)."""
+    """Place raw blocks end to end from 0:00 (the track never has gaps). m-25114465: a
+    block's `tail_s` (the next block's transition) comes off its end, so the next block
+    starts where the video that comes out starts it."""
     blocks: list[PreviewBlock] = []
     at = 0.0
     for item in raw:
+        joined: dict[str, Any] = {}
+        if item.get("join") and float(item.get("join_s") or 0) > 0:
+            joined = {
+                "join": str(item["join"]),
+                "join_s": _r(float(item["join_s"])),
+                "join_dir": str(item.get("join_dir") or ""),
+            }
         if item["kind"] == _PHOTO:
             dur = float(item["dur"])
             dur = min(max(dur, contract.PHOTO_SECONDS_MIN), contract.PHOTO_SECONDS_MAX)
@@ -183,6 +198,8 @@ def _lay_out(raw: Sequence[dict[str, Any]]) -> tuple[PreviewBlock, ...]:
                 "speed": speed,
                 "rotate": int(item.get("rotate") or 0),
             }
+        length = max(length - max(float(item.get("tail_s") or 0.0), 0.0), 0.0)
+        extra.update(joined)
         blocks.append(
             PreviewBlock(
                 key=str(item["key"]),
@@ -322,6 +339,11 @@ def from_timeline(
             "url": _url(key, sources),
             "poster": str(item.get("thumb") or ""),
             "label": f"{noun} {n}",
+            # m-25114465: its transition in, and the one into the next block
+            "tail_s": item.get("tail_s", 0.0),
+            "join": item.get("join_drawn", ""),
+            "join_s": item.get("join_s", 0.0),
+            "join_dir": item.get("join_dir", ""),
         }
         if item["kind"] == _PHOTO:
             row.update(dur=item["dur"], rotate=item.get("rotate", 0))

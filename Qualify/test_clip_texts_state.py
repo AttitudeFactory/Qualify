@@ -686,7 +686,7 @@ def test_mas_texto_in_a_gap_moves_the_marker_and_its_panel_says_its_seconds(
     assert state.clip_text_panel_row["added_line"] == "Pusiste un texto de 0:17 a 0:25."
     assert "Pusiste un texto de" not in state.clip_edit_notice
     scripts = _scripts(events)
-    assert "seq.goTo(h, 17.00)" in scripts
+    assert "seq.goTo(h, 17.00, false, true)" in scripts
     assert "getElementById('clip-text-field')" in scripts
     # an empty text has no block yet: no scroll at creation
     assert "__qTimelineRevealNew" not in scripts

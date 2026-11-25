@@ -100,6 +100,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     clip_editor_vm,
     clip_gallery_vm,
+    clip_joins_vm,
     clip_photos_vm,
     clip_texts_vm,
     edit_sequence,
@@ -1902,6 +1903,18 @@ class CreativeState(rx.State):
     clip_photo_seconds: dict[str, float] = {}
     #: ED-14: each photo block's quarter turns («Girar»), by block id (missing = upright).
     clip_photo_turns: dict[str, int] = {}
+    #: m-25114465 «Tocar la unión»: how each block comes in over the one before it, by the
+    #: id of the block AFTER the join («fundido» / «barrido»; missing = «Corte»). Never the
+    #: first block's (`clip_joins_vm.clean_joins`). Always a new dict.
+    clip_block_joins: dict[str, str] = {}
+    #: Deivid 2026-11-26: each blending join's duration (s, 0,1 s a step) and a wipe's
+    #: direction, by the same block id (missing = the library's default). Always new dicts.
+    clip_join_seconds: dict[str, float] = {}
+    clip_join_dirs: dict[str, str] = {}
+    #: The join whose choices show under the timeline (its block id; "" = none).
+    clip_join_open: str = ""
+    #: The owner already chose a join once: the line on how to find them goes (ux review).
+    clip_join_used: bool = False
     #: ED-10's one text (legacy, see `clip_text_start`).
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
@@ -6741,9 +6754,181 @@ class CreativeState(rx.State):
             },
             pieces=self.clip_cut_pieces if known else [],
         )
-        return clip_photos_vm.apply_photo_settings(
+        media = clip_photos_vm.apply_photo_settings(
             media, self.clip_photo_seconds, self.clip_photo_turns
         )
+        # m-25114465: each join's choice, on the block after it (and its overlap on the
+        # block before): every reader then lays the blocks as the video comes out
+        return clip_joins_vm.apply_joins(
+            media,
+            self.clip_block_joins,
+            enabled=clip_joins_vm.joins_enabled(),
+            local=self.clip_editor_shown,
+            seconds=self.clip_join_seconds,
+            directions=self.clip_join_dirs,
+        )
+
+    # -- m-25114465 «Tocar la unión»: how two blocks of «Fotos y videos» meet -------------
+
+    def _clip_join_rows(self) -> list[dict[str, str]]:
+        """`clip_joins_vm.join_rows` of the timeline now ([] off the switch)."""
+        if not clip_joins_vm.joins_enabled() or not self.clip_editor_shown:
+            return []
+        media = self._clip_tl_media()
+        starts = [clip_editor_vm.block_start(media, index) for index in range(len(media))]
+        return clip_joins_vm.join_rows(
+            media,
+            clip_editor_vm.timeline_segments(media),
+            local=self.clip_editor_shown,
+            open_id=self.clip_join_open,
+            starts=starts,
+        )
+
+    @rx.var
+    def clip_tl_joins(self) -> list[dict[str, str]]:
+        """Every join between two blocks, as the timeline draws them (`join_rows`) — read
+        ONCE per change: the other join vars and the events read these rows."""
+        return self._clip_join_rows()
+
+    @rx.var
+    def clip_join_chosen(self) -> dict[str, str]:
+        """The open join's row ({} = none open)."""
+        open_id = self.clip_join_open
+        return next((row for row in self.clip_tl_joins if row["id"] == open_id), {})
+
+    @rx.var
+    def clip_join_hint(self) -> str:
+        """ux review: how to find the joins («Toca el punto…») — with two blocks or more,
+        until the owner chooses ANY join the first time, «Corte» included
+        (`clip_join_used`)."""
+        rows = self.clip_tl_joins
+        if not rows or self.clip_join_used:
+            return ""
+        return clip_joins_vm.FIND_HINT
+
+    @rx.var
+    def clip_join_slower(self) -> str:
+        """ux review: beside «Crear», only while some join is not «Corte» — and only with
+        the join's panel CLOSED (open, the panel says it itself: never twice)."""
+        if self.clip_join_open:
+            return ""
+        return clip_joins_vm.slower_line([row["kind"] for row in self.clip_tl_joins])
+
+    @rx.var
+    def clip_join_choices(self) -> list[dict[str, str]]:
+        """The open join's choices (`option_rows`: «Corte», then what fits)."""
+        row = self.clip_join_chosen
+        return clip_joins_vm.option_rows(row) if row else []
+
+    @rx.event
+    def open_clip_join(self, block_id: str) -> list[rx.event.EventSpec]:
+        """A join tapped (or Enter): its panel shows, nothing else chosen; tapped again,
+        it closes."""
+        if not any(row["id"] == block_id for row in self.clip_tl_joins):
+            return []
+        was = self.clip_join_open
+        events = list(self._clip_choose(""))  # (it closes any join too)
+        self.clip_join_open = "" if was == block_id else block_id
+        if self.clip_join_open:
+            # ux review: its panel comes into view, the focus on the option marked
+            events.append(rx.call_script(f"window.__qTimeline?.revealJoin({json.dumps(block_id)})"))
+        return events
+
+    @rx.event
+    def close_clip_join(self) -> list[rx.event.EventSpec]:
+        """«Listo» on a join's panel: it closes and the focus goes back to its point."""
+        block_id = self.clip_join_open
+        self.clip_join_open = ""
+        if not block_id:
+            return []
+        return [rx.call_script(f"window.__qTimeline?.focusJoin({json.dumps(block_id)})")]
+
+    @rx.event
+    def set_clip_join(self, value: str | list[str]) -> None:
+        """The open join takes `value` — only a kind it offers now («Corte» always)."""
+        kind = value[0] if isinstance(value, list) and value else value
+        row = self.clip_join_chosen
+        if not row or not isinstance(kind, str) or kind not in row["offered"].split(","):
+            return
+        media = self._clip_tl_media()
+        ids = clip_joins_vm.segment_ids(media)
+        at = ids.index(row["id"]) if row["id"] in ids else 1
+        joins = dict(self.clip_block_joins)
+        seconds = dict(self.clip_join_seconds)
+        if kind == clip_joins_vm.CUT:
+            joins.pop(row["id"], None)
+        else:
+            # Deivid 2026-11-26: it starts at the library's default, or at the longest
+            # that fits when the default does not
+            fit = clip_joins_vm.fit_seconds(clip_editor_vm.timeline_segments(media), at, kind)
+            start = clip_joins_vm.start_seconds(kind, fit)
+            if start is None:
+                return
+            joins[row["id"]] = kind
+            seconds[row["id"]] = start
+        self.clip_join_seconds = seconds
+        self.clip_join_used = True
+        self._clip_keep_joins(clip_joins_vm.clean_joins(joins, media))
+        self._clip_notice_done()
+        self.clip_edit_notice = clip_joins_vm.put_line(
+            row["before_label"], row["after_label"], kind
+        )
+
+    def _clip_keep_joins(self, joins: dict[str, str]) -> None:
+        """The joins kept, with only their own durations and directions."""
+        self.clip_block_joins = joins
+        self.clip_join_seconds = clip_joins_vm.clean_by_join(self.clip_join_seconds, joins)
+        self.clip_join_dirs = clip_joins_vm.clean_by_join(self.clip_join_dirs, joins)
+
+    @rx.var
+    def clip_join_seconds_value(self) -> float:
+        """The open join's duration bar: its value, and its ends (`join_rows`)."""
+        return float(self.clip_join_chosen.get("seconds") or 0.0)
+
+    @rx.var
+    def clip_join_seconds_min(self) -> float:
+        return float(self.clip_join_chosen.get("seconds_min") or 0.0)
+
+    @rx.var
+    def clip_join_seconds_max(self) -> float:
+        return float(self.clip_join_chosen.get("seconds_max") or 0.0)
+
+    @rx.var
+    def clip_join_directions(self) -> list[dict[str, str]]:
+        """The open wipe's directions (`direction_rows`)."""
+        row = self.clip_join_chosen
+        return clip_joins_vm.direction_rows(row) if row.get("has_direction") else []
+
+    @rx.event
+    def set_clip_join_seconds(self, value: list[float] | float | str) -> None:
+        """The duration bar (0,1 s a step; Radix sends a list). Never past what fits now
+        (`fit_seconds`, the server's room): a longer value is brought to it."""
+        row = self.clip_join_chosen
+        seconds = clip_joins_vm.seconds_from_slider(value)
+        if not row or not row.get("has_seconds") or seconds is None or not row.get("fit"):
+            return
+        low, fit = float(row["seconds_min"]), float(row["fit"])
+        chosen = min(max(clip_joins_vm.snap_seconds(seconds), low), fit)
+        if abs(chosen - float(row["seconds"] or 0)) < 1e-9:
+            return
+        self.clip_join_seconds = {**self.clip_join_seconds, row["id"]: chosen}
+        self._clip_notice_done()
+        self.clip_edit_notice = clip_joins_vm.seconds_put_line(
+            row["before_label"], row["after_label"], chosen
+        )
+
+    @rx.event
+    def set_clip_join_direction(self, value: str | list[str]) -> None:
+        """A wipe's direction («Izquierda · Derecha · Arriba · Abajo»)."""
+        way = value[0] if isinstance(value, list) and value else value
+        row = self.clip_join_chosen
+        if not row or not row.get("has_direction") or not isinstance(way, str):
+            return
+        if way not in row["directions"].split(",") or way == row["direction"]:
+            return
+        self.clip_join_dirs = {**self.clip_join_dirs, row["id"]: way}
+        self._clip_notice_done()
+        self.clip_edit_notice = clip_joins_vm.direction_put_line(row["after_label"], way)
 
     def _clip_effect_resolved(
         self, media: list[dict[str, object]] | None = None
@@ -6900,7 +7085,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_tl_total(self) -> str:
-        return timeline_vm.num(clip_editor_vm.media_total(self._clip_tl_media()))
+        media = self._clip_tl_media()
+        total = clip_editor_vm.media_total(media)
+        # m-25114465: a transition (0,4 s, 0,5 s…) leaves the video off the ½ s grid — the
+        # track's length is then exact, as each block's (`timeline_vm.exact`)
+        if any(clip_joins_vm.tail_of(item) for item in media):
+            return timeline_vm.exact(total)
+        return timeline_vm.num(total)
 
     @rx.var
     def clip_tl_ticks(self) -> list[dict[str, str]]:
@@ -7478,9 +7669,11 @@ class CreativeState(rx.State):
         known, or out of 3–60 s (the warning under the timeline says it then)."""
         if not self._clip_cut_known() or self.clip_cut_end <= self.clip_cut_start:
             return ""
-        seconds = clip_editor_vm.recipe_seconds(self._clip_edit_recipe().segments)
+        segments = self._clip_edit_recipe().segments
+        seconds = clip_editor_vm.recipe_seconds(segments)
         low, high = clip_editor_vm.LOCAL_MIN_SECONDS, clip_editor_vm.LOCAL_MAX_SECONDS
-        if not low - 1e-6 <= seconds <= high + 1e-6:
+        judged = clip_editor_vm.local_length(segments)  # as the server judges 3–60 s
+        if not low - 1e-6 <= judged <= high + 1e-6:
             return ""
         return clip_editor_vm.duration_line(seconds)
 
@@ -7514,6 +7707,11 @@ class CreativeState(rx.State):
         self._clip_text_quiet = ""
         # EF-20: «Listo: el texto quedó …» was about the last change only
         self._clip_placement_done = self._clip_placement_done_line = ""
+        # m-25114465: the joins follow the blocks — none on the first, none of a block gone
+        if self.clip_block_joins:
+            self._clip_keep_joins(
+                clip_joins_vm.clean_joins(self.clip_block_joins, self._clip_tl_media())
+            )
         after = self._clip_edit_snapshot()
         line = clip_editor_vm.change_message(before, after)
         if line:
@@ -7544,6 +7742,11 @@ class CreativeState(rx.State):
         self.clip_rotate = 0
         self.clip_photo_seconds = {}
         self.clip_photo_turns = {}
+        self.clip_block_joins = {}
+        self.clip_join_seconds = {}
+        self.clip_join_dirs = {}
+        self.clip_join_used = False
+        self.clip_join_open = ""
         self.clip_effect_ids = []
         self.clip_effect_uses = []
         self.clip_effect_parts = []
@@ -8554,6 +8757,8 @@ class CreativeState(rx.State):
             and clip_editor_vm.flow_of(block) != media
         ):
             self._clip_insert_at = -1
+        # m-25114465: one thing under the timeline at a time — a block or a flow closes a join
+        self.clip_join_open = ""
         if block != self.clip_edit_block:
             # a handle's «hasta aquí» and an off speed's «why» belong to their block
             self.clip_cut_error = ""
@@ -9085,6 +9290,11 @@ class CreativeState(rx.State):
         or photo moves it one place (D-T6: no buttons), on a text or effect ½ s, and on a
         handle that edge ½ s."""
         self._clip_notice_done()
+        if key == "Escape" and edge == "join":
+            # m-25114465: Escape in a join's panel closes it, as «Listo» (the script has
+            # already put the focus back on its point)
+            self.clip_join_open = ""
+            return []
         if key == "Escape":
             return self._clip_choose("") if self.clip_edit_block else []
         if key in ("ArrowUp", "ArrowDown") and not edge:
@@ -10056,6 +10266,21 @@ class CreativeState(rx.State):
         self._set_clip_frame("first", *((first["key"], first["name"]) if first else ("", "")))
         self._set_clip_frame("last", *((last["key"], last["name"]) if last else ("", "")))
         self._clip_prune_photos()
+        self._clip_prune_joins()
+
+    def _clip_prune_joins(self) -> None:
+        """m-25114465 review: every way a block leaves or moves (its ✕, «Quitar», the
+        strip reordered…) goes through `_sync_clip_frames` — a join whose block is gone or
+        now first is forgotten, and the open join's panel closes with its block."""
+        if not self.clip_block_joins and not self.clip_join_open:
+            return
+        media = self._clip_tl_media()
+        kept = clip_joins_vm.clean_joins(self.clip_block_joins, media)
+        if kept != self.clip_block_joins:
+            self._clip_keep_joins(kept)
+        after_first = set(clip_joins_vm.segment_ids(media)[1:])
+        if self.clip_join_open and self.clip_join_open not in after_first:
+            self.clip_join_open = ""
 
     def _clip_prune_photos(self) -> None:
         """ED-14: a photo that left the Clip (its ✕, «Quitar», unmarked in the Galería,

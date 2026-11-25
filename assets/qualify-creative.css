@@ -1198,6 +1198,97 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-tl__item { z-index: 2; }
 .q-tl__item[data-tl-chosen="true"] { z-index: 3; }
+/* m-25114465 «la unión»: a point on the line between two blocks of «Fotos y videos»,
+   riding the track's TOP edge like CapCut's transition button (Deivid 2026-11-26: «las
+   pistas se mueven hacia abajo, no me gusta» — no row of its own). The layer lies over
+   the track (`.q-tl__media` is the track's own height; `.q-tl__joins` is absolute,
+   inset 0, no height, no margin): no track moves a pixel. The dot is 20 px, half of it in
+   the gap above the track as a picture only. Its target is 44 px tall but 24 px wide
+   (WCAG 2.5.8's minimum: ~12 px over each block at 375 px) and starts at the canvas' 4 px
+   gap above the track (`.q-tl__canvas` `gap: 4px`): never over the ruler nor the
+   playhead's head, on a phone and on a desktop. The layer lets every other tap through
+   to the blocks, and it is hidden while blocks are reordered. */
+.q-tl__media { position: relative; }
+.q-tl__joins { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+/* while a block of «Fotos y videos» is lifted and moved, the points stay out of the way */
+[data-tl-dragging="move"] .q-tl__joins { opacity: 0; visibility: hidden; }
+.q-tl__join {
+  position: absolute;
+  top: -4px;
+  left: calc(var(--j-at) * var(--tl-px));
+  width: 24px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: start center;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+/* ux review: a point touching the chosen block is hidden (its trim handles sit right
+   there; the screen also takes it out of the tab order); one that really sits under a
+   handle — measured in px by `assets/timeline.js` `markJoins` — dims and lets it have
+   the taps. */
+.q-tl__join[data-join-off="1"] { visibility: hidden; pointer-events: none; }
+.q-tl__join[data-join-near] { pointer-events: none; opacity: 0.35; }
+.q-tl-join-way { display: inline-flex; align-items: center; gap: 4px; }
+/* the dot rides the track's top edge: it overflows the target upwards as a picture only,
+   so the ruler keeps its taps and clicks */
+.q-tl__join .q-tl__join-dot { margin-top: -6px; pointer-events: none; }
+.q-tl__join-dot {
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 2px solid var(--gray-a9);
+  background: var(--color-panel-solid);
+  box-shadow: 0 1px 3px var(--black-a6);
+  transition: transform 120ms ease;
+}
+/* Deivid (option A): «Fundido» / «Barrido» fill the point with the accent and carry their
+   icon in the accent's contrast colour (white on teal-9: 3.1:1, WCAG 1.4.11's 3:1 for a
+   graphic); «Corte» stays empty. A block too short keeps the warning tone. */
+.q-tl__join[data-join-kind="fundido"] .q-tl__join-dot,
+.q-tl__join[data-join-kind="barrido"] .q-tl__join-dot { border-color: var(--accent-9); background: var(--accent-9); color: var(--accent-contrast); }
+.q-tl__join-icon { display: block; }
+.q-tl__join[data-join-warn="1"] .q-tl__join-dot { border-color: var(--amber-9); background: var(--amber-9); color: var(--amber-contrast); }
+.q-tl__join[aria-expanded="true"] .q-tl__join-dot { transform: scale(1.2); box-shadow: 0 0 0 3px var(--accent-a6); }
+.q-tl__join:hover .q-tl__join-dot { transform: scale(1.1); }
+.q-tl__join:focus-visible { outline: 2px solid var(--focus-8); outline-offset: 0; }
+.q-tl-panel__warn { color: var(--amber-11); }
+@media (prefers-reduced-motion: reduce) { .q-tl__join-dot { transition: none; } }
+/* Deivid 2026-11-26 («bloques enteros, encimados»): every block is drawn whole; the next
+   one starts where it really starts and lies over the end of this one (it comes later,
+   so it is drawn over it; a chosen block comes on top, z 3). Its first `--b-in` seconds —
+   the transition — carry a veil with the transition's icon, CapCut-like: a picture only
+   (the join's point names it), never in the way of a tap. */
+.q-tl__overlap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  z-index: 1;
+  width: calc(var(--b-in) / var(--b-len) * (100% - 2px));
+  border-radius: var(--q-radius-control) 0 0 var(--q-radius-control);
+  background: repeating-linear-gradient(135deg, var(--accent-a7) 0 4px, var(--accent-a4) 4px 8px);
+  pointer-events: none;
+}
+/* ux review: the block's name, seconds and picture start AFTER its overlap — the stripes
+   never cover them (percentages of the block's own width, phone and desktop alike). */
+.q-tl__item[data-tl-in="1"] .q-tl__block {
+  padding-left: calc(var(--b-in) / var(--b-len) * 100% + var(--space-2));
+}
+.q-tl__item[data-tl-in="1"] .q-tl__pic { left: calc(var(--b-in) / var(--b-len) * 100%); }
+@container q-tl (min-width: 52rem) {
+  .q-tl__join { left: calc(var(--j-at) / var(--tl-total) * 100%); }
+}
 .q-tl__block {
   display: flex;
   align-items: center;
@@ -1532,6 +1623,11 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-edit-seq .q-edit-seq__layer { visibility: hidden; }
 .q-edit-seq .q-edit-seq__layer[data-on] { visibility: visible; }
+/* m-25114465 «la unión»: while a block fades or wipes in, the block before it goes on
+   playing UNDER it (`data-under`, z 0) and the one coming in is drawn over it (z 1) —
+   both seen at once, as the final video blends them. */
+.q-edit-seq .q-edit-preview__poster.q-edit-seq__layer { z-index: 1; }
+.q-edit-seq .q-edit-seq__layer[data-under] { z-index: 0; }
 .q-edit-seq .q-edit-seq__overlay:not([data-on]) { display: none; }
 /* ED-13 D (m-25029108; replaces B6's fixed 0,5 s transition): a text enters and leaves
    as the final video draws it — `assets/edit-preview.js` computes, on the clock, its
