@@ -24,7 +24,7 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 <a id="referentes-rubro-001"></a>
 
-## REFERENTES-RUBRO-001 — Rubro y país de cada cuenta dentro de la revisión de referentes (RF-04, m-25119461) — 2026-11-25 · CAMBIO DE PROMPT SIN MEDIR; EVALUACIÓN PROPUESTA, NO CORRIDA
+## REFERENTES-RUBRO-001 — Rubro y país de cada cuenta dentro de la revisión de referentes (RF-04, m-25119461) — 2026-11-25 · MEDIDO EL MISMO DÍA: RUBRO PASA (0,87 en test), PAÍS DE LA IA NO PASA (precisión 0,82 frente a 0,95); `encaja`, `tipo` y trampas sin regresión
 
 - **Qué cambió:** la herramienta `revisar_cuentas` (`qualify_api.referentes.ai`, `claude-sonnet-5` con esfuerzo `low`, sin cambio de modelo) pide además, por cuenta:
   - `rubro`: una clave del catálogo de rubros del Brand Kit (`discovery_seed.NICHE_LABELS`: `food_drink`, `fashion_beauty`, `fitness_health`, `travel_lifestyle`, `real_estate`, `technology`, `education`, `entertainment`) u `otro`. Es un `enum` en el esquema estricto.
@@ -69,7 +69,72 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 3. **Sin regresión:** precisión, recall, trampas y `kind` de `encaja` iguales a los de 2026-10-14 (Sonnet 5 @ low: 1.000 / 0.758 / 0/106 / 0.917), con 2 repeticiones.
 4. **Umbral para confiar en el filtro Nicho:** exactitud del rubro ≥ 0,85 en test, sin clase por debajo de 0,7. Para Región: precisión del país de la IA ≥ 0,95. Si no se llega, el filtro usa solo los países de fuentes gratis.
 5. **Costo de la evaluación:** ≈ USD 0,15–0,20 por corrida con Sonnet 5 @ low (la corrida de octubre costó USD 0,142), es decir ≈ USD 0,4 con dos repeticiones.
-6. **Comando:** el mismo `just eval-referentes` o `run_eval.py`, con un puntaje nuevo para `rubro`/`pais` en `run_eval.py`. No se escribió: espera las etiquetas.
+6. **Comando:** el mismo `just eval-referentes` o `run_eval.py`, con un puntaje nuevo para `rubro`/`pais` en `run_eval.py`. Escrito y corrido el mismo día (abajo).
+
+**Resultado (2026-11-25, aprobado por Deivid en la sesión; tope de gasto USD 0,5):**
+
+- **Modelo:** `claude-sonnet-5`, esfuerzo `low` (el de producción), prompt `referentes-review-2`, lotes de 30 como en las corridas de octubre. Solo Anthropic.
+- **Comando:** `PYTHONUTF8=1 uv run --no-sync python packages/api/evals/referentes_ai/run_eval.py --env-file <ruta del .env> --configs sonnet-5@low`, dos veces (2 repeticiones). Se usó `run_eval.py` y no `just eval-referentes` porque esa receta necesita el servidor de Langfuse; las dos comparten el mismo runner y el mismo puntaje. Resultados: `packages/api/evals/referentes_ai/results/20261125-105447.json` y `20261125-105631.json`.
+- **Datos:** los 164 casos de `cases.json` (97 cuentas distintas; una cuenta que aparece en dos marcas lleva las mismas etiquetas). **Las etiquetas de `rubro` y `pais` las puso un agente (Claude), no una persona**, con las reglas escritas en el `_doc` del archivo. Falta un muestreo humano; las 24 cuentas marcadas `dudoso` van primero. No se sumaron las 59 cuentas de la base local (habría que leer la base; queda pendiente).
+- **Partición:** el set no tenía. Se hizo dev/test **sobre cuentas distintas** (la misma cuenta nunca queda a los dos lados), estratificada por rubro: 49 cuentas en dev (79 apariciones) y 48 en test (85). No se ajustó nada con ninguna de las dos.
+- **Clases presentes:** `technology` 60, `food_drink` 48, `otro` 19, `entertainment` 15, `education` 13 y `travel_lifestyle` 9 apariciones. `fashion_beauty`, `fitness_health` y `real_estate` no tienen ningún caso: su exactitud no está medida.
+- **Costo real:** USD 0,2012 + USD 0,1856 = **USD 0,3868** las dos corridas (≈ USD 0,0012 por cuenta revisada, frente a ≈ USD 0,0009 de octubre con lotes de 30: +30 a 35 %, dentro de lo estimado).
+
+| Métrica | Corrida 1 | Corrida 2 | Umbral | ¿Pasa? |
+|---|---|---|---|---|
+| Rubro, exactitud en **test** (n = 85) | 0,882 | 0,859 | ≥ 0,85 | Sí (media 0,870) |
+| Rubro, exactitud en dev (n = 79) | 0,873 | 0,861 | — | — |
+| País de la IA, precisión estricta en **test** (un país donde el texto no lo dice cuenta como error) | 0,815 (44/54) | 0,827 (43/52) | ≥ 0,95 | **No** |
+| País, precisión en todo el set | 0,804 (86/107) | 0,842 (85/101) | — | — |
+| País, precisión solo donde el oro tiene país | 1,000 | 1,000 | — | — |
+| País, cobertura (aciertos ÷ cuentas con país en el oro, todo el set) | 0,989 | 0,977 | — | — |
+
+**Rubro por clase (todo el set, corrida 1 / 2):** `education` 1,00 / 1,00; `food_drink` 0,98 / 0,98; `entertainment` 0,93 / 0,93; `travel_lifestyle` 0,89 / 0,78; `otro` 0,84 / 0,74; `technology` 0,77 / 0,77. En test, `travel_lifestyle` (n = 4) quedó en 0,75 / 0,50 y `technology` en 0,79 / 0,79.
+
+**Matriz de confusión del rubro (oro → respuesta, corrida 2, todo el set):**
+
+| Oro | Respuestas |
+|---|---|
+| `technology` | `technology` 46, `education` 9, `entertainment` 4, `otro` 1 |
+| `food_drink` | `food_drink` 47, `fitness_health` 1 |
+| `otro` | `otro` 14, `technology` 2, `entertainment` 2, `education` 1 |
+| `entertainment` | `entertainment` 14, `fitness_health` 1 |
+| `education` | `education` 13 |
+| `travel_lifestyle` | `travel_lifestyle` 7, `otro` 1, `entertainment` 1 |
+
+La corrida 1 es casi igual (`technology` → `education` 11).
+
+- **Casi todo el error de rubro es una frontera de la taxonomía, no un desvío.** A los creadores que enseñan programación (`brujeriatech`, `leomarisreyes.dev`, `edtecnica`, `josegabrielarape`, `lauratuttman`) el oro los pone en `technology` (el tema) y el modelo en `education`. Si Deivid decide que enseñar un oficio digital es «Educación», la exactitud sube a 0,945 / 0,915. Es una decisión de producto: qué ve el dueño cuando filtra por «Tecnología».
+
+**País: por qué no pasa.** Las mismas cuentas fallan en las dos corridas: es sistemático. En todas, el oro dice «no se sabe» y el modelo puso un país:
+
+- **El país de la marca o de las otras cuentas del lote**, que el prompt prohíbe: `somosisum`, `jacksonmartinez010`, `julianacontrerash` y `carlosdelgadosc` (marca de programación en Venezuela) y `doumatpedro` (hamburguesería en Táchira) salen `VE` sin ciudad, bandera, prefijo ni moneda en su texto.
+- **Lo que el modelo sabe, no lo que dice el texto:** `trt_contigo` y `un24tvoficial` (`VE`, por lo que sabe de esos canales), `diegolesrecomienda` (`VE`, por la dirección «Urb. La Coromoto» sin país) y `phonecellven` (`VE`, por el «ven» del usuario).
+- **El idioma:** `lauratuttman` → `BR` por escribir en portugués; en la corrida 1, `imparkerburton` y `overtime` → `US` por escribir en inglés.
+- **Un lugar visitado:** `iambiggroove` → `DO` por «a flaming steak in the DR».
+
+Aun dando por buenos los cuatro discutibles (`phonecellven`, `diegolesrecomienda`, `trt_contigo`, `un24tvoficial`), la precisión en test queda en 0,926 / 0,942: tampoco llega a 0,95. Cuando el texto sí dice el país, el modelo acierta siempre (1,000) y casi nunca deja de darlo (cobertura 0,98).
+
+**Sin regresión en `encaja`, `tipo` y trampas** (mismo `run_eval.py`, mismos 164 casos; línea base: Sonnet 5 @ low del 2026-10-14):
+
+| Corrida | precision | recall | trampas | kind |
+|---|---|---|---|---|
+| 2026-10-14, Langfuse (versión 1) | 1,000 | 0,758 | 0/106 | 0,917 |
+| 2026-10-14, `run_eval.py` (versión 1) | 0,950 | 0,780 | 1/106 | 0,941 |
+| **2026-11-25, corrida 1 (versión 2)** | 0,958 | 0,935 | 1/106 | 0,940 |
+| **2026-11-25, corrida 2 (versión 2)** | 0,958 | 0,799 | 1/106 | 0,934 |
+
+- La trampa es la misma de octubre: `matsimultiservicios`, un curso de programación automotriz.
+- La caída de recall de la corrida 2 es la tienda de celulares (0,364): el modelo vuelve a descartar a los creadores tech que publican en inglés por «público internacional». Es el criterio inestable que el README ya documentó en octubre (0,455), no algo nuevo de la versión 2.
+
+**Veredicto: NO PASA.** El rubro pasa el umbral (0,870 en test, media de dos corridas) y la revisión no empeoró, pero el país de la IA es inventado en ≈ 1 de cada 6 cuentas a las que les pone país. No se tocó el prompt.
+
+**Qué se propone (sin aplicar; necesita el visto bueno de Deivid):**
+
+1. **Ya, en el PR #807:** que el filtro Región use solo el país de fuentes gratis y guarde el de la IA sin mostrarlo, como decía el punto 4 de la propuesta. Hoy `qualify_api.creators.region_rubro` usa el país de la IA cuando ninguna fuente gratis lo sabe.
+2. **Prompt `referentes-review-3`:** en `pais`, «solo si en el texto de ESTA cuenta aparece escrito un lugar (ciudad, estado, país, bandera, prefijo telefónico o moneda). No sirven: el idioma, lo que sabes de la cuenta o del medio, las abreviaturas del usuario, un lugar que la cuenta visitó, el país de la marca ni el de las otras cuentas de la lista». Además, pedir `pais_evidencia` (las palabras exactas del texto) y que el código descarte el país si esas palabras no están en el bloque de la cuenta. Esa comprobación en código corta el error principal (el país de la marca) aunque el modelo lo intente.
+3. **Rubro:** decidir la frontera «enseñar programación» (`technology` o `education`) y escribirla en el prompt y en el `_doc` del oro.
+4. Medir la versión 3 con el mismo set, después del muestreo humano de las etiquetas (≈ USD 0,4 con dos corridas).
 
 ---
 
