@@ -29,6 +29,7 @@ from qualify_api.evals.effects_bench import (
     CONTROLS,
     Judgment,
     JudgmentError,
+    PreviewUploadError,
     bench_arms,
     bench_library,
     consensus,
@@ -38,6 +39,7 @@ from qualify_api.evals.effects_bench import (
     plan_trials,
     preview_asset_path,
     score_arms,
+    upload_previews,
     wilson,
 )
 
@@ -250,25 +252,46 @@ def test_library_v6_offers_only_what_passes_and_keeps_v5(tmp_path: Path) -> None
     smoke = next(e for e in document["entries"] if e["id"] == "humo_denso")
     embers = next(e for e in document["entries"] if e["id"] == "brasas")
     assert smoke["offered"] and smoke["version"] == 1
-    assert smoke["preview_asset"] == preview_asset_path("humo_denso", 1)
+    # «Así se ve» is an R2 platform key, never a file of the repository
+    assert smoke["preview_asset"] == "platform/effects/humo_denso/v1/preview.mp4"
+    assert preview_asset_path("humo_denso", 1) == smoke["preview_asset"]
     assert not embers["offered"] and embers["preview_asset"] is None
     assert embers["measured"]["successes"] == 1
-    # the copied preview of every offered effect, under an assets root like the package's
-    preview = tmp_path / "humo_denso" / "v1" / "preview.mp4"
-    preview.parent.mkdir(parents=True)
-    for entry in base["entries"]:
-        if entry.get("preview_asset"):
-            path = tmp_path.joinpath(*entry["preview_asset"].split("/")[1:])
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"x")
-    preview.write_bytes(b"mp4")
-    library = parse_library(document, assets_root=tmp_path)
+    # loads with the packaged assets as they are: no file for the R2 preview
+    library = parse_library(document)
     offered = library.offered(model=model)
     assert "humo_denso" in [e.id for e in offered]
     assert "brasas" not in [e.id for e in offered]
     assert library.offered(model="otro-modelo") != offered  # D5: tied to its model
     with pytest.raises(ValueError):
         library_v6(document, measured, notes="again")  # already measured: never edited
+
+
+def _store() -> Any:
+    from qualify_shared.objects.memory import MemoryObjectStore
+
+    return MemoryObjectStore()
+
+
+def test_previews_go_to_r2_retried_and_read_back() -> None:
+    store = _store()
+    store.fail_puts = 2  # two passing R2 failures: the third try lands
+    done = upload_previews(store, {"humo_denso": (1, b"video-1")})
+    key = "platform/effects/humo_denso/v1/preview.mp4"
+    assert done["humo_denso"]["key"] == key and store.objects[key] == b"video-1"
+    assert store.content_types[key] == "video/mp4"
+    # idempotent: the same bytes are not written again
+    puts = len(store.puts)
+    upload_previews(store, {"humo_denso": (1, b"video-1")})
+    assert len(store.puts) == puts
+
+
+def test_a_preview_that_never_lands_stops_the_library() -> None:
+    store = _store()
+    store.fail_puts = 3
+    with pytest.raises(PreviewUploadError):
+        upload_previews(store, {"brasas": (1, b"x")})
+    assert not store.objects
 
 
 # -- the runner ------------------------------------------------------------------------
@@ -332,7 +355,59 @@ def test_paid_run_needs_its_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert runner.main(["drafts", *out, "--cases", str(cases), "--i-have-spend-authorization"]) == 3
 
 
-def test_judge_then_score_on_a_fake_run(tmp_path: Path) -> None:
+def _sheet(path: Path, key: dict[str, Any], ok_for: str) -> Path:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "video",
+                "se_pidio",
+                "visible",
+                "en_zona",
+                "producto_igual",
+                "sin_letras",
+                "creible",
+                "nota",
+            ]
+        )
+        for blind, info in key.items():
+            ok = "si" if info["arm"] == ok_for else "no"
+            writer.writerow([blind, info["asked"], ok, "si", "si", "si", "2", ""])
+    return path
+
+
+def test_cases_take_local_photos_outside_the_repo_and_wait_for_missing_ones(
+    tmp_path: Path,
+) -> None:
+    runner = _runner()
+    photo = tmp_path / "fotos" / "nibbles.jpg"
+    photo.parent.mkdir()
+    photo.write_bytes(b"jpg")
+    elsewhere = tmp_path / "otra" / "bianki.jpg"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"jpg")
+    file = tmp_path / "casos.json"
+    cases = [
+        {"id": "nibbles", "product": "Smash", "description": "d", "photo": "fotos/nibbles.jpg"},
+        {"id": "bianki", "product": "Shawarma", "description": "d", "photo": None},
+    ]
+    file.write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    ready, _, _, waiting = runner._load_cases(str(file))
+    assert [c["id"] for c in ready] == ["nibbles"] and waiting == ["bianki"]
+    assert Path(ready[0]["photo"]) == photo.resolve()
+    cases[1]["photo"] = str(elsewhere)  # an absolute local path, anywhere outside the repo
+    file.write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    ready, _, _, waiting = runner._load_cases(str(file))
+    assert len(ready) == 2 and not waiting
+    cases[1]["photo"] = str(REPO / "packages/render/public/sample/photo-1.jpg")
+    file.write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    with pytest.raises(runner.CasesError):
+        runner._load_cases(str(file))
+
+
+def test_judge_then_score_then_library_on_a_fake_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runner = _runner()
     run = tmp_path / "run"
     (run / "videos").mkdir(parents=True)
@@ -357,28 +432,42 @@ def test_judge_then_score_on_a_fake_run(tmp_path: Path) -> None:
     assert runner.main(["judge", "--run", str(run)]) == 0
     assert runner.main(["judge", "--run", str(run)]) == 2  # never reshuffled
     key = json.loads((run / "juicio" / "clave.json").read_text(encoding="utf-8"))
-    assert len(key) == 8 and (run / "juicio" / "juicio.html").is_file()
-    sheet = run / "juicio-ana.csv"
-    with sheet.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "video",
-                "se_pidio",
-                "visible",
-                "en_zona",
-                "producto_igual",
-                "sin_letras",
-                "creible",
-                "nota",
-            ]
-        )
-        for blind, info in key.items():
-            ok = "si" if info["arm"] == "humo_denso" else "no"
-            writer.writerow([blind, info["asked"], ok, "si", "si", "si", "2", ""])
-    assert runner.main(["score", "--run", str(run), "--juicio", f"ana={sheet}"]) == 0
+    assert len(key) == 8
+    page = (run / "juicio" / "juicio.html").read_text(encoding="utf-8")
+    assert '<option value="deivid">Deivid</option>' in page and "Herwin" in page
+    assert (run / "juicio" / "juicio-deivid.csv").is_file()
+    assert (run / "juicio" / "juicio-herwin.csv").is_file()
+    deivid = _sheet(tmp_path / "d.csv", key, "humo_denso")
+    herwin = _sheet(tmp_path / "h.csv", key, "humo_denso")
+    stranger = ["score", "--run", str(run), "--juicio", f"ana={deivid}"]
+    assert runner.main(stranger) == 2  # only Deivid and Herwin judge
+    score = ["score", "--run", str(run), "--juicio", f"deivid={deivid}"]
+    assert runner.main([*score, "--juicio", f"Herwin={herwin}"]) == 0
     results = json.loads((run / "resultados.json").read_text(encoding="utf-8"))
+    assert results["agreement"]["raters"] == ["deivid", "herwin"]
+    assert results["agreement"]["double_judged"] == 8
     assert results["arms"]["humo_denso"]["passes_d5"] is True
     assert results["measured"]["humo_denso"]["model"] == "dreamina-seedance-2-5-260628"
     assert "humo_atmosferico" not in results["measured"]
     assert len(results["winners"]["humo_denso"]) == 4
+
+    # library: a copy of the library files, an R2 double; nothing goes into the repo
+    creative = tmp_path / "creative"
+    (creative / "effects_data").mkdir(parents=True)
+    v5 = REPO / "packages/creative/src/qualify_creative/effects_data/v5.json"
+    (creative / "effects_data" / "v5.json").write_bytes(v5.read_bytes())
+    monkeypatch.setattr(runner, "_creative_root", lambda: creative)
+    store = _store()
+    monkeypatch.setattr(runner, "_r2_store", lambda: store)
+    assert runner.main(["library", "--run", str(run)]) == 0  # plan only
+    assert not store.objects and not (creative / "effects_data" / "v6.json").exists()
+    assert (run / "biblioteca-v6.json").is_file()
+    assert runner.main(["library", "--run", str(run), "--upload"]) == 0
+    key_r2 = "platform/effects/humo_denso/v1/preview.mp4"
+    winner = results["winners"]["humo_denso"][0]
+    assert store.objects[key_r2] == winner.encode()  # the winning draft's bytes
+    v6 = json.loads((creative / "effects_data" / "v6.json").read_text(encoding="utf-8"))
+    smoke = next(e for e in v6["entries"] if e["id"] == "humo_denso")
+    assert smoke["offered"] and smoke["preview_asset"] == key_r2
+    assert parse_library(v6).offered(model="dreamina-seedance-2-5-260628")
+    assert runner.main(["library", "--run", str(run), "--upload"]) == 2  # never edited

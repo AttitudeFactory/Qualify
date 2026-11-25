@@ -104,6 +104,25 @@ PROMPT_SLOTS = frozenset({"zone", "subject"})
 _SLOT = re.compile(r"\{([a-z_]+)\}")
 
 
+#: EF-12 (m-25026587, Deivid 2026-11-25): the «Así se ve» video of a «Con IA» effect is its
+#: winning bench video, made from a business's photo — client material never enters the
+#: repository, so it lives in R2 under a PLATFORM key (no tenant, outside the `t/` lock):
+#: exactly `platform/effects/<id>/v<version>/preview.mp4`. Only a `seedance_prompt` entry
+#: may name one; the packaged-file check (`parse_library`) does not apply to it.
+PLATFORM_PREVIEW_PREFIX = "platform/effects/"
+PLATFORM_PREVIEW_FILE = "preview.mp4"
+
+
+def platform_preview_key(effect_id: str, version: int) -> str:
+    """The R2 key of a «Con IA» effect's example video (`PLATFORM_PREVIEW_PREFIX`)."""
+    return f"{PLATFORM_PREVIEW_PREFIX}{effect_id}/v{version}/{PLATFORM_PREVIEW_FILE}"
+
+
+def is_platform_preview(path: str | None) -> bool:
+    """Whether a `preview_asset` names an R2 platform key rather than a packaged file."""
+    return bool(path) and str(path).startswith(PLATFORM_PREVIEW_PREFIX)
+
+
 def _asset_path_problem(path: str, effect_id: str, version: int) -> str | None:
     """A global read-only path of the library: `effects/<id>/v<version>/…`, relative,
     POSIX, no scheme, no `..`, no empty segment, no backslash."""
@@ -254,7 +273,16 @@ class EffectEntry(BaseModel):
             raise ValueError("only a Seedance effect has a prompt")
         elif self.measured is not None:
             raise ValueError("only a Seedance effect is measured by the bench")
-        for path in (self.asset, self.preview_asset):
+        platform = is_platform_preview(self.preview_asset)
+        if platform and (
+            self.stage != "seedance_prompt"
+            or self.preview_asset != platform_preview_key(self.id, self.version)
+        ):
+            raise ValueError(
+                "only a Seedance effect names an R2 preview, exactly "
+                f"{platform_preview_key(self.id, self.version)!r}"
+            )
+        for path in (self.asset, None if platform else self.preview_asset):
             problem = None if path is None else _asset_path_problem(path, self.id, self.version)
             if problem:
                 raise ValueError(problem)
@@ -431,6 +459,7 @@ def parse_library(raw: object, *, assets_root: Path | None = None) -> EffectsLib
         f"{entry.id} v{entry.version}: {entry.preview_asset}"
         for entry in library.entries
         if entry.preview_asset is not None
+        and not is_platform_preview(entry.preview_asset)  # in R2, not packaged (EF-12)
         and not preview_file(entry.preview_asset, assets_root).is_file()
     ]
     if missing:
@@ -749,6 +778,8 @@ __all__ = [
     "MissingPreviewAsset",
     "NotALibraryLayer",
     "NotASeedanceEffect",
+    "PLATFORM_PREVIEW_FILE",
+    "PLATFORM_PREVIEW_PREFIX",
     "ParamSpec",
     "RecipeProblem",
     "SEEDANCE_EFFECT_FILL_VERSION",
@@ -757,11 +788,13 @@ __all__ = [
     "effect_subject",
     "effect_use_problems",
     "effect_zone",
+    "is_platform_preview",
     "layer_loop_file",
     "load_effects",
     "measured_on_model",
     "parse_library",
     "part_effect_problems",
+    "platform_preview_key",
     "preview_file",
     "seconds_label",
     "seedance_effect_line",

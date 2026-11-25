@@ -18,9 +18,11 @@ from qualify_creative.effects import (
     EffectsLibrary,
     MissingPreviewAsset,
     effect_use_problems,
+    is_platform_preview,
     load_effects,
     parse_library,
     part_effect_problems,
+    platform_preview_key,
     preview_file,
     transition_problems,
 )
@@ -218,6 +220,49 @@ def test_a_malformed_preview_is_refused(path: str) -> None:
     entry = _entry("humo_capa")
     entry["preview_asset"] = path
     with pytest.raises(ValidationError):
+        parse_library(_with(entry))
+
+
+_BENCH = {
+    "successes": 3,
+    "n": 4,
+    "wilson_low": 0.3006,
+    "wilson_high": 0.9544,
+    "measured_on": "2026-11-26",
+    "model": "dreamina-seedance-2-5-260628",
+}
+
+
+def test_an_offered_ai_template_may_show_its_example_from_r2() -> None:
+    """EF-12: «Así se ve» is the winning bench video — a business's product, so never a
+    packaged file: an R2 platform key, which needs no file under `effects_assets/`."""
+    entry = _entry("humo_denso")
+    entry.update(
+        offered=True,
+        measured=_BENCH,
+        preview_asset="platform/effects/humo_denso/v1/preview.mp4",
+    )
+    library = parse_library(_with(entry), assets_root=Path(tempfile.mkdtemp()))
+    assert library.get("humo_denso", 1).preview_asset == platform_preview_key("humo_denso", 1)
+    assert is_platform_preview(library.get("humo_denso", 1).preview_asset)
+
+
+@pytest.mark.parametrize(
+    ("effect_id", "path"),
+    [
+        ("humo_denso", "platform/effects/brasas/v1/preview.mp4"),  # another effect's key
+        ("humo_denso", "platform/effects/humo_denso/v2/preview.mp4"),  # another version
+        ("humo_denso", "platform/effects/humo_denso/v1/../x.mp4"),
+        ("humo_denso", "platform/effects/humo_denso/v1/other.mp4"),
+        ("humo_capa", "platform/effects/humo_capa/v1/preview.mp4"),  # a layer: packaged
+    ],
+)
+def test_an_r2_preview_has_exactly_its_platform_key(effect_id: str, path: str) -> None:
+    entry = _entry(effect_id)
+    if entry["stage"] == "seedance_prompt":
+        entry.update(offered=True, measured=_BENCH)
+    entry["preview_asset"] = path
+    with pytest.raises(ValidationError, match="R2 preview"):
         parse_library(_with(entry))
 
 

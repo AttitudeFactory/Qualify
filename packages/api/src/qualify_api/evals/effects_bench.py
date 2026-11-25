@@ -29,12 +29,18 @@ D5 (`qualify_creative.effects.Measured.passes`): an effect is offered when it su
 in at least 2 of 3 of at least 4 tries — ON THE MODEL IT RAN ON. The library v6 is v5
 with `measured` filled for every judged entry (at the same entry version: `measured` is
 the one field that moves, once, from null — `effects.py`), `offered: true` only for the
-ones that pass, and the `preview_asset` of each offered one (its winning video).
+ones that pass, and the `preview_asset` of each offered one: its winning video, written
+to R2 under a platform key (`platform/effects/<id>/v<n>/preview.mp4`, Deivid 2026-11-25),
+never into the repository — it shows a business's product (`upload_previews`).
+
+The judges (Deivid, 2026-11-25): Deivid and Herwin (`JUDGES`), blind, each on their own.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -48,6 +54,7 @@ from qualify_creative.effects import (
     EffectsLibrary,
     Measured,
     effect_zone,
+    platform_preview_key,
 )
 from qualify_creative.schemas import EffectUse
 
@@ -58,8 +65,9 @@ BENCH_TICKET = "m-25026587"
 BENCH_VERSION = 1
 #: The library the bench writes (v5 is never edited).
 NEW_LIBRARY_VERSION = 6
-#: The file name of a winning video inside `effects_assets/<id>/v<n>/`.
-PREVIEW_FILE = "preview.mp4"
+#: The two people who judge the videos, blind (Deivid, 2026-11-25). A judgment file is
+#: `juicio-<judge>.csv`; `score` accepts no one else.
+JUDGES: tuple[str, ...] = ("deivid", "herwin")
 
 #: The atmospheric controls: id → (the object arm it is compared with, its template).
 #: No `{zone}`: an atmospheric prompt names no place in the frame. `{subject}` is filled
@@ -463,7 +471,53 @@ def object_vs_atmospheric(scores: Mapping[str, ArmScore]) -> list[dict[str, Any]
 
 
 def preview_asset_path(effect_id: str, version: int) -> str:
-    return f"effects/{effect_id}/v{version}/{PREVIEW_FILE}"
+    """Where an offered effect's «Así se ve» lives: an R2 PLATFORM key (no tenant, never a
+    file in the repository — the winning video shows a business's product)."""
+    return platform_preview_key(effect_id, version)
+
+
+class PreviewUploadError(RuntimeError):
+    """A winning video could not be written to R2 (after its retries) or read back the
+    same: the library v6 is not written."""
+
+
+def upload_previews(
+    store: Any,
+    videos: Mapping[str, tuple[int, bytes]],
+    *,
+    attempts: int = 3,
+) -> dict[str, dict[str, Any]]:
+    """Write each winning video (`effect_id → (entry version, mp4 bytes)`) to its platform
+    key (`preview_asset_path`) through `store` (`put(key, fileobj, content_type)` and
+    `open(key)`, as `R2ObjectStore`), each write retried up to `attempts` times (rule 3),
+    then read back and compared by sha256. Idempotent: an object already there with the
+    same bytes is not written again. Returns `{effect_id: {"key", "sha256", "bytes"}}`;
+    raises `PreviewUploadError` naming the effect when one cannot be made to match."""
+    done: dict[str, dict[str, Any]] = {}
+    for effect_id, (version, data) in videos.items():
+        key = preview_asset_path(effect_id, version)
+        digest = hashlib.sha256(data).hexdigest()
+        if _stored_sha256(store, key) != digest:
+            for attempt in range(1, attempts + 1):
+                try:
+                    store.put(key, io.BytesIO(data), "video/mp4")
+                    break
+                except Exception as exc:  # a passing R2 failure: retry
+                    if attempt == attempts:
+                        raise PreviewUploadError(f"{effect_id}: {key}: {exc}") from exc
+            if _stored_sha256(store, key) != digest:
+                raise PreviewUploadError(f"{effect_id}: {key} does not read back the same")
+        done[effect_id] = {"key": key, "sha256": digest, "bytes": len(data)}
+    return done
+
+
+def _stored_sha256(store: Any, key: str) -> str | None:
+    try:
+        handle = store.open(key)
+    except Exception:  # not there (ObjectNotFound) or unreadable: write it
+        return None
+    with handle:
+        return hashlib.sha256(handle.read()).hexdigest()
 
 
 def library_v6(
@@ -508,7 +562,8 @@ __all__ = [
     "Judgment",
     "JudgmentError",
     "NEW_LIBRARY_VERSION",
-    "PREVIEW_FILE",
+    "JUDGES",
+    "PreviewUploadError",
     "Trial",
     "bench_arms",
     "bench_library",
@@ -520,6 +575,7 @@ __all__ = [
     "object_vs_atmospheric",
     "parse_judgments",
     "plan_trials",
+    "upload_previews",
     "preview_asset_path",
     "read_judgment_csv",
     "score_arms",

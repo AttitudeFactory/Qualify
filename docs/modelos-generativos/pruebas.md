@@ -36,7 +36,12 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   (US$0,514007 cada uno; US$15,834 con el margen del 10 %). Con la fase B (≤ 10 borradores) y
   ≤ 3 finales 1080p (US$2,8431 cada uno), el banco completo cotiza ≤ US$28,06. Tope duro
   US$30.
-- **Pendiente:** el OK escrito de Deivid en el ticket, la aprobación de las fotos y la corrida
+- **Decisiones de Deivid (2026-11-25):** juzgan Deivid y Herwin; los casos son nibbles burger
+  (preparado en `%TEMP%\m-25026587\casos.json`, en seco: 14 borradores, US$7,196098) y Bianki
+  (falta su foto); el «Así se ve» de cada efecto ofrecido va a R2
+  (`platform/effects/<id>/v<n>/preview.mp4`), nunca al repositorio. Todavía no se sube nada, y
+  falta una ruta que sirva esas claves.
+- **Pendiente:** el OK escrito de Deivid en el ticket, la foto de Bianki y la corrida
   de 23:00 a 05:00 (hora de Bogotá), salvo OK de Herwin para el día o de Deivid en la sesión.
   Método, cotización, rúbrica y resultados «PENDIENTES»: [`seedance-2-5.md`](seedance-2-5.md#ef12-001).
 

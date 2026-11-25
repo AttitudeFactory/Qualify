@@ -25,16 +25,23 @@ Subcommands (all outputs OUTSIDE the repo, `%TEMP%/m-25026587/<run>/` by default
              (`gasto.json` in the run folder); the whole plan is quoted with its margin
              before the first task and refused if it does not fit. Resumable: `--run`
              reuses a run folder and skips trials that already have their video.
-    judge    the blind judging kit: the videos renamed v01…vNN in random order, an offline
-             form (`juicio.html`, downloads `juicio-<nombre>.csv`) and a CSV template.
-    score    reads one or two judgment CSVs: success per arm with its Wilson interval,
-             Cohen's κ, object vs atmospheric, and the `measured` of each effect (D5).
+    judge    the blind judging kit for Deivid and Herwin: the videos renamed v01…vNN in
+             random order, an offline form (`juicio.html`, downloads
+             `juicio-<juez>.csv`) and one CSV template per judge.
+    score    reads `--juicio deivid=<csv> --juicio herwin=<csv>`: success per arm with its
+             Wilson interval, Cohen's κ, object vs atmospheric, and each effect's
+             `measured` (D5).
     finals   the 1080p final of the best winning draft of each effect that passes D5 (at
              most `--max-finals`), from its draft task id as production does. Dry unless
              authorized; same ceiling and window.
-    library  writes `effects_data/v6.json` (v5 is never edited) with `measured`,
-             `offered` (only over D5) and each offered effect's `preview_asset` (its
-             winning video, copied into `effects_assets/<id>/v1/preview.mp4`).
+    library  the library v6 (v5 is never edited): `measured`, `offered` (only over D5) and
+             each offered effect's `preview_asset` = its winning video in R2 under the
+             platform key `platform/effects/<id>/v<n>/preview.mp4` — never a file in the
+             repository. Plan only (draft in the run folder) unless `--upload`.
+
+`casos.json` (outside the repo): `{"kit": {...}, "cases": [{"id", "business", "product",
+"description", "photo", "kit"}]}` — `photo` relative to the file or an absolute local path
+outside the repo; null = the case waits for its photo (left out; a paid run refuses).
 
     # dry run: compiles and quotes every draft, sends nothing (no key needed)
     just eval-efectos drafts
@@ -183,14 +190,41 @@ def _kit(fields: dict[str, Any]) -> Any:
     )
 
 
-def _load_cases(path: str | None) -> tuple[list[dict[str, Any]], dict[str, Any], Path]:
-    """The repo sample cases, or a JSON file OUTSIDE the repo (`{"kit": {...}, "cases":
-    [{"id", "product", "photo", "description", "business"}]}`, paths relative to it)."""
+class CasesError(ValueError):
+    """A `casos.json` the bench refuses (a photo inside the repository, a missing file)."""
+
+
+def _load_cases(
+    path: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], Path, list[str]]:
+    """The repo sample cases, or a JSON file OUTSIDE the repo:
+
+        {"kit": {...}, "cases": [{"id", "business", "product", "description",
+                                   "photo": "<relative to the file, or absolute>",
+                                   "kit": {... this business's Brand Kit fields ...}}]}
+
+    A photo may be any local path OUTSIDE the repository (client material never enters
+    it); a case whose `photo` is null or empty is a slot still waiting for its photo — it
+    is left out and listed (the 4th value), never run. Each case's `photo` comes back
+    absolute."""
     if not path:
-        return list(SAMPLE_CASES), {}, REPO
+        cases = [{**c, "photo": str(REPO / c["photo"])} for c in SAMPLE_CASES]
+        return cases, {}, REPO, []
     file = Path(path).resolve()
     data = json.loads(file.read_text(encoding="utf-8"))
-    return list(data["cases"]), dict(data.get("kit") or {}), file.parent
+    ready: list[dict[str, Any]] = []
+    waiting: list[str] = []
+    for case in data["cases"]:
+        if not case.get("photo"):
+            waiting.append(str(case["id"]))
+            continue
+        photo = (file.parent / str(case["photo"])).resolve()
+        if photo.is_relative_to(REPO):
+            raise CasesError(f"{case['id']}: la foto tiene que estar fuera del repositorio")
+        if not photo.is_file():
+            raise CasesError(f"{case['id']}: no existe la foto {photo}")
+        ready.append({**case, "photo": str(photo)})
+    return ready, dict(data.get("kit") or {}), file.parent, waiting
 
 
 def _photo_key(case: dict[str, Any]) -> str:
@@ -409,8 +443,7 @@ def _run_dir(args: argparse.Namespace) -> Path:
 def _drafts_pass(
     trials: list[Any],
     cases: dict[str, dict[str, Any]],
-    base: Path,
-    kit: Any,
+    kit_fields: dict[str, Any],
     *,
     guarded: GuardedSeedance,
     router: Any,
@@ -437,7 +470,9 @@ def _drafts_pass(
         if trial.label in done and done[trial.label].get("video"):
             continue  # resumed: this one already has its video
         case = cases[trial.case_id]
-        photo = (base / case["photo"]).read_bytes()
+        photo = Path(case["photo"]).read_bytes()
+        # each business with its own Brand Kit (palette, typefaces) over the file's
+        kit = _kit({**kit_fields, **dict(case.get("kit") or {})})
         store = MemoryStore({_photo_key(case): photo})
         producer = MediaProducer(
             store=store,
@@ -567,10 +602,23 @@ def cmd_drafts(args: argparse.Namespace) -> int:
     if not arms:
         print("Ningún efecto coincide con --effect.", file=sys.stderr)
         return 2
-    all_cases, kit_fields, base = _load_cases(args.cases)
+    try:
+        all_cases, kit_fields, _, waiting = _load_cases(args.cases)
+    except CasesError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    if waiting:
+        print(f"Casos sin foto todavía (fuera del plan): {', '.join(waiting)}")
+        if paid:
+            print(
+                "La corrida pagada necesita la foto de cada caso del casos.json.", file=sys.stderr
+            )
+            return 2
     cases = {c["id"]: c for c in all_cases if not args.case or c["id"] in args.case}
+    if not cases:
+        print("Ningún caso con foto.", file=sys.stderr)
+        return 2
     trials = plan_trials(arms, list(cases), args.reps)
-    kit = _kit(kit_fields)
     pricing = JsonPricingTable(PRICING_VERSION)
     model = args.model
 
@@ -582,8 +630,7 @@ def cmd_drafts(args: argparse.Namespace) -> int:
         planned = _drafts_pass(
             trials,
             cases,
-            base,
-            kit,
+            kit_fields,
             guarded=dry_guard,
             router=CreativeRouter({"seedance": dry_guard}, pricing, dry_keys),
             keys=dry_keys,
@@ -610,6 +657,7 @@ def cmd_drafts(args: argparse.Namespace) -> int:
         "audio": args.audio,
         "arms": [{"id": a.id, "kind": a.kind, "asked": a.asked()} for a in arms],
         "cases": list(cases),
+        "cases_waiting_for_photo": waiting,
         "reps": args.reps,
         "calls": len(quotes),
         "quote_usd": str(total),
@@ -654,8 +702,7 @@ def cmd_drafts(args: argparse.Namespace) -> int:
             _drafts_pass(
                 pending,
                 cases,
-                base,
-                kit,
+                kit_fields,
                 guarded=guarded,
                 router=CreativeRouter({"seedance": guarded}, pricing, keys),
                 keys=keys,
@@ -694,7 +741,8 @@ label{{margin-right:14px}} textarea{{width:100%}}
 <li><b>Sin letras ni logos</b> que nadie pidió.</li>
 <li><b>Creíble para un anuncio:</b> de 1 (no) a 3 (sí).</li>
 </ol>
-<p>Tu nombre: <input id="who" placeholder="nombre"></p>
+<p>Quién juzga: <select id="who">{judges}</select>
+ Cada uno juzga por su cuenta, sin ver el juicio del otro.</p>
 {items}
 <p><button onclick="save()">Descargar mi juicio (CSV)</button></p>
 <script>
@@ -703,7 +751,7 @@ function val(n){{
  const c=document.querySelector('input[name="'+n+'"]:checked');return c?c.value:'';}}
 function q(s){{s=String(s);return /[",\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}}
 function save(){{
- const who=(document.getElementById('who').value||'persona').trim().replace(/[^a-zA-Z0-9_-]/g,'_');
+ const who=document.getElementById('who').value;
  const rows=[cols.join(',')];
  document.querySelectorAll('.v').forEach(d=>{{const v=d.dataset.video;
   rows.push([v,d.dataset.asked,val(v+'-visible'),val(v+'-en_zona'),val(v+'-producto_igual'),
@@ -725,7 +773,11 @@ def _radio(video: str, name: str, options: tuple[tuple[str, str], ...]) -> str:
 
 
 def cmd_judge(args: argparse.Namespace) -> int:
-    from qualify_api.evals.effects_bench import JUDGMENT_COLUMNS, judgment_template_rows
+    from qualify_api.evals.effects_bench import (
+        JUDGES,
+        JUDGMENT_COLUMNS,
+        judgment_template_rows,
+    )
 
     run = Path(args.run)
     trials = _read_json(run / TRIALS_FILE, {}).get("trials", {})
@@ -773,19 +825,24 @@ def cmd_judge(args: argparse.Namespace) -> int:
             f'<textarea rows="2" placeholder="nota (opcional)"></textarea></div></div>'
         )
     _write_json(folder / "clave.json", key)
+    options = "".join(f'<option value="{j}">{j.capitalize()}</option>' for j in JUDGES)
     (folder / "juicio.html").write_text(
-        _HTML.format(items="\n".join(items), columns=json.dumps(list(JUDGMENT_COLUMNS))),
+        _HTML.format(
+            items="\n".join(items), columns=json.dumps(list(JUDGMENT_COLUMNS)), judges=options
+        ),
         encoding="utf-8",
     )
-    with (folder / "plantilla.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(JUDGMENT_COLUMNS))
-        writer.writeheader()
-        writer.writerows(
-            judgment_template_rows([(blind, info["asked"]) for blind, info in key.items()])
-        )
+    rows = judgment_template_rows([(blind, info["asked"]) for blind, info in key.items()])
+    for judge in JUDGES:
+        with (folder / f"juicio-{judge}.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(JUDGMENT_COLUMNS))
+            writer.writeheader()
+            writer.writerows(rows)
     print(
-        f"{len(key)} videos a ciegas en {folder}.\nCada persona abre juicio.html (o llena una "
-        "copia de plantilla.csv) y devuelve su juicio-<nombre>.csv. No abran clave.json."
+        f"{len(key)} videos a ciegas en {folder}.\n"
+        f"Juzgan {' y '.join(j.capitalize() for j in JUDGES)}, cada uno por su cuenta: abre "
+        "juicio.html (elige tu nombre y descarga tu CSV) o llena tu juicio-<nombre>.csv. "
+        "No abran clave.json."
     )
     return 0
 
@@ -801,6 +858,7 @@ def _measured_on(run: Path) -> date:
 def cmd_score(args: argparse.Namespace) -> int:
     from qualify_api.evals.effects_bench import (
         BENCH_VERSION,
+        JUDGES,
         consensus,
         object_vs_atmospheric,
         read_judgment_csv,
@@ -815,7 +873,20 @@ def cmd_score(args: argparse.Namespace) -> int:
     by_rater = {}
     for item in args.juicio:
         name, _, path = item.partition("=")
+        name = name.strip().lower()
+        if name not in JUDGES or not path:
+            print(
+                f"--juicio es <juez>=<csv>, con juez en {', '.join(JUDGES)} (no {name!r}).",
+                file=sys.stderr,
+            )
+            return 2
         by_rater[name] = read_judgment_csv(Path(path).read_text(encoding="utf-8-sig"), key)
+    if set(by_rater) != set(JUDGES):
+        print(
+            f"Faltan juicios de: {', '.join(sorted(set(JUDGES) - set(by_rater)))}. "
+            "Puntúo con los que hay; κ solo sale con los dos.",
+            file=sys.stderr,
+        )
     verdicts, agreement = consensus(by_rater)
     scores = score_arms(key, verdicts)
     trials = _read_json(run / TRIALS_FILE, {}).get("trials", {})
@@ -950,12 +1021,36 @@ def cmd_finals(args: argparse.Namespace) -> int:
 # -- library v6 ----------------------------------------------------------------------------
 
 
+def _creative_root() -> Path:
+    """Where the library files live (a test points it elsewhere)."""
+    return REPO / "packages" / "creative" / "src" / "qualify_creative"
+
+
+def _r2_store() -> Any:
+    """The production bucket (`R2Settings.from_env()`; `QUALIFY_OBJECT_STORE_DIR` gives the
+    local fake bucket). Built only by `library --upload`."""
+    from qualify_shared.objects.config import R2Settings
+    from qualify_shared.objects.s3 import R2ObjectStore
+
+    return R2ObjectStore(R2Settings.from_env())
+
+
 def cmd_library(args: argparse.Namespace) -> int:
-    from qualify_creative.effects import Measured, parse_library, preview_file
+    """The library v6 from `resultados.json`. Without `--upload`: the plan only — the
+    platform keys and sizes, and the v6 draft in the run folder; nothing written to R2 nor
+    to the repository. With `--upload`: each winning video goes to R2 under its platform
+    key (retried, read back by sha256), and only then `effects_data/v6.json` is written.
+    No video ever goes into the repository: it shows a business's product."""
+    from qualify_creative.effects import Measured, parse_library
 
-    from qualify_api.evals.effects_bench import library_v6, preview_asset_path
+    from qualify_api.evals.effects_bench import (
+        PreviewUploadError,
+        library_v6,
+        preview_asset_path,
+        upload_previews,
+    )
 
-    creative = REPO / "packages" / "creative" / "src" / "qualify_creative"
+    creative = _creative_root()
     target = creative / "effects_data" / "v6.json"
     if target.exists():
         print(f"{target} ya existe: una biblioteca no se edita.", file=sys.stderr)
@@ -967,26 +1062,38 @@ def cmd_library(args: argparse.Namespace) -> int:
     measured = {arm: Measured.model_validate(m) for arm, m in results.get("measured", {}).items()}
     base = json.loads((creative / "effects_data" / "v5.json").read_text(encoding="utf-8"))
     versions = {e["id"]: int(e["version"]) for e in base["entries"]}
-    copied: list[Path] = []
+    videos: dict[str, tuple[int, bytes]] = {}
+    sources: dict[str, str] = {}
     for arm, labels in results.get("winners", {}).items():
         if not measured.get(arm) or not measured[arm].passes:
             continue
-        source = run / (finals.get(arm, {}).get("video") or trials[labels[0]]["video"])
-        dest = preview_file(preview_asset_path(arm, versions[arm]))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, dest)
-        copied.append(dest)
+        relative = finals.get(arm, {}).get("video") or trials[labels[0]]["video"]
+        videos[arm] = (versions[arm], (run / relative).read_bytes())
+        sources[arm] = relative
     notes = (
         f"EF-12 / {TICKET} (ADR 50 D5/D6): the effects library v6. The SAME entries as v5, "
         f"at the same versions; every Seedance template the paid bench judged carries its "
         f"`measured` (model {results.get('model')}, {results.get('measured_on')}), and only "
-        "the ones over D5 (>= 2/3 with n >= 4) are offered, each with its winning video as "
-        "`preview_asset`. v1-v5 keep reading exactly as they were."
+        "the ones over D5 (>= 2/3 with n >= 4) are offered, each with its winning video in "
+        "R2 under a platform key as `preview_asset`. v1-v5 keep reading exactly as they were."
     )
     document = library_v6(base, measured, notes=notes)
-    parse_library(document)  # refuses a preview that is not there
+    parse_library(document)  # an R2 preview has its exact platform shape
+    for arm, (version, data) in videos.items():
+        print(f"  {arm}: {sources[arm]} → {preview_asset_path(arm, version)} ({len(data)} B)")
+    if not args.upload:
+        draft = run / "biblioteca-v6.json"
+        _write_json(draft, document)
+        print(f"Sin subir: nada escrito en R2 ni en el repositorio. Borrador en {draft}")
+        return 0
+    try:
+        uploaded = upload_previews(_r2_store(), videos)
+    except PreviewUploadError as exc:
+        print(f"No se subió a R2: {exc}. La biblioteca v6 no se escribe.", file=sys.stderr)
+        return 5
+    _write_json(run / "vistas-previas-r2.json", uploaded)
     target.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"Escrita {target}; vistas previas: {[str(p) for p in copied] or 'ninguna'}")
+    print(f"Escrita {target}; en R2: {[u['key'] for u in uploaded.values()] or 'ninguna'}")
     print("Falta (código de producción, otro cambio): EFFECTS_LIBRARY_VERSION = 'v6'.")
     return 0
 
@@ -1040,8 +1147,14 @@ def _parser() -> argparse.ArgumentParser:
     finals.add_argument("--run", required=True)
     finals.add_argument("--max-finals", type=int, default=3)
 
-    library = sub.add_parser("library", help="write effects_data/v6.json from the results")
+    library = sub.add_parser("library", help="the library v6 (plan only unless --upload)")
     library.add_argument("--run", required=True)
+    library.add_argument("--env-file", default=".env")
+    library.add_argument(
+        "--upload",
+        action="store_true",
+        help="write the winning videos to R2 (platform keys), then effects_data/v6.json",
+    )
     return parser
 
 

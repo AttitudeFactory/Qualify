@@ -404,9 +404,20 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
   - Antes de la primera tarea, el plan entero con su margen tiene que caber en lo que queda
     del tope.
   - `SpendLedger` no sirve aquí: su techo técnico es de US$10 por corrida.
-- **Material:** solo fotos de negocios que administra el fundador, aprobadas antes (criterio
-  del ticket), en un `casos.json` **fuera del repositorio** (`--cases`). La corrida pagada se
-  niega sin él.
+- **Material (decisión de Deivid, 2026-11-25): nibbles burger y Bianki**, negocios que
+  administra el fundador. Van en un `casos.json` **fuera del repositorio** (`--cases`); la
+  corrida pagada se niega sin él.
+  - Cada foto es una ruta local fuera del repositorio, absoluta o relativa al archivo. Una
+    foto dentro del repositorio se rechaza.
+  - Cada caso puede traer el Brand Kit de su negocio (paleta y tipografías).
+  - Un caso con `"photo": null` es un hueco que espera su foto: la prueba en seco lo deja
+    fuera y lo nombra, y la corrida pagada se niega hasta que llegue.
+  - **nibbles burger:** la foto principal de «Smash doble» (1080×1620), copiada en solo
+    lectura del volumen local de subidas de la base de desarrollo, como en EF-11, con la
+    paleta y las tipografías de su Brand Kit (Baloo 2 y Nunito).
+  - **Bianki:** hueco; la foto la pasa Deivid.
+  - El `casos.json` está en `%TEMP%\m-25026587\casos.json` y la foto en
+    `%TEMP%\m-25026587\fotos\`. No entra al repositorio.
 - **Salidas:** todo va a `%TEMP%\m-25026587\<corrida>\`: videos, prompts y `pruebas.json`.
   Este último guarda la procedencia de cada video: proveedor, modelo pedido y cobrado,
   `effect_id`, versión, `prompt_version`, `fill_version`, biblioteca, tabla de precios, zona,
@@ -414,9 +425,17 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 
 ### Cotización (prueba en seco del 2026-11-25, tabla `v8`)
 
-Corrida con las fotos de muestra del repositorio (`packages/render/public/sample/`). El costo
-no depende de la foto: un borrador 480p 9:16 de 5 s son ≈ 48.038 tokens con cualquier foto.
-Las 28 solicitudes se compilaron con el productor real y ninguna quedó sin compilar.
+Dos corridas en seco, sin llave y sin enviar nada:
+
+- **Con el `casos.json` real** (solo el caso de nibbles, porque Bianki espera su foto): **14
+  borradores** (7 brazos × 1 caso × 2 tiradas), **US$7,196098** (US$7,917 con margen). Todos
+  compilaron. El prompt termina con la línea del efecto sobre «Smash doble» y lleva la paleta
+  y las tipografías de nibbles.
+- **Con las fotos de muestra del repositorio** (`packages/render/public/sample/`, dos casos):
+  las **28** solicitudes del plan completo compilaron todas.
+
+El costo no depende de la foto: un borrador 480p 9:16 de 5 s son ≈ 48.038 tokens con
+cualquier foto. Con la foto de Bianki, el plan es exactamente el de la tabla.
 
 | Fase | Tareas | US$ por tarea | Cotizado | Con 10 % de margen |
 |---|---|---|---|---|
@@ -431,9 +450,11 @@ SD25-002 y EF11-001. Así los finales caben; si no cupieran, el arnés no los ma
 
 ### Cómo se juzga
 
-- `judge` copia los videos con nombres ciegos (`v01`…, en orden al azar con semilla fija) y
-  deja un formulario sin conexión (`juicio.html`, que descarga `juicio-<nombre>.csv`) y una
-  `plantilla.csv`. La clave (`clave.json`) no se abre hasta puntuar.
+- **Juzgan Deivid y Herwin** (decisión de Deivid, 2026-11-25), cada uno por su cuenta.
+- `judge` copia los videos con nombres ciegos (`v01`…, en orden al azar con semilla fija).
+  Deja un formulario sin conexión (`juicio.html`: cada uno elige su nombre y descarga
+  `juicio-deivid.csv` o `juicio-herwin.csv`) y una plantilla CSV por juez. La clave
+  (`clave.json`) no se abre hasta puntuar. `score` no acepta otros nombres.
 - **Rúbrica**, mirando el video completo:
   1. Efecto visible: sí, dudoso o no. Lo dudoso cuenta como no.
   2. En la zona pedida. Se deja vacío cuando se pidió «toda la escena».
@@ -442,7 +463,7 @@ SD25-002 y EF11-001. Así los finales caben; si no cupieran, el arnés no los ma
   5. Creíble para un anuncio, de 1 a 3.
 
   **«Salió» = 1 a 4 en sí.** La credibilidad no entra en el éxito; ordena los ganadores.
-- **Dos personas, a ciegas:** un video sale solo si las dos dicen que salió. Se informan el κ
+- **Las dos personas, a ciegas:** un video sale solo si las dos dicen que salió. Se informan el κ
   de Cohen sobre «salió» y la lista de desacuerdos. Si κ < 0,6, se reescriben las reglas antes
   de usar el resultado.
 - **Objeto contra atmósfera:** los dos brazos se comparan con los criterios que el control
@@ -454,9 +475,30 @@ SD25-002 y EF11-001. Así los finales caben; si no cupieran, el arnés no los ma
   - las mismas entradas, a la misma versión, con `measured` en cada plantilla juzgada
     (`measured` es el único campo que pasa una vez de nulo a valor);
   - `offered: true` solo si pasa D5;
-  - su `preview_asset`: el video ganador, el final si lo hay.
+  - su `preview_asset` («Así se ve»): el video ganador, el final si lo hay, **en R2 y no en
+    el repositorio**, porque muestra el producto de un negocio (decisión de Deivid,
+    2026-11-25).
 
-  Usar la v6 en producción (`EFFECTS_LIBRARY_VERSION`) es otro cambio.
+  **Clave en R2:** `platform/effects/<id>/v<versión>/preview.mp4`. Es una clave de
+  plataforma: no lleva negocio y queda fuera del bloqueo de `t/`. La biblioteca acepta esa
+  forma exacta solo en una plantilla de Seedance (`platform_preview_key`), sin exigir archivo
+  en `effects_assets/`.
+  - Sin `--upload`, `library` solo muestra el plan (clave y tamaño de cada video) y deja el
+    borrador `biblioteca-v6.json` en la carpeta de la corrida.
+  - Con `--upload`, sube cada video (hasta 3 intentos, idempotente), lo relee y compara el
+    sha256. Solo entonces escribe `effects_data/v6.json`. Si una subida falla, la v6 no se
+    escribe.
+  - Está probado con un doble de R2 (`MemoryObjectStore`). Hoy no se sube nada.
+
+  **Cómo se sirve: falta una ruta.** `/r2media/<token>` solo firma claves de un negocio
+  (`t/`, `gallery/`, `reel-windows/`), y su `ObjectGate` vuelve a comprobar el prefijo del
+  negocio al leer. Por eso no sirve una clave de plataforma. Y el editor
+  (`editor_preview_contract.preview_effect_url`) solo resuelve archivos `effects/…`
+  empaquetados. Hace falta una ruta propia de solo lectura para `platform/effects/` (por
+  ejemplo `/r2effects/<id>/v<n>`, sin token de negocio porque el contenido es igual para
+  todos, o con un token como `/r2seasonal`), y que el editor la use cuando la clave empieza
+  por `platform/`. Es otro ticket. Usar la v6 en producción (`EFFECTS_LIBRARY_VERSION`)
+  también es otro cambio.
 
 ### Duración estimada
 
@@ -474,10 +516,11 @@ Con una tarea a la vez:
 just eval-efectos drafts --env-file <checkout>/.env --cases <fuera>/casos.json \
     --i-have-spend-authorization --max-usd 30
 just eval-efectos judge --run <fuera>/m-25026587/<corrida>
-just eval-efectos score --run <corrida> --juicio persona1=<csv> --juicio persona2=<csv>
+just eval-efectos score --run <corrida> --juicio deivid=<csv> --juicio herwin=<csv>
 just eval-efectos finals --run <corrida> --env-file <checkout>/.env \
     --i-have-spend-authorization --max-usd 30
-just eval-efectos library --run <corrida>
+just eval-efectos library --run <corrida>            # plan, sin subir
+just eval-efectos library --run <corrida> --env-file <checkout>/.env --upload  # R2 + v6
 ```
 
 ### Resultados — PENDIENTES
@@ -492,6 +535,6 @@ just eval-efectos library --run <corrida>
 | `humo_atmosferico` (control) | toda la escena | PENDIENTE | | — | | |
 | `brasas` | abajo | PENDIENTE | | | | |
 
-- κ entre las dos personas: PENDIENTE.
+- κ entre Deivid y Herwin: PENDIENTE.
 - Objeto contra atmósfera en humo y vapor: PENDIENTE.
 - Gasto real, con `pricing_version`: PENDIENTE (tope US$30).
