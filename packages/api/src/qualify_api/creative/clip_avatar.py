@@ -93,6 +93,9 @@ logger = logging.getLogger(__name__)
 
 #: The two switches (house convention: `1`/`on`/`true` turn a switch on; anything else,
 #: or nothing, leaves it off — a typo never turns it on).
+#: NEVER turned on before PR 2 of m-25119867: until then a Clip whose avatar block of its
+#: first «Crear» fails waits forever (no «Intentar de nuevo», «Quitar avatar» nor the 72 h
+#: limit yet). Said next to them in `.env.example` and `deploy/.env.prod.example` too.
 PRESENTER_SWITCH = "QUALIFY_CLIP_AVATAR_PRESENTER"
 ANIMATED_SWITCH = "QUALIFY_CLIP_AVATAR_ANIMATED"
 _ON_VALUES = ("1", "on", "true")
@@ -179,32 +182,53 @@ FIRST_CREATE_DAILY_CAP_TEXT = (
 FIRST_CREATE_SWITCHED_OFF_TEXT = (
     "Este tipo de avatar todavía no está disponible. Quítalo para crear tu video."
 )
-TOO_MANY_BLOCKS_TEXT = f"Puedes poner hasta {BLOCKS_PER_CREATE} avatares en un video."
+TOO_MANY_BLOCKS_TEXT = (
+    f"Un video puede tener hasta {BLOCKS_PER_CREATE} avatares. Quita los que sobren."
+)
+#: The owner's stretches and the avatars together pass `SEGMENTS_MAX` (8).
+TOO_MANY_SEGMENTS_TEXT = (
+    f"Tu video puede tener hasta {SEGMENTS_MAX} fotos, videos y avatares en total. "
+    "Quita alguno para crear tu video."
+)
 NEEDS_OWN_MEDIA_TEXT = "Agrega al menos 3 segundos de tus fotos o videos para acompañar al avatar."
-FILE_NOT_OWNED_TEXT = "No pudimos usar esa imagen. Súbela de nuevo."
+FILE_NOT_OWNED_TEXT = "No pudimos usar una de las imágenes del avatar. Súbela de nuevo."
 #: `clip_wait`'s words (`ClipWait.owner_text`).
-WAITING_ONE_TEXT = "Estamos creando tu avatar. Tu video se arma cuando esté listo."
-WAITING_MANY_TEXT = "Estamos creando tus avatares. Tu video se arma cuando estén listos."
+WAITING_ONE_TEXT = (
+    "Estamos creando tu avatar. Puede tardar varios minutos. Puedes salir: tu video te "
+    "espera en Por aprobar."
+)
+WAITING_MANY_TEXT = (
+    "Estamos creando tus avatares. Puede tardar varios minutos. Puedes salir: tu video te "
+    "espera en Por aprobar."
+)
+#: PR 1 of m-25119867 has no «Intentar de nuevo» / «Quitar avatar» yet: the words never
+#: promise a button the screen cannot show (the PR 2 wording is in the contract §1.2).
 BLOCK_FAILED_STATE_TEXT = (
-    "Uno de tus avatares no salió. Inténtalo de nuevo o quítalo, y armamos tu video con lo demás."
+    "Uno de tus avatares no se pudo crear. Tu video espera. Pronto podrás intentarlo de "
+    "nuevo o quitarlo."
 )
 ASSEMBLING_WITH_BLOCKS_TEXT = "Tus avatares están listos. Estamos armando tu video."
 ASSEMBLING_TEXT = "Estamos armando tu video."
-READY_TEXT = "Tu video está listo."
-#: A block's own words when it failed without a detail of its own.
-BLOCK_TIMEOUT_TEXT = "Tu avatar tardó demasiado y no salió. Puedes intentarlo de nuevo o quitarlo."
-BLOCK_FAILED_TEXT = "Tu avatar no salió. Puedes intentarlo de nuevo o quitarlo."
-#: A block that, at its real length, makes the Clip pass 60 s (`clip_too_long`).
+READY_TEXT = "Tu video está listo. Revísalo y apruébalo."
+#: A block's own words when it failed without a detail of its own (no buttons yet, PR 1).
+BLOCK_TIMEOUT_TEXT = (
+    "Tu avatar tardó demasiado y no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo."
+)
+BLOCK_FAILED_TEXT = "Tu avatar no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo."
+#: A block that, at its real length, makes the Clip pass 60 s (`clip_too_long`). The
+#: owner cannot edit the Clip's stretches while it waits (`drafting` has no EDIT edge),
+#: so the words only ask about the avatar.
 CLIP_TOO_LONG_TEXT = (
     "Con tu avatar, el video pasa de 60 segundos. Acorta lo que dice el avatar o quítalo."
 )
 
 
-def daily_left_text(left: int) -> str:
-    """The cap's words when fewer blocks are left today than the «Crear» asks for."""
-    if left == 1:
-        return "Hoy puedes crear 1 avatar más. Quita los demás para crear tu video."
-    return f"Hoy puedes crear {left} avatares más. Quita uno para crear tu video."
+def daily_left_text(left: int, asking: int) -> str:
+    """The cap's words when fewer blocks are left today (`left`, at least 1) than the
+    «Crear» asks for (`asking`): how many there are room for, and how many to take out."""
+    extra = max(1, asking - left)
+    room = "1 avatar más" if left == 1 else f"{left} avatares más"
+    return f"Hoy solo puedes crear {room}. Quita {extra} para crear tu video."
 
 
 class ClipAvatarRefused(ValueError):
@@ -260,7 +284,7 @@ def check_avatar_daily_cap(
     left = max(0, AVATAR_DAILY_CAP - used)
     if not first_create:
         raise AvatarDailyCapReached(used=used, asking=asking)
-    words = FIRST_CREATE_DAILY_CAP_TEXT if left == 0 else daily_left_text(left)
+    words = FIRST_CREATE_DAILY_CAP_TEXT if left == 0 else daily_left_text(left, asking)
     raise AvatarDailyCapReached(used=used, asking=asking, owner_message=words)
 
 
@@ -903,8 +927,8 @@ def stretch_problem(stretch: BlockStretch, clip_id: UUID) -> tuple[str, str] | N
 #: screen reads, and the owner's words.
 AVATAR_JOIN_CODE = "avatar_join_cut_only"
 AVATAR_JOIN_TEXT = (
-    "Junto a un avatar, la unión solo puede ser «Corte», para que su voz se escuche "
-    "completa. Cámbiala y vuelve a intentarlo."
+    "Al lado de un avatar, la unión tiene que ser «Corte», para que su voz se escuche "
+    "completa. Cambia la unión de esa foto o video a «Corte» y vuelve a crear tu video."
 )
 
 
@@ -1044,6 +1068,19 @@ def plan_states(
         else:
             found.append(PlannedBlock(entry, row, "ready"))
     return tuple(found)
+
+
+def _row_state(row: BlockRow) -> PlannedBlock:
+    """A block with no plan entry (option A, or a Clip already made from its plan) as
+    its row stands: removed, being made, failed (its reason) or made."""
+    entry = ClipAvatarSlot(slot=row.slot, at=0, seconds_estimate=max(1, row.script_seconds))
+    if row.removed:
+        return PlannedBlock(entry, row, "removed")
+    if row.status == "drafting":
+        return PlannedBlock(entry, row, "creating")
+    if row.status == "failed":
+        return PlannedBlock(entry, row, "failed", row.failure_reason or "failed")
+    return PlannedBlock(entry, row, "ready")
 
 
 #: The placeholder stretch of a block not made yet, only to check the recipe the owner
@@ -1705,6 +1742,15 @@ class ClipAvatarService:
             )
         if any(placement.at > len(media.segments) for placement in placements):
             raise ValueError("an avatar goes before one of the owner's stretches, or at the end")
+        if len(media.segments) + len(placements) > SEGMENTS_MAX:
+            # checked here, by its code: the recipe with the blocks is built by
+            # `model_copy` (no validation) and would otherwise fail as a bare
+            # ValidationError when its parts are read
+            raise ClipAvatarRefused(
+                "too_many_segments",
+                TOO_MANY_SEGMENTS_TEXT,
+                raw=f"{len(media.segments)} stretches + {len(placements)} avatars",
+            )
         plan = tuple(
             ClipAvatarSlot(
                 slot=slot,
@@ -1904,17 +1950,9 @@ class ClipAvatarService:
         if plan:
             planned = plan_states(plan, rows, self._env)
         else:
-            # already made from its blocks (or option A's): each block as it stands
-            planned = tuple(
-                PlannedBlock(
-                    ClipAvatarSlot(
-                        slot=row.slot, at=0, seconds_estimate=max(1, row.script_seconds)
-                    ),
-                    row,
-                    "removed" if row.removed else "ready",
-                )
-                for row in rows
-            )
+            # already made from its blocks (or option A's): each block as its row says —
+            # being made, failed (with its own words) or made; never guessed
+            planned = tuple(_row_state(row) for row in rows)
         blocks = tuple(self._block_wait(tenant_id, planned_block) for planned_block in planned)
         live = [b for b in blocks if b.state != "removed"]
         state: Literal["waiting_blocks", "block_failed", "assembling", "ready", "failed"]

@@ -317,20 +317,50 @@ def test_a_text_over_a_planned_block_is_checked_on_the_estimated_timeline() -> N
     assert _clip_brief(world, made.clip_id).media.text_layers == (text,)
 
 
-@pytest.mark.parametrize(("used", "words"), [(3, None), (2, 1), (1, 2)])
-def test_todays_cap_is_checked_for_every_block_of_the_create(used: int, words: int | None) -> None:
+@pytest.mark.parametrize(
+    ("used", "words"),
+    [
+        (3, "Ya creaste 3 avatares hoy. Mañana puedes crear más."),
+        (2, "Hoy solo puedes crear 1 avatar más. Quita 2 para crear tu video."),
+        (1, "Hoy solo puedes crear 2 avatares más. Quita 1 para crear tu video."),
+    ],
+)
+def test_todays_cap_is_checked_for_every_block_of_the_create(used: int, words: str) -> None:
     world = _world()
     world.store.used_today = used
     with pytest.raises(ca.AvatarDailyCapReached) as refused:
         _create(world, *(_at(_presenter(script="Hola."), 0) for _ in range(3)))
     assert refused.value.code == ca.AVATAR_DAILY_CAP_CODE and refused.value.asking == 3
-    expected = ca.FIRST_CREATE_DAILY_CAP_TEXT if words is None else ca.daily_left_text(words)
-    assert refused.value.owner_message == expected
+    assert refused.value.owner_message == words
     _nothing_written(world)
 
 
 def test_the_daily_cap_words_at_the_first_create_are_section_9s() -> None:
     assert ca.FIRST_CREATE_DAILY_CAP_TEXT == "Ya creaste 3 avatares hoy. Mañana puedes crear más."
+
+
+def test_more_stretches_than_a_clip_holds_are_refused_by_code() -> None:
+    """8 stretches of the owner's and 1 avatar pass `SEGMENTS_MAX`: a stable code before
+    anything is read — never a bare ValidationError from the recipe built with them."""
+    world = _world()
+    world.store.reads = 0
+    eight = tuple(_own(1.0, f"uploads/{TENANT_ID}/{i}.mp4") for i in range(8))
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        _create(world, _at(_presenter(), 0), brief=_clip(*eight))
+    assert refused.value.code == "too_many_segments"
+    assert refused.value.owner_message == ca.TOO_MANY_SEGMENTS_TEXT
+    assert world.store.reads == 0
+    _nothing_written(world)
+
+
+def test_the_switches_say_not_before_pr_2() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    for name in (".env.example", "deploy/.env.prod.example"):
+        assert "NO encender antes del PR 2 de m-25119867" in (root / name).read_text(
+            encoding="utf-8"
+        )
 
 
 def test_no_paid_call_without_the_months_video_for_every_block() -> None:
@@ -449,7 +479,11 @@ def test_with_its_blocks_made_the_clip_is_made_once_from_their_videos() -> None:
     first = _made(world, made.block_ids[0], seconds=4.4)
     second = _made(world, made.block_ids[1], seconds=1.2)
     asked = _clip_brief(world, made.clip_id)
+    asked_id = world.repo.drafts[made.clip_id].brief_id
+    assert asked.media.derived_from_brief_id is None
     world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    # provenance: the derived brief points to the one the owner sent
+    assert _clip_brief(world, made.clip_id).media.derived_from_brief_id == asked_id
     clip = world.repo.drafts[made.clip_id]
     assert clip.status == GENERATED
     brief = _clip_brief(world, made.clip_id)
@@ -633,6 +667,35 @@ def test_one_block_reads_in_the_singular_and_a_clip_without_blocks_reads_nothing
     plain = world.repo.seed_draft(_clip(), status=GENERATED)
     assert world.service.clip_wait(tenant_id=TENANT_ID, clip_id=plain) is None
     assert world.service.clip_wait(tenant_id=TENANT_ID, clip_id=uuid4()) is None
+
+
+def test_clip_wait_reads_option_a_blocks_as_their_rows_say() -> None:
+    """A Clip with no plan (option A's blocks): each block's state is its row's — being
+    made, failed with its own words, made — never assumed `ready`."""
+    from .test_clip_avatar import _wired
+
+    service, _, repo, store, _, clip_id = _wired(env=PRESENTER_ON)
+    store.capped = False
+    making = service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+    broken = service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+    done = service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+    repo.drafts[broken] = replace(
+        repo.drafts[broken], status=FAILED, failure_reason="timeout", failure_detail=None
+    )
+    repo.drafts[done] = replace(repo.drafts[done], status=GENERATED)
+    service._store = PlanStore(repo)  # noqa: SLF001 — the double that reads failures
+    wait = service.clip_wait(tenant_id=TENANT_ID, clip_id=clip_id)
+    assert wait is not None
+    states = {b.block_id: (b.state, b.failure_code, b.owner_text) for b in wait.blocks}
+    assert states[making] == ("creating", None, None)
+    assert states[broken] == ("failed", "timeout", ca.BLOCK_TIMEOUT_TEXT)
+    assert states[done][0] == "ready"
 
 
 def test_the_free_reads_before_create() -> None:

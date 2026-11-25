@@ -17,6 +17,11 @@
 | `retry_block`, `remove_block`, `actions` en `BlockWait`, `wait_until` y la falla a las 72 h (P1, P2) | **PR 2** |
 | `recreate` de un Clip de la opción B (R6) | **PR 2** |
 | Aviso activo (correo o WhatsApp) cuando el video esté listo (§1.6) | pendiente, fuera de los dos PR |
+| Efectos sobre un avatar: `avatar_block_effect` («Textos sí, efectos no», §3.2) | **PR 2** |
+| `create_draft` con un brief que ya trae plan: hoy es un `ValueError` sin `code`; tendrá un rechazo con `code` estable (lo pidió el review-agent) | **PR 2** |
+| «Necesita tu atención» en la tarjeta de «Por aprobar» y en la cuenta de Inicio cuando un avatar falla (§1.6) | **PR 2** |
+
+> **No encender `QUALIFY_CLIP_AVATAR_PRESENTER` ni `QUALIFY_CLIP_AVATAR_ANIMATED` antes del PR 2.** Hasta entonces, un Clip cuyo avatar falla espera para siempre: no hay «Intentar de nuevo», «Quitar avatar» ni el plazo de 72 h. Está escrito también junto a los interruptores, en `.env.example`, en `deploy/.env.prod.example` y en `clip_avatar.py`.
 **Reglas de partida:** ADR 50 §9 (`docs/adr-50-video-efectos-por-pasos.md`, firmado por Deivid el 2026-11-25) y ADR 44 (`docs/diseno-video-por-planos.md`).
 **Pantalla:** m-25112921 (carril B). Este documento es su contrato.
 
@@ -124,10 +129,10 @@ Cómo se calcula `state` (se deriva de las filas cada vez que se consulta; no se
 
 | `clip_status` | Avatares (sin contar los `removed`) | `state` | `owner_text` |
 |---|---|---|---|
-| `drafting` | alguno `creating` y ninguno `failed` | `waiting_blocks` | «Estamos creando tu avatar. Tu video se arma cuando esté listo.» Con dos o más: «Estamos creando tus avatares. Tu video se arma cuando estén listos.» |
-| `drafting` | alguno `failed` | `block_failed` | «Uno de tus avatares no salió. Inténtalo de nuevo o quítalo, y armamos tu video con lo demás.» |
+| `drafting` | alguno `creating` y ninguno `failed` | `waiting_blocks` | «Estamos creando tu avatar. Puede tardar varios minutos. Puedes salir: tu video te espera en Por aprobar.» Con dos o más: «Estamos creando tus avatares. Puede tardar varios minutos. Puedes salir: tu video te espera en Por aprobar.» |
+| `drafting` | alguno `failed` | `block_failed` | PR 1, sin prometer botones: «Uno de tus avatares no se pudo crear. Tu video espera. Pronto podrás intentarlo de nuevo o quitarlo.» Con el PR 2: «Uno de tus avatares no se pudo crear. Toca «Intentar de nuevo» o «Quitar avatar», y armamos tu video con lo demás.» |
 | `drafting` | todos `ready`, o no queda ninguno | `assembling` | «Tus avatares están listos. Estamos armando tu video.» Si no queda ninguno: «Estamos armando tu video.» |
-| `generated`, `rejected`, `approved`, `staged`, `published` | — | `ready` | «Tu video está listo.» |
+| `generated`, `rejected`, `approved`, `staged`, `published` | — | `ready` | «Tu video está listo. Revísalo y apruébalo.» |
 | `failed` | — | `failed` | El `failure_detail` del Clip, como en cualquier pieza que falla. |
 
 **Cómo se consulta.** Mientras `state` sea `waiting_blocks` o `assembling`, cada 3 s con la pantalla abierta, igual que el estado del análisis de reels (ADR 44 §13.3). Con `block_failed` la pantalla deja de consultar, porque solo cambia con una acción del dueño o al vencer `wait_until`. Con `ready` o `failed` también deja de consultar. Si el dueño sale y vuelve, la fila guarda el estado: la Galería ve el Clip como una pieza en `drafting` y puede llamar a `clip_wait` para la etiqueta de la tarjeta.
@@ -140,15 +145,16 @@ Se lanzan **antes de escribir nada y antes de cualquier llamada de pago**. Todos
 |---|---|---|---|
 | `switched_off` | `ClipAvatarRefused` | «Este tipo de avatar todavía no está disponible. Quítalo para crear tu video.» | **Nuevo**. El de la opción A termina en «Tu video queda como está.», pero en la opción B todavía no hay video. |
 | `too_long` | `ClipAvatarRefused` | «Lo que dice el avatar dura más de 30 segundos. Déjalo en unas 7 frases cortas y vuelve a intentarlo.» | El de §9, ya en el código (`TOO_LONG_TEXT`). |
-| `avatar_daily_cap_reached` | `AvatarDailyCapReached` | Si ya se crearon 3 hoy: «Ya creaste 3 avatares hoy. Mañana puedes crear más.» | Texto exacto de §9. El código de la opción A le agrega «Tu video queda guardado como está.», que en B no aplica. |
-| `avatar_daily_cap_reached` | `AvatarDailyCapReached` | Si quedan menos de los que se piden: «Hoy puedes crear 1 avatar más. Quita los demás para crear tu video.» / «Hoy puedes crear 2 avatares más. Quita uno para crear tu video.» | **Nuevo**. El texto de §9 diría algo falso, por ejemplo «Ya creaste 3» cuando el dueño lleva 1 y pide 3. Trae `used`, `cap` y `asking`. |
+| `avatar_daily_cap_reached` | `AvatarDailyCapReached` | Si ya se crearon 3 hoy: «Ya creaste 3 avatares hoy. Mañana puedes crear más.» | Texto exacto de §9. **Pendiente:** el coordinador informó que Deivid aprobó agregar, solo en la opción B, «Quita el avatar para crear tu video ahora.». Cambiar un texto firmado necesita que Deivid lo confirme en su sesión, así que el código sigue con el texto de §9. El código de la opción A le agrega «Tu video queda guardado como está.», que en B no aplica. |
+| `avatar_daily_cap_reached` | `AvatarDailyCapReached` | Si quedan menos de los que se piden: «Hoy solo puedes crear {quedan} avatar(es) más. Quita {sobran} para crear tu video.», con el plural correcto. Por ejemplo, con 1 hecho y 3 pedidos: «Hoy solo puedes crear 2 avatares más. Quita 1 para crear tu video.» | **Nuevo**. El texto de §9 diría algo falso, por ejemplo «Ya creaste 3» cuando el dueño lleva 1 y pide 3. Trae `used`, `cap` y `asking`. |
 | `clip_not_local` | `ClipAvatarRefused` | «Solo puedes agregar un avatar a un video armado con tus fotos y videos.» | Ya existe (`CLIP_NOT_LOCAL_TEXT`). |
 | `avatar_needs_own_media` | `ClipAvatarRefused` | «Agrega al menos 3 segundos de tus fotos o videos para acompañar al avatar.» | **Nuevo** (pregunta P5). |
-| `too_many_blocks` | `ClipAvatarRefused` | «Puedes poner hasta 3 avatares en un video.» | **Nuevo**. |
+| `too_many_blocks` | `ClipAvatarRefused` | «Un video puede tener hasta 3 avatares. Quita los que sobren.» | **Nuevo**. |
+| `too_many_segments` | `ClipAvatarRefused` | «Tu video puede tener hasta 8 fotos, videos y avatares en total. Quita alguno para crear tu video.» | **Nuevo** (revisar con ux-designer). Pasa cuando las fotos y videos del dueño más los avatares superan `SEGMENTS_MAX` = 8. Se revisa en el paso 1, antes de leer nada. |
 | `no_brand_avatar` | `ClipAvatarRefused` | «Tu marca todavía no tiene su avatar. Créalo en Tu marca, o describe aquí cómo quieres que se vea.» | Ya existe (`NO_BRAND_AVATAR_TEXT`). |
-| `avatar_file_not_owned` | `ClipAvatarRefused` | «No pudimos usar esa imagen. Súbela de nuevo.» | **Nuevo** (§1.5). Pasa cuando la imagen, el fondo o un producto del bloque no son del negocio. |
-| `avatar_join_cut_only` | `ClipAvatarRefused` | «Junto a un avatar, la unión solo puede ser «Corte», para que su voz se escuche completa. Cámbiala y vuelve a intentarlo.» | **Nuevo** (§1.7). |
-| `local_length_out_of_range`, `too_many_segments`, `texts_overlap`… | `RecipeRefused` | Los textos que la pantalla ya usa para esos códigos (`Qualify/clip_editor_vm.py`). | Ya existen. El largo cuenta los avatares por su largo estimado. |
+| `avatar_file_not_owned` | `ClipAvatarRefused` | «No pudimos usar una de las imágenes del avatar. Súbela de nuevo.» | **Nuevo** (§1.5). Pasa cuando la imagen, el fondo o un producto del bloque no son del negocio. |
+| `avatar_join_cut_only` | `ClipAvatarRefused` | «Al lado de un avatar, la unión tiene que ser «Corte», para que su voz se escuche completa. Cambia la unión de esa foto o video a «Corte» y vuelve a crear tu video.» | **Nuevo** (§1.7). |
+| `local_length_out_of_range`, `texts_overlap`… | `RecipeRefused` | Los textos que la pantalla ya usa para esos códigos (`Qualify/clip_editor_vm.py`). | Ya existen. El largo cuenta los avatares por su largo estimado. |
 | `local_daily_cap_reached` | el de EF-15 | El de hoy. | Ya existe. |
 | — | `NotEnoughCreations` | Los textos de cupo que la pantalla ya usa. | Ya existe. Se revisan juntos los segundos de todos los avatares nuevos y los de todos los bloques de la marca que todavía no se cobraron (§9). |
 | — | `BrandNotReady`, `RouteBlockedByPolicy` | Los de hoy. | Ya existen. |
@@ -157,8 +163,8 @@ Textos del estado de un bloque (`BlockWait.owner_text`) cuando el bloque no trae
 
 | `failure_code` | Texto |
 |---|---|
-| `timeout` | «Tu avatar tardó demasiado y no salió. Puedes intentarlo de nuevo o quitarlo.» (**nuevo**) |
-| cualquier otro sin detalle | «Tu avatar no salió. Puedes intentarlo de nuevo o quitarlo.» (**nuevo**) |
+| `timeout` | PR 1: «Tu avatar tardó demasiado y no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo.» Con el PR 2: «Tu avatar tardó demasiado y no se pudo crear. Puedes intentarlo de nuevo o quitarlo.» |
+| cualquier otro sin detalle | PR 1: «Tu avatar no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo.» Con el PR 2: «Tu avatar no se pudo crear. Puedes intentarlo de nuevo o quitarlo.» |
 
 Los detalles que ya escribe el productor siguen igual. Por ejemplo `BLOCK_TOO_LONG_TEXT` («Al leerlo en voz alta, lo que dice el avatar pasó de 30 segundos…») y los de `avatar_failure_text`.
 
@@ -192,7 +198,7 @@ Botones (verbos, `qualify-copy-es`): «Intentar de nuevo», «Quitar avatar».
 
   Solo sirve con un bloque `failed`. Marca `part_removed_at`, como «Quitar parte»: no se borra nada y no se cobra nada. El bloque sale del plan del Clip. Devuelve `True` si lo quitó y `False` si ya estaba quitado (se puede llamar dos veces). Si los demás avatares ya están listos, o no queda ninguno, el Clip pasa a `assembling` y se arma con lo que hay.
 - **Si el dueño no elige.** Pasado `wait_until`, el Clip falla con `failure_reason="avatar_block_failed"`. Se devuelve lo que se cobró por el Clip, nada de los bloques se cobra, y el `failure_detail` dice: «Tu video no se armó porque uno de tus avatares no salió y no elegiste qué hacer. Créalo de nuevo cuando quieras.» (**nuevo**). La espera dura 72 h (P2, decidido) y queda en el **PR 2**. Hasta entonces, un Clip con un avatar fallido sigue esperando, con latido. Los dos interruptores están apagados en todos los entornos, así que no le pasa a ningún cliente.
-- **Un bloque que salió pero no cabe** (con su largo real el Clip pasa de 60 s) se muestra como fallido con `failure_code="clip_too_long"` y el texto «Con tu avatar, el video pasa de 60 segundos. Acorta lo que dice el avatar o quítalo.» (**nuevo**). También se muestra fallido un bloque cuyo tipo se apagó mientras el Clip esperaba (`switched_off`).
+- **Un bloque que salió pero no cabe** (con su largo real el Clip pasa de 60 s; el texto se mantiene porque el dueño no puede editar las fotos y videos del Clip mientras espera: `drafting` no tiene borde de edición) se muestra como fallido con `failure_code="clip_too_long"` y el texto «Con tu avatar, el video pasa de 60 segundos. Acorta lo que dice el avatar o quítalo.» (**nuevo**). También se muestra fallido un bloque cuyo tipo se apagó mientras el Clip esperaba (`switched_off`).
 
 ### 1.5 Lo que la pantalla puede leer antes de «Crear» (todo en el PR 1, gratis y sin red)
 
@@ -208,7 +214,7 @@ Todo es de `qualify_api.creative.clip_avatar`, salvo donde se indica otro módul
 | **Si la marca ya tiene avatar** | `ClipAvatarService.brand_avatar_ready(tenant_id=…, brand_id=…)` | `True` si el avatar de la marca está listo (`brand_avatar`, estado READY). Solo así sirve `use_brand_avatar=True`. |
 | **Voz de la marca** | Ya existe: `Qualify/creative_provider.brand_clone_voice(tenant_id, brand_id)` | La voz clonada de la marca como opción `{"id": "brand", "name": "Tu voz · …"}` cuando está lista, y si no, `None`. El servidor la resuelve con `voice_access.BRAND_VOICE`. |
 | **Voces públicas de Seed Speech** | Ya existe: `Qualify/creative_provider.public_voices()` y `voice_options(...)` | La lista cerrada `qualify_creative.adapters.byteplus_speech.PUBLIC_SPANISH_VOICES`, con `id`, nombre para mostrar («Nombre · estilo») y género. Sale del código y no llama a la red ni a ningún servicio pagado. El servidor solo acepta esos ids (`PUBLIC_VOICE_IDS`). |
-| **Imagen propia del avatar animado** | Ya existe: `CreativeState.handle_avatar_upload` → `_save_uploads` → `save_upload` (CM-9) | La imagen se guarda en R2 bajo `t/<negocio>/uploads/…` y su clave va en `avatar_image_key`. El servidor revisa en el «Crear», antes de escribir nada, que la clave sea del negocio (`media.owned_by`). Si no lo es, rechaza con `avatar_file_not_owned` y el texto «No pudimos usar esa imagen. Súbela de nuevo.» (**nuevo**, revisar con ux-designer). El productor la revisa otra vez antes de leerla (`_key_problems`). |
+| **Imagen propia del avatar animado** | Ya existe: `CreativeState.handle_avatar_upload` → `_save_uploads` → `save_upload` (CM-9) | La imagen se guarda en R2 bajo `t/<negocio>/uploads/…` y su clave va en `avatar_image_key`. El servidor revisa en el «Crear», antes de escribir nada, que la clave sea del negocio (`media.owned_by`). Si no lo es, rechaza con `avatar_file_not_owned` y el texto «No pudimos usar una de las imágenes del avatar. Súbela de nuevo.» (**nuevo**, revisar con ux-designer). El productor la revisa otra vez antes de leerla (`_key_problems`). |
 | **Casilla de derechos** (`avatar_rights_confirmed`) | Ya existe, en `Qualify/content_generator.py` | «Tengo derecho a animar esta imagen (no es la foto de una persona real sin su permiso).» Si falta: «Confirma que tienes derecho a animar esa imagen.» (`creative_state`). Se reusa tal cual y no es texto nuevo. |
 
 ### 1.6 Aviso cuando el video esté listo (punto 9, decidido por Deivid)
@@ -219,11 +225,16 @@ Después de «Crear», el dueño va a «Por aprobar». La tarjeta del Clip muest
 - **Lo que no existe.** Un aviso activo de «Tu video está listo», por correo o por WhatsApp, sería un módulo nuevo (otro canal, otra plantilla y su baja). **Queda pendiente** y fuera de los dos PR. Si Deivid lo quiere, tendría esta forma:
   - lo dispara el paso de `drafting` a `generated` de un Clip de la opción B;
   - sale por correo, con la misma baja que el resumen de la mañana;
-  - el texto sería «Tu video con avatar está listo. Ábrelo en Por aprobar para revisarlo.», que va por `qualify-copy-es` y hay que pasarlo por ux-designer.
+  - asunto: «Tu video con avatar ya está listo»;
+  - cuerpo: «El video de {negocio} con avatar ya está listo. Revísalo y dinos si lo apruebas.»;
+  - botón: «Ver mi video», que lleva directo al video (textos revisados por ux-designer).
+  - El correo va en un ticket aparte que crea el coordinador; no se construye en estos PR.
+- **PR 2 (solo en este contrato):** cuando un avatar no se pudo crear, la tarjeta del Clip en «Por aprobar» y la cuenta de Inicio lo marcan como «necesita tu atención».
+- **También pendiente:** un aviso por correo cuando un avatar no se pudo crear, en el mismo ticket aparte.
 
 ### 1.7 Uniones junto a un avatar: solo «Corte» (decidido por Deivid, PR 1)
 
-- **La regla.** La unión de un avatar con el tramo anterior, y la del tramo que sigue al avatar, solo pueden ser «Corte». Si no, el servidor rechaza con `code="avatar_join_cut_only"` y el texto «Junto a un avatar, la unión solo puede ser «Corte», para que su voz se escuche completa. Cámbiala y vuelve a intentarlo.» (**nuevo**, revisar con ux-designer). Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente.
+- **La regla.** La unión de un avatar con el tramo anterior, y la del tramo que sigue al avatar, solo pueden ser «Corte». Si no, el servidor rechaza con `code="avatar_join_cut_only"` y el texto «Al lado de un avatar, la unión tiene que ser «Corte», para que su voz se escuche completa. Cambia la unión de esa foto o video a «Corte» y vuelve a crear tu video.» (**nuevo**, revisar con ux-designer). Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente.
 - **Dónde se revisa (los tres caminos):**
   - en el primer «Crear» (opción B), antes de escribir nada;
   - en `place_block` (opción A): el tramo delante del que entra el avatar no puede traer una unión que no sea corte;
@@ -302,7 +313,7 @@ Es el patrón de espera que ya usa el armado local (`LocalVideoWait`) más el de
   - lo que queda pasado el final se recorta a él, y lo que empezaría en el final o después se quita;
   - un efecto sin tramo (todo el video) no cambia.
 - **Si con el largo real el Clip pasa de 60 s.** La voz real salió más larga que la estimación, pero cada bloque ya está limitado a 30 s. El Clip no se arma con un recorte silencioso. La entrada del plan de ese bloque queda con `refused="clip_too_long"`, en un brief nuevo y con valla. El bloque se muestra fallido con el texto «Con tu avatar, el video pasa de 60 segundos. Acorta lo que dice el avatar o quítalo.» (**nuevo**) y el Clip espera al dueño. El bloque mismo sigue en `generated`, porque la FSM no tiene un paso de `generated` a `failed`. Es raro: la estimación usa 15 caracteres por segundo y la voz real casi siempre lee más rápido. Si el bloque salió `generated` sin video guardado, pasa lo mismo con `refused="block_not_ready"`.
-- **Procedencia (regla 6).** El brief que mandó el dueño, con los tiempos estimados, queda como fila propia. El brief nuevo trae los tiempos reales y el registro dice cuántos textos o efectos se movieron o se quitaron. El asset del Clip guarda en `params.local.avatar_blocks` lo mismo que en la opción A (bloque, revisión, asset, proveedor, modelo y largo). No se agregó un `params.local.recipe_shift`: comparar los dos briefs da lo mismo sin tocar el armado.
+- **Procedencia (regla 6).** El brief que mandó el dueño, con los tiempos estimados, queda como fila propia, y el brief derivado apunta a él con `media.derived_from_brief_id` (lo pone solo el servidor; `create_draft` lo borra si llega de afuera). El brief nuevo trae los tiempos reales y el registro dice cuántos textos o efectos se movieron o se quitaron. El asset del Clip guarda en `params.local.avatar_blocks` lo mismo que en la opción A (bloque, revisión, asset, proveedor, modelo y largo). No se agregó un `params.local.recipe_shift`: comparar los dos briefs da lo mismo sin tocar el armado.
 
 ### 2.5 Tablas y campos
 
@@ -359,13 +370,9 @@ Es el patrón de espera que ya usa el armado local (`LocalVideoWait`) más el de
 
 P1 cuenta para el tope. P2 son 72 h y después `avatar_block_failed` con devolución. P3 es la variante vacía. P4 es la espera en `drafting` con latido. P5 exige 3 s propios. P6 hace que el bloque deje de contar cuando su Clip falla. P3 y P4 quedan como enmienda §14 del ADR 44, y P1, P2, P5 y P6 más la regla de uniones como enmienda §11 del ADR 50. Las dos están `[PROPUESTO]` y esperan la firma de Deivid.
 
-### 3.2 Abierta: efectos y textos sobre el tramo del avatar (punto 8 de la sesión del editor)
+### 3.2 Decidida: efectos y textos sobre el tramo del avatar (punto 8; Deivid, 2026-11-25) — PR 2
 
-Ni el §9 ni el código lo resuelven hoy. El armado local dibuja los textos sobre todo el Clip, avatar incluido, y las capas de efecto (`humo_capa`, `brasas_capa`, `vapor_capa`) también se ponen encima de cualquier tramo. «Cámara rápida» no es un efecto con tramo: es la velocidad del tramo, y el avatar ya va siempre a ×1 (`avatar_block_speed`). La opción A deja hoy poner textos y capas sobre un avatar.
-
-- **Pregunta:** ¿se permiten textos y capas de efecto encima del tramo de un avatar?
-- **Recomendación:** permitir los textos, porque se dibujan encima, no tocan la voz y el aviso de lugar de m-25026599 ya advierte cuando un texto tapa algo. Rechazar las capas de efecto que se cruzan con el tramo de un avatar, con un código nuevo `avatar_block_effect`: humo o brasas sobre la cara del presentador se ven mal y no aportan.
-- **Mientras tanto:** no se decidió nada. El PR 1 no agrega ninguna regla y se comporta como la opción A.
+«Textos sí, efectos no». Se aceptan textos sobre un avatar: se dibujan encima, no tocan la voz y el aviso de lugar de m-25026599 advierte cuando tapan algo. Se rechazan las capas `humo_capa`, `brasas_capa` y `vapor_capa` cuando su tramo se cruza con el de un bloque de avatar, con `code="avatar_block_effect"`. «Cámara rápida» no es un efecto con tramo: el avatar ya va siempre a ×1 (`avatar_block_speed`). **Se construye en el PR 2** y está anotado en la enmienda §11 del ADR 50. El PR 1 se comporta como la opción A.
 
 ### 3.3 El texto original de las preguntas (para el registro)
 

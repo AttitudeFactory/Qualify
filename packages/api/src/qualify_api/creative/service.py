@@ -2571,6 +2571,8 @@ class ContentService:
                 "media": brief.media.model_copy(
                     update={
                         "brand_application_version": 0,
+                        # m-25119867: server-owned provenance, never the caller's
+                        "derived_from_brief_id": None,
                         "prompt_compiler_version": 0,
                         "script_word_budget": None,
                         "script_rewrites": 0,
@@ -3097,7 +3099,7 @@ class ContentService:
             store = PostgresClipAvatarStore()
         verdict = plan_gate(tenant_id=tenant_id, clip_id=draft.id, brief=brief, store=store)
         if isinstance(verdict, PlanReady):
-            fresh = self._replace_clip_brief(tenant_id, draft, verdict.brief)
+            fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
             # rule 6: the brief the owner sent stays (estimated times); this log says
             # how many texts and effects moved to the blocks' real lengths, or were cut
             logger.info(
@@ -3106,7 +3108,7 @@ class ContentService:
                 verdict.moved,
                 verdict.dropped,
             )
-            return fresh, verdict.brief
+            return fresh, made_from
         if isinstance(verdict, PlanRefused):
             # a made block the Clip cannot take (over 60 s): refused on the plan, so the
             # screen shows it failed; the Clip waits for the owner
@@ -3118,11 +3120,16 @@ class ContentService:
 
     def _replace_clip_brief(
         self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
-    ) -> DraftRecord:
+    ) -> tuple[DraftRecord, ContentBrief]:
         """The Clip's new brief, in a transaction fenced by the worker's lease and the
         Clip's row (still `drafting`, same revision) — never a second writer. The brief
-        the owner sent stays as the record of what he asked for. The Clip as it reads
-        now."""
+        the owner sent stays as the record of what he asked for, and the new one points
+        to it (`media.derived_from_brief_id`, provenance). The Clip as it reads now, and
+        the brief as written."""
+        origin = brief.media.derived_from_brief_id or draft.brief_id
+        brief = brief.model_copy(
+            update={"media": brief.media.model_copy(update={"derived_from_brief_id": origin})}
+        )
         repo = self._repo
         if isinstance(repo, PostgresContentRepository):
             from qualify_shared.db.session import tenant_unit_of_work  # noqa: PLC0415
@@ -3157,7 +3164,7 @@ class ContentService:
         fresh = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
         if fresh is None:
             raise UnknownDraft(str(draft.id))
-        return fresh
+        return fresh, brief
 
     def _generate(self, *, tenant_id: UUID, draft: DraftRecord) -> None:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)

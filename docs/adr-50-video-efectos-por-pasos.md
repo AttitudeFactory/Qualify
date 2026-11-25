@@ -395,4 +395,7 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 - **P6. Cupo.** Un bloque cuyo Clip **falló** deja de contar en el cupo en ese momento. Esto completa la regla del §9, según la cual un bloque deja de contar «al aprobarse su Clip o con la retención». Se lee del estado del Clip, así que vale para las dos opciones.
 - **Uniones (decisión de Deivid, 2026-11-25).** Una unión junto a un avatar solo puede ser «Corte», en las dos opciones y también en el armado. Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente. El código es `avatar_join_cut_only`. La regla lee la unión de cada tramo (`SourceSegment.transition_in`, del §10) y vale con `QUALIFY_CLIP_BLOCK_TRANSITIONS` apagado o encendido: es la condición para encenderlo.
 
-**Fuera de esta enmienda.** Los efectos y textos sobre el tramo del avatar (pregunta abierta en `docs/contrato-avatar-primer-crear.md` §3), la pantalla (m-25112921) y la medición pagada (m-25112919).
+- **Efectos y textos sobre un avatar (punto 8, decidido por Deivid el 2026-11-25, según informó el coordinador; se construye en el PR 2).** «Textos sí, efectos no». Se aceptan textos sobre el tramo de un avatar. Se rechazan `humo_capa`, `brasas_capa` y `vapor_capa` cuando se cruzan con un bloque de avatar, con `avatar_block_effect`.
+- **No se encienden** `QUALIFY_CLIP_AVATAR_PRESENTER` ni `QUALIFY_CLIP_AVATAR_ANIMATED` antes del PR 2. Hasta entonces, un Clip cuyo avatar falla espera para siempre.
+
+**Fuera de esta enmienda.** La pantalla (m-25112921), la medición pagada (m-25112919) y el correo de aviso, que va en un ticket aparte.
