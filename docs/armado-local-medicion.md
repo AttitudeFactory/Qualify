@@ -488,6 +488,18 @@ paso de unión usa ~275 MiB. El costo es el tiempo: +372 s con fundidos y +518 s
 desde su comienzo (sin buscar). Si hiciera falta bajar ese tiempo, la opción es buscar el
 cuadro clave más cercano en `encode_transition`; queda anotado, sin ticket.
 
+Después de la revisión (2026-11-25) cada tramo se decodifica desde el cuadro clave anterior
+(`JoinClip.seek`; la salida es la misma byte por byte). Repetí `blocks3_fade2` en las mismas
+condiciones: pico anon 338 MiB, unión 276 MiB, 929 s de CPU y 936 s de pared. No bajó el
+tiempo. Esa corrida coincidió con pruebas en la misma máquina, pero con 3 bloques casi todo el
+costo de la unión está en volver a codificar el Clip, no en decodificar desde el comienzo. La
+búsqueda ayuda más con muchos bloques.
+
+**Pendiente:** `blocks3_wipe2` después de la búsqueda, `blocks8_cut` y `blocks8_mixed7` (60 s,
+8 bloques, 7 uniones mezcladas). Los casos están en el harness y se corren con
+`EF15_VOLUME=m25114465-clips CPUS=1 bash deploy/measure/local-video-memory.sh run qualify-memtest:deps blocks8_cut blocks8_mixed7`
+(antes, `make … --only k4_h264_60.mp4 hd_h264_15.mp4` si el volumen no existe).
+
 ## Pendiente
 
 - **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el

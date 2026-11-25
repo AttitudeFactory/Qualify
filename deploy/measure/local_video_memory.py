@@ -131,6 +131,20 @@ CASES: dict[str, tuple[list[tuple[str, float, float, float, str]], int]] = {
         ],
         0,
     ),
+    # m-25114465 (review #3): the longest Clip, 60 s in 8 blocks of 7.5 s
+    "blocks8_cut": (
+        [
+            ("k4_h264_60.mp4", 0, 15, 2, "video"),
+            ("hd_h264_15.mp4", 0, 7.5, 1, "video"),
+            ("k4_h264_60.mp4", 15, 30, 2, "video"),
+            ("hd_h264_15.mp4", 7.5, 15, 1, "video"),
+            ("k4_h264_60.mp4", 30, 45, 2, "video"),
+            ("hd_h264_15.mp4", 0, 7.5, 1, "video"),
+            ("k4_h264_60.mp4", 45, 60, 2, "video"),
+            ("hd_h264_15.mp4", 7.5, 15, 1, "video"),
+        ],
+        0,
+    ),
 }
 #: m-25114465: the cases whose blocks blend (`SourceSegment.transition_in` of each block,
 #: in order; the first is always None). Same stretches as `blocks3_cut`.
@@ -139,9 +153,11 @@ _WIPE = {"effect_id": "barrido", "version": 2, "params": {"duration_s": 0.8}}
 TRANSITIONS: dict[str, tuple[dict[str, Any] | None, ...]] = {
     "blocks3_fade2": (None, _FADE, _FADE),
     "blocks3_wipe2": (None, _WIPE, _WIPE),
+    # 7 joins blended, fades and wipes in turn
+    "blocks8_mixed7": (None, _FADE, _WIPE, _FADE, _WIPE, _FADE, _WIPE, _FADE),
 }
 for _name in TRANSITIONS:
-    CASES[_name] = CASES["blocks3_cut"]
+    CASES[_name] = CASES["blocks8_cut" if _name.startswith("blocks8") else "blocks3_cut"]
 
 
 # ---------------------------------------------------------------------------------- make
