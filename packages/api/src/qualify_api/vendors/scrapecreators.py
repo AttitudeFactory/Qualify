@@ -186,9 +186,14 @@ FEATURE_CREATOR_REELS = "creator_reels"
 #: The weekly TikTok read per hashtag of a business's rubro (m-25026378,
 #: `qualify_api.hashtags.weekly`; migration 0167 widens the CHECK to ten).
 FEATURE_HASHTAG_WEEKLY = "hashtag_weekly"
+#: «Buscar más cuentas en TikTok» of «Descubrir cuentas nuevas» (RF-07b, m-25119482): its
+#: own budget (50/day, 200/month, `creators.discover_paid`) is summed over this feature
+#: alone, inside the business's R5 cap (migration 0184 widens the CHECK to eleven).
+FEATURE_DISCOVER_SEARCH = "discover_accounts_search"
 FEATURES = frozenset(
     {
         FEATURE_CREATOR_PROFILE,
+        FEATURE_DISCOVER_SEARCH,
         FEATURE_CREATOR_REELS,
         FEATURE_HASHTAG_WEEKLY,
         FEATURE_PROFILE,
