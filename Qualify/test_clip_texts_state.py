@@ -169,9 +169,20 @@ def test_with_three_texts_mas_texto_is_off_and_says_why(editor_on: None) -> None
         == ("Tu video puede tener hasta 3 textos. Quita uno para poner otro.")
     )
     assert state.clip_tl_add_note == clip_texts_vm.TEXTS_FULL  # above the «+»
+    notice = state.clip_edit_notice
     assert CreativeState.open_clip_flow.fn(state, "text") == []
-    assert state.clip_edit_notice == clip_texts_vm.TEXTS_FULL
+    # m-25114465 (live test): said once, by the note — the live line does not repeat it
+    assert state.clip_edit_notice == notice != clip_texts_vm.TEXTS_FULL
     assert len(state.clip_text_uses) == 3
+    # the «Texto en pantalla» tab reached another way (a tab of the side panel) says it
+    # itself, and the note above «Agregar» leaves it out meanwhile: never twice on screen
+    CreativeState.open_clip_flow.fn(state, "effect")
+    CreativeState.switch_clip_flow.fn(state, "text")
+    assert state.clip_text_add_reason == clip_texts_vm.TEXTS_FULL
+    assert not state.clip_text_panel_on
+    assert state.clip_tl_add_note == ""
+    CreativeState.done_clip_block.fn(state)
+    assert state.clip_tl_add_note == clip_texts_vm.TEXTS_FULL
     # the orbit's «Texto» is off by the same var (`add_off`), described by the note
     from . import clip_editor_view
 
@@ -181,6 +192,20 @@ def test_with_three_texts_mas_texto_is_off_and_says_why(editor_on: None) -> None
     CreativeState.select_clip_block.fn(state, "texto-t1")
     CreativeState.clip_block_action.fn(state, "Quitar")
     assert not state.clip_text_full and state.clip_tl_add_note == ""
+
+
+def test_the_third_text_with_its_panel_open_keeps_the_note(editor_on: None) -> None:
+    """Final review of m-25114465: the tab shows a TEXT (the 3rd just put), not why no
+    text goes in — the note above «Agregar» still says why «Texto» is off."""
+    state = _timeline_state()
+    _put_on(state, "uno", _PHOTO)
+    _put_on(state, "dos", _KEY)
+    CreativeState.hear_clip_time.fn(state, 17.0, "pause")
+    CreativeState.open_clip_flow.fn(state, "text")  # the 3rd, its panel open
+    uid = state._clip_text_current()
+    CreativeState.set_clip_text_value.fn(state, uid, "tres")
+    assert state.clip_text_full and state.clip_text_panel_on
+    assert state.clip_tl_add_note == clip_texts_vm.TEXTS_FULL
 
 
 # -- criterion 3: two texts «Arriba» at once ----------------------------------------------------
@@ -631,3 +656,115 @@ def test_the_letters_size_is_chosen_in_the_panel(editor_on: None) -> None:
     assert state.clip_text_uses[0]["size"] == "medium"
     assert state.clip_edit_notice == clip_texts_vm.SIZE_DOWN_LINE
     assert state.clip_text_panel_row["large_off"] == "1"
+
+
+# -- m-25114465: the first free gap ----------------------------------------------------------
+
+
+def _new_span(state: CreativeState, uid: str) -> tuple[float, float]:
+    media = state._clip_tl_media()
+    use = next(
+        u for u in clip_texts_vm.resolve_text_uses(state.clip_text_uses, media) if u["uid"] == uid
+    )
+    return float(use["start"]), float(use["end"])  # type: ignore[arg-type]
+
+
+def test_mas_texto_in_a_gap_moves_the_marker_and_its_panel_says_its_seconds(
+    editor_on: None,
+) -> None:
+    state = _timeline_state()  # 25 s: the photo 0–2, the own video 2–17, the other 17–25
+    first = _put_on(state, "Hoy 2×1", _PHOTO, _KEY)  # 0–17
+    CreativeState.hear_clip_time.fn(state, 3.0, "pause")  # inside the first text
+    events = CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    assert uid and uid != first
+    # not on top of the first text: the gap after it, to the end
+    assert _new_span(state, uid) == (17.0, 25.0)
+    # the marker goes there (the preview shows it while it is typed)
+    assert state.clip_edit_playhead == 17.0
+    # said INSIDE the modal panel (a polite region), not on the timeline's line behind it
+    assert state.clip_text_panel_row["added_line"] == "Pusiste un texto de 0:17 a 0:25."
+    assert "Pusiste un texto de" not in state.clip_edit_notice
+    scripts = _scripts(events)
+    assert "seq.goTo(h, 17.00)" in scripts
+    assert "getElementById('clip-text-field')" in scripts
+    # an empty text has no block yet: no scroll at creation
+    assert "__qTimelineRevealNew" not in scripts
+
+
+def test_mas_texto_at_the_marker_does_not_jump_the_preview(editor_on: None) -> None:
+    state = _timeline_state()
+    CreativeState.hear_clip_time.fn(state, 6.2, "pause")  # it goes at 6.0, on the magnet
+    events = CreativeState.open_clip_flow.fn(state, "text")
+    assert _new_span(state, state._clip_text_current()) == (6.0, 25.0)
+    assert state.clip_edit_playhead == 6.2  # not moved 0,2 s back
+    assert state.clip_text_panel_row["added_line"] == "Pusiste un texto de 0:06 a 0:25."
+    assert "seq.goTo" not in _scripts(events)
+
+
+def test_closing_a_written_new_text_scrolls_to_its_block_and_stays_quiet(
+    editor_on: None,
+) -> None:
+    state = _timeline_state()
+    CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    CreativeState.set_clip_text_value.fn(state, uid, "Hoy 2×1")
+    CreativeState.commit_clip_text.fn(state, uid, "Hoy 2×1")
+    assert state.clip_edit_notice == ""  # no generic «Pusiste un texto.» on its first save
+    events = CreativeState.done_clip_block.fn(state)  # «Listo»: the panel closes
+    assert f'__qTimelineRevealNew("texto-{uid}")' in _scripts(events)
+    # a later edit of that text says its line, and its panel no longer says where it went
+    CreativeState.select_clip_block.fn(state, clip_texts_vm.text_block_id(uid))
+    assert state.clip_text_panel_row["added_line"] == ""
+    CreativeState.set_clip_text_value.fn(state, uid, "Hoy 3×2")
+    CreativeState.commit_clip_text.fn(state, uid, "")
+    assert state.clip_edit_notice == "Cambiaste el texto de tu video."
+
+
+def test_closing_an_empty_new_text_scrolls_nowhere(editor_on: None) -> None:
+    state = _timeline_state()
+    CreativeState.open_clip_flow.fn(state, "text")
+    events = CreativeState.done_clip_block.fn(state)
+    assert state.clip_text_uses == []
+    assert "__qTimelineRevealNew" not in _scripts(events)
+
+
+def test_the_added_line_keeps_the_seconds_it_was_put_at(editor_on: None) -> None:
+    state = _timeline_state()
+    CreativeState.hear_clip_time.fn(state, 6.0, "pause")
+    CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    CreativeState.set_clip_text_value.fn(state, uid, "Hoy")
+    CreativeState.nudge_clip_text.fn(state, uid, "end", -0.5)  # its seconds change
+    assert state.clip_text_panel_row["time_line"].startswith("Se ve de 0:06 a 0:24,5.")
+    assert state.clip_text_panel_row["added_line"] == "Pusiste un texto de 0:06 a 0:25."
+
+
+def test_choosing_another_block_from_a_new_text_does_not_scroll_to_it(editor_on: None) -> None:
+    state = _timeline_state()
+    CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    CreativeState.set_clip_text_value.fn(state, uid, "Hoy")
+    events = CreativeState.select_clip_block.fn(state, _KEY)  # block B chosen
+    assert state.clip_edit_block == _KEY
+    assert "__qTimelineRevealNew" not in _scripts(events)
+    assert state._clip_text_fresh == "" and state._clip_text_quiet == ""
+
+
+def test_atras_closing_a_new_text_lets_it_go_and_scrolls_to_it(editor_on: None) -> None:
+    """m-25114465: the phone's «atrás» (or a reload without `?bloque=`) closes the tab of
+    a text just put as «Listo» does: the put ends and the tracks scroll to it."""
+    state = _timeline_state()
+    step = state.create_step_n
+    CreativeState.open_clip_flow.fn(state, "text")
+    uid = state._clip_text_current()
+    CreativeState.set_clip_text_value.fn(state, uid, "Hoy")
+    events = CreativeState.reconcile_reel_editor_route.fn(state, f"?paso={step}")
+    assert state.clip_edit_block == ""
+    assert state._clip_text_fresh == "" and state._clip_text_quiet == ""
+    assert f'__qTimelineRevealNew("texto-{uid}")' in _scripts(events)
+    # an empty one goes, and nothing scrolls
+    CreativeState.open_clip_flow.fn(state, "text")
+    events = CreativeState.reconcile_reel_editor_route.fn(state, f"?paso={step}")
+    assert len(state.clip_text_uses) == 1
+    assert "__qTimelineRevealNew" not in _scripts(events)

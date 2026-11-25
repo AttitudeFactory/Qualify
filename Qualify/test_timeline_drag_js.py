@@ -631,3 +631,23 @@ def test_the_drag_script_uses_the_pure_stops() -> None:
     assert "core().revealScroll(" in script
     css = (_ASSETS / "qualify-creative.css").read_text(encoding="utf-8")
     assert "var(--tl-bubble-x, 0px)" in css
+
+
+def test_a_block_just_added_is_scrolled_into_view_sideways_only() -> None:
+    """m-25114465 (UX review): `__qTimelineRevealNew` reuses `core.revealScroll` on the
+    tracks' horizontal axis only — up and down is `__qTimeline.reveal`'s — and honours
+    reduced motion."""
+    script = (_ASSETS / "timeline-drag.js").read_text(encoding="utf-8")
+    start = script.index("function revealNew(")
+    body = script[start : script.index("window.__qTimelineRevealNew = revealNew;")]
+    assert body.count("core().revealScroll(") == 1
+    assert "scrollTop" not in body and "innerHeight" not in body
+    assert 'reduceMotion() ? "auto" : "smooth"' in body
+    assert "(prefers-reduced-motion: reduce)" in script
+    # a block at 900–940 px in a 375 px phone view (8–367 with its margin): the tracks
+    # move by what it is past the right edge
+    got = _run(
+        "return core.revealScroll({scrollLeft: 100, maxScroll: 2000, viewLeft: 0,"
+        " viewRight: 375, blockLeft: 900, blockRight: 940, edge: 'start', margin: 8});"
+    )
+    assert got == 100 + 940 - 367
