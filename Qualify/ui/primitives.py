@@ -320,10 +320,14 @@ def callout(
     message: str | rx.Var,
     tone: str = "info",
     icon: str | None = None,
+    *,
+    live: bool = True,
     **props,
 ) -> rx.Component:
     """Inline, persistent feedback tied to a place on the page (a load error above a
-    list, a warning about a limit). Not for transient confirmations — use ``rx.toast``."""
+    list, a warning about a limit). Not for transient confirmations — use ``rx.toast``.
+    ``live=False`` drops its own `role` (alert/status) for a callout that sits inside a
+    live region already: a region nested in another is read twice, or not at all."""
     default_icon = {
         "error": "triangle-alert",
         "warn": "triangle-alert",
@@ -332,12 +336,13 @@ def callout(
         "neutral": "info",
         "accent": "info",
     }[tone if tone in T.TONE_SCALE else "info"]
+    if live:
+        props = {"role": "alert" if tone == "error" else "status", **props}
     return rx.callout(
         message,
         icon=icon or default_icon,
         variant="surface",
         width="100%",
-        role="alert" if tone == "error" else "status",
         **T.tone_scheme(tone),
         **props,
     )

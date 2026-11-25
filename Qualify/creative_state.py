@@ -53,6 +53,7 @@ from qualify_api.creative.parts import (
     PartsOverBudget,
     PartsUnavailable,
 )
+from qualify_api.creative.placement_ai import placement_enabled
 from qualify_api.creative.queue_visibility import CANCEL_NOT_AVAILABLE, QueueCancellationUnavailable
 from qualify_api.creative.service import (
     ApprovalBlocked,
@@ -137,6 +138,7 @@ from .catalog_vm import (
 )
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
+    ClipPlacementRead,
     PartsPreviewsShort,
     acting_user_id,
     approval_videos,
@@ -151,6 +153,7 @@ from .creative_provider import (
     business_kind,
     cancel_draft_queue,
     catalog_products,
+    clip_placement_advice,
     clip_text_look,
     configured_video_engine,
     creations_balance,
@@ -1931,6 +1934,21 @@ class CreativeState(rx.State):
     #: The editor before the first key of the text being typed: leaving the field says
     #: what changed (typing is not a change yet), {} = nothing typed.
     _clip_text_before: dict[str, Any] = {}
+    #: EF-20 phase 2 (m-25026599): the advice already kept for the Clip's uploaded videos
+    #: (`creative_provider.clip_placement_advice`, `PlacementAdvice.to_params` per source
+    #: key; {} = none, or the switch off), what it was read for (its business and videos,
+    #: `clip_texts_vm.placement_signature`), whether a video had none yet and when it was
+    #: read (`time.monotonic`): read once per Clip, never per key. Server-side only: it
+    #: lives in the session's state, which logout destroys.
+    _clip_placement: dict[str, dict[str, Any]] = {}
+    _clip_placement_asked: str = ""
+    _clip_placement_missing: bool = False
+    _clip_placement_at: float = 0.0
+    #: What the warning's button just did, said in that text's panel («Listo: el texto
+    #: quedó …», `clip_texts_vm.placement_done_line`) until the editor's next change,
+    #: another text chosen or the panel shut.
+    _clip_placement_done: str = ""
+    _clip_placement_done_line: str = ""
     clip_effect_ids: list[str] = []
     #: ED-04 m-25026627: the layer effects put on the video, each a block of the «Efectos»
     #: rows — `{uid, effect_id, start, end, lane, blocks}` (`clip_editor_vm`, «uses»):
@@ -7494,6 +7512,8 @@ class CreativeState(rx.State):
         self._clip_notice_done()
         # m-25114465: once any change of a text just put was said, its next save speaks
         self._clip_text_quiet = ""
+        # EF-20: «Listo: el texto quedó …» was about the last change only
+        self._clip_placement_done = self._clip_placement_done_line = ""
         after = self._clip_edit_snapshot()
         line = clip_editor_vm.change_message(before, after)
         if line:
@@ -7507,6 +7527,7 @@ class CreativeState(rx.State):
         self.clip_text_error = ""
         self._clip_text_put = []
         self._clip_text_fresh = self._clip_text_quiet = self._clip_text_fresh_line = ""
+        self._clip_placement_done = self._clip_placement_done_line = ""
         self._clip_text_before = {}
         self.clip_effect_times = {}
         self.clip_media_seconds = {}
@@ -7926,16 +7947,108 @@ class CreativeState(rx.State):
         if not uid:
             return {}
         media = self._clip_tl_media()
-        use = next((u for u in self._clip_text_resolved(media) if u["uid"] == uid), None)
+        resolved = self._clip_text_resolved(media)
+        use = next((u for u in resolved if u["uid"] == uid), None)
         if use is None:
             return {}
         row = clip_texts_vm.text_panel_row(
-            use, media, subtitles=self._clip_subtitles_on(), palette=self.clip_brand_palette
+            use,
+            media,
+            subtitles=self._clip_subtitles_on(),
+            palette=self.clip_brand_palette,
+            placement=self._clip_placement_kept(),
+            taken=self._clip_text_places_taken(resolved, use),
         )
         # m-25114465: said inside the (modal) panel, where a screen reader still hears it
         # — the seconds it was PUT at, fixed then (it is said in the past tense)
         row["added_line"] = self._clip_text_fresh_line if uid == self._clip_text_fresh else ""
+        # EF-20 UX review: what «Poner el texto arriba» did, in the same live region as
+        # the warning it replaces (never both at once)
+        done = uid == self._clip_placement_done and not row["placement_warning"]
+        row["placement_done"] = self._clip_placement_done_line if done else ""
         return row
+
+    @staticmethod
+    def _clip_text_places_taken(
+        resolved: list[dict[str, object]], use: Mapping[str, object]
+    ) -> list[str]:
+        """EF-20: the places other written texts take at `use`'s seconds (the warning's
+        button never offers them: two texts in one place stop «Siguiente»)."""
+        return clip_texts_vm.places_taken(
+            resolved,
+            str(use["uid"]),
+            start=float(use["start"]),  # type: ignore[arg-type]
+            end=float(use["end"]),  # type: ignore[arg-type]
+        )
+
+    def _clip_placement_kept(self) -> list[dict[str, Any]]:
+        """EF-20 phase 2: the kept advice of the Clip's videos now, in their order (a video
+        taken out of the Clip no longer counts)."""
+        kept = self._clip_placement
+        return [kept[key] for key in clip_texts_vm.placement_keys(self.clip_videos) if key in kept]
+
+    @rx.event
+    async def load_clip_placement(self) -> None:
+        """EF-20 phase 2 (m-25026599): read the advice already kept for the Clip's uploaded
+        videos. Two hidden readers call it: the timeline's (`clip_placement_videos`, so
+        «+ Texto» already knows where a new text is born, decision A) and the text
+        panel's (`clip_placement_mount`, another text or video set). It reads only when
+        due — once per Clip (its business and videos), and again only when a video had
+        none yet and a minute went by (`clip_texts_vm.placement_ask_due`). With the switch
+        off (`QUALIFY_VIDEO_PLACEMENT_AI`) it does nothing at all: no session lookup, no
+        thread. Server-side with the session's own business; it only reads (the
+        `media-worker` made the advice). Whatever fails, the panel shows nothing new."""
+        if not placement_enabled():
+            return
+        keys = clip_texts_vm.placement_keys(self.clip_videos)
+        if not keys:
+            return
+        try:
+            tenant_id = await self._clip_preview_tenant()
+        except Exception as exc:  # noqa: BLE001 — a hint is never worth failing the panel
+            logger.warning("placement advice tenant not read: %s", type(exc).__name__)
+            return
+        if tenant_id is None:
+            return
+        signature = clip_texts_vm.placement_signature(str(tenant_id), keys)
+        now = time.monotonic()
+        if not clip_texts_vm.placement_ask_due(
+            signature,
+            asked=self._clip_placement_asked,
+            missing=self._clip_placement_missing,
+            asked_at=self._clip_placement_at,
+            now=now,
+        ):
+            return
+        if signature != self._clip_placement_asked:
+            self._clip_placement = {}  # another Clip or business: nothing of the last one
+        self._clip_placement_asked = signature
+        self._clip_placement_at = now
+        try:
+            read = await asyncio.to_thread(clip_placement_advice, tenant_id, keys)
+        except Exception as exc:  # noqa: BLE001 — the provider never raises; belt and braces
+            logger.warning("placement advice not read: %s", type(exc).__name__)
+            read = ClipPlacementRead(failed=True, waiting=True)
+        # a failed read keeps what this Clip already showed; a video still without advice
+        # (and only an uploaded one: the others never get it) is asked again later
+        if not read.failed:
+            self._clip_placement = dict(read.advice)
+        self._clip_placement_missing = read.waiting
+
+    @rx.var
+    def clip_placement_videos(self) -> str:
+        """EF-20 decision A: the timeline's hidden reader's React key — the Clip's videos
+        only — so the advice is already kept when «+ Texto» puts a text (it is born in the
+        recommended place), not just once a text's panel is open."""
+        return "|".join(clip_texts_vm.placement_keys(self.clip_videos))
+
+    @rx.var
+    def clip_placement_mount(self) -> str:
+        """EF-20 phase 2: the hidden reader's React key in the text's panel — the text and
+        the Clip's videos — so another text or another video set mounts it again and
+        `load_clip_placement` runs (it reads only when due)."""
+        keys = clip_texts_vm.placement_keys(self.clip_videos)
+        return f"{self._clip_text_current()}|" + "|".join(keys)
 
     @rx.var
     def clip_text_fade_s(self) -> float:
@@ -7993,6 +8106,18 @@ class CreativeState(rx.State):
         )
         if why:
             return ""
+        # EF-20, Deivid's decision A: with kept advice for the Clip it is born in the
+        # recommended place (or the next free one that does not cover the product); no
+        # advice: as before. Only this new text — one that has a place never moves.
+        subtitles = self._clip_subtitles_on()
+        born = clip_texts_vm.new_text_place(
+            self._clip_placement_kept(),
+            clip_texts_vm.resolve_text_uses(uses, media),
+            uid,
+            subtitles=subtitles,
+        )
+        if born != clip_texts_vm.default_place(subtitles=subtitles):
+            uses = clip_texts_vm.set_place(uses, uid, born, subtitles=subtitles)
         self.clip_text_uses = uses
         self._clip_text_put = [uid]
         self.clip_text_error = ""
@@ -8069,6 +8194,41 @@ class CreativeState(rx.State):
         """«Arriba · En el medio · Abajo». «Abajo» is off while the subtitles are on: it
         says why and the text stays where it is (Deivid 2026-11-23)."""
         value = place[0] if isinstance(place, list) and place else place
+        self._clip_text_set_place(uid, value)
+
+    @rx.event
+    def use_clip_text_placement(self, uid: str) -> rx.event.EventSpec | None:
+        """EF-20 phase 2: «Poner el texto arriba», the warning's button — the ONLY way the
+        advice moves a text, and only when the owner taps it (Deivid 2026-11-23: never by
+        itself, never blocking). The place is the one the warning shows now, worked out
+        here (never one the browser names); without a warning it does nothing. The
+        button then leaves the page: the focus goes to the place chosen (ux-designer)."""
+        if not isinstance(uid, str) or uid != self._clip_text_current():
+            return None
+        resolved = self._clip_text_resolved()
+        use = next((u for u in resolved if str(u.get("uid")) == uid), None)
+        if use is None:
+            return None
+        hint = clip_texts_vm.placement_hint(
+            self._clip_placement_kept(),
+            str(use.get("place")),
+            subtitles=self._clip_subtitles_on(),
+            taken=self._clip_text_places_taken(resolved, use),
+        )
+        if not hint["use_place"]:
+            return None
+        self._clip_text_set_place(uid, hint["use_place"])
+        # UX review: said once, inside the panel (its live region), not by a toast nor
+        # again by the timeline's line («Cambiaste el lugar del texto.»), which sits
+        # behind the modal panel
+        self.clip_edit_notice = ""
+        self._clip_placement_done = uid
+        self._clip_placement_done_line = hint["done"]
+        block = clip_texts_vm.text_block_id(uid)
+        return rx.call_script(clip_texts_vm.focus_place_script(block))
+
+    def _clip_text_set_place(self, uid: str, value: object) -> None:
+        """`set_clip_text_place`'s rule, shared with the warning's button."""
         if not isinstance(value, str) or not self._clip_text_has(uid):
             return
         subtitles = self._clip_subtitles_on()
@@ -8372,6 +8532,9 @@ class CreativeState(rx.State):
         sideways; else ""."""
         fresh = self._clip_text_fresh
         self._clip_text_leave(old)
+        # EF-20 review: «Listo: el texto quedó …» belongs to the panel it was said in —
+        # another text chosen or the panel closed lets it go
+        self._clip_placement_done = self._clip_placement_done_line = ""
         closing = not new or clip_editor_vm.is_flow(new)
         if closing and fresh and self._clip_text_has(fresh) and not self._clip_text_fresh:
             return clip_texts_vm.text_block_id(fresh)
