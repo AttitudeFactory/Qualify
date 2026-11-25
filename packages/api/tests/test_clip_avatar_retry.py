@@ -656,8 +656,12 @@ def test_a_brief_stamped_meanwhile_is_read_again_not_refused(
             world.run(made.clip_id)  # stamps the second failure: a new brief
 
     monkeypatch.setattr(world.service, "_refuse_planned_recipe", the_clips_pass_runs_meanwhile)
+    rows, calls = set(world.ledger.rows), len(world.dispatcher.calls)
     assert world.retry(made) == made.block_ids[0]
     assert world.repo.drafts[made.block_ids[0]].status == DRAFTING
+    # read again once, written once: one new charge row, one dispatch
+    assert set(world.ledger.rows) - rows == {(made.block_ids[0], 2)}
+    assert world.dispatcher.calls[calls:] == [(TENANT_ID, made.block_ids[0])]
     plan = {e.slot: e for e in _clip_brief(world, made.clip_id).media.clip_avatar_plan}
     assert plan[1].failed_at is None and plan[2].failed_at is not None
 
@@ -682,3 +686,49 @@ def test_the_owner_facing_words_of_the_review() -> None:
     assert "mientras sale el avatar" in ca.AVATAR_EFFECT_TEXT
     assert "No se cobró nada de los avatares" in ca.AVATAR_BLOCK_FAILED_TEXT
     assert "presentador o avatar animado" in ca.KIND_CHANGE_TEXT
+
+
+def _brief_moves_on_every_read(world: World, made: ca.ClipWithBlocks, monkeypatch: Any) -> None:
+    """The Clip's brief changes after every read of the action (twice in a row): its lock
+    always finds another brief."""
+    planned = world.service._planned_block  # noqa: SLF001
+
+    def and_the_brief_moves(*args: Any, **kwargs: Any) -> Any:
+        found = planned(*args, **kwargs)
+        draft = world.repo.drafts[made.clip_id]
+        world.repo.replace_brief(
+            tenant_id=TENANT_ID,
+            draft_id=made.clip_id,
+            user_id=USER_ID,
+            brief=world.repo.briefs[draft.brief_id],
+        )
+        return found
+
+    monkeypatch.setattr(world.service, "_planned_block", and_the_brief_moves)
+
+
+def test_retry_with_the_brief_moving_twice_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, made = _failed_world()
+    _brief_moves_on_every_read(world, made, monkeypatch)
+    rows, calls = dict(world.ledger.rows), list(world.dispatcher.calls)
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        world.retry(made)
+    assert refused.value.code == "clip_not_waiting"
+    block = world.repo.drafts[made.block_ids[0]]
+    assert (block.status, block.revision) == (FAILED, 1)
+    assert dict(world.ledger.rows) == rows and world.dispatcher.calls == calls
+
+
+def test_remove_with_the_brief_moving_twice_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, made = _failed_world()
+    _brief_moves_on_every_read(world, made, monkeypatch)
+    rows, calls = dict(world.ledger.rows), list(world.dispatcher.calls)
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        world.remove(made)
+    assert refused.value.code == "clip_not_waiting"
+    assert made.block_ids[0] not in world.store.removed
+    assert dict(world.ledger.rows) == rows and world.dispatcher.calls == calls
