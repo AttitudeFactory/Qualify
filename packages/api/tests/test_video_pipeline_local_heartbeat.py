@@ -21,6 +21,7 @@ from qualify_api.creative.video_pipeline import local
 from .test_content_service import TENANT_ID
 from .test_video_pipeline_local import (
     PHOTO_KEY,
+    SIZE,
     VIDEO_KEY,
     ReadingStore,
     _local_clip,
@@ -33,6 +34,25 @@ pytest.importorskip("av")
 
 BEAT_THREAD = "creative-local-beat"
 INTERVAL_S = 0.01
+
+
+@pytest.fixture(autouse=True)
+def no_normalize_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `normalize_local` jobs in memory, as `test_video_pipeline_local` does: the real
+    door (`gallery_jobs` through `tenant_session`) would reach Postgres — never offline."""
+    from qualify_api.creative.video_pipeline import local_sources
+
+    jobs = local_sources.InMemoryLocalSourceJobs()
+    monkeypatch.setattr(local_sources, "default_jobs", lambda: jobs)
+
+
+@pytest.fixture(autouse=True)
+def assemble_at_the_sources_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Assembled at the tiny sources' own 9:16 size, not 1080×1920 (the subject is the
+    beat, not the size): `render_local_part` reads it at call time."""
+    from qualify_creative.video import prepare
+
+    monkeypatch.setattr(prepare, "TARGET_SIZE", SIZE)
 
 
 @pytest.fixture
