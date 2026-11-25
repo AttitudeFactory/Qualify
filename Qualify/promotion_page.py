@@ -21,6 +21,7 @@ from .promotion_unpublished_ui import (
     unpublished_country,
     unpublished_feed_video,
     unpublished_images,
+    unpublished_products,
     unpublished_review,
     unpublished_text,
     unpublished_vertical_video,
@@ -159,9 +160,10 @@ def _source_choice(source: rx.Var) -> rx.Component:
                             "Con el video vertical",
                             "Con la imagen vertical",
                         ),
-                        rx.cond(
-                            source.media_kind == "videos",
-                            "Con los dos videos",
+                        rx.match(
+                            source.media_kind,
+                            ("videos", "Con los dos videos"),
+                            ("carousel", "Varios productos (carrusel)"),
                             "Con las dos imágenes",
                         ),
                     )
@@ -179,9 +181,14 @@ def _source_choice(source: rx.Var) -> rx.Component:
                     rx.cond(
                         source.story,
                         "Solo en historias de Instagram",
-                        rx.cond(
-                            source.media_kind == "videos",
-                            "Dos videos de la pieza: para el perfil y vertical",
+                        rx.match(
+                            source.media_kind,
+                            ("videos", "Dos videos de la pieza: para el perfil y vertical"),
+                            (
+                                "carousel",
+                                "Muestra de 2 a 10 productos en un solo anuncio: la gente "
+                                "desliza y ve la foto y el precio de cada uno.",
+                            ),
                             "Dos imágenes de la pieza: para el perfil y vertical",
                         ),
                     ),
@@ -1110,6 +1117,7 @@ def promotion_index() -> rx.Component:
                     ("greeting", _greeting()),
                     ("audience", promotion_audience()),
                     ("images", unpublished_images()),
+                    ("products", unpublished_products()),
                     ("feed_video", unpublished_feed_video()),
                     ("vertical_video", unpublished_vertical_video()),
                     ("text", unpublished_text()),

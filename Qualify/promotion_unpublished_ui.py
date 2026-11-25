@@ -1,20 +1,32 @@
 """The unpublished-piece steps of the promotion wizard (m-24828982): the piece's own
-4:5 and 9:16 files, the ad's text, one country, and a review with both previews."""
+4:5 and 9:16 files, the ad's text, one country, and a review with both previews.
+m-25113484: or a carousel of 2 to 10 Catálogo products, in the Instagram feed only."""
 
 from __future__ import annotations
 
 import reflex as rx
 
 from .connections_state import SUPPORT_QUERY_PARAM
+from .post_card import viewable_src
 from .promotion_state import PromotionState as S
-from .promotion_vm import COUNTRY_LABELS, VIDEO_WAITING, WEBSITE_CTA_LABELS, AdMediaVM
+from .promotion_vm import (
+    COUNTRY_LABELS,
+    VIDEO_WAITING,
+    WEBSITE_CTA_LABELS,
+    AdMediaVM,
+    CarouselProductVM,
+)
 from .r2_media import BACKEND_BASE
-from .ui import callout, card, choice_card, choice_card_check, signal_pill
+from .ui import callout, card, choice_card, choice_card_check, media_thumb, signal_pill, tone_badge
 from .ui import tokens as T
 
 PLACEMENTS_NOTE = (
     "Se mostrará solo en Instagram: la versión del perfil en el inicio y en el perfil, "
     "y la vertical de pantalla completa en historias y reels."
+)
+CAROUSEL_PLACEMENT = (
+    "Se mostrará solo en el inicio de Instagram. La gente desliza las tarjetas, "
+    "y cada una lleva la foto, el nombre y el precio del producto."
 )
 
 
@@ -121,6 +133,84 @@ def unpublished_images() -> rx.Component:
     )
 
 
+def _product_card(product: rx.Var[CarouselProductVM]) -> rx.Component:
+    chosen = product.order > 0
+    return choice_card(
+        rx.vstack(
+            rx.box(
+                media_thumb(
+                    viewable_src(product.photo_key), size=None, width="100%", height="7rem"
+                ),
+                rx.cond(
+                    chosen,
+                    rx.box(
+                        # Its place in the carousel, readable over any photo.
+                        tone_badge(product.order.to_string(), "info"),
+                        position="absolute",
+                        top="0.35rem",
+                        left="0.35rem",
+                        class_name="q-nums",
+                    ),
+                ),
+                position="relative",
+                width="100%",
+            ),
+            rx.text(product.name, size="2", weight="medium", class_name="q-clamp-2"),
+            rx.text(product.price_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            spacing="1",
+            width="100%",
+        ),
+        selected=chosen,
+        on_select=S.toggle_product(product.id),
+        role="checkbox",
+        disabled=S.busy,
+        padding="0.4rem",
+        min_width="0",
+        text_align="left",
+        aria_label=rx.cond(
+            chosen,
+            product.name + ", puesto " + product.order.to_string() + " en el carrusel",
+            product.name,
+        ),
+        key=product.id,
+    )
+
+
+def unpublished_products() -> rx.Component:
+    return rx.vstack(
+        rx.text(
+            "Toca los productos en el orden en que quieres que salgan. "
+            "Toca otra vez para quitar uno.",
+            color=T.TEXT_MUTED,
+        ),
+        rx.box(
+            rx.cond(
+                S.form.product_ids.length() >= 2,
+                signal_pill(S.carousel_count, "ok"),
+                signal_pill(S.carousel_count, "info"),
+            ),
+            aria_live="polite",
+        ),
+        rx.box(
+            rx.foreach(S.carousel_products, _product_card),
+            display="grid",
+            # two a row on a 360 px phone, so names and prices stay readable
+            grid_template_columns="repeat(auto-fill, minmax(9rem, 1fr))",
+            gap="0.5rem",
+            width="100%",
+            role="group",
+            aria_label="Productos de tu Catálogo",
+        ),
+        rx.text(
+            "Solo aparecen los productos con foto y precio en tu Catálogo.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
 def unpublished_feed_video() -> rx.Component:
     return rx.vstack(
         rx.text("Es el que verá la gente en el inicio y en el perfil.", color=T.TEXT_MUTED),
@@ -212,12 +302,16 @@ def unpublished_text() -> rx.Component:
                 "Lo tomamos de la pieza. Hasta 2.200 caracteres.",
                 rows="5",
             ),
-            _text_field(
-                "Título",
-                "headline",
-                S.form.headline,
-                "Una frase corta. Hasta 100 caracteres.",
-                min_height="44px",
+            # A carousel has no title of its own: each card shows its product's name.
+            rx.cond(
+                S.form.media_kind != "carousel",
+                _text_field(
+                    "Título",
+                    "headline",
+                    S.form.headline,
+                    "Una frase corta. Hasta 100 caracteres.",
+                    min_height="44px",
+                ),
             ),
             _text_field(
                 "Página que abrirá el anuncio",
@@ -280,10 +374,14 @@ def unpublished_country() -> rx.Component:
             spacing="2",
             width="100%",
         ),
-        callout(PLACEMENTS_NOTE, "info"),
+        callout(_placement(), "info"),
         spacing="4",
         width="100%",
     )
+
+
+def _placement() -> rx.Var[str]:
+    return rx.cond(S.form.media_kind == "carousel", CAROUSEL_PLACEMENT, PLACEMENTS_NOTE)
 
 
 def _fact(label: str, value: rx.Var[str] | str) -> rx.Component:
@@ -417,12 +515,16 @@ def unpublished_review() -> rx.Component:
             S.has_remote_review,
             rx.vstack(
                 ad_status_pill(),
-                rx.grid(
-                    _preview("En el inicio y el perfil", S.review.preview_url, "520px"),
-                    _preview("En historias y reels", S.review.vertical_preview_url, "640px"),
-                    columns=rx.breakpoints(initial="1", md="2"),
-                    gap="4",
-                    width="100%",
+                rx.cond(
+                    S.form.media_kind == "carousel",
+                    _preview("En el inicio de Instagram", S.review.preview_url, "620px"),
+                    rx.grid(
+                        _preview("En el inicio y el perfil", S.review.preview_url, "520px"),
+                        _preview("En historias y reels", S.review.vertical_preview_url, "640px"),
+                        columns=rx.breakpoints(initial="1", md="2"),
+                        gap="4",
+                        width="100%",
+                    ),
                 ),
                 spacing="3",
                 width="100%",
@@ -430,20 +532,29 @@ def unpublished_review() -> rx.Component:
             rx.cond(
                 ~S.video_waiting & ~S.needs_help,
                 callout(
-                    "Este es el resumen. No activa el anuncio: primero lo creamos en pausa "
-                    "para que veas cómo queda en el perfil y en historias.",
+                    rx.cond(
+                        S.form.media_kind == "carousel",
+                        "Este es el resumen. No activa el anuncio: primero lo creamos en pausa "
+                        "para que veas cómo queda el carrusel en Instagram.",
+                        "Este es el resumen. No activa el anuncio: primero lo creamos en pausa "
+                        "para que veas cómo queda en el perfil y en historias.",
+                    ),
                     "info",
                 ),
             ),
         ),
-        _files(),
+        rx.cond(S.form.media_kind != "carousel", _files()),
         card(
             rx.vstack(
-                _fact("Dónde aparece", PLACEMENTS_NOTE),
+                _fact("Dónde aparece", _placement()),
                 _fact("Instagram", S.selected_source.account_label),
                 _fact("Cuenta para anuncios", S.selected_source.account_name),
                 _fact("Texto", S.form.message),
-                _fact("Título", S.form.headline),
+                rx.cond(
+                    S.form.media_kind == "carousel",
+                    _fact("Productos, en este orden", S.carousel_names),
+                    _fact("Título", S.form.headline),
+                ),
                 _fact("Botón", S.button_label),
                 _fact("Página de destino", S.form.link_url),
                 _fact("País", S.country_label),
@@ -467,7 +578,11 @@ def unpublished_review() -> rx.Component:
                     color=T.TEXT_MUTED,
                 ),
                 rx.checkbox(
-                    "Revisé las dos vistas y autorizo el presupuesto total indicado.",
+                    rx.cond(
+                        S.form.media_kind == "carousel",
+                        "Revisé la vista previa y autorizo el presupuesto total indicado.",
+                        "Revisé las dos vistas y autorizo el presupuesto total indicado.",
+                    ),
                     checked=S.confirm_charge,
                     on_change=S.accept_charge,
                     disabled=S.busy | S.paid_operation_locked | S.checks_block_confirmation,

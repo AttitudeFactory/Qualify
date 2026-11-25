@@ -56,6 +56,8 @@ class PromotionRequest:
     lead_form_snapshot: dict[str, Any] = field(default_factory=dict)
     # The owner's chat greeting (m-24828980); only a messaging promotion carries one.
     greeting_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Extra approved HTTPS destinations: a catalog carousel's per-card links (m-25113484).
+    card_links: tuple[str, ...] = ()
 
     def snapshot(self) -> dict[str, Any]:
         from qualify_api.ads.enhancements import validate_request_policy
@@ -119,6 +121,10 @@ class PromotionRequest:
             )
         ):
             raise ValueError("objective, CTA and HTTPS destination are required")
+        if any(
+            not isinstance(link, str) or not link.startswith("https://") for link in self.card_links
+        ):
+            raise ValueError("card links must be HTTPS destinations")
         if not (self.content_draft_id or self.publish_attempt_id or self.source_media_id):
             raise ValueError("promotion provenance is required")
         reserved = {
@@ -150,7 +156,12 @@ class PromotionRequest:
                     ):
                         raise ValueError("creative CTA differs from approved metadata")
                     # A chat CTA carries Meta's fixed chat link; MessagingTarget checked it.
-                    if key == "link" and child != self.link_url and not self.messaging_snapshot:
+                    if (
+                        key == "link"
+                        and child != self.link_url
+                        and child not in self.card_links
+                        and not self.messaging_snapshot
+                    ):
                         raise ValueError("creative link differs from approved metadata")
                     if key == "page_welcome_message":
                         continue  # A JSON string by contract (SDK type), checked exactly above.
@@ -176,6 +187,8 @@ class PromotionRequest:
             snapshot.pop("greeting_snapshot", None)
         if self.meta_currency_offset is None:
             snapshot.pop("meta_currency_offset", None)
+        if not self.card_links:
+            snapshot.pop("card_links", None)
         return snapshot
 
 
