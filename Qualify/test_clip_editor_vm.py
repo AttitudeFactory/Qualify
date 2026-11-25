@@ -106,8 +106,6 @@ def test_fixed_words() -> None:
         "velocidad menor."
     )
     assert (vm.FROM_LABEL, vm.TO_LABEL) == ("Desde", "Hasta")
-    assert (vm.EARLIER, vm.LATER) == ("Medio segundo antes", "Medio segundo después")
-    assert (vm.EARLIER_TEXT, vm.LATER_TEXT) == ("− ½ s", "+ ½ s")
     assert vm.ROTATE == "Girar"
     assert vm.ROTATE_LABEL == "Girar el video un cuarto de vuelta"
     assert vm.WHOLE_VIDEO == "Usar el video entero"

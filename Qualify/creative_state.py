@@ -99,6 +99,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     clip_editor_vm,
     clip_gallery_vm,
+    clip_photos_vm,
     clip_texts_vm,
     edit_sequence,
     part_editor_provider,
@@ -1892,6 +1893,12 @@ class CreativeState(rx.State):
     _clip_cap_added: int = 0
     _clip_cap_out: list[str] = []
     clip_rotate: int = 0
+    #: ED-14 m-25029109: each photo block's seconds on the timeline, by block id
+    #: (`clip_photos_vm`; missing = 2 s) — changed only by dragging its end handle (or ←/→
+    #: on it, focused; Deivid 2026-11-24: no «− ½ s / + ½ s»). Always a new dict.
+    clip_photo_seconds: dict[str, float] = {}
+    #: ED-14: each photo block's quarter turns («Girar»), by block id (missing = upright).
+    clip_photo_turns: dict[str, int] = {}
     #: ED-10's one text (legacy, see `clip_text_start`).
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
@@ -6690,10 +6697,13 @@ class CreativeState(rx.State):
     # -- ED-10 m-25026648: the timeline -------------------------------------------------
 
     def _clip_tl_media(self) -> list[dict[str, object]]:
-        """«Fotos y videos» on the timeline (`clip_editor_vm.timeline_media`)."""
+        """«Fotos y videos» on the timeline (`clip_editor_vm.timeline_media`), each photo
+        block at its own seconds and turn (ED-14, `clip_photos_vm.apply_photo_settings`):
+        every reader — the rows, the preview, the recipe, where a new block goes — sees
+        them."""
         own = self._clip_edit_key()
         known = self._clip_cut_known()
-        return clip_editor_vm.timeline_media(
+        media = clip_editor_vm.timeline_media(
             self._clip_strip(),
             own_key=own if known else "",
             cut_start=self.clip_cut_start,
@@ -6705,6 +6715,9 @@ class CreativeState(rx.State):
                 **({own: self.clip_source_seconds} if known else {}),
             },
             pieces=self.clip_cut_pieces if known else [],
+        )
+        return clip_photos_vm.apply_photo_settings(
+            media, self.clip_photo_seconds, self.clip_photo_turns
         )
 
     def _clip_effect_resolved(
@@ -6752,13 +6765,15 @@ class CreativeState(rx.State):
     def _clip_tl_rows(self) -> list[dict[str, str]]:
         """Every block's row (media, texts, effects), for the chosen one and the panel.
         The own video's pieces and the texts and effects have handles the screen moves
-        (ED-03: a piece is trimmed or lengthened inside its video, `trim_bounds`); photos
-        and other videos have none yet (ED-14 and a later ticket)."""
+        (ED-03: a piece is trimmed or lengthened inside its video, `trim_bounds`); a photo
+        has its end handle and its panel's limit line (ED-14, `_clip_photo_fields`);
+        other videos have none yet (a later ticket)."""
         media, overlays, total = self._clip_tl()
         mine = self._clip_edit_key()
         own = mine if self._clip_can_cut() else ""
         pieces = self._clip_pieces() if own else []
         rows = timeline_vm.media_blocks(media)  # type: ignore[arg-type]
+        full = clip_editor_vm.timeline_full(media)
         thumbs = self._clip_block_thumbs()
         for row, item in zip(rows, media, strict=True):
             # ED-11: the file's picture (every piece of a file shows the same one)
@@ -6770,6 +6785,9 @@ class CreativeState(rx.State):
             row["handles"] = ""
             if row["own"] and 0 <= index < len(pieces):
                 row.update(self._clip_handle_fields(pieces[index]))
+            elif item.get("kind") == "photo":
+                # ED-14: a photo's end handle and the panel's line at its edges
+                row.update(self._clip_photo_fields(item, full, media))
         return [
             *rows,
             *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
@@ -7472,6 +7490,8 @@ class CreativeState(rx.State):
         self._clip_notice_once = ""
         self._clip_cap_begin()
         self.clip_rotate = 0
+        self.clip_photo_seconds = {}
+        self.clip_photo_turns = {}
         self.clip_effect_ids = []
         self.clip_effect_uses = []
         self.clip_effect_parts = []
@@ -7883,6 +7903,13 @@ class CreativeState(rx.State):
         )
 
     @rx.var
+    def clip_text_fade_s(self) -> float:
+        """The panel's text's fade as a number, for its slider (0,3–1 s)."""
+        uid = self._clip_text_current()
+        use = next((u for u in self.clip_text_uses if str(u.get("uid")) == uid), None)
+        return clip_texts_vm.normalize_fade(use.get("fade") if use else None)
+
+    @rx.var
     def clip_text_color_rows(self) -> list[dict[str, str]]:
         """ED-13 (Deivid 2026-11-23): the colour chips of «Franja» / «Recuadro de tu color»
         for the text in the panel (`clip_texts_vm.box_color_rows`), [] for the others."""
@@ -8011,7 +8038,7 @@ class CreativeState(rx.State):
 
     @rx.event
     def nudge_clip_text(self, uid: str, edge: str, delta: float) -> None:
-        """«Empieza»/«Termina» «− ½ s / + ½ s» (or ←/→ on its handle): that edge ½ s,
+        """←/→ on a text's focused handle: that edge ½ s,
         inside the video, the text never under 1 s (`clip_texts_vm.nudge_text`)."""
         try:
             step = float(delta)
@@ -8045,15 +8072,15 @@ class CreativeState(rx.State):
         self._clip_text_store(uid, new)
 
     @rx.event
-    def step_clip_text_fade(self, uid: str, delta: float) -> None:
-        """«Tarda en aparecer» «− 0,1 s / + 0,1 s», from 0,3 to 1 s (Deivid 2026-11-20)."""
-        try:
-            step = float(delta)
-        except (TypeError, ValueError):
-            return
+    def set_clip_text_fade(self, uid: str, value: list[float] | float | str) -> None:
+        """«Tarda en entrar y salir»'s slider, from 0,3 to 1 s, 0,1 s a step (Deivid
+        2026-11-24: a slider, no «− 0,1 s / + 0,1 s»). Radix sends a list."""
         if not self._clip_text_has(uid):
             return
-        uses = clip_texts_vm.step_fade(self.clip_text_uses, uid, step)
+        fade = clip_texts_vm.fade_from_slider(value)
+        if fade is None:
+            return
+        uses = clip_texts_vm.set_fade(self.clip_text_uses, uid, fade)
         if uses == self.clip_text_uses:
             return
         before = self._clip_text_snap()
@@ -8766,9 +8793,10 @@ class CreativeState(rx.State):
 
     @rx.event
     def nudge_clip_block(self, block_id: str, edge: str, delta: float) -> rx.event.EventSpec | None:
-        """«− ½ s / + ½ s» of the chosen block's panel, or ←/→ on its handle: when a text
-        or effect starts or ends. A video has no «Desde/Hasta» any more (Deivid
-        2026-11-17: one «Cortar» where the marker is, `cut_clip_video`)."""
+        """←/→ on a focused handle (`clip_block_key`): when a text or effect starts or
+        ends, a photo's seconds. No panel has «− ½ s / + ½ s» any more (Deivid
+        2026-11-24: the times change by dragging the handles); a video has no
+        «Desde/Hasta» (Deivid 2026-11-17: one «Cortar» where the marker is)."""
         if edge not in ("start", "end"):
             return None
         try:
@@ -8778,6 +8806,11 @@ class CreativeState(rx.State):
         uid = clip_texts_vm.text_uid(block_id)
         if uid:
             CreativeState.nudge_clip_text.fn(self, uid, edge, delta)
+            return None
+        if self._clip_photo_place(block_id):
+            # ED-14: ←/→ on a photo's end handle; it has no start
+            if edge == "end":
+                self._clip_photo_nudge(block_id, delta)
             return None
         row = self._clip_overlay(block_id)
         if not row:
@@ -8817,6 +8850,11 @@ class CreativeState(rx.State):
         if key not in ("ArrowLeft", "ArrowRight") or not block_id:
             return []
         step = -1 if key == "ArrowLeft" else 1
+        if edge in ("start", "end") and self._clip_photo_place(block_id):
+            # ED-14: a photo's end handle, ½ s per arrow (a photo has no start handle)
+            if edge == "end":
+                self._clip_photo_nudge(block_id, step * clip_photos_vm.NUDGE_S)
+            return []
         if edge in ("start", "end") and block_id in self._clip_media_ids():
             # ED-03: a handle of the own video's piece, ½ s of the video per arrow
             self._clip_trim_step(block_id, edge, step * timeline_vm.STEP_S)
@@ -8854,6 +8892,11 @@ class CreativeState(rx.State):
             return []
         if what == "move" and block_id in self._clip_media_ids():
             self._clip_move_media(block_id, int(round(number)))
+        elif what in ("start", "end") and self._clip_photo_place(block_id):
+            # ED-14: a photo's end handle dropped at its new seconds (½ s magnet, 1–5 s)
+            if what == "end":
+                self._clip_photo_set(block_id, clip_photos_vm.from_drag(number))
+            return []
         elif what in ("start", "end") and block_id in self._clip_media_ids():
             # ED-03: a trim handle dragged (finger or mouse) to a second of the video
             self._clip_trim(block_id, what, number)
@@ -8965,12 +9008,27 @@ class CreativeState(rx.State):
     def clip_block_action(self, label: str) -> list[rx.event.EventSpec]:
         """The chosen block's bar. «Quitar»: a video or a photo leaves the Clip (as its
         ✕ in «Fotos y videos»), the text or an effect leaves the video (the live line
-        says which)."""
+        says which). ED-14: «Girar» of a photo turns that block a quarter clockwise."""
         block = self.clip_edit_block
         uid = clip_texts_vm.text_uid(block)
         if uid and self._clip_text_has(uid):
             return self._clip_text_action(label, uid)
-        if label != clip_editor_vm.REMOVE or not block or clip_editor_vm.is_flow(block):
+        if not block or clip_editor_vm.is_flow(block):
+            return []
+        if label == clip_editor_vm.ROTATE:
+            number = self._clip_photo_place(block)
+            if number:
+                media = self._clip_tl_media()
+                file_key = next((str(m["key"]) for m in media if m["id"] == block), "")
+                self._clip_notice_done()
+                self.clip_photo_turns = clip_photos_vm.with_turn(
+                    self.clip_photo_turns, block, file_key
+                )
+                self.clip_edit_notice = clip_photos_vm.turned_line(
+                    number, clip_photos_vm.turn_of(self.clip_photo_turns, block)
+                )
+            return []
+        if label != clip_editor_vm.REMOVE:
             return []
         key, index = clip_editor_vm.piece_of(block)
         track, place = self._clip_track_place(block)
@@ -9152,6 +9210,71 @@ class CreativeState(rx.State):
         extra = clip_editor_vm.fitted_line(fitted)
         self.clip_edit_notice = f"{line} {extra}" if extra else line
         return True
+
+    # -- ED-14 m-25029109: a photo's seconds and turn ------------------------------------------
+
+    def _clip_photo_place(self, block_id: str) -> int:
+        """The place (1-based, counting every block) of photo block `block_id` on the
+        timeline; 0 = not a photo there."""
+        if not block_id:
+            return 0
+        return clip_photos_vm.photo_place(self._clip_tl_media(), block_id)
+
+    def _clip_photo_fields(
+        self, item: dict[str, object], full: bool, media: list[dict[str, object]]
+    ) -> dict[str, str]:
+        """A photo row's end handle and its panel's buttons (`photo_row_fields`); at 5 s
+        with the timeline full, the line suggests another photo only if one can still
+        be lengthened (`other_room`, Deivid 2026-11-24)."""
+        seconds = float(item.get("dur") or clip_photos_vm.DEFAULT_SECONDS)  # type: ignore[arg-type]
+        room = clip_photos_vm.other_room(media, clip_photos_vm.block_key(item))
+        return clip_photos_vm.photo_row_fields(seconds, full=full, room=room)
+
+    def _clip_photo_seconds_now(self, block_id: str) -> float:
+        media = self._clip_tl_media()
+        item = next((m for m in media if m["id"] == block_id), None)
+        if item is None:
+            return clip_photos_vm.DEFAULT_SECONDS
+        return float(item.get("dur") or clip_photos_vm.DEFAULT_SECONDS)  # type: ignore[arg-type]
+
+    def _clip_photo_set(self, block_id: str, seconds: float) -> bool:
+        """Photo block `block_id` shows `seconds` (normalized: ½ s magnet, 1–5 s): the
+        blocks after it move (no gaps), a text or an effect past a shorter video's end is
+        cut to it, effects stuck to blocks follow, and the live line says so. Whether
+        anything changed."""
+        number = self._clip_photo_place(block_id)
+        if not number:
+            return False
+        now = self._clip_photo_seconds_now(block_id)
+        new = clip_photos_vm.normalize(seconds)
+        if abs(new - now) < 0.005:
+            return False
+        self._clip_notice_done()
+        self.clip_photo_seconds = clip_photos_vm.with_seconds(
+            self.clip_photo_seconds, block_id, new
+        )
+        fitted = self._clip_fit_overlays()
+        self._clip_effects_follow()
+        line = clip_photos_vm.changed_line(number, new)
+        extra = clip_editor_vm.fitted_line(fitted)
+        self.clip_edit_notice = f"{line} {extra}" if extra else line
+        return True
+
+    def _clip_photo_nudge(self, block_id: str, delta: float) -> None:
+        """←/→ on a photo's focused end handle: ½ s; at 1 s or 5 s nothing moves. The
+        reason is shown ONCE, under the panel's «Se ve N s» (`row["limit"]`, the handle's
+        `aria-describedby`): the live line does not repeat it (ED-14 UX review)."""
+        media = self._clip_tl_media()
+        now = self._clip_photo_seconds_now(block_id)
+        new, why = clip_photos_vm.nudge(
+            now,
+            delta,
+            full=clip_editor_vm.timeline_full(media),
+            room=clip_photos_vm.other_room(media, block_id),
+        )
+        if why:
+            return
+        self._clip_photo_set(block_id, new)
 
     def _clip_trim_step(self, block_id: str, edge: str, delta: float) -> None:
         """←/→ on a trim handle: that edge ½ s of the video, on the ½ s grid."""
@@ -9671,6 +9794,21 @@ class CreativeState(rx.State):
         last = frames[-1] if len(frames) > 1 else None
         self._set_clip_frame("first", *((first["key"], first["name"]) if first else ("", "")))
         self._set_clip_frame("last", *((last["key"], last["name"]) if last else ("", "")))
+        self._clip_prune_photos()
+
+    def _clip_prune_photos(self) -> None:
+        """ED-14: a photo that left the Clip (its ✕, «Quitar», unmarked in the Galería,
+        another product…) forgets its seconds and turn — chosen again, it comes in at 2 s
+        and upright. Every way a photo leaves goes through `_sync_clip_frames`."""
+        if not self.clip_photo_seconds and not self.clip_photo_turns:
+            return
+        media = self._clip_tl_media()
+        seconds = clip_photos_vm.prune(self.clip_photo_seconds, media)
+        turns = clip_photos_vm.prune_turns(self.clip_photo_turns, media)
+        if seconds != self.clip_photo_seconds:
+            self.clip_photo_seconds = seconds
+        if turns != self.clip_photo_turns:
+            self.clip_photo_turns = turns
 
     @rx.event
     def start_clip_image_drag(self, index: int) -> None:

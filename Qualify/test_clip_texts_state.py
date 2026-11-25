@@ -107,12 +107,16 @@ def test_its_handles_move_its_times_and_the_panel_its_length(editor_on: None) ->
     CreativeState.nudge_clip_text.fn(state, uid, "start", 0.5)
     assert state.clip_text_panel_row["time_line"].startswith("Se ve de 0:00,5 a 0:24,5.")
     assert state.clip_edit_notice == "Cambiaste cuándo sale el texto."
-    CreativeState.step_clip_text_fade.fn(state, uid, 0.1)
+    # Deivid 2026-11-24: a slider (Radix sends a list), no «− 0,1 s / + 0,1 s»
+    CreativeState.set_clip_text_fade.fn(state, uid, [0.6000000000000001])
     assert state.clip_text_panel_row["fade_value"] == "Tarda en entrar y salir: 0,6 s"
+    assert state.clip_text_fade_s == 0.6
     assert state.clip_edit_notice == "Cambiaste cuánto tarda en entrar y salir el texto."
-    for _ in range(10):
-        CreativeState.step_clip_text_fade.fn(state, uid, 0.1)
-    assert state.clip_text_panel_row["fade_more_off"] == "1"  # 1 s at most
+    CreativeState.set_clip_text_fade.fn(state, uid, [3.0])  # past its end: 1 s at most
+    assert state.clip_text_fade_s == 1.0
+    CreativeState.set_clip_text_fade.fn(state, uid, [0.1])  # 0,3 s at least
+    assert state.clip_text_fade_s == 0.3
+    CreativeState.set_clip_text_fade.fn(state, uid, [1.0])
     layer = state._clip_edit_media()["text_layers"][0]  # type: ignore[index]
     assert (layer["start_s"], layer["end_s"], layer["fade_s"]) == (0.5, 24.5, 1.0)
     # at most 120 characters
@@ -571,7 +575,12 @@ def test_the_panel_and_the_preview_compile() -> None:
     # at once, all shut at first — each header with its title and what is chosen
     assert "q-text-fold" not in panel and "q-text-section" not in panel
     assert panel.count("q-text-acc__summary") == 4  # round 4: «Tamaño de las letras»
-    assert '"multiple"' in panel and "defaultValue" not in panel
+    # the accordion has no default (all shut); the only default is the fade slider's own
+    # (Deivid 2026-11-24: a slider, no «− 0,1 s / + 0,1 s»), controlled by its value
+    assert '"multiple"' in panel
+    assert panel.count("defaultValue") == panel.count("defaultValue:[0.5]") == 1
+    assert "set_clip_text_fade" in panel and "clip_text_fade_s" in panel
+    assert "step_clip_text_fade" not in panel and "0,1 s" not in panel
     for expected in (
         "clip-text-place-title",
         "place_choice",

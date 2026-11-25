@@ -285,6 +285,14 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 # ED-03: «Inicio de video 2» / «Final de video 2» (the noun in lower case)
                 "start_handle": f"Inicio de {label[:1].lower()}{label[1:]}",
                 "end_handle": f"Final de {label[:1].lower()}{label[1:]}",
+                # ED-14: the id of a line saying why a handle stops ("" = none; a photo's
+                # row gets one at 1 s or 5 s, `clip_photos_vm.photo_row_fields`)
+                "start_why": "",
+                "end_why": "",
+                # ED-14: the first block starts the track, the last ends it — that handle
+                # sits inside the block, never past the track (`.q-tl__item[data-tl-at-*]`)
+                "at_start": "1" if n == 1 else "",
+                "at_end": "1" if n == m else "",
                 **handles,
             }
         )
@@ -351,6 +359,14 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "end_now": num(end),
                 "end_min": num(start + MIN_S),
                 "end_max": num(total),
+                # ED-14: the id of a line saying why a handle stops ("" = none)
+                "start_why": "",
+                "end_why": "",
+                # ED-14: it starts or ends less than a handle's width (1 s on a phone) from
+                # an end of the track — that handle sits inside the block, never past the
+                # track (`.q-tl__item[data-tl-at-*]`)
+                "at_start": "1" if start < MIN_S - 0.005 else "",
+                "at_end": "1" if end > total - MIN_S + 0.005 else "",
             }
         )
     return rows

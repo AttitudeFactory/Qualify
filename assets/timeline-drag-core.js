@@ -327,6 +327,125 @@
     return { value: value, at: at + (value - from) / speed };
   }
 
+  /* ED-14 (Deivid 2026-11-24: «no me gusta que el slider pueda salir de pantalla y de la
+     linea del tiempo»; option B, «Crece sin verse»): where a dragged handle is DRAWN.
+     Its value follows the pointer as always (`trimValue`, its own bounds only: 5 s for
+     a photo, the video's material for a piece, the video for a text or effect), but the
+     handle and the box it draws stop at the edge of what is seen of the tracks — past
+     it the value keeps growing while the handle waits at the edge, and the bubble says
+     the real seconds. `shift`: the px the value asks for; `handleLeft`/`handleWidth`:
+     where the handle is at rest (px, the canvas's coordinates — what scrolls with the
+     tracks); `viewLeft`/`viewRight`: what is seen of the tracks (the scroller's box
+     inside the screen, same coordinates). Returns the px to draw — never further out
+     than where it already is (a handle already past the edge stays put). */
+  function pinShift(opts) {
+    var shift = num(opts.shift);
+    var left = num(opts.handleLeft);
+    var right = left + Math.max(num(opts.handleWidth), 0);
+    var most = Math.max(num(opts.viewRight) - right, 0);
+    var least = Math.min(num(opts.viewLeft) - left, 0);
+    return Math.min(Math.max(shift, least), most);
+  }
+
+  /* ED-14 (Deivid 2026-11-24, «sigue saliéndose»): the edges a drag may draw up to —
+     what is seen of the scroller (`viewLeft`/`viewRight`, inside the screen) AND the
+     track itself (`trackLeft`/`trackRight`: where its first second starts and its last
+     one ends; on a desktop the scroller has room on each side for the handles, which is
+     where the drag used to spill). All in the same px (the canvas's, or the viewport's). */
+  function dragEdges(opts) {
+    var left = Math.max(num(opts.viewLeft), num(opts.trackLeft));
+    var right = Math.min(num(opts.viewRight), num(opts.trackRight));
+    return { left: left, right: Math.max(right, left) };
+  }
+
+  /* What a trim drag draws (ED-14 option B, «Crece sin verse»): the handle and the box
+     (the silhouette over the block) stop at `limitLeft`/`limitRight` (`dragEdges`) while
+     the value goes on. `shift`: the px the value asks for; `edge` "start"/"end";
+     `boxLeft`/`boxWidth`: the box the value asks for (px from the block's left);
+     `handleLeft`/`handleWidth`: the handle at rest and `blockEdge`: the dragged edge of
+     the block at rest (canvas px). Returns `{handle, boxLeft, boxWidth}`: the handle's
+     shift to draw and the box to draw — neither past the limits (never further out than
+     at rest either). */
+  function trimDrawing(opts) {
+    var shift = num(opts.shift);
+    var limits = { viewLeft: opts.limitLeft, viewRight: opts.limitRight };
+    var handle = pinShift({
+      shift: shift,
+      handleLeft: opts.handleLeft,
+      handleWidth: opts.handleWidth,
+      viewLeft: limits.viewLeft,
+      viewRight: limits.viewRight,
+    });
+    var edgeShift = pinShift({
+      shift: shift,
+      handleLeft: opts.blockEdge,
+      handleWidth: 0,
+      viewLeft: limits.viewLeft,
+      viewRight: limits.viewRight,
+    });
+    var boxLeft = num(opts.boxLeft);
+    var boxWidth = num(opts.boxWidth);
+    if (opts.edge === "start") {
+      boxLeft += edgeShift - shift;
+      boxWidth -= edgeShift - shift;
+    } else {
+      boxWidth += edgeShift - shift;
+    }
+    return { handle: handle, boxLeft: boxLeft, boxWidth: Math.max(boxWidth, 0) };
+  }
+
+  /* Once a drag ends, the tracks scroll so the block is seen whole if it fits, else its
+     dragged edge (`edge` "start"/"end"). `blockLeft`/`blockRight` and `viewLeft`/
+     `viewRight`: viewport px; `scrollLeft`/`maxScroll`: the scroller's. Returns the new
+     scrollLeft (the same one when nothing needs to move). */
+  function revealScroll(opts) {
+    var margin = Math.max(num(opts.margin), 0);
+    var lo = num(opts.viewLeft) + margin;
+    var hi = num(opts.viewRight) - margin;
+    var left = num(opts.blockLeft);
+    var right = num(opts.blockRight);
+    var delta = 0;
+    if (right - left <= hi - lo) {
+      if (right > hi) delta = right - hi;
+      else if (left < lo) delta = left - lo;
+    } else if (opts.edge === "start") {
+      delta = left - lo;
+    } else {
+      delta = right - hi;
+    }
+    var next = num(opts.scrollLeft) + delta;
+    return Math.round(Math.min(Math.max(next, 0), Math.max(num(opts.maxScroll), 0)));
+  }
+
+  /* A photo's seconds while its handle moves: on the ½ s magnet only (the screen keeps
+     them so), inside `min`…`max` — the magnet's nearest step that fits, never past
+     them. */
+  function stepValue(value, min, max) {
+    var low = min === undefined || min === null ? -Infinity : Math.ceil(num(min) / STEP - 1e-6) * STEP;
+    var high =
+      max === undefined || max === null ? Infinity : Math.floor(num(max) / STEP + 1e-6) * STEP;
+    var v = snap(value);
+    if (high < low) return round2(Math.min(Math.max(num(value), num(min)), num(max)));
+    return round2(Math.min(Math.max(v, low), high));
+  }
+
+  /* The bubble over a dragged handle («Se ve 2,5 s», «Hasta 0:09») stays on screen: the
+     px it moves sideways from centred over the handle (`center`, `width`: viewport px)
+     so it sits inside `viewLeft`…`viewRight` with `margin` px to spare — 0 when it fits
+     centred; wider than the view, its start goes at the left edge. */
+  function bubbleShift(opts) {
+    var margin = Math.max(num(opts.margin), 0);
+    var width = Math.max(num(opts.width), 0);
+    var lo = num(opts.viewLeft) + margin;
+    var hi = num(opts.viewRight) - margin;
+    var left = num(opts.center) - width / 2;
+    var right = left + width;
+    if (width > hi - lo) return Math.round(lo - left);
+    if (left < lo) return Math.round(lo - left);
+    if (right > hi) return Math.round(hi - right);
+    return 0;
+  }
+
   /* «0:04», «0:03,7», «0:03,25»: a video's handle to the hundredth, as
      `timeline_vm.clock_exact` (the bubble says «Desde 0:03,7» — ED-03 UX review). */
   function clockExact(seconds) {
@@ -405,6 +524,12 @@
     trimMinSource: trimMinSource,
     trimBounds: trimBounds,
     trimValue: trimValue,
+    pinShift: pinShift,
+    dragEdges: dragEdges,
+    trimDrawing: trimDrawing,
+    revealScroll: revealScroll,
+    stepValue: stepValue,
+    bubbleShift: bubbleShift,
     clockExact: clockExact,
     insertIndex: insertIndex,
     carriesFiles: carriesFiles,
