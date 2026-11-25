@@ -3,7 +3,9 @@ under m-24872324; decision 5 of `docs/epica-filtrado-reels.md`). Pure — no dat
 network — so every row, every state and every sentence is tested offline
 (`Qualify/test_reels_competitors_vm.py`).
 
-Over RF-02's filter bar: «Elige cuáles 6 competidores leemos cada lunes» — one row per
+From RF-02's filter bar, «Tus competidores» opens a drawer (option A, Deivid
+2026-11-25; it replaced the ticket's panel «Elige cuáles 6 competidores leemos cada
+lunes», which pushed the ideas down) — one row per
 account the brand marked «Compite contigo» (`competencia`), ticked when the Monday run
 reads it. With nothing chosen, the first 6 of the list are the ticked ones
 (`reels.competitor_accounts`). A competitor outside the 6 has «Ver sus reels ahora»: a
@@ -25,20 +27,29 @@ from qualify_api.referentes.reels import NETWORK_LABELS, CompetitorAccount
 from .reels_filters_vm import account_key, parse_account_key
 
 #: The panel's title and the button (exact, ticket m-25119465).
-PICKER_TITLE = rivals.WEEKLY_PICKER_TITLE
+#: Option A, chosen by Deivid on 2026-11-25 after seeing the panel live (it pushed the
+#: ideas down): the panel moves into a drawer opened from the filter bar, and its title
+#: replaces the ticket's «Elige cuáles 6 competidores leemos cada lunes».
+PICKER_TITLE = "Tus competidores"
 READ_NOW = rivals.READ_NOW_BUTTON
-#: What the panel says under its title (drafted here, for the UX check).
+#: What the panel says under its title (Deivid, option A).
 PICKER_BODY = (
-    "Los que marques los revisamos cada lunes. Para ver ya los reels de otro, "
+    "Marca hasta 6: cada lunes te traemos sus reels nuevos. Para ver ya los de otro, "
     "pulsa «Ver sus reels ahora»."
 )
-#: How many are ticked: «3 de 6».
-PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY)
+#: How many are ticked: «3 de 6 marcados».
+PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY) + " marcados"
+#: The bar button's accessible name: how many are read on Monday, or that a read is on.
+BUTTON_LABEL = "Tus competidores: {n} de " + str(rivals.MAX_WEEKLY) + " los revisamos cada lunes"
+BUTTON_LABEL_READING = "Tus competidores: estamos leyendo sus reels"
+#: A manual read ended while the drawer was closed (a toast; open, the row says it).
+TOAST_DONE = "Listo: los reels de {account} ya están en «Más reels revisados»."
+TOAST_FAILED = "No pudimos leer los reels de {account}. Inténtalo de nuevo en unos minutos."
 #: More than 6 ticked (exact, `competitors.TOO_MANY_TEXT`).
 TOO_MANY = rivals.TOO_MANY_TEXT
 #: Unticking the last one (an empty choice would mean «the first 6» again).
 KEEP_ONE = "Deja marcado al menos un competidor."
-#: The choice or the read could not be saved (Postgres down).
+#: The choice could not be saved (Postgres down).
 SAVE_FAILED = "No pudimos guardar tu elección. Inténtalo de nuevo."
 #: «Ver sus reels ahora» could not be asked for (Postgres down): the read's own failure.
 READ_FAILED = rivals.FAILED_TEXT
@@ -112,6 +123,31 @@ def with_answer(
     return out
 
 
+def ended(before: Mapping[str, str], table: Iterable[Mapping[str, str]]) -> list[tuple[str, str]]:
+    """The manual reads that were reading (`before`: key → state) and are not any more,
+    as `(tone, sentence)` toasts: «ok» with `TOAST_DONE`, «error» with `TOAST_FAILED`."""
+    out = []
+    for row in table:
+        if before.get(row["key"]) != rivals.STATE_READING:
+            continue
+        state = row.get("state", "")
+        if state == rivals.STATE_READING:
+            continue
+        if state == rivals.STATE_DONE:
+            out.append(("ok", TOAST_DONE.format(account=row["label"])))
+        else:
+            out.append(("error", TOAST_FAILED.format(account=row["label"])))
+    return out
+
+
+def button_label(table: Iterable[Mapping[str, str]]) -> str:
+    """The bar button's accessible name (`BUTTON_LABEL` / `BUTTON_LABEL_READING`)."""
+    rows_ = list(table)
+    if reading(rows_):
+        return BUTTON_LABEL_READING
+    return BUTTON_LABEL.format(n=sum(1 for row in rows_ if row.get("weekly")))
+
+
 def picked_count(table: Iterable[Mapping[str, str]]) -> str:
     """«3 de 6»: how many rows the Monday run reads."""
     return PICKED_COUNT.format(n=sum(1 for row in table if row.get("weekly")))
@@ -151,6 +187,8 @@ def toggle(table: Sequence[Mapping[str, str]], key: str) -> Toggle | None:
 
 
 __all__ = [
+    "BUTTON_LABEL",
+    "BUTTON_LABEL_READING",
     "KEEP_ONE",
     "PICKED_COUNT",
     "PICKER_BODY",
@@ -159,10 +197,14 @@ __all__ = [
     "READ_NOW",
     "SAVE_FAILED",
     "STATE_TONES",
+    "TOAST_DONE",
+    "TOAST_FAILED",
     "TOO_MANY",
     "WEEKLY_DETAIL",
     "ReadState",
     "Toggle",
+    "button_label",
+    "ended",
     "picked_count",
     "read_state",
     "reading",

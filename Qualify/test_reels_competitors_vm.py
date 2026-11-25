@@ -22,7 +22,11 @@ def _accounts(n: int, weekly: int = 6, *, picked: bool = False) -> list[Competit
 
 
 def test_the_owners_words_are_the_tickets() -> None:
-    assert vm.PICKER_TITLE == "Elige cuáles 6 competidores leemos cada lunes"
+    assert vm.PICKER_TITLE == "Tus competidores"  # option A, Deivid 2026-11-25
+    assert vm.PICKER_BODY == (
+        "Marca hasta 6: cada lunes te traemos sus reels nuevos. Para ver ya los de otro, "
+        "pulsa «Ver sus reels ahora»."
+    )
     assert vm.READ_NOW == "Ver sus reels ahora"
     assert vm.TOO_MANY == "Puedes elegir hasta 6 competidores."
     assert rivals.DAILY_LIMIT_TEXT == (
@@ -41,7 +45,8 @@ def test_a_row_per_competitor_says_whether_monday_reads_it() -> None:
     assert table[0]["detail"] == "Instagram · Lo revisamos cada lunes"
     assert table[7]["detail"] == "TikTok"
     assert table[0]["key"] == "instagram:rival0"
-    assert vm.picked_count(table) == "6 de 6"
+    assert vm.picked_count(table) == "6 de 6 marcados"
+    assert vm.button_label(table) == "Tus competidores: 6 de 6 los revisamos cada lunes"
 
 
 def test_each_read_state_gets_its_words_and_tone() -> None:

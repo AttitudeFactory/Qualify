@@ -76,7 +76,7 @@ async def test_opening_shows_the_competitors_and_pays_nothing(world: _World) -> 
     assert len(rows) == 8
     # nothing chosen: the first six of the list are read on Monday
     assert sum(bool(r["weekly"]) for r in rows) == 6
-    assert state.competitors_count == "6 de 6"
+    assert state.competitors_count == "6 de 6 marcados"
     assert world.paid == []
     assert world.runs.competitor_runs(TENANT, world.brand) == []
 
@@ -186,7 +186,7 @@ async def test_a_read_that_ends_refreshes_the_panel_and_the_lists(world: _World)
     assert await DiscoverReelsState.refresh_competitors.fn(proxy) is None
     _finish(world, outside["key"], STATUS_OK)
     follow = await DiscoverReelsState.refresh_competitors.fn(proxy)
-    assert follow is DiscoverReelsState.refilter  # the new reels reach the lists
+    assert follow[0] is DiscoverReelsState.refilter  # the new reels reach the lists
     row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
     assert row["state"] == rivals.STATE_DONE and row["message"] == rivals.DONE_TEXT
     assert not state.competitors_reading
@@ -306,16 +306,102 @@ async def test_another_business_never_sees_the_panel_of_this_one(
     assert world.paid == []
 
 
-def test_the_panel_is_over_the_filter_bar_in_plain_spanish_with_44px_targets() -> None:
+def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
+    """Option A (Deivid, 2026-11-25): «Tus competidores» ends the bar and opens the
+    system's drawer; the clock that follows a read lives outside it."""
     import inspect
 
     from . import discover_reels
 
-    source = inspect.getsource(discover_reels._ideas)
-    assert source.index("_competitors_panel()") < source.index("_filter_bar()")
+    bar = inspect.getsource(discover_reels._filter_bar)
+    assert bar.index("_reset_button()") < bar.index("_rivals_button(chip=False)")
+    assert bar.index("_reset_button(chip=True)") < bar.index("_rivals_button(chip=True)")
+    assert "rx.separator" in bar
+    assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
+    button = inspect.getsource(discover_reels._rivals_button)
+    for needed in ('"users"', "aria_haspopup", "aria_expanded", "q-rf-trigger", "q-rf-chip"):
+        assert needed in button, needed
+    assert "loading_spinner" in button and "competitors_label" in button
+    drawer_source = inspect.getsource(discover_reels._competitors_drawer)
+    assert "drawer(" in drawer_source and "on_close_auto_focus" in drawer_source
+    assert "reels_filters_vm.DONE_LABEL" in drawer_source
+    assert "_ticker" not in drawer_source  # closing it never stops the clock
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "_ticker(S.refresh_competitors)" in ideas
     row = inspect.getsource(discover_reels._competitor_row)
     assert 'min_height="44px"' in row  # the button; the checkbox row is `.q-rf-option`
-    assert "reels_competitors_vm.READ_NOW" in row
-    panel = inspect.getsource(discover_reels._competitors_panel)
-    assert "reels_competitors_vm.PICKER_TITLE" in panel
     assert STATUS_OK  # the panel never shows a run's status word
+
+
+async def test_the_drawer_opens_and_closes_and_needs_competitors(world: _World) -> None:
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.competitor_rows
+    state.open_competitors(True)  # the phone's chip: from the bottom
+    assert state.competitors_open and state.competitors_bottom
+    state.competitors_changed(False)  # Esc / backdrop / «Cerrar»
+    assert not state.competitors_open
+    state.open_competitors(False)  # the desktop button: from the right
+    assert state.competitors_open and not state.competitors_bottom
+    state.close_competitors()  # «Listo»
+    assert not state.competitors_open
+    assert state.competitors_label == "Tus competidores: 1 de 6 los revisamos cada lunes"
+    # no competitor marked: no button, no drawer
+    world.repo.clear_label(tenant_id=TENANT, brand_id=world.brand, network="tiktok", handle="rival")
+    await _open(proxy)
+    assert state.competitor_rows == []
+    state.open_competitors(False)
+    assert not state.competitors_open
+    assert world.paid == []
+
+
+async def test_a_read_that_ends_with_the_drawer_closed_says_so_in_a_toast(
+    world: _World,
+) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    assert state.competitors_label == "Tus competidores: estamos leyendo sus reels"
+    assert not state.competitors_open  # the clock lives outside the drawer
+    _finish(world, outside["key"], STATUS_OK)
+    events = await DiscoverReelsState.refresh_competitors.fn(proxy)
+    assert events[0] is DiscoverReelsState.refilter and len(events) == 2
+    toast = str(events[1])
+    assert reels_competitors_vm.TOAST_DONE.format(account=outside["label"]) in toast
+
+
+async def test_a_failed_read_with_the_drawer_closed_toasts_the_failure(world: _World) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    _finish(world, outside["key"], "error")
+    events = await DiscoverReelsState.refresh_competitors.fn(proxy)
+    assert reels_competitors_vm.TOAST_FAILED.format(account=outside["label"]) in str(events[1])
+
+
+async def test_with_the_drawer_open_the_row_says_it_and_no_toast(world: _World) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    state.open_competitors(False)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    _finish(world, outside["key"], STATUS_OK)
+    events = await DiscoverReelsState.refresh_competitors.fn(proxy)
+    assert events == [DiscoverReelsState.refilter]
+    row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
+    assert row["message"] == rivals.DONE_TEXT
