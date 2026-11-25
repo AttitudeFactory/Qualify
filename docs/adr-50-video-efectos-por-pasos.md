@@ -279,3 +279,49 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - Un análisis barato del video del dueño que diga si aparece una persona (reabre D4 y la fila `own_video_ai_effect`).
 - Quejas repetidas de clientes por algo de la lista de §1.7.
 - Que la regla de modo falle más de lo que acepte el golden set de EF-10 (m-25026578).
+
+## 10. Enmienda: transiciones en la unión de los bloques del Clip
+
+**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-24 (m-25114465, épica m-25026566, carril A). **Sin firmar.** Hasta que Deivid lo firme, lo que dice §1.4 y §1.2 sigue siendo la regla: en un Clip normal no hay transiciones fuera de la unión de partes.
+
+**Firma de Deivid:** `[ ]` ____________________ · fecha: __________
+
+### 10.1 Contexto
+
+- Hasta hoy, en un Clip normal no había transiciones: el servidor rechazaba cualquiera con `transition_on_clip`, y el armado local pegaba los bloques de «Fotos y videos» con corte.
+- EF-16 (m-25026594) ya hace `fundido` y `barrido` en la unión de **partes** (`video/join.py`), pero la pantalla del Clip nunca tuvo el selector.
+- Deivid lo pidió el 2026-11-24 al armar un Clip (m-25114465): entre cada dos bloques hay un punto en la línea de tiempo, y al tocarlo se elige «Corte», «Fundido» o «Barrido». Por defecto, «Corte».
+
+### 10.2 Decisión propuesta
+
+- **Dónde vive:** en cada bloque, `SourceSegment.transition_in`. Es una entrada de la biblioteca de etapa `transition` y dice cómo se une ese bloque con el anterior. No lleva tramo propio (`start_s`/`end_s`).
+- **Corte no cambia nada:** «Corte» es `None`. Si llega `corte` explícito, se lee como `None`, y un `None` nunca se escribe en el JSON. Un Clip con solo cortes se guarda, se serializa y tiene el mismo digest que antes de este cambio.
+- **Qué se dibuja:** `fundido` y `barrido` en versión 2 (biblioteca v5, 0,3–0,8 s), los mismos de EF-16. No hay clases nuevas de transición.
+- **Cómo se une:** el paso local arma los bloques con corte, como siempre (`speed`). Si hay al menos una transición, corta ese video en las uniones que mezclan y lo vuelve a unir con el mismo código de EF-16 (`encode_segment`, `encode_transition`, `JoinTransition`, `concat_segments`), con un decodificador a la vez y 1 hilo. Va antes de las capas y los textos (`video_pipeline/block_join.py`). Los bloques se solapan lo que dura la transición y el sonido se cruza en esos mismos milisegundos. El Clip dura la suma de sus bloques menos cada transición (`clip_seconds`). Los textos y efectos se miden sobre ese largo. Sigue siendo costo 0.
+- **Procedencia:** `params.local.transitions` guarda la versión del paso, los cuadros por segundo y cada unión mezclada (bloque, efecto, versión, tipo, duración, dirección y cuadros). `params.local.steps.block_join` guarda la versión, y la transición elegida queda también en `params.local.segments`.
+- **Holgura:** cada bloque debe durar al menos las transiciones que lo comen, la de entrada y la de salida, contadas en cuadros de 30 fps. Si no, el servidor lo rechaza antes de crear la pieza con `transitions_longer_than_block` y el texto «El bloque N es más corto que sus transiciones. Hazlo más largo o elige transiciones más cortas.». La pantalla puede avisar antes con `block_transition_room_s` y `block_transition_room_problems`. Si un bloque real sale un cuadro más corto que en la receta, la unión se hace con corte y queda anotado en `fallback_cuts`. El video no falla.
+
+### 10.3 Qué sigue rechazado
+
+- Una transición sobre el Clip entero o entre sus efectos: `transition_on_clip`, con el texto «Las transiciones van en la unión entre dos bloques…».
+- Una transición en el primer bloque: `transition_on_first_block`.
+- Una transición en los bloques de un Clip que no se arma con fotos y videos propios (`local`), o de una parte de «Video por partes»: `recipe_unavailable` en `segments[i].transition_in`. Las partes siguen uniendo sus bloques con corte. Sus transiciones son las de la unión de partes (EF-16, ED-07).
+- Una versión que la unión no dibuja (`fundido`/`barrido` v1), un efecto que no es transición, o una duración fuera de rango: `not_offered`, `transition_not_a_transition`, `param_out_of_range`.
+
+### 10.4 Memoria
+
+Medido el 2026-11-24 con `deploy/measure/local-video-memory.sh` (casos nuevos `blocks3_*`), `--memory 768m --memory-swap 768m --cpus 1`, amd64. Clip de 1080×1920 con 3 bloques: 20 s de 4K a ×2, 15 s de 1080p a ×1 y 20 s de 4K a ×2, o sea 35 s con corte y 33,4 s con 2 uniones de 0,8 s. Detalle en `docs/armado-local-medicion.md`.
+
+| Caso | Pico anon MiB (tope 768) | Paso de unión, anon MiB | CPU s | Pared s | OOM |
+|---|---|---|---|---|---|
+| Solo cortes (referencia) | 327 | no corre | 537 | 542 | no |
+| 2 fundidos de 0,8 s | **341** | 275 | 908 | 914 | no |
+| 2 barridos de 0,8 s | 338 | 262 | 1053 | 1060 | no |
+
+Lectura: el pico sigue siendo el paso `prepare` del 4K. La unión no lo sube: queda en ~275 MiB anónimos, lejos de los ~600 de §8. Lo que cuesta es el tiempo: con 1 CPU suma ~6 a 9 minutos a este Clip de 35 s, porque vuelve a codificar todo el video y lee el anterior desde el principio en cada unión. El lease del worker se renueva durante el armado (`produce_local`). En arm64 tardará más; no está medido.
+
+### 10.5 Consecuencias
+
+- El Clip con transiciones se codifica una vez más entera (los segmentos de la unión, con los ajustes de `JOIN_SEGMENT_X264`). Un Clip con solo cortes no cambia: ni bytes ni tiempo.
+- La pantalla del Clip (selector en la unión, accesible y a 375 px) y el lugar automático de lo nuevo en la línea de tiempo quedan para el carril de la pantalla de m-25114465.
+- Esta sección se numera §10 para no chocar con §9, que agrega el PR #795 (avatar en el Clip).
