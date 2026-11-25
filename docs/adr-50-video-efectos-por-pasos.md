@@ -280,9 +280,9 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - Quejas repetidas de clientes por algo de la lista de §1.7.
 - Que la regla de modo falle más de lo que acepte el golden set de EF-10 (m-25026578).
 
-## 9. Enmienda `[PROPUESTO]` — bloque de avatar dentro del Clip (m-25112920, 2026-11-24)
+## 9. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` — bloque de avatar dentro del Clip (m-25112920, 2026-11-24)
 
-**Estado:** `[PROPUESTO]` · redactada por creative-engineer el 2026-11-24 con las decisiones de Deivid del mismo día (vía «creacion de tickets»). **Firma de Deivid:** `________________` (fecha: `__________`). Hasta que Deivid la firme, el código queda apagado con los dos interruptores.
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactada por creative-engineer el 2026-11-24 con las decisiones de Deivid del mismo día (vía «creacion de tickets»). **Firma de Deivid:** «Firmo el §9 del ADR 50», escrito por Deivid en la sesión «quailify-deivid» el 2026-11-25. Los dos interruptores siguen apagados en todos los entornos; encenderlos es otra decisión.
 
 **Qué cambia.** El §1.5 dice que el modo `local` es «sin IA» y que su asset lleva `ai_generated=False`. Con esta enmienda, un Clip `local` puede llevar un **bloque de avatar**: un video donde el avatar de la marca habla, hecho con OmniHuman 1.5. Si la receta del Clip toca un bloque, el video armado sale con `ai_generated=True`. Esto sigue la regla del §3 («la etiqueta se lee de lo que se hizo»).
 
