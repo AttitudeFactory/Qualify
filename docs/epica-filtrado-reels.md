@@ -112,6 +112,17 @@ en la enmienda RF-05 de `docs/adr-42-ideas-reels-costo.md`. **La pantalla espera
 (#810):** el selector y el botón van en `Qualify/discover_reels.py` cuando #810 esté en
 `main`.
 
+**RF-02b backend (2026-11-25, m-25119463):** `referentes/reviewed_reels.py` une `creators`
+(`region_code`, `rubro`, de RF-04) con `LEFT JOIN` en Postgres y en el gemelo en memoria.
+Filtros: `ReelFilters.of(regions=["CO", …])` (ISO-2, una o varias) y `niches=[clave]`.
+Opciones: `REGION_OPTIONS` = los tres mercados del negocio (`tenancy.locale.COUNTRIES`:
+Colombia, Venezuela, Uruguay) + «Todas»; `brand_niche(tenant, brand)` lee el rubro del Brand Kit
+(`connect.sector`; si no hay clave, `rubro_text`) con `tenant_session` y da «Nicho: …».
+**Cuentas sin país o sin rubro:** con el filtro apagado («Todas», sin nicho) entran siempre; con
+un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para las ideas. El nicho
+**no** se aplica por defecto: la cobertura de rubro es ~0 % hasta que las cuentas vuelvan a pasar
+por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
+
 Descartadas: RF-06 «Competencia del sector» (decisión 1), RF-08 «Buscar por producto»
 (decisión 2), RF-03 (fusionada en RF-01).
 
