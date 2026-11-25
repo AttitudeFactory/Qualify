@@ -22,6 +22,7 @@ the keyboard edits of §3.7 (½ s steps, 1 s minimum, no gaps).
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 #: The magnet (§3.3): every edge lands on a half second.
@@ -545,3 +546,81 @@ def timed_text(overlays: list[dict[str, Any]], block_id: str) -> str:
                 return "Cambiaste cuándo sale el texto."
             return f"Cambiaste cuándo sale {item['label']}."
     return ""
+
+
+# -- where something new goes (m-25114465: «si hay espacio, que se ponga ahí solo») -------
+#
+# Deivid 2026-11-24: a new text, effect or other component lands by itself in the FIRST
+# free gap where it fits, looking at EVERY row of its kind — never on top of another, never
+# refused while there is room. «First» is deterministic:
+#
+# 1. from the playhead: among the gaps that still have room after the playhead, the one
+#    whose usable start (the playhead when it is inside the gap, else the gap's start) is
+#    the earliest; a tie goes to the upper row;
+# 2. when nothing fits from the playhead: the earliest gap of the whole timeline (from
+#    0:00), upper row first on a tie;
+# 3. when nothing fits anywhere: None — the caller keeps its rule of before (trimmed to
+#    the free room, a new row, or the usual warning).
+
+
+def free_gaps(obstacles: Sequence[Sequence[float]], total: float) -> list[tuple[float, float]]:
+    """The free stretches of a row of a video of `total` s, around `obstacles`."""
+    gaps: list[tuple[float, float]] = []
+    at = 0.0
+    for a, b in sorted((float(a), float(b)) for a, b in obstacles):
+        if a > at + 1e-6:
+            gaps.append((at, min(a, float(total))))
+        at = max(at, b)
+    if float(total) > at + 1e-6:
+        gaps.append((at, float(total)))
+    return [(round(a, 2), round(b, 2)) for a, b in gaps if b - a > 1e-6]
+
+
+def first_free_slot(
+    rows: Sequence[Sequence[Sequence[float]]],
+    *,
+    total: float,
+    playhead: float = 0.0,
+    length: float | None = None,
+    least: float = MIN_S,
+) -> tuple[int, float, float] | None:
+    """`(row, start, end)` of the first free gap where something new fits, among `rows`
+    (each the spans already on that row) of a video of `total` s — the rule above.
+
+    `length`: the seconds it needs whole; None = it takes the free gap it lands in from
+    its start to the gap's end (a text lasts until the next one, or to the end), at
+    least `least`. The playhead is first pulled back so that what is needed still fits
+    before the end (a text put at the last second still lasts 1 s). Pure."""
+    total = float(total)
+    need = float(length) if length is not None else float(least)
+    if total <= 0 or need <= 0 or need > total + 1e-6:
+        return None
+    head = min(max(float(playhead), 0.0), max(total - need, 0.0))
+    gaps = [(row, gap) for row, spans in enumerate(rows) for gap in free_gaps(spans, total)]
+
+    def earliest(from_head: bool) -> tuple[int, float, float] | None:
+        found: tuple[float, int, float] | None = None
+        for row, (a, b) in gaps:
+            start = max(a, head) if from_head else a
+            if b - start < need - 1e-6:
+                continue
+            key = (round(start, 2), row, b)
+            if found is None or key[:2] < found[:2]:
+                found = key
+        if found is None:
+            return None
+        start, row, gap_end = found
+        return row, start, round(start + need, 2) if length is not None else gap_end
+
+    return earliest(from_head=True) or earliest(from_head=False)
+
+
+def first_free_row(rows: Sequence[Sequence[Sequence[float]]], span: Sequence[float]) -> int | None:
+    """The upper row where `span` — fixed seconds, e.g. an effect on the parts the owner
+    marked — is free, or None when it is taken on every row (meeting at a second is
+    fine). Pure."""
+    start, end = float(span[0]), float(span[1])
+    for row, spans in enumerate(rows):
+        if not any(start < float(b) - 1e-6 and float(a) < end - 1e-6 for a, b in spans):
+            return row
+    return None

@@ -250,6 +250,75 @@ async def test_a_token_that_cannot_be_minted_is_not_playable(
     assert state.clip_edit_remote and not state.clip_edit_video_playable
 
 
+def _video_block(state: CreativeState, key: str) -> dict[str, str]:
+    return next(r for r in state._clip_tl_rows() if r["id"] == key)
+
+
+def test_a_measured_video_whose_path_is_renewed_is_not_said_broken(editor_on: None) -> None:
+    """m-25114465 (live test, nibbles' Clip): a generated piece in R2 (5,04 s, playing)
+    showed «No pudimos mostrar tu video aquí…» in its panel. The line followed
+    `_clip_playable()` alone, False while the `/r2media/` path is being renewed; now it
+    follows THIS block: measured → it plays → a wait, never «broken»."""
+    key = f"t/{_TENANT}/generated/p1/clip-final-1.mp4"
+    state = _state()
+    state.clip_videos = [{"key": key, "name": "Publicación", "source": "pieces"}]
+    state.clip_sequence = [key]
+    state.clip_preview_for, state.clip_preview_url = key, "/r2media/tok-1"
+    CreativeState.report_clip_media.fn(state, key, 5.04, 1080, 1920)
+    assert _video_block(state, key)["own"] == "1"  # cut is offered: no line
+    # one layer of the preview in sequence reports it failed: its path is renewed
+    CreativeState.report_clip_media.fn(state, key, -1, 0, 0)
+    assert state.clip_preview_for == "" and not state.clip_edit_video_playable
+    row = _video_block(state, key)
+    assert (row["mine"], row["own"]) == ("1", "")
+    assert row["cut_note"] == clip_editor_vm.CUT_WAITING != clip_editor_vm.PREVIEW_BROKEN
+    # the panel shows that block's line, not the own video's playability
+    from . import clip_editor_view
+
+    extra = str(clip_editor_view._block_extra().render())
+    assert "cut_note" in extra and "clip_edit_video_playable" not in extra
+
+
+def test_a_video_that_really_failed_and_was_never_measured_is_said_broken(
+    editor_on: None,
+) -> None:
+    key = f"t/{_TENANT}/generated/p1/clip-final-1.mp4"
+    state = _state()
+    state.clip_videos = [{"key": key, "name": "Publicación", "source": "pieces"}]
+    state.clip_sequence = [key]
+    state.clip_preview_for, state.clip_preview_url = key, ""  # its address could not be made
+    assert _video_block(state, key)["cut_note"] == clip_editor_vm.PREVIEW_BROKEN
+    # its address is being made: a wait
+    state.clip_preview_for = ""
+    assert _video_block(state, key)["cut_note"] == clip_editor_vm.CUT_WAITING
+
+
+async def test_a_measured_video_whose_renewed_path_cannot_be_made_is_said_broken(
+    editor_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review of m-25114465: measured once is not «plays forever» — a renewal
+    that cannot make its address is a real failure (`PREVIEW_BROKEN`), never an endless
+    «Espera unos segundos…»."""
+    _r2_door(monkeypatch)
+    key = f"t/{_TENANT}/generated/p1/clip-final-1.mp4"
+    state = _state()
+    state.clip_videos = [{"key": key, "name": "Publicación", "source": "pieces"}]
+    state.clip_sequence = [key]
+    state.clip_preview_for, state.clip_preview_url = key, "/r2media/tok-1"
+    CreativeState.report_clip_media.fn(state, key, 5.04, 1080, 1920)
+    CreativeState.report_clip_media.fn(state, key, -1, 0, 0)  # its path died: renewed
+    assert _video_block(state, key)["cut_note"] == clip_editor_vm.CUT_WAITING
+
+    def down(tenant_id: UUID, key: str, media_type: str) -> str:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(creative_state_module, "issue_view_path", down)
+    await CreativeState.resolve_clip_preview.fn(state)
+    assert state.clip_preview_for == key and state.clip_preview_url == ""
+    assert state.clip_media_seconds.get(key) == 5.04  # measured before, still
+    assert _video_block(state, key)["cut_note"] == clip_editor_vm.PREVIEW_BROKEN
+
+
 async def test_with_the_switch_off_no_path_is_minted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(clip_editor_vm, "CLIP_EDITOR_ON", False)
     tokens = _r2_door(monkeypatch)
@@ -327,8 +396,11 @@ def test_text_is_kept_when_the_field_is_left(editor_on: None) -> None:
     CreativeState.set_clip_text_value.fn(state, uid, "2×1 hoy")
     assert state.clip_seq_texts[0]["text"] == "2×1 hoy"  # the preview follows
     assert state.clip_edit_notice == ""  # typing is not a change yet
+    # m-25114465: its panel already says «Pusiste un texto de …»: the first save of a
+    # text just put says no generic «Pusiste un texto.»; the next edits say theirs
+    assert state.clip_text_panel_row["added_line"].startswith("Pusiste un texto de 0:00 a ")
     CreativeState.commit_clip_text.fn(state, uid, "")
-    assert state.clip_edit_notice == "Pusiste un texto."
+    assert state.clip_edit_notice == ""
     CreativeState.set_clip_text_value.fn(state, uid, "2×1 mañana")
     CreativeState.commit_clip_text.fn(state, uid, "")
     assert state.clip_edit_notice == "Cambiaste el texto de tu video."

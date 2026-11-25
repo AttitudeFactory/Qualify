@@ -2499,8 +2499,14 @@ class MediaProducer:
         #: EF-14: what draws and lays the texts and layers over a Seedance clip (its
         #: preview and its final). None = `recompose.ClipComposer` over `render_client`.
         clip_composer: Any = None,
+        #: m-25112920: the provenance of a `local` recipe's files of the generator —
+        #: AI imagery or not, avatar block or not (`clip_avatar.db_generated_sources`,
+        #: given (tenant, keys)). None = no lookup: a recipe with such a file fails
+        #: closed (never made without knowing its «hecho con IA»).
+        clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
     ) -> None:
         self._store = store
+        self._clip_avatar_sources = clip_avatar_sources
         self._render_client = render_client
         self._clip_composer = clip_composer
         self._part_windows = part_windows
@@ -5734,6 +5740,19 @@ class MediaProducer:
             allowed = run is not None or queue_enabled()
         except ValueError:  # a malformed switch: fail closed
             allowed = False
+        blocks = self._generated_sources(tenant_id, brief)
+        if blocks is None:
+            # m-25112920: a file of the generator in the recipe and no way to look it
+            # up — never made without knowing its «hecho con IA» (fails closed, nothing
+            # read or charged)
+            from qualify_api.creative.video_pipeline.local import (  # noqa: PLC0415
+                LOCAL_SOURCE_FAILED_TEXT,
+            )
+
+            logger.warning("draft %s: generator files cannot be looked up here", draft_id)
+            return MediaOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value, detail=LOCAL_SOURCE_FAILED_TEXT
+            )
         save = _Saver(self._store, tenant_id, draft_id, revision, heartbeat)
         return produce_local(
             tenant_id=tenant_id,
@@ -5748,7 +5767,35 @@ class MediaProducer:
             # ED-13: the texts in the Brand Kit's own font file when it holds a usable one
             brand=self._video_text_brand(tenant_id, brief, kit),
             render_client=self._render_client,
+            generated_sources=blocks,
         )
+
+    def _generated_sources(self, tenant_id: UUID, brief: ContentBrief) -> Mapping[str, Any] | None:
+        """m-25112920: the recipe's stretches (videos and photos) that are files of the
+        generator, with their provenance — which are AI imagery, which are avatar blocks
+        ({} for none: only the owner's own files, nothing looked up). None: there is such
+        a file and no lookup wired, or the lookup failed — never made without knowing
+        its «hecho con IA» (the outcome says so; nothing raises)."""
+        from qualify_api.creative.clip_avatar import is_generated_file  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.recipe import recipe_of  # noqa: PLC0415
+
+        keys = list(
+            dict.fromkeys(
+                segment.key
+                for part in recipe_of(brief)
+                for segment in part.segments
+                if is_generated_file(tenant_id, segment.key)
+            )
+        )
+        if not keys:
+            return {}
+        if self._clip_avatar_sources is None:
+            return None
+        try:
+            return self._clip_avatar_sources(tenant_id, keys)
+        except Exception:  # noqa: BLE001 — the database down: fail closed, never raise
+            logger.warning("generator files of a local recipe not looked up", exc_info=True)
+            return None
 
     def _video_text_brand(self, tenant_id: UUID, brief: ContentBrief, kit: BrandKit) -> Any:
         """ED-13 (m-25029108): `kit` with the font file its video texts are drawn in
@@ -7587,6 +7634,20 @@ class MediaProducer:
                 signature=signature,
                 palette=kit.palette_rgb,
             )
+        # m-25112920: an avatar block of a Clip runs on OmniHuman 1.5 only (Deivid) —
+        # refused before the presenter, the voice or the render is paid
+        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            BLOCK_MODEL_TEXT,
+            BLOCK_TOO_LONG_TEXT,
+            block_max_seconds,
+            block_model_problem,
+        )
+
+        wrong_model = block_model_problem(brief.media, self._omnihuman_req_key)
+        if wrong_model is not None:
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value, BLOCK_MODEL_TEXT, raw=wrong_model
+            )
         # before anything is paid for: OmniHuman fetches the photo and the voice from a
         # public URL, so without one every step after this would be money lost
         if not _links_ready(self._reference_links):
@@ -7720,11 +7781,13 @@ class MediaProducer:
                 logger.warning("brand voice activation not stamped: %s", type(exc).__name__)
         voice_key = save("voice.mp3", audio, MP3)
         seconds = _media_seconds(audio) or len(script) / _CHARS_PER_SECOND
-        if seconds > self._omnihuman_max_seconds:
+        # m-25112920: a Clip's avatar block is capped at 30 s, before OmniHuman is ordered
+        longest = block_max_seconds(media, self._omnihuman_max_seconds)
+        if seconds > longest:
             raise _MediaFailed(
                 FailureReason.INVALID_PARAMETERS.value,
-                AVATAR_SCRIPT_TOO_LONG,
-                raw=f"voice track {seconds:.1f}s > {self._omnihuman_max_seconds}s",
+                BLOCK_TOO_LONG_TEXT if media.clip_avatar_block else AVATAR_SCRIPT_TOO_LONG,
+                raw=f"voice track {seconds:.1f}s > {longest}s",
             )
 
         # 3. the talking video, by OmniHuman

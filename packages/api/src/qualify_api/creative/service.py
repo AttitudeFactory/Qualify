@@ -919,8 +919,18 @@ def check_part_link(
 ) -> None:
     """VE-08 (criterion 6): a child's brief names its part (`media.part`) exactly when the
     draft has a parent, and the part's index is the draft's `part_index` — a part never
-    exists loose, and a loose piece never carries a part."""
+    exists loose, and a loose piece never carries a part.
+
+    m-25112920: an avatar block of a Clip (`media.clip_avatar_block`, an avatar kind) is
+    the other child: always under its Clip, in a slot (`part_index`), never with a part —
+    and a block is never created loose."""
     part = brief.media.part
+    if brief.media.clip_avatar_block:
+        if part is not None or not brief.kind.is_video:
+            raise ValueError("an avatar block of a Clip is an avatar, never a part")
+        if parent_draft_id is None or part_index is None:
+            raise ValueError("an avatar block of a Clip lives under its Clip, in a slot")
+        return
     if (part is None) != (parent_draft_id is None) or (parent_draft_id is None) != (
         part_index is None
     ):
@@ -2429,8 +2439,13 @@ class ContentService:
         creations: CreationsLedger | None = None,
         progress: Callable[[UUID, UUID], None] | None = None,
         vendor_tasks: VendorTaskStore | None = None,
+        clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
     ) -> None:
         self._media = media
+        #: m-25112920: which stretches of a Clip's recipe are its avatar blocks' videos
+        #: (`clip_avatar.db_generated_sources` on Postgres when None) — what approving the
+        #: Clip charges of the month's video seconds.
+        self._clip_avatar_sources = clip_avatar_sources
         #: The vendor tasks a generation created, kept by id (m-24852154): None = a
         #: task that outlives the wait cannot be resumed (tests, scripts).
         self._vendor_tasks = vendor_tasks
@@ -4172,6 +4187,8 @@ class ContentService:
         # the piece's videos are counted — all or nothing; without enough videos left
         # (`NotEnoughCreations`) nothing is written and the piece waits as it was
         charge_id = self._charge_videos(tenant_id, record)
+        # m-25112920: the seconds of the Clip's avatar blocks, each once, on its own row
+        blocks = self._charge_clip_blocks(tenant_id, record, charge_id)
         try:
             self._repo.set_approved(
                 tenant_id=tenant_id,
@@ -4189,6 +4206,11 @@ class ContentService:
                     draft_id=draft_id,
                     revision=record.revision,
                 )
+            for block in blocks:
+                if self._creations is not None:
+                    self._creations.uncharge_videos(
+                        tenant_id=tenant_id, draft_id=block.draft_id, revision=block.revision
+                    )
             raise
         # the operator's verdict, on the generation's Langfuse trace (plan §8)
         review.score_approval(
@@ -4491,6 +4513,57 @@ class ContentService:
             return 0, 0
         return price.videos, price.video_seconds
 
+    def _clip_avatar_charges(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
+        """m-25112920: the `VideoCharge` of each avatar block of this Clip its recipe
+        plays and no approval charged yet — on the BLOCK's own charge row, so approving
+        another version of the Clip never charges it twice. Empty without blocks, for
+        anything but a top-level Clip, or without a quota; no lookup at all unless a
+        stretch can be a block. (D3 still holds for the owner's own stretches.)"""
+        if self._creations is None or record.parent_draft_id is not None:
+            return ()
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None or brief.kind is not ContentKind.CLIP:
+            return ()
+        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            clip_block_charges,
+            db_generated_sources,
+        )
+
+        resolver = self._clip_avatar_sources
+        if resolver is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return ()
+            resolver = db_generated_sources
+        return clip_block_charges(
+            tenant_id=tenant_id,
+            clip_id=record.id,
+            brief=brief,
+            sources=lambda keys: resolver(tenant_id, keys),
+        )
+
+    def _charge_clip_blocks(
+        self, tenant_id: UUID, record: DraftRecord, clip_charge: UUID | None
+    ) -> tuple[Any, ...]:
+        """Charge the Clip's uncharged avatar blocks with its approval, all or nothing;
+        when the month cannot pay them, what the Clip's own approval charged is undone
+        too (`NotEnoughCreations`, nothing written). Only the blocks THIS call charged
+        (`charged_videos_many`) — what a failed approval undoes; a block another approval
+        charged meanwhile is never undone here."""
+        charges = self._clip_avatar_charges(tenant_id, record)
+        if not charges or self._creations is None:
+            return ()
+        try:
+            charged = self._creations.charged_videos_many(
+                tenant_id=tenant_id, brand_id=record.brand_id, charges=charges
+            )
+        except Exception:
+            if clip_charge is not None:
+                self._creations.uncharge_videos(
+                    tenant_id=tenant_id, draft_id=record.id, revision=record.revision
+                )
+            raise
+        return tuple(charged)
+
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
         quota, or already charged by an earlier approval of the same generation)."""
@@ -4526,6 +4599,10 @@ class ContentService:
         elif record.status != GENERATED:
             return None
         videos, seconds = self._videos_of(tenant_id, record)
+        # m-25112920: the Clip's avatar blocks no approval charged yet, as `approve`
+        blocks = self._clip_avatar_charges(tenant_id, record)
+        videos += sum(block.videos for block in blocks)
+        seconds += sum(block.seconds for block in blocks)
         if not videos:
             return None
         balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
@@ -5231,6 +5308,13 @@ class ContentService:
         if regenerate:
             # before the FSM, the charge and the dispatch: nothing is written
             self._refuse_own_media(tenant_id=tenant_id, draft_id=draft_id, brief_id=record.brief_id)
+            if record.parent_draft_id is not None:
+                stored = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+                if stored is not None and stored.media.clip_avatar_block:
+                    # m-25112920: a Clip's avatar block is paid OmniHuman with no charge of
+                    # its own — never made again here, past the quota check of
+                    # `clip_avatar.create_block` (a new block is asked for instead)
+                    raise ValueError("an avatar block of a Clip is not made again on its own")
         if regenerate and record.status == REJECTED:
             # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
             # Applying REJECT again is not a legal edge (rejected → rejected) and used to

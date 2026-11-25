@@ -54,6 +54,12 @@ there is never moved by itself: it shows the warning and stops «Siguiente»
 (`texts_problem`) until the owner moves it. The flag is an argument (`subtitles`), never
 read from anywhere.
 
+EF-20 phase 2 (m-25026599, Deivid 2026-11-23: «advertencia… y que muestre la mejor
+posición», never a block): when the server kept advice for the Clip's videos, a text whose
+place may cover the product says so in its panel and offers the better place
+(`placement_hint`); only the owner's tap moves it. The rules and words are the server's
+(`qualify_api.creative.placement_advice`), imported, never copied.
+
 Reused from `clip_editor_vm` (imported, never copied): `part_groups`, `group_span`,
 `block_spans`, `media_total`, `remap_effect_blocks` (renaming a cut piece's blocks works
 for any use); from `ui.timeline_vm`: `snap` and `clock`, so a text's times read like every
@@ -62,9 +68,20 @@ other block's.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
+
+from qualify_api.creative.placement_advice import (
+    BAND_WORDS,
+    CombinedAdvice,
+    PlacementAdvice,
+    combine_advice,
+    use_band_text,
+    warning_text,
+)
+from qualify_api.creative.placement_ai import TEXT_PREFERENCE
 
 from . import clip_editor_vm as cevm
 from . import editor_preview_contract as contract
@@ -398,6 +415,17 @@ def time_line(start: float, end: float) -> str:
     )
 
 
+#: m-25114465: the id of `added_line` in the panel (the field's `aria-describedby`).
+ADDED_LINE_ID = "clip-text-added"
+
+
+def added_line(start: float, end: float) -> str:
+    """m-25114465 (UX review): what the panel of a text «+ Texto» just put says, in a
+    polite live region inside the panel — its seconds, in the panel's own clock
+    (`time_line`)."""
+    return f"Pusiste un texto de {tl.clock(start)} a {tl.clock(end)}."
+
+
 DONE = "Listo"
 ADD = "+ Texto"
 EDIT = cevm.TEXT_EDIT
@@ -446,6 +474,204 @@ def place_offered(place: str, *, subtitles: bool = False) -> bool:
     """A place the owner may choose now: any of the three, but «Abajo» while subtitles
     are on."""
     return place in PLACES and not (subtitles and place == SUBTITLES_PLACE)
+
+
+# -- EF-20 phase 2 (m-25026599): «el texto puede tapar tu producto» --------------------------
+#
+# Deivid (2026-11-23): never block, never move the text by itself — warn that the chosen
+# place may cover the product and show the better one. The advice is the server's
+# (`qualify_api.creative.placement_advice`, kept once per uploaded video by the
+# `media-worker`); here it is only compared with the place the owner chose, on every
+# change, for free. The words are the contract's (`warning_text`, `use_band_text`).
+
+#: A video with no advice yet is asked for again at most this often (the advice is made
+#: in the background a little after the upload): opening a text's panel never queries
+#: more than this.
+PLACEMENT_RETRY_S = 60.0
+_NO_HINT: dict[str, str] = {"warning": "", "use_text": "", "use_place": "", "done": ""}
+
+
+def placement_keys(videos: Sequence[Mapping[str, object]]) -> list[str]:
+    """The Clip's videos that may carry advice: the owner's own, once each, in order (a
+    reel's reference video is not part of the piece)."""
+    keys = [str(v.get("key") or "") for v in videos if v.get("source") != "reel"]
+    return list(dict.fromkeys(key for key in keys if key))
+
+
+def placement_signature(tenant: str, keys: Sequence[str]) -> str:
+    """What the advice was read for: the business and the Clip's videos (any order)."""
+    return f"{tenant}|" + "|".join(sorted(set(keys)))
+
+
+def placement_ask_due(
+    signature: str, *, asked: str, missing: bool, asked_at: float, now: float
+) -> bool:
+    """Whether to read the advice now: once per Clip (its business and videos), and again
+    only when a video had none yet and `PLACEMENT_RETRY_S` went by — never per key."""
+    if not signature:
+        return False
+    if signature != asked:
+        return True
+    return missing and now - asked_at >= PLACEMENT_RETRY_S
+
+
+def _combined(advices: Sequence[Mapping[str, object]]) -> CombinedAdvice | None:
+    """The Clip's kept `advices` (`PlacementAdvice.to_params`, one per video that has
+    one) as ONE advice for the whole piece (`combine_advice`, the union of their bands);
+    an unusable one is left out; None without any."""
+    parsed = [a for a in (PlacementAdvice.from_params(raw) for raw in advices) if a is not None]
+    return combine_advice(parsed)
+
+
+def _better_place(
+    combined: CombinedAdvice, *, subtitles: bool, taken: Collection[str], exclude: str = ""
+) -> str:
+    """The place to offer: the recommended one when it is offered and free, else the
+    first of `TEXT_PREFERENCE` that is offered, free and does not cover the product — ""
+    when none is left. Free: no other written text there at the same seconds (`taken`;
+    two texts in one place stop «Siguiente», `texts_problem`). With the subtitles on,
+    «Abajo» is theirs and never offered."""
+    busy = set(taken)
+    rec = combined.recommended_text_band
+    if rec != exclude and rec not in busy and place_offered(rec, subtitles=subtitles):
+        return rec
+    for band in TEXT_PREFERENCE:
+        if band == exclude or band in busy or not place_offered(band, subtitles=subtitles):
+            continue
+        if not combined.covers_product(band):
+            return band
+    return ""
+
+
+def places_taken(
+    resolved: Sequence[Mapping[str, object]], uid: str, *, start: float, end: float
+) -> list[str]:
+    """The places of the OTHER written texts that show at some of `start`–`end` (the
+    text `uid`'s seconds): where it cannot go without two texts in one place."""
+    me = {"start": start, "end": end}
+    return list(
+        dict.fromkeys(
+            str(u.get("place"))
+            for u in _shown(resolved)
+            if str(u.get("uid")) != uid and _overlap(me, u)
+        )
+    )
+
+
+def placement_hint(
+    advices: Sequence[Mapping[str, object]],
+    place: str,
+    *,
+    subtitles: bool = False,
+    taken: Collection[str] = (),
+) -> dict[str, str]:
+    """The warning for the text's `place` over the Clip's kept `advices`: ``warning``
+    («Abajo, el texto puede tapar tu producto. Arriba no lo tapa.», `placement_warning`),
+    the button's ``use_text`` («Poner el texto arriba»), the place it puts
+    (``use_place``) and what it says once tapped (``done``, `placement_done_line`) — all
+    "" when there is nothing to say: no advice, the place does not cover the product, or
+    it already is the best one. The button never offers a place another text takes at
+    those seconds (`taken`, ux-designer: it would stop «Siguiente» with «Aquí se verían
+    dos textos…»), nor «Abajo» with the subtitles on: the first free place that does not
+    cover the product instead, and without one the warning shows with no button."""
+    combined = _combined(advices)
+    if combined is None:
+        return dict(_NO_HINT)
+    chosen = normalize_place(place)
+    best = _better_place(combined, subtitles=subtitles, taken=taken, exclude=chosen)
+    # whether to warn is the server's rule (`warning_text` reads only the bands, which
+    # `CombinedAdvice` carries too) against the place that would really be offered
+    judged = dataclasses.replace(combined, recommended_text_band=best) if best else combined
+    if not warning_text(judged, chosen):  # type: ignore[arg-type]
+        return dict(_NO_HINT)
+    fills = all(combined.covers_product(band) for band in PLACES)
+    return {
+        "warning": placement_warning(chosen, best, fills_frame=fills),
+        "use_text": use_band_text(best) if best else "",
+        "use_place": best,
+        "done": placement_done_line(best, fills_frame=fills) if best else "",
+    }
+
+
+def new_text_place(
+    advices: Sequence[Mapping[str, object]],
+    resolved: Sequence[Mapping[str, object]],
+    uid: str,
+    *,
+    subtitles: bool = False,
+) -> str:
+    """Where a text «+ Texto» just put is born (Deivid, decision A, m-25026599): with
+    kept advice for the Clip, the recommended place — the same combined advice the
+    warning reads —, or, when another text takes it at those seconds, the next free
+    place of `TEXT_PREFERENCE` that does not cover the product; none, or no advice:
+    `default_place` («Abajo»; «En el medio» with the subtitles on, never «Abajo»).
+    Only for the new text `uid` in `resolved`: a text that has a place never moves."""
+    fallback = default_place(subtitles=subtitles)
+    combined = _combined(advices)
+    new = next((u for u in resolved if str(u.get("uid")) == uid), None)
+    if combined is None or new is None:
+        return fallback
+    taken = places_taken(
+        resolved,
+        uid,
+        start=float(new["start"]),  # type: ignore[arg-type]
+        end=float(new["end"]),  # type: ignore[arg-type]
+    )
+    return _better_place(combined, subtitles=subtitles, taken=taken) or fallback
+
+
+def _band_word(band: str, *, capital: bool = False) -> str:
+    """The place as the server's contract names it (`BAND_WORDS`: «arriba / en el medio /
+    abajo», the editor's own options), with a capital to open a sentence."""
+    words = BAND_WORDS.get(band, "")
+    return words[:1].upper() + words[1:] if capital else words
+
+
+def placement_warning(chosen: str, best: str, *, fills_frame: bool = False) -> str:
+    """The warning, naming the place the owner chose (UX review, m-25026599: the server's
+    «Aquí…» did not say where): «Abajo, el texto puede tapar tu producto. Arriba no lo
+    tapa.»; when the product fills the video: «… Arriba lo tapa menos.»; with no free
+    better place (`best` ""), the first sentence alone."""
+    first = f"{_band_word(chosen, capital=True)}, el texto puede tapar tu producto."
+    if not best:
+        return first
+    tail = "lo tapa menos" if fills_frame else "no lo tapa"
+    return f"{first} {_band_word(best, capital=True)} {tail}."
+
+
+def placement_done_line(band: str, *, fills_frame: bool = False) -> str:
+    """What «Poner el texto arriba» did, said inside the panel (UX review, m-25026599: no
+    floating toast, and the timeline's live line sits behind the modal panel): «Listo:
+    el texto quedó arriba, sin tapar tu producto.»; when the product fills the video:
+    «Listo: el texto quedó arriba, donde tapa menos tu producto.» — "" for a place that
+    does not exist."""
+    words = _band_word(band)
+    if not words:
+        return ""
+    how = "donde tapa menos tu producto" if fills_frame else "sin tapar tu producto"
+    return f"Listo: el texto quedó {words}, {how}."
+
+
+#: «Dónde va el texto»'s title id (`ui.text_panel.PLACE_TITLE_ID`): its control is
+#: `aria-labelledby` it.
+PLACE_TITLE_ID = "clip-text-place-title"
+
+
+def focus_place_script(block_id: str) -> str:
+    """After «Poner el texto arriba» the warning and its button leave the page: the focus
+    goes to the place now chosen in «Dónde va el texto» (read as «Arriba, seleccionado»);
+    with that section shut, to its folded header (a button whose summary says the place,
+    ux-designer); failing both, to the text's panel — never lost to the page's top."""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(block_id))
+    return (
+        "window.setTimeout(function () {"
+        f" var g = document.querySelector('[aria-labelledby=\"{PLACE_TITLE_ID}\"]');"
+        ' var b = g && g.querySelector(\'[data-state="on"], [aria-checked="true"]\');'
+        f" var h = document.getElementById('{PLACE_TITLE_ID}');"
+        " var s = h && h.closest('button');"
+        f" var p = document.querySelector('[data-tl-panel=\"{safe}\"]');"
+        " var t = b || s || p; if (t) t.focus(); }, 60)"
+    )
 
 
 def focus_field_script() -> str:
@@ -659,6 +885,13 @@ def latest_start(total: float) -> float:
     return max(math.floor((float(total) - MIN_S) / STEP_S + 1e-6) * STEP_S, 0.0)
 
 
+def _grid_inside(edge: float, other: float, *, up: bool) -> float:
+    """m-25114465: a new text's `edge` moved onto the ½ s grid — up for its start, down
+    for its end — when it still lasts 1 s up to `other` (its other edge); else as it is."""
+    grid = (math.ceil if up else math.floor)(round(float(edge) / STEP_S, 6)) * STEP_S
+    return round(grid, 2) if abs(float(other) - grid) >= MIN_S - 1e-6 else float(edge)
+
+
 def text_from_playhead(
     uses: Sequence[Mapping[str, object]],
     media: Sequence[Mapping[str, object]],
@@ -669,16 +902,32 @@ def text_from_playhead(
     fade: float = FADE_DEFAULT,
 ) -> tuple[list[dict[str, object]], str, str]:
     """The ticket's «+ Texto»: a text from the playhead (on the ½ s grid) to the end of
-    the video. `(uses, uid of the new one, "")`, or `(uses as they were, "", why not)`."""
+    the video. `(uses, uid of the new one, "")`, or `(uses as they were, "", why not)`.
+
+    m-25114465 (Deivid 2026-11-24, «si hay espacio solo se ponga ahí»): it lands in the
+    first free gap of «Textos» where 1 s fits (`timeline_vm.first_free_slot`: from the
+    playhead, else the earliest of the video) and lasts that gap — to the next text, or
+    open to the end —, never over another text. Its edges go on the ½ s grid inside the
+    gap (start rounded up, a closed end rounded down) while 1 s still fits; else they keep
+    the gap's own edge. With no such gap, the rule of before: from the playhead to the
+    end (a clash in one place says so, `clash_line`)."""
     why = add_reason(uses, media)
     current = [dict(u) for u in uses]
     if why:
         return current, "", why
     total = cevm.media_total(media)
     start = min(max(tl.snap(float(playhead)), 0.0), latest_start(total))
+    end = OPEN_END
+    taken = [(float(u["start"]), float(u["end"])) for u in resolve_text_uses(current, media)]  # type: ignore[arg-type]
+    slot = tl.first_free_slot([taken], total=total, playhead=start, least=MIN_S)
+    if slot is not None:
+        _row, start, gap_end = slot
+        start = _grid_inside(start, gap_end, up=True)
+        if gap_end < round(total, 2) - 0.005:
+            end = _grid_inside(gap_end, start, up=False)
     uid = new_text_uid(current)
     use = normalize_text_use(
-        {"uid": uid, "text": text, "place": place, "start": start, "end": OPEN_END, "fade": fade}
+        {"uid": uid, "text": text, "place": place, "start": start, "end": end, "fade": fade}
     )
     return [*current, use], uid, ""
 
@@ -1270,6 +1519,8 @@ def text_panel_row(
     *,
     subtitles: bool = False,
     palette: Sequence[str] = (),
+    placement: Sequence[Mapping[str, object]] = (),
+    taken: Collection[str] = (),
 ) -> dict[str, str]:
     """The chosen text's panel as strings (a resolved use): its title, the field, the
     place (``place_choice``: its folded summary), when it shows (``time_line``, A1: no
@@ -1287,7 +1538,11 @@ def text_panel_row(
     Brand Kit's `palette`); «Sin fondo» shows the same chips for its letters
     (``chips_for_text`` "1", round 3) and says they may get lost on a light video
     (``shadow_note``). Round 4: the letters' size (``size``, ``size_choice`` its folded
-    summary), «Grande» off past `LARGE_MAX` characters (``large_off``, ``large_note``)."""
+    summary), «Grande» off past `LARGE_MAX` characters (``large_off``, ``large_note``).
+    EF-20 phase 2: over the Clip's kept advice (`placement`), the warning that the place
+    may cover the product (``placement_warning``), the button's words
+    (``placement_use``) and the place it puts (``placement_place``) — "" without one
+    (`placement_hint`; never a place another text takes at those seconds, `taken`)."""
     start, end = float(use["start"]), float(use["end"])  # type: ignore[arg-type]
     text = str(use.get("text") or "")
     fade = normalize_fade(use.get("fade"))
@@ -1301,6 +1556,7 @@ def text_panel_row(
     in_name, out_name = MOTION_IN_NAMES[motion_in], MOTION_OUT_NAMES[motion_out]
     size = normalize_size(use.get("size"))
     large_ok = large_allowed(text)
+    hint = placement_hint(placement, str(use.get("place")), subtitles=subtitles, taken=taken)
     return {
         "id": text_block_id(str(use["uid"])),
         "uid": str(use["uid"]),
@@ -1311,6 +1567,8 @@ def text_panel_row(
         "panel": f"{TITLE} · de {tl.clock(start)} a {tl.clock(end)}",
         "name": text_name(text, start, end) if text.strip() else TITLE,
         "time_line": time_line(start, end),
+        # m-25114465: «Pusiste un texto de …» for a text just put (the state fills it)
+        "added_line": "",
         "fade": fade_value(fade),
         "fade_text": fade_text(fade),
         "fade_value": fade_line(fade, fade_label) if fade_label else "",
@@ -1343,6 +1601,12 @@ def text_panel_row(
         "size_choice": size_choice(size),
         "large_off": "" if large_ok else "1",
         "large_note": "" if large_ok else LARGE_NOTE,
+        # EF-20 phase 2: a warning only, never a block nor a move by itself
+        "placement_warning": hint["warning"],
+        "placement_use": hint["use_text"],
+        "placement_place": hint["use_place"],
+        # what the warning's button did (`placement_done_line`): the state fills it in
+        "placement_done": "",
     }
 
 

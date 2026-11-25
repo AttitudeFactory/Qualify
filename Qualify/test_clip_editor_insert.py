@@ -178,9 +178,9 @@ def test_with_eight_the_add_option_is_off_and_says_why(editor_on: None) -> None:
         state.clip_tl_add_note == "Tu video ya tiene 8 fotos o videos. Quita una para agregar otra."
     )
     assert CreativeState.open_clip_flow.fn(state, vm.FLOW_MEDIA) == []
-    assert (
-        state.clip_edit_notice == "Tu video ya tiene 8 fotos o videos. Quita una para agregar otra."
-    )
+    # m-25114465 (live test): said once, by the note above «Agregar» — not again on the
+    # timeline's live line
+    assert state.clip_edit_notice == ""
     assert not vm.is_flow(state.clip_edit_block)
     # one less: on again
     CreativeState.remove_clip_image.fn(state, state.clip_images[0]["key"])
@@ -625,12 +625,14 @@ def test_a_full_timeline_drop_says_the_refused_file_too(
 
 def test_the_same_line_said_again_is_announced_again(editor_on: None) -> None:
     # UX review S7: the `role=status` text changes (a thin space comes and goes)
+    # (a file dropped on a full timeline; «Agregar» → «Foto o video» says nothing more
+    # since m-25114465: its note above the «+» already does)
     state = _full_state()
-    CreativeState.open_clip_flow.fn(state, vm.FLOW_MEDIA)
+    CreativeState.drop_clip_block.fn(state, "", "place", 0.0)
     assert state.clip_edit_notice == vm.FULL_LINE
-    CreativeState.open_clip_flow.fn(state, vm.FLOW_MEDIA)
+    CreativeState.drop_clip_block.fn(state, "", "place", 0.0)
     assert state.clip_edit_notice == vm.FULL_LINE + vm.SAY_AGAIN
-    CreativeState.open_clip_flow.fn(state, vm.FLOW_MEDIA)
+    CreativeState.drop_clip_block.fn(state, "", "place", 0.0)
     assert state.clip_edit_notice == vm.FULL_LINE
 
 

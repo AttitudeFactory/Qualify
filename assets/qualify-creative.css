@@ -1579,6 +1579,32 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-text-acc__summary { font-size: var(--font-size-1); color: var(--gray-11); overflow-wrap: anywhere; }
 .q-text-acc .AccordionChevron { flex: none; }
 .q-text-acc .AccordionContent { color: var(--gray-12); }
+/* EF-20 (m-25026599), UX review: «el texto puede tapar tu producto» arrives a moment after
+   the text's panel opens. It unfolds (a grid row from 0 to its own height) instead of
+   pushing «Dónde va el texto» down at once; with reduced motion it simply appears. The
+   inner box's 3 px padding (taken back by a −3 px margin, so it stays aligned) keeps
+   the button's focus ring inside the clipped box. */
+.q-place-warn {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 100%;
+  transition: grid-template-rows 220ms ease-out;
+}
+.q-place-warn[data-open="1"] { grid-template-rows: 1fr; }
+.q-place-warn__inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 3px;
+  margin: -3px;
+}
+.q-place-warn__inner > [role="status"] { width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .q-place-warn { transition: none; }
+}
 /* The box's colour (Deivid 2026-11-23): the campaign picker's round swatches (`.q-swatch`,
    `qualify.css`) at a 44 px target, 8 px apart; the chosen one is ringed (`.q-swatch--on`)
    and checked in the letters' colour. */
