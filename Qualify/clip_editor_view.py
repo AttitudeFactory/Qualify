@@ -174,7 +174,7 @@ def _text_panel() -> rx.Component:
     while «+ Texto» puts it, or under the timeline when its block is chosen (A1, Deivid
     2026-11-23: its times change on the timeline; no «¿En qué partes va?»)."""
     row = S.clip_text_panel_row
-    return text_panel(
+    panel = text_panel(
         row,
         on_text=lambda value: S.set_clip_text_value(row["uid"], value),
         on_text_commit=lambda value: S.commit_clip_text(row["uid"], value),
@@ -191,7 +191,14 @@ def _text_panel() -> rx.Component:
         on_color=S.set_clip_text_box_color,
         on_text_color=S.set_clip_text_text_color,
         on_size=S.set_clip_text_size,
+        on_use_placement=S.use_clip_text_placement,
     )
+    # EF-20 phase 2: the Clip's placement advice is read when a text's panel opens, another
+    # text is chosen or the Clip's videos change (its React key), only when due — once
+    # per Clip, again for a video still waiting for its advice (`load_clip_placement`);
+    # never per key
+    reader = rx.box(display="none", key=S.clip_placement_mount, on_mount=S.load_clip_placement)
+    return rx.fragment(panel, reader)
 
 
 def _text_tab() -> rx.Component:
@@ -754,6 +761,14 @@ def _timeline() -> rx.Component:
 
 
 def _timeline_body() -> rx.Component:
+    # EF-20 decision A: the Clip's placement advice is read with the timeline (only when
+    # due: once per Clip, `load_clip_placement`), so «+ Texto» already knows where the
+    # product shows and puts the new text where it does not cover it
+    reader = rx.box(display="none", key=S.clip_placement_videos, on_mount=S.load_clip_placement)
+    return rx.fragment(_timeline_layout(), reader)
+
+
+def _timeline_layout() -> rx.Component:
     return timeline_layout(
         timeline(
             media=S.clip_tl_media_rows,

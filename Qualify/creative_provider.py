@@ -153,6 +153,7 @@ __all__ = [
     "brand_clone_voice",
     "brand_readiness",
     "catalog_products",
+    "clip_placement_advice",
     "default_brand_id",
     "draft_detail",
     "edit_variant",
@@ -197,6 +198,51 @@ def business_kind(tenant_id: UUID, brand_id: UUID) -> tuple[str, str]:
     connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
     data = connect if isinstance(connect, dict) else {}
     return str(data.get("sector") or ""), str(data.get("rubro_text") or "")
+
+
+@dataclasses.dataclass(frozen=True)
+class ClipPlacementRead:
+    """What `clip_placement_advice` read for a Clip's videos."""
+
+    #: The kept advice per source key (`PlacementAdvice.to_params`); {} = none.
+    advice: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+    #: A video the owner uploaded here has no advice yet (the `media-worker` makes it a
+    #: little after the upload): worth reading again later. Never for a video that will
+    #: never get one (Galería, stock, a publication) nor with the switch off.
+    waiting: bool = False
+    #: The read failed: keep what was shown, and try again later.
+    failed: bool = False
+
+
+def clip_placement_advice(
+    tenant_id: UUID, source_keys: Sequence[str], env: Mapping[str, str] | None = None
+) -> ClipPlacementRead:
+    """EF-20 phase 2 (m-25026599): the advice already kept for the Clip's uploaded videos —
+    where the product shows and which band the text should go to — as plain dicts,
+    keyed by source key. ONE query through `placement_advice_for` (`tenant_session`;
+    another business's key is left out, never looked up). Blocking (database): the state
+    calls it in a thread. It only READS: the advice is made by the `media-worker`;
+    nothing here asks the model.
+
+    With the switch off (`QUALIFY_VIDEO_PLACEMENT_AI`) or no key: no advice and nothing
+    to wait for — the editor shows nothing new. Never raises (a failure is `failed`)."""
+    from qualify_api.creative.placement_advice import placement_advice_for  # noqa: PLC0415
+    from qualify_api.creative.placement_ai import placement_enabled  # noqa: PLC0415
+    from qualify_api.creative.upload_previews import is_previewable  # noqa: PLC0415
+
+    keys = [str(key) for key in source_keys if key]
+    if not keys or not placement_enabled(env):
+        return ClipPlacementRead()
+    try:
+        found = placement_advice_for(tenant_id, keys)
+        advisable = [key for key in keys if is_previewable(tenant_id, key)]
+    except Exception as exc:  # noqa: BLE001 — a hint is never worth failing the editor
+        logger.warning("placement advice not read: %s", type(exc).__name__)
+        return ClipPlacementRead(failed=True, waiting=True)
+    return ClipPlacementRead(
+        advice={key: advice.to_params() for key, advice in found.items()},
+        waiting=any(key not in found for key in advisable),
+    )
 
 
 # ---------------------------------------------------------------------------
