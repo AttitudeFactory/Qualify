@@ -284,6 +284,8 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 
 **Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-24 (m-25114465, épica m-25026566, carril A). **Sin firmar.** Hasta que Deivid lo firme, lo que dice §1.4 y §1.2 sigue siendo la regla: en un Clip normal no hay transiciones fuera de la unión de partes.
 
+**Interruptor:** el código está detrás de `QUALIFY_CLIP_BLOCK_TRANSITIONS`, que queda **apagado** (`off`, por defecto) hasta que Deivid firme esta sección (decisión del coordinador, 2026-11-25). Apagado, el servidor rechaza cualquier transición entre bloques distinta de «Corte» con `recipe_unavailable` y el texto de «no disponible».
+
 **Firma de Deivid:** `[ ]` ____________________ · fecha: __________
 
 ### 10.1 Contexto
@@ -299,11 +301,13 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - **Qué se dibuja:** `fundido` y `barrido` en versión 2 (biblioteca v5, 0,3–0,8 s), los mismos de EF-16. No hay clases nuevas de transición.
 - **Cómo se une:** el paso local arma los bloques con corte, como siempre (`speed`). Si hay al menos una transición, corta ese video en las uniones que mezclan y lo vuelve a unir con el mismo código de EF-16 (`encode_segment`, `encode_transition`, `JoinTransition`, `concat_segments`), con un decodificador a la vez y 1 hilo. Va antes de las capas y los textos (`video_pipeline/block_join.py`). Los bloques se solapan lo que dura la transición y el sonido se cruza en esos mismos milisegundos. El Clip dura la suma de sus bloques menos cada transición (`clip_seconds`). Los textos y efectos se miden sobre ese largo. Sigue siendo costo 0.
 - **Procedencia:** `params.local.transitions` guarda la versión del paso, los cuadros por segundo y cada unión mezclada (bloque, efecto, versión, tipo, duración, dirección y cuadros). `params.local.steps.block_join` guarda la versión, y la transición elegida queda también en `params.local.segments`.
-- **Holgura:** cada bloque debe durar al menos las transiciones que lo comen, la de entrada y la de salida, contadas en cuadros de 30 fps. Si no, el servidor lo rechaza antes de crear la pieza con `transitions_longer_than_block` y el texto «El bloque N es más corto que sus transiciones. Hazlo más largo o elige transiciones más cortas.». La pantalla puede avisar antes con `block_transition_room_s` y `block_transition_room_problems`. Si un bloque real sale un cuadro más corto que en la receta, la unión se hace con corte y queda anotado en `fallback_cuts`. El video no falla.
+- **Rangos:** los da la biblioteca, que es la única fuente (`transition_duration_range`). En la v5, `fundido` v2 y `barrido` v2 van de 0,3 a 0,8 s, con 0,5 y 0,4 s por defecto. Las entradas v1 (0,2–1,5 y 0,2–1,0 s) siguen en la biblioteca, pero no se ofrecen.
+- **Holgura:** cada bloque que se une con otro debe durar las transiciones que lo comen, la de entrada y la de salida, **más 9 cuadros propios** (0,3 s a 30 fps, `BLOCK_MIN_FREE_FRAMES`). Con menos, la unión quedaba vacía o de pocos cuadros y el armado fallaba (revisión de código). Si no cabe, el servidor lo rechaza antes de crear la pieza con `transitions_longer_than_block` y el texto «El bloque N es muy corto para sus transiciones. Alárgalo, acorta sus transiciones o deja una de sus uniones con «Corte».». La pantalla puede avisar antes con `block_transition_room_s` y `block_transition_room_problems`. Si un bloque real sale un cuadro más corto que en la receta, la unión se hace con corte y queda anotado en `fallback_cuts` y en `params.local.warnings`. El video no falla. Si la unión falla por algo nuestro, el dueño lee «No pudimos hacer las transiciones de tu video por un problema nuestro…», sin cobro y con «Corte» como salida. Mientras corre, el borrador da señal de vida antes, durante (cada 60 s) y después de cada tramo, para que `reap_stale_drafts` no lo dé por muerto.
 
 ### 10.3 Qué sigue rechazado
 
 - Una transición sobre el Clip entero o entre sus efectos: `transition_on_clip`, con el texto «Las transiciones van en la unión entre dos bloques…».
+- Con el interruptor apagado: cualquier transición entre bloques distinta de «Corte» (`recipe_unavailable`).
 - Una transición en el primer bloque: `transition_on_first_block`.
 - Una transición en los bloques de un Clip que no se arma con fotos y videos propios (`local`), o de una parte de «Video por partes»: `recipe_unavailable` en `segments[i].transition_in`. Las partes siguen uniendo sus bloques con corte. Sus transiciones son las de la unión de partes (EF-16, ED-07).
 - Una versión que la unión no dibuja (`fundido`/`barrido` v1), un efecto que no es transición, o una duración fuera de rango: `not_offered`, `transition_not_a_transition`, `param_out_of_range`.
