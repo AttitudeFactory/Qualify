@@ -69,7 +69,7 @@ reels revisados» y **no pasa por el analizador de producción** (que solo corre
 **Tickets en Meegle** (creados 2026-11-25, Backlog, asignados a Deivid, bajo m-24872324):
 RF-00 m-25119446 · RF-01 m-25119458 · RF-02 m-25119460 · RF-04 m-25119461 · RF-02b m-25119463 ·
 RF-05 m-25119465 · RF-09 m-25119466 · RF-07a m-25119467 · RF-10 m-25119468 · RF-07b m-25119482 ·
-RF-11 m-25119483. «Bloqueado por»: RF-02←01; RF-04←00; RF-02b←02,04; RF-05←01; RF-09←01,04;
+RF-11 m-25119483 · RF-12 m-25119986 (país por IA, creado después). «Bloqueado por»: RF-02←01; RF-04←00; RF-02b←02,04; RF-05←01; RF-09←01,04;
 RF-07a←01,04; RF-10←02; RF-07b←07a; RF-11←01 (+ catálogo de Herwin).
 
 **Resultado RF-00 (2026-11-25, base local):** 59 cuentas `referente`/`competencia`; 0 % con
@@ -79,6 +79,23 @@ con país). `category` guarda la categoría de la red (`creators/snapshots.py:37
 Producción no se midió (sin acceso desde esta máquina); Deivid decidió seguir con lo sabido:
 **RF-04 con alcance completo** — país gratis primero, rubro inferido con IA dentro de la revisión
 de cuentas existente, con procedencia.
+
+**Cobertura tras RF-04 (2026-11-25, base local, solo lectura):** país gratis 0 % → **98 %**
+(58/59: 32 por la `region` de los videos de TikTok, 26 por `creator_sightings`); rubro 0 % hasta
+que cada cuenta vuelva a pasar por la revisión con IA. Hallazgo: `creator_discovery._tiktok_author`
+busca el país en `author.region`, pero TikTok lo trae en `aweme_info.region`.
+
+**Eval REFERENTES-RUBRO-001 (2026-11-25, USD 0,39):** rubro 0,87 en test (pasa ≥ 0,85); país por
+IA 0,815 / 0,827 (no pasa ≥ 0,95, inventa el país). Decisión de Deivid: **país solo de fuentes
+gratis** en RF-04; el país por IA pasa a **RF-12 m-25119986** (prompt `referentes-review-4` con
+evidencia escrita, bloqueado por RF-04). PRs: RF-01 #806, RF-04 #807.
+
+**Muestreo humano y prompt v3 (2026-11-25):** Deivid revisó los 14 casos dudosos de rubro. Reglas:
+quien enseña → Educación; deporte y medios generales → Entretenimiento; medio temático → su tema;
+el rubro es lo que la cuenta ES; sin evidencia → fuera. `referentes-review-3` las incorpora:
+rubro en test 0,941 / 0,906 (v2: 0,894 / 0,847), sin regresión, USD 0,4287. Excepción aceptada:
+«Viajes y estilo de vida» 0,57 / 0,43 (n = 7, todo lauratuttman). El país por IA pasa a
+`referentes-review-4` en RF-12. #806 fusionado (main 9407a6a6); #807 fusionado (main ee64050b, migración 0182).
 
 Descartadas: RF-06 «Competencia del sector» (decisión 1), RF-08 «Buscar por producto»
 (decisión 2), RF-03 (fusionada en RF-01).
