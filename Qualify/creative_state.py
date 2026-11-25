@@ -2454,6 +2454,16 @@ class CreativeState(rx.State):
         return "Aprobar"
 
     @rx.var
+    def review_video_key(self) -> str:
+        """EF-18 (m-25026598): the key of the video the piece's page shows — what its
+        contact sheet must have been made from ("" = no video, or a previous version on
+        screen: the sheet belongs to the version that would be approved)."""
+        draft = self.draft
+        if draft is None or draft.viewing_previous_version:
+            return ""
+        return next((item.key for item in draft.media if item.media_type == "video"), "")
+
+    @rx.var
     def kind_is_video(self) -> bool:
         return self.brief_kind in ("avatar_video", "animated_avatar_video")
 
