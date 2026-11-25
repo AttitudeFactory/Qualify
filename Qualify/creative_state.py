@@ -7384,7 +7384,11 @@ class CreativeState(rx.State):
         for effect_id in self._clip_used_effect_ids():
             effect = editor_contract.effect_of(effect_id)
             if effect is not None and effect.preview_asset:
-                urls[effect_id] = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                url = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                # m-25120474: an R2 preview lives on the backend's origin, like the videos
+                if editor_contract.is_backend_effect_url(url):
+                    url = clip_editor_vm.SEQ_BASE + url
+                urls[effect_id] = url
         return edit_sequence.from_timeline(
             media, overlays, self._clip_seq_sources(), effect_urls=urls
         )
@@ -7469,6 +7473,9 @@ class CreativeState(rx.State):
             effect = editor_contract.effect_of(effect_id)
             if effect is not None and effect.preview_asset:
                 url = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                # m-25120474: an R2 preview lives on the backend's origin, like the videos
+                if editor_contract.is_backend_effect_url(url):
+                    url = clip_editor_vm.SEQ_BASE + url
                 if url and url not in srcs:
                     srcs.append(url)
         return srcs

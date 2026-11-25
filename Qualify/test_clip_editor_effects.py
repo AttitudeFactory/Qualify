@@ -14,12 +14,14 @@ explains why); the view model's rules tested on their own."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 import qualify_creative
+import reflex as rx
 
 from . import clip_editor_vm as vm
 from . import creative_state as module
@@ -362,6 +364,43 @@ def test_the_sequence_carries_each_layer_opacity(editor_on: None) -> None:
     assert [row["opacity"] for row in state.clip_seq_effects] == ["0.6", "0.5"]
     data = json.loads(state._clip_sequence().to_json())
     assert data["effects"][0]["opacity"] == 0.6
+
+
+def test_an_r2_preview_layer_goes_to_the_backend_origin(
+    editor_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-25120474: a layer whose «Así se ve» lives in R2 plays from `/r2effects/…` on the
+    BACKEND's origin (`SEQ_BASE`, swapped for `BACKEND_BASE` by the view, like the
+    videos); the local loops keep their frontend address."""
+    humo = contract.effect_of("humo_capa")
+    assert humo is not None
+    r2_humo = dataclasses.replace(humo, preview_asset="platform/effects/humo_capa/v1/preview.mp4")
+    real_of = contract.effect_of
+    monkeypatch.setattr(
+        contract, "effect_of", lambda i: r2_humo if i == "humo_capa" else real_of(i)
+    )
+    state = _three()
+    state.clip_effect_uses = [_use("u1", "humo_capa", 0, 3), _use("u2", "vapor_capa", 3, 6)]
+    assert [e.url for e in state._clip_sequence().effects] == [
+        vm.SEQ_BASE + "/r2effects/humo_capa/v1",
+        "/effects/vapor_capa/v1/preview.webm",
+    ]
+    assert state.clip_seq_effects[0]["url"] == vm.SEQ_BASE + "/r2effects/humo_capa/v1"
+    assert state.clip_edit_effect_srcs == [
+        vm.SEQ_BASE + "/r2effects/humo_capa/v1",
+        "/effects/vapor_capa/v1/preview.webm",
+    ]
+    assert vm.SEQ_BASE + "/r2effects/humo_capa/v1" in state.clip_seq_json
+
+
+def test_the_preview_puts_the_origin_on_a_marked_effect_address() -> None:
+    """m-25120474: `effect_url_base` swaps the mark for the origin in each layer's `src`;
+    without it the row's address is used as is."""
+    row = rx.Var.create({"url": "__QB__/r2effects/humo_capa/v1", "index": "0", "opacity": "1"})
+    marked = str(ep._seq_effect(row, (vm.SEQ_BASE, rx.Var.create("https://api.test"))))
+    assert f'?.["url"].replaceAll("{vm.SEQ_BASE}", "https://api.test")' in marked
+    plain = str(ep._seq_effect(row))
+    assert "replaceAll" not in plain and '?.["url"],' in plain
 
 
 def test_a_recipe_sequence_takes_the_opacity_too() -> None:

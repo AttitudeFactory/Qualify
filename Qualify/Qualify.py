@@ -5,6 +5,7 @@ import logging
 import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.creative.queue_dispatch import warn_if_inline
+from qualify_api.http.effect_preview_routes import router as effect_preview_router
 from qualify_api.planner.embedded import calendar_worker
 
 from .ad_forms_page import ad_forms_index
@@ -128,6 +129,8 @@ avatar_api.include_router(r2_media_router)
 avatar_api.include_router(seasonal_media_router)
 # «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
 avatar_api.include_router(piece_download_router)
+# m-25120474: the effects' «Así se ve» video, read-only from R2 `platform/effects/`.
+avatar_api.include_router(effect_preview_router)
 
 
 # Type faces + the `--q-*` tokens (assets/qualify.css) layer on top of the Radix theme
