@@ -20,6 +20,13 @@ or several), «Duración» and «Restablecer filtros» (`reels_filters_vm`); des
 in a sticky bar, phone chips that open a sheet from the bottom. Changing a filter is one
 more read of what is stored (RF-01's `reviewed_reels`): it never queues a run, never marks
 the brand, never pays. Under the ideas, «Más reels revisados», paged.
+
+RF-05 (m-25119465), option A chosen by Deivid on 2026-11-25: «Tus competidores» at the end
+of the bar opens a drawer (`reels_competitors_vm`) — ticking a competitor saves the
+brand's labels — with «Ver sus reels ahora» for the others, which only QUEUES the read
+inside the daily cap (the reels-worker pays). While one is in flight a clock outside the
+drawer reads the rows again every `POLL_SECONDS` (free) and, when it ends, the lists too;
+with the drawer closed a toast says how it ended.
 """
 
 from __future__ import annotations
@@ -34,11 +41,18 @@ from uuid import UUID
 
 import reflex as rx
 from qualify_api.referentes import reels_ai
+from qualify_api.referentes.competitors import STATE_READING
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 from qualify_api.referentes.reviewed_reels import KIND_REFERENTE
 from qualify_api.referentes.reviewed_reels import PAGE_SIZE as MORE_PAGE_SIZE
 
-from . import reel_wait_vm, reels_discovery, reels_filters_vm, reels_ideas_vm
+from . import (
+    reel_wait_vm,
+    reels_competitors_vm,
+    reels_discovery,
+    reels_filters_vm,
+    reels_ideas_vm,
+)
 from .auth_state import AuthState
 from .catalog_vm import IDEAS_RETURN_PATH, brand_referentes_href
 from .creative_provider import default_brand_id
@@ -150,6 +164,16 @@ class DiscoverReelsState(rx.State):
     #: The reel playing inside its own card (its `key`), "" when none — one at a time,
     #: so starting another stops the previous (its iframe unmounts).
     playing_key: str = ""
+    #: RF-05: the competitors panel (`reels_competitors_vm.rows`), the row being saved or
+    #: asked to read now ("" none) and the panel's last refusal or error.
+    competitor_rows: list[dict[str, str]] = []
+    competitor_busy: str = ""
+    competitor_error: str = ""
+    #: Option A (Deivid, 2026-11-25): the panel lives in a drawer opened from the bar —
+    #: open or not, and whether it rises from the bottom (the phone's chip) or slides from
+    #: the right (the desktop button).
+    competitors_open: bool = False
+    competitors_bottom: bool = False
 
     #: The stored ideas, best first (backend only).
     _cards: list[dict[str, str]] = []
@@ -183,6 +207,11 @@ class DiscoverReelsState(rx.State):
             self.more_reels = []
             self.has_more = False
             self.sheet = ""
+            self.competitor_rows = []
+            self.competitor_busy = ""
+            self.competitor_error = ""
+            self.competitors_open = False
+            self.competitors_bottom = False
             self._cards_tenant_id = tenant_id
 
     # -- RF-02: the filter bar ------------------------------------------------------------
@@ -453,6 +482,7 @@ class DiscoverReelsState(rx.State):
             shown = await asyncio.to_thread(
                 reels_discovery.load_ideas, tenant_id, brand_id, filters=filters
             )
+            rivals = await _competitor_rows(tenant_id, brand_id)
         except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
             logger.warning("stored reel ideas unreadable: %s: %s", type(exc).__name__, exc)
             async with self:
@@ -465,7 +495,153 @@ class DiscoverReelsState(rx.State):
                 self._claim_cards(str(tenant_id))
                 self._brand_id = str(brand_id)
                 self._show(shown)
+                if rivals is not None:
+                    self.competitor_rows = rivals
         await _settle(opened)
+
+    # -- RF-05: the competitors panel -----------------------------------------------------
+
+    @rx.var
+    def competitors_count(self) -> str:
+        """«3 de 6 marcados»: how many the Monday run reads."""
+        return reels_competitors_vm.picked_count(self.competitor_rows)
+
+    @rx.var
+    def competitors_label(self) -> str:
+        """The bar button's accessible name: the count, or that a read is in flight."""
+        return reels_competitors_vm.button_label(self.competitor_rows)
+
+    @rx.event
+    def open_competitors(self, bottom: bool) -> None:
+        """«Tus competidores»: the drawer from the right (desktop) or the bottom (phone)."""
+        if not self.competitor_rows:
+            return
+        self.competitors_bottom = bool(bottom)
+        self.competitors_open = True
+        self.competitor_error = ""
+
+    @rx.event
+    def competitors_changed(self, is_open: bool) -> None:
+        """The drawer closed (Esc, the backdrop, «Cerrar»)."""
+        if not is_open:
+            self.competitors_open = False
+
+    @rx.event
+    def close_competitors(self) -> None:
+        """«Listo»."""
+        self.competitors_open = False
+
+    @rx.var
+    def competitors_reading(self) -> bool:
+        """A manual read is queued or running: the panel asks again every `POLL_SECONDS`."""
+        return reels_competitors_vm.reading(self.competitor_rows)
+
+    def _session_brand(self) -> tuple[UUID, UUID] | None:
+        tenant_id = tenant_uuid(self._cards_tenant_id) if self._cards_tenant_id else None
+        if tenant_id is None or not self._brand_id:
+            return None
+        return tenant_id, UUID(self._brand_id)
+
+    @rx.event(background=True)
+    async def toggle_weekly(self, key: str) -> None:
+        """Tick or untick a competitor for the Monday run (at most 6). Saves the brand's
+        own labels — never a read, never a paid call."""
+        async with self:
+            if self.competitor_busy:
+                return
+            change = reels_competitors_vm.toggle(self.competitor_rows, key)
+            if change is None:
+                return
+            if change.error:
+                self.competitor_error = change.error
+                return
+            target = self._session_brand()
+            if target is None:
+                return
+            self.competitor_busy = key
+            self.competitor_error = ""
+        tenant_id, brand_id = target
+        try:
+            await asyncio.to_thread(
+                reels_discovery.choose_competitors, tenant_id, brand_id, list(change.picks)
+            )
+        except Exception as exc:  # noqa: BLE001 — the panel says it, the log keeps why
+            logger.warning("competitor picks not saved: %s: %s", type(exc).__name__, exc)
+            async with self:
+                self.competitor_busy = ""
+                self.competitor_error = reels_competitors_vm.SAVE_FAILED
+            return
+        rivals = await _competitor_rows(tenant_id, brand_id)
+        async with self:
+            self.competitor_busy = ""
+            if rivals is not None and self._session_brand() == target:
+                self.competitor_rows = rivals
+
+    @rx.event(background=True)
+    async def read_competitor(self, key: str) -> None:
+        """«Ver sus reels ahora»: queue that competitor's read for today — once — inside
+        the business's daily cap. It only QUEUES: the reels-worker pays (ADR 42 R4/R8)."""
+        async with self:
+            if self.competitor_busy or key not in {r["key"] for r in self.competitor_rows}:
+                return
+            target = self._session_brand()
+            if target is None:
+                return
+            self.competitor_busy = key
+            self.competitor_error = ""
+        tenant_id, brand_id = target
+        try:
+            answer = await asyncio.to_thread(
+                reels_discovery.read_competitor_now, tenant_id, brand_id, key
+            )
+        except Exception as exc:  # noqa: BLE001 — the panel says it, the log keeps why
+            logger.warning("competitor read not queued: %s: %s", type(exc).__name__, exc)
+            async with self:
+                self.competitor_busy = ""
+                self.competitor_error = reels_competitors_vm.READ_FAILED
+            return
+        rivals = await _competitor_rows(tenant_id, brand_id)
+        async with self:
+            self.competitor_busy = ""
+            if self._session_brand() != target:
+                return
+            # a refused press (the daily cap) queues no read: its answer is the row's line
+            self.competitor_rows = reels_competitors_vm.with_answer(
+                rivals if rivals is not None else self.competitor_rows, key, answer
+            )
+
+    @rx.event(background=True)
+    async def refresh_competitors(self, _shown: str = "") -> Any:
+        """The panel's browser clock, while a manual read is in flight — mounted outside
+        the drawer, so it keeps going with the drawer closed: read the rows again
+        (Postgres, free). When a read has just ended, the lists are read again too, so its
+        reels show under «Competidores»; with the drawer closed a toast says how it ended
+        (open, the row's own line says it)."""
+        async with self:
+            target = self._session_brand()
+            before = {r["key"]: r.get("state", "") for r in self.competitor_rows}
+        if target is None:
+            return None
+        rivals = await _competitor_rows(*target)
+        if rivals is None:
+            return None
+        async with self:
+            if self._session_brand() != target:
+                return None
+            self.competitor_rows = rivals
+            closed = not self.competitors_open
+        finished = reels_competitors_vm.ended(before, rivals)
+        if not finished:
+            return None
+        toasts = [
+            rx.toast.success(text)
+            if tone == "ok"
+            else rx.toast.warning(text)
+            if tone == "warn"
+            else rx.toast.error(text)
+            for tone, text in finished
+        ]
+        return [DiscoverReelsState.refilter, *(toasts if closed else [])]
 
     @rx.event(background=True)
     async def tick(self, _shown: str = "") -> None:
@@ -626,6 +802,16 @@ class DiscoverReelsState(rx.State):
         # (UI-2) polls it from there (`CreativeState.poll_reel_analysis`); coming back
         # via the card asks again and gets the same id (`request_analysis`)
         yield go_to_step("/create", 1)
+
+
+async def _competitor_rows(tenant_id: UUID, brand_id: UUID) -> list[dict[str, str]] | None:
+    """RF-05: the competitors panel's rows (Postgres only, free); None when they could not
+    be read — the panel keeps what it showed and the rest of the screen goes on."""
+    try:
+        return await asyncio.to_thread(reels_discovery.competitor_rows, tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001 — the ideas must show whatever happens here
+        logger.warning("competitors panel unreadable: %s: %s", type(exc).__name__, exc)
+        return None
 
 
 async def _still_mine(state: Any, load_id: int, tenant_id: UUID) -> bool:
@@ -1248,14 +1434,23 @@ def _filter_bar() -> rx.Component:
         rx.box(
             *(_dropdown(axis) for axis in axes),
             _reset_button(),
+            # RF-05, option A: «Tus competidores» after the filters, set apart
+            rx.cond(
+                DiscoverReelsState.competitor_rows.length() > 0,
+                rx.separator(orientation="vertical", size="1"),
+            ),
+            _rivals_button(chip=False),
             class_name="q-rf-row q-rf-desktop",
         ),
         rx.box(
             *(_chip(axis) for axis in axes),
             _reset_button(chip=True),
+            _rivals_button(chip=True),
             class_name="q-rf-row q-rf-phone",
         ),
         _sheet(),
+        _competitors_drawer(bottom=False),
+        _competitors_drawer(bottom=True),
         role="search",
         aria_label=reels_filters_vm.BAR_LABEL,
         class_name="q-rf-bar",
@@ -1263,8 +1458,8 @@ def _filter_bar() -> rx.Component:
 
 
 def _empty_lists() -> rx.Component:
-    """Nothing left with these filters — never a mute list: competitors before RF-05
-    reads them, a brand that marked none, or the ticket's «No hay reels con estos
+    """Nothing left with these filters — never a mute list: competitors before any of
+    their reels is read (RF-05), a brand that marked none, or the ticket's «No hay reels con estos
     filtros», each with the way out."""
     S = DiscoverReelsState
     reset = rx.button(
@@ -1421,6 +1616,9 @@ def _ideas() -> rx.Component:
             ),
         ),
         _filter_bar(),
+        # RF-05: the competitors' clock, outside their drawer — it keeps following a
+        # manual read with the drawer closed (and says how it ended in a toast)
+        rx.cond(S.competitors_reading, _ticker(S.refresh_competitors)),
         rx.box(
             lists,
             class_name=rx.cond(S.filtering, "q-rf-lists q-rf-lists--busy", "q-rf-lists"),
@@ -1429,6 +1627,148 @@ def _ideas() -> rx.Component:
         ),
         spacing="4",
         width="100%",
+    )
+
+
+def _read_state(row: rx.Var[dict[str, str]]) -> rx.Component:
+    """Under a row, today's «Ver sus reels ahora»: reading, done, a limit or a failure, in
+    the tone of each (`reels_competitors_vm.STATE_TONES`)."""
+    message = row["message"].to(str)
+    return rx.match(
+        row["tone"],
+        ("info", callout(message, "info")),
+        ("ok", callout(message, "ok")),
+        ("warn", callout(message, "warn")),
+        ("error", callout(message, "error")),
+        rx.fragment(),
+    )
+
+
+def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
+    """One competitor: a 44 px checkbox row («leemos cada lunes») and, outside the 6,
+    «Ver sus reels ahora». The button drops under the name on a phone."""
+    S = DiscoverReelsState
+    key = row["key"].to(str)
+    weekly = row["weekly"].to(str) != ""
+    busy = S.competitor_busy == key
+    read_now = rx.button(
+        rx.cond(busy, loading_spinner("sm"), rx.icon("play", size=14, aria_hidden="true")),
+        reels_competitors_vm.READ_NOW,
+        variant="soft",
+        size="2",
+        min_height="44px",
+        on_click=S.read_competitor(key),
+        disabled=(S.competitor_busy != "") | (row["state"].to(str) == STATE_READING),
+        aria_busy=rx.cond(busy, "true", "false"),
+        aria_label=reels_competitors_vm.READ_NOW + ": " + row["label"].to(str),
+    )
+    return rx.vstack(
+        rx.flex(
+            rx.box(
+                _option_row(
+                    row["label"].to(str),
+                    weekly,
+                    S.toggle_weekly(key),
+                    role="checkbox",
+                    detail=row["detail"].to(str),
+                ),
+                flex="1 1 14rem",
+                min_width="0",
+            ),
+            rx.cond(weekly, rx.fragment(), read_now),
+            wrap="wrap",
+            align="center",
+            gap="2",
+            width="100%",
+        ),
+        _read_state(row),
+        spacing="1",
+        width="100%",
+        role="listitem",
+    )
+
+
+#: The bar's «Tus competidores» button (desktop) and chip (phone): the drawer gives the
+#: focus back to whichever of the two is on screen when it closes.
+RIVALS_BUTTON_ID = "q-rf-rivals"
+RIVALS_CHIP_ID = "q-rf-rivals-chip"
+RIVALS_FOCUS_SCRIPT = (
+    "window.setTimeout(function () {"
+    f" var ids = ['{RIVALS_BUTTON_ID}', '{RIVALS_CHIP_ID}'];"
+    " for (var i = 0; i < ids.length; i++) {"
+    "  var b = document.getElementById(ids[i]);"
+    "  if (b && b.offsetParent !== null) { b.focus(); return; }"
+    " }"
+    "}, 0);"
+)
+
+
+def _rivals_button(*, chip: bool) -> rx.Component:
+    """«Tus competidores» at the end of the bar (option A, Deivid 2026-11-25): opens the
+    drawer — from the right on a desktop, from the bottom on a phone. While a manual read
+    is in flight it shows the spinner instead of its icon. Not drawn for a brand that
+    marked no competitor (RF-02's empty message tells it how)."""
+    S = DiscoverReelsState
+    return rx.cond(
+        S.competitor_rows.length() > 0,
+        rx.el.button(
+            rx.cond(
+                S.competitors_reading,
+                loading_spinner("sm"),
+                rx.icon("users", size=14, aria_hidden="true"),
+            ),
+            rx.text(reels_competitors_vm.PICKER_TITLE, size="2", as_="span"),
+            type="button",
+            id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
+            on_click=S.open_competitors(chip),
+            class_name="q-rf-chip" if chip else "q-rf-trigger",
+            aria_label=S.competitors_label,
+            aria_haspopup="dialog",
+            aria_expanded=rx.cond(S.competitors_open, "true", "false"),
+        ),
+    )
+
+
+def _competitors_drawer(*, bottom: bool) -> rx.Component:
+    """The competitors panel in the system's `drawer`: the same rows (ticking saves the
+    brand's labels; «Ver sus reels ahora» only queues the read, the reels-worker pays
+    inside the daily cap) and «Listo». Its clock is NOT here (`_ideas` mounts it), so
+    closing the drawer never stops a read's follow-up."""
+    S = DiscoverReelsState
+    body = rx.vstack(
+        signal_pill(S.competitors_count, "accent"),
+        rx.cond(S.competitor_error != "", callout(S.competitor_error, "warn")),
+        rx.vstack(
+            rx.foreach(S.competitor_rows, _competitor_row),
+            spacing="2",
+            width="100%",
+            role="list",
+            aria_label=reels_competitors_vm.PICKER_TITLE,
+        ),
+        spacing="3",
+        width="100%",
+    )
+    foot = rx.hstack(
+        rx.spacer(),
+        rx.button(
+            reels_filters_vm.DONE_LABEL,
+            size="3",
+            min_height="44px",
+            on_click=S.close_competitors,
+        ),
+        width="100%",
+        align="center",
+    )
+    shown = S.competitors_bottom if bottom else ~S.competitors_bottom
+    return drawer(
+        body,
+        open=S.competitors_open & shown,
+        on_open_change=S.competitors_changed,
+        title=reels_competitors_vm.PICKER_TITLE,
+        description=reels_competitors_vm.PICKER_BODY,
+        footer=foot,
+        side="bottom" if bottom else "right",
+        on_close_auto_focus=rx.call_script(RIVALS_FOCUS_SCRIPT).prevent_default,
     )
 
 
@@ -1471,14 +1811,15 @@ def _empty(icon: str) -> rx.Component:
     return empty_state(icon, S.title, S.body, rx.cond(S.action != "", _action()))
 
 
-def _ticker() -> rx.Component:
+def _ticker(on_change: Any = None) -> rx.Component:
     """The browser clock: every `POLL_SECONDS` it asks for one more read
     (`DiscoverReelsState.tick`). It lives only while the screen waits — leaving it, or the
     end of the wait, unmounts it — and it is the browser's, so a deploy that restarts the
-    server never leaves a screen without it. Nothing of it is seen or read."""
+    server never leaves a screen without it. Nothing of it is seen or read. RF-05's panel
+    mounts the same clock on `refresh_competitors` while a manual read is in flight."""
     return rx.moment(
         interval=int(POLL_SECONDS * 1000),
-        on_change=DiscoverReelsState.tick,
+        on_change=on_change if on_change is not None else DiscoverReelsState.tick,
         display="none",
         aria_hidden="true",
     )

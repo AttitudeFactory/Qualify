@@ -138,6 +138,9 @@ class BrandAccountLabel(Base):
     #: The operator's influence order inside its label, 0 = most influential; NULL until
     #: ordered (migration 0031).
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: RF-05 (migration 0183): a `competencia` account the owner chose to have its reels
+    #: read every Monday (at most 6); none chosen = the first 6 by `position`.
+    read_weekly: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
 
 class CreatorProfileCache(Base):

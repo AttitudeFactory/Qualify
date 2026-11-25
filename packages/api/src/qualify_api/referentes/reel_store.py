@@ -28,6 +28,13 @@ R12 (m-24854859, migration 0141): a reel also keeps its cover's signed CDN URL
 (`cover_url` + `cover_url_at`), written by the same upsert and with the same rule as
 `video_url`, and `cover_r2_key`, the R2 copy the run makes of each idea's cover
 (`reel_covers`, which also writes the key and its last use; this module only reads it).
+
+RF-05 (m-25119465, migration 0183): a `competitor_now` run reads ONE competitor at the
+owner's request and names it (`account_network`, `account_handle`); `uq_brand_reel_run`
+spans the account, NULLS NOT DISTINCT, so there is one per brand, account and day and
+still one weekly run per brand and day. `latest_run` (what the screen shows, and what the
+worker retries) never returns one; `competitor_runs` lists them. `competitor_credits` /
+`competitor_cost_usd` are the part of a run's spend that went on competitors.
 """
 
 from __future__ import annotations
@@ -56,7 +63,10 @@ _text = text
 TRIGGER_WEEKLY = "weekly"
 TRIGGER_MANUAL = "manual"
 TRIGGER_OPERATOR_90D = "operator_90d"
-TRIGGERS = (TRIGGER_WEEKLY, TRIGGER_MANUAL, TRIGGER_OPERATOR_90D)
+#: RF-05 (m-25119465, 0183): the owner's «Ver sus reels ahora» on ONE competitor — a run
+#: of its own that names its account, never the run the screen shows (`latest_run`).
+TRIGGER_COMPETITOR_NOW = "competitor_now"
+TRIGGERS = (TRIGGER_WEEKLY, TRIGGER_MANUAL, TRIGGER_OPERATOR_90D, TRIGGER_COMPETITOR_NOW)
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
@@ -71,6 +81,16 @@ STATUS_ERROR = "error"
 #: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo», a later
 #: slice: no screen calls it yet).
 RETRYABLE = frozenset({STATUS_CHECK_FAILED, STATUS_ERROR})
+
+
+def retryable(trigger: str) -> frozenset[str]:
+    """What `enqueue(retry=True)` puts back in the queue for `trigger`. A manual read of a
+    competitor (RF-05) also comes back from `budget_stopped`: the owner presses again once
+    the gate lets reads through (`competitors.read_now` checks the cap first)."""
+    if trigger == TRIGGER_COMPETITOR_NOW:
+        return RETRYABLE | {STATUS_BUDGET_STOPPED}
+    return RETRYABLE
+
 
 ACCOUNT_OK = "ok"
 ACCOUNT_MISSING = "missing"
@@ -120,6 +140,13 @@ class RunRecord:
     #: How many times the run was claimed (0134); `enqueue_run(retry=True)` sets it back
     #: to 0.
     attempts: int = 0
+    #: RF-05 (0183): the one account a `competitor_now` run reads; None for any other.
+    account_network: str | None = None
+    account_handle: str | None = None
+    #: RF-05: the part of `credits` / `cost_usd` spent on `competencia` accounts (all of
+    #: it for a `competitor_now` run).
+    competitor_credits: int = 0
+    competitor_cost_usd: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -262,7 +289,11 @@ class ReelRunStore(Protocol):
         pipeline_version: str,
         now: datetime,
         retry: bool = False,
-    ) -> RunRecord: ...
+        account: tuple[str, str] | None = None,
+    ) -> RunRecord:
+        """One run per `(brand, trigger, run_date, account)`; `account` (network, handle)
+        is given exactly for `TRIGGER_COMPETITOR_NOW`."""
+        ...
 
     def get_run(self, tenant_id: UUID, run_id: UUID) -> RunRecord | None: ...
 
@@ -295,8 +326,12 @@ class ReelRunStore(Protocol):
         cost_usd: Decimal,
         brief_hash: str | None,
         started_at: datetime,
+        competitor_credits: int = 0,
+        competitor_cost_usd: Decimal = Decimal("0"),
     ) -> bool:
-        """Same fence as `progress`; False when the run is no longer that claim's."""
+        """Same fence as `progress`; False when the run is no longer that claim's. The
+        `competitor_*` amounts are the part of `credits` / `cost_usd` spent on
+        competitors (RF-05)."""
         ...
 
     def release(self, tenant_id: UUID, run_id: UUID, *, started_at: datetime) -> bool:
@@ -331,7 +366,21 @@ class ReelRunStore(Protocol):
 
     def latest_run(
         self, tenant_id: UUID, brand_id: UUID, *, status: str | None = None
-    ) -> RunRecord | None: ...
+    ) -> RunRecord | None:
+        """The brand's newest run the screen shows — never a `competitor_now` one."""
+        ...
+
+    def competitor_runs(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        *,
+        run_date: date | None = None,
+        finished_after: datetime | None = None,
+    ) -> list[RunRecord]:
+        """RF-05: the brand's `competitor_now` runs — of `run_date` when given, ended after
+        `finished_after` when given — newest first."""
+        ...
 
     # -- the screen's opening and the tenant's clock (R8) ------------------------------
     def mark_opened(
@@ -494,6 +543,28 @@ def capture_reel_hashtags(
         return 0
 
 
+def _check_account(trigger: str, account: tuple[str, str] | None) -> None:
+    """0183's `ck_brand_reel_run_account`, before any write: a `competitor_now` run names
+    its account (network, normalized handle) and no other trigger does."""
+    if (trigger == TRIGGER_COMPETITOR_NOW) != (account is not None):
+        raise ValueError("an account is named exactly by a competitor_now run")
+    if account is not None:
+        network, handle = account
+        if network not in ("instagram", "tiktok"):
+            raise ValueError(f"unsupported network: {network!r}")
+        if not handle or handle != handle.lower() or handle.startswith("@"):
+            raise ValueError("the account handle must be normalized")
+
+
+def _check_competitor_spend(
+    credits: int, cost_usd: Decimal, competitor_credits: int, competitor_cost_usd: Decimal
+) -> None:
+    """0183's `ck_brand_reel_run_competitor_spend`: the competitor part of a run's spend is
+    a part of it."""
+    if not (0 <= competitor_credits <= credits and 0 <= competitor_cost_usd <= cost_usd):
+        raise ValueError("the competitor spend must be a part of the run's spend")
+
+
 class MemoryReelRunStore:
     """`ReelRunStore` in process memory, with the same idempotency, monotonic guards and
     tenant scoping as Postgres. `writes` counts every write, so a test can pin that a
@@ -540,17 +611,22 @@ class MemoryReelRunStore:
         pipeline_version: str,
         now: datetime,
         retry: bool = False,
+        account: tuple[str, str] | None = None,
     ) -> RunRecord:
+        _check_account(trigger, account)
+        net, handle = account if account is not None else (None, None)
         with self._lock:
             for record in self.runs.values():
-                if (record.brand_id, record.trigger, record.run_date) == (
-                    brand_id,
-                    trigger,
-                    run_date,
-                ):
+                if (
+                    record.brand_id,
+                    record.trigger,
+                    record.run_date,
+                    record.account_network,
+                    record.account_handle,
+                ) == (brand_id, trigger, run_date, net, handle):
                     if record.tenant_id != tenant_id:
                         raise PermissionError("another tenant's brand")
-                    if retry and record.status in RETRYABLE:
+                    if retry and record.status in retryable(trigger):
                         self._write()
                         record = replace(
                             record,
@@ -582,6 +658,8 @@ class MemoryReelRunStore:
                 queued_at=now,
                 started_at=None,
                 finished_at=None,
+                account_network=net,
+                account_handle=handle,
             )
             self.runs[record.id] = record
             return record
@@ -649,7 +727,10 @@ class MemoryReelRunStore:
         cost_usd: Decimal,
         brief_hash: str | None,
         started_at: datetime,
+        competitor_credits: int = 0,
+        competitor_cost_usd: Decimal = Decimal("0"),
     ) -> bool:
+        _check_competitor_spend(credits, cost_usd, competitor_credits, competitor_cost_usd)
         with self._lock:
             record = self.get_run(tenant_id, run_id)
             if record is None:
@@ -663,6 +744,8 @@ class MemoryReelRunStore:
                 credits=record.credits + credits,
                 cost_usd=record.cost_usd + cost_usd,
                 brief_hash=brief_hash,
+                competitor_credits=record.competitor_credits + competitor_credits,
+                competitor_cost_usd=record.competitor_cost_usd + competitor_cost_usd,
             )
 
     def release(self, tenant_id: UUID, run_id: UUID, *, started_at: datetime) -> bool:
@@ -727,10 +810,35 @@ class MemoryReelRunStore:
             for r in self.runs.values()
             if r.tenant_id == tenant_id
             and r.brand_id == brand_id
+            and r.trigger != TRIGGER_COMPETITOR_NOW
             and (status is None or r.status == status)
         ]
         return max(
             mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at, r.id), default=None
+        )
+
+    def competitor_runs(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        *,
+        run_date: date | None = None,
+        finished_after: datetime | None = None,
+    ) -> list[RunRecord]:
+        mine = [
+            r
+            for r in self.runs.values()
+            if r.tenant_id == tenant_id
+            and r.brand_id == brand_id
+            and r.trigger == TRIGGER_COMPETITOR_NOW
+            and (run_date is None or r.run_date == run_date)
+            and (
+                finished_after is None
+                or (r.finished_at is not None and r.finished_at > finished_after)
+            )
+        ]
+        return sorted(
+            mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at, r.id), reverse=True
         )
 
     # the screen's opening and the tenant's clock
@@ -1031,8 +1139,12 @@ def _fields(verdict: NewVerdict) -> dict[str, Any]:
 _RUN_COLUMNS = (
     "id, tenant_id, brand_id, trigger, run_date, status, days, accounts_total, "
     "accounts_done, credits, cost_usd, brief_hash, pipeline_version, queued_at, "
-    "started_at, finished_at, attempts"
+    "started_at, finished_at, attempts, account_network, account_handle, "
+    "competitor_credits, competitor_cost_usd"
 )
+#: RF-05: the runs the screen shows (and the worker retries) are never a manual read of
+#: one competitor.
+_SHOWN_RUN = "trigger <> 'competitor_now'"
 #: The fence of every write on a claimed run (R8): still `running`, still this claim's.
 _FENCE = "id = :id AND status = 'running' AND started_at = :started_at"
 _REEL_COLUMNS = (
@@ -1112,7 +1224,8 @@ def _verdict(row: Any, prefix: str = "") -> StoredVerdict:
 #: worker retries (`retry_check`): one order for both.
 _LATEST_ORDER = "COALESCE(finished_at, queued_at) DESC, queued_at DESC, id DESC"
 _LATEST_OF_BRAND = (
-    "SELECT l.id FROM brand_reel_runs l WHERE l.brand_id = r.brand_id ORDER BY "
+    "SELECT l.id FROM brand_reel_runs l WHERE l.brand_id = r.brand_id "
+    "AND l.trigger <> 'competitor_now' ORDER BY "
     "COALESCE(l.finished_at, l.queued_at) DESC, l.queued_at DESC, l.id DESC LIMIT 1"
 )
 
@@ -1233,21 +1346,36 @@ class PostgresReelRunStore:
         pipeline_version: str,
         now: datetime,
         retry: bool = False,
+        account: tuple[str, str] | None = None,
     ) -> RunRecord:
+        _check_account(trigger, account)
+        net, handle = account if account is not None else (None, None)
+        # the row's key: `uq_brand_reel_run` is NULLS NOT DISTINCT over the account (0183)
+        key = (
+            "brand_id = :brand AND trigger = :trigger AND run_date = :run_date "
+            "AND account_network IS NOT DISTINCT FROM CAST(:net AS text) "
+            "AND account_handle IS NOT DISTINCT FROM CAST(:handle AS text)"
+        )
+        keys = {
+            "brand": brand_id,
+            "trigger": trigger,
+            "run_date": run_date,
+            "net": net,
+            "handle": handle,
+        }
         with tenant_session(tenant_id) as session:
             row = session.execute(
                 text(
                     "INSERT INTO brand_reel_runs (tenant_id, brand_id, trigger, run_date, "
-                    "days, pipeline_version, queued_at) VALUES (:tenant, :brand, :trigger, "
-                    ":run_date, :days, :pipeline, :now) "
+                    "days, pipeline_version, queued_at, account_network, account_handle) "
+                    "VALUES (:tenant, :brand, :trigger, :run_date, :days, :pipeline, :now, "
+                    ":net, :handle) "
                     "ON CONFLICT ON CONSTRAINT uq_brand_reel_run DO NOTHING "
                     f"RETURNING {_RUN_COLUMNS}"
                 ),
                 {
+                    **keys,
                     "tenant": tenant_id,
-                    "brand": brand_id,
-                    "trigger": trigger,
-                    "run_date": run_date,
                     "days": days,
                     "pipeline": pipeline_version,
                     "now": now,
@@ -1261,20 +1389,16 @@ class PostgresReelRunStore:
                         "UPDATE brand_reel_runs SET status = 'queued', queued_at = :now, "
                         "started_at = NULL, finished_at = NULL, accounts_done = 0, "
                         "accounts_total = 0, attempts = 0 "
-                        "WHERE brand_id = :brand AND trigger = :trigger "
-                        "AND run_date = :run_date AND status IN ('check_failed','error') "
+                        f"WHERE {key} AND status = ANY(CAST(:retryable AS text[])) "
                         f"RETURNING {_RUN_COLUMNS}"
                     ),
-                    {"brand": brand_id, "trigger": trigger, "run_date": run_date, "now": now},
+                    {**keys, "now": now, "retryable": sorted(retryable(trigger))},
                 ).first()
                 if row is not None:
                     return _run(row)
             row = session.execute(
-                text(
-                    f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE brand_id = :brand "
-                    "AND trigger = :trigger AND run_date = :run_date"
-                ),
-                {"brand": brand_id, "trigger": trigger, "run_date": run_date},
+                text(f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE {key}"),
+                keys,
             ).first()
             if row is None:
                 # the UNIQUE row exists but RLS hides it: another tenant's brand
@@ -1339,11 +1463,16 @@ class PostgresReelRunStore:
         cost_usd: Decimal,
         brief_hash: str | None,
         started_at: datetime,
+        competitor_credits: int = 0,
+        competitor_cost_usd: Decimal = Decimal("0"),
     ) -> bool:
+        _check_competitor_spend(credits, cost_usd, competitor_credits, competitor_cost_usd)
         return self._fenced(
             tenant_id,
             "status = :status, finished_at = :now, credits = credits + :credits, "
-            "cost_usd = cost_usd + :cost, brief_hash = :brief",
+            "cost_usd = cost_usd + :cost, brief_hash = :brief, "
+            "competitor_credits = competitor_credits + :comp_credits, "
+            "competitor_cost_usd = competitor_cost_usd + :comp_cost",
             {
                 "id": run_id,
                 "started_at": started_at,
@@ -1352,6 +1481,8 @@ class PostgresReelRunStore:
                 "credits": credits,
                 "cost": cost_usd,
                 "brief": brief_hash,
+                "comp_credits": competitor_credits,
+                "comp_cost": competitor_cost_usd,
             },
         )
 
@@ -1408,7 +1539,7 @@ class PostgresReelRunStore:
     def latest_run(
         self, tenant_id: UUID, brand_id: UUID, *, status: str | None = None
     ) -> RunRecord | None:
-        where = "brand_id = :brand" + (" AND status = :status" if status else "")
+        where = f"brand_id = :brand AND {_SHOWN_RUN}" + (" AND status = :status" if status else "")
         params: dict[str, Any] = {"brand": brand_id}
         if status:
             params["status"] = status
@@ -1421,6 +1552,29 @@ class PostgresReelRunStore:
                 params,
             ).first()
             return _run(row) if row is not None else None
+
+    def competitor_runs(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        *,
+        run_date: date | None = None,
+        finished_after: datetime | None = None,
+    ) -> list[RunRecord]:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text(
+                    f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE brand_id = :brand "
+                    "AND trigger = 'competitor_now' "
+                    "AND (CAST(:run_date AS date) IS NULL "
+                    "OR run_date = CAST(:run_date AS date)) "
+                    "AND (CAST(:after AS timestamptz) IS NULL "
+                    "OR finished_at > CAST(:after AS timestamptz)) "
+                    f"ORDER BY {_LATEST_ORDER}"
+                ),
+                {"brand": brand_id, "run_date": run_date, "after": finished_after},
+            ).all()
+            return [_run(row) for row in rows]
 
     # the screen's opening and the tenant's clock
     def mark_opened(
@@ -1822,6 +1976,7 @@ __all__ = [
     "TRANSCRIPT_TIKTOK",
     "TRANSCRIPT_VENDOR",
     "TRIGGERS",
+    "TRIGGER_COMPETITOR_NOW",
     "TRIGGER_MANUAL",
     "TRIGGER_OPERATOR_90D",
     "TRIGGER_WEEKLY",

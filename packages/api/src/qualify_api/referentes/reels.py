@@ -5,7 +5,9 @@ transcribed, which ones the product check reads, and the card the screen shows.
 - **Whose reels** (`brand_referentes`): every account the operator labelled *referente*
   — found by the search or added by hand — on a network the vendor reads (Instagram,
   TikTok), in the operator's influence order, without the hand-added ones the AI review
-  said are another rubro. At most `MAX_REFERENTES`.
+  said are another rubro. At most `MAX_REFERENTES`. RF-05 (m-25119465): the weekly run
+  also reads `brand_competitors` — the `competencia` accounts the owner picked, else the
+  first `MAX_WEEKLY_COMPETITORS` (6) of the list; detractors are never read.
 - **Their reels and what they say**: `reel_pages` bounds a walk, `transcribe_one` reads
   one transcript with its timings (Instagram's paid speech-to-text, TikTok's free
   subtitles; VE-04b keeps the timed stretches the same call brings).
@@ -133,6 +135,80 @@ def brand_referentes(tenant_id: UUID, brand_id: UUID, *, repository: Any = None)
             )
         )
     return out[:MAX_REFERENTES]
+
+
+#: RF-05 (m-25119465, decision 5 of `docs/epica-filtrado-reels.md`): the `competencia`
+#: accounts the Monday run reads — the owner's picks, else the first ones of the list.
+MAX_WEEKLY_COMPETITORS = 6
+LABEL_COMPETITOR = "competencia"
+
+
+@dataclass(frozen=True)
+class CompetitorAccount:
+    """One `competencia` account of the brand, as the selector shows it."""
+
+    network: str
+    handle: str
+    #: The owner ticked it (`brand_account_labels.read_weekly`, 0183).
+    picked: bool
+    #: The Monday run reads it: picked, or — with nothing picked — among the first
+    #: `MAX_WEEKLY_COMPETITORS` of the list.
+    weekly: bool
+    kind: str = ""
+    note: str = ""
+
+
+def competitor_accounts(
+    tenant_id: UUID, brand_id: UUID, *, repository: Any = None
+) -> list[CompetitorAccount]:
+    """Every `competencia` account of the brand on a network the vendor reads, in the
+    owner's order (`position`, then when it was labelled), each saying whether the Monday
+    run reads it. Detractors are never here (decision 3). Reads through `tenant_session`;
+    never calls the vendor."""
+    repo = repository or default_repository()
+    labels = [
+        label
+        for label in repo.labels(tenant_id=tenant_id, brand_id=brand_id)
+        if label.label == LABEL_COMPETITOR and label.network in NETWORK_LABELS
+    ]
+    labels.sort(key=lambda lb: (lb.position is None, lb.position or 0, lb.labeled_at))
+    accounts = repo.latest_accounts(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        identities=[(label.network, label.handle) for label in labels],
+    )
+    picked = [label for label in labels if label.read_weekly][:MAX_WEEKLY_COMPETITORS]
+    weekly = {
+        (label.network, label.handle) for label in (picked or labels[:MAX_WEEKLY_COMPETITORS])
+    }
+    out: list[CompetitorAccount] = []
+    for label in labels:
+        stored = accounts.get((label.network, label.handle))
+        card = {str(k): str(v) for k, v in (stored.card if stored else {}).items()}
+        out.append(
+            CompetitorAccount(
+                network=label.network,
+                handle=label.handle,
+                picked=label.read_weekly,
+                weekly=(label.network, label.handle) in weekly,
+                kind=card.get("kind", ""),
+                note=card.get("review", ""),
+            )
+        )
+    return out
+
+
+def brand_competitors(
+    tenant_id: UUID, brand_id: UUID, *, repository: Any = None
+) -> list[Referente]:
+    """The competitors the Monday run reads (RF-05): the owner's picks, else the first
+    `MAX_WEEKLY_COMPETITORS` of the list; never more. The others are read only when the
+    owner asks («Ver sus reels ahora»)."""
+    return [
+        Referente(network=a.network, handle=a.handle, kind=a.kind, note=a.note)
+        for a in competitor_accounts(tenant_id, brand_id, repository=repository)
+        if a.weekly
+    ]
 
 
 #: The path a card shows a reel's cover from — `reel → path`, "" for none. The Reflex
@@ -477,12 +553,15 @@ __all__ = [
     "CHECK_NO_BRIEF",
     "CHECK_UNAVAILABLE",
     "MAX_PAID_TRANSCRIPTS",
+    "LABEL_COMPETITOR",
     "MAX_REFERENTES",
+    "MAX_WEEKLY_COMPETITORS",
     "MONTH_DAYS",
     "NETWORK_LABELS",
     "QUARTER_DAYS",
     "WEEK_DAYS",
     "WINDOW_DAYS",
+    "CompetitorAccount",
     "CoverFn",
     "FetchFn",
     "Referente",
@@ -490,7 +569,9 @@ __all__ = [
     "TranscribeFn",
     "account_lifts",
     "age_label",
+    "brand_competitors",
     "brand_referentes",
+    "competitor_accounts",
     "check_failure_cause",
     "check_failure_reason",
     "default_repository",
