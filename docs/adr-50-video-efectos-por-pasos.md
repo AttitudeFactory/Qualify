@@ -380,11 +380,11 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 - La pantalla del Clip (selector en la unión, accesible y a 375 px) y el lugar automático de lo nuevo en la línea de tiempo quedan para el carril de la pantalla de m-25114465.
 - Esta sección se numera §10 y va después de §9 (avatar en el Clip, PR #795, ya firmado).
 
-## 11. Enmienda `[PROPUESTO]`: el avatar desde el primer «Crear» del Clip (m-25119867, opción B)
+## 11. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]`: el avatar desde el primer «Crear» del Clip (m-25119867, opción B)
 
-**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas de Deivid del 2026-11-25 a las preguntas P1–P6 de `docs/contrato-avatar-primer-crear.md` §3, que llegaron por «creacion de tickets», y su decisión sobre las uniones.
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas de Deivid del 2026-11-25 a las preguntas P1–P6 de `docs/contrato-avatar-primer-crear.md` §3, que llegaron por «creacion de tickets», y su decisión sobre las uniones.
 
-**Firma de Deivid:** `[ ]` «Firmo el §11», escrito por Deivid en la sesión «quailify-deivid» · fecha: ____
+**Firma de Deivid:** `[x]` «Firmo el §11», elegido por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-25. Los interruptores del avatar siguen apagados: no se encienden antes del PR 2 de m-25119867.
 
 **Qué cambia del §9.**
 

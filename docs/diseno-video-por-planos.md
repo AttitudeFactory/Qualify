@@ -462,11 +462,11 @@ Decidió: **Deivid Vargas, 2026-11-02**. La fila del ADR 44 ya está en `docs/ar
 
 **Lo que este documento no cierra:** el fundador confirma 40/80/160 s y «+20 s»; backend y creative alinean VE-03, VE-04a, VE-04b, VE-04d, VE-12 y VE-21 con 13.2–13.5 y 13.8 (en especial `wanted_at`, el tope de flota en lugar del diario por negocio, la purga global en el `reels-worker` y la ventana a 30 d); `QUALIFY_CREATIVE_DISPATCHER=queue` en producción ya está confirmado (2026-11-16, m-25026575); falta que platform-engineer fije el `mem_limit` del `reels-worker`.
 
-## 14. Enmienda `[PROPUESTO]`: los bloques de avatar del Clip (m-25119867)
+## 14. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]`: los bloques de avatar del Clip (m-25119867)
 
-**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas P3 y P4 de Deivid del 2026-11-25 (`docs/contrato-avatar-primer-crear.md` §3). Va junto con la enmienda §11 del ADR 50.
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas P3 y P4 de Deivid del 2026-11-25 (`docs/contrato-avatar-primer-crear.md` §3). Va junto con la enmienda §11 del ADR 50.
 
-**Firma de Deivid:** `[ ]` «Firmo el §14 del ADR 44», escrito por Deivid en la sesión «quailify-deivid» · fecha: ____
+**Firma de Deivid:** `[x]` «Firmo el §14», elegido por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-25.
 
 - **P3. Un hijo sin el texto de su padre.** Este documento dice que todo hijo lleva el texto de su padre (`_inherited_copy`). Un bloque de avatar elegido en el primer «Crear» de un Clip se hace cuando el Clip todavía no tiene texto. Ese bloque lleva una **variante vacía**: sin llamada a un proveedor y con costo 0. Su guion son las palabras del dueño, y su `fidelity` dice `clip_avatar_block_without_text`. Un bloque nunca se publica solo: el texto lo lleva el Clip. Las partes de un video por partes y los bloques de la opción A siguen heredando el texto como hasta ahora.
 - **P4. El padre que espera en `drafting`.** El riesgo N1 deja al padre de un video por partes fuera de `drafting` mientras sus partes se hacen. Un Clip que espera a sus bloques sí espera en `drafting`, como ya esperan la parte «Sigue a la anterior» de VE-13 y un Clip local mientras se normalizan sus videos. Espera con su trabajo `queued` (el reaper no lo toca) y con latido. La corrida se suelta sin marcarla hecha (`ClipBlocksWait`, que es un `LocalVideoWait`) y se reintenta cada 30 s. `mark_parent_dirty` la despierta cuando un bloque termina. La espera tiene fin: cada bloque termina solo, y si uno falla el dueño tiene 72 h para elegir (P2 del §11 del ADR 50).
