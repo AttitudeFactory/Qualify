@@ -22,10 +22,9 @@ yet — when the brand kit has no ``template_asset_key`` there is nothing to ren
 from __future__ import annotations
 
 import logging
-import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -129,6 +128,7 @@ from qualify_api.creative.fsm import (
     InvalidTransition,
     apply_transition,
 )
+from qualify_api.creative.heartbeat import beating
 from qualify_api.creative.local_cap import check_local_daily_cap
 from qualify_api.creative.media import (
     KEPT_FROM_REVISION,
@@ -179,23 +179,11 @@ cost_logger = logging.getLogger("qualify_api.creative.costs")
 FINAL_HEARTBEAT_EVERY_S = 60.0
 
 
-@contextmanager
-def _beating(beat: Callable[[], None], every_s: float) -> Iterator[None]:
+def _beating(beat: Callable[[], None], every_s: float) -> AbstractContextManager[None]:
     """Call `beat` every `every_s` seconds on a daemon thread while the block runs; it
-    stops (and is waited for) when the block ends, so no beat lands after it."""
-    stop = threading.Event()
-
-    def loop() -> None:
-        while not stop.wait(every_s):
-            beat()
-
-    thread = threading.Thread(target=loop, name="creative-final-beat", daemon=True)
-    thread.start()
-    try:
-        yield
-    finally:
-        stop.set()
-        thread.join(max(every_s, 1.0) + 5.0)
+    stops (and is waited for) when the block ends, so no beat lands after it. Shared with
+    the local assembly since m-25119832 (`heartbeat.beating`)."""
+    return beating(beat, every_s, name="creative-final-beat")
 
 
 #: Stamped on every draft this service creates; provenance, per the hard architectural

@@ -97,6 +97,7 @@ from qualify_api.creative.clip_avatar import (
     stretch_problem,
 )
 from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
+from qualify_api.creative.heartbeat import beating
 from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
     JPEG,
@@ -210,6 +211,10 @@ _PART_TEXTS = {
 #: How often the preparation's lease is renewed while the video is made (None =
 #: `lease_kept`'s own, a third of the lease). Tests shorten it.
 LEASE_RENEW_EVERY_S: float | None = None
+#: m-25119832: how often the draft's progress stamp (`beat`) is renewed while a step of
+#: the assembly runs (prepare, photo hold, speed, layers, texts) — well under the
+#: reaper's 20 min, as the parts' join. Tests shorten it.
+LOCAL_HEARTBEAT_EVERY_S = 60.0
 
 
 class LocalVideoFailed(Exception):
@@ -356,7 +361,45 @@ def render_local_part(
     `brand` is the tenant's `BrandKit` (its typeface and palette draw the texts) and
     `render_client` the render service's `RemotionRenderClient` (or a callable that builds
     one): both used only when the part has a text. Without a client a text fails as the
-    service being down — never a video without the texts the owner chose."""
+    service being down — never a video without the texts the owner chose.
+
+    m-25119832: `beat` is also called every `LOCAL_HEARTBEAT_EVERY_S` on a side thread
+    for the whole assembly — the speed step alone measured 867 s without returning (8
+    stretches, 60 s, 768m and 1 CPU), and the reaper fails a draft after 20 min without a
+    stamp. The thread is stopped and waited for before this returns or raises."""
+    alive = (
+        beating(beat, LOCAL_HEARTBEAT_EVERY_S, name="creative-local-beat")
+        if beat is not None
+        else nullcontext()
+    )
+    with alive:
+        return _render_local_part(
+            part,
+            tenant_id=tenant_id,
+            store=store,
+            root=root,
+            beat=beat,
+            brand=brand,
+            render_client=render_client,
+            draft_id=draft_id,
+            source_jobs=source_jobs,
+        )
+
+
+def _render_local_part(
+    part: PartRecipe,
+    *,
+    tenant_id: UUID,
+    store: Any,
+    root: Path,
+    beat: Callable[[], None] | None,
+    brand: Any,
+    render_client: Any,
+    draft_id: UUID | None,
+    source_jobs: Any,
+) -> LocalRender:
+    """`render_local_part`'s steps, with a beat at the end of each long one (the side
+    thread covers the time inside them)."""
     from qualify_creative.video._source import VideoSourceError  # noqa: PLC0415
     from qualify_creative.video.memory import release_memory  # noqa: PLC0415
     from qualify_creative.video.photo_hold import HOLD_VERSION, render_photo_hold  # noqa: PLC0415
