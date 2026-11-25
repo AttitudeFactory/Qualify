@@ -28,7 +28,10 @@ The steps, per stretch in the recipe's order:
    kbps track for the whole video — `join`'s format: a ×1 stretch keeps its original sound,
    trimmed to its picture; a sped-up stretch, a photo or a file without sound is silence of
    its length; 80 ms fades at the cuts. The layers and the texts (4, 5) copy that track as
-   it is;
+   it is; m-25114465: a block with a `transition_in` (`fundido`, `barrido`) is then
+   blended with the block before it (`block_join`, EF-16's own segment join) — the blocks
+   overlap, so the Clip lasts its blocks minus each transition; with only cuts nothing
+   changes;
 4. «Humo», «Brasas», «Vapor» (EF-08, `qualify_creative.video.layer_overlay`): each use of
    a library layer in the part's `effects` (its entry at its version, through
    `TimedEffectLayer.from_entry` and the read-only `effects.layer_loop_file`; its params, or
@@ -260,6 +263,9 @@ class LocalRender:
     sources: Any = None
     #: m-25049580: the sound's provenance (`_sound_provenance`), None for a silent render.
     sound: dict[str, Any] | None = None
+    #: m-25114465: the blocks' transitions as blended (`block_join.BlockJoins.params`),
+    #: None when every join is a cut (the step did not run).
+    transitions: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -455,10 +461,12 @@ def render_local_part(
             code="unreadable",
         ) from exc
     release_memory()  # the speed step's decoder and encoder, before the layers and texts
+    # m-25114465: the blocks' transitions, before the layers and the texts (their clock)
+    joins = _blend_blocks(part, result, root, beat)
     # EF-08: the library's layers (smoke, embers, steam) BEFORE the texts, so the words
     # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
     # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
-    video = result.path
+    video = joins.path if joins is not None else result.path
     effect_layers = _effect_layers(part)
     layered: tuple[Path, dict[str, Any]] | None = None
     if effect_layers and not part.text_layers:
@@ -485,6 +493,8 @@ def render_local_part(
     }
     if photos:
         steps["photo_hold"] = HOLD_VERSION
+    if joins is not None:
+        steps["block_join"] = joins.params["version"]
     if layered is not None:
         steps["layer_compose"] = layered[1]["compose_version"]
     text_params: dict[str, Any] | None = None
@@ -496,8 +506,8 @@ def render_local_part(
         path=composed.path,
         width=result.width,
         height=result.height,
-        seconds=result.duration_s,
-        frames=result.frames,
+        seconds=joins.seconds if joins is not None else result.duration_s,
+        frames=joins.frames if joins is not None else result.frames,
         speed=result.params(),
         steps=steps,
         warnings=tuple(warnings),
@@ -505,7 +515,31 @@ def render_local_part(
         effect_layers=layered[1] if layered is not None else None,
         sources=sources,
         sound=_sound_provenance(part, result.sound),
+        transitions=joins.params if joins is not None else None,
     )
+
+
+def _blend_blocks(part: PartRecipe, result: Any, root: Path, beat: Any) -> Any:
+    """m-25114465: `result` (the speed step's) with its blocks' transitions blended
+    (`block_join.blend_block_joins`), the speed step's file removed once replaced; None
+    when every join is a cut (nothing re-encoded)."""
+    from qualify_creative.video.memory import release_memory  # noqa: PLC0415
+
+    from qualify_api.creative.video_pipeline.block_join import blend_block_joins  # noqa: PLC0415
+
+    joins = blend_block_joins(
+        part,
+        result.path,
+        [planned.frames for planned in result.plan.segments],
+        size=(result.width, result.height),
+        rate=result.fps,
+        root=root,
+        beat=beat,
+    )
+    if joins is not None:
+        Path(result.path).unlink(missing_ok=True)  # never two large files without need
+        release_memory()
+    return joins
 
 
 def _sound_provenance(
@@ -888,6 +922,9 @@ def produce_local(
     }
     if sheet is not None:
         params[CONTACT_SHEET_PARAMS_KEY] = sheet
+    if made.transitions is not None:
+        # m-25114465: each join blended (block, effect, version, kind, duration, frames)
+        params["local"]["transitions"] = made.transitions
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers

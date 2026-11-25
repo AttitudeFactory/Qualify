@@ -450,6 +450,106 @@ def test_a_photo_and_a_video_make_one_video_with_no_gaps(
     assert [(s["out_start_s"], s["out_end_s"]) for s in speed] == [(0.0, 2.0), (2.0, 3.5)]
 
 
+def _blended_clip(how: dict[str, Any]) -> ContentBrief:
+    """m-25114465: 2 s of green video (60 frames), then a red photo held 1.5 s (45 frames)
+    blending into it for 0.5 s (15 frames)."""
+    photo = SourceSegment(key=PHOTO_KEY, start_s=0.0, end_s=1.5, kind="photo", transition_in=how)
+    return _stamped(_local_clip(_video(), photo))
+
+
+@pytest.mark.parametrize("effect", ["fundido", "barrido"])
+def test_a_block_blends_into_the_one_before_it_and_the_clip_is_shorter(
+    queue_on: None, sources: dict[str, bytes], effect: str
+) -> None:
+    """m-25114465: the two blocks overlap 15 frames — 105 − 15 = 90 frames (3.0 s), green
+    before the join, red after it, the 15 frames between both mixed (fade) or split (wipe,
+    the photo entering from the right edge), one sound track; recorded in
+    `params.local.transitions` and `steps["block_join"]`."""
+    store = ReadingStore(sources)
+    how = {"effect_id": effect, "version": 2, "params": {"duration_s": 0.5}}
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip(how),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert write.params["duration_seconds"] == pytest.approx(3.0)
+    frames = _decoded(store.files[write.object_key])
+    assert len(frames) == 90
+    assert [f.pts for f in frames] == sorted(f.pts for f in frames)
+    pixel = [f.to_ndarray(format="rgb24") for f in (frames[10], frames[52], frames[80])]
+    green, mixed, red = (p[160, 90] for p in pixel)
+    assert green[1] > 150 and green[0] < 90
+    assert red[0] > 150 and red[1] < 90
+    if effect == "fundido":
+        assert 70 < mixed[0] < 190 and 70 < mixed[1] < 190  # both at once
+    else:
+        left, right = pixel[1][160, 5], pixel[1][160, 175]
+        assert left[1] > 150 and right[0] > 150  # green stays left, red came in from the right
+    meta = write.params["local"]
+    assert meta["steps"]["block_join"] == "block-join-v1"
+    joins = meta["transitions"]
+    assert joins["fps"] == 30 and joins["frames"] == 90 and joins["fallback_cuts"] == []
+    kind = {"fundido": "fade", "barrido": "wipe"}[effect]
+    assert joins["joins"] == [
+        {
+            "block": 1,
+            "effect_id": effect,
+            "version": 2,
+            "kind": kind,
+            "duration_s": 0.5,
+            "direction": "left",
+            "frames": 15,
+        }
+    ]
+    # the chosen transition is in the recipe's provenance too
+    assert meta["segments"][1]["transition_in"]["effect_id"] == effect
+
+
+def test_a_clip_of_cuts_records_no_block_join(queue_on: None, sources: dict[str, bytes]) -> None:
+    store = ReadingStore(sources)
+    cut = {"effect_id": "corte", "version": 1}
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip(cut),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    (write,) = outcome.media
+    assert write.params["duration_seconds"] == pytest.approx(3.5)
+    assert "transitions" not in write.params["local"]
+    assert "block_join" not in write.params["local"]["steps"]
+    assert all("transition_in" not in s for s in write.params["local"]["segments"])
+
+
+def test_a_blended_run_retried_makes_the_same_video(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """Idempotent: the same draft blended twice writes the same key and the same bytes."""
+    store = ReadingStore(sources)
+    producer = _producer(store, ExplodingByteplus())
+    draft_id = uuid4()
+    brief = _blended_clip({"effect_id": "fundido", "version": 2})
+    made = []
+    for _ in range(2):
+        (write,) = producer.produce(
+            tenant_id=TENANT_ID,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        ).media
+        made.append((write.object_key, store.files[write.object_key]))
+    assert made[0] == made[1]
+
+
 def test_a_retried_run_makes_the_same_single_asset(
     queue_on: None, sources: dict[str, bytes]
 ) -> None:
