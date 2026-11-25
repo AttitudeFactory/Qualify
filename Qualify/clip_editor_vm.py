@@ -167,7 +167,7 @@ def fast_too_short_line(seconds: float) -> str:
     """The warning when «Cámara rápida» leaves less than 3 s."""
     return (
         f"Tu video durará {contract.seconds_text(seconds)} s: muy poco para un reel. "
-        "Elige un bloque más largo o una velocidad menor."
+        "Alarga el bloque o elige una velocidad menor."
     )
 
 
@@ -175,7 +175,7 @@ def fast_too_long_line(seconds: float) -> str:
     """The words when «Cámara rápida» leaves more than 60 s (EF-04 refuses past 60 s)."""
     return (
         f"Con esa velocidad tu video duraría {contract.seconds_text(seconds)} s: muy largo "
-        "para un reel. Elige una velocidad mayor o corta un bloque más corto."
+        "para un reel. Elige una velocidad mayor o acorta el bloque."
     )
 
 

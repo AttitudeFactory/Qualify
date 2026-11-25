@@ -102,8 +102,7 @@ def test_fixed_words() -> None:
     assert vm.whole_label(15) == "Usar el video entero"
     assert vm.whole_label(15.5) == "Usar los primeros 15 s"
     assert vm.fast_too_short_line(2) == (
-        "Tu video durará 2 s: muy poco para un reel. Elige un bloque más largo o una "
-        "velocidad menor."
+        "Tu video durará 2 s: muy poco para un reel. Alarga el bloque o elige una velocidad menor."
     )
     assert (vm.FROM_LABEL, vm.TO_LABEL) == ("Desde", "Hasta")
     assert vm.ROTATE == "Girar"
@@ -316,7 +315,7 @@ def test_fast_motion_is_judged_by_ef04s_plan_speed() -> None:
     seconds, warning = vm.fast_check(key="k", start=0, end=7.5, speed=5)
     assert seconds == 1.5
     assert warning == (
-        "Tu video durará 1,5 s: muy poco para un reel. Elige un bloque más largo o una "
+        "Tu video durará 1,5 s: muy poco para un reel. Alarga el bloque o elige una "
         "velocidad menor."
     )
     # 1300 s at ×20 = 65 s: past a reel's 60 s (EF-07's words)
@@ -324,7 +323,7 @@ def test_fast_motion_is_judged_by_ef04s_plan_speed() -> None:
     assert seconds == 65.0
     assert warning == (
         "Con esa velocidad tu video duraría 65 s: muy largo para un reel. Elige una velocidad "
-        "mayor o corta un bloque más corto."
+        "mayor o acorta el bloque."
     )
     # what EF-04 cannot plan at all (here, an empty stretch) gets the generic line
     assert vm.fast_check(key="k", start=4, end=4, speed=10) == (0.0, vm.REFUSAL_GENERIC)
