@@ -495,10 +495,45 @@ tiempo. Esa corrida coincidió con pruebas en la misma máquina, pero con 3 bloq
 costo de la unión está en volver a codificar el Clip, no en decodificar desde el comienzo. La
 búsqueda ayuda más con muchos bloques.
 
-**Pendiente:** `blocks3_wipe2` después de la búsqueda, `blocks8_cut` y `blocks8_mixed7` (60 s,
-8 bloques, 7 uniones mezcladas). Los casos están en el harness y se corren con
-`EF15_VOLUME=m25114465-clips CPUS=1 bash deploy/measure/local-video-memory.sh run qualify-memtest:deps blocks8_cut blocks8_mixed7`
-(antes, `make … --only k4_h264_60.mp4 hd_h264_15.mp4` si el volumen no existe).
+### Clip de 60 s en 8 bloques y el latido (medido 2026-11-25, punta `cf3d0a53`)
+
+Mismas condiciones (`qualify-memtest:deps`, `--memory 768m --memory-swap 768m --cpus 1`, amd64,
+escritorio con Docker Desktop), fuentes hechas con
+`make … --only k4_h264_60.mp4 hd_h264_15.mp4` en un volumen temporal propio
+(`m25114465-clips-a84d`, borrado al terminar). Los tres casos se corrieron uno detrás del otro,
+sin otra medición en paralelo. `blocks8_*` son 8 bloques de 7,5 s de salida que alternan 4K a ×2
+y 1080p a ×1: 60 s con corte, 54,4 s con 7 uniones de 0,8 s (fundido y barrido alternados).
+
+Para ver el latido, el harness corrió dentro de un envoltorio de medición que no está en el
+repositorio: le pasa a `render_local_part` un `beat` que imprime la hora de cada latido, e imprime
+la hora de cada paso. Es el mismo `beat` que recibe en el worker (`media._local_clip` →
+`produce_local`); el resto no cambia. «Hueco» es el tiempo más largo entre dos latidos, contando
+desde el arranque y hasta el final.
+
+| Caso | Salida s | Pico anon MiB (tope 768) | prepare / speed / unión, anon MiB | CPU s | Pared s | `speed` s | Unión s | Hueco más largo sin latido | OOM |
+|---|---|---|---|---|---|---|---|---|---|
+| blocks3_wipe2 (2 barridos, con búsqueda) | 33,4 | 333 | 333 / 282 / 259 | 1157 | 1162 | 474 | 422 | 474 s (paso `speed`) | no |
+| blocks8_cut (solo cortes) | 60,0 | **343** | 343 / 288 / — | 1378 | 1385 | 867 | no corre | **867 s** (paso `speed` hasta el final) | no |
+| blocks8_mixed7 (7 uniones) | 54,4 | 340 | 340 / 280 / 278 | 1706 | 1715 | 635 | 708 | 636 s (paso `speed`) | no |
+
+`oom_kill` 0 en los tres; el pico de cgroup llega a 768 MiB por la caché de páginas, como antes.
+
+Lectura:
+
+- **Memoria:** cabe. El pico sigue en `prepare` del 4K (~340 MiB); la unión de 7 transiciones
+  usa 278 MiB, lo mismo que con 2.
+- **Tiempo:** el Clip más largo con 7 uniones tarda 28,6 min de pared a 1 CPU; el paso de unión
+  es 11,8 min de eso. `blocks3_wipe2` con la búsqueda tardó más que sin ella (1162 s contra
+  1060 s el 2026-11-24), pero la diferencia está en `speed`, que no cambió: es ruido de la
+  máquina. Las corridas del mismo día también varían (`speed` 867 s con cortes contra 635 s
+  con uniones, sobre las mismas fuentes).
+- **Latido durante la unión:** sí, cada ≤60 s (hueco más largo dentro de la unión: 60,0 s).
+- **El hueco largo no está en la unión, está en `speed`:** `render_speed` no da latidos, y
+  con 8 bloques a 1 CPU estuvo **14,5 min** sin latido (`blocks8_cut`, donde además no hay
+  latido después de `speed` porque no hay unión, capas ni textos). El reaper marca fallido a
+  los 20 min: queda un margen de ~5,5 min en amd64, y arm64 (no medido) puede ser más lento.
+  No viene de m-25114465 (pasa igual sin transiciones), pero este Clip de 60 s es el que lo
+  acerca al límite. Queda anotado para quien lleve el armado local; no se cambió código.
 
 ## Pendiente
 

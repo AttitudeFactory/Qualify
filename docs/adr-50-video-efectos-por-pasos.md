@@ -324,6 +324,16 @@ Medido el 2026-11-24 con `deploy/measure/local-video-memory.sh` (casos nuevos `b
 
 Lectura: el pico sigue siendo el paso `prepare` del 4K. La unión no lo sube: queda en ~275 MiB anónimos, lejos de los ~600 de §8. Lo que cuesta es el tiempo: con 1 CPU suma ~6 a 9 minutos a este Clip de 35 s, porque vuelve a codificar todo el video y lee el anterior desde el principio en cada unión. El lease del worker se renueva durante el armado (`produce_local`). En arm64 tardará más; no está medido.
 
+Medido de nuevo el 2026-11-25 (punta `cf3d0a53`, con la búsqueda del cuadro clave, mismas condiciones), con el Clip más largo: 60 s en 8 bloques que alternan 4K a ×2 y 1080p a ×1. El latido se midió pasando a `render_local_part` un `beat` que anota la hora, como el del worker.
+
+| Caso | Pico anon MiB (tope 768) | Paso de unión, anon MiB | CPU s | Pared s | Unión s | Hueco más largo sin latido | OOM |
+|---|---|---|---|---|---|---|---|
+| 2 barridos de 0,8 s (3 bloques, 33,4 s) | 333 | 259 | 1157 | 1162 | 422 | 474 s (`speed`) | no |
+| 8 bloques, solo cortes (60 s) | **343** | no corre | 1378 | 1385 | — | **867 s** (`speed`) | no |
+| 8 bloques, 7 uniones mezcladas (54,4 s) | 340 | 278 | 1706 | 1715 | 708 | 636 s (`speed`) | no |
+
+Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prepare`). El Clip más largo con 7 uniones tarda ~29 min a 1 CPU, 12 de ellos en la unión, y la unión da latido cada ≤60 s. El hueco largo está antes, en el paso `speed` (`render_speed`), que no da latidos: 14,5 min con 8 bloques y solo cortes, contra los 20 min del reaper. No lo trae esta enmienda (pasa igual sin transiciones), pero conviene un latido periódico ahí antes de medir en arm64. Detalle en `docs/armado-local-medicion.md`.
+
 ### 10.5 Consecuencias
 
 - El Clip con transiciones se codifica una vez más entera (los segmentos de la unión, con los ajustes de `JOIN_SEGMENT_X264`). Un Clip con solo cortes no cambia: ni bytes ni tiempo.
