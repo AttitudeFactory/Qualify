@@ -352,7 +352,7 @@ def test_the_ledger_books_the_call_with_the_prompt_version(
         client_factory=_factory(client, []),
         attribution=TEST_ATTRIBUTION,
     )
-    assert seen[0].prompt_version == REVIEW_PROMPT_VERSION == "referentes-review-2"
+    assert seen[0].prompt_version == REVIEW_PROMPT_VERSION == "referentes-review-3"
     assert seen[0].feature == TEST_ATTRIBUTION.feature
 
 

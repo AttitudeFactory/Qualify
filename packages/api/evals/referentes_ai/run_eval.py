@@ -20,8 +20,8 @@ labeled y or n count, m is ambiguous and never scored:
 - `kind` = the `tipo` is within the accepted set, over accounts that label one;
 - `answered` = accounts the model returned a verdict for / accounts asked about.
 
-Rubro and country (REFERENTES-RUBRO-001, prompt `referentes-review-2`), per dev/test split of
-the gold labels (agent-labeled, see `cases.json` `_doc`), over every account occurrence:
+Rubro and country (REFERENTES-RUBRO-001, prompts `referentes-review-2` and `-3`), per
+dev/test split of the gold labels (see `cases.json` `_doc`), over every account occurrence:
 
 - `rubro_accuracy` = answered rubro == gold rubro, over answered accounts; per gold class
   too, with the confusion matrix (gold -> answered);

@@ -41,9 +41,9 @@ tenant line this module must never cross.
 ## Rubro
 
 A key of the Brand Kit's rubro catalog (`referentes.discovery_seed.NICHE_LABELS`) or
-`otro`, from the account review only (`ai`, prompt `referentes-review-2`, measured at 0.87
-on test against a 0.85 bar): no free source carries it — the network's `category` is its
-own taxonomy (RF-00), kept apart.
+`otro`, from the account review only (`ai`, prompt `referentes-review-3`, with Deivid's
+rubro rules; measured in REFERENTES-RUBRO-001): no free source carries it — the
+network's `category` is its own taxonomy (RF-00), kept apart.
 
 ## Idempotency
 

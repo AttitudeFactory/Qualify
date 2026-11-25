@@ -179,7 +179,22 @@ En test, `travel_lifestyle` (n = 7) queda en 0,43 / 0,29, y `entertainment` (n =
   - Casi todo ese error es `lauratuttman`. El oro dice viajes y estilo de vida (regla 4), pero el modelo la ve como `education` o `technology` por sus publicaciones de «aprende a programar».
   - Es la regla 4, que el prompt no conoce: el prompt dice «para un creador o un medio, el rubro del contenido que publica».
 - En `entertainment`, el modelo pone `otro` o `technology` en los medios de noticias (`npr`, `bloombergbusiness`, `un24tvoficial`). Es la regla 3, que el prompt tampoco conoce.
-- Conclusión: el oro ya refleja las reglas de Deivid, pero el prompt `referentes-review-2` no. Escribir las reglas 1 a 4 en el prompt es trabajo de la versión `referentes-review-3`, junto con el país de RF-12, y hay que medirlo de nuevo con este mismo oro.
+- Conclusión: el oro ya refleja las reglas de Deivid, pero el prompt `referentes-review-2` no. Escribir las reglas 1 a 4 en el prompt es trabajo de la versión `referentes-review-3`, y hay que medirlo de nuevo con este mismo oro.
+
+**Regla 6 (Deivid, 2026-11-25):** un medio de noticias de **un solo tema** va al rubro de ese tema. Por eso `instagram:technology` queda en `technology`. `entertainment` es solo para los medios generales, como NPR, UN24 o Bloomberg. Deivid también confirmó `matsimultiservicios` como `education` y `bloombergbusiness` como `entertainment`.
+
+**`referentes-review-3` (2026-11-25) — ESCRITO, SIN MEDIR.** Por decisión de Deivid, antes de mergear el PR #807 el prompt lleva sus reglas de rubro y se vuelve a medir.
+
+- **Qué cambió:** solo el párrafo `rubro` de `REVIEW_SYSTEM`, que ahora tiene 5 reglas:
+  1. es lo que la cuenta ES, no una publicación suelta;
+  2. quien enseña programación o una técnica es `education`;
+  3. el deporte es `entertainment`;
+  4. un medio de noticias general es `entertainment`, y uno temático va a su tema;
+  5. si los datos no dejan ver el rubro, `otro`.
+- **Qué no cambió:** `encaja`, `tipo`, `razon`, la herramienta y el párrafo `pais`. El país sigue sin guardarse; su prompt será `referentes-review-4`, en RF-12.
+- **Versión:** `REVIEW_PROMPT_VERSION = "referentes-review-3"`.
+- **Medición pendiente:** dos corridas de `run_eval.py --configs sonnet-5@low` sobre el oro corregido. Están aprobadas por Deivid con un tope de USD 0,5; se estiman en ≈ USD 0,39–0,42, cerca de los USD 0,3868 de la v2. **No se corrieron:** el control de permisos de la sesión del agente bloqueó la llamada pagada. Esta versión **no debe mergearse** hasta medirla.
+- **Criterio para pasar:** cada corrida ≥ 0,85 en test, ninguna clase con n ≥ 5 por debajo de 0,70, y `encaja`, `tipo` y trampas sin empeorar frente a la v2.
 
 **Decisión de Deivid (2026-11-25): el país sale solo de fuentes gratis.** Aplicada en el PR #807, en el commit «feat(creators): region from free sources only»:
 

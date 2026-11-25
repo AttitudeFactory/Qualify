@@ -17,14 +17,15 @@ answer as one `revisar_cuentas` tool call. Per account:
 - `rubro` — the account's rubro as a key of the Brand Kit's rubro catalog
   (`discovery_seed.NICHE_LABELS`), `otro` when none fits; and `pais` — the account's
   country (ISO alpha-2), only when its own texts make it clear, else "". Added by RF-04
-  (m-25119461, prompt version 2) to the SAME call, no extra one. The caller stores the
+  (m-25119461, prompt version 2; the rubro rules in version 3) to the SAME call, no
+  extra one. The caller stores the
   RUBRO on the global `creators` row with provenance (`creators.region_rubro`) for the
   Nicho filter. The `pais` is returned but NEVER stored: REFERENTES-RUBRO-001 measured it
   at 0.82 precision against a 0.95 bar (the model writes the brand's country, the
   language's, or what it already knows), so Deivid decided on 2026-11-25 that the
   country comes from free sources only. The field stays in the prompt on purpose: the
   rubro was measured WITH it, and dropping it would ship an unmeasured prompt; a country
-  by AI is a new ticket (`referentes-review-3`, with its evidence checked in code).
+  by AI is RF-12 (`referentes-review-4`, with its evidence checked in code).
 
 A judgement about one brand's accounts, returned to the caller and never written back
 anywhere as a rule: nothing accumulates per rubro, and the prompt carries principles,
@@ -69,9 +70,12 @@ REVIEW_EFFORT: str | None = "low"
 REVIEW_TOOL = "revisar_cuentas"
 
 #: The prompt's version — provenance of what the review writes (the ledger's
-#: `prompt_version`, `creators.rubro_version` / `region_version`). 2 = RF-04 (m-25119461):
-#: `rubro` and `pais` per account. Bump on any change to `REVIEW_SYSTEM` or the tool.
-REVIEW_PROMPT_VERSION = "referentes-review-2"
+#: `prompt_version`, `creators.rubro_version`). 2 = RF-04 (m-25119461): `rubro` and
+#: `pais` per account. 3 = Deivid's rubro rules (2026-11-25): the rubro is what the account
+#: IS; teaching is education; sport and general news media are entertainment, a one-topic
+#: medium goes to its topic; no evidence is otro. `pais` is unchanged (RF-12). Bump on
+#: any change to `REVIEW_SYSTEM` or the tool.
+REVIEW_PROMPT_VERSION = "referentes-review-3"
 
 #: Accounts per call: a phase's shortlist fits in one (`creator_discovery.REVIEW_PER_NETWORK`
 #: × 2 networks), plus room for a few manual ones.
@@ -200,8 +204,15 @@ Las cuentas marcadas "agregada a mano" las eligió el operador: revísalas igual
 misma exigencia; si no encaja, dilo con respeto en la razón (el operador decide).
 
 rubro — el rubro de la CUENTA (no el de la marca), independiente de si encaja, con una \
-de estas claves: {rubros}; u otro si ninguna aplica o no se puede saber. Para un creador \
-o un medio, el rubro del contenido que publica.
+de estas claves: {rubros}; u otro si ninguna aplica. Reglas:
+1. El rubro es lo que la cuenta ES (su negocio o el tema de la cuenta), no lo que dice \
+una publicación suelta.
+2. Quien enseña programación o una técnica (cursos, tutoriales, clases, masterclass) es \
+education, aunque el tema sea tecnología.
+3. El deporte (fútbol, NBA, cualquier deporte como espectáculo) es entertainment.
+4. Un medio de noticias general es entertainment; un medio de un solo tema va al rubro de \
+ese tema.
+5. Si los datos de la cuenta no dejan ver su rubro, otro.
 
 pais — el país de la cuenta, como código ISO de dos letras en mayúsculas (CO, VE, UY, MX, \
 ES…), solo si lo que la cuenta dice lo deja claro: una ciudad o un país en la bio, el \

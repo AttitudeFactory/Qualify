@@ -259,7 +259,7 @@ def test_the_reviewer_hands_the_rubro_to_the_pool_but_never_the_country() -> Non
     ]
     assert not any(hasattr(r, "country") for r in rows)
     assert {r.model for r in rows} == {"claude-sonnet-5"}
-    assert {r.version for r in rows} == {"referentes-review-2"}
+    assert {r.version for r in rows} == {"referentes-review-3"}
     assert all(r.source_ref.startswith("review-input:") for r in rows)
 
 
