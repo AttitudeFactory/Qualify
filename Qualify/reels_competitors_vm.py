@@ -1,0 +1,169 @@
+"""The owner's competitors in «Ideas para tus reels» — the screen of RF-05 (m-25119465,
+under m-24872324; decision 5 of `docs/epica-filtrado-reels.md`). Pure — no database, no
+network — so every row, every state and every sentence is tested offline
+(`Qualify/test_reels_competitors_vm.py`).
+
+Over RF-02's filter bar: «Elige cuáles 6 competidores leemos cada lunes» — one row per
+account the brand marked «Compite contigo» (`competencia`), ticked when the Monday run
+reads it. With nothing chosen, the first 6 of the list are the ticked ones
+(`reels.competitor_accounts`). A competitor outside the 6 has «Ver sus reels ahora»: a
+read at once, queued by `competitors.read_now` and paid by the reels-worker, inside the
+business's daily cap. Its state after the press — reading, done, a limit, a failure —
+shows under the row, in the words of `qualify_api.referentes.competitors`.
+
+Opening the panel and ticking a row never pay: they read and write the brand's own labels.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+
+from qualify_api.referentes import competitors as rivals
+from qualify_api.referentes.reels import NETWORK_LABELS, CompetitorAccount
+
+from .reels_filters_vm import account_key, parse_account_key
+
+#: The panel's title and the button (exact, ticket m-25119465).
+PICKER_TITLE = rivals.WEEKLY_PICKER_TITLE
+READ_NOW = rivals.READ_NOW_BUTTON
+#: What the panel says under its title (drafted here, for the UX check).
+PICKER_BODY = (
+    "Los que marques los revisamos cada lunes. Para ver ya los reels de otro, "
+    "pulsa «Ver sus reels ahora»."
+)
+#: How many are ticked: «3 de 6».
+PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY)
+#: More than 6 ticked (exact, `competitors.TOO_MANY_TEXT`).
+TOO_MANY = rivals.TOO_MANY_TEXT
+#: Unticking the last one (an empty choice would mean «the first 6» again).
+KEEP_ONE = "Deja marcado al menos un competidor."
+#: The choice or the read could not be saved (Postgres down).
+SAVE_FAILED = "No pudimos guardar tu elección. Inténtalo de nuevo."
+#: The row of an account the Monday run reads.
+WEEKLY_DETAIL = "Lo revisamos cada lunes"
+
+#: A row's state after «Ver sus reels ahora», and the tone its line is painted in.
+STATE_TONES = {
+    rivals.STATE_READING: "info",
+    rivals.STATE_DONE: "ok",
+    rivals.STATE_LIMIT: "warn",
+    rivals.STATE_FAILED: "error",
+}
+
+
+@dataclass(frozen=True)
+class ReadState:
+    """A row's state after «Ver sus reels ahora» (`competitors.ReadNow`, in plain strings)."""
+
+    state: str
+    message: str
+
+
+def read_state(answer: rivals.ReadNow) -> ReadState:
+    return ReadState(answer.state, answer.message)
+
+
+def rows(
+    accounts: Sequence[CompetitorAccount], states: Mapping[str, ReadState] | None = None
+) -> list[dict[str, str]]:
+    """One row per competitor, in the owner's order: `{"key", "label", "detail",
+    "weekly", "state", "message", "tone"}` — «@rival» over «Instagram · Lo revisamos cada
+    lunes»; `weekly` = "1" when the Monday run reads it (no «Ver sus reels ahora» then);
+    `state`/`message`/`tone` = today's manual read, "" when none."""
+    found = states or {}
+    out = []
+    for account in accounts:
+        key = account_key(account.network, account.handle)
+        network = NETWORK_LABELS.get(account.network, account.network)
+        read = found.get(key)
+        out.append(
+            {
+                "key": key,
+                "label": f"@{account.handle}",
+                "detail": f"{network} · {WEEKLY_DETAIL}" if account.weekly else network,
+                "weekly": "1" if account.weekly else "",
+                "state": read.state if read else "",
+                "message": read.message if read else "",
+                "tone": STATE_TONES.get(read.state, "") if read else "",
+            }
+        )
+    return out
+
+
+def with_answer(
+    table: Sequence[Mapping[str, str]], key: str, answer: ReadState | None
+) -> list[dict[str, str]]:
+    """`table` with the press's `answer` on `key`'s row when the stored rows say nothing
+    of it — a press the daily cap refused queues no read, so only its answer can tell the
+    owner why nothing happens."""
+    out = [dict(row) for row in table]
+    if answer is None:
+        return out
+    for row in out:
+        if row["key"] == key and not row.get("state"):
+            row.update(
+                state=answer.state,
+                message=answer.message,
+                tone=STATE_TONES.get(answer.state, ""),
+            )
+    return out
+
+
+def picked_count(table: Iterable[Mapping[str, str]]) -> str:
+    """«3 de 6»: how many rows the Monday run reads."""
+    return PICKED_COUNT.format(n=sum(1 for row in table if row.get("weekly")))
+
+
+def reading(table: Iterable[Mapping[str, str]]) -> bool:
+    """Some manual read is still queued or running (the screen asks again later)."""
+    return any(row.get("state") == rivals.STATE_READING for row in table)
+
+
+@dataclass(frozen=True)
+class Toggle:
+    """What ticking a row asks for: the new choice to save, or why it is refused."""
+
+    picks: tuple[tuple[str, str], ...] = ()
+    error: str = ""
+
+
+def toggle(table: Sequence[Mapping[str, str]], key: str) -> Toggle | None:
+    """Tick or untick `key`, starting from the rows the Monday run reads now (with nothing
+    chosen, the first 6): the new choice, `TOO_MANY` past 6, or None for a key that is
+    not a row (a stale browser)."""
+    keys = [row["key"] for row in table]
+    if key not in keys:
+        return None
+    weekly = [row["key"] for row in table if row.get("weekly")]
+    if key in weekly:
+        chosen = [k for k in weekly if k != key]
+        if not chosen:  # an empty choice means «the first 6»: it would tick them back
+            return Toggle(error=KEEP_ONE)
+    elif len(weekly) >= rivals.MAX_WEEKLY:
+        return Toggle(error=TOO_MANY)
+    else:
+        chosen = [k for k in keys if k in weekly or k == key]  # the list's order
+    picks = tuple(pair for pair in (parse_account_key(k) for k in chosen) if pair)
+    return Toggle(picks=picks)
+
+
+__all__ = [
+    "KEEP_ONE",
+    "PICKED_COUNT",
+    "PICKER_BODY",
+    "PICKER_TITLE",
+    "READ_NOW",
+    "SAVE_FAILED",
+    "STATE_TONES",
+    "TOO_MANY",
+    "WEEKLY_DETAIL",
+    "ReadState",
+    "Toggle",
+    "picked_count",
+    "read_state",
+    "reading",
+    "rows",
+    "toggle",
+    "with_answer",
+]

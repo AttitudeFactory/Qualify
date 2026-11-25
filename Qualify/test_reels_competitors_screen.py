@@ -1,0 +1,249 @@
+"""RF-05 (m-25119465) on «Ideas para tus reels»: the competitors panel over RF-02's filter
+bar — what opening shows (and that it pays nothing), ticking the 6 for Monday, «Ver sus
+reels ahora» (it only queues), the daily cap's words, the «Competidores» filter once their
+reels are read, and two businesses on the same screen. Offline: the same world as
+`test_reels_discovery.py` (every paid door fails the test if touched)."""
+
+# The fixtures `store` / `world` are imported from `test_reels_discovery` so pytest finds
+# them by name; a test's `world` argument is that fixture, not a redefinition.
+# ruff: noqa: F811
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any
+from uuid import UUID, uuid4
+
+import pytest
+from qualify_api.referentes import competitors as rivals
+from qualify_api.referentes.reel_store import (
+    STATUS_OK,
+    TRIGGER_COMPETITOR_NOW,
+    NewVerdict,
+    PublicReel,
+)
+from qualify_api.vendors import usage
+
+from . import reels_competitors_vm
+from .test_reels_discovery import (  # noqa: F401 — fixtures: pytest finds them by name
+    CLOCK,
+    TENANT,
+    _filter,
+    _key,
+    _no_kit,
+    _open,
+    _screen_state,
+    _World,
+    store,
+    world,
+)
+
+OTHER = UUID("b0000000-0000-4000-8000-000000000002")
+
+
+def _competitors(world: _World, *handles: str) -> None:
+    """More `competencia` accounts on Instagram, after the store's @rival (TikTok)."""
+    for handle in handles:
+        world.repo.set_label(
+            tenant_id=TENANT,
+            brand_id=world.brand,
+            network="instagram",
+            handle=handle,
+            label="competencia",
+            labeled_by=None,
+        )
+
+
+async def _toggle(proxy: Any, key: str) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    await DiscoverReelsState.toggle_weekly.fn(proxy, key)
+
+
+async def _read_now(proxy: Any, key: str) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    await DiscoverReelsState.read_competitor.fn(proxy, key)
+
+
+async def test_opening_shows_the_competitors_and_pays_nothing(world: _World) -> None:
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    rows = state.competitor_rows
+    assert [r["label"] for r in rows][:2] == ["@rival", "@rival0"]
+    assert len(rows) == 8
+    # nothing chosen: the first six of the list are read on Monday
+    assert sum(bool(r["weekly"]) for r in rows) == 6
+    assert state.competitors_count == "6 de 6"
+    assert world.paid == []
+    assert world.runs.competitor_runs(TENANT, world.brand) == []
+
+
+async def test_ticking_saves_the_choice_and_a_seventh_is_refused(world: _World) -> None:
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _toggle(proxy, "instagram:rival6")  # a seventh
+    assert state.competitor_error == reels_competitors_vm.TOO_MANY
+    await _toggle(proxy, "tiktok:rival")  # free a place…
+    assert state.competitor_error == ""
+    await _toggle(proxy, "instagram:rival6")  # …and take it
+    picked = {
+        lb.handle
+        for lb in world.repo.labels(tenant_id=TENANT, brand_id=world.brand)
+        if lb.read_weekly
+    }
+    assert picked == {"rival0", "rival1", "rival2", "rival3", "rival4", "rival6"}
+    assert {r["label"] for r in state.competitor_rows if r["weekly"]} == {f"@{h}" for h in picked}
+    assert world.paid == []
+
+
+async def test_read_now_only_queues_and_says_it_is_reading(world: _World) -> None:
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    await _read_now(proxy, outside["key"])  # a double press is the same read
+    reads = world.runs.competitor_runs(TENANT, world.brand)
+    assert len(reads) == 1 and reads[0].trigger == TRIGGER_COMPETITOR_NOW
+    row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
+    assert row["state"] == rivals.STATE_READING
+    assert row["message"] == rivals.READING_TEXT
+    assert state.competitors_reading
+    assert world.paid == []  # the reels-worker pays, never the screen
+
+
+async def test_read_now_with_the_daily_cap_spent_says_so(world: _World) -> None:
+    world.ok_run()
+    _competitors(world, "rival0")
+    ledger = usage.InMemoryUsageStore()
+    usage.configure_store(ledger)  # the conftest puts the default back after the test
+    ledger.events.append(
+        usage.UsageEvent(
+            tenant_id=TENANT,
+            brand_id=None,
+            vendor=usage.SCRAPECREATORS,
+            feature="reels_list",
+            credits=usage.DAILY_CAP,
+            usd_estimate=Decimal("0"),
+            pricing_table_version=usage.PRICING_TABLE_VERSION,
+            request_key=f"seed:{uuid4()}",
+            created_at=CLOCK,
+        )
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    # with two competitors, both are in the Monday six: the button needs a seventh
+    _competitors(world, *(f"rival{i}" for i in range(1, 7)))
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    assert world.runs.competitor_runs(TENANT, world.brand) == []  # nothing queued
+    row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
+    assert row["state"] == rivals.STATE_LIMIT and row["tone"] == "warn"
+    assert row["message"] == (
+        "Hoy ya se alcanzó el límite de lecturas de tu negocio. Inténtalo mañana."
+    )
+    assert world.paid == []
+
+
+async def test_the_competitors_filter_shows_their_reels_once_read(world: _World) -> None:
+    world.ok_run()
+    world.runs.upsert_reels(
+        TENANT,
+        [
+            PublicReel(
+                network="tiktok",
+                reel_id="C1",
+                handle="rival",
+                taken_at=CLOCK,
+                metrics_at=CLOCK,
+                parser_version=1,
+                caption="Nuestra burger",
+                views=5_000,
+            )
+        ],
+    )
+    world.runs.save_verdicts(
+        TENANT,
+        world.brand,
+        [
+            NewVerdict(
+                network="tiktok",
+                reel_id="C1",
+                brief_hash="b",
+                input_hash="iC1",
+                fits=True,
+                model_id="claude",
+                prompt_version="p",
+                affinity="producto",
+            )
+        ],
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("kind", "competencia"))
+    assert [c["key"] for c in state.more_reels] == ["tiktok:C1"]
+    assert state.empty_kind == ""
+    assert world.paid == []
+
+
+async def test_no_competitor_marked_keeps_rf02s_message_and_no_panel(world: _World) -> None:
+    world.ok_run()
+    world.repo.clear_label(tenant_id=TENANT, brand_id=world.brand, network="tiktok", handle="rival")
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.competitor_rows == []
+    await _filter(proxy, state.set_filter("kind", "competencia"))
+    from . import reels_filters_vm
+
+    assert state.empty_kind == reels_filters_vm.EMPTY_NO_COMPETITORS
+
+
+async def test_another_business_never_sees_the_panel_of_this_one(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from . import discover_reels
+
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    other_brand = uuid4()
+    world.repo.add_brand(tenant_id=OTHER, brand_id=other_brand)
+    monkeypatch.setattr(
+        discover_reels,
+        "default_brand_id",
+        lambda tenant: world.brand if tenant == TENANT else other_brand,
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    assert state.competitor_rows
+    proxy.auth.session_tenant_id = str(OTHER)  # another business logs in, same tab
+    await _open(proxy)
+    assert state.competitor_rows == [] and state.competitor_busy == ""
+    await _read_now(proxy, outside["key"])  # a stale press of A's row does nothing
+    await _toggle(proxy, outside["key"])
+    assert world.runs.competitor_runs(OTHER, other_brand) == []
+    assert len(world.runs.competitor_runs(TENANT, world.brand)) == 1
+    assert world.paid == []
+
+
+def test_the_panel_is_over_the_filter_bar_in_plain_spanish_with_44px_targets() -> None:
+    import inspect
+
+    from . import discover_reels
+
+    source = inspect.getsource(discover_reels._ideas)
+    assert source.index("_competitors_panel()") < source.index("_filter_bar()")
+    row = inspect.getsource(discover_reels._competitor_row)
+    assert 'min_height="44px"' in row  # the button; the checkbox row is `.q-rf-option`
+    assert "reels_competitors_vm.READ_NOW" in row
+    panel = inspect.getsource(discover_reels._competitors_panel)
+    assert "reels_competitors_vm.PICKER_TITLE" in panel
+    assert STATUS_OK  # the panel never shows a run's status word
