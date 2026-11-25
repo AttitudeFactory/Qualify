@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_shared.db.admin import admin_session
+from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.referentes import PostgresReferentesRepository
@@ -270,3 +271,123 @@ def test_newest_verdict_strict_fits_brief_and_unknown_duration_in_sql(env: Any) 
     assert e.ids(e.read(a)) == ["comp", "mid", "long", "longest", "nodur"]
     short_ones = rv.ReelFilters.of(durations=[rv.DURATION_UNDER_15, rv.DURATION_15_30])
     assert e.ids(e.read(a, filters=short_ones)) == ["comp", "mid"]
+
+
+# --------------------------------------------------------------------------------------
+# RF-02b (m-25119463): region and niche over `creators` (0182)
+# --------------------------------------------------------------------------------------
+
+
+def _creator(
+    tenant: UUID,
+    network: str,
+    handle: str,
+    *,
+    region: str = "",
+    rubro: str = "",
+    region_source: str = "",
+) -> None:
+    """A row of the global pool with RF-04's facts and their provenance. Written like
+    RF-04 writes it: through `tenant_session` (the table is global; the door is the
+    application role)."""
+    now = datetime.now(UTC)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "INSERT INTO creators (network, handle, region_code, region_source, "
+                "region_version, region_inferred_at, rubro, rubro_source, rubro_model, "
+                "rubro_version, rubro_inferred_at, seen_at) VALUES (:n, :h, :rc, :rs, :rv, :rat, "
+                ":ru, :rus, :rum, :ruv, :ruat, :seen)"
+            ),
+            {
+                "n": network,
+                "h": handle,
+                "rc": region,
+                "rs": (region_source or "sightings") if region else "",
+                "rv": "region-free-1" if region else "",
+                "rat": now if region else None,
+                "ru": rubro,
+                "rus": "ai" if rubro else "",
+                "rum": "claude-haiku" if rubro else "",
+                "ruv": "referentes-review-3" if rubro else "",
+                "ruat": now if rubro else None,
+                "seen": now,
+            },
+        )
+
+
+@pytest.fixture
+def placed(env: Any) -> Any:
+    """`inspira` in Colombia (food), `tiktoker` in Venezuela (no rubro), `rival` with a
+    rubro and no country, the detractor in Colombia; nothing else is in the pool."""
+    e, a, b = env
+    _creator(a[0], "instagram", e.handle("inspira"), region="CO", rubro="food_drink")
+    _creator(a[0], "tiktok", e.handle("tiktoker"), region="VE", region_source="tiktok_region")
+    _creator(a[0], "instagram", e.handle("rival"), rubro="food_drink")
+    _creator(a[0], "instagram", e.handle("nada"), region="CO", rubro="food_drink")
+    return e, a, b
+
+
+def test_region_and_niche_filters_in_sql(placed: Any) -> None:
+    e, a, _ = placed
+    of = rv.ReelFilters.of
+    everything = e.ids(e.read(a))
+    assert everything == ["comp", "short", "mid", "long", "longest"]  # off: unknowns enter
+    assert e.ids(e.read(a, filters=of(regions=["CO"]))) == ["short", "mid"]
+    assert e.ids(e.read(a, filters=of(regions=["co", "VE"]))) == [
+        "short",
+        "mid",
+        "long",
+        "longest",
+    ]
+    assert e.ids(e.read(a, filters=of(regions=["UY"]))) == []
+    assert e.ids(e.read(a, filters=of(niches=["food_drink"]))) == ["comp", "short", "mid"]
+    both = of(regions=["CO"], niches=["food_drink"], durations=[rv.DURATION_15_30])
+    assert e.ids(e.read(a, filters=both)) == ["mid"]
+    assert [i.reel.reel_id for i in e.read(a, filters=of(regions=["CO"])).ideas] == [e.rid("idea")]
+    assert e.read(a, filters=of(regions=["VE"])).ideas == []
+    assert "hater" not in e.ids(e.read(a, filters=of(regions=["CO"])))
+    by_id = {item.reel.reel_id.removeprefix(f"rf01{e.token}"): item for item in e.read(a).more}
+    assert (by_id["short"].region_code, by_id["short"].rubro) == ("CO", "food_drink")
+    assert (by_id["comp"].region_code, by_id["comp"].rubro) == ("", "food_drink")
+    assert e.read(a).facts[("tiktok", e.handle("tiktoker"))].region_source == "tiktok_region"
+
+
+def test_region_and_niche_never_cross_businesses(placed: Any) -> None:
+    e, a, b = placed
+    colombia = rv.ReelFilters.of(regions=["CO"])
+    # B follows the same Colombian account: it sees its own kept reel, none of A's
+    assert e.ids(e.read(b, filters=colombia)) == ["only_b"]
+    assert set(e.read(b).facts) == {("instagram", e.handle("inspira"))}
+    assert "only_b" not in e.ids(e.read(a, filters=colombia))
+    # B naming A's brand with a region set: RLS still hides every brand_* row of A
+    assert (
+        e.library.fitting(
+            b[0], a[1], brief_hash=BRIEF, filters=colombia, exclude=[], offset=0, limit=50
+        )
+        == []
+    )
+    crossed = rv.reviewed_reels(b[0], a[1], store=e.runs, library=e.library, filters=colombia)
+    assert crossed.more == [] and crossed.ideas == [] and crossed.facts == {}
+    before = _usage_events()
+    e.read(a, filters=rv.ReelFilters.of(regions=["CO"], niches=["food_drink"]))
+    assert _usage_events() == before
+
+
+def test_brand_niche_reads_the_brand_kit_through_tenant_session(env: Any) -> None:
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+
+    _, a, b = env
+    store = BrandKitStore()
+    store.save_details(
+        tenant_id=a[0], brand_id=a[1], user_id=None, documents={"connect": {"sector": "food_drink"}}
+    )
+    store.save_details(
+        tenant_id=b[0],
+        brand_id=b[1],
+        user_id=None,
+        documents={"connect": {"sector": "real_estate"}},
+    )
+    assert rv.brand_niche(*a).text == "Nicho: Comida y bebida"
+    assert rv.brand_niche(*b).text == "Nicho: Inmobiliaria"
+    assert rv.brand_niche(b[0], a[1]) == rv.NO_NICHE  # RLS: A's kit is not B's to read
