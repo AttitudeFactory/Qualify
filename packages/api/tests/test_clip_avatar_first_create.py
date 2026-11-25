@@ -360,14 +360,15 @@ def test_more_stretches_than_a_clip_holds_are_refused_by_code() -> None:
     _nothing_written(world)
 
 
-def test_the_switches_say_not_before_pr_2() -> None:
+def test_the_switches_stay_off_and_say_it_is_a_decision_of_its_own() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3]
     for name in (".env.example", "deploy/.env.prod.example"):
-        assert "NO encender antes del PR 2 de m-25119867" in (root / name).read_text(
-            encoding="utf-8"
-        )
+        text = (root / name).read_text(encoding="utf-8")
+        assert "NO encender antes del PR 2" not in text
+        assert "encenderlos es una decisión aparte" in text
+        assert f"{ca.PRESENTER_SWITCH}=off" in text and f"{ca.ANIMATED_SWITCH}=off" in text
 
 
 def test_no_paid_call_without_the_months_video_for_every_block() -> None:
@@ -550,7 +551,10 @@ def test_a_kind_switched_off_while_waiting_is_never_placed() -> None:
         store=world.store,
         env={},
     )
-    assert isinstance(gate, ca.PlanWait) and gate.reason == "block_failed"
+    # PR 2: a failure seen for the first time is stamped (its 72 h start), never placed
+    assert isinstance(gate, ca.PlanRefused) and gate.code == "failure_seen"
+    (entry,) = gate.brief.media.clip_avatar_plan
+    assert entry.failed_at is not None and entry.refused is None
 
 
 # ---------------------------------------------------------------------------

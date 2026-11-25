@@ -1576,7 +1576,8 @@ class ClipAvatarSlot(BaseModel):
     BEFORE (`len(segments)` = at the end; equal `at` keep slot order); `seconds_estimate`
     its script read aloud, the length the screen drew it with. `refused` is the server's
     code when the block cannot go into the Clip as it came out (`clip_too_long`): the
-    owner retries or removes it. Pure data, server-owned, in `content_briefs.media`."""
+    owner retries or removes it (m-25119867 PR 2). Pure data, server-owned, in
+    `content_briefs.media`."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1584,6 +1585,10 @@ class ClipAvatarSlot(BaseModel):
     at: int = Field(ge=0, le=SEGMENTS_MAX)
     seconds_estimate: int = Field(ge=1, le=int(LOCAL_TOTAL_MAX_S))
     refused: str | None = Field(default=None, max_length=40, pattern=_PLAN_REFUSAL)
+    #: When the server first saw this block failed (or refused it): the Clip waits for the
+    #: owner `CLIP_AVATAR_OWNER_WAIT` (72 h, ADR 50 §11 P2) from the latest one. None while
+    #: the block is fine; a retry clears it.
+    failed_at: datetime | None = None
 
 
 def _plan_slots_unique(plan: tuple[ClipAvatarSlot, ...]) -> tuple[ClipAvatarSlot, ...]:
