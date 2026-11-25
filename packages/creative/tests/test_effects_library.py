@@ -136,6 +136,9 @@ def test_recipe_refusals_are_pinned() -> None:
         # ED-13 round 4, appended
         "unknown_text_size",
         "text_too_long_for_large",
+        # m-25114465, appended
+        "transition_on_first_block",
+        "transitions_longer_than_block",
     )
 
 

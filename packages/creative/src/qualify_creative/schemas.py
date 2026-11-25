@@ -695,7 +695,7 @@ RecipeRefusal = Literal[
     "too_many_ai_effects",  # more than one `seedance_prompt` effect in one part
     "too_many_of_effect",  # the same effect more times than its `max_per_part`
     "effect_needs_own_video",  # an effect that works on the owner's video, without one
-    "transition_on_clip",  # a transition in a normal Clip (only between parts)
+    "transition_on_clip",  # a transition in a normal Clip outside a block's `transition_in`
     "transition_in_effects",  # a transition among a part's effects, not `transition_in`
     "transition_not_a_transition",  # `transition_in` names an effect that is not one
     "transition_on_first_part",  # the first part has no part before it to blend with
@@ -733,6 +733,9 @@ RecipeRefusal = Literal[
     # ED-13 round 4 (m-25029108): appended, never reordered
     "unknown_text_size",  # a text's size is not «Pequeña», «Mediana» or «Grande»
     "text_too_long_for_large",  # «Grande» on a text over `VIDEO_TEXT_LARGE_MAX_CHARS`
+    # m-25114465: appended, never reordered
+    "transition_on_first_block",  # a Clip's first block has no block before it to blend with
+    "transitions_longer_than_block",  # a Clip's block shorter than the transitions eating it
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -842,6 +845,9 @@ SEGMENT_SOURCE_MAX_S = 60.0
 SegmentRotation = Literal[0, 90, 180, 270]
 #: An effect id as the library writes it (`effects_data/vN.json`).
 EFFECT_ID_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+#: The library's hard cut (`corte`): no transition at all — a block's `transition_in`
+#: naming it reads as None (m-25114465).
+CUT_EFFECT_ID = "corte"
 EffectParamValue = bool | int | float | str
 
 
@@ -1057,7 +1063,15 @@ class SourceSegment(BaseModel):
     tuple, in the same order as the videos — no type of its own —, from `start_s` 0 to
     `end_s` = how long it shows (`PHOTO_SECONDS_MIN`-`PHOTO_SECONDS_MAX`), at `speed` 1,
     `rotate` allowed. Those rules need no library and never change, so the type checks
-    them, each with its `RecipeRefusal` code as the error's `type`."""
+    them, each with its `RecipeRefusal` code as the error's `type`.
+
+    m-25114465 (ADR 50 §10, proposed): `transition_in` is how this block blends with the
+    block BEFORE it in a normal Clip — a `transition` effect of the library (`fundido`,
+    `barrido`) with no span of its own. None is the hard cut (`corte`), and a `corte`
+    given explicitly is read as None: a cut is the absence of a transition, so a Clip
+    whose joins are all cuts serializes — and digests — exactly as before the field
+    existed (`transition_in` None is never dumped). Whether it is offered, built, not on
+    the first block and short enough for its blocks is `validate_recipe`'s."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1067,6 +1081,19 @@ class SourceSegment(BaseModel):
     speed: float = Field(default=1.0, ge=SEGMENT_SPEED_MIN, le=SEGMENT_SPEED_MAX)
     rotate: SegmentRotation = 0
     kind: SegmentKind = "video"
+    transition_in: EffectUse | None = None
+
+    @field_validator("transition_in", mode="after")
+    @classmethod
+    def _a_cut_is_no_transition(cls, value: EffectUse | None) -> EffectUse | None:
+        return None if value is not None and value.effect_id == CUT_EFFECT_ID else value
+
+    @model_serializer(mode="wrap")
+    def _without_a_cut(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict) and self.transition_in is None:
+            data.pop("transition_in", None)
+        return data
 
     @property
     def output_seconds(self) -> float:
@@ -1090,6 +1117,10 @@ class SourceSegment(BaseModel):
                     "a photo shows {low} to {high} seconds",
                     {"low": PHOTO_SECONDS_MIN, "high": PHOTO_SECONDS_MAX},
                 )
+        if self.transition_in is not None and (
+            self.transition_in.start_s is not None or self.transition_in.end_s is not None
+        ):
+            raise ValueError("a transition between blocks has no span of its own")
         return self
 
 
