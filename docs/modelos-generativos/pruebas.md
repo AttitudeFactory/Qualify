@@ -183,7 +183,7 @@ En test, `travel_lifestyle` (n = 7) queda en 0,43 / 0,29, y `entertainment` (n =
 
 **Regla 6 (Deivid, 2026-11-25):** un medio de noticias de **un solo tema** va al rubro de ese tema. Por eso `instagram:technology` queda en `technology`. `entertainment` es solo para los medios generales, como NPR, UN24 o Bloomberg. Deivid también confirmó `matsimultiservicios` como `education` y `bloombergbusiness` como `entertainment`.
 
-**`referentes-review-3` (2026-11-25) — ESCRITO, SIN MEDIR.** Por decisión de Deivid, antes de mergear el PR #807 el prompt lleva sus reglas de rubro y se vuelve a medir.
+**`referentes-review-3` (2026-11-25) — MEDIDO: NO PASA EL CRITERIO COMPLETO.** El rubro en test pasa (0,941 / 0,906) y no hay regresión, pero `travel_lifestyle` en test queda por debajo de 0,70. Todo ese error es una sola cuenta: `lauratuttman`. Por decisión de Deivid, antes de mergear el PR #807 el prompt lleva sus reglas de rubro y se vuelve a medir.
 
 - **Qué cambió:** solo el párrafo `rubro` de `REVIEW_SYSTEM`, que ahora tiene 5 reglas:
   1. es lo que la cuenta ES, no una publicación suelta;
@@ -193,8 +193,65 @@ En test, `travel_lifestyle` (n = 7) queda en 0,43 / 0,29, y `entertainment` (n =
   5. si los datos no dejan ver el rubro, `otro`.
 - **Qué no cambió:** `encaja`, `tipo`, `razon`, la herramienta y el párrafo `pais`. El país sigue sin guardarse; su prompt será `referentes-review-4`, en RF-12.
 - **Versión:** `REVIEW_PROMPT_VERSION = "referentes-review-3"`.
-- **Medición pendiente:** dos corridas de `run_eval.py --configs sonnet-5@low` sobre el oro corregido. Están aprobadas por Deivid con un tope de USD 0,5; se estiman en ≈ USD 0,39–0,42, cerca de los USD 0,3868 de la v2. **No se corrieron:** el control de permisos de la sesión del agente bloqueó la llamada pagada. Esta versión **no debe mergearse** hasta medirla.
 - **Criterio para pasar:** cada corrida ≥ 0,85 en test, ninguna clase con n ≥ 5 por debajo de 0,70, y `encaja`, `tipo` y trampas sin empeorar frente a la v2.
+
+**Medición (2026-11-25):**
+
+- **Quién la corrió:** la sesión coordinadora («creacion de tickets»), con permiso directo de Deivid y tope de USD 0,5. El control de permisos le bloqueó la llamada pagada al agente de backend dos veces.
+- **Modelo:** `claude-sonnet-5`, esfuerzo `low`, lotes de 30. Es la misma configuración que la v2. Versión `referentes-review-3`.
+- **Comando:** `run_eval.py --configs sonnet-5@low`, dos veces.
+- **Resultados:** `packages/api/evals/referentes_ai/results/20261125-112959.json` y `20261125-113129.json`.
+- **Muestra:** el oro corregido con las reglas 1 a 6 de Deivid. n = 161 apariciones: 85 en test y 76 en dev. Quedan fuera las 3 sin evidencia.
+- **Costo real:** USD 0,2305 + USD 0,1982 = **USD 0,4287**.
+
+| Exactitud del rubro | v3, corrida 1 | v3, corrida 2 | v2, mismo oro (`--rescore`) | Umbral |
+|---|---|---|---|---|
+| **test** (n = 85) | **0,941** | **0,906** | 0,894 / 0,847 | ≥ 0,85 cada corrida |
+| dev (n = 76) | 0,947 | 0,947 | 0,921 / 0,895 | — |
+| todo el set (n = 161) | 0,944 | 0,925 | 0,907 / 0,870 | — |
+
+Exactitud por clase, v3 (corrida 1 / corrida 2):
+
+| Clase | test: n | test: exactitud | todo el set: n | todo el set: exactitud |
+|---|---|---|---|---|
+| `food_drink` | 24 | 1,00 / 0,96 | 48 | 0,98 / 0,98 |
+| `technology` | 25 | 1,00 / 0,88 | 44 | 0,98 / 0,89 |
+| `education` | 13 | 0,85 / 1,00 | 25 | 0,88 / 0,96 |
+| `entertainment` | 10 | 1,00 / 1,00 | 20 | 1,00 / 1,00 |
+| `otro` | 6 | 1,00 / 1,00 | 13 | 0,92 / 0,92 |
+| **`travel_lifestyle`** | **7** | **0,57 / 0,43** | 11 | 0,73 / **0,64** |
+
+- **La v3 sí aplica las reglas de Deivid.** `entertainment` pasa de 0,75 a 1,00: los medios generales ya salen como entretenimiento. `education` y `technology` también mejoran.
+- **El único fallo es `travel_lifestyle`.** Todos sus errores son la misma cuenta, `lauratuttman`, que aparece en tres marcas. Por la regla 4 el oro dice viajes y estilo de vida (Instagram: «Muitas dicas e hacks para facilitar sua vida»). El modelo la ve como `education` en TikTok, por «bora aprender a programar», y como `otro` en Instagram.
+  - Sin `lauratuttman`, la clase quedaría en 1,00.
+  - Con una sola cuenta repetida no se puede saber si es un fallo del prompt o una etiqueta discutible. La clase tiene muy pocas cuentas distintas.
+
+**Sin regresión en `encaja`, `tipo` y trampas:**
+
+| Corrida | precision | recall | trampas | kind |
+|---|---|---|---|---|
+| v2, corrida 1 | 0,958 | 0,935 | 1/106 | 0,940 |
+| v2, corrida 2 | 0,958 | 0,799 | 1/106 | 0,934 |
+| **v3, corrida 1** | 0,950 | 0,894 | 1/106 | 0,958 |
+| **v3, corrida 2** | 1,000 | 0,799 | 0/106 | 0,931 |
+
+- Las medias quedan igual o mejor: precision 0,975 frente a 0,958, trampas 1 frente a 2, kind 0,945 frente a 0,937. Recall 0,847 frente a 0,867.
+- **Recall de la corrida 1:** baja porque en `programming-creator` se descartaron `thecodingspacerd` y `jean.iovino`. Son dos de los descartes discutibles que el README ya documentó en septiembre, no algo nuevo de la v3.
+- **Recall de la corrida 2:** es la tienda de celulares (0,364), la misma inestabilidad conocida de la v2.
+
+**Veredicto: NO PASA el criterio completo.**
+
+| Criterio | Resultado |
+|---|---|
+| Cada corrida ≥ 0,85 en test | Cumple (0,941 / 0,906) |
+| Sin regresión en `encaja`, `tipo` y trampas | Cumple |
+| Ninguna clase con n ≥ 5 por debajo de 0,70 | **No cumple:** `travel_lifestyle` en test queda en 0,57 / 0,43 (n = 7), y en todo el set la corrida 2 da 0,64 (n = 11) |
+
+Por instrucción de Deivid, no se ajustó el prompt después de medir. Decide él:
+
+1. Mergear con la v3 y aceptar el fallo de `travel_lifestyle`, que se debe a una sola cuenta.
+2. Revisar la etiqueta de `lauratuttman`.
+3. Sumar cuentas de `travel_lifestyle` al oro antes de juzgar esa clase.
 
 **Decisión de Deivid (2026-11-25): el país sale solo de fuentes gratis.** Aplicada en el PR #807, en el commit «feat(creators): region from free sources only»:
 
