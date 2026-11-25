@@ -100,6 +100,21 @@
     return Math.min(best, n - 1);
   }
 
+  /* m-25114465 (review): the px each «Fotos y videos» block takes on the row while blocks
+     are reordered — the STEP to the next block's left edge (`lefts[i+1] - lefts[i]`), and
+     the last one its own width. Blocks drawn whole and laid over each other at their
+     transitions (Deivid: «bloques enteros, encimados») would make `dropIndex` and
+     `layoutShifts` count each overlap twice; their sum is the row's real span. */
+  function stepWidths(lefts, widths) {
+    var n = (widths || []).length;
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var next = i + 1 < n ? num(lefts[i + 1]) - num(lefts[i]) : num(widths[i]);
+      out.push(Math.max(next, 0));
+    }
+    return out;
+  }
+
   /* The px each block moves when `from` is dropped at `to` (remove-then-insert, like
      `timeline_vm.move_to`): the others make room with the lifted block's width, and the
      lifted block's own entry is where its slot is. */
@@ -245,6 +260,19 @@
       if (num(mid) < num(x)) n += 1;
     });
     return n;
+  }
+
+  /* m-25114465 (ux review): which join points really sit under a chosen block's trim
+     handles — in PIXELS, as the browser lays them (a desktop's scale is not a phone's).
+     `points` and `handles` are `{ left, right }` boxes (px); a point is under a handle
+     when their boxes overlap. One boolean per point. */
+  function joinsNear(opts) {
+    var handles = (opts && opts.handles) || [];
+    return ((opts && opts.points) || []).map(function (p) {
+      return handles.some(function (h) {
+        return p.left < h.right && h.left < p.right;
+      });
+    });
   }
 
   /* ED-12: whether a drag over the timeline carries files of the computer (anything
@@ -533,6 +561,8 @@
     clockExact: clockExact,
     insertIndex: insertIndex,
     carriesFiles: carriesFiles,
+    joinsNear: joinsNear,
+    stepWidths: stepWidths,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) root.__qTimelineDragCore = api;

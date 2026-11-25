@@ -20,7 +20,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from urllib.parse import quote
 
-from . import clip_gallery_vm
+from . import clip_gallery_vm, clip_joins_vm
 from . import editor_preview_contract as contract
 from .ui import timeline_vm
 
@@ -255,9 +255,13 @@ def piece_speed_reasons(
     start = float(item.get("src_start") or 0.0)  # type: ignore[arg-type]
     end = float(item.get("src_end") or 0.0)  # type: ignore[arg-type]
     source = max(end - start, 0.0)
-    others = media_total(media) - _shown_length(item)
+    # m-25114465 review: as the server — 60 s against the blocks laid end to end, 3 s
+    # against what comes out once the transitions overlap them
+    overlaps = sum(clip_joins_vm.tail_of(m) for m in media)
+    others = sum(_shown_length(m) + clip_joins_vm.tail_of(m) for m in media if m is not item)
     for speed in contract.FAST_MOTION_SPEEDS:
-        total = others + source / speed
+        laid = others + source / speed
+        total = judged_length(laid, laid - overlaps)
         if source_too_long(start, end):
             why = SOURCE_TOO_LONG
         elif not FAST_MIN_SECONDS - 1e-6 <= total <= FAST_MAX_SECONDS + 1e-6:
@@ -926,7 +930,11 @@ def timeline_segments(media: Sequence[Mapping[str, object]]) -> tuple[contract.S
             if turn not in contract.ROTATIONS:
                 turn = 0  # ED-14: only a quarter turn travels; anything else is upright
             if seconds > 0:
-                out.append(contract.SourceSegment(key, 0.0, seconds, 1.0, turn, "photo"))
+                out.append(
+                    contract.SourceSegment(
+                        key, 0.0, seconds, 1.0, turn, "photo", _joined_in(item, bool(out))
+                    )
+                )
             continue
         start = round(float(item.get("src_start") or 0.0), 2)  # type: ignore[arg-type]
         end = round(float(item.get("src_end") or 0.0), 2)  # type: ignore[arg-type]
@@ -939,15 +947,38 @@ def timeline_segments(media: Sequence[Mapping[str, object]]) -> tuple[contract.S
                     end,
                     round(speed, 2),
                     int(item.get("rotate") or 0),  # type: ignore[call-overload]
+                    transition_in=_joined_in(item, bool(out)),
                 )
             )
     return tuple(out)
 
 
+def _joined_in(item: Mapping[str, object], after: bool) -> contract.EffectUse | None:
+    """m-25114465: the block's `transition_in` (`clip_joins_vm.apply_joins`) — never on
+    the first stretch (`after` False)."""
+    return clip_joins_vm.transition_of(item) if after else None
+
+
 def recipe_seconds(segments: Sequence[contract.SourceSegment]) -> float:
     """How long the video of `segments` lasts, as the backend reads it (EF-06
-    `segments_seconds`: each stretch at its speed; a photo its seconds)."""
-    return sum((s.end_s - s.start_s) / (s.speed or 1.0) for s in segments)
+    `segments_seconds`: each stretch at its speed; a photo its seconds) — m-25114465:
+    minus what each block's transition overlaps the one before it (`clip_seconds`)."""
+    joined = clip_joins_vm.transitions_seconds(segments)
+    return sum((s.end_s - s.start_s) / (s.speed or 1.0) for s in segments) - joined
+
+
+def judged_length(laid: float, joined: float) -> float:
+    """The length the server judges against 3–60 s (`recipe._length_problems`): the
+    blocks laid end to end (`laid`, at most 60 s: the speed step's bound) unless what
+    comes out once the transitions overlap them (`joined`) is under 3 s — then that."""
+    return joined if joined < LOCAL_MIN_SECONDS else laid
+
+
+def local_length(segments: Sequence[contract.SourceSegment]) -> float:
+    """m-25114465 review: `judged_length` of a recipe's stretches — 60 s against their
+    sum, 3 s against `recipe_seconds` (their transitions taken off), as the server."""
+    laid = sum((s.end_s - s.start_s) / (s.speed or 1.0) for s in segments)
+    return judged_length(laid, recipe_seconds(segments))
 
 
 # -- B6 (m-25048789): what «Crear» needs on «Arma tu video» ----------------------------------
@@ -1039,7 +1070,11 @@ def recipe_problem(
         return TOO_MANY_PIECES, "warn"
     if any(s.kind != "photo" and source_too_long(s.start_s, s.end_s) for s in recipe.segments):
         return SOURCE_TOO_LONG, "warn"  # A9 (m-25042483): the backend would refuse it
-    seconds = recipe_seconds(recipe.segments)
+    # m-25114465: a block shorter than the transitions eating into it — the server's words
+    joins = clip_joins_vm.room_problems(recipe.segments)
+    if joins:
+        return joins[min(joins)], "warn"
+    seconds = local_length(recipe.segments)
     if not LOCAL_MIN_SECONDS - 1e-6 <= seconds <= LOCAL_MAX_SECONDS + 1e-6:
         fast, video = speed_facts(recipe.segments, speed_offered=speed_offered)
         return length_out_of_range_line(round(seconds, 1), fast=fast, video=video), "warn"
@@ -1174,13 +1209,16 @@ def too_close_text(edge: float) -> str:
 
 
 def _shown_length(item: Mapping[str, object]) -> float:
-    """Seconds a media block lasts in the final video (a video at its speed)."""
+    """Seconds a media block takes on the final video's track (a video at its speed) —
+    m-25114465: less what the next block's transition overlaps its end (`tail_s`), so
+    the next block starts where the server starts it."""
+    tail = clip_joins_vm.tail_of(item)
     if item.get("kind") == "photo":
-        return float(item.get("dur") or 0.0)  # type: ignore[arg-type]
+        return max(float(item.get("dur") or 0.0) - tail, 0.0)  # type: ignore[arg-type]
     speed = float(item.get("speed") or 1.0) or 1.0  # type: ignore[arg-type]
     src_start = float(item.get("src_start") or 0.0)  # type: ignore[arg-type]
     src_end = float(item.get("src_end") or 0.0)  # type: ignore[arg-type]
-    return max(src_end - src_start, 0.0) / speed
+    return max(max(src_end - src_start, 0.0) / speed - tail, 0.0)
 
 
 def block_at(media: Sequence[Mapping[str, object]], key: str, playhead: float) -> str:
@@ -1412,12 +1450,13 @@ def timeline_rejected_line(rejected: Sequence[object] | None) -> str:
 def jump_script(seconds: float) -> str:
     """The preview in sequence goes to `seconds` (criterion: «la vista previa salta
     ahí»), once the timeline re-rendered with what went in (`assets/edit-preview.js`
-    `seq.goTo`)."""
+    `seq.goTo`) — m-25114465: that block alone, never mid-transition (`noJoin`)."""
     return (
         "window.setTimeout(function () {"
         " var h = document.querySelector('[data-edit-sync] [data-edit-seq-host]');"
         " var p = window.__qEditPreview;"
-        f" if (h && p && p.seq) p.seq.goTo(h, {max(float(seconds), 0.0):.2f}); }}, 150)"
+        f" if (h && p && p.seq) p.seq.goTo(h, {max(float(seconds), 0.0):.2f}, false, true);"
+        " }, 150)"
     )
 
 
@@ -1551,9 +1590,11 @@ def block_thumbs(
 
 
 def media_total(media: Sequence[Mapping[str, object]]) -> float:
-    """The video's length on the timeline: the media track has no gaps."""
+    """The video's length on the timeline: the media track has no gaps. m-25114465: less
+    each transition between two blocks (`tail_s`)."""
     total = 0.0
     for item in media:
+        total -= clip_joins_vm.tail_of(item)
         if item.get("kind") == "photo":
             total += float(item.get("dur") or 0.0)  # type: ignore[arg-type]
             continue

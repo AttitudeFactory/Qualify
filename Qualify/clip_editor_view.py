@@ -46,6 +46,7 @@ from __future__ import annotations
 import reflex as rx
 
 from . import clip_editor_vm as vm
+from . import clip_joins_vm as joins_vm
 from . import clip_photos_vm as photos_vm
 from . import clip_texts_vm
 from .creative_state import CreativeState
@@ -69,6 +70,7 @@ from .ui.text_panel import text_panel
 from .ui.timeline import (
     timeline,
     timeline_actions,
+    timeline_join_panel,
     timeline_layout,
     timeline_panel,
     timeline_script,
@@ -608,6 +610,25 @@ def _block_panel() -> rx.Component:
     )
 
 
+def _join_panel() -> rx.Component:
+    """m-25114465: the open join's panel («Corte · Fundido · Barrido»), under the bar."""
+    return timeline_join_panel(
+        S.clip_join_chosen,
+        S.clip_join_choices,
+        on_change=S.set_clip_join,
+        on_done=S.close_clip_join,
+        help_text=joins_vm.HELP,
+        # Deivid 2026-11-26: its duration and, a wipe, its direction
+        seconds=S.clip_join_seconds_value,
+        seconds_min=S.clip_join_seconds_min,
+        seconds_max=S.clip_join_seconds_max,
+        seconds_step=joins_vm.STEP_S,
+        on_seconds=S.set_clip_join_seconds,
+        directions=S.clip_join_directions,
+        on_direction=S.set_clip_join_direction,
+    )
+
+
 #: Where the focus goes when the side panel closes: what opened it — the «Producto»
 #: row's «Cambiar» (`data-flow-opener`) or the «+» (the orbit's options are gone by
 #: then) —, else the chosen block; never while another drawer took over.
@@ -787,6 +808,9 @@ def _timeline_layout() -> rx.Component:
             effect_lane_names=S.clip_tl_effect_lane_names,
             # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
             thumb_base=BACKEND_BASE,
+            # m-25114465: «la unión» between every two blocks ([] off the switch)
+            joins=S.clip_tl_joins,
+            on_join=S.open_clip_join,
         ),
         timeline_actions(
             S.clip_tl_chosen_kind,
@@ -829,8 +853,26 @@ def arma_tu_video(media_body: rx.Component) -> rx.Component:
         rx.box(_timeline(), class_name="q-edit__timeline"),
         rx.box(
             rx.cond(S.clip_tl_selected != "", _block_panel()),
+            rx.cond(S.clip_join_open != "", _join_panel()),
             _problem(),
             rx.text(vm.PREVIEW_FREE, size="1", color=T.TEXT_MUTED),
+            # m-25114465 (ux review): how to find the joins, until the first one; and,
+            # with any join that is not «Corte», that the video takes longer — the line
+            # nearest «Crear» on this step (its button is the step frame's)
+            rx.cond(
+                S.clip_join_hint != "",
+                rx.text(S.clip_join_hint, size="1", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                S.clip_join_slower != "",
+                rx.hstack(
+                    rx.icon("clock", size=T.ICON_SM, aria_hidden="true"),
+                    rx.text(S.clip_join_slower, size="1"),
+                    spacing="1",
+                    align="center",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
             upload_preview_notice(),  # ED-09: its 480p copy could not be made
             class_name="q-edit__main",
         ),

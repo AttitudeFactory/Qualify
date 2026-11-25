@@ -407,6 +407,13 @@ def edit_sequence_preview(
     line under the frame is not drawn at all (the frame gets its height)."""
     layer = "q-edit-preview__video q-edit-seq__layer"
     frame = rx.box(
+        # m-25114465: the photo of the block that goes on UNDER the next one while that
+        # one fades or wipes in (a video goes on in its own player: `data-under`)
+        rx.image(
+            alt="",
+            class_name="q-edit-preview__poster q-edit-seq__layer",
+            custom_attrs={"data-edit-seq-under": ""},
+        ),
         rx.image(
             alt="",
             class_name="q-edit-preview__poster q-edit-seq__layer",
