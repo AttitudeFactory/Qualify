@@ -320,13 +320,13 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), la música y el volumen entre bloques, y la medición pagada (m-25112919).
 
-## 10. Enmienda: transiciones en la unión de los bloques del Clip
+## 10. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]`: transiciones en la unión de los bloques del Clip
 
-**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-24 (m-25114465, épica m-25026566, carril A). **Sin firmar.** Hasta que Deivid lo firme, lo que dice §1.4 y §1.2 sigue siendo la regla: en un Clip normal no hay transiciones fuera de la unión de partes.
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactado por creative-engineer el 2026-11-24 (m-25114465, épica m-25026566, carril A). Firmado por Deivid el 2026-11-25.
 
-**Interruptor:** el código está detrás de `QUALIFY_CLIP_BLOCK_TRANSITIONS`, que queda **apagado** (`off`, por defecto) hasta que Deivid firme esta sección (decisión del coordinador, 2026-11-25). Apagado, el servidor rechaza cualquier transición entre bloques distinta de «Corte» con `recipe_unavailable` y el texto de «no disponible».
+**Interruptor:** el código está detrás de `QUALIFY_CLIP_BLOCK_TRANSITIONS`, que queda **apagado** (`off`, por defecto) en todos los entornos. La firma no lo enciende: encenderlo es otra decisión, y no se enciende hasta que la regla «uniones con avatar = solo corte» (m-25119867) esté en `main`. Apagado, el servidor rechaza cualquier transición entre bloques distinta de «Corte» con `recipe_unavailable` y el texto de «no disponible».
 
-**Firma de Deivid:** `[ ]` ____________________ · fecha: __________
+**Firma de Deivid:** `[x]` «Firmo el §10», escrito por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-25
 
 ### 10.1 Contexto
 
