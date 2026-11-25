@@ -12,6 +12,10 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
   revisados» come narrowed by the owner's filters through RF-01's read
   (`reviewed_reels.reviewed_reels`) — filtering reads only what is stored, never pays;
 - `more_reviewed` — the next page of «Más reels revisados», the same read;
+- RF-05 (m-25119465): `competitor_rows` (the panel over the filter bar, Postgres only),
+  `choose_competitors` (which 6 the Monday run reads, the brand's own labels) and
+  `read_competitor_now` («Ver sus reels ahora»: it only QUEUES the read, inside the daily
+  cap — the reels-worker pays);
 - `mark_opened` — the brand's «last opened» signal the worker's 14-day inactivity rule
   reads (decided 2026-11-04); it never raises and never delays the screen;
 - `ensure_first_run` — option A, confirmed by the founder on 2026-11-04: a brand with
@@ -35,12 +39,12 @@ from uuid import UUID
 
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as shared_brief
-from qualify_api.referentes import reel_analysis, reel_runs, reels, reviewed_reels
+from qualify_api.referentes import competitors, reel_analysis, reel_runs, reels, reviewed_reels
 from qualify_api.referentes.reel_analysis_types import AnalysisRef, ReelSource
 from qualify_api.referentes.reel_store import ReelRunStore
 from qualify_api.referentes.reviewed_reels import ReelFilters, ReviewedReelsStore
 
-from . import reels_ideas_vm, referentes_provider
+from . import reels_competitors_vm, reels_filters_vm, reels_ideas_vm, referentes_provider
 from .avatar_proxy import reel_cover_path
 
 logger = logging.getLogger(__name__)
@@ -284,10 +288,87 @@ def request_similar(tenant_id: UUID, card: dict[str, str]) -> AnalysisRef | None
         return None
 
 
+# --------------------------------------------------------------------------------------
+# RF-05 (m-25119465): the owner's competitors
+# --------------------------------------------------------------------------------------
+
+
+def competitor_rows(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    store: ReelRunStore | None = None,
+    repository: Any = None,
+    now: datetime | None = None,
+) -> list[dict[str, str]]:
+    """The panel's rows (`reels_competitors_vm.rows`): every competitor of the brand, which
+    ones the Monday run reads, and today's manual read of each. Postgres only — never a
+    write, never the vendor."""
+    repo = repository or referentes_provider.REPOSITORY
+    accounts = reels.competitor_accounts(tenant_id, brand_id, repository=repo)
+    if not accounts:
+        return []
+    moment = (now or datetime.now(UTC)).timestamp()
+    states = competitors.read_states(tenant_id, brand_id, store=store, clock=lambda: moment)
+    return reels_competitors_vm.rows(
+        accounts,
+        {
+            reels_filters_vm.account_key(network, handle): reels_competitors_vm.read_state(answer)
+            for (network, handle), answer in states.items()
+        },
+    )
+
+
+def choose_competitors(
+    tenant_id: UUID,
+    brand_id: UUID,
+    picks: Sequence[tuple[str, str]],
+    *,
+    repository: Any = None,
+) -> None:
+    """Save which competitors the Monday run reads (`competitors.choose_weekly`): the
+    brand's own labels, through `tenant_session`. Never pays."""
+    competitors.choose_weekly(
+        tenant_id, brand_id, picks, repository=repository or referentes_provider.REPOSITORY
+    )
+
+
+def read_competitor_now(
+    tenant_id: UUID,
+    brand_id: UUID,
+    key: str,
+    *,
+    store: ReelRunStore | None = None,
+    repository: Any = None,
+) -> reels_competitors_vm.ReadState | None:
+    """«Ver sus reels ahora» (`competitors.read_now`): queues the read of that competitor
+    for today — once — unless the business's daily cap is spent. Never pays here: the
+    reels-worker does. None for a key that is not one of the brand's competitors."""
+    pair = reels_filters_vm.parse_account_key(key)
+    if pair is None:
+        return None
+    moment = datetime.now(UTC).timestamp()  # the panel's clock (`competitor_rows`)
+    answer = competitors.read_now(
+        tenant_id,
+        brand_id,
+        pair[0],
+        pair[1],
+        store=store,
+        repository=repository or referentes_provider.REPOSITORY,
+        clock=lambda: moment,
+    )
+    if answer.state == competitors.STATE_NOT_COMPETITOR:
+        return None
+    return reels_competitors_vm.read_state(answer)
+
+
 __all__ = [
     "BRIEF_HASHTAGS",
     "brand_brief",
+    "choose_competitors",
+    "competitor_rows",
     "cover_path",
+    "read_competitor_now",
     "ensure_first_run",
     "has_brief",
     "load_ideas",

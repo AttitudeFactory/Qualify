@@ -97,6 +97,21 @@ rubro en test 0,941 / 0,906 (v2: 0,894 / 0,847), sin regresión, USD 0,4287. Exc
 «Viajes y estilo de vida» 0,57 / 0,43 (n = 7, todo lauratuttman). El país por IA pasa a
 `referentes-review-4` en RF-12. #806 fusionado (main 9407a6a6); #807 fusionado (main ee64050b, migración 0182).
 
+**RF-05 construido (2026-11-25, m-25119465, migración 0183).** Backend completo, sin
+llamadas pagadas durante el desarrollo (pruebas sin red con fakes y `-m db` en una base
+aislada). La corrida del lunes lee las 6 cuentas `competencia` elegidas
+(`brand_account_labels.read_weekly`; sin elección, las 6 primeras por `position`) después
+de los referentes. «Ver sus reels ahora» es una corrida `competitor_now` de una cuenta, una
+por negocio, cuenta y día local (`referentes/competitors.py`). El gasto queda aparte:
+`competitor_reels_list` / `competitor_reels_transcript` en `vendor_usage_events` y
+`competitor_credits` / `competitor_cost_usd` en `brand_reel_runs`. El filtro
+«Competidores» de RF-01 ya trae sus reels (también los de una lectura manual, aunque no
+haya corrida del lunes). Peor caso de la corrida semanal: 130 créditos, antes 88. Costo
+estimado: ≈ USD 0,5 al mes por negocio y ≈ USD 0,01–0,02 por cada lectura manual. Detalle
+en la enmienda RF-05 de `docs/adr-42-ideas-reels-costo.md`. **La pantalla espera a RF-02
+(#810):** el selector y el botón van en `Qualify/discover_reels.py` cuando #810 esté en
+`main`.
+
 **RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
 ni llamadas pagadas; se recalcula al leer, desde `public_reels` y `creators` (globales).
 «En ascenso»: `lift` de `creators/metrics.py` (cm-1) ≥ 2,0 (el mismo `LIFT_HIGHLIGHT` de

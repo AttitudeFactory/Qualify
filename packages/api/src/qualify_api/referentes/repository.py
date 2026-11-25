@@ -30,7 +30,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy import and_, case, delete, false, func, select, true, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -211,6 +211,8 @@ class AccountLabel:
     labeled_at: datetime
     #: Influence order inside the label, 0 = most influential; None until ordered.
     position: int | None = None
+    #: RF-05: a `competencia` account the owner chose to have read every Monday (0183).
+    read_weekly: bool = False
 
 
 class ReferentesRepository(Protocol):
@@ -284,6 +286,15 @@ class ReferentesRepository(Protocol):
         """Store each labeled `(network, handle)`'s influence position. An account with no
         label is skipped — a position only means something inside a label. Raises
         `ValueError` for a negative position."""
+        ...
+
+    def set_weekly_picks(
+        self, *, tenant_id: UUID, brand_id: UUID, picks: Iterable[tuple[str, str]]
+    ) -> None:
+        """RF-05: exactly `picks` among the brand's `competencia` accounts are read every
+        Monday (`read_weekly`); every other label of the brand is cleared. An account in
+        `picks` that is not labelled `competencia` is skipped. How many is the caller's
+        rule (`competitors.MAX_WEEKLY`)."""
         ...
 
 
@@ -461,6 +472,10 @@ class MemoryReferentesRepository:
             labeled_at=datetime.now(UTC),
             # Re-labeling keeps the position, as Postgres' upsert does.
             position=previous[1].position if previous is not None else None,
+            # ...and the weekly pick only while the label stays the same (RF-05)
+            read_weekly=previous is not None
+            and previous[1].read_weekly
+            and previous[1].label == _validate_label(label),
         )
         self._labels[key] = (tenant_id, stored)
         return stored
@@ -492,6 +507,17 @@ class MemoryReferentesRepository:
                 tenant_id,
                 replace(entry[1], position=position),
             )
+
+    def set_weekly_picks(
+        self, *, tenant_id: UUID, brand_id: UUID, picks: Iterable[tuple[str, str]]
+    ) -> None:
+        self._check_brand(tenant_id, brand_id)
+        wanted = {(_normalize_network(n), normalize_handle(h)) for n, h in picks}
+        for (b, network, handle), (t, label) in list(self._labels.items()):
+            if b != brand_id or t != tenant_id:
+                continue
+            pick = label.label == "competencia" and (network, handle) in wanted
+            self._labels[(b, network, handle)] = (t, replace(label, read_weekly=pick))
 
 
 # --------------------------------------------------------------------------------------
@@ -775,15 +801,29 @@ class PostgresReferentesRepository:
                     "label": stmt.excluded.label,
                     "labeled_by": stmt.excluded.labeled_by,
                     "labeled_at": func.now(),
+                    # RF-05: the weekly pick survives only while the label stays the same
+                    "read_weekly": case(
+                        (
+                            BrandAccountLabel.label == stmt.excluded.label,
+                            BrandAccountLabel.read_weekly,
+                        ),
+                        else_=false(),
+                    ),
                 },
-            ).returning(BrandAccountLabel.labeled_at)
-            labeled_at = session.execute(stmt).scalar_one()
+            ).returning(
+                BrandAccountLabel.labeled_at,
+                BrandAccountLabel.position,
+                BrandAccountLabel.read_weekly,
+            )
+            row = session.execute(stmt).one()
         return AccountLabel(
             network=values["network"],
             handle=values["handle"],
             label=values["label"],
             labeled_by=labeled_by,
-            labeled_at=labeled_at,
+            labeled_at=row.labeled_at,
+            position=row.position,
+            read_weekly=row.read_weekly,
         )
 
     def clear_label(self, *, tenant_id: UUID, brand_id: UUID, network: str, handle: str) -> bool:
@@ -816,6 +856,7 @@ class PostgresReferentesRepository:
                     labeled_by=row.labeled_by,
                     labeled_at=row.labeled_at,
                     position=row.position,
+                    read_weekly=row.read_weekly,
                 )
                 for row in rows
             )
@@ -838,3 +879,30 @@ class PostgresReferentesRepository:
                     )
                     .values(position=position)
                 )
+
+    def set_weekly_picks(
+        self, *, tenant_id: UUID, brand_id: UUID, picks: Iterable[tuple[str, str]]
+    ) -> None:
+        wanted = sorted({(_normalize_network(n), normalize_handle(h)) for n, h in picks})
+        is_pick = (
+            tuple_(BrandAccountLabel.network, BrandAccountLabel.handle).in_(wanted)
+            if wanted
+            else false()
+        )
+        with tenant_session(tenant_id) as session:
+            if not _brand_visible(session, tenant_id, brand_id):
+                raise ValueError("brand not found for this tenant")
+            # one statement: the whole choice is replaced at once
+            session.execute(
+                update(BrandAccountLabel)
+                .where(
+                    BrandAccountLabel.tenant_id == tenant_id,
+                    BrandAccountLabel.brand_id == brand_id,
+                )
+                .values(
+                    read_weekly=case(
+                        (and_(BrandAccountLabel.label == "competencia", is_pick), true()),
+                        else_=false(),
+                    )
+                )
+            )

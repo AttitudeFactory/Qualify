@@ -95,7 +95,7 @@ ACCOUNT_KIND_WORDS = {KIND_REFERENTE: "Te inspira", KIND_COMPETENCIA: "Compite c
 
 #: Nothing left with the chosen filters (exact, ticket m-25119460).
 EMPTY_FILTERED = "No hay reels con estos filtros. Prueba quitando alguno."
-#: Only competitors chosen, before RF-05 reads their reels (UX review 3: no promise
+#: Only competitors chosen, and none of their reels read yet (UX review 3: no promise
 #: without a date): nothing is read yet, and the way on is the inspiring accounts.
 COMPETITORS_EMPTY_TITLE = "Aún no revisamos los reels de tus competidores"
 COMPETITORS_EMPTY_BODY = "Mientras tanto, mira las ideas de las cuentas que te inspiran."
@@ -367,7 +367,7 @@ def empty_message(
     more: int,
 ) -> EmptyMessage:
     """The message when nothing is left to show (`ideas` and `more` are what the filtered
-    read returned). Competitors first: until RF-05 reads their reels, a filter on them is
+    read returned). Competitors first: until their reels are read (RF-05), a filter on them is
     empty by design and is told so — and, when the brand marked none, how to mark them."""
     if ideas or more:
         return EmptyMessage()
