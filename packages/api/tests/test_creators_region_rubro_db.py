@@ -4,9 +4,8 @@ Pins:
 
 - `creators` stays global: the new columns name no tenant, no RLS on the table, and the
   provenance checks refuse a value that does not say where it came from;
-- the backfill reads only what the pool already stores, ranks the sources (a free one
-  over the AI's; within the free ones, the account's own data over a search's country),
-  and a second run writes nothing;
+- the backfill reads only what the pool already stores, ranks the free sources (the
+  account's own data over a search's country), and a second run writes nothing;
 - the review's rubro: the same answer twice is a no-op, a new prompt version rewrites;
   the region comes from free sources only (no model is a region source, 2026-11-25);
 - tenant isolation: a business's coverage counts its own labels and nobody else's, read
