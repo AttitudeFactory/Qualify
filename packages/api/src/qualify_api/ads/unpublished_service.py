@@ -15,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
 
 from qualify_api.ads.activation_repository import ActivationReview, PostgresActivationRepository
+from qualify_api.ads.carousel import CAROUSEL_PIPELINE, CarouselSource, carousel_payload
 from qualify_api.ads.client import MarketingClient
 from qualify_api.ads.enhancements import compose_brand_policy
 from qualify_api.ads.enhancements_service import load_brand_enhancements
@@ -48,12 +49,16 @@ from qualify_api.ads.unpublished import (
     video_creative_payload,
 )
 from qualify_api.ads.unpublished_repository import (
+    CHANGED,
     UnpublishedRepository,
+    carousel_cards,
     guard_source,
+    load_carousel_source,
     load_image_source,
     thumbnails,
 )
 from qualify_api.connections.ad_accounts import GraphAdAccountReader, PostgresAccountBinding
+from qualify_api.creative.media import MediaStore, owned_by
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,16 @@ def image_bytes(gate: ObjectGate, source: ImageSource, asset: ImageSelection) ->
     try:
         with gate.open_object(source.tenant_id, asset.object_key) as stream:
             data = stream.read(MAX_IMAGE_BYTES + 1)
+    except (OSError, ObjectNotFound):
+        raise UnpublishedUnavailable(
+            "No pudimos leer la imagen de esta pieza. Vuelve a elegir las imágenes."
+        ) from None
+    return checked_image(data, asset)
+
+
+def checked_image(data: bytes, asset: ImageSelection) -> bytes:
+    """The bytes, once their size, MIME and dimensions match the server-resolved row."""
+    try:
         if not 0 < len(data) <= MAX_IMAGE_BYTES:
             raise UnpublishedUnavailable("Cada imagen del anuncio debe ocupar como máximo 8 MB.")
         with Image.open(io.BytesIO(data)) as image:
@@ -84,7 +99,6 @@ def image_bytes(gate: ObjectGate, source: ImageSource, asset: ImageSelection) ->
     except (
         OSError,
         SyntaxError,
-        ObjectNotFound,
         UnidentifiedImageError,
         Image.DecompressionBombError,
     ):
@@ -202,6 +216,24 @@ class UnpublishedImageService:
         self.reviews = PostgresActivationRepository()
         self.accounts = PostgresAccountBinding()
 
+    def _image_bytes(self, source: Any, asset: ImageSelection) -> bytes:
+        """Blocking read of one image the server resolved; async callers use a thread."""
+        return image_bytes(self.gate, source, asset)
+
+    def _reload(self, tenant_id: UUID, recipe: dict[str, Any]) -> Any:
+        """The current source of an approval, re-read from the database."""
+        snapshot = recipe["source"]
+        if snapshot.get("pipeline") == CAROUSEL_PIPELINE:
+            raise UnpublishedUnavailable(CHANGED)
+        return load_image_source(
+            tenant_id,
+            UUID(snapshot["draft_id"]),
+            recipe["ad_account_id"],
+            UUID(snapshot["feed"]["asset_id"]) if snapshot["feed"] else None,
+            UUID(snapshot["vertical"]["asset_id"]),
+            thumbnails(snapshot),
+        )
+
     def _guard(self, source: ImageSource, actor: UUID, expiry: datetime | None = None) -> None:
         authorize_actor(source.tenant_id, actor)
         guard_source(source)
@@ -244,7 +276,7 @@ class UnpublishedImageService:
     async def _upload(
         self, source: ImageSource, asset: ImageSelection, client: MarketingClient, actor: UUID
     ) -> tuple[str, str]:
-        data = await asyncio.to_thread(image_bytes, self.gate, source, asset)
+        data = await asyncio.to_thread(self._image_bytes, source, asset)
         digest = hashlib.sha256(data).hexdigest()
         self._guard(source, actor)
         row, claimed = self.recipes.claim_upload(source, asset, digest)
@@ -338,7 +370,7 @@ class UnpublishedImageService:
         each video once first."""
 
         def image(asset: ImageSelection) -> str:
-            return hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest()
+            return hashlib.sha256(self._image_bytes(source, asset)).hexdigest()
 
         if not source.is_video:
             return [await asyncio.to_thread(image, a) for a in source.assets]
@@ -445,109 +477,20 @@ class UnpublishedImageService:
                 ]
                 creative = creative_payload(source, form, tuple(row[0] for row in uploaded))
                 digests = [row[1] for row in uploaded]
-            policy = load_brand_enhancements(tenant_id=tenant_id, brand_id=source.brand_id)
-            if policy.enabled:
-                raise UnpublishedUnavailable(
-                    "Desactiva las mejoras automáticas de esta marca antes de preparar el anuncio."
-                )
-            request = compose_brand_policy(
-                PromotionRequest(
-                    tenant_id=tenant_id,
-                    brand_id=source.brand_id,
-                    request_key=f"unpublished:{request_key}",
-                    meta_ad_account_id=source.meta_account_id,
-                    objective="OUTCOME_TRAFFIC",
-                    cta_type=form.cta_type,
-                    link_url=form.link_url,
-                    budget_kind="lifetime",
-                    budget_minor=form.budget_minor,
-                    currency="COP",
-                    start_time=form.start_time,
-                    end_time=form.end_time,
-                    approved_by=actor,
-                    approved_at=recipe["approved_at"],
-                    content_draft_id=draft_id,
-                    meta_currency_offset=1,
-                    targeting={
-                        "geo_locations": {"countries": [form.country]},
-                        "publisher_platforms": ["instagram"],
-                        "instagram_positions": (
-                            ["story"] if source.is_story else ["stream", "story", "reels"]
-                        ),
-                        "targeting_automation": {"advantage_audience": 0},
-                    },
-                    adset_options={
-                        "billing_event": "IMPRESSIONS",
-                        "optimization_goal": "LINK_CLICKS",
-                        "destination_type": "WEBSITE",
-                    },
-                    creative=creative,
-                ),
-                policy,
-            )
-            dummy = Promotion(uuid4(), request.snapshot(), ids={key: "0" for key in STEPS})
-            expiry = datetime.now(UTC) + timedelta(minutes=5)
-            await self._validate(client, dummy, source, actor, expiry)
-            promotion = self.promotions.create_or_get(request)
-            self.recipes.link(tenant_id, recipe["id"], promotion.id)
-
-            async def fence() -> None:
-                self._guard(source, actor, expiry)
-                current = load_brand_enhancements(tenant_id=tenant_id, brand_id=source.brand_id)
-                if current.snapshot() != policy.snapshot():
-                    raise UnpublishedUnavailable(
-                        "Las mejoras automáticas de la marca cambiaron. Prepara otra vista previa."
-                    )
-
-            async def validate_step(promotion: Promotion, resource: str, payload: dict) -> None:
-                await client.validate(resource, params=payload)
-                await fence()
-
-            promotion = await PromotionService(self.promotions, _Binding(source, access)).resume(
-                tenant_id, promotion.id, before_write=fence, validate_step=validate_step
-            )
-            if len(promotion.ids) != len(STEPS):
-                raise UnpublishedUnavailable(
-                    "La creación quedó pendiente de comprobación. No se activó el anuncio."
-                )
-            await self._remote(client, promotion, source, actor)
-            previews = []
-            placements = ("INSTAGRAM_STORY",) if source.is_story else STANDARD_AND_STORY
-            for placement in placements:
-                page = await client.adpreviews(
-                    promotion.ids["ads"], params={"ad_format": placement}
-                )
-                await fence()
-                body = page.data[0].get("body") if len(page.data) == 1 else None
-                if not isinstance(body, str) or not body.strip() or len(body) > 200_000:
-                    raise UnpublishedUnavailable(
-                        "No pudimos preparar la vista previa del anuncio. "
-                        "Intenta de nuevo en unos minutos."
-                    )
-                previews.append(body)
-            review = self.reviews.create(
-                ActivationReview(
-                    uuid4(),
-                    tenant_id,
-                    promotion.id,
-                    fingerprint(promotion.request),
-                    previews[0],
-                    fingerprint(previews),
-                    {
-                        "kind": ("unpublished-story-" if source.is_story else "unpublished-")
-                        + ("videos" if source.is_video else "images"),
-                        "recipe_id": str(recipe["id"]),
-                        "source": source.snapshot(),
-                        "digests": digests,
-                        "previews": previews,
-                    },
-                    expiry,
-                    actor,
-                )
-            )
-            feed_html, vertical_html = ("", *previews) if source.is_story else previews
-            return UnpublishedPreview(
-                recipe["id"], promotion.id, review.id, feed_html, vertical_html, review.expires_at
+            return await self._promote(
+                source,
+                form,
+                recipe,
+                access,
+                creative,
+                digests,
+                actor,
+                request_key,
+                provenance={"content_draft_id": draft_id},
+                positions=["story"] if source.is_story else ["stream", "story", "reels"],
+                placements=("INSTAGRAM_STORY",) if source.is_story else STANDARD_AND_STORY,
+                kind=("unpublished-story-" if source.is_story else "unpublished-")
+                + ("videos" if source.is_video else "images"),
             )
         except MarketingError:
             raise UnpublishedUnavailable(
@@ -555,6 +498,129 @@ class UnpublishedImageService:
             ) from None
         finally:
             await client.aclose()
+
+    async def _promote(
+        self,
+        source: Any,
+        form: ImageAdForm,
+        recipe: dict[str, Any],
+        access: AccountAccess,
+        creative: dict[str, Any],
+        digests: list[str],
+        actor: UUID,
+        request_key: UUID,
+        *,
+        provenance: dict[str, Any],
+        positions: list[str],
+        placements: tuple[str, ...],
+        kind: str,
+    ) -> UnpublishedPreview:
+        """Validate, create PAUSED, read back and preview; one review the owner confirms.
+        Shared by every unpublished kind once its media are at Meta."""
+        tenant_id, client = source.tenant_id, access.client
+        policy = load_brand_enhancements(tenant_id=tenant_id, brand_id=source.brand_id)
+        if policy.enabled:
+            raise UnpublishedUnavailable(
+                "Desactiva las mejoras automáticas de esta marca antes de preparar el anuncio."
+            )
+        request = compose_brand_policy(
+            PromotionRequest(
+                tenant_id=tenant_id,
+                brand_id=source.brand_id,
+                request_key=f"unpublished:{request_key}",
+                meta_ad_account_id=source.meta_account_id,
+                objective="OUTCOME_TRAFFIC",
+                cta_type=form.cta_type,
+                link_url=form.link_url,
+                budget_kind="lifetime",
+                budget_minor=form.budget_minor,
+                currency="COP",
+                start_time=form.start_time,
+                end_time=form.end_time,
+                approved_by=actor,
+                approved_at=recipe["approved_at"],
+                **provenance,
+                meta_currency_offset=1,
+                targeting={
+                    "geo_locations": {"countries": [form.country]},
+                    "publisher_platforms": ["instagram"],
+                    "instagram_positions": positions,
+                    "targeting_automation": {"advantage_audience": 0},
+                },
+                adset_options={
+                    "billing_event": "IMPRESSIONS",
+                    "optimization_goal": "LINK_CLICKS",
+                    "destination_type": "WEBSITE",
+                },
+                creative=creative,
+            ),
+            policy,
+        )
+        dummy = Promotion(uuid4(), request.snapshot(), ids={key: "0" for key in STEPS})
+        expiry = datetime.now(UTC) + timedelta(minutes=5)
+        await self._validate(client, dummy, source, actor, expiry)
+        promotion = self.promotions.create_or_get(request)
+        self.recipes.link(tenant_id, recipe["id"], promotion.id)
+
+        async def fence() -> None:
+            self._guard(source, actor, expiry)
+            current = load_brand_enhancements(tenant_id=tenant_id, brand_id=source.brand_id)
+            if current.snapshot() != policy.snapshot():
+                raise UnpublishedUnavailable(
+                    "Las mejoras automáticas de la marca cambiaron. Prepara otra vista previa."
+                )
+
+        async def validate_step(promotion: Promotion, resource: str, payload: dict) -> None:
+            await client.validate(resource, params=payload)
+            await fence()
+
+        promotion = await PromotionService(self.promotions, _Binding(source, access)).resume(
+            tenant_id, promotion.id, before_write=fence, validate_step=validate_step
+        )
+        if len(promotion.ids) != len(STEPS):
+            raise UnpublishedUnavailable(
+                "La creación quedó pendiente de comprobación. No se activó el anuncio."
+            )
+        await self._remote(client, promotion, source, actor)
+        previews = []
+        for placement in placements:
+            page = await client.adpreviews(promotion.ids["ads"], params={"ad_format": placement})
+            await fence()
+            body = page.data[0].get("body") if len(page.data) == 1 else None
+            if not isinstance(body, str) or not body.strip() or len(body) > 200_000:
+                raise UnpublishedUnavailable(
+                    "No pudimos preparar la vista previa del anuncio. "
+                    "Intenta de nuevo en unos minutos."
+                )
+            previews.append(body)
+        review = self.reviews.create(
+            ActivationReview(
+                uuid4(),
+                tenant_id,
+                promotion.id,
+                fingerprint(promotion.request),
+                previews[0],
+                fingerprint(previews),
+                {
+                    "kind": kind,
+                    "recipe_id": str(recipe["id"]),
+                    "source": source.snapshot(),
+                    "digests": digests,
+                    "previews": previews,
+                },
+                expiry,
+                actor,
+            )
+        )
+        # One preview: a story fills `vertical_html`, a carousel (feed only) `feed_html`.
+        if len(previews) == 1:
+            previews_out = ("", previews[0]) if source.is_story else (previews[0], "")
+        else:
+            previews_out = tuple(previews)
+        feed_html, vertical_html = previews_out
+        return UnpublishedPreview(
+            recipe["id"], promotion.id, review.id, feed_html, vertical_html, review.expires_at
+        )
 
     async def _remote(
         self,
@@ -630,15 +696,7 @@ class UnpublishedImageService:
         if confirm_charge is not True:
             raise UnpublishedUnavailable("Confirma el presupuesto antes de activar el anuncio.")
         recipe = self.recipes.recipe(tenant_id, recipe_id)
-        snapshot = recipe["source"]
-        source = load_image_source(
-            tenant_id,
-            UUID(snapshot["draft_id"]),
-            recipe["ad_account_id"],
-            UUID(snapshot["feed"]["asset_id"]) if snapshot["feed"] else None,
-            UUID(snapshot["vertical"]["asset_id"]),
-            thumbnails(snapshot),
-        )
+        source = self._reload(tenant_id, recipe)
         review = self.reviews.get(tenant_id, review_id)
         promotion = self.promotions.get(tenant_id, recipe["promotion_id"])
         if (
@@ -709,5 +767,100 @@ class UnpublishedImageService:
             if claimed:
                 self.reviews.finish(tenant_id, review.id, token, "unknown")
             raise
+        finally:
+            await client.aclose()
+
+
+def catalog_image_bytes(store: MediaStore, source: CarouselSource, asset: ImageSelection) -> bytes:
+    """A Catálogo photo through the Catálogo's own store (R2, or the local volume for older
+    keys), only for a key of this tenant that the server read from the product row."""
+    if not owned_by(source.tenant_id, asset.object_key):
+        raise UnpublishedUnavailable(CHANGED)
+    try:
+        data = store.read(asset.object_key)
+    except Exception:  # noqa: BLE001 - any store failure is the same owner error
+        raise UnpublishedUnavailable(
+            "No pudimos leer la foto de un producto. Revísala en tu Catálogo."
+        ) from None
+    return checked_image(data, asset)
+
+
+class CarouselAdService(UnpublishedImageService):
+    """A paused Instagram carousel of 2 to 10 Catálogo products (m-25113484): each card is the
+    product's primary photo, its name and price, and its own HTTPS link. Same approval,
+    upload intents, validate_only, PAUSED creation, previews and `confirm` as the ad from a
+    piece. `store` reads the product photos; production uses the Catálogo's store."""
+
+    def __init__(self, gate: ObjectGate, store: MediaStore | None = None) -> None:
+        super().__init__(gate)
+        if store is None:
+            from qualify_api.creative.composition import media_root  # noqa: PLC0415
+            from qualify_api.creative.media import (  # noqa: PLC0415
+                LocalMediaStore,
+                R2ReadingMediaStore,
+            )
+
+            store = R2ReadingMediaStore(LocalMediaStore(media_root()), gate)
+        self.store = store
+
+    def _image_bytes(self, source: Any, asset: ImageSelection) -> bytes:
+        return catalog_image_bytes(self.store, source, asset)
+
+    def _reload(self, tenant_id: UUID, recipe: dict[str, Any]) -> Any:
+        snapshot = recipe["source"]
+        if snapshot.get("pipeline") != CAROUSEL_PIPELINE:
+            raise UnpublishedUnavailable(CHANGED)
+        return load_carousel_source(tenant_id, recipe["ad_account_id"], carousel_cards(snapshot))
+
+    async def prepare(  # type: ignore[override]
+        self,
+        *,
+        tenant_id: UUID,
+        ad_account_id: UUID,
+        products: tuple[tuple[UUID, str], ...],
+        form: ImageAdForm,
+        actor: UUID,
+        request_key: UUID,
+        confirm_preparation: bool,
+    ) -> UnpublishedPreview:
+        """`products` = (product id, card link) in card order; an empty link uses
+        `form.link_url`. Returns the Instagram feed preview in `feed_html`
+        (`vertical_html` is empty); activation is the inherited `confirm`."""
+        if confirm_preparation is not True:
+            raise UnpublishedUnavailable("Confirma la preparación del anuncio en pausa.")
+        form.validate(datetime.now(UTC))
+        cards = tuple((product, link or form.link_url) for product, link in products)
+        source = load_carousel_source(tenant_id, ad_account_id, cards)
+        self._guard(source, actor)
+        for asset in source.assets:  # every local limit before any network call
+            await asyncio.to_thread(self._image_bytes, source, asset)
+        recipe = self.recipes.approve(source, form, actor, request_key)
+        access = await self._account(source, actor)
+        client = access.client
+        try:
+            await self._observe(source, client, actor)
+            uploaded = [await self._upload(source, asset, client, actor) for asset in source.assets]
+            return await self._promote(
+                source,
+                form,
+                recipe,
+                access,
+                carousel_payload(source, form, tuple(row[0] for row in uploaded)),
+                [row[1] for row in uploaded],
+                actor,
+                request_key,
+                # Promotion provenance: the approval row, which holds every product and photo.
+                provenance={
+                    "source_media_id": f"catalog-carousel:{recipe['id']}",
+                    "card_links": tuple(sorted({card.link_url for card in source.cards})),
+                },
+                positions=["stream"],
+                placements=("INSTAGRAM_STANDARD",),
+                kind="unpublished-carousel",
+            )
+        except MarketingError:
+            raise UnpublishedUnavailable(
+                "Meta no confirmó la preparación. No se activó el anuncio."
+            ) from None
         finally:
             await client.aclose()

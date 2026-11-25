@@ -41,12 +41,19 @@ VIDEO_STEPS = ("source", "feed_video", "vertical_video", "text", "country", "bud
 # m-25026350: a story with a link button is ONLY an ad (no organic story): one 9:16 file,
 # shown only in Instagram stories. A single source or a single file is not a step.
 STORY_STEPS = ("source", "story_media", "story_link", "story_audience", "budget")
+# m-25113484: an Instagram feed carousel of 2 to 10 Catálogo products; the piece lends
+# only its text, link and button.
+CAROUSEL_STEPS = ("source", "products", "text", "country", "budget")
+CAROUSEL_MIN, CAROUSEL_MAX = 2, 10
+CAROUSEL_COUNT = "Elige de 2 a 10 productos de tu Catálogo."
+CAROUSEL_FULL = "10 de 10: ya está lleno. Toca uno elegido para quitarlo."
 STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
     "images": "Elige las dos imágenes del anuncio",
     "feed_video": "Video para el perfil",
     "vertical_video": "Video vertical de pantalla completa",
     "text": "¿Qué dirá tu anuncio?",
     "country": "¿En qué país quieres mostrarlo?",
+    "products": "¿Qué productos van en el carrusel?",
     "story_media": "¿Qué imagen o video lleva tu historia?",
     "story_link": "¿A dónde lleva el botón?",
     "story_audience": "¿Quién la ve?",
@@ -223,6 +230,17 @@ class AdMediaVM:
 
 
 @dataclass(frozen=True)
+class CarouselProductVM:
+    """A Catálogo product that can be a carousel card; `order` is its card (0 = out)."""
+
+    id: str
+    name: str = ""
+    price_label: str = ""
+    photo_key: str = ""  # upload-store key, resolved by the page like the Catálogo does
+    order: int = 0
+
+
+@dataclass(frozen=True)
 class PromotionSourceVM:
     id: str
     account_label: str
@@ -258,6 +276,8 @@ class PromotionSourceVM:
     default_headline: str = ""
     default_country: str = ""
     story: bool = False  # m-25026350: one 9:16 file, an ad only in Instagram stories
+    # m-25113484 (media_kind "carousel"): the brand's products that can be cards.
+    products: list[CarouselProductVM] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -313,6 +333,7 @@ class PromotionDraftVM:
     story: bool = False
     # The piece offers a single source (one ad account, one kind): not a step (story only).
     single_source: bool = False
+    product_ids: list[str] = field(default_factory=list)  # carousel cards, in order
 
 
 @dataclass(frozen=True)
@@ -473,6 +494,8 @@ def step_keys(draft: PromotionDraftVM) -> tuple[str, ...]:
         skip = {"source"} if draft.single_source else set()
         skip |= {"story_media"} if draft.single_vertical else set()
         return tuple(key for key in STORY_STEPS if key not in skip)
+    if draft.media_kind == "carousel":
+        return CAROUSEL_STEPS
     if draft.media_kind == "videos":
         skip = {"feed_video"} if draft.single_feed else set()
         skip |= {"vertical_video"} if draft.single_vertical else set()
@@ -533,6 +556,9 @@ UNPUBLISHED_PROBLEMS = {
     "story_audience": lambda d: (
         "" if d.country in COUNTRY_LABELS else "Elige el país donde quieres mostrar tu historia."
     ),
+    "products": lambda d: (
+        "" if CAROUSEL_MIN <= len(d.product_ids) <= CAROUSEL_MAX else CAROUSEL_COUNT
+    ),
 }
 
 
@@ -560,7 +586,8 @@ def text_problem(draft: PromotionDraftVM) -> str:
         return "Escribe el texto del anuncio."
     if len(draft.message) > 2200:
         return "El texto del anuncio admite hasta 2.200 caracteres."
-    if not draft.headline.strip():
+    # A carousel sends no title: each card carries its product's name and price.
+    if not draft.headline.strip() and draft.media_kind != "carousel":
         return "Escribe el título del anuncio."
     if len(draft.headline) > 100:
         return "El título del anuncio admite hasta 100 caracteres."
@@ -697,7 +724,9 @@ def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
             return UNPUBLISHED_PROBLEMS["story_media"](draft)
         if draft.media_kind == "videos" and not draft.vertical_cover_id:
             return "Elige la portada del video."
-    elif draft.media_kind and not (draft.feed_asset_id and draft.vertical_asset_id):
+    elif draft.media_kind not in {"", "carousel"} and not (
+        draft.feed_asset_id and draft.vertical_asset_id
+    ):
         return "Elige los dos archivos de la pieza para el anuncio."
     elif draft.media_kind == "videos" and not (draft.feed_cover_id and draft.vertical_cover_id):
         return UNPUBLISHED_PROBLEMS["covers"](draft)
@@ -740,3 +769,31 @@ def step_counter(
     if not kind:
         return step, total
     return (total + 1 if reviewed else step), total + 1
+
+
+def toggle_carousel_product(chosen: list[str], product_id: str) -> list[str]:
+    """A tap on a product: chosen → out (the next cards move up); not chosen → the last
+    card, unless there are already ten (the counter says so, next to the cards)."""
+    if product_id in chosen:
+        return [row for row in chosen if row != product_id]
+    if len(chosen) >= CAROUSEL_MAX:
+        return list(chosen)
+    return [*chosen, product_id]
+
+
+def carousel_choices(
+    products: list[CarouselProductVM], chosen: list[str]
+) -> list[CarouselProductVM]:
+    position = {product_id: n for n, product_id in enumerate(chosen, 1)}
+    return [replace(row, order=position.get(row.id, 0)) for row in products]
+
+
+def carousel_count_label(count: int) -> str:
+    """The limit said before the first tap, then how many and how many are left."""
+    if count <= 0:
+        return CAROUSEL_COUNT
+    if count < CAROUSEL_MIN:
+        return "1 elegido · elige al menos 1 más"
+    if count >= CAROUSEL_MAX:
+        return CAROUSEL_FULL
+    return f"{count} de {CAROUSEL_MAX} elegidos"

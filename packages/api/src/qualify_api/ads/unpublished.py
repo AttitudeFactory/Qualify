@@ -183,22 +183,8 @@ class ImageAdForm:
             raise UnpublishedUnavailable("El texto del anuncio admite hasta 2.200 caracteres.")
         if len(self.headline) > 100:
             raise UnpublishedUnavailable("El título del anuncio admite hasta 100 caracteres.")
-        try:
-            url = urlsplit(self.link_url)
-            valid_url = (
-                url.scheme == "https"
-                and url.hostname
-                and not url.username
-                and not url.password
-                and (url.port is None or 0 < url.port <= 65535)
-                and not any(c.isspace() or ord(c) < 32 for c in self.link_url)
-            )
-        except ValueError:
-            valid_url = False
         if (
-            not valid_url
-            or len(self.link_url) > 2048
-            or any(ord(c) < 32 for c in self.link_url)
+            not https_link(self.link_url)
             or not self.message.strip()
             or len(self.message) > 2200
             or not self.headline.strip()
@@ -221,6 +207,24 @@ class ImageAdForm:
             "start_time": self.start_time.isoformat(),
             "end_time": self.end_time.isoformat(),
         }
+
+
+def https_link(value: object) -> bool:
+    """An owner-typed destination: plain HTTPS, a host, no credentials or control chars."""
+    if not isinstance(value, str) or len(value) > 2048:
+        return False
+    try:
+        url = urlsplit(value)
+        return bool(
+            url.scheme == "https"
+            and url.hostname
+            and not url.username
+            and not url.password
+            and (url.port is None or 0 < url.port <= 65535)
+            and not any(c.isspace() or ord(c) < 32 for c in value)
+        )
+    except ValueError:
+        return False
 
 
 def _image_hash(value: object) -> bool:

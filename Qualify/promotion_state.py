@@ -109,6 +109,7 @@ from .promotion_vm import (
     UNPUBLISHED_SOURCE_TITLE,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
+    CarouselProductVM,
     PromotionCheckVM,
     PromotionDraftVM,
     PromotionResultVM,
@@ -117,6 +118,8 @@ from .promotion_vm import (
     budget_field_copy,
     budget_minor,
     budget_money,
+    carousel_choices,
+    carousel_count_label,
     first_problem,
     greeting_buttons_label,
     greeting_from_saved,
@@ -134,6 +137,7 @@ from .promotion_vm import (
     step_keys,
     step_problem,
     step_title,
+    toggle_carousel_product,
     video_outcome,
     zone_label,
 )
@@ -1869,6 +1873,33 @@ class PromotionState(rx.State):
             self._invalidate_review()
             self.reviewed = stay
 
+    @rx.var
+    def carousel_products(self) -> list[CarouselProductVM]:
+        return carousel_choices(self.selected_source.products, self.form.product_ids)
+
+    @rx.var
+    def carousel_count(self) -> str:
+        return carousel_count_label(len(self.form.product_ids))
+
+    @rx.var
+    def carousel_names(self) -> str:
+        """The review's «Productos»: the chosen cards, in order."""
+        names = {row.id: row.name for row in self.selected_source.products}
+        return " · ".join(
+            f"{n}. {names.get(row, '')}" for n, row in enumerate(self.form.product_ids, 1)
+        )
+
+    @rx.event
+    def toggle_product(self, product_id: str) -> None:
+        """A tap on a Catálogo product: in as the next card, or out (m-25113484)."""
+        if self.busy or not any(row.id == product_id for row in self.selected_source.products):
+            return
+        chosen = toggle_carousel_product(self.form.product_ids, product_id)
+        if chosen != self.form.product_ids:
+            self.error = ""
+            self.form = replace(self.form, product_ids=chosen)
+            self._invalidate_review()
+
     @rx.event
     def choose_country(self, code: str) -> None:
         if self.busy or code not in COUNTRY_LABELS or code == self.form.country:
@@ -2155,7 +2186,11 @@ class PromotionState(rx.State):
             with acting_login(UUID(context[1])):
                 if confirm and form.media_kind:
                     outcome = await asyncio.to_thread(
-                        confirm_unpublished, UUID(context[0]), UUID(context[2]), review
+                        confirm_unpublished,
+                        UUID(context[0]),
+                        UUID(context[2]),
+                        review,
+                        form.media_kind == "carousel",
                     )
                 elif confirm:
                     outcome = await asyncio.to_thread(

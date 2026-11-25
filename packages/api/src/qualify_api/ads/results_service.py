@@ -111,14 +111,20 @@ def _scope(tenant: UUID, promotion: UUID, *, system: bool = False) -> ResultScop
               SELECT p.id,p.meta_ad_account_id,p.meta_ad_id,p.meta_adset_id,p.meta_campaign_id,
                      p.currency,a.id AS account_id,a.connection_id,a.timezone_name
               FROM ad_promotions p JOIN ad_unpublished_sources u
-                ON u.promotion_id=p.id AND u.tenant_id=p.tenant_id
-                AND u.draft_id=p.content_draft_id AND u.brand_id=p.brand_id
+                ON u.promotion_id=p.id AND u.tenant_id=p.tenant_id AND u.brand_id=p.brand_id
+                AND (
+                  (u.draft_id=p.content_draft_id AND p.source_media_id IS NULL)
+                  -- m-25113484: a catalog carousel has no piece; its approval is the source.
+                  OR (u.draft_id IS NULL AND p.content_draft_id IS NULL
+                    AND u.pipeline_version='ad-catalog-carousel-v1'
+                    AND p.source_media_id='catalog-carousel:' || u.id::text)
+                )
               JOIN ad_accounts a ON a.id=u.ad_account_id AND a.tenant_id=u.tenant_id
                 AND a.brand_id=u.brand_id AND a.ad_account_id=p.meta_ad_account_id
                 AND a.currency=p.currency AND a.connection_id=u.connection_id
               JOIN social_connections c ON c.id=u.connection_id AND c.tenant_id=u.tenant_id
                 AND c.brand_id=u.brand_id
-              WHERE p.id=:id AND p.publish_attempt_id IS NULL AND p.source_media_id IS NULL
+              WHERE p.id=:id AND p.publish_attempt_id IS NULL
                 AND a.selected AND a.available AND c.status='active'
                 AND a.credential_version=c.current_credential_version
                 AND c.purged_at IS NULL AND c.purge_started_at IS NULL
