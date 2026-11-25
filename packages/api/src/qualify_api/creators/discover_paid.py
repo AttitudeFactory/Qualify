@@ -51,8 +51,8 @@ button and this module searches TikTok — paying — for more.
   `repository._merge`) and each one gets a `creator_sightings` row (kind `keyword`, the
   query, the region asked) — the provenance RF-07a already reads. A page served from the
   cache writes nothing: it was recorded when it was paid. The country TikTok states per
-  video is applied with `region_rubro.apply_region` citing `vendor_payloads:<id>` (`region-free-1`). The
-  outcome carries the `vendor_payloads` ids and `PAID_SEARCH_VERSION`.
+  video is applied with `region_rubro.apply_region` citing `vendor_payloads:<id>`
+  (`region-free-1`). The outcome carries the `vendor_payloads` ids and `PAID_SEARCH_VERSION`.
 - **Tenant isolation.** The only per-tenant tables touched are `vendor_usage_events`
   (written by the gate, read for the budget) and `brands` / `brand_account_labels`
   (RF-07a's read), all through `tenant_session` with the RLS policy
