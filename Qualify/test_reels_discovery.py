@@ -42,6 +42,7 @@ from qualify_api.referentes.reel_store import (
 )
 
 from . import reels_discovery as rd
+from . import reels_filters_vm
 
 TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 NOW = 1_800_000_000.0
@@ -462,6 +463,14 @@ def world(store: Any, monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(discover_reels, "default_brand_id", lambda tenant: brand)
     monkeypatch.setattr(referentes_provider, "REPOSITORY", repo)
     monkeypatch.setattr(reel_runs, "default_store", lambda: world.runs)
+    # RF-02: the filtered read (RF-01) over the same runs and labels, in memory
+    from qualify_api.referentes import reviewed_reels
+
+    monkeypatch.setattr(
+        reviewed_reels,
+        "default_library",
+        lambda: reviewed_reels.MemoryReviewedReelsStore(world.runs, repo),
+    )
     monkeypatch.setattr(rd, "_business_timezone", lambda tenant: "America/Bogota")
     # UI-1: the reels' shared analyses (global tables) in memory
     from qualify_api.referentes import reel_analysis
@@ -870,7 +879,14 @@ def test_a_reel_plays_inside_its_card_one_at_a_time() -> None:
     assert state.playing_key == ""
     rendered = str(discover_view().render())
     assert '"video"' in rendered and "iframe" in rendered and "q-dr-more-panel" in rendered
-    assert "dialog" not in rendered.lower()
+    # the reel plays in its card, never in a dialog (RF-02's phone sheet is the filter
+    # bar's, not the player's)
+    import reflex as rx
+
+    from .discover_reels import _reel_tile
+
+    tile = str(rx.foreach(DiscoverReelsState.reels, _reel_tile).render())
+    assert "iframe" in tile and "dialog" not in tile.lower()
     state.video_failed("tiktok:7")
     state.video_failed("tiktok:7")
     assert state.failed_videos == ["tiktok:7"]  # its MP4 died: the embed takes over
@@ -916,3 +932,279 @@ def test_the_adapter_never_reaches_a_paid_door() -> None:
     source = inspect.getsource(rd)
     for door in ("scrapecreators", "review_reels", "reel_runs.run(", "cached_discover"):
         assert door not in source, door
+
+
+# --------------------------------------------------------------------------------------
+# RF-02 (m-25119460): the filter bar and «Más reels revisados»
+# --------------------------------------------------------------------------------------
+
+
+def _reviewed(
+    world: _World,
+    specs: list[tuple[str, str, str, float | None]],
+    *,
+    cover_url: str | None = None,
+    read_at: datetime = MONDAY - timedelta(hours=1),
+) -> None:
+    """Reels the run reviewed and KEPT but did not make ideas: `(network, handle,
+    reel_id, duration_s)`, judged for the shown run's brief (`b`)."""
+    stored = [
+        PublicReel(
+            network=network,
+            reel_id=reel_id,
+            handle=handle,
+            taken_at=MONDAY - timedelta(days=5),
+            # the cover's link is read with the figures (`cover_url_at` = `metrics_at`)
+            metrics_at=read_at,
+            parser_version=1,
+            caption="Smash burger",
+            views=1_000 - n,
+            duration_s=duration,
+            cover_url=cover_url,
+        )
+        for n, (network, handle, reel_id, duration) in enumerate(specs)
+    ]
+    world.runs.upsert_reels(TENANT, stored)
+    world.runs.save_verdicts(
+        TENANT,
+        world.brand,
+        [
+            NewVerdict(
+                network=reel.network,
+                reel_id=reel.reel_id,
+                brief_hash="b",
+                input_hash=f"i{reel.reel_id}",
+                fits=True,
+                model_id="claude",
+                prompt_version="p",
+                affinity="producto",
+            )
+            for reel in stored
+        ],
+    )
+
+
+async def _filter(proxy: _Proxy, asked: Any) -> None:
+    """A filter event's answer: when it asks for a read (`refilter`), run it."""
+    from .discover_reels import DiscoverReelsState
+
+    if asked is not None:
+        await DiscoverReelsState.refilter.fn(proxy)
+
+
+async def test_filtering_reads_what_is_stored_and_never_pays(world: _World) -> None:
+    """«Canal», «Duración»: one more read of what is stored — never the vendor, the model,
+    a first run or the «last opened» mark; the ideas are RF-01's `ideas`, filtered."""
+    world.ok_run()
+    _reviewed(
+        world,
+        [
+            ("instagram", "foodie", "M1", 12.0),
+            ("instagram", "makeupqueen", "M2", 40.0),
+            ("tiktok", "vecino", "T1", 20.0),
+        ],
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert [c["key"] for c in state.more_reels] == ["instagram:M1", "instagram:M2", "tiktok:T1"]
+    assert state.filter_values == {
+        "network": "Todos",
+        "kind": "Todos",
+        "account": "Todas",
+        "duration": "Todas",
+    }
+    opened, writes = list(world.opened), world.runs.writes
+
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    assert state.filter_network == "tiktok" and state.filters_on
+    assert state.reels == [] and [c["key"] for c in state.more_reels] == ["tiktok:T1"]
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and state.empty_kind == ""
+
+    await _filter(proxy, state.set_filter("network", ""))
+    await _filter(proxy, state.set_filter("duration", "lt15"))
+    assert [c["key"] for c in state.more_reels] == ["instagram:M1"]
+    assert state.filter_values["duration"] == "Menos de 15 segundos"
+
+    assert world.paid == [] and world.first_runs == [] and world.opened == opened
+    assert world.runs.writes == writes  # read-only
+    assert world.reads[0] is True and set(world.reads[1:]) == {False}  # never queues
+
+
+async def test_reset_brings_everything_back_to_all(world: _World) -> None:
+    world.ok_run()
+    _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    await _filter(proxy, state.set_filter("duration", "gte60"))
+    assert state.empty_kind == reels_filters_vm.EMPTY_FILTERS  # nothing left: said
+    await _filter(proxy, state.reset_filters())
+    assert not state.filters_on and state.empty_kind == ""
+    assert set(state.filter_values.values()) == {"Todos", "Todas"}
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert [c["key"] for c in state.more_reels] == ["tiktok:T1"]
+    assert state.reset_filters() is None  # nothing to reset: no read
+
+
+async def test_accounts_one_or_several_from_the_labelled_ones(world: _World) -> None:
+    world.ok_run()
+    _reviewed(
+        world,
+        [("instagram", "makeupqueen", "M2", 40.0), ("tiktok", "vecino", "T1", 20.0)],
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    # labelled accounts on a network only, inspiradores first; never `otro:sinredes`
+    assert [o["key"] for o in state.account_options] == [
+        "instagram:foodie",
+        "instagram:makeupqueen",
+        "tiktok:vecino",
+        "tiktok:rival",
+    ]
+    await _filter(proxy, state.toggle_account("tiktok:vecino"))
+    await _filter(proxy, state.toggle_account("instagram:foodie"))
+    assert state.filter_values["account"] == "2 cuentas"
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert [c["key"] for c in state.more_reels] == ["tiktok:T1"]
+    assert state.toggle_account("instagram:stranger") is None  # not offered: no read
+    await _filter(proxy, state.all_accounts())
+    assert state.filter_accounts == [] and len(state.more_reels) == 2
+    assert world.paid == []
+
+
+async def test_competitors_before_rf05_say_they_are_coming(world: _World) -> None:
+    """No `competencia` account is read until RF-05: the filter says so plainly."""
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("kind", "competencia"))
+    assert state.reels == [] and state.more_reels == []
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS  # the run still has ideas
+    assert state.empty_kind == reels_filters_vm.EMPTY_COMPETITORS
+    # its way on, «Ver cuentas que te inspiran»: Inspiradores, no competitor account left
+    await _filter(proxy, state.toggle_account("tiktok:rival"))
+    await _filter(proxy, state.show_inspiring())
+    assert (state.filter_kind, state.filter_accounts) == ("referente", [])
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert state.empty_kind == ""
+    assert world.paid == []
+
+
+async def test_more_reviewed_reels_come_in_pages(world: _World) -> None:
+    """«Más reels revisados»: 12 per page, «Ver más reels» while `has_more`; free."""
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(15)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert len(state.more_reels) == 12 and state.has_more
+    # while a filtered read is in flight (Enter on the focused button) nothing is paged:
+    # that read restarts the list and its offset
+    state.filtering = True
+    await DiscoverReelsState.load_more.fn(proxy)
+    assert len(state.more_reels) == 12 and world.reads == [True]
+    state.filtering = False
+    await DiscoverReelsState.load_more.fn(proxy)
+    assert len(state.more_reels) == 15 and not state.has_more
+    assert len({c["key"] for c in state.more_reels}) == 15
+    # a reel of the second list never offers «Hacer uno parecido» (its video was not kept)
+    assert {c["can_replicate"] for c in state.more_reels} == {""}
+    assert world.paid == [] and world.first_runs == []
+
+
+async def test_an_expired_cover_of_an_older_reel_shows_the_placeholder(world: _World) -> None:
+    """Only the ideas keep a copy of their cover (R2); an older reel's CDN link lives ~4
+    days: past it the card gets no picture — the placeholder, never a broken image."""
+    world.ok_run()
+    cover = "https://scontent.cdninstagram.com/v/{}.jpg"
+    _reviewed(
+        world,
+        [("instagram", "foodie", "OLD", 20.0)],
+        cover_url=cover.format("old"),
+        read_at=CLOCK - timedelta(days=5),
+    )
+    _reviewed(
+        world,
+        [("instagram", "foodie", "NEW", 20.0)],
+        cover_url=cover.format("new"),
+        read_at=CLOCK - timedelta(days=1),
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    covers = {c["id"]: c["cover"] for c in state.more_reels}
+    assert covers["OLD"] == ""  # the placeholder, «La imagen ya no está disponible»
+    assert covers["NEW"].startswith("/avatar/reel/instagram/NEW?")  # still fresh: shown
+
+
+async def test_a_business_never_sees_another_ones_reels_or_accounts(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two businesses on the same screen: B sees none of A's reels, accounts or filters —
+    every read is scoped by the logged-in tenant."""
+    from . import discover_reels
+
+    world.ok_run()
+    _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
+    other = UUID("b0000000-0000-4000-8000-000000000002")
+    other_brand = uuid4()
+    world.repo.add_brand(tenant_id=other, brand_id=other_brand)
+    monkeypatch.setattr(
+        discover_reels,
+        "default_brand_id",
+        lambda tenant: world.brand if tenant == TENANT else other_brand,
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    assert state.more_reels and state.account_options
+    proxy.auth.session_tenant_id = str(other)  # another business logs in, same tab
+    await _open(proxy)
+    assert state.reels == [] and state.more_reels == [] and state.account_options == []
+    assert not state.filters_on  # A's filters are not B's
+    assert state.screen != rd.reels_ideas_vm.SCREEN_IDEAS
+
+
+def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
+    import json
+    from pathlib import Path
+
+    from .discover_reels import discover_view
+
+    rendered = str(discover_view().render())
+
+    def shown(text: str) -> bool:
+        """`text` in the render, as is or with its non-ASCII escaped («Duraci\\u00f3n»)."""
+        escaped = json.dumps(text)[1:-1]
+        return any(form in rendered for form in (text, escaped, escaped.replace("\\", "\\\\")))
+
+    for text in (
+        "Canal",
+        "Tipo de cuenta",
+        "Cuenta",
+        "Duración",
+        "Restablecer filtros",
+        "Instagram",
+        "TikTok",
+        "Inspiradores",
+        "Competidores",
+        "Menos de 15 segundos",
+        "De 15 a 30 segundos",
+        "De 30 a 60 segundos",
+        "Más de 60 segundos",
+        "No hay reels con estos filtros. Prueba quitando alguno.",
+        "Más reels revisados",
+        "La imagen ya no está disponible",
+    ):
+        assert shown(text), text
+    assert '"search"' in rendered and "radiogroup" in rendered  # labelled, focusable
+    assert "q-drawer--bottom" in rendered  # the phone's sheet from the bottom
+    for gone in ("Ordenar", "Región", "Nicho", "Detractor", "Últimos"):
+        assert not shown(gone), gone  # out of RF-02 (decision 2 and 3; RF-02b)
+    css = Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css"
+    rules = css.read_text(encoding="utf-8")
+    for selector in (".q-rf-chip {", ".q-rf-option {"):
+        block = rules[rules.index(selector) :]
+        assert "min-height: 44px" in block[: block.index("}")], selector
+    assert ".q-rf-desktop { display: none; }" in rules
