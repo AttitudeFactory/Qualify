@@ -1,7 +1,7 @@
 # ADR 42 — «Ideas para tus reels»: reels públicos compartidos, puerta medida y corrida semanal
 
 **Estado:** `[APROBADO — decisiones de Herwin Rey (fundador), 2026-10-24 y 2026-10-25]` · propuesto por principal-architect.
-**Enmienda:** [del 2026-11-04 — R7 y R8](#enmienda-del-2026-11-04--r7-y-r8), al final del documento.
+**Enmienda:** [del 2026-11-04 — R7 y R8](#enmienda-del-2026-11-04--r7-y-r8) y [del 2026-11-25 — R4 y R8: competidores (RF-05)](#enmienda-del-2026-11-25--r4-y-r8-competidores-rf-05), al final del documento.
 **Ticket:** m-24854769 · **Épica:** la crea el product-owner desde el [anexo](#anexo--rebanadas-para-la-épica).
 **Evidencia:** lectura del código de `main` del 2026-10-24 (§1.2, con líneas) y el análisis de experiencia de ux-designer del mismo día (abrir nunca busca, corrida semanal, cupo en tiempo).
 **Numeración:** el análisis hablaba de «ADR 40», pero el 40 (SonarQube y Langfuse) y el 41 (cola de generación) ya estaban firmados en `main`. Esta decisión es la **42**.
@@ -209,10 +209,11 @@ El product-owner las archiva tal cual: una rebanada, un Issue y un PR. Áreas: *
 | R1 | Mudar el cliente de ScrapeCreators y el pipeline de reels a `packages/api` (`qualify_api.vendors.scrapecreators`, `qualify_api.referentes.reels`) sin cambiar el comportamiento; `Qualify/` importa de allí | BE | — | Los tests de `Qualify/test_reels_discovery.py` y `test_scrapecreators_client.py` pasan desde `packages/api`; no queda en `Qualify/` código que llame al proveedor para reels |
 | R2 | Puerta medida `metered_get`: interruptor, piso de 500, parada ante 402, lectura de `credits_remaining`, alerta a Lark bajo 2.000; test estático que prohíbe otras llamadas | BE | R1 | Un test con saldo simulado de 499 no hace la llamada; un 402 deja el interruptor en parada; el test estático falla si se añade un `httpx.get` al dominio del proveedor fuera de la puerta |
 | R3 | Migración: `reel_accounts`, `public_reels`, `vendor_balance`, `vendor_payloads.payload_r2_key` (globales) + `brand_reel_verdicts`, `brand_reel_runs`, `brand_reel_ideas`, `vendor_usage_events` (RLS) | BE | — | `just test-db` pasa con el aislamiento A/B en las cuatro tablas con RLS; upgrade → downgrade → upgrade limpio en CI |
-| R4 | `run()` persistente: comprueba brief y clave **antes** de pagar; refresco por cuenta con TTL de 24/72 h y candado; transcripciones y veredictos en BD con procedencia; un fallo de Claude deja la corrida en `check_failed` sin borrar lo guardado | BE | R2, R3 | Test: sin brief no hay llamada al proveedor; con Claude caído, una segunda corrida no vuelve a pagar listas; dos tenants con el mismo referente generan una sola lectura |
-| R5 | Topes por negocio (150/día, 600/mes) desde `vendor_usage_events`, cargados al tenant que dispara; un tope alcanzado deja la corrida en `budget_stopped` | BE | R2, R3 | Test con 149 + 2 créditos: la segunda llamada no se hace y queda registrada la parada |
+| R4 | `run()` persistente: comprueba brief y clave **antes** de pagar; refresco por cuenta con TTL de 24/72 h y candado; transcripciones y veredictos en BD con procedencia; un fallo de Claude deja la corrida en `check_failed` sin borrar lo guardado | BE | R2, R3 | Test: sin brief no hay llamada al proveedor; con Claude caído, una segunda corrida no vuelve a pagar listas; dos tenants con el mismo referente generan una sola lectura || R5 | Topes por negocio (150/día, 600/mes) desde `vendor_usage_events`, cargados al tenant que dispara; un tope alcanzado deja la corrida en `budget_stopped` | BE | R2, R3 | Test con 149 + 2 créditos: la segunda llamada no se hace y queda registrada la parada |
 | R6 | Raw de las listas en `vendor_payloads` (a R2 en gzip si pasa de 100 KB) con `parser_version` | BE | R3 | Se puede re-parsear una página guardada sin red; medir y anotar en el PR cuánto pesa una página real |
 | R7 | La vista lee la BD: abrir no llama al proveedor; muestra la última corrida `ok` con «Actualizado …» y la fecha de los datos | UI + UX | R4 | Test de la vista: abrir con la BD vacía muestra el estado vacío y hace cero llamadas al proveedor |
+
+*→ Enmienda del 2026-11-25 (RF-05), R4: la corrida del lunes lee también hasta 6 cuentas `competencia`, y hay una corrida `competitor_now` de una sola cuenta.*
 
 **Nota de R1 (m-24854844).** El pipeline ya vive en `qualify_api.referentes.reels` y el cliente en `qualify_api.vendors.scrapecreators`, pero el armado del brief de la marca (`brand_brief`: semilla de la búsqueda, Brand Kit y catálogo) sigue en `Qualify/reels_discovery.py` y llega al servicio como `BriefLoader` inyectado. Por eso un worker de `qualify_api` todavía no puede correr una búsqueda solo. **El armado del brief se muda a `packages/api` en R4**, que es la corrida persistente que comprueba el brief antes de pagar.
 
@@ -280,8 +281,7 @@ Las filas de `vendor_usage_events` y los topes por negocio llegaron con R5 (nota
 
 | # | Rebanada | Área | Depende de | Criterio de aceptación verificable |
 |---|---|---|---|---|
-| R8 | `reels-worker` (`just reels-worker`, `--tenant` en local) en el compose de producción, con su propio rol de BD: atiende las corridas en cola y programa la semanal del lunes a las 06:00 hora local; omite marcas sin abrir en 14 días | BE + PL | R4, R5 | Test con reloj falso: a las 06:00 del lunes en `America/Bogota` encola una corrida por marca activa, ninguna para una marca inactiva, y una segunda pasada no duplica (UNIQUE) |
-| R9 | Botón «Buscar reels nuevos»: encola una corrida `manual`, como máximo una al día por marca; muestra el progreso real (`accounts_done / accounts_total`) y, al agotarse, «Mañana puedes buscar otra vez» | UI + UX | R8 | Dos pulsaciones el mismo día crean una sola corrida; la pantalla nunca muestra créditos ni dinero |
+| R8 | `reels-worker` (`just reels-worker`, `--tenant` en local) en el compose de producción, con su propio rol de BD: atiende las corridas en cola y programa la semanal del lunes a las 06:00 hora local; omite marcas sin abrir en 14 días | BE + PL | R4, R5 | Test con reloj falso: a las 06:00 del lunes en `America/Bogota` encola una corrida por marca activa, ninguna para una marca inactiva, y una segunda pasada no duplica (UNIQUE) || R9 | Botón «Buscar reels nuevos»: encola una corrida `manual`, como máximo una al día por marca; muestra el progreso real (`accounts_done / accounts_total`) y, al agotarse, «Mañana puedes buscar otra vez» | UI + UX | R8 | Dos pulsaciones el mismo día crean una sola corrida; la pantalla nunca muestra créditos ni dinero |
 | R10 | Lectura de 90 días solo para el operador de Qualify (corrida `operator_90d`) | BE + UI | R8 | Un usuario de negocio no ve la pestaña ni puede encolarla (test de permiso) |
 | R11 | Ideas: 6–8 por corrida, marca de visto/nuevo, retención de 4 semanas (purga salvo la última `ok`) y aviso en Inicio cuando llegan | BE + UI + UX | R8 | Test de purga a 29 días; el aviso de Inicio aparece con ideas sin ver y desaparece al abrirlas |
 | R12 | Portadas a R2 (`public/reel-covers/`) durante la corrida, solo de las ideas | BE | R8 | Una idea de 6 días muestra su portada desde R2 aunque la URL del CDN haya caducado |
@@ -292,6 +292,8 @@ Las filas de `vendor_usage_events` y los topes por negocio llegaron con R5 (nota
 | R17 | Medición: consumo semanal por tenant y función (consulta SQL documentada) antes y después de F1, una semana cada uno | DS | R5 | El resultado queda anotado en `docs/descubrir-reels-scrapecreators.md` con la fecha |
 
 R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamiento.
+
+*→ Enmienda del 2026-11-25 (RF-05), R8: el worker atiende también las corridas `competitor_now` («Ver sus reels ahora»), antes que las semanales, y nunca las reintenta solo.*
 
 **Nota de R12 (m-24854859).** Construido sobre R7 y R8 (migración 0141). Cómo quedó:
 
@@ -350,3 +352,25 @@ R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamient
    - Con 4 marcas activas: ≤ 32 reels por semana, ≈ USD 0,18 por semana normal (≈ USD 0,75 al mes) y ≤ USD 0,63 por semana en el peor caso. Menos si las marcas comparten reels.
    - El costo queda en la fila global y en Langfuse, nunca en el libro de consumo de un negocio (decisión 10 de la épica) ni en los créditos de R5 (`test_reels_worker_analysis_drain.py`). R4 lo suma además, como dato, al `cost_usd` de la corrida que lo disparó.
    - Una fila cuyo video ya se borró a los 30 días no la toma ni la descarga ni la descripción (FN3): leería un objeto que ya no existe.
+
+## Enmienda del 2026-11-25 — R4 y R8: competidores (RF-05)
+
+**Estado:** decisión 5 de `docs/epica-filtrado-reels.md`, firmada por Deivid el 2026-11-25 con la opción de costo B. Construido en RF-05 (m-25119465), migración `0183_reels_competitors`. Lo firmado arriba no se reescribe: R4 y R8 llevan una nota que apunta aquí.
+
+1. **R4 — la corrida del lunes lee también a los competidores.** Además de los referentes (hasta 12), lee las cuentas marcadas `competencia` que eligió el dueño, **6 como mucho** (`brand_account_labels.read_weekly`). Si no eligió ninguna, lee las 6 primeras de su lista (`position`, después la fecha de la marca). Con más de 6, las demás no se leen solas. Los detractores nunca se leen (decisión 3 de la épica).
+   - Orden: primero los referentes (sus listas y sus transcripciones) y después los competidores. Si el tope frena a un referente, la corrida queda `budget_stopped`, como antes. Si frena a un competidor, solo se dejan de leer competidores y la corrida sigue con lo guardado: las ideas de los referentes nunca pagan por ellos.
+   - Los candidatos de los competidores se eligen aparte (con la misma regla, `reels._candidates`), así que nunca le quitan un puesto a un reel de un referente. Sus transcripciones tienen su propio tope, `COMPETITOR_PAID_TRANSCRIPTS` = 18. El filtro de producto es el mismo, estricto.
+   - Los veredictos de los competidores alimentan «Más reels revisados» (RF-01, filtro «Competidores»). **Las 6–8 ideas siguen siendo solo de los referentes** (R11 no cambia), y el analizador de producción sigue corriendo solo sobre las ideas.
+   - Si falla el chequeo de los competidores, queda en el log y las ideas se guardan igual. El reintento de la corrida (punto 8 de la enmienda del 2026-11-04) los vuelve a revisar sin pagar de nuevo lo leído.
+   - Peor caso de un intento semanal: 12 × 4 + 40 (referentes) + 6 × 4 + 18 (competidores) = **130 créditos**, dentro de los 150 diarios del negocio (antes, 88).
+2. **R4 — «Ver sus reels ahora».** Para cualquier competidor, el dueño pide una lectura al momento. Es una corrida propia, `trigger = 'competitor_now'`, que nombra su cuenta (`account_network`, `account_handle`).
+   - Hay **una por negocio, cuenta y día local**: `uq_brand_reel_run` pasa a ser `UNIQUE NULLS NOT DISTINCT (brand_id, trigger, run_date, account_network, account_handle)`. Pulsar dos veces devuelve la misma corrida. Si falló o la puerta la frenó, pulsar otra vez la vuelve a poner en la cola (siempre que quede tope).
+   - Paga como una cuenta de la corrida semanal y por la misma puerta (`reel_runs.run`): la página 1 o el recorrido de 30 días solo si la cuenta no está fresca (24 h / 72 h, la haya leído este negocio u otro), hasta `READ_NOW_PAID_TRANSCRIPTS` = 2 transcripciones y el veredicto de sus `READ_NOW_REVIEWED` = 8 reels más vistos (los guardados se reusan). No deja ideas.
+   - Antes de encolar, `competitors.read_now` mira el tope del negocio. Si ya se gastó el del día, no encola y el dueño lee «Hoy ya se alcanzó el límite de lecturas de tu negocio. Inténtalo mañana.» (con el del mes, lee desde qué fecha puede volver a intentarlo). Si el tope se alcanza a mitad de la lectura, la puerta la frena igual (`budget_stopped`).
+   - Nunca es la corrida que muestra la pantalla: `latest_run` y el reintento automático la excluyen.
+3. **R8 — el worker.** La cola atiende `competitor_now` antes que `weekly`, igual que `manual` y `operator_90d`. Un chequeo fallido de `competitor_now` no se reintenta solo (`failed_checks` lo salta): el dueño vuelve a pulsar. El rol `qualify_reels_worker` no gana columnas: solo lee `trigger`, que ya podía leer.
+4. **El gasto, aparte.**
+   - En `vendor_usage_events`, la puerta anota la lista y las transcripciones de un competidor como `competitor_reels_list` y `competitor_reels_transcript`, no como `reels_list` y `reels_transcript`. El cliente de la corrida lleva la etiqueta (`UsageCharge.account_label = 'competencia'`) y `scrapecreators.labelled_feature` cambia el nombre. Cuenta dentro de los mismos topes de 150 al día y 600 al mes.
+   - En `brand_reel_runs`, `competitor_credits` y `competitor_cost_usd` son la parte de `credits` y `cost_usd` gastada en competidores (Claude incluido). En una corrida `competitor_now` son iguales al total. Un CHECK impide que la parte pase del total.
+5. **Costo esperado** (estimación [S]; confirmar con una semana de R17): 6 cuentas por semana, con hasta 4 páginas y 18 transcripciones, son ≤ 42 créditos (≈ USD 0,08) más ≈ 40 veredictos (≈ USD 0,04). Son **≈ USD 0,5 al mes por negocio** en el peor caso, y menos con cuentas que publican poco o que comparten otros negocios. Cada «Ver sus reels ahora» cuesta ≤ 6 créditos y 8 veredictos (≈ USD 0,01–0,02). Cabe en la opción B de la épica (≈ USD 0,6–0,8 al mes para toda la épica).
+6. **Límite conocido:** una marca con competidores pero sin referentes sigue sin corrida semanal (`ready_for_runs` pide referentes, como antes). Puede leer a sus competidores con «Ver sus reels ahora».

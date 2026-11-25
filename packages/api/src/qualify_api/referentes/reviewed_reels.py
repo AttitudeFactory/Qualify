@@ -15,10 +15,11 @@ This module reads what is already stored and returns, for one brand:
 
 **Source.** `brand_reel_verdicts` ⨝ `public_reels` ⨝ `brand_account_labels`, never
 `brand_reel_ideas` (which only keeps the 6-8). Per reel, only its NEWEST verdict for the
-shown run's `brief_hash` counts (a newer transcript or model may have judged it again),
-and it must keep the strict product filter: `fits` AND `affinity` in `reels_ai.FITS`
-(a verdict stored under an older rule cannot slip in). A brand with no `ok` run has no
-brief to judge against, so the list is empty.
+shown run's `brief_hash` (and the later manual reads', RF-05 below) counts (a newer
+transcript or model may have judged it again), and it must keep the strict product
+filter: `fits` AND `affinity` in `reels_ai.FITS` (a verdict stored under an older rule
+cannot slip in). A brand with no `ok` run nor `ok` manual read has no brief to judge
+against, so the list is empty.
 
 **Filters** (`ReelFilters`, every one optional, combinable): channel (Instagram /
 TikTok), account kind (`referente` = inspiradores, `competencia` = competidores — decision
@@ -35,10 +36,13 @@ row (`country_code`, `category`, migration 0036), whose fill on the brands' acco
 unmeasured (RF-00, m-25119446) and is not joined here; RF-04 (m-25119461) brings the
 region and rubro of each account, with provenance, and turns them on.
 
-**Competidores — a second data gap.** The run reads only `referente` accounts today
-(`reels.brand_referentes`), so no verdict exists yet for a `competencia` account: that
-kind and those accounts return nothing until RF-05 (m-25119465) reads them. The query
-already serves them; nothing here invents them.
+**Competidores** (RF-05, m-25119465). The Monday run also reads the 6 `competencia`
+accounts the owner picked (`reels.brand_competitors`) and stores their verdicts under the
+run's brief, and «Ver sus reels ahora» (`competitors.read_now`) reads any other one. A
+manual read judges with the brief of its own moment, so the list reads the shown run's
+brief plus the brief of every manual read that ended `ok` after it (`_briefs`); per reel
+the newest verdict decides. A brand with no `ok` weekly run still sees what its manual
+reads kept.
 
 **Free and read-only.** Opening the list never calls ScrapeCreators nor Claude, writes
 nothing (no `vendor_usage_events` row) and never queues the production reel analyzer,
@@ -53,7 +57,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -65,6 +69,7 @@ from qualify_api.referentes.reel_runs import RunView
 from qualify_api.referentes.reel_store import (
     _REEL_COLUMNS,
     _VERDICT_COLUMNS,
+    STATUS_OK,
     Idea,
     MemoryReelRunStore,
     PublicReel,
@@ -102,6 +107,8 @@ DURATION_BUCKETS: dict[str, tuple[float, float | None]] = {
 REGION_NICHE_READY = False
 
 PAGE_SIZE = 12
+#: RF-05: with no weekly run shown, the manual reads of this many days back are read.
+MANUAL_READS_DAYS = 30
 MAX_PAGE_SIZE = 48
 
 
@@ -242,8 +249,10 @@ class ReviewedReelsStore(Protocol):
         exclude: Sequence[tuple[str, str]],
         offset: int,
         limit: int,
+        also_briefs: Sequence[str] = (),
     ) -> list[ReviewedReel]:
-        """The kept reels of the brand for `brief_hash`, newest verdict per reel, filtered,
+        """The kept reels of the brand for `brief_hash` (and `also_briefs`: the briefs of
+        the owner's later «Ver sus reels ahora», RF-05), newest verdict per reel, filtered,
         without `exclude` (`(network, reel_id)`), ordered by views then likes."""
         ...
 
@@ -281,10 +290,12 @@ class MemoryReviewedReelsStore:
         exclude: Sequence[tuple[str, str]],
         offset: int,
         limit: int,
+        also_briefs: Sequence[str] = (),
     ) -> list[ReviewedReel]:
+        briefs = {brief_hash, *also_briefs}
         newest: dict[tuple[str, str], StoredVerdict] = {}
         for tenant, brand, verdict in self.runs.verdict_rows.values():  # insertion order
-            if (tenant, brand) == (tenant_id, brand_id) and verdict.brief_hash == brief_hash:
+            if (tenant, brand) == (tenant_id, brand_id) and verdict.brief_hash in briefs:
                 newest[(verdict.network, verdict.reel_id)] = verdict
         kinds = self.account_kinds(tenant_id, brand_id)
         skip = set(exclude)
@@ -326,6 +337,7 @@ class PostgresReviewedReelsStore:
         exclude: Sequence[tuple[str, str]],
         offset: int,
         limit: int,
+        also_briefs: Sequence[str] = (),
     ) -> list[ReviewedReel]:
         reel_cols = ", ".join(f"r.{c.strip()} AS r_{c.strip()}" for c in _REEL_COLUMNS.split(","))
         verdict_names = [c.strip() for c in _VERDICT_COLUMNS.split(",")]
@@ -338,7 +350,7 @@ class PostgresReviewedReelsStore:
         ]
         params: dict[str, Any] = {
             "brand": brand_id,
-            "brief": brief_hash,
+            "briefs": sorted({brief_hash, *also_briefs}),
             "fits": sorted(reels_ai.FITS),
             "kinds": list(filters.wanted_kinds),
             "limit": limit,
@@ -377,7 +389,7 @@ class PostgresReviewedReelsStore:
             # prompt may have judged it again): that one decides
             "WITH latest AS (SELECT DISTINCT ON (v.network, v.reel_id) "
             f"{latest_cols} FROM brand_reel_verdicts v "
-            "WHERE v.brand_id = :brand AND v.brief_hash = :brief "
+            "WHERE v.brand_id = :brand AND v.brief_hash = ANY(CAST(:briefs AS text[])) "
             "ORDER BY v.network, v.reel_id, v.created_at DESC, v.id DESC) "
             f"SELECT {reel_cols}, {verdict_cols}, l.label AS account_kind "
             "FROM latest v "
@@ -411,6 +423,32 @@ def default_library() -> ReviewedReelsStore:
     return _library
 
 
+def _briefs(
+    tenant_id: UUID,
+    brand_id: UUID,
+    seen: RunView,
+    store: ReelRunStore | None,
+    now: datetime | None = None,
+) -> list[str]:
+    """The briefs whose verdicts the second list reads: the shown run's, plus (RF-05) the
+    one of every «Ver sus reels ahora» that ended `ok` after it — a read the owner asked
+    for shows at once, even when the brief changed since Monday or there is no `ok`
+    weekly run yet. Per reel the newest verdict still decides."""
+    briefs: list[str] = []
+    if seen.shown is not None and seen.shown.brief_hash:
+        briefs.append(seen.shown.brief_hash)
+    after = seen.shown.finished_at if seen.shown is not None else None
+    if after is None:  # no weekly run yet: the manual reads of the last month only
+        after = (now or datetime.now(UTC)) - timedelta(days=MANUAL_READS_DAYS)
+    reads = (store or reel_runs.default_store()).competitor_runs(
+        tenant_id, brand_id, finished_after=after
+    )
+    for run in reads:
+        if run.status == STATUS_OK and run.brief_hash and run.brief_hash not in briefs:
+            briefs.append(run.brief_hash)
+    return briefs
+
+
 def reviewed_reels(
     tenant_id: UUID,
     brand_id: UUID,
@@ -442,12 +480,13 @@ def reviewed_reels(
     ]
     more: list[ReviewedReel] = []
     has_more = False
-    brief = seen.shown.brief_hash if seen.shown is not None else None
-    if brief:
+    briefs = _briefs(tenant_id, brand_id, seen, store, now)
+    if briefs:
         page = lib.fitting(
             tenant_id,
             brand_id,
-            brief_hash=brief,
+            brief_hash=briefs[0],
+            also_briefs=briefs[1:],
             filters=chosen,
             exclude=[(idea.reel.network, idea.reel.reel_id) for idea in seen.ideas],
             offset=offset,

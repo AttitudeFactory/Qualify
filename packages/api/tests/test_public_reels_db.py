@@ -212,7 +212,9 @@ def test_idempotency_keys_make_repeats_no_ops(two_tenants) -> None:
     run_sql = text(
         "INSERT INTO brand_reel_runs (tenant_id, brand_id, trigger, run_date, days, "
         "pipeline_version) VALUES (:t, :b, 'manual', :d, 30, 'r3-test') "
-        "ON CONFLICT (brand_id, trigger, run_date) DO NOTHING RETURNING id"
+        # 0183 (RF-05): the key spans the account too, NULLS NOT DISTINCT — named, as the
+        # store names it (`reel_store.PostgresReelRunStore.enqueue`)
+        "ON CONFLICT ON CONSTRAINT uq_brand_reel_run DO NOTHING RETURNING id"
     )
     usage_sql = text(
         "INSERT INTO vendor_usage_events (tenant_id, vendor, feature, credits, request_key) "
