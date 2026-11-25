@@ -17,7 +17,15 @@ from .promotion_vm import (
     CarouselProductVM,
 )
 from .r2_media import BACKEND_BASE
-from .ui import callout, card, choice_card, choice_card_check, media_thumb, signal_pill, tone_badge
+from .ui import (
+    callout,
+    card,
+    choice_card,
+    choice_card_check,
+    choice_card_number,
+    media_thumb,
+    signal_pill,
+)
 from .ui import tokens as T
 
 PLACEMENTS_NOTE = (
@@ -145,11 +153,10 @@ def _product_card(product: rx.Var[CarouselProductVM]) -> rx.Component:
                     chosen,
                     rx.box(
                         # Its place in the carousel, readable over any photo.
-                        tone_badge(product.order.to_string(), "info"),
+                        choice_card_number(product.order.to_string()),
                         position="absolute",
                         top="0.35rem",
                         left="0.35rem",
-                        class_name="q-nums",
                     ),
                 ),
                 position="relative",
@@ -167,6 +174,11 @@ def _product_card(product: rx.Var[CarouselProductVM]) -> rx.Component:
         padding="0.4rem",
         min_width="0",
         text_align="left",
+        # a <button> centers its content: pin it to the top so the photos of a row
+        # line up when one name wraps to two lines
+        display="flex",
+        flex_direction="column",
+        justify_content="flex-start",
         aria_label=rx.cond(
             chosen,
             product.name + ", puesto " + product.order.to_string() + " en el carrusel",

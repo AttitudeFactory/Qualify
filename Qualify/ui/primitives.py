@@ -924,6 +924,14 @@ def choice_card_check(size: str = "1.15rem") -> rx.Component:
     )
 
 
+def choice_card_number(label: rx.Var | str) -> rx.Component:
+    """A selected `choice_card`'s place in an order (1, 2, 3…), pinned over its photo:
+    solid accent-12 with accent-1 text (AA in both themes) and an accent-1 halo, so it
+    reads on a white photo and on a dark one. Hidden from readers: the card's
+    ``aria_label`` says the place in words. Render it under ``rx.cond``."""
+    return rx.box(label, class_name="q-choice-card-number q-nums", aria_hidden="true")
+
+
 def media_thumb(
     src: rx.Var[str] | str,
     *,
