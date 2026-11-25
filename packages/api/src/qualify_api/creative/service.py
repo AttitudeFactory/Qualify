@@ -511,6 +511,18 @@ class VariantWrite:
 
 
 @dataclass(frozen=True)
+class NewDraftInputs:
+    """What `ContentService.new_draft_inputs` hands back: the stamped brief, the voice
+    profile and pipeline versions the draft is born with, and its price (None without a
+    monthly quota)."""
+
+    brief: ContentBrief
+    voice_version: int
+    pipeline_version: str
+    price: Any
+
+
+@dataclass(frozen=True)
 class UsageWrite:
     """One ``creative_usage_events`` row: cost provenance for one vendor call."""
 
@@ -2440,8 +2452,12 @@ class ContentService:
         progress: Callable[[UUID, UUID], None] | None = None,
         vendor_tasks: VendorTaskStore | None = None,
         clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
+        clip_avatar_store: Any = None,
     ) -> None:
         self._media = media
+        #: m-25119867: the avatar blocks a Clip waits for (`clip_avatar.ClipAvatarStore`;
+        #: `PostgresClipAvatarStore` on Postgres when None).
+        self._clip_avatar_store = clip_avatar_store
         #: m-25112920: which stretches of a Clip's recipe are its avatar blocks' videos
         #: (`clip_avatar.db_generated_sources` on Postgres when None) — what approving the
         #: Clip charges of the month's video seconds.
@@ -2511,41 +2527,21 @@ class ContentService:
         version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
         return brief, voice.version, version
 
-    # -- create -------------------------------------------------------------
-
-    @transactional_dispatch
-    def create_draft(
+    def new_draft_inputs(
         self,
         *,
         tenant_id: UUID,
         brand_id: UUID,
         brief: ContentBrief,
-        user_id: UUID,
-        request_key: UUID | None = None,
-    ) -> UUID:
-        """Persist brief + draft in ``DRAFTING`` (one transaction), dispatch generation,
-        return the draft id immediately — generation runs out of band (§7.4).
-
-        Readiness and the image-route policy are checked BEFORE any row exists:
-        ``BrandNotReady`` / ``RouteBlockedByPolicy`` leave nothing behind to reap.
-
-        ``request_key`` makes it idempotent (ticket 24803289): a key that already has a
-        draft returns that draft and dispatches nothing — its generation, which is what
-        costs money, runs once whatever retries or concurrent calls the caller makes.
-        Without a key nothing changes.
-        """
-        if brief.brand_id != brand_id:
-            raise ValueError("brief.brand_id does not match brand_id")
-        # VE-08 (criterion 6): a part is born with its parent, all its siblings charged
-        # together (`parts.PartsService.create_parts`) — never as a loose piece
-        check_part_link(brief, None, None)
-        if brief.kind is ContentKind.OWN_MEDIA:
-            # m-25019217: recorded from a publication (`creative.own_media`), never generated
-            raise ValueError("an own-media piece is recorded from «Publicar», not generated")
-        if request_key is not None:
-            existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
-            if existing is not None:
-                return existing
+        recipe_brief: ContentBrief | None = None,
+    ) -> NewDraftInputs:
+        """Everything `create_draft` checks and stamps before a top-level draft's row
+        exists — readiness, route policy, the parts' text cap, the recipe, the queue, the
+        local daily cap, the server-owned versions, the producer's stamp and the month's
+        price — refused with nothing written. m-25119867: `recipe_brief` is the recipe
+        the owner sees when it differs from the stored one (a Clip whose avatar blocks are
+        still to be made: their stretches at their estimated length); it is the one
+        `refuse_unbuilt_recipe` checks."""
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
         voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
         missing = tuple(
@@ -2573,7 +2569,7 @@ class ContentService:
         # what the engine does not draw yet fails closed (`RecipeRefused`, codes in
         # `problems`; a `local` Clip lasting under 3 s or over 60 s says its
         # `duration_s`). EF-06: a `local` Clip is made only in the creative worker.
-        refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
+        refuse_unbuilt_recipe(recipe_brief or brief, tenant_id=tenant_id)
         refuse_local_without_queue(brief)
         if is_local_recipe(brief):
             # EF-15 (m-25026575): a business builds at most `local_daily_cap()` local
@@ -2581,7 +2577,6 @@ class ContentService:
             # (D3: a local piece uses no video seconds and no vista previa, so nothing
             # else limits the CPU it takes)
             check_local_daily_cap(self._repo, tenant_id=tenant_id)
-        received_middle = len(brief.media.clip_image_keys)
         # Caller cannot select an internal compiler version through MediaInputs.
         brief = brief.model_copy(
             update={
@@ -2620,6 +2615,55 @@ class ContentService:
             short = balance.shortfall(price)
             if short is not None:
                 raise short
+        return NewDraftInputs(
+            brief=brief,
+            voice_version=voice.version,
+            pipeline_version=execution_version,
+            price=price,
+        )
+
+    # -- create -------------------------------------------------------------
+
+    @transactional_dispatch
+    def create_draft(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        brief: ContentBrief,
+        user_id: UUID,
+        request_key: UUID | None = None,
+    ) -> UUID:
+        """Persist brief + draft in ``DRAFTING`` (one transaction), dispatch generation,
+        return the draft id immediately — generation runs out of band (§7.4).
+
+        Readiness and the image-route policy are checked BEFORE any row exists:
+        ``BrandNotReady`` / ``RouteBlockedByPolicy`` leave nothing behind to reap.
+
+        ``request_key`` makes it idempotent (ticket 24803289): a key that already has a
+        draft returns that draft and dispatches nothing — its generation, which is what
+        costs money, runs once whatever retries or concurrent calls the caller makes.
+        Without a key nothing changes.
+        """
+        if brief.brand_id != brand_id:
+            raise ValueError("brief.brand_id does not match brand_id")
+        # VE-08 (criterion 6): a part is born with its parent, all its siblings charged
+        # together (`parts.PartsService.create_parts`) — never as a loose piece
+        check_part_link(brief, None, None)
+        if brief.kind is ContentKind.OWN_MEDIA:
+            # m-25019217: recorded from a publication (`creative.own_media`), never generated
+            raise ValueError("an own-media piece is recorded from «Publicar», not generated")
+        if request_key is not None:
+            existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+            if existing is not None:
+                return existing
+        received_middle = len(brief.media.clip_image_keys)
+        if brief.media.clip_avatar_plan:
+            # m-25119867: server-owned — only `clip_avatar.create_clip_with_blocks` plans
+            raise ValueError("a Clip's avatar blocks are planned by their own service")
+        inputs = self.new_draft_inputs(tenant_id=tenant_id, brand_id=brand_id, brief=brief)
+        brief, price = inputs.brief, inputs.price
+        voice_version, execution_version = inputs.voice_version, inputs.pipeline_version
 
         # the key only reaches repositories that know it (every other caller sends none)
         keyed: dict[str, UUID] = {"request_key": request_key} if request_key else {}
@@ -2628,7 +2672,7 @@ class ContentService:
                 tenant_id=tenant_id,
                 user_id=user_id,
                 brief=brief,
-                voice_profile_version=voice.version,
+                voice_profile_version=voice_version,
                 pipeline_version=execution_version,
                 **keyed,
             )
@@ -3040,10 +3084,102 @@ class ContentService:
             logger.warning("brand context unreadable for %s: %s", brand_id, type(exc).__name__)
             return None
 
+    def _clip_plan_ready(
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+    ) -> tuple[DraftRecord, ContentBrief]:
+        """m-25119867: a Clip with avatar blocks still in its plan. Every block made →
+        the Clip gets ONE new brief with their videos as stretches (texts and effects
+        moved to their real lengths) and is made from it. Otherwise it waits: its sign of
+        life is stamped and `ClipBlocksWait` (a `LocalVideoWait`) leaves the worker's run
+        not done, nothing read past the blocks, written or paid; a block that would pass
+        the 60 s is marked refused (`clip_too_long`) on a new brief first. Every write
+        is fenced by the run's lease and the Clip's revision."""
+        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            ClipBlocksWait,
+            PlanReady,
+            PlanRefused,
+            PostgresClipAvatarStore,
+            plan_gate,
+        )
+
+        store = self._clip_avatar_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                raise RuntimeError("a Clip waiting for avatar blocks needs the blocks' store")
+            store = PostgresClipAvatarStore()
+        verdict = plan_gate(tenant_id=tenant_id, clip_id=draft.id, brief=brief, store=store)
+        if isinstance(verdict, PlanReady):
+            fresh = self._replace_clip_brief(tenant_id, draft, verdict.brief)
+            # rule 6: the brief the owner sent stays (estimated times); this log says
+            # how many texts and effects moved to the blocks' real lengths, or were cut
+            logger.info(
+                "clip %s: its avatar blocks are made; assembled now (%d moved, %d dropped)",
+                draft.id,
+                verdict.moved,
+                verdict.dropped,
+            )
+            return fresh, verdict.brief
+        if isinstance(verdict, PlanRefused):
+            # a made block the Clip cannot take (over 60 s): refused on the plan, so the
+            # screen shows it failed; the Clip waits for the owner
+            self._replace_clip_brief(tenant_id, draft, verdict.brief)
+        beat = self._heartbeat(tenant_id, draft.id)
+        if beat is not None:
+            beat()
+        raise ClipBlocksWait(f"clip {draft.id} waits for its avatar blocks ({verdict.reason})")
+
+    def _replace_clip_brief(
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+    ) -> DraftRecord:
+        """The Clip's new brief, in a transaction fenced by the worker's lease and the
+        Clip's row (still `drafting`, same revision) — never a second writer. The brief
+        the owner sent stays as the record of what he asked for. The Clip as it reads
+        now."""
+        repo = self._repo
+        if isinstance(repo, PostgresContentRepository):
+            from qualify_shared.db.session import tenant_unit_of_work  # noqa: PLC0415
+
+            from qualify_api.creative.pipeline import PipelineStore  # noqa: PLC0415
+
+            run = current_preparation()
+            with tenant_unit_of_work(tenant_id) as session:
+                if run is not None:
+                    PipelineStore().fence(session, run)
+                row = session.execute(
+                    text("""
+                    SELECT d.status, d.revision, b.created_by
+                    FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
+                    WHERE d.id = :d FOR UPDATE OF d
+                """),
+                    {"d": draft.id},
+                ).first()
+                if (
+                    row is None
+                    or str(row.status) != DRAFTING
+                    or int(row.revision) != (draft.revision)
+                ):
+                    raise CheckpointError("the Clip moved while its avatar blocks were placed")
+                repo.replace_brief(
+                    tenant_id=tenant_id, draft_id=draft.id, user_id=row.created_by, brief=brief
+                )
+        else:
+            repo.replace_brief(  # type: ignore[attr-defined]
+                tenant_id=tenant_id, draft_id=draft.id, user_id=UUID(int=0), brief=brief
+            )
+        fresh = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
+        if fresh is None:
+            raise UnknownDraft(str(draft.id))
+        return fresh
+
     def _generate(self, *, tenant_id: UUID, draft: DraftRecord) -> None:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft.id} has no readable brief")
+        if brief.media.clip_avatar_plan:
+            # m-25119867: a Clip waits for the avatar blocks chosen at its first «Crear»
+            # (`ClipBlocksWait`, before any read or paid call), then is made ONCE from a
+            # brief with their videos as stretches
+            draft, brief = self._clip_plan_ready(tenant_id, draft, brief)
         # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
         # draft is the session, so its regenerations sit together; every vendor call the
         # router makes inside is nested here (`observed.TracedProvider`). A no-op unless
@@ -3205,7 +3341,7 @@ class ContentService:
         elif draft.parent_draft_id is not None:
             # VE-08: a part of a video by parts asks Claude nothing — it carries one of
             # its parent's texts (cost 0), which its approval with the parent selects
-            stage = self._inherited_copy(tenant_id, draft)
+            stage = self._inherited_copy(tenant_id, draft, brief)
         else:
             # m-24820842: a Seedance 2.x talking video sizes its generated script before it
             # is written (the words its prompt leaves under the 1,000-word ceiling)
@@ -3324,7 +3460,7 @@ class ContentService:
         return attempt
 
     def _inherited_copy(
-        self, tenant_id: UUID, draft: DraftRecord
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief | None = None
     ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
         """A part's text: ONE variant of its parent, copied as it reads now (the edit
         merged over it), with the provenance of the call that wrote it. No vendor call,
@@ -3337,6 +3473,24 @@ class ContentService:
             (v for v in variants if parent is not None and v.id == parent.selected_variant_id),
             None,
         ) or next((v for v in variants if (v.fidelity or {}).get("passed")), None)
+        if chosen is None and brief is not None and brief.media.clip_avatar_block:
+            # m-25119867 (P3, Deivid 2026-11-25): an avatar block chosen at its Clip's
+            # first «Crear» is made before the Clip has a text. A block is never published
+            # alone — the Clip carries the text — so it takes an empty one: no vendor
+            # call, cost 0; its script is the owner's own words.
+            empty = VariantWrite(
+                ordinal=0,
+                copy={"hook": "", "caption": "", "script": brief.media.own_script or ""},
+                fidelity={
+                    "passed": True,
+                    "hard_failures": [],
+                    "inherited_from": None,
+                    "clip_avatar_block_without_text": True,
+                },
+                model_id="none",
+                model_revision=None,
+            )
+            return [empty], [], Decimal(0), True
         if chosen is None:
             # `create_parts` refuses a parent without its text: a broken invariant
             raise ValueError(f"part {draft.id}: its video by parts has no text to carry")
