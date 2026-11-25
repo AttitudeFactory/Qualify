@@ -65,6 +65,7 @@ class Creator(Base):
         CheckConstraint("posts_seen >= ai_posts_seen", name="ck_creator_ai_posts"),
         Index("ix_creators_seen", "seen_at"),
         Index("ix_creators_followers", "network", "followers"),
+        Index("ix_creators_region_rubro", "region_code", "rubro"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -100,6 +101,24 @@ class Creator(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    # Inferred region and rubro with provenance (0182, m-25119461) — written only by
+    # `qualify_api.creators.region_rubro`, never by the pool's upsert.
+    region_code: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    region_source: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    region_source_ref: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    region_model: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    region_version: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    region_inferred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rubro: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    rubro_source: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    rubro_source_ref: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    rubro_model: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    rubro_version: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    rubro_inferred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

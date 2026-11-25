@@ -17,10 +17,14 @@ from qualify_api.referentes.ai import (
     REVIEW_BATCH,
     REVIEW_EFFORT,
     REVIEW_MODEL,
+    REVIEW_PROMPT_VERSION,
     REVIEW_TOOL,
+    RUBROS,
     AccountToReview,
     BrandBrief,
+    normalize_country,
     review_accounts,
+    review_input_ref,
 )
 
 #: m-24955649: who pays for the faked Claude calls of this module.
@@ -257,3 +261,104 @@ def test_one_call_takes_at_most_a_batch() -> None:
             client_factory=_factory(ScriptedClient([]), []),
             attribution=TEST_ATTRIBUTION,
         )
+
+
+# --------------------------------------------------------------------------------------
+# RF-04 (m-25119461): rubro and country ride on the same verdict
+# --------------------------------------------------------------------------------------
+
+
+def test_the_tool_asks_for_a_catalog_rubro_and_a_country_per_account() -> None:
+    client = ScriptedClient([_use({"resultados": []})])
+    review_accounts(
+        BRAND,
+        _accounts(),
+        api_key="k",
+        client_factory=_factory(client, []),
+        attribution=TEST_ATTRIBUTION,
+    )
+    request = client.calls[0]
+    item = request["tools"][0]["input_schema"]["properties"]["resultados"]["items"]
+    assert item["properties"]["rubro"]["enum"] == list(RUBROS)
+    assert item["properties"]["pais"] == {"type": "string"}
+    assert {"rubro", "pais"} <= set(item["required"])
+    system = str(request["system"])
+    # the catalog keys are spelled out, with the Brand Kit's own labels
+    assert "food_drink (comida y bebida)" in system and "real_estate (inmobiliaria)" in system
+    assert "Nunca supongas el país de la marca" in system
+    assert len(client.calls) == 1  # no second call for it
+
+
+def test_rubro_and_country_come_back_validated() -> None:
+    client = ScriptedClient(
+        [
+            _use(
+                {
+                    "resultados": [
+                        {
+                            "id": "1",
+                            "tipo": "creador",
+                            "encaja": True,
+                            "razon": "Chef.",
+                            "rubro": "food_drink",
+                            "pais": "co",
+                        },
+                        {
+                            "id": "2",
+                            "tipo": "marca",
+                            "encaja": False,
+                            "razon": "Otro formato.",
+                            "rubro": "panaderia",  # not a catalog key: dropped
+                            "pais": "Colombia",  # not a code: dropped
+                        },
+                        {"id": "3", "tipo": "marca", "encaja": True, "razon": "", "rubro": "otro"},
+                    ]
+                }
+            )
+        ]
+    )
+    reviews, _ = review_accounts(
+        BRAND,
+        _accounts(),
+        api_key="k",
+        client_factory=_factory(client, []),
+        attribution=TEST_ATTRIBUTION,
+    )
+    assert [(r.id, r.rubro, r.country) for r in reviews] == [
+        ("instagram:elchefbogota", "food_drink", "CO"),
+        ("tiktok:perrosya", "", ""),
+        ("instagram:donarosa", "otro", ""),
+    ]
+
+
+def test_the_ledger_books_the_call_with_the_prompt_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.referentes import ai as review_ai
+
+    seen: list[Any] = []
+    real = review_ai.create_turn
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["attribution"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(review_ai, "create_turn", spy)
+    client = ScriptedClient([_use({"resultados": []})])
+    review_accounts(
+        BRAND,
+        _accounts(),
+        api_key="k",
+        client_factory=_factory(client, []),
+        attribution=TEST_ATTRIBUTION,
+    )
+    assert seen[0].prompt_version == REVIEW_PROMPT_VERSION == "referentes-review-2"
+    assert seen[0].feature == TEST_ATTRIBUTION.feature
+
+
+def test_the_input_ref_follows_what_the_model_read() -> None:
+    first, second, _ = _accounts()
+    assert review_input_ref(first) == review_input_ref(first)
+    assert review_input_ref(first) != review_input_ref(second)
+    assert review_input_ref(first).startswith("review-input:")
+    assert normalize_country(" uy ") == "UY" and normalize_country("URY") == ""

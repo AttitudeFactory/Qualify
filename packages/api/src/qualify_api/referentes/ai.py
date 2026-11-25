@@ -14,6 +14,12 @@ answer as one `revisar_cuentas` tool call. Per account:
   card.
 - `razon` — one short sentence, shown to the operator: a model's decision is shown with
   its reason and stored with its provenance (`CallStats`).
+- `rubro` — the account's rubro as a key of the Brand Kit's rubro catalog
+  (`discovery_seed.NICHE_LABELS`), `otro` when none fits; and `pais` — the account's
+  country (ISO alpha-2), only when its own texts make it clear, else "". Added by RF-04
+  (m-25119461, prompt version 2) to the SAME call, no extra one: the caller stores them
+  on the global `creators` row with provenance (`creators.region_rubro`) for the Región
+  and Nicho filters. Like `tipo`, they describe the public account, never the brand.
 
 A judgement about one brand's accounts, returned to the caller and never written back
 anywhere as a rule: nothing accumulates per rubro, and the prompt carries principles,
@@ -25,6 +31,7 @@ API facts pinned from the `claude-api` skill (2026-09) — see `qualify_api.clau
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -44,6 +51,7 @@ from ..claude_tools import (
     tool_uses,
 )
 from ..privacy import mask_phones
+from .discovery_seed import NICHE_LABELS
 
 #: Chosen by `packages/api/evals/referentes_ai` (Haiku 4.5 vs Sonnet 5) — see that
 #: directory's README for the numbers behind it. Haiku let 25 of 212 traps through and
@@ -55,11 +63,20 @@ REVIEW_EFFORT: str | None = "low"
 
 REVIEW_TOOL = "revisar_cuentas"
 
+#: The prompt's version — provenance of what the review writes (the ledger's
+#: `prompt_version`, `creators.rubro_version` / `region_version`). 2 = RF-04 (m-25119461):
+#: `rubro` and `pais` per account. Bump on any change to `REVIEW_SYSTEM` or the tool.
+REVIEW_PROMPT_VERSION = "referentes-review-2"
+
 #: Accounts per call: a phase's shortlist fits in one (`creator_discovery.REVIEW_PER_NETWORK`
 #: × 2 networks), plus room for a few manual ones.
 REVIEW_BATCH = 30
 
 KINDS = ("marca", "creador", "medio", "otro")
+
+#: The rubros the model may answer: the Brand Kit's catalog keys plus `otro`.
+RUBRO_OTHER = "otro"
+RUBROS: tuple[str, ...] = (*NICHE_LABELS, RUBRO_OTHER)
 
 #: What the model reads per account — enough to judge, bounded so a batch stays small.
 MAX_CAPTIONS = 3
@@ -124,6 +141,10 @@ class AccountReview:
     kind: str
     fits: bool
     reason: str
+    #: A `RUBROS` key, or "" when the model gave none (an answer from before version 2).
+    rubro: str = ""
+    #: ISO 3166-1 alpha-2, or "" when the account's texts do not make it clear.
+    country: str = ""
 
 
 # --------------------------------------------------------------------------------------
@@ -171,7 +192,16 @@ o no con esta marca. Sin repetir el nombre de la cuenta.
 
 Las cuentas marcadas "agregada a mano" las eligió el operador: revísalas igual, con la \
 misma exigencia; si no encaja, dilo con respeto en la razón (el operador decide).
-"""
+
+rubro — el rubro de la CUENTA (no el de la marca), independiente de si encaja, con una \
+de estas claves: {rubros}; u otro si ninguna aplica o no se puede saber. Para un creador \
+o un medio, el rubro del contenido que publica.
+
+pais — el país de la cuenta, como código ISO de dos letras en mayúsculas (CO, VE, UY, MX, \
+ES…), solo si lo que la cuenta dice lo deja claro: una ciudad o un país en la bio, el \
+nombre o las publicaciones, o hashtags de lugar. Si no hay esa evidencia, "" (cadena \
+vacía). Nunca supongas el país de la marca.
+""".format(rubros=", ".join(f"{key} ({label.lower()})" for key, label in NICHE_LABELS.items()))
 
 
 def _review_tool() -> dict:
@@ -188,8 +218,10 @@ def _review_tool() -> dict:
                         "tipo": {"type": "string", "enum": list(KINDS)},
                         "encaja": {"type": "boolean"},
                         "razon": {"type": "string"},
+                        "rubro": {"type": "string", "enum": list(RUBROS)},
+                        "pais": {"type": "string"},
                     },
-                    "required": ["id", "tipo", "encaja", "razon"],
+                    "required": ["id", "tipo", "encaja", "razon", "rubro", "pais"],
                     "additionalProperties": False,
                 },
             }
@@ -297,10 +329,10 @@ def review_accounts(
         messages=[{"role": "user", "content": _review_message(brand, accounts)}],
         tools=[_review_tool()],
         tool_choice=forced_or_auto(config, REVIEW_TOOL),
-        # ~90 output tokens per account; with thinking on, the ceiling the SDK allows
-        # without streaming covers the reasoning too.
-        max_tokens=16000 if config.thinks else max(2048, 120 * len(accounts)),
-        attribution=attribution,
+        # ~90 output tokens per account (+ ~12 for rubro and pais, version 2); with
+        # thinking on, the ceiling the SDK allows without streaming covers the reasoning.
+        max_tokens=16000 if config.thinks else max(2048, 140 * len(accounts)),
+        attribution=attribution.versioned(REVIEW_PROMPT_VERSION),
     )
     calls = [b for b in tool_uses(response) if b.name == REVIEW_TOOL]
     if not calls:
@@ -331,6 +363,28 @@ def review_accounts(
                 kind=str(kind),
                 fits=fits,
                 reason=_clip(str(item.get("razon") or ""), 240),
+                rubro=_rubro(item.get("rubro")),
+                country=normalize_country(item.get("pais")),
             )
         )
     return out, meter.stats()
+
+
+def _rubro(value: object) -> str:
+    """A catalog key the model answered, or "" for anything else (a key the catalog
+    does not have is dropped, never stored)."""
+    key = str(value or "").strip().lower()
+    return key if key in RUBROS else ""
+
+
+def normalize_country(value: object) -> str:
+    """Two ASCII letters, upper case — or "" (an empty, long or non-letter answer)."""
+    code = str(value or "").strip().upper()
+    return code if len(code) == 2 and code.isascii() and code.isalpha() else ""
+
+
+def review_input_ref(account: AccountToReview) -> str:
+    """A short digest of what the model read about one account — the `source_ref` of
+    what the review infers about it (the same texts give the same ref)."""
+    digest = hashlib.sha256(_account_block(0, account).encode("utf-8")).hexdigest()
+    return f"review-input:{digest[:16]}"

@@ -22,6 +22,57 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="referentes-rubro-001"></a>
+
+## REFERENTES-RUBRO-001 — Rubro y país de cada cuenta dentro de la revisión de referentes (RF-04, m-25119461) — 2026-11-25 · CAMBIO DE PROMPT SIN MEDIR; EVALUACIÓN PROPUESTA, NO CORRIDA
+
+- **Qué cambió:** la herramienta `revisar_cuentas` (`qualify_api.referentes.ai`, `claude-sonnet-5` con esfuerzo `low`, sin cambio de modelo) pide además, por cuenta:
+  - `rubro`: una clave del catálogo de rubros del Brand Kit (`discovery_seed.NICHE_LABELS`: `food_drink`, `fashion_beauty`, `fitness_health`, `travel_lifestyle`, `real_estate`, `technology`, `education`, `entertainment`) u `otro`. Es un `enum` en el esquema estricto.
+  - `pais`: código ISO de dos letras, solo si la bio, el nombre, las publicaciones o los hashtags de lugar de la cuenta lo dejan claro; si no, cadena vacía. El prompt prohíbe suponer el país de la marca.
+  - El sistema dice qué es cada clave con la etiqueta en español que ve el dueño. El código descarta un rubro fuera del catálogo y un país que no sea dos letras.
+- **Versión:** `REVIEW_PROMPT_VERSION = "referentes-review-2"`. La versión 1 es la de antes, sin número. Viaja en el `prompt_version` del libro de consumo y en `creators.rubro_version` / `region_version`.
+- **Sin llamada nueva:** es la misma llamada del veredicto «encaja / tipo / razón», con la misma `feature` en el libro (`referentes-revision`). El techo de salida sin razonamiento sube de 120 a 140 tokens por cuenta.
+- **Dónde queda:** en la fila global de `creators` (0182), con procedencia:
+  - fuente `ai`;
+  - modelo;
+  - versión del prompt;
+  - `review-input:<sha256>` de lo que leyó el modelo;
+  - fecha.
+
+  El país de la IA se usa solo si ninguna fuente gratis lo sabía (`qualify_api.creators.region_rubro`). Una fuente gratis lo reemplaza; la IA nunca reemplaza una fuente gratis.
+- **Qué no se midió:** nada. No se corrió ninguna llamada pagada (orden del ticket). Los tests usan un cliente falso. Tampoco se midió si `encaja` y `tipo` cambian al pedir dos campos más. Es el riesgo principal del cambio, y la evaluación de abajo lo cubre.
+
+**Costo marginal estimado [S]** (Sonnet 5: USD 2 por millón de tokens de entrada y USD 10 por millón de salida):
+
+| Parte | Cálculo | Por llamada de 10 cuentas |
+|---|---|---|
+| Entrada | ~300 tokens más de sistema y esquema | ≈ USD 0,0006 |
+| Salida | ~15 tokens por cuenta (`"rubro":"food_drink","pais":"CO"`) | ≈ USD 0,0015 |
+| Razonamiento extra con `low` | ~100 tokens, sin medir | ≈ USD 0,001 |
+| **Total** | | **≈ USD 0,002–0,003** (≈ USD 0,0002–0,0003 por cuenta revisada) |
+
+- Frente a la revisión de hoy (USD 0,142 por 164 cuentas en el experimento de 2026-10-14, ≈ USD 0,00087 por cuenta), es ≈ +25–35 % sobre esa función.
+- Por negocio y mes, con unas pocas búsquedas de referentes (≈ 3 fases × 2 llamadas cada una), son ≈ USD 0,015–0,03. Cabe en la opción B firmada (≈ USD 0,6–0,8 en toda la épica).
+- No hay ningún crédito nuevo de ScrapeCreators: el país gratis sale de lo ya guardado.
+
+**Evaluación propuesta (necesita el visto bueno de Deivid antes de gastar):**
+
+1. **Datos:** se reusan los 164 casos reales de `packages/api/evals/referentes_ai/cases.json` (4 marcas). Se agregan a mano dos etiquetas por cuenta:
+   - `rubro`: clave del catálogo, u `otro`;
+   - `pais`: ISO o «no se sabe».
+
+   Se suman las 59 cuentas `referente`/`competencia` de la base local, con su país de `tiktok_region` como referencia cuando lo hay. Partición dev/test según `qualify-measure`.
+2. **Métricas por clase:**
+   - exactitud del rubro y matriz de confusión entre las 8 claves y `otro`;
+   - precisión del país cuando lo da (lo grave es un país inventado) y cobertura (cuántas veces lo da);
+   - qué tan seguido el país de la IA contradice `tiktok_region` en las cuentas que tienen los dos.
+3. **Sin regresión:** precisión, recall, trampas y `kind` de `encaja` iguales a los de 2026-10-14 (Sonnet 5 @ low: 1.000 / 0.758 / 0/106 / 0.917), con 2 repeticiones.
+4. **Umbral para confiar en el filtro Nicho:** exactitud del rubro ≥ 0,85 en test, sin clase por debajo de 0,7. Para Región: precisión del país de la IA ≥ 0,95. Si no se llega, el filtro usa solo los países de fuentes gratis.
+5. **Costo de la evaluación:** ≈ USD 0,15–0,20 por corrida con Sonnet 5 @ low (la corrida de octubre costó USD 0,142), es decir ≈ USD 0,4 con dos repeticiones.
+6. **Comando:** el mismo `just eval-referentes` o `run_eval.py`, con un puntaje nuevo para `rubro`/`pais` en `run_eval.py`. No se escribió: espera las etiquetas.
+
+---
+
 <a id="capa-004"></a>
 
 ## CAPA-004 — Primera imagen real con la capa encendida en producción: Bianki, «Shawarma mixto», una imagen y un carrusel (m-25040499, m-25042157) — 2026-11-17 · DOS PIEZAS, NO ES UNA MEDICIÓN
