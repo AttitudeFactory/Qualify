@@ -1002,7 +1002,10 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
     transaction. VE-10a: OPENS the run when there is none yet (the first part to settle
     does), so the parent never waits in `drafting` for its parts (risk N1); a run
     already there is dirtied. Two parts settling together only bump the same row: the
-    run's lease (`PipelineStore.acquire`) gives one join."""
+    run's lease (`PipelineStore.acquire`) gives one join.
+
+    m-25112920: only a video by parts joins — an avatar block settling under its Clip
+    opens nothing (the Clip takes the block when the owner places it, `clip_avatar`)."""
     session.execute(
         text("""
         INSERT INTO creative_pipeline_runs AS r
@@ -1010,6 +1013,7 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
         SELECT p.tenant_id, p.id, p.revision, 'join', p.pipeline_version
         FROM content_drafts c
         JOIN content_drafts p ON p.tenant_id = c.tenant_id AND p.id = c.parent_draft_id
+        JOIN content_briefs pb ON pb.id = p.brief_id AND pb.kind = 'shot_video'
         WHERE c.id = :child
         ON CONFLICT (tenant_id, draft_id, revision, phase)
         DO UPDATE SET dirty_version = r.dirty_version + 1

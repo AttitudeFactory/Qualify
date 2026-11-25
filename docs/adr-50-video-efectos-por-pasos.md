@@ -90,7 +90,7 @@ Lo que quiere el dueño: subir su video, ponerle un texto y uno o varios efectos
 - `PartMode` gana el modo `local`: sin Seedance y a **costo 0**, solo con video o fotos propios del negocio y sin efectos de Seedance.
 - Corre en el `creative-worker` (preparación del trabajo `preview` de ADR 41), nunca en Reflex: el despachador `inline` lo rechaza.
 - Las fuentes de más de 4K o de más de 8 bits se normalizan antes en el `media-worker` (ADR 47, trabajo `normalize_local` en `gallery_jobs`, revisión `0171`).
-- El asset lleva `ai_generated=False` y no lleva bloque `draft`: no hay final de Seedance que pedir, así que se publica tal cual.
+- El asset lleva `ai_generated=False` y no lleva bloque `draft`: no hay final de Seedance que pedir, así que se publica tal cual. Un Clip con un tramo hecho con IA (un video de Seedance o una imagen de Seedream del generador, o un bloque de avatar de OmniHuman) sale `ai_generated=True`: ver el §9.
 
 ### 1.6 Compatibilidad con lo guardado
 
@@ -279,3 +279,43 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - Un análisis barato del video del dueño que diga si aparece una persona (reabre D4 y la fila `own_video_ai_effect`).
 - Quejas repetidas de clientes por algo de la lista de §1.7.
 - Que la regla de modo falle más de lo que acepte el golden set de EF-10 (m-25026578).
+
+## 9. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` — bloque de avatar dentro del Clip (m-25112920, 2026-11-24)
+
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactada por creative-engineer el 2026-11-24 con las decisiones de Deivid del mismo día (vía «creacion de tickets»). **Firma de Deivid:** «Firmo el §9 del ADR 50», escrito por Deivid en la sesión «quailify-deivid» el 2026-11-25. Los dos interruptores siguen apagados en todos los entornos; encenderlos es otra decisión.
+
+**Qué cambia.** El §1.5 dice que el modo `local` es «sin IA» y que su asset lleva `ai_generated=False`. Con esta enmienda, un Clip `local` puede llevar un **bloque de avatar**: un video donde el avatar de la marca habla, hecho con OmniHuman 1.5. Si la receta del Clip toca un bloque, el video armado sale con `ai_generated=True`. Esto sigue la regla del §3 («la etiqueta se lee de lo que se hizo»).
+
+**Cómo encaja.**
+
+- El bloque es un borrador hijo del Clip (`parent_draft_id`, el enlace de la revisión `0119`). Su tipo es `AVATAR_VIDEO` (presentador humano) o `ANIMATED_AVATAR_VIDEO` (personaje animado). Su `part_index` solo marca su lugar bajo el Clip (1 a 6). No es una parte de un video por partes: no lleva `media.part`.
+- El brief del bloque lleva `media.clip_avatar_block=True`. Lo pone solo el servidor y vive en el JSON del brief: no hay migración.
+- El bloque se hace por el camino del presentador que ya existe: Seedream dibuja al presentador, Seed Speech lee el guion del dueño y OmniHuman 1.5 mueve los labios.
+- Su video entra a la receta del Clip como un `SourceSegment` de tipo `video`, de 0 a su largo y a ×1 (`clip_avatar.place_block`). El armado local lo une con las fotos y los videos del dueño.
+- Un bloque solo va a ×1: a otra velocidad el armado pondría silencio y se perdería la voz (m-25049580). El armado rechaza un bloque a otra velocidad o un bloque de otro video antes de leer nada.
+- Cada bloque queda en `params.local.avatar_blocks` del asset del Clip: borrador, revisión, asset, proveedor, modelo y largo. El costo y el prompt quedan en las filas del propio bloque.
+
+**La etiqueta de IA, para todos los tramos (decisión de Deivid, 2026-11-24).** Esto corrige el §1.5 aparte del avatar, y vale **aunque los interruptores del avatar estén apagados**.
+
+- Un Clip `local` sale con `ai_generated=True` si **cualquier** tramo es imagen hecha con IA. Puede ser un video de Seedance o una imagen de Seedream del generador que el dueño eligió (P3), o un bloque de OmniHuman. Basta uno.
+- Se lee de lo que se hizo (§3), en el asset del generador que dio ese archivo, nunca por la ruta. Primero cuenta lo que el propio asset anotó (`params.ai_generated`, que escriben el armado local, la unión y el final por partes). Después, su proveedor, si es un proveedor de generación (Seedance, Seedream, OmniHuman). Por último, `requires_ai_disclosure` de su borrador, que se calcula de lo que ese borrador hizo.
+- Solo se buscan los archivos que guardó el generador. Las fotos y los videos que subió el dueño, los de la Galería y las ventanas de reels son suyos: no se buscan y no cuentan como IA.
+- Un Clip solo con fotos y videos propios sigue en `False`.
+- **La etiqueta falla hacia el lado seguro.** Un archivo que guardó el generador y no tiene fila en `image_assets` cuenta como IA: por ejemplo, la vista previa 480p de Seedance cuya fila pisó el final, un póster o el presentador de Seedream. Queda en `ai_sources` como `unknown_generated`. Hacer fallar el Clip sería peor para el dueño.
+- El avatar de la marca (`t/{negocio}/brand/{marca}/avatar/…`) lo dibuja Seedream: si entra como tramo, cuenta como IA (`brand_avatar`). Los logos y demás archivos de la marca, la Galería (solo guarda lo que sube el negocio), las copias normalizadas de los videos del dueño y las ventanas de reels son del dueño.
+- Cada tramo de IA queda en `params.local.ai_sources` del asset del Clip: borrador, asset, proveedor y modelo.
+- Si hay archivos del generador en la receta y el armado no puede consultarlos, el Clip no se arma: nunca sale sin saber si lleva la etiqueta.
+- Antes de este cambio, un Clip con un video de Seedance elegido por el dueño salía `False`. Ahora sale `True` a propósito.
+
+**Cupo y gasto (enmienda a D3 solo para los bloques).**
+
+- Crear el bloque no descuenta nada: escribe su fila de cobro en cero, como cualquier pieza, y con ella la cola encuentra la reserva de la generación.
+- Sus segundos se descuentan del cupo de video del mes cuando se aprueba el Clip, como un clip de Seedance. El cobro queda en la fila del propio bloque, así que aprobar otra versión del Clip no lo vuelve a cobrar.
+- El servidor rechaza crear el bloque si el mes no alcanza para sus segundos y los de **todos** los bloques de la marca que aún no se cobraron: no hay llamada de pago sin cupo. Cuentan todos los bloques sin cobrar cuyo Clip todavía no se aprobó, en cualquier Clip de la marca y sin importar el mes en que se crearon (un bloque del día 31 aprobado el día 1 sigue contando). Un bloque que nunca se colocó deja de contar al aprobarse su Clip o con la retención.
+- **Tope diario (decisión de Deivid, 2026-11-24):** un negocio crea como máximo 3 bloques al día, en su propio día (zona horaria del negocio, como el tope de videos con fotos y videos propios). Cuentan todos los bloques creados ese día, aprobados o no. No cuenta uno que falló antes de pagar nada. El cuarto se rechaza antes de escribir nada y de cualquier llamada de pago: «Ya creaste 3 avatares hoy. Mañana puedes crear más.»
+- Máximo 30 s por bloque. Se rechaza al crearlo, con el largo estimado del guion, y otra vez con la voz real, antes de pedir OmniHuman.
+- Las fotos y los videos propios del dueño siguen sin descontar nada (D3).
+
+**Interruptores.** `QUALIFY_CLIP_AVATAR_PRESENTER` y `QUALIFY_CLIP_AVATAR_ANIMATED`, apagados en todos los entornos. El servidor rechaza crear o poner un bloque de un tipo apagado. Con los dos apagados no puede existir ningún bloque, así que nada más cambia. Los borradores `avatar_video` y `animated_avatar_video` sueltos siguen igual.
+
+**Fuera de esta enmienda.** La pantalla (m-25112921), la música y el volumen entre bloques, y la medición pagada (m-25112919).

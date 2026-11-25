@@ -392,6 +392,14 @@ class CreationsLedger(Protocol):
         charged — when the month cannot pay their sum."""
         ...
 
+    def charged_videos_many(
+        self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
+    ) -> list[VideoCharge]:
+        """`charge_videos_many`, answering WHICH of `charges` this call took (those
+        already charged are skipped and not returned) — what an approval that fails
+        afterwards must undo, and only that (m-25112920)."""
+        ...
+
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
         """Undo `charge_videos` when the approval could not be written."""
         ...
@@ -745,6 +753,16 @@ class PostgresCreationsLedger:
     def charge_videos_many(
         self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
     ) -> list[UUID]:
+        return [row_id for _, row_id in self._charge_videos(tenant_id, brand_id, charges)]
+
+    def charged_videos_many(
+        self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
+    ) -> list[VideoCharge]:
+        return [item for item, _ in self._charge_videos(tenant_id, brand_id, charges)]
+
+    def _charge_videos(
+        self, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
+    ) -> list[tuple[VideoCharge, UUID]]:
         wanted = [c for c in charges if c.videos > 0]
         if not wanted:
             return []
@@ -774,7 +792,7 @@ class PostgresCreationsLedger:
                 raise short
             dimension = video_dimension(self._weights)
             shares = carve(state.split(dimension, sum(amounts)), amounts)
-            ids: list[UUID] = []
+            ids: list[tuple[VideoCharge, UUID]] = []
             for (item, row), share in zip(pending, shares, strict=True):
                 if row is None:
                     # a piece created before the quota (or with it switched off): its
@@ -800,7 +818,7 @@ class PostgresCreationsLedger:
                 row.videos_charged_at = self._clock()
                 session.flush()
                 self._allocate(session, tenant_id, row.id, share, period, state.plan)
-                ids.append(row.id)
+                ids.append((item, row.id))
             return ids
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
@@ -1290,6 +1308,16 @@ class InMemoryCreationsLedger:
     def charge_videos_many(
         self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
     ) -> list[UUID]:
+        return [row_id for _, row_id in self._charge_videos(tenant_id, brand_id, charges)]
+
+    def charged_videos_many(
+        self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
+    ) -> list[VideoCharge]:
+        return [item for item, _ in self._charge_videos(tenant_id, brand_id, charges)]
+
+    def _charge_videos(
+        self, tenant_id: UUID, brand_id: UUID, charges: Sequence[VideoCharge]
+    ) -> list[tuple[VideoCharge, UUID]]:
         pending: list[VideoCharge] = []
         for item in charges:
             if item.videos <= 0:
@@ -1306,7 +1334,7 @@ class InMemoryCreationsLedger:
         if short is not None:
             raise short
         shares = carve(state.split(video_dimension(self._weights), sum(amounts)), amounts)
-        ids: list[UUID] = []
+        ids: list[tuple[VideoCharge, UUID]] = []
         for item, amount, share in zip(pending, amounts, shares, strict=True):
             row = self.rows.get((item.draft_id, item.revision))
             if row is None:
@@ -1315,7 +1343,7 @@ class InMemoryCreationsLedger:
             row.videos = item.videos
             row.video_seconds = amount if self._weights.video_in_seconds else 0
             row.add(share)
-            ids.append(row.id)
+            ids.append((item, row.id))
         return ids
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
