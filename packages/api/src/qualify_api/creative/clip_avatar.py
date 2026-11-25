@@ -75,6 +75,7 @@ from qualify_creative.enums import (
     VideoEngine,
 )
 from qualify_creative.schemas import (
+    CUT_EFFECT_ID,
     DURATIONS_SECONDS,
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
@@ -905,32 +906,32 @@ AVATAR_JOIN_TEXT = (
     "Junto a un avatar, la unión solo puede ser «Corte», para que su voz se escuche "
     "completa. Cámbiala y vuelve a intentarlo."
 )
-#: The library's hard cut: no transition (m-25114465 reads it as None too).
-_CUT = "corte"
 
 
-def avatar_join_problems(segments: Sequence[Any], blocks: Iterable[int]) -> tuple[int, ...]:
-    """The indexes of the stretches whose join touches an avatar block and is not a cut:
-    the block's own `transition_in` (its join with the stretch before it) and the one of
-    the stretch right after it. `blocks` are the blocks' indexes in `segments`. Pure.
-
-    The field a stretch's join lives in (`SourceSegment.transition_in`) comes with
-    m-25114465 (#804, `QUALIFY_CLIP_BLOCK_TRANSITIONS`); on a recipe without it every
-    join is a cut and this finds nothing — it is read with `getattr` so the rule holds
-    the moment the field exists, on every path that checks it (the first «Crear»,
-    `place_block` and the local assembly)."""
+def avatar_join_problems(
+    segments: Sequence[SourceSegment | None], blocks: Iterable[int]
+) -> tuple[int, ...]:
+    """The indexes of the stretches whose join touches an avatar block and is not a cut
+    (ADR 50 §10's `SourceSegment.transition_in`): the block's own (its join with the
+    stretch before it) and the one of the stretch right after it. `blocks` are the
+    blocks' indexes in `segments`; None is a block not made yet (its join is always a
+    cut). Holds with `QUALIFY_CLIP_BLOCK_TRANSITIONS` off or on — it is the condition to
+    turn it on — on every path that checks it: the first «Crear», `place_block` and the
+    local assembly. Pure."""
     found: list[int] = []
     for index in sorted(set(blocks)):
         for at in (index, index + 1):
             if not 0 <= at < len(segments) or at in found:
                 continue
-            join = getattr(segments[at], "transition_in", None)
-            if join is not None and getattr(join, "effect_id", None) != _CUT:
+            segment = segments[at]
+            join = segment.transition_in if segment is not None else None
+            # `corte` is read as None by the type already; kept explicit for clarity
+            if join is not None and join.effect_id != CUT_EFFECT_ID:
                 found.append(at)
     return tuple(sorted(found))
 
 
-def refuse_avatar_joins(segments: Sequence[Any], blocks: Iterable[int]) -> None:
+def refuse_avatar_joins(segments: Sequence[SourceSegment | None], blocks: Iterable[int]) -> None:
     """`ClipAvatarRefused` (`avatar_join_cut_only`) when a join next to a block blends."""
     bad = avatar_join_problems(segments, blocks)
     if bad:
