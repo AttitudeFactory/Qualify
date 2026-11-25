@@ -259,7 +259,7 @@ def test_over_sixty_seconds_says_how_long(editor_on: None) -> None:
     for key in keys[1:]:
         CreativeState.report_clip_media.fn(state, key, 15.0, 1080, 1920)
     assert state.clip_edit_problem == [
-        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video, o "
+        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o bloque de video, o "
         "hazlo más rápido en «Velocidad».",
         "warn",
     ]
