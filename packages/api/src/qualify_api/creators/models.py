@@ -107,7 +107,6 @@ class Creator(Base):
     region_code: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     region_source: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     region_source_ref: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    region_model: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     region_version: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     region_inferred_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

@@ -11,19 +11,19 @@ and Nicho filters need a country and a rubro per account. RF-00 measured 0 % of 
 hold what Qualify INFERS, kept apart from what the network reports (`country_code`,
 `category` stay untouched):
 
-- `region_code` — ISO 3166-1 alpha-2, or '' when unknown. Filled first from free sources
+- `region_code` — ISO 3166-1 alpha-2, or '' when unknown. Filled ONLY from free sources
   (`qualify_api.creators.region_rubro`): the network's own country already on the row
   (`profile`), the `region` TikTok returns with each video in the cached vendor answers
   (`tiktok_region`), the location of the account's saved reels (`reel_location`), the
-  country of the searches that surfaced it (`sightings`); and only when none answers,
-  from the account review Claude already runs (`ai`, `referentes.ai`).
+  country of the searches that surfaced it (`sightings`). Never from a model: Deivid,
+  2026-11-25, after REFERENTES-RUBRO-001 measured the review's country at 0.82 precision
+  against a 0.95 bar (`docs/modelos-generativos/pruebas.md`); the CHECK refuses `ai`.
 - `rubro` — a key of the Brand Kit's rubro catalog
   (`referentes.discovery_seed.NICHE_LABELS`: `food_drink`, `real_estate`…), `otro` when
   none fits, '' when not inferred yet. Only the AI review fills it.
 - Provenance per value: `*_source`, `*_source_ref` (the `vendor_payloads` id, the
-  sighting term or the reel id it came from), `*_model` ('' for a free source),
-  `*_version` (prompt version for `ai`, pipeline version for a free source) and
-  `*_inferred_at`.
+  sighting term, or the digest of what the review read), `*_version` (pipeline version
+  for the region, prompt version for the rubro), `rubro_model`, and `*_inferred_at`.
 
 ## Why `creators` has no `tenant_id` and no RLS — and what protects it
 
@@ -31,8 +31,10 @@ hold what Qualify INFERS, kept apart from what the network reports (`country_cod
 the network, shared by every business — the signed precedent of 0036 (H9 in
 `docs/adr-42-ideas-reels-costo.md`; the same rule as the hashtag catalog, 0023). The
 columns added here keep it that way: a country and a rubro describe the PUBLIC ACCOUNT,
-inferred from what the account itself publishes (bio, category, captions, hashtags,
-the region TikTok attaches to its videos), never from a business. Nothing here names a
+taken from what the network says about the account (the region TikTok attaches to
+its videos, a reel's place, the search that surfaced it) or, for the rubro, inferred
+from what the account itself publishes (bio, category, captions, hashtags) — never
+from a business (an operator's private note never reaches it). Nothing here names a
 tenant, a brand, a user or a label: which business follows which account, and as what,
 stays in `brand_account_labels` (tenant_id + RLS ENABLE/FORCE + the NULLIF policy, 0020).
 What protects the table is the role grants, unchanged from 0036: `qualify_app` may
@@ -59,7 +61,6 @@ _TEXT_COLUMNS = (
     "region_code",
     "region_source",
     "region_source_ref",
-    "region_model",
     "region_version",
     "rubro",
     "rubro_source",
@@ -71,13 +72,12 @@ _TEXT_COLUMNS = (
 _CHECKS = {
     "ck_creator_region_code": "region_code = '' OR region_code ~ '^[A-Z]{2}$'",
     "ck_creator_region_source": (
-        "region_source IN ('', 'profile', 'tiktok_region', 'reel_location', 'sightings', 'ai')"
+        "region_source IN ('', 'profile', 'tiktok_region', 'reel_location', 'sightings')"
     ),
     # a value always says where it came from, and an empty one says nothing
     "ck_creator_region_provenance": (
         "(region_code = '') = (region_source = '') "
-        "AND (region_code = '' OR region_inferred_at IS NOT NULL) "
-        "AND (region_source <> 'ai' OR region_model <> '')"
+        "AND (region_code = '' OR region_inferred_at IS NOT NULL)"
     ),
     # the catalog's keys are snake_case ascii; the list itself lives in code
     "ck_creator_rubro": "rubro ~ '^[a-z_]*$'",

@@ -96,21 +96,20 @@ def test_an_unknown_path_or_shape_gives_nothing() -> None:
 
 
 def _claim(source: str, code: str, handle: str = "a", ref: str = "") -> rr.RegionClaim:
-    model = "claude-sonnet-5" if source == "ai" else ""
-    return rr.RegionClaim("tiktok", handle, code, source, ref, model=model)
+    return rr.RegionClaim("tiktok", handle, code, source, ref)
 
 
 def test_the_best_source_wins_whatever_the_majority_says() -> None:
     claims = [
         _claim("sightings", "CO"),
         _claim("sightings", "CO"),
-        _claim("ai", "MX"),
+        _claim("reel_location", "MX", handle="b"),
         _claim("tiktok_region", "VE"),
         _claim("sightings", "UY", handle="b"),
     ]
     best = rr.best_claims(claims)
     assert best[("tiktok", "a")].code == "VE" and best[("tiktok", "a")].source == "tiktok_region"
-    assert best[("tiktok", "b")].code == "UY"
+    assert best[("tiktok", "b")].code == "MX"  # a reel's place beats a search's country
 
 
 def test_within_a_source_the_heaviest_country_wins_and_ties_go_to_the_latest() -> None:
@@ -128,9 +127,11 @@ def test_within_a_source_the_heaviest_country_wins_and_ties_go_to_the_latest() -
     assert (tie[("tiktok", "a")].code, tie[("tiktok", "a")].source_ref) == ("VE", "p2")
 
 
-def test_the_source_order_is_free_first_and_ai_last() -> None:
-    assert rr.REGION_SOURCES == ("profile", "tiktok_region", "reel_location", "sightings", "ai")
-    assert "ai" not in rr.FREE_SOURCES
+def test_the_region_comes_only_from_free_sources() -> None:
+    # Deivid, 2026-11-25 (REFERENTES-RUBRO-001): the review's country is never a source
+    assert rr.REGION_SOURCES == ("profile", "tiktok_region", "reel_location", "sightings")
+    assert not hasattr(rr, "SOURCE_AI")
+    assert "country" not in {f.name for f in rr.ReviewInference.__dataclass_fields__.values()}
 
 
 def test_claims_refuse_what_they_cannot_vouch_for() -> None:
@@ -138,7 +139,7 @@ def test_claims_refuse_what_they_cannot_vouch_for() -> None:
         rr.RegionClaim("tiktok", "a", "Colombia", "sightings")
     with pytest.raises(ValueError):
         rr.RegionClaim("tiktok", "a", "CO", "rumor")
-    with pytest.raises(ValueError):  # an AI value without its model has no provenance
+    with pytest.raises(ValueError):  # a model is never a region source
         rr.RegionClaim("tiktok", "a", "CO", "ai")
     with pytest.raises(ValueError):
         rr.RubroClaim("tiktok", "a", "panaderia", "claude-sonnet-5", "v2")
@@ -153,7 +154,7 @@ def test_rubros_are_the_brand_kit_catalog_plus_otro() -> None:
 
 
 def test_record_inferences_without_a_business_writes_nothing() -> None:
-    inference = rr.ReviewInference("tiktok", "a", "food_drink", "CO", "m", "v")
+    inference = rr.ReviewInference("tiktok", "a", "food_drink", "m", "v")
     assert rr.record_inferences(None, [inference]) == 0
 
 

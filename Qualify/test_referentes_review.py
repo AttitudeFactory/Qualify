@@ -203,7 +203,7 @@ def test_a_shortlist_goes_out_as_parallel_calls_of_ten() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# RF-04 (m-25119461): the review's rubro and country reach the shared pool
+# RF-04 (m-25119461): the review's rubro reaches the shared pool; its country never
 # --------------------------------------------------------------------------------------
 
 
@@ -225,7 +225,7 @@ class RubroReview(FakeReview):
         return out, CallStats(kwargs["config"].model_id, None, 100, 20)
 
 
-def test_the_reviewer_hands_rubro_and_country_to_the_pool_with_provenance() -> None:
+def test_the_reviewer_hands_the_rubro_to_the_pool_but_never_the_country() -> None:
     bianki = _candidate("instagram", "Bianki", 5_000, bio="Shawarma en San Cristóbal")
     quiet = _candidate("tiktok", "callado", 100)
     hand = _candidate("tiktok", "nada", 100)
@@ -233,7 +233,7 @@ def test_the_reviewer_hands_rubro_and_country_to_the_pool_with_provenance() -> N
         {
             "instagram:bianki": ("food_drink", "VE"),
             "tiktok:callado": ("otro", ""),
-            "tiktok:nada": ("", ""),
+            "tiktok:nada": ("", "CO"),
         }
     )
     stored: list[tuple[Any, list[Any]]] = []
@@ -251,11 +251,13 @@ def test_the_reviewer_hands_rubro_and_country_to_the_pool_with_provenance() -> N
     assert len(fake.calls) == 1  # the same call as the verdict, nothing extra
     tenant, rows = stored[0]
     assert tenant == TENANT
-    # an answer with neither rubro nor country stores nothing
-    assert [(r.network, r.handle, r.rubro, r.country) for r in rows] == [
-        ("instagram", "bianki", "food_drink", "VE"),
-        ("tiktok", "callado", "otro", ""),
+    # an answer without a rubro stores nothing, whatever country it gave; and the
+    # country the model gave is never handed over (free sources only, 2026-11-25)
+    assert [(r.network, r.handle, r.rubro) for r in rows] == [
+        ("instagram", "bianki", "food_drink"),
+        ("tiktok", "callado", "otro"),
     ]
+    assert not any(hasattr(r, "country") for r in rows)
     assert {r.model for r in rows} == {"claude-sonnet-5"}
     assert {r.version for r in rows} == {"referentes-review-2"}
     assert all(r.source_ref.startswith("review-input:") for r in rows)
@@ -295,7 +297,7 @@ def test_a_manual_add_also_teaches_the_pool() -> None:
         attribution=TEST_ATTRIBUTION,
         record=lambda _t, rows: stored.append(list(rows)) or len(rows),
     )
-    assert [(r.handle, r.rubro, r.country) for r in stored[0]] == [("elchef", "food_drink", "CO")]
+    assert [(r.handle, r.rubro) for r in stored[0]] == [("elchef", "food_drink")]
     # the provenance digests what the model actually read (manual, no note)
     sent = rr.to_review(_candidate("tiktok", "elchef", 1_000), manual=True)
     assert stored[0][0].source_ref == rr.review_ai.review_input_ref(sent)

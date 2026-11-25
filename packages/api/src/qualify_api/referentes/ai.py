@@ -17,9 +17,14 @@ answer as one `revisar_cuentas` tool call. Per account:
 - `rubro` — the account's rubro as a key of the Brand Kit's rubro catalog
   (`discovery_seed.NICHE_LABELS`), `otro` when none fits; and `pais` — the account's
   country (ISO alpha-2), only when its own texts make it clear, else "". Added by RF-04
-  (m-25119461, prompt version 2) to the SAME call, no extra one: the caller stores them
-  on the global `creators` row with provenance (`creators.region_rubro`) for the Región
-  and Nicho filters. Like `tipo`, they describe the public account, never the brand.
+  (m-25119461, prompt version 2) to the SAME call, no extra one. The caller stores the
+  RUBRO on the global `creators` row with provenance (`creators.region_rubro`) for the
+  Nicho filter. The `pais` is returned but NEVER stored: REFERENTES-RUBRO-001 measured it
+  at 0.82 precision against a 0.95 bar (the model writes the brand's country, the
+  language's, or what it already knows), so Deivid decided on 2026-11-25 that the
+  country comes from free sources only. The field stays in the prompt on purpose: the
+  rubro was measured WITH it, and dropping it would ship an unmeasured prompt; a country
+  by AI is a new ticket (`referentes-review-3`, with its evidence checked in code).
 
 A judgement about one brand's accounts, returned to the caller and never written back
 anywhere as a rule: nothing accumulates per rubro, and the prompt carries principles,
@@ -143,7 +148,8 @@ class AccountReview:
     reason: str
     #: A `RUBROS` key, or "" when the model gave none (an answer from before version 2).
     rubro: str = ""
-    #: ISO 3166-1 alpha-2, or "" when the account's texts do not make it clear.
+    #: ISO 3166-1 alpha-2, or "" when the account's texts do not make it clear. Read by
+    #: the eval only: never stored (country from free sources only, 2026-11-25).
     country: str = ""
 
 

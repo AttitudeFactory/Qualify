@@ -13,11 +13,13 @@ Two jobs:
   `manual=True` — which never drops it: the operator's call stands, the verdict only
   warns — and returned as a card like any other.
 
-Both store what the review infers about each PUBLIC account — its rubro and, when no
-free source knew it, its country (RF-04, m-25119461) — on the shared `creators` row with
-its provenance (`qualify_api.creators.region_rubro.record_inferences`), through the
-reviewing business's own door. No extra call: it is part of the same verdict. A failed
-write is logged and never fails the review.
+Both store what the review infers about each PUBLIC account's rubro (RF-04,
+m-25119461) on the shared `creators` row with its provenance
+(`qualify_api.creators.region_rubro.record_inferences`), through the reviewing business's
+own door, and fill the region of those accounts from free sources. The review's `pais`
+is NOT stored: the country comes from free sources only (Deivid, 2026-11-25, after
+REFERENTES-RUBRO-001). No extra call: it is part of the same verdict. A failed write is
+logged and never fails the review.
 
 Kept OUT of `creator_discovery.py`: that module's code is fingerprinted as the
 algorithm, and how a model is called is not part of it — the algorithm only knows that
@@ -129,10 +131,11 @@ def inferences(
     *,
     sent: Sequence[review_ai.AccountToReview] | None = None,
 ) -> list[region_rubro.ReviewInference]:
-    """What the review said about each candidate's rubro and country, ready to store.
-    Accounts outside the pool's networks, and answers with no rubro and no country, are
-    left out. `sent` is what the model read (by default `to_review(candidate)`): its
-    digest is the provenance, and an account the model read with an operator's NOTE is
+    """What the review said about each candidate's rubro, ready to store. Its `pais`
+    is never stored (country from free sources only, Deivid 2026-11-25). Accounts outside
+    the pool's networks, and answers with no rubro, are left out. `sent` is what the
+    model read (by default `to_review(candidate)`): its digest is the provenance, and an
+    account the model read with an operator's NOTE is
     left out entirely — the note is the business's own private text, and what the model
     concluded from it must not land on the shared, public `creators` row (0182)."""
     read = {item.id: item for item in (sent or ())}
@@ -141,7 +144,7 @@ def inferences(
         answer = answers.get(account_id(candidate))
         if answer is None or candidate.network not in region_rubro.NETWORKS:
             continue
-        if not answer.rubro and not answer.country:
+        if not answer.rubro:
             continue
         item = read.get(account_id(candidate)) or to_review(candidate)
         if item.note.strip():
@@ -151,7 +154,6 @@ def inferences(
                 network=candidate.network,
                 handle=candidate.username,
                 rubro=answer.rubro,
-                country=answer.country,
                 model=model_id,
                 version=review_ai.REVIEW_PROMPT_VERSION,
                 source_ref=review_ai.review_input_ref(item),
@@ -169,7 +171,7 @@ def _store(
     *,
     sent: Sequence[review_ai.AccountToReview] | None = None,
 ) -> None:
-    """Keep the review's rubro / country; a failure is logged with its traceback, never
+    """Keep the review's rubro; a failure is logged with its traceback, never
     raised (the verdict stands even if the pool cannot learn from it)."""
     found = inferences(candidates, answers, model_id, sent=sent)
     if not found:
@@ -177,9 +179,9 @@ def _store(
     try:
         written = record(attribution.tenant_id, found)
     except Exception:
-        logger.warning("referentes review: rubro/country not stored", exc_info=True)
+        logger.warning("referentes review: rubro not stored", exc_info=True)
         return
-    logger.info("referentes review: rubro/country stored for %d of %d", written, len(found))
+    logger.info("referentes review: rubro stored for %d of %d", written, len(found))
 
 
 def _resolve_key(api_key: str | None) -> str | None:
@@ -252,8 +254,8 @@ def make_reviewer(
     record: RecordFn = region_rubro.record_inferences,
 ) -> AccountReviewer | None:
     """The reviewer a search runs with, or None without an API key (the search then
-    runs unreviewed, as before version 9). What it infers about each account's rubro and
-    country goes to `record` (RF-04)."""
+    runs unreviewed, as before version 9). What it infers about each account's rubro
+    goes to `record` (RF-04)."""
     key = _resolve_key(api_key)
     if key is None:
         return None

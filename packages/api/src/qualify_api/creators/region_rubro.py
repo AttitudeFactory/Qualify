@@ -3,9 +3,16 @@
 The Región and Nicho filters of the reel-filter epic (m-24872324,
 `docs/epica-filtrado-reels.md`) need a country and a rubro per account. They live on the
 GLOBAL `creators` row (0182: public data of the network, no tenant — see that revision's
-docstring), each value with its provenance: source, source ref, model, version, time.
+docstring), each value with its provenance: source, source ref, version, time (and the
+model, for the rubro).
 
-## Region — where each value comes from, best first
+## Region — FREE SOURCES ONLY, best first
+
+Deivid, 2026-11-25: the country comes only from free sources. The account review's
+`pais` was measured (REFERENTES-RUBRO-001, `docs/modelos-generativos/pruebas.md`) at a
+precision of 0.815 / 0.827 against the 0.95 bar — the model writes the brand's country,
+the language's or what it already knows — so it is never stored. A country by AI goes to
+a new ticket (prompt `referentes-review-3`, with the evidence checked in code).
 
 1. `profile` — the network's own country already on the row (`creators.country_code`:
    TikTok's `region` on a feed author, an Instagram business address).
@@ -22,9 +29,7 @@ docstring), each value with its provenance: source, source ref, model, version, 
    reel list is cached on the local base.
 4. `sightings` — the country of the searches that surfaced the account
    (`creator_sightings.country_code`): the search's country, not the account's, so an
-   approximation (RF-00: 58 of 59 labeled accounts have one) — kept last of the free ones.
-5. `ai` — what Claude's account review answered (`referentes.ai`, `pais`), only when no
-   free source did: it never replaces a free value, and a free value replaces it.
+   approximation (RF-00: 58 of 59 labeled accounts have one) — kept last.
 
 Within one source the most frequent country wins (ties: the latest evidence). Nothing
 here calls a vendor or a model: `backfill` only reads what is already stored.
@@ -36,15 +41,16 @@ tenant line this module must never cross.
 ## Rubro
 
 A key of the Brand Kit's rubro catalog (`referentes.discovery_seed.NICHE_LABELS`) or
-`otro`, from the account review only (`ai`): no free source carries it — the network's
-`category` is its own taxonomy (RF-00), kept apart.
+`otro`, from the account review only (`ai`, prompt `referentes-review-2`, measured at 0.87
+on test against a 0.85 bar): no free source carries it — the network's `category` is its
+own taxonomy (RF-00), kept apart.
 
 ## Idempotency
 
 `apply_region` / `apply_rubro` are single conditional UPDATEs: the same claim twice
 changes nothing (not even `*_inferred_at`); a worse source never replaces a better one; an
-AI answer replaces an AI answer only when the prompt version changed (or, for the rubro,
-when a real rubro comes for an account stored as `otro`). A re-run of the
+AI rubro replaces an AI rubro only when the prompt version changed or a real rubro comes
+for an account stored as `otro`. A re-run of the
 backfill therefore writes zero rows, and never pays: it reads the pool and nothing else.
 
 ## Reading (RF-01, RF-02b, RF-07a)
@@ -78,20 +84,18 @@ logger = logging.getLogger(__name__)
 
 NETWORKS = ("tiktok", "instagram")
 
-#: Region sources, best first (the order `apply_region` ranks by).
+#: Region sources, best first (the order `apply_region` ranks by). All free: no model
+#: answer is ever a region source (Deivid, 2026-11-25).
 SOURCE_PROFILE = "profile"
 SOURCE_TIKTOK_REGION = "tiktok_region"
 SOURCE_REEL_LOCATION = "reel_location"
 SOURCE_SIGHTINGS = "sightings"
-SOURCE_AI = "ai"
 REGION_SOURCES: tuple[str, ...] = (
     SOURCE_PROFILE,
     SOURCE_TIKTOK_REGION,
     SOURCE_REEL_LOCATION,
     SOURCE_SIGHTINGS,
-    SOURCE_AI,
 )
-FREE_SOURCES = REGION_SOURCES[:-1]
 
 #: The pipeline version of a free value (`creators.region_version`). Bump when what a
 #: free source reads, or the order, changes.
@@ -111,21 +115,18 @@ Key = tuple[str, str]
 
 @dataclass(frozen=True)
 class RegionClaim:
-    """One account's country according to one source, with its provenance."""
+    """One account's country according to one free source, with its provenance."""
 
     network: str
     handle: str
     code: str
     source: str
     source_ref: str = ""
-    model: str = ""
     version: str = FREE_PIPELINE_VERSION
 
     def __post_init__(self) -> None:
         if self.source not in REGION_SOURCES:
             raise ValueError(f"source must be one of {REGION_SOURCES}, got {self.source!r}")
-        if self.source == SOURCE_AI and not self.model:
-            raise ValueError("an AI region needs its model")
         code = normalize_country(self.code)
         if not code:
             raise ValueError(f"not a country code: {self.code!r}")
@@ -374,22 +375,19 @@ def free_claims(
     return best_claims(claims)
 
 
-#: A claim lands when the row has no region; when its source ranks better; when the same
-#: free source now says another country (or runs another pipeline version); or when an
-#: AI answer comes from another prompt version. The same claim twice is a no-op — and an
-#: AI answer never replaces a free value.
+#: A claim lands when the row has no region; when its source ranks better; or when the
+#: same source now says another country (or runs another pipeline version). The same
+#: claim twice is a no-op.
 _APPLY_REGION = text(
     """
     UPDATE creators SET region_code = :code, region_source = :source,
-           region_source_ref = :ref, region_model = :model, region_version = :version,
-           region_inferred_at = :now
+           region_source_ref = :ref, region_version = :version, region_inferred_at = :now
      WHERE network = :network AND handle = :handle
        AND (
             region_source = ''
          OR array_position(CAST(:ranks AS text[]), region_source) > :rank
-         OR (region_source = :source AND NOT :is_ai
+         OR (region_source = :source
              AND (region_code <> :code OR region_version <> :version))
-         OR (region_source = :source AND :is_ai AND region_version <> :version)
        )
     """
 )
@@ -422,7 +420,6 @@ def apply_region(session: Session, claim: RegionClaim, *, now: datetime | None =
             "code": claim.code,
             "source": claim.source,
             "ref": claim.source_ref,
-            "model": claim.model,
             "version": claim.version,
             "now": _now(now),
             "network": claim.network,
@@ -430,7 +427,6 @@ def apply_region(session: Session, claim: RegionClaim, *, now: datetime | None =
             "ranks": list(REGION_SOURCES),
             # array_position is 1-based
             "rank": REGION_SOURCES.index(claim.source) + 1,
-            "is_ai": claim.source == SOURCE_AI,
         },
     )
     return bool(result.rowcount)
@@ -517,12 +513,12 @@ def coverage(session: Session) -> Coverage:
 
 @dataclass(frozen=True)
 class ReviewInference:
-    """What one review answered about one account: its rubro and, maybe, its country."""
+    """What one review answered about one account that is kept: its rubro. The review's
+    `pais` has no field here on purpose — it is never stored (Deivid, 2026-11-25)."""
 
     network: str
     handle: str
     rubro: str
-    country: str
     model: str
     version: str
     source_ref: str = ""
@@ -534,8 +530,8 @@ class ReviewInference:
 def record_inferences_in(
     session: Session, inferences: Sequence[ReviewInference], *, now: datetime | None = None
 ) -> int:
-    """Store the review's rubro and country (country only where no free source answered:
-    the free ones are tried first, here, from what the pool already has). Returns rows
+    """Store the review's rubro, and fill the region of the same accounts from the free
+    sources the pool already has (no payload scan: the backfill does that). Returns rows
     written. Accounts outside the pool (other networks, never seen) are skipped."""
     moment = _now(now)
     keep = [i for i in inferences if i.network in NETWORKS and normalize_handle(i.handle)]
@@ -549,17 +545,6 @@ def record_inferences_in(
         changed = False
         if key in free:
             changed |= apply_region(session, free[key], now=moment)
-        elif item.country:
-            claim = RegionClaim(
-                item.network,
-                item.handle,
-                item.country,
-                SOURCE_AI,
-                item.source_ref,
-                model=item.model,
-                version=item.version,
-            )
-            changed |= apply_region(session, claim, now=moment)
         if item.rubro in RUBROS:
             rubro = RubroClaim(
                 item.network, item.handle, item.rubro, item.model, item.version, item.source_ref

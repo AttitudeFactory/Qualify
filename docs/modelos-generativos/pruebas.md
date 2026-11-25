@@ -32,15 +32,15 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   - El sistema dice qué es cada clave con la etiqueta en español que ve el dueño. El código descarta un rubro fuera del catálogo y un país que no sea dos letras.
 - **Versión:** `REVIEW_PROMPT_VERSION = "referentes-review-2"`. La versión 1 es la de antes, sin número. Viaja en el `prompt_version` del libro de consumo y en `creators.rubro_version` / `region_version`.
 - **Sin llamada nueva:** es la misma llamada del veredicto «encaja / tipo / razón», con la misma `feature` en el libro (`referentes-revision`). El techo de salida sin razonamiento sube de 120 a 140 tokens por cuenta.
-- **Dónde queda:** en la fila global de `creators` (0182), con procedencia:
+- **Dónde queda (el rubro):** en la fila global de `creators` (0182), con procedencia:
   - fuente `ai`;
   - modelo;
   - versión del prompt;
   - `review-input:<sha256>` de lo que leyó el modelo;
   - fecha.
 
-  El país de la IA se usa solo si ninguna fuente gratis lo sabía (`qualify_api.creators.region_rubro`). Una fuente gratis lo reemplaza; la IA nunca reemplaza una fuente gratis.
-- **Qué no se midió:** nada. No se corrió ninguna llamada pagada (orden del ticket). Los tests usan un cliente falso. Tampoco se midió si `encaja` y `tipo` cambian al pedir dos campos más. Es el riesgo principal del cambio, y la evaluación de abajo lo cubre.
+  El país de la IA **no se guarda** (decisión de Deivid del 2026-11-25, abajo). El país sale solo de fuentes gratis (`qualify_api.creators.region_rubro`).
+- **Medición:** se midió el mismo día con la evaluación de abajo (aprobada por Deivid). Al escribir esta entrada todavía no se había corrido nada.
 
 **Costo marginal estimado [S]** (Sonnet 5: USD 2 por millón de tokens de entrada y USD 10 por millón de salida):
 
@@ -129,12 +129,21 @@ Aun dando por buenos los cuatro discutibles (`phonecellven`, `diegolesrecomienda
 
 **Veredicto: NO PASA.** El rubro pasa el umbral (0,870 en test, media de dos corridas) y la revisión no empeoró, pero el país de la IA es inventado en ≈ 1 de cada 6 cuentas a las que les pone país. No se tocó el prompt.
 
-**Qué se propone (sin aplicar; necesita el visto bueno de Deivid):**
+**Decisión de Deivid (2026-11-25): el país sale solo de fuentes gratis.** Aplicada en el PR #807, en el commit «feat(creators): region from free sources only»:
 
-1. **Ya, en el PR #807:** que el filtro Región use solo el país de fuentes gratis y guarde el de la IA sin mostrarlo, como decía el punto 4 de la propuesta. Hoy `qualify_api.creators.region_rubro` usa el país de la IA cuando ninguna fuente gratis lo sabe.
-2. **Prompt `referentes-review-3`:** en `pais`, «solo si en el texto de ESTA cuenta aparece escrito un lugar (ciudad, estado, país, bandera, prefijo telefónico o moneda). No sirven: el idioma, lo que sabes de la cuenta o del medio, las abreviaturas del usuario, un lugar que la cuenta visitó, el país de la marca ni el de las otras cuentas de la lista». Además, pedir `pais_evidencia` (las palabras exactas del texto) y que el código descarte el país si esas palabras no están en el bloque de la cuenta. Esa comprobación en código corta el error principal (el país de la marca) aunque el modelo lo intente.
-3. **Rubro:** decidir la frontera «enseñar programación» (`technology` o `education`) y escribirla en el prompt y en el `_doc` del oro.
-4. Medir la versión 3 con el mismo set, después del muestreo humano de las etiquetas (≈ USD 0,4 con dos corridas).
+- `creators.region_code` sale solo de `profile`, `tiktok_region`, `reel_location` o `sightings`.
+- `ai` ya no es fuente de país. El CHECK de 0182 lo rechaza, y la columna `region_model` se quitó porque ninguna fuente gratis tiene modelo.
+- El `pais` que devuelve `revisar_cuentas` no se guarda en ninguna parte: `ReviewInference` ya no tiene ese campo. Ni siquiera se guarda «sin mostrarlo», como decía la propuesta de arriba.
+- **El prompt queda igual, `referentes-review-2`, con `pais` dentro.** El rubro se midió con ese prompt; quitar `pais` daría un prompt sin medir. Cuesta unos 5 tokens de salida por cuenta, y `run_eval.py` lo sigue leyendo.
+- El rubro de la IA se guarda tal cual.
+
+**Pendiente: ticket nuevo para el país por IA**, prompt `referentes-review-3`, con los puntos 1 a 3 de abajo y medido con el mismo set.
+
+**Propuesta para `referentes-review-3` (sin aplicar):**
+
+1. **Prompt `referentes-review-3`:** en `pais`, «solo si en el texto de ESTA cuenta aparece escrito un lugar (ciudad, estado, país, bandera, prefijo telefónico o moneda). No sirven: el idioma, lo que sabes de la cuenta o del medio, las abreviaturas del usuario, un lugar que la cuenta visitó, el país de la marca ni el de las otras cuentas de la lista». Además, pedir `pais_evidencia` (las palabras exactas del texto) y que el código descarte el país si esas palabras no están en el bloque de la cuenta. Esa comprobación en código corta el error principal (el país de la marca) aunque el modelo lo intente.
+2. **Rubro:** decidir la frontera «enseñar programación» (`technology` o `education`) y escribirla en el prompt y en el `_doc` del oro.
+3. Medir la versión 3 con el mismo set, después del muestreo humano de las etiquetas (≈ USD 0,4 con dos corridas).
 
 ---
 
