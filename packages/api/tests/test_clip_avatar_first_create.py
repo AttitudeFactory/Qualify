@@ -321,8 +321,8 @@ def test_a_text_over_a_planned_block_is_checked_on_the_estimated_timeline() -> N
     ("used", "words"),
     [
         (3, "Ya creaste 3 avatares hoy. Mañana puedes crear más."),
-        (2, "Hoy solo puedes crear 1 avatar más. Quita 2 para crear tu video."),
-        (1, "Hoy solo puedes crear 2 avatares más. Quita 1 para crear tu video."),
+        (2, "Hoy solo puedes crear 1 avatar más. Quita 2 avatares para crear tu video."),
+        (1, "Hoy solo puedes crear 2 avatares más. Quita 1 avatar para crear tu video."),
     ],
 )
 def test_todays_cap_is_checked_for_every_block_of_the_create(used: int, words: str) -> None:
@@ -856,3 +856,78 @@ def test_the_assembly_refuses_a_blend_next_to_an_avatar_whatever_path_put_it_the
         generated_sources={key: block},
     )
     assert outcome.detail == ca.AVATAR_JOIN_TEXT
+
+
+# ---------------------------------------------------------------------------
+# review of 4b780b34: provenance of derived briefs, the ready words, the cap's plural
+
+
+def test_create_draft_never_keeps_a_callers_derived_from() -> None:
+    world = _world()
+    draft = world.content.create_draft(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        user_id=USER_ID,
+        brief=_clip(derived_from_brief_id=uuid4()),
+    )
+    assert _clip_brief(world, draft).media.derived_from_brief_id is None
+
+
+def test_create_clip_with_blocks_never_keeps_a_callers_derived_from() -> None:
+    world = _world()
+    made = _create(world, _at(_presenter(), 0), brief=_clip(derived_from_brief_id=uuid4()))
+    assert _clip_brief(world, made.clip_id).media.derived_from_brief_id is None
+
+
+def test_place_block_points_its_brief_to_the_owners_one() -> None:
+    from .test_clip_avatar import _wired
+
+    service, _, repo, store, _, clip_id = _wired(env=PRESENTER_ON)
+    store.capped = False
+    asked = repo.drafts[clip_id].brief_id
+    for at in (0, 1):
+        block = service.create_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+        )
+        repo.drafts[block] = replace(repo.drafts[block], status=GENERATED)
+        store.videos[block] = ca.BlockVideo(
+            asset_id=uuid4(), object_key=f"t/{TENANT_ID}/generated/{block}/r1/v.mp4", seconds=3.0
+        )
+        service.place_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, block_id=block, at=at
+        )
+        brief = repo.briefs[repo.drafts[clip_id].brief_id]
+        # a brief derived from a derived one still points to the owner's
+        assert brief.media.derived_from_brief_id == asked
+        repo.drafts[clip_id] = replace(repo.drafts[clip_id], status=GENERATED)
+
+
+@pytest.mark.parametrize(
+    ("status", "words"),
+    [
+        (GENERATED, "Tu video está listo. Revísalo y apruébalo."),
+        ("approved", "Tu video está listo."),
+        ("staged", "Tu video está listo."),
+        ("published", "Tu video está listo."),
+    ],
+)
+def test_ready_asks_for_approval_only_while_it_waits_for_it(status: str, words: str) -> None:
+    world = _world()
+    made = _create(world, _at(_presenter(), 0))
+    _made(world, made.block_ids[0])
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    world.repo.drafts[made.clip_id] = replace(world.repo.drafts[made.clip_id], status=status)
+    wait = world.service.clip_wait(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert wait is not None and wait.state == "ready" and wait.owner_text == words
+
+
+def test_the_cap_remainder_has_its_plural_in_both_halves() -> None:
+    assert ca.daily_left_text(1, 2) == (
+        "Hoy solo puedes crear 1 avatar más. Quita 1 avatar para crear tu video."
+    )
+    assert ca.daily_left_text(2, 3) == (
+        "Hoy solo puedes crear 2 avatares más. Quita 1 avatar para crear tu video."
+    )
+    assert ca.daily_left_text(1, 3) == (
+        "Hoy solo puedes crear 1 avatar más. Quita 2 avatares para crear tu video."
+    )

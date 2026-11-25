@@ -187,8 +187,8 @@ TOO_MANY_BLOCKS_TEXT = (
 )
 #: The owner's stretches and the avatars together pass `SEGMENTS_MAX` (8).
 TOO_MANY_SEGMENTS_TEXT = (
-    f"Tu video puede tener hasta {SEGMENTS_MAX} fotos, videos y avatares en total. "
-    "Quita alguno para crear tu video."
+    f"Tu video puede tener hasta {SEGMENTS_MAX} entre fotos, videos y avatares. "
+    "Quita alguno y vuelve a crear tu video."
 )
 NEEDS_OWN_MEDIA_TEXT = "Agrega al menos 3 segundos de tus fotos o videos para acompañar al avatar."
 FILE_NOT_OWNED_TEXT = "No pudimos usar una de las imágenes del avatar. Súbela de nuevo."
@@ -210,6 +210,8 @@ BLOCK_FAILED_STATE_TEXT = (
 ASSEMBLING_WITH_BLOCKS_TEXT = "Tus avatares están listos. Estamos armando tu video."
 ASSEMBLING_TEXT = "Estamos armando tu video."
 READY_TEXT = "Tu video está listo. Revísalo y apruébalo."
+#: Ready and already approved (or scheduled, or published): nothing left to ask.
+READY_DONE_TEXT = "Tu video está listo."
 #: A block's own words when it failed without a detail of its own (no buttons yet, PR 1).
 BLOCK_TIMEOUT_TEXT = (
     "Tu avatar tardó demasiado y no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo."
@@ -227,8 +229,13 @@ def daily_left_text(left: int, asking: int) -> str:
     """The cap's words when fewer blocks are left today (`left`, at least 1) than the
     «Crear» asks for (`asking`): how many there are room for, and how many to take out."""
     extra = max(1, asking - left)
-    room = "1 avatar más" if left == 1 else f"{left} avatares más"
-    return f"Hoy solo puedes crear {room}. Quita {extra} para crear tu video."
+    return (
+        f"Hoy solo puedes crear {_avatars(left)} más. Quita {_avatars(extra)} para crear tu video."
+    )
+
+
+def _avatars(count: int) -> str:
+    return "1 avatar" if count == 1 else f"{count} avatares"
 
 
 class ClipAvatarRefused(ValueError):
@@ -1959,7 +1966,8 @@ class ClipAvatarService:
         if clip.status == "failed":
             state, words = "failed", clip.failure_detail or BLOCK_FAILED_TEXT
         elif clip.status in _READY_STATUSES:
-            state, words = "ready", READY_TEXT
+            # «Revísalo y apruébalo» only while it waits for the owner's approval
+            state, words = "ready", READY_TEXT if clip.status == "generated" else READY_DONE_TEXT
         elif any(b.state == "failed" for b in live) and plan:
             state, words = "block_failed", BLOCK_FAILED_STATE_TEXT
         elif any(b.state == "creating" for b in live) and plan:
@@ -2084,7 +2092,12 @@ class ClipAvatarService:
         fresh = ContentBrief.model_validate(
             {
                 **brief.model_dump(),
-                "media": {**brief.media.model_dump(), "segments": tuple(segments)},
+                "media": {
+                    **brief.media.model_dump(),
+                    "segments": tuple(segments),
+                    # provenance: a brief the server derives points to the owner's one
+                    "derived_from_brief_id": brief.media.derived_from_brief_id or clip.brief_id,
+                },
             }
         )
         problems = validate_recipe(recipe_of(fresh), video_by_parts=False, tenant_id=tenant_id)

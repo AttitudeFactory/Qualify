@@ -1752,10 +1752,12 @@ class MediaInputs(BaseModel):
     clip_avatar_plan: Annotated[tuple[ClipAvatarSlot, ...], AfterValidator(_plan_slots_unique)] = (
         Field(default=(), max_length=PARTS_MAX)
     )
-    #: Server-owned (m-25119867, provenance): the brief this one was derived from by the
-    #: server — a Clip's brief with its avatar blocks' videos put in its recipe points to
-    #: the brief the owner sent (`content_briefs.id`). None on every brief the owner sent
-    #: and on every one stored before it.
+    #: Server-owned (m-25119867, provenance): the brief the owner sent that the server
+    #: derived this one from (`content_briefs.id`) — a Clip's brief with its avatar blocks'
+    #: videos put in its recipe (option B, `ContentService._replace_clip_brief`) or with a
+    #: block placed (option A, `ClipAvatarService.place_block`); a brief derived from a
+    #: derived one keeps pointing to the owner's. `create_draft` clears it. None on every
+    #: brief the owner sent and on every one stored before it.
     derived_from_brief_id: UUID | None = None
     #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
     #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
