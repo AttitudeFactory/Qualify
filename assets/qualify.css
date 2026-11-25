@@ -1726,6 +1726,26 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) {
   .rt-DialogContent.q-drawer { animation: none; }
 }
+/* The phone's sheet (`drawer(side="bottom")`, RF-02 m-25119460): the same dialog rising
+   from the bottom edge, full width, as tall as its content (85 % at most), rounded on
+   top. Declared after the right-edge rules so it wins on the same specificity. */
+.rt-DialogContent.q-drawer.q-drawer--bottom {
+  top: auto !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: auto !important;
+  max-height: 85dvh !important;
+  border-radius: var(--q-radius-card, 16px) var(--q-radius-card, 16px) 0 0 !important;
+  animation: q-sheet-in var(--q-dur) var(--q-ease);
+}
+.q-drawer--bottom .q-drawer-foot { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+@keyframes q-sheet-in {
+  from { translate: 0 100%; }
+  to { translate: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-DialogContent.q-drawer.q-drawer--bottom { animation: none; }
+}
 
 /* ── Stepper (ui.stepper, QUA-118) ──────────────────────────────────────────── */
 .q-stepper {
@@ -2376,6 +2396,9 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .radix-themes .rt-BaseDialogContent.q-drawer {
   background: var(--q-dialog-fill);
   box-shadow: inset 1px 0 0 var(--q-glass-edge), var(--lq-shadow-overlay);
+}
+.radix-themes .rt-BaseDialogContent.q-drawer.q-drawer--bottom {
+  box-shadow: inset 0 1px 0 var(--q-glass-edge), var(--lq-shadow-overlay);
 }
 .q-drawer-foot { background: transparent; }
 

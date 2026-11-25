@@ -14,6 +14,12 @@ the brand's «last opened» mark (the worker's 14-day rule) and, for a brand tha
 a run, its first run queued (option A, confirmed by the founder) — the view then says it is
 being prepared and, from the browser (`_ticker`), reads the view again — free — every
 `POLL_SECONDS` until that run ends or has been in line too long.
+
+RF-02 (m-25119460): a filter bar over the ideas — «Canal», «Tipo de cuenta», «Cuenta» (one
+or several), «Duración» and «Restablecer filtros» (`reels_filters_vm`); desktop dropdowns
+in a sticky bar, phone chips that open a sheet from the bottom. Changing a filter is one
+more read of what is stored (RF-01's `reviewed_reels`): it never queues a run, never marks
+the brand, never pays. Under the ideas, «Más reels revisados», paged.
 """
 
 from __future__ import annotations
@@ -29,14 +35,28 @@ from uuid import UUID
 import reflex as rx
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
+from qualify_api.referentes.reviewed_reels import KIND_REFERENTE
+from qualify_api.referentes.reviewed_reels import PAGE_SIZE as MORE_PAGE_SIZE
 
-from . import reel_wait_vm, reels_discovery, reels_ideas_vm
+from . import reel_wait_vm, reels_discovery, reels_filters_vm, reels_ideas_vm
 from .auth_state import AuthState
 from .catalog_vm import IDEAS_RETURN_PATH, brand_referentes_href
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
 from .r2_media import BACKEND_BASE
 from .reel_replication import import_reference
+from .reels_filters_vm import (
+    AXIS_ACCOUNT,
+    AXIS_DURATION,
+    AXIS_KIND,
+    AXIS_LABELS,
+    AXIS_NETWORK,
+    EMPTY_COMPETITORS,
+    EMPTY_FILTERS,
+    EMPTY_NO_COMPETITORS,
+    EMPTY_NO_IDEAS,
+    FilterChoice,
+)
 from .reels_ideas_vm import (
     SCREEN_CHECK_FAILED,
     SCREEN_IDEAS,
@@ -51,6 +71,7 @@ from .tenant import tenant_uuid
 from .ui import (
     callout,
     card,
+    drawer,
     empty_state,
     loading_spinner,
     section,
@@ -106,6 +127,26 @@ class DiscoverReelsState(rx.State):
     waiting: bool = False
     #: Why the stored ideas could not be read (`reels_ideas_vm.LOAD_ERROR`), "" none.
     load_error: str = ""
+    #: RF-02: the bar's values ("" = «Todos»; `accounts` are `account_key`s). Held in
+    #: memory only — never in the browser's storage — and cleared with another business.
+    filter_network: str = ""
+    filter_kind: str = ""
+    filter_duration: str = ""
+    filter_accounts: list[str] = []
+    #: The accounts «Cuenta» offers (`reels_filters_vm.account_options`) and their kinds.
+    account_options: list[dict[str, str]] = []
+    _accounts: dict[str, str] = {}
+    #: Which axis' sheet is open on a phone ("" none).
+    sheet: str = ""
+    #: A filtered read is in flight (the lists dim until it lands).
+    filtering: bool = False
+    #: «Más reels revisados»: the pages read so far, whether a next one exists, the next
+    #: page's offset, and the «Ver más reels» read in flight / its error.
+    more_reels: list[dict[str, str]] = []
+    has_more: bool = False
+    more_loading: bool = False
+    more_error: str = ""
+    _more_next: int = 0
     #: The reel playing inside its own card (its `key`), "" when none — one at a time,
     #: so starting another stops the previous (its iframe unmounts).
     playing_key: str = ""
@@ -135,7 +176,223 @@ class DiscoverReelsState(rx.State):
             self.failed_videos = []
             self.failed_covers = []
             self.expanded = []
+            # another business: its filters, accounts and reels are not this one's
+            self._set_choice(reels_filters_vm.NO_CHOICE)
+            self.account_options = []
+            self._accounts = {}
+            self.more_reels = []
+            self.has_more = False
+            self.sheet = ""
             self._cards_tenant_id = tenant_id
+
+    # -- RF-02: the filter bar ------------------------------------------------------------
+
+    def _choice(self) -> FilterChoice:
+        return FilterChoice.of(
+            network=self.filter_network,
+            kind=self.filter_kind,
+            duration=self.filter_duration,
+            accounts=self.filter_accounts,
+        )
+
+    def _set_choice(self, choice: FilterChoice) -> None:
+        self.filter_network = choice.network
+        self.filter_kind = choice.kind
+        self.filter_duration = choice.duration
+        self.filter_accounts = list(choice.accounts)
+
+    @rx.var
+    def filters_on(self) -> bool:
+        """Some filter narrows the lists («Restablecer filtros» is offered)."""
+        return bool(
+            self.filter_network or self.filter_kind or self.filter_duration or self.filter_accounts
+        )
+
+    @rx.var
+    def filter_values(self) -> dict[str, str]:
+        """axis → what it is set to, in words («Todos», «Instagram», «2 cuentas»).
+        The vars are read here, not through `_choice()`: a computed var only tracks the
+        attributes it reads itself, so a helper would leave it stale."""
+        choice = FilterChoice.of(
+            network=self.filter_network,
+            kind=self.filter_kind,
+            duration=self.filter_duration,
+            accounts=self.filter_accounts,
+        )
+        return {
+            chip["axis"]: chip["value"]
+            for chip in reels_filters_vm.chips(choice, self.account_options)
+        }
+
+    @rx.var
+    def sheet_title(self) -> str:
+        return AXIS_LABELS.get(self.sheet, "")
+
+    @rx.var
+    def empty_kind(self) -> str:
+        """Which `reels_filters_vm.EMPTY_*` replaces both lists when they are empty."""
+        if self.screen != SCREEN_IDEAS:
+            return ""
+        choice = FilterChoice.of(
+            network=self.filter_network,
+            kind=self.filter_kind,
+            duration=self.filter_duration,
+            accounts=self.filter_accounts,
+        )
+        shown = [c for c in self._cards if c.get("affinity") in reels_ai.FITS]
+        return reels_filters_vm.empty_message(
+            choice, self._accounts, ideas=len(shown), more=len(self.more_reels)
+        ).kind
+
+    @rx.event
+    def open_sheet(self, axis: str) -> None:
+        """A phone chip: open its axis' sheet."""
+        self.sheet = axis if axis in reels_filters_vm.AXES else ""
+
+    @rx.event
+    def sheet_changed(self, is_open: bool) -> None:
+        """The sheet closed (Esc, the backdrop, «Cerrar»)."""
+        if not is_open:
+            self.sheet = ""
+
+    @rx.event
+    def close_sheet(self) -> None:
+        self.sheet = ""
+
+    @rx.event
+    def set_filter(self, axis: str, value: str) -> Any:
+        """One single-choice axis to `value` ("" = «Todos»); its sheet closes and the
+        lists are read again — what is stored, free."""
+        self.sheet = ""
+        before = self._choice()
+        choice = reels_filters_vm.set_axis(before, axis, value)
+        if choice == before:
+            return None
+        self._set_choice(choice)
+        return DiscoverReelsState.refilter
+
+    @rx.event
+    def toggle_account(self, key: str) -> Any:
+        """«Cuenta»: add or remove one account (several may be chosen; the sheet stays)."""
+        if key not in self._accounts and key not in self.filter_accounts:
+            return None
+        self._set_choice(reels_filters_vm.toggle_account(self._choice(), key))
+        return DiscoverReelsState.refilter
+
+    @rx.event
+    def all_accounts(self) -> Any:
+        """«Cuenta: Todas»."""
+        if not self.filter_accounts:
+            return None
+        self._set_choice(reels_filters_vm.clear_accounts(self._choice()))
+        return DiscoverReelsState.refilter
+
+    @rx.event
+    def show_inspiring(self) -> Any:
+        """«Ver cuentas que te inspiran» (competitors not read yet): «Tipo de cuenta» to
+        «Inspiradores», with no account chosen — a competitor account would leave it
+        empty again."""
+        self.sheet = ""
+        before = self._choice()
+        choice = reels_filters_vm.set_axis(
+            reels_filters_vm.clear_accounts(before), AXIS_KIND, KIND_REFERENTE
+        )
+        if choice == before:
+            return None
+        self._set_choice(choice)
+        return DiscoverReelsState.refilter
+
+    @rx.event
+    def reset_filters(self) -> Any:
+        """«Restablecer filtros»: every axis back to «Todos», the full list again."""
+        self.sheet = ""
+        if not self._choice().active:
+            return None
+        self._set_choice(reels_filters_vm.NO_CHOICE)
+        return DiscoverReelsState.refilter
+
+    @rx.event(background=True)
+    async def refilter(self) -> None:
+        """Read the lists again with the bar's values (RF-01's read): Postgres only — it
+        never queues a run, never marks the brand, never reads the vendor nor asks the
+        model. A newer read supersedes it (`_load_id`)."""
+        async with self:
+            if not self._brand_id or not self._cards_tenant_id:
+                return
+            self._load_id += 1
+            load_id = self._load_id
+            self.filtering = True
+            filters = self._choice().to_filters()
+            tenant_id = tenant_uuid(self._cards_tenant_id)
+            brand_id = UUID(self._brand_id)
+        shown: reels_ideas_vm.IdeasScreen | None = None
+        try:
+            if tenant_id is not None:
+                shown = await asyncio.to_thread(
+                    reels_discovery.load_ideas,
+                    tenant_id,
+                    brand_id,
+                    first_run=False,
+                    filters=filters,
+                )
+        except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
+            logger.warning("filtered reel ideas unreadable: %s: %s", type(exc).__name__, exc)
+            async with self:
+                if self._load_id == load_id:
+                    self.filtering = False
+                    self.load_error = reels_ideas_vm.LOAD_ERROR
+            return
+        async with self:
+            if self._load_id != load_id:
+                return
+            self.filtering = False
+            if (
+                shown is not None
+                and tenant_id is not None
+                and await _still_mine(self, load_id, tenant_id)
+            ):
+                self._show(shown)
+
+    @rx.event(background=True)
+    async def load_more(self) -> None:
+        """«Ver más reels»: the next page of «Más reels revisados», same filters — what is
+        stored, free."""
+        async with self:
+            # never while a filtered read is in flight: its list restarts the paging
+            if self.more_loading or self.filtering or not self.has_more or not self._brand_id:
+                return
+            self.more_loading = True
+            self.more_error = ""
+            load_id = self._load_id
+            filters = self._choice().to_filters()
+            offset = self._more_next
+            tenant_id = tenant_uuid(self._cards_tenant_id)
+            brand_id = UUID(self._brand_id)
+        try:
+            if tenant_id is None:
+                raise LookupError("no tenant in this session")
+            cards, has_more = await asyncio.to_thread(
+                reels_discovery.more_reviewed,
+                tenant_id,
+                brand_id,
+                filters=filters,
+                offset=offset,
+            )
+        except Exception as exc:  # noqa: BLE001 — the button says it, the log keeps why
+            logger.warning("more reviewed reels unreadable: %s: %s", type(exc).__name__, exc)
+            async with self:
+                self.more_loading = False
+                if self._load_id == load_id:
+                    self.more_error = reels_filters_vm.MORE_ERROR
+            return
+        async with self:
+            self.more_loading = False
+            if self._more_next != offset or not await _still_mine(self, load_id, tenant_id):
+                return  # the filters changed (or the session) meanwhile: not this list
+            seen = {c.get("key") for c in self.more_reels}
+            self.more_reels = [*self.more_reels, *(c for c in cards if c.get("key") not in seen)]
+            self.has_more = has_more
+            self._more_next = offset + MORE_PAGE_SIZE
 
     def _show(self, shown: reels_ideas_vm.IdeasScreen) -> None:
         self.screen = shown.screen
@@ -148,7 +405,17 @@ class DiscoverReelsState(rx.State):
         self.waiting = shown.waiting
         self._read_at = time.time()
         self._cards = list(shown.cards)
-        keys = {c.get("key", "") for c in self._cards}
+        # RF-02: the second list, its paging, and the accounts «Cuenta» offers — a chosen
+        # account the brand no longer offers is dropped from the bar
+        self.more_reels = list(shown.more_cards)
+        self.has_more = shown.has_more
+        self.more_error = ""
+        self._more_next = MORE_PAGE_SIZE
+        self._accounts = dict(shown.accounts)
+        self.account_options = reels_filters_vm.account_options(shown.accounts)
+        if shown.screen == SCREEN_IDEAS:
+            self._set_choice(reels_filters_vm.known_accounts(self._choice(), shown.accounts))
+        keys = {c.get("key", "") for c in self._cards} | {c.get("key", "") for c in self.more_reels}
         if self.playing_key not in keys:
             self.playing_key = ""
         self.expanded = [k for k in self.expanded if k in keys]
@@ -166,6 +433,12 @@ class DiscoverReelsState(rx.State):
             auth = await self.get_state(AuthState)
             # the logged-in tenant only: a pre-login Brand Kit draft never opens /create
             session_tenant_id = auth.session_tenant_id
+            # RF-02: the bar's values of this business only (another one starts with none)
+            filters = (
+                self._choice().to_filters()
+                if self._cards_tenant_id == session_tenant_id
+                else reels_filters_vm.NO_CHOICE.to_filters()
+            )
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         opened: asyncio.Task[None] | None = None
         try:
@@ -177,7 +450,9 @@ class DiscoverReelsState(rx.State):
             opened = asyncio.create_task(
                 asyncio.to_thread(reels_discovery.mark_opened, tenant_id, brand_id)
             )
-            shown = await asyncio.to_thread(reels_discovery.load_ideas, tenant_id, brand_id)
+            shown = await asyncio.to_thread(
+                reels_discovery.load_ideas, tenant_id, brand_id, filters=filters
+            )
         except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
             logger.warning("stored reel ideas unreadable: %s: %s", type(exc).__name__, exc)
             async with self:
@@ -208,13 +483,18 @@ class DiscoverReelsState(rx.State):
                 return
             self._ticking = True
             load_id = self._load_id
+            filters = self._choice().to_filters()
             tenant_id = tenant_uuid(self._cards_tenant_id)
             brand_id = UUID(self._brand_id)
         shown: reels_ideas_vm.IdeasScreen | None = None
         try:
             if tenant_id is not None:
                 shown = await asyncio.to_thread(
-                    reels_discovery.load_ideas, tenant_id, brand_id, first_run=False
+                    reels_discovery.load_ideas,
+                    tenant_id,
+                    brand_id,
+                    first_run=False,
+                    filters=filters,
                 )
         except Exception as exc:  # noqa: BLE001 — the screen stays; the next tick retries
             logger.warning("reel ideas re-read failed: %s: %s", type(exc).__name__, exc)
@@ -233,6 +513,9 @@ class DiscoverReelsState(rx.State):
         «preparando» clock unmounts with the view)."""
         self._load_id += 1
         self.playing_key = ""
+        self.sheet = ""
+        self.filtering = False
+        self.more_loading = False
 
     @rx.event
     def play(self, key: str) -> None:
@@ -408,7 +691,22 @@ def _reel_media(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 class_name="q-dr-cover-img",
                 on_error=DiscoverReelsState.cover_failed(key),
             ),
-            rx.center(rx.icon("film", size=28, color=T.TEXT_FAINT), class_name="q-dr-cover-img"),
+            # RF-02: «Más reels revisados» keeps no copy of its covers (their CDN link
+            # lives ~4 days): the placeholder says so instead of looking broken
+            rx.center(
+                rx.vstack(
+                    rx.icon("film", size=28, color=T.TEXT_FAINT, aria_hidden="true"),
+                    rx.text(
+                        reels_filters_vm.COVER_GONE,
+                        size="1",
+                        color=T.TEXT_MUTED,
+                        text_align="center",
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                class_name="q-dr-cover-img q-dr-cover-empty",
+            ),
         ),
         rx.cond(
             reel["lift"] != "",
@@ -582,10 +880,27 @@ def _details_panel(reel: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
+def _reel_tile(reel: rx.Var[dict[str, str]], *, more: bool = False) -> rx.Component:
     """One idea as the «C» card (§ request 2026-10-15): the picture with how it does
     against its own account, who and how many views, what it is (format and hook), the
-    rest folded into «Detalles», what its analysis saw, and «Hacer uno parecido»."""
+    rest folded into «Detalles», what its analysis saw, and «Hacer uno parecido».
+    `more` (RF-02): a reel of «Más reels revisados» — the same card without «Hacer uno
+    parecido» (its video was not kept) nor its line."""
+    if more:
+        foot: rx.Component = rx.fragment()
+    else:
+        # founder, 2026-11-04: only when the run kept the reel's video (R2) — the
+        # reference is prepared from that copy, never from a link the browser holds
+        foot = rx.cond(
+            reel["can_replicate"] == "1",
+            _replicate(reel),
+            rx.text(
+                reels_ideas_vm.CANNOT_REPLICATE,
+                size="2",
+                color=T.TEXT_MUTED,
+                class_name="q-dr-replicate-help",
+            ),
+        )
     return card(
         rx.vstack(
             _reel_media(reel),
@@ -656,18 +971,7 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 align_items="start",
             ),
             _details_panel(reel),
-            # founder, 2026-11-04: only when the run kept the reel's video (R2) — the
-            # reference is prepared from that copy, never from a link the browser holds
-            rx.cond(
-                reel["can_replicate"] == "1",
-                _replicate(reel),
-                rx.text(
-                    reels_ideas_vm.CANNOT_REPLICATE,
-                    size="2",
-                    color=T.TEXT_MUTED,
-                    class_name="q-dr-replicate-help",
-                ),
-            ),
+            foot,
             spacing="2",
             width="100%",
             align_items="start",
@@ -728,16 +1032,385 @@ def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+# --------------------------------------------------------------------------------------
+# RF-02: the filter bar (m-25119460)
+# --------------------------------------------------------------------------------------
+
+#: The single-choice axes, in the bar's order around «Cuenta».
+_SINGLE_AXES = (AXIS_NETWORK, AXIS_KIND)
+_STATE_VALUE = {
+    AXIS_NETWORK: lambda: DiscoverReelsState.filter_network,
+    AXIS_KIND: lambda: DiscoverReelsState.filter_kind,
+    AXIS_DURATION: lambda: DiscoverReelsState.filter_duration,
+}
+
+
+def _option_row(
+    label: str | rx.Var[str],
+    chosen: rx.Var[bool],
+    on_click: Any,
+    *,
+    role: str,
+    detail: str | rx.Var[str] | None = None,
+) -> rx.Component:
+    """One option of a filter: a 44 px row with a check when chosen — a radio
+    (single-choice axes) or a checkbox («Cuenta»), read as such by a screen reader."""
+    return rx.el.button(
+        rx.box(
+            rx.cond(chosen, rx.icon("check", size=16), rx.fragment()),
+            class_name="q-rf-check",
+            aria_hidden="true",
+        ),
+        rx.vstack(
+            rx.text(label, size="2", weight=rx.cond(chosen, "medium", "regular")),
+            *([rx.text(detail, size="1", color=T.TEXT_MUTED)] if detail is not None else []),
+            spacing="0",
+            align_items="start",
+        ),
+        type="button",
+        role=role,
+        aria_checked=rx.cond(chosen, "true", "false"),
+        on_click=on_click,
+        class_name="q-rf-option",
+    )
+
+
+def _single_options(axis: str, *, close: bool) -> rx.Component:
+    """«Todos» and the axis' options. `close`: each option also closes the desktop
+    dropdown it sits in (the phone's sheet closes from the state)."""
+    current = _STATE_VALUE[axis]()
+    rows = []
+    for option in reels_filters_vm.single_options(axis):
+        row = _option_row(
+            option["label"],
+            current == option["value"],
+            DiscoverReelsState.set_filter(axis, option["value"]),
+            role="radio",
+        )
+        rows.append(rx.popover.close(row) if close else row)
+    return rx.box(
+        *rows,
+        role="radiogroup",
+        aria_label=AXIS_LABELS[axis],
+        class_name="q-rf-options",
+    )
+
+
+def _account_options() -> rx.Component:
+    """«Todas» and every account the brand labelled (one or several, checkboxes)."""
+    S = DiscoverReelsState
+    return rx.box(
+        _option_row(
+            reels_filters_vm.ALL_LABELS[AXIS_ACCOUNT],
+            S.filter_accounts.length() == 0,
+            S.all_accounts,
+            role="checkbox",
+        ),
+        rx.foreach(
+            S.account_options,
+            lambda option: _option_row(
+                option["label"],
+                S.filter_accounts.contains(option["key"]),
+                S.toggle_account(option["key"]),
+                role="checkbox",
+                detail=option["detail"],
+            ),
+        ),
+        rx.cond(
+            S.account_options.length() == 0,
+            rx.text(
+                reels_filters_vm.NO_ACCOUNTS_OPTION,
+                size="2",
+                color=T.TEXT_MUTED,
+                padding="0.5rem 0.75rem",
+            ),
+        ),
+        role="group",
+        aria_label=AXIS_LABELS[AXIS_ACCOUNT],
+        class_name="q-rf-options",
+    )
+
+
+def _axis_value(axis: str) -> rx.Var[str]:
+    return DiscoverReelsState.filter_values[axis].to(str)
+
+
+def _axis_on(axis: str) -> rx.Var[bool]:
+    S = DiscoverReelsState
+    if axis == AXIS_ACCOUNT:
+        return S.filter_accounts.length() > 0
+    return _STATE_VALUE[axis]() != ""
+
+
+def _trigger_face(axis: str) -> list[rx.Component]:
+    """What a dropdown or a chip reads: «Canal» · «Todos» ▾."""
+    return [
+        rx.text(AXIS_LABELS[axis], size="2", color=T.TEXT_MUTED, as_="span"),
+        rx.text(_axis_value(axis), size="2", weight="medium", as_="span", class_name="q-rf-value"),
+        rx.icon("chevron-down", size=14, aria_hidden="true"),
+    ]
+
+
+def _dropdown(axis: str) -> rx.Component:
+    """A desktop filter: a button that opens its options under it."""
+    options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=True)
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.el.button(
+                *_trigger_face(axis),
+                type="button",
+                class_name=rx.cond(_axis_on(axis), "q-rf-trigger q-rf-trigger--on", "q-rf-trigger"),
+                aria_label=AXIS_LABELS[axis] + ": " + _axis_value(axis),
+            ),
+        ),
+        rx.popover.content(
+            options,
+            side="bottom",
+            align="start",
+            class_name="q-rf-pop",
+        ),
+    )
+
+
+def _chip(axis: str) -> rx.Component:
+    """A phone filter: a chip that opens its sheet from the bottom."""
+    return rx.el.button(
+        *_trigger_face(axis),
+        type="button",
+        on_click=DiscoverReelsState.open_sheet(axis),
+        class_name=rx.cond(_axis_on(axis), "q-rf-chip q-rf-chip--on", "q-rf-chip"),
+        aria_label=AXIS_LABELS[axis] + ": " + _axis_value(axis),
+        aria_haspopup="dialog",
+    )
+
+
+def _reset_button(*, chip: bool = False) -> rx.Component:
+    """«Restablecer filtros»: shown while some filter narrows the lists."""
+    return rx.cond(
+        DiscoverReelsState.filters_on,
+        rx.el.button(
+            rx.icon("rotate-ccw", size=14, aria_hidden="true"),
+            rx.text(reels_filters_vm.RESET_LABEL, size="2", as_="span"),
+            type="button",
+            on_click=DiscoverReelsState.reset_filters,
+            class_name="q-rf-chip q-rf-reset" if chip else "q-rf-trigger q-rf-reset",
+        ),
+    )
+
+
+def _sheet() -> rx.Component:
+    """The phone's sheet of the chip that was tapped: its options, «Restablecer filtros»
+    and «Listo». A single-choice option closes it; «Cuenta» stays open to pick several."""
+    S = DiscoverReelsState
+    foot = rx.hstack(
+        rx.button(
+            reels_filters_vm.RESET_LABEL,
+            variant="ghost",
+            size="3",
+            min_height="44px",
+            on_click=S.reset_filters,
+            disabled=~S.filters_on,
+        ),
+        rx.spacer(),
+        rx.button(
+            reels_filters_vm.DONE_LABEL,
+            size="3",
+            min_height="44px",
+            on_click=S.close_sheet,
+        ),
+        width="100%",
+        align="center",
+    )
+    return drawer(
+        rx.match(
+            S.sheet,
+            (AXIS_NETWORK, _single_options(AXIS_NETWORK, close=False)),
+            (AXIS_KIND, _single_options(AXIS_KIND, close=False)),
+            (AXIS_ACCOUNT, _account_options()),
+            (AXIS_DURATION, _single_options(AXIS_DURATION, close=False)),
+            rx.fragment(),
+        ),
+        open=S.sheet != "",
+        on_open_change=S.sheet_changed,
+        title=S.sheet_title,
+        footer=foot,
+        side="bottom",
+    )
+
+
+def _filter_bar() -> rx.Component:
+    """RF-02's sticky bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
+    «Cuenta», «Duración» and «Restablecer filtros». On a desktop, dropdowns; at 640 px or
+    less, chips (wrapping onto a second row) that open a sheet from the bottom. Every change is
+    one more read of what is stored — never a paid call."""
+    axes = (*_SINGLE_AXES, AXIS_ACCOUNT, AXIS_DURATION)
+    return rx.box(
+        rx.box(
+            *(_dropdown(axis) for axis in axes),
+            _reset_button(),
+            class_name="q-rf-row q-rf-desktop",
+        ),
+        rx.box(
+            *(_chip(axis) for axis in axes),
+            _reset_button(chip=True),
+            class_name="q-rf-row q-rf-phone",
+        ),
+        _sheet(),
+        role="search",
+        aria_label=reels_filters_vm.BAR_LABEL,
+        class_name="q-rf-bar",
+    )
+
+
+def _empty_lists() -> rx.Component:
+    """Nothing left with these filters — never a mute list: competitors before RF-05
+    reads them, a brand that marked none, or the ticket's «No hay reels con estos
+    filtros», each with the way out."""
+    S = DiscoverReelsState
+    reset = rx.button(
+        rx.icon("rotate-ccw", size=14, aria_hidden="true"),
+        reels_filters_vm.RESET_LABEL,
+        variant="soft",
+        size="3",
+        on_click=S.reset_filters,
+    )
+    return rx.match(
+        S.empty_kind,
+        (
+            EMPTY_COMPETITORS,
+            empty_state(
+                "users",
+                reels_filters_vm.COMPETITORS_EMPTY_TITLE,
+                reels_filters_vm.COMPETITORS_EMPTY_BODY,
+                rx.button(
+                    reels_filters_vm.COMPETITORS_EMPTY_ACTION,
+                    variant="soft",
+                    size="3",
+                    on_click=S.show_inspiring,
+                ),
+            ),
+        ),
+        (
+            EMPTY_NO_COMPETITORS,
+            empty_state(
+                "users",
+                reels_filters_vm.NO_COMPETITORS_TITLE,
+                reels_filters_vm.NO_COMPETITORS_BODY,
+                rx.link(
+                    rx.button(reels_filters_vm.NO_COMPETITORS_ACTION, variant="soft", size="3"),
+                    href=ACCOUNTS_HREF,
+                ),
+            ),
+        ),
+        (
+            EMPTY_FILTERS,
+            rx.center(
+                rx.vstack(
+                    rx.icon("search-x", size=T.ICON_LG, color=T.TEXT_FAINT, aria_hidden="true"),
+                    rx.text(reels_filters_vm.EMPTY_FILTERED, size="3", text_align="center"),
+                    reset,
+                    spacing="3",
+                    align="center",
+                ),
+                padding=T.PAD_EMPTY,
+                width="100%",
+                class_name="q-empty",
+            ),
+        ),
+        (
+            EMPTY_NO_IDEAS,
+            rx.vstack(
+                rx.text(reels_filters_vm.NO_IDEAS_LEFT, size="2", color=T.TEXT_MUTED),
+                rx.link(
+                    rx.button(reels_filters_vm.NO_IDEAS_LEFT_ACTION, variant="soft", size="3"),
+                    href=ACCOUNTS_HREF,
+                ),
+                spacing="3",
+                align_items="start",
+                width="100%",
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
+def _more() -> rx.Component:
+    """«Más reels revisados» (RF-01's second list): the other reels the product check
+    kept, paged with «Ver más reels»; covers may be gone (the placeholder says so)."""
+    S = DiscoverReelsState
+    grid = rx.box(
+        rx.foreach(S.more_reels, lambda reel: _reel_tile(reel, more=True)),
+        class_name="q-dr-grid",
+        role="list",
+        aria_label=reels_filters_vm.MORE_TITLE,
+    )
+    pager = rx.vstack(
+        rx.cond(S.more_error != "", callout(S.more_error, "error")),
+        rx.cond(
+            S.has_more,
+            rx.button(
+                rx.cond(S.more_loading, loading_spinner("sm"), rx.icon("chevron-down", size=14)),
+                rx.cond(S.more_loading, reels_filters_vm.MORE_BUSY, reels_filters_vm.MORE_BUTTON),
+                variant="soft",
+                size="3",
+                min_height="44px",
+                on_click=S.load_more,
+                disabled=S.more_loading,
+                aria_busy=rx.cond(S.more_loading, "true", "false"),
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align="center",
+    )
+    return rx.cond(
+        S.more_reels.length() > 0,
+        section(
+            reels_filters_vm.MORE_TITLE,
+            grid,
+            pager,
+            description=reels_filters_vm.MORE_BODY,
+        ),
+    )
+
+
 def _ideas() -> rx.Component:
     """The stored ideas under the header that dates them — and, above them, the notice
     of a newer run that failed: «No pudimos traer ideas nuevas», in the info tone (founder,
-    2026-11-04) — the ideas below are still true and there is nothing to fix."""
+    2026-11-04) — the ideas below are still true and there is nothing to fix.
+
+    RF-02: the filter bar over both lists; the ideas (RF-01's `ideas`, already filtered)
+    and «Más reels revisados» under them — or, when the filters leave nothing, the
+    message that says why and how to go back."""
     S = DiscoverReelsState
     grid = rx.box(
         rx.foreach(S.reels, _reel_tile),
         class_name="q-dr-grid",
         role="list",
         aria_label="Ideas para tus reels",
+    )
+    ideas = rx.cond(
+        S.reels.length() > 0,
+        grid,
+        rx.text(
+            rx.cond(
+                S.filters_on,
+                reels_filters_vm.IDEAS_NONE_FILTERED,
+                reels_filters_vm.NO_IDEAS_LEFT,
+            ),
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+    )
+    lists = rx.cond(
+        S.empty_kind != "",
+        _empty_lists(),
+        rx.vstack(
+            section(S.title, ideas, description=S.body),
+            _more(),
+            spacing="5",
+            width="100%",
+        ),
     )
     return rx.vstack(
         rx.cond(
@@ -747,7 +1420,13 @@ def _ideas() -> rx.Component:
                 "info",
             ),
         ),
-        section(S.title, grid, description=S.body),
+        _filter_bar(),
+        rx.box(
+            lists,
+            class_name=rx.cond(S.filtering, "q-rf-lists q-rf-lists--busy", "q-rf-lists"),
+            aria_busy=rx.cond(S.filtering, "true", "false"),
+            width="100%",
+        ),
         spacing="4",
         width="100%",
     )

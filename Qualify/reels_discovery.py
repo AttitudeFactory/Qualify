@@ -8,7 +8,10 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
 - `stored_ideas` — the latest run and the latest `ok` one with its ideas
   (`reel_runs.view`), how many accounts the brand follows, whether something says what it
   sells, the business's zone and the stored reels each idea's lift is measured against.
-  Postgres only, never a write;
+  Postgres only, never a write. RF-02 (m-25119460): the ideas and one page of «Más reels
+  revisados» come narrowed by the owner's filters through RF-01's read
+  (`reviewed_reels.reviewed_reels`) — filtering reads only what is stored, never pays;
+- `more_reviewed` — the next page of «Más reels revisados», the same read;
 - `mark_opened` — the brand's «last opened» signal the worker's 14-day inactivity rule
   reads (decided 2026-11-04); it never raises and never delays the screen;
 - `ensure_first_run` — option A, confirmed by the founder on 2026-11-04: a brand with
@@ -32,9 +35,10 @@ from uuid import UUID
 
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as shared_brief
-from qualify_api.referentes import reel_analysis, reel_runs, reels
+from qualify_api.referentes import reel_analysis, reel_runs, reels, reviewed_reels
 from qualify_api.referentes.reel_analysis_types import AnalysisRef, ReelSource
 from qualify_api.referentes.reel_store import ReelRunStore
+from qualify_api.referentes.reviewed_reels import ReelFilters, ReviewedReelsStore
 
 from . import reels_ideas_vm, referentes_provider
 from .avatar_proxy import reel_cover_path
@@ -122,13 +126,20 @@ def stored_ideas(
     repository: Any = None,
     timezone: str | None = None,
     now: datetime | None = None,
+    filters: ReelFilters | None = None,
+    library: ReviewedReelsStore | None = None,
 ) -> reels_ideas_vm.StoredIdeas:
     """Everything «Ideas para tus reels» shows, read from Postgres — never the vendor,
     never the model, never a write. `now` is the moment the screen reads at (the run's
-    retry and «Replicar» are judged at it); the real clock when not given."""
+    retry and «Replicar» are judged at it); the real clock when not given. `filters`
+    (RF-02) narrow the ideas and «Más reels revisados» (RF-01's read, first page); the
+    run's state — which screen, its notice — never depends on them."""
     runs = store or reel_runs.default_store()
     repo = repository or referentes_provider.REPOSITORY
-    seen = reel_runs.view(tenant_id, brand_id, store=runs, now=now)
+    reviewed = reviewed_reels.reviewed_reels(
+        tenant_id, brand_id, filters=filters, store=runs, library=library, now=now
+    )
+    seen = reviewed.view
     account_reels: Sequence[Any] = ()
     if seen.shown is not None and seen.ideas:
         # each idea's lift is against its account's reels of the run's window, as stored
@@ -141,6 +152,7 @@ def stored_ideas(
         has_brief=has_brief(tenant_id, brand_id, repository=repo),
         timezone=timezone if timezone is not None else _business_timezone(tenant_id),
         account_reels=account_reels,
+        reviewed=reviewed,
     )
 
 
@@ -169,6 +181,8 @@ def load_ideas(
     store: ReelRunStore | None = None,
     repository: Any = None,
     timezone: str | None = None,
+    filters: ReelFilters | None = None,
+    library: ReviewedReelsStore | None = None,
 ) -> reels_ideas_vm.IdeasScreen:
     """What the screen shows now (`reels_ideas_vm.ideas_screen`). A brand that could
     have ideas but never had a run gets its first one queued (option A) and the view is
@@ -180,7 +194,14 @@ def load_ideas(
     screen alike — two clocks could disagree on whether the retry is still due."""
     moment = now or datetime.now(UTC)
     stored = stored_ideas(
-        tenant_id, brand_id, store=store, repository=repository, timezone=timezone, now=moment
+        tenant_id,
+        brand_id,
+        store=store,
+        repository=repository,
+        timezone=timezone,
+        now=moment,
+        filters=filters,
+        library=library,
     )
     if first_run and reels_ideas_vm.wants_first_run(stored):
         # option A (founder, 2026-11-04): the first open queues the brand's first run
@@ -190,6 +211,32 @@ def load_ideas(
     if not shown.cards:
         return shown
     return replace(shown, cards=with_badges(tenant_id, shown.cards))
+
+
+def more_reviewed(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    filters: ReelFilters | None = None,
+    offset: int,
+    now: datetime | None = None,
+    store: ReelRunStore | None = None,
+    library: ReviewedReelsStore | None = None,
+) -> tuple[list[dict[str, str]], bool]:
+    """One more page of «Más reels revisados» (RF-02), from `offset`, narrowed by
+    `filters`: its cards and whether a next page exists. RF-01's read — Postgres only,
+    never the vendor, the model or a write."""
+    moment = now or datetime.now(UTC)
+    page = reviewed_reels.reviewed_reels(
+        tenant_id,
+        brand_id,
+        filters=filters,
+        offset=offset,
+        store=store or reel_runs.default_store(),
+        library=library,
+        now=moment,
+    )
+    return reels_ideas_vm.more_cards(page.more, now=moment), page.has_more
 
 
 # --------------------------------------------------------------------------------------
@@ -245,6 +292,7 @@ __all__ = [
     "has_brief",
     "load_ideas",
     "mark_opened",
+    "more_reviewed",
     "reel_source",
     "request_similar",
     "stored_ideas",

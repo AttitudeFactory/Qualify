@@ -1017,6 +1017,7 @@ def drawer(
     step: rx.Component | None = None,
     on_open_auto_focus: Any | None = None,
     on_close_auto_focus: Any | None = None,
+    side: str = "right",
 ) -> rx.Component:
     """A panel that slides in from the right edge and stays there while the operator
     works through something longer than a dialog — the Planificador's assign flow.
@@ -1030,7 +1031,13 @@ def drawer(
     docs/design-system.md §4.5): pass ``ui.steps.step_progress(n, m)`` and it sits in
     the fixed header under the title, which then takes the focus on a step change
     (``ui.steps.settle_step("drawer")``); the matching foot is
-    ``step_foot(..., in_drawer=True)`` as ``footer``."""
+    ``step_foot(..., in_drawer=True)`` as ``footer``.
+
+    ``side="bottom"`` is the phone's sheet (RF-02, m-25119460): the same dialog rising
+    from the bottom edge, full width, as tall as its content up to 85 % of the screen,
+    rounded on top (``.q-drawer--bottom``) — for a short choice reached from a chip."""
+    if side not in ("right", "bottom"):
+        raise ValueError(f"unknown drawer side: {side}")
     body = rx.box(
         *children,
         class_name="q-drawer-body",
@@ -1100,7 +1107,7 @@ def drawer(
     return rx.dialog.root(
         rx.dialog.content(
             rx.flex(*parts, direction="column", height="100%", width="100%", gap="0"),
-            class_name="q-drawer",
+            class_name="q-drawer q-drawer--bottom" if side == "bottom" else "q-drawer",
             style={"--q-drawer-w": width},
             **(
                 {"on_open_auto_focus": on_open_auto_focus} if on_open_auto_focus is not None else {}
