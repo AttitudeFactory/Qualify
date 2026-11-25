@@ -384,3 +384,250 @@ def test_the_bubble_reads_the_handle_to_the_hundredth_as_the_screen() -> None:
     values = [4, 3.7, 3.25, 3.05, 61.5, 59.999, 0]
     got = _run(f"return {values}.map(core.clockExact);")
     assert got == [vm.clock_exact(v) for v in values]
+
+
+# -- ED-14 (Deivid 2026-11-24): a handle never leaves the timeline nor the screen ----------
+# Option B, «Crece sin verse»: past the edge of what is seen, the handle waits there and
+# the value keeps following the pointer, inside the handle's own bounds.
+
+#: One drag step as `timeline-drag.js` computes it: the value (`trimValue` with the
+#: handle's own bounds, `stepValue` for a photo) and where the handle is drawn
+#: (`pinShift`). `o`: {value0, dx, px, speed, min, max, photo, handleLeft, handleWidth,
+#: viewLeft, viewRight, edge}.
+_STEP = (
+    "const step = (o) => {"
+    " let v = core.trimValue({value: o.value0, dx: o.dx, px: o.px, speed: o.speed || 1,"
+    " at: 0, from: o.edge === 'start' ? o.value0 : 0, targets: [], min: o.min, max: o.max})"
+    ".value;"
+    " if (o.photo) v = core.stepValue(v, o.min, o.max);"
+    " const shift = (v - o.value0) / (o.speed || 1) * o.px;"
+    " const drawn = core.pinShift({shift, handleLeft: o.handleLeft,"
+    " handleWidth: o.handleWidth, viewLeft: o.viewLeft, viewRight: o.viewRight});"
+    " return [v, drawn]; };"
+)
+#: A 2 s photo at 375 px, 44 px per second: its 44 px handle at 250 px has 81 px to
+#: the screen's edge.
+_PHOTO = (
+    "{value0: 2, px: 44, min: 1, max: 5, photo: true, handleLeft: 250, handleWidth: 44,"
+    " viewLeft: 0, viewRight: 375}"
+)
+
+
+def test_the_value_keeps_growing_while_the_handle_waits_at_the_edge() -> None:
+    got = _run(_STEP + f" const p = {_PHOTO}; return [44, 100, 130].map(dx => step({{...p, dx}}));")
+    # 1 s further (44 px): still on screen. Past 81 px the handle stays at the edge (81 px)
+    # while the seconds go on: 4,5 s, then 5 s
+    assert got == [[3, 44], [4.5, 81], [5, 81]]
+
+
+def test_with_the_handle_at_the_edge_a_photo_still_stops_at_5_s() -> None:
+    got = _run(_STEP + f" const p = {_PHOTO}; return [400, 2000].map(dx => step({{...p, dx}}));")
+    assert got == [[5, 81], [5, 81]]
+
+
+def test_a_video_piece_grows_past_the_edge_up_to_its_material() -> None:
+    # at ×2 a px of the track is worth twice the seconds of the video; its 16 px handle at
+    # 200 px has 88 px left — then it waits there while the piece goes on to 18 s (its
+    # material)
+    got = _run(
+        _STEP + " const p = {value0: 10, px: 44, speed: 2, min: 1, max: 18,"
+        " handleLeft: 200, handleWidth: 16, viewLeft: 0, viewRight: 304};"
+        " return [44, 132, 1000].map(dx => step({...p, dx}));"
+    )
+    assert got == [[12, 44], [16, 88], [18, 88]]
+
+
+def test_a_start_handle_waits_at_the_left_edge() -> None:
+    got = _run(
+        _STEP + " const p = {value0: 6, px: 44, min: 0, max: 8, edge: 'start',"
+        " handleLeft: 88, handleWidth: 44, viewLeft: 44, viewRight: 375};"
+        " return [-44, -132].map(dx => step({...p, dx}));"
+    )
+    assert got == [[5, -44], [3, -44]]
+
+
+def test_a_handle_already_past_the_edge_stays_put_and_can_come_back() -> None:
+    """The last block on a desktop: its end handle already sits past the tracks' edge —
+    it is never drawn further out, the value still grows, and shortening draws it in."""
+    got = _run(
+        _STEP + " const p = {value0: 2, px: 50, min: 1, max: 5, photo: true,"
+        " handleLeft: 600, handleWidth: 16, viewLeft: 0, viewRight: 610};"
+        " return [100, -50].map(dx => step({...p, dx}));"
+    )
+    assert got == [[4, 0], [1, -50]]
+
+
+def test_on_release_the_block_is_seen_whole_or_its_dragged_edge() -> None:
+    cases = [
+        # fits, and already seen: nothing moves
+        {"scrollLeft": 100, "maxScroll": 900, "viewLeft": 0, "viewRight": 375,
+         "blockLeft": 50, "blockRight": 250, "edge": "end", "margin": 8},
+        # fits, its end past the right: scroll until it is seen whole
+        {"scrollLeft": 100, "maxScroll": 900, "viewLeft": 0, "viewRight": 375,
+         "blockLeft": 200, "blockRight": 420, "edge": "end", "margin": 8},
+        # wider than the view: its dragged end is seen
+        {"scrollLeft": 100, "maxScroll": 900, "viewLeft": 0, "viewRight": 375,
+         "blockLeft": -100, "blockRight": 500, "edge": "end", "margin": 8},
+        # wider than the view, its start dragged: its start is seen
+        {"scrollLeft": 100, "maxScroll": 900, "viewLeft": 0, "viewRight": 375,
+         "blockLeft": -100, "blockRight": 500, "edge": "start", "margin": 8},
+        # never past what the tracks can scroll
+        {"scrollLeft": 880, "maxScroll": 900, "viewLeft": 0, "viewRight": 375,
+         "blockLeft": 200, "blockRight": 420, "edge": "end", "margin": 8},
+    ]  # fmt: skip
+    got = _run(f"return {json.dumps(cases)}.map(c => core.revealScroll(c));")
+    assert got == [100, 153, 233, 0, 900]
+
+
+def test_the_scroll_never_passes_what_the_tracks_had() -> None:
+    # the box a drag draws never widens the tracks: the scroll keeps its starting max
+    got = _run("return [core.clampScroll(380, 14, 390), core.clampScroll(390, 14, 390)];")
+    assert got == [390, 390]
+
+
+def test_the_bubble_stays_on_screen_at_375_px() -> None:
+    cases = [
+        # centred over a handle in the middle: it fits, no move
+        {"center": 190, "width": 80, "viewLeft": 0, "viewRight": 375, "margin": 4},
+        # near the right edge: it moves left until its right end is 4 px inside
+        {"center": 360, "width": 80, "viewLeft": 0, "viewRight": 375, "margin": 4},
+        # near the left edge: it moves right
+        {"center": 10, "width": 80, "viewLeft": 0, "viewRight": 375, "margin": 4},
+        # the tracks start 16 px in from the screen's edge
+        {"center": 30, "width": 80, "viewLeft": 16, "viewRight": 359, "margin": 4},
+        # wider than the view: its start at the left edge
+        {"center": 100, "width": 500, "viewLeft": 0, "viewRight": 375, "margin": 4},
+    ]
+    got = _run(f"return {json.dumps(cases)}.map(c => core.bubbleShift(c));")
+    assert got == [0, -29, 34, 30, 154]
+    for case, shift in zip(cases, got, strict=True):  # type: ignore[arg-type]
+        left = case["center"] - case["width"] / 2 + shift
+        if case["width"] <= case["viewRight"] - case["viewLeft"] - 2 * case["margin"]:
+            assert case["viewLeft"] + case["margin"] <= left
+            assert left + case["width"] <= case["viewRight"] - case["margin"]
+
+
+# -- ED-14 (Deivid 2026-11-24, «sigue saliéndose»): the edge is the TRACK's, not only the
+# scroller's — on a desktop the scroller leaves 44 px beside the track for the handles
+
+#: Draw one drag step and return, in canvas px, the right (or left) end of the silhouette
+#: and of the handle, plus the drag's edges. `o`: {shift, edge, boxLeft, boxWidth,
+#: itemLeft, handleLeft, handleWidth, blockEdge, viewLeft, viewRight, trackLeft,
+#: trackRight}.
+_DRAW = (
+    "const draw = (o) => {"
+    " const e = core.dragEdges(o);"
+    " const d = core.trimDrawing({...o, limitLeft: e.left, limitRight: e.right});"
+    " return {edges: e, boxLeft: o.itemLeft + d.boxLeft,"
+    " boxRight: o.itemLeft + d.boxLeft + d.boxWidth,"
+    " handleLeft: o.handleLeft + d.handle,"
+    " handleRight: o.handleLeft + d.handle + o.handleWidth}; };"
+)
+
+
+def test_the_last_block_on_a_desktop_never_draws_past_the_track() -> None:
+    """Deivid's capture: 3 photos, 7,5 s on a 600 px track (80 px per second) inside a
+    scroller with 44 px on each side. Foto 3 (2 s) ends the track: its end handle sits
+    INSIDE it (16 px, `data-tl-at-end`). Dragged 2 s further (160 px), neither the
+    silhouette nor the handle passes the track's 600 px — the 44 px beside it included."""
+    got = _run(
+        _DRAW + " return draw({shift: 160, edge: 'end', itemLeft: 440, boxLeft: 0,"
+        " boxWidth: 320, handleLeft: 584, handleWidth: 16, blockEdge: 600,"
+        " viewLeft: -44, viewRight: 644, trackLeft: 0, trackRight: 600});"
+    )
+    assert got["edges"] == {"left": 0, "right": 600}  # type: ignore[index]
+    assert got["boxRight"] == 600 and got["handleRight"] == 600  # type: ignore[index]
+
+
+def test_a_block_inside_the_track_stops_at_its_end_too() -> None:
+    # Foto 2 (3,5 s at 80 px, from 160 px): its end handle outside it, as always; dragged
+    # far right the silhouette stops at the track's end and so does the handle's right
+    got = _run(
+        _DRAW + " return draw({shift: 900, edge: 'end', itemLeft: 160, boxLeft: 0,"
+        " boxWidth: 1180, handleLeft: 440, handleWidth: 16, blockEdge: 440,"
+        " viewLeft: -44, viewRight: 644, trackLeft: 0, trackRight: 600});"
+    )
+    assert got["boxRight"] == 600 and got["handleRight"] == 600  # type: ignore[index]
+
+
+def test_at_375_px_the_edge_is_the_screen_or_the_track_whichever_is_nearer() -> None:
+    # a phone: the track goes on past the screen (scroll) — the screen's edge stops it
+    phone = _run(
+        _DRAW + " return draw({shift: 300, edge: 'end', itemLeft: 200, boxLeft: 0,"
+        " boxWidth: 388, handleLeft: 288, handleWidth: 44, blockEdge: 288,"
+        " viewLeft: 0, viewRight: 375, trackLeft: -500, trackRight: 1500});"
+    )
+    assert phone["edges"] == {"left": 0, "right": 375}  # type: ignore[index]
+    assert phone["boxRight"] <= 375 and phone["handleRight"] <= 375  # type: ignore[index]
+    # scrolled to the end: the track ends before the screen — the track's end stops it
+    end = _run(
+        _DRAW + " return draw({shift: 300, edge: 'end', itemLeft: 100, boxLeft: 0,"
+        " boxWidth: 388, handleLeft: 144, handleWidth: 44, blockEdge: 188,"
+        " viewLeft: 0, viewRight: 375, trackLeft: -900, trackRight: 188});"
+    )
+    assert end["boxRight"] == 188 and end["handleRight"] == 188  # type: ignore[index]
+
+
+def test_a_start_handle_never_draws_before_the_track() -> None:
+    # the first block, its start handle inside it (`data-tl-at-start`), dragged left
+    got = _run(
+        _DRAW + " return draw({shift: -200, edge: 'start', itemLeft: 0, boxLeft: -200,"
+        " boxWidth: 360, handleLeft: 0, handleWidth: 16, blockEdge: 0,"
+        " viewLeft: -44, viewRight: 644, trackLeft: 0, trackRight: 600});"
+    )
+    assert got["boxLeft"] == 0 and got["handleLeft"] == 0  # type: ignore[index]
+
+
+def test_the_bubble_stays_inside_the_timeline_area() -> None:
+    # over Foto 3's handle at the track's end (600 px, the scroller goes to 644 and the
+    # clock sits above it): an 80 px bubble moves left inside the track, 4 px to spare
+    got = _run(
+        "const e = core.dragEdges({viewLeft: 0, viewRight: 644, trackLeft: 0,"
+        " trackRight: 600});"
+        " return core.bubbleShift({center: 592, width: 80, viewLeft: e.left,"
+        " viewRight: e.right, margin: 4});"
+    )
+    assert got == -36
+    assert 592 - 40 + got + 80 <= 600 - 4  # type: ignore[operator]
+
+
+def test_a_block_at_an_end_of_the_track_keeps_that_handle_inside() -> None:
+    from .ui import timeline_vm
+
+    media = [
+        {"id": "a", "kind": "photo", "dur": 2.0},
+        {"id": "b", "kind": "photo", "dur": 3.5},
+        {"id": "c", "kind": "photo", "dur": 2.0},
+    ]
+    rows = timeline_vm.media_blocks(media)
+    assert [(r["at_start"], r["at_end"]) for r in rows] == [("1", ""), ("", ""), ("", "1")]
+    overlays = [
+        {"id": "t1", "kind": "text", "label": "Hola", "start": 0.0, "end": 7.5},
+        {"id": "t2", "kind": "text", "label": "Chao", "start": 2.0, "end": 4.0},
+        # review: within a handle's width (1 s on a phone) of an end it counts too — its
+        # handle outside would stick out of the track
+        {"id": "t3", "kind": "text", "label": "Ya", "start": 0.5, "end": 7.0},
+        {"id": "t4", "kind": "text", "label": "Sí", "start": 1.0, "end": 6.5},
+    ]
+    texts = timeline_vm.overlay_blocks(overlays, "text", 7.5)
+    assert [(r["at_start"], r["at_end"]) for r in texts] == [
+        ("1", "1"),
+        ("", ""),
+        ("1", "1"),
+        ("", ""),
+    ]
+    css = (_ASSETS / "qualify-creative.css").read_text(encoding="utf-8")
+    # an inner handle never covers more than half its block (a 1 s block stays movable)
+    assert "max-width: 50%" in css
+    assert '.q-tl__item[data-tl-at-end="1"] > .q-tl__handle--end { left: auto; right: 0;' in css
+    assert '.q-tl__item[data-tl-at-start="1"] > .q-tl__handle--start { right: auto; left: 0;' in css
+
+
+def test_the_drag_script_uses_the_pure_stops() -> None:
+    script = (_ASSETS / "timeline-drag.js").read_text(encoding="utf-8")
+    assert "core().trimDrawing(" in script and "core().bubbleShift(" in script
+    assert "core().dragEdges(" in script and "t.lane = lane" in script
+    assert "core().stepValue(" in script and "t.maxScroll" in script
+    assert "core().revealScroll(" in script
+    css = (_ASSETS / "qualify-creative.css").read_text(encoding="utf-8")
+    assert "var(--tl-bubble-x, 0px)" in css

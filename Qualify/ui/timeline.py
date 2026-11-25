@@ -126,6 +126,9 @@ def _handle(row: Any, edge: str) -> rx.Component:
             "aria-valuemin": row[f"{edge}_min"],
             "aria-valuemax": row[f"{edge}_max"],
             "aria-orientation": "horizontal",
+            # ED-14: why it stops at an edge, when the row says it (``*_why``, an id; ""
+            # points at nothing)
+            "aria-describedby": row[f"{edge}_why"],
             "data-tl-handle": edge,
             "data-tl-id": row["id"],
             "data-tl-at": row["start"],
@@ -237,7 +240,12 @@ def _block(
         role="listitem",
         class_name="q-tl__item",
         style={"--b-start": row["start"], "--b-len": row["length"]},
-        custom_attrs={"data-tl-chosen": rx.cond(chosen, "true", "false")},
+        custom_attrs={
+            "data-tl-chosen": rx.cond(chosen, "true", "false"),
+            # ED-14: it starts / ends the track — that handle sits inside the block
+            "data-tl-at-start": row["at_start"],
+            "data-tl-at-end": row["at_end"],
+        },
     )
 
 

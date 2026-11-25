@@ -1243,6 +1243,16 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-tl__handle--start { right: 100%; justify-content: flex-end; }
 .q-tl__handle--end { left: 100%; justify-content: flex-start; }
+/* ED-14 (Deivid 2026-11-24: «no me gusta que el slider pueda salir de pantalla y de la
+   linea del tiempo»): a block that starts or ends the track keeps that handle INSIDE it,
+   its grip on the block's edge — never past the track, at rest or dragged
+   (`timeline-drag.js` stops the drag there too, `core.trimDrawing`). */
+.q-tl__item[data-tl-at-start="1"] > .q-tl__handle--start { right: auto; left: 0; justify-content: flex-start; }
+.q-tl__item[data-tl-at-end="1"] > .q-tl__handle--end { left: auto; right: 0; justify-content: flex-end; }
+/* …and never wider than half its block (review): a 1 s block (44 px on a phone) keeps half
+   of itself free to be held and moved, and its two inner handles never overlap. */
+.q-tl__item[data-tl-at-start="1"] > .q-tl__handle--start,
+.q-tl__item[data-tl-at-end="1"] > .q-tl__handle--end { max-width: 50%; }
 /* ED-11 review (Deivid): with a mouse the zone that grabs is the bar itself, so the
    `ew-resize` cursor, the hover and the time bubble sit on what the owner sees; a finger
    (`pointer: coarse`) keeps the 44 px target of §3.8 — and so does a touch laptop, whose
@@ -1751,13 +1761,15 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   background: var(--accent-a5);
   pointer-events: none;
 }
-/* «Desde 0:06» over the handle: the panel's colour, accent text and border (UX review). */
+/* «Desde 0:06» over the handle: the panel's colour, accent text and border (UX review).
+   ED-14 (Deivid 2026-11-24): `--tl-bubble-x` (`timeline-drag.js`, `core.bubbleShift`)
+   moves it sideways so it never leaves the screen, also at 375 px. */
 .q-tl__handle[data-tl-time]::after {
   content: attr(data-tl-time);
   position: absolute;
   bottom: calc(100% + 4px);
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(calc(-50% + var(--tl-bubble-x, 0px)));
   padding: 0 var(--space-1);
   border: 1px solid var(--accent-9);
   border-radius: var(--q-radius-control);

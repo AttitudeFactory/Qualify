@@ -572,18 +572,91 @@
     var end = t.edge === "start" ? t.end : t.value;
     var left = ((start - t.from) / t.speed) * t.px;
     var width = Math.max(((end - start) / t.speed) * t.px, 0);
-    var box = trimBox(t);
-    box.style.left = left + "px";
-    box.style.width = width + "px";
     var shift = ((t.value - t.value0) / t.speed) * t.px;
-    t.handle.style.transform = "translateX(" + shift + "px)";
-    // «Desde 0:06» / «Hasta 0:09» (the handle's own word), to the hundredth
-    var word = t.handle.getAttribute("data-tl-word") || "";
-    t.handle.setAttribute("data-tl-time", (word ? word + " " : "") + core().clockExact(t.value));
+    // ED-14 option B («Crece sin verse», Deivid 2026-11-24): the handle and the box (the
+    // silhouette) wait at the edge — of what is seen AND of the track itself, never in
+    // the room the desktop leaves beside it — while the value goes on (`core.trimDrawing`)
+    var edges = drawEdges(t);
+    var drawn = core().trimDrawing({
+      shift: shift,
+      edge: t.edge,
+      boxLeft: left,
+      boxWidth: width,
+      handleLeft: t.handleLeft,
+      handleWidth: t.handleWidth,
+      blockEdge: t.edge === "start" ? t.blockStart : t.blockEnd,
+      limitLeft: canvasX(t, edges.left),
+      limitRight: canvasX(t, edges.right),
+    });
+    var box = trimBox(t);
+    box.style.left = drawn.boxLeft + "px";
+    box.style.width = drawn.boxWidth + "px";
+    t.handle.style.transform = "translateX(" + drawn.handle + "px)";
+    if (t.photo) {
+      // ED-14: a photo's handle says how long it shows — «Se ve 2,5 s» — in the words of
+      // its own `aria-valuetext` (`timeline_vm.media_blocks`), only the number changes
+      var secs = String(t.value).replace(".", ",");
+      var number = /[\d.,]+(?=\s*s$)/;
+      var text = number.test(t.photoWords) ? t.photoWords.replace(number, secs) : secs + " s";
+      t.handle.setAttribute("data-tl-time", text);
+    } else {
+      // «Desde 0:06» / «Hasta 0:09» (the handle's own word), to the hundredth
+      var word = t.handle.getAttribute("data-tl-word") || "";
+      t.handle.setAttribute(
+        "data-tl-time",
+        (word ? word + " " : "") + core().clockExact(t.value)
+      );
+    }
+    placeBubble(t);
   }
 
-  // The preview shows the handle's frame: a video's own second, or a text's or effect's
-  // moment of the final video.
+  // ED-14 (Deivid 2026-11-24): what is seen of the tracks — the scroller's box inside the
+  // screen — in viewport px.
+  function viewBox(t) {
+    var area = t.scroller || t.root;
+    var box = area.getBoundingClientRect();
+    var screen = document.documentElement.clientWidth || window.innerWidth || box.right;
+    return { left: Math.max(box.left, 0), right: Math.min(box.right, screen) };
+  }
+
+  // …and the track itself (its lane: from its first second to its last), in viewport px:
+  // a drag draws nothing past either (`core.dragEdges`).
+  function drawEdges(t) {
+    var view = viewBox(t);
+    var lane = t.lane ? t.lane.getBoundingClientRect() : view;
+    return core().dragEdges({
+      viewLeft: view.left,
+      viewRight: view.right,
+      trackLeft: lane.left,
+      trackRight: lane.right,
+    });
+  }
+
+  // The bubble over the handle moves sideways to stay on screen (`core.bubbleShift`),
+  // also at 375 px. Its width is the `::after`'s own; an estimate when the browser does
+  // not say it.
+  function placeBubble(t) {
+    var handleBox = t.handle.getBoundingClientRect();
+    var label = t.handle.getAttribute("data-tl-time") || "";
+    var width = parseFloat(getComputedStyle(t.handle, "::after").width);
+    if (!isFinite(width) || width <= 0) width = label.length * 7.5 + 12;
+    // inside the timeline's tracks (not only the screen): away from the clock and the
+    // playhead above the desktop's end
+    var view = drawEdges(t);
+    var shift = core().bubbleShift({
+      center: handleBox.left + handleBox.width / 2,
+      width: width,
+      viewLeft: view.left,
+      viewRight: view.right,
+      margin: 4,
+    });
+    t.handle.style.setProperty("--tl-bubble-x", shift + "px");
+  }
+
+  // The preview shows the handle's frame: a video's own second, a photo's end on the
+  // final video (ED-14: `at + value`, kept inside the photo as it plays now, so the
+  // preview shows the photo and never the next block), or a text's or effect's moment
+  // of the final video.
   function showTrimFrame(t) {
     var api = seqApi();
     var host = previewOf(t.root);
@@ -592,7 +665,9 @@
       api.showSource(host, t.index, t.value);
     } else if (api.goTo) {
       if (api.pause) api.pause(host, true);
-      api.goTo(host, t.value, true);
+      var to = t.value;
+      if (t.photo) to = t.at + Math.max(Math.min(t.value, t.value0) - 0.05, 0);
+      api.goTo(host, to, true);
     }
   }
 
@@ -600,6 +675,9 @@
     var t = trim;
     if (!t) return;
     var dx = canvasX(t, t.clientX) - t.x0;
+    // the value follows the pointer inside the handle's own bounds only (5 s, the
+    // video's material, the video): past the edge of what is seen it keeps going while
+    // the handle waits there (ED-14 option B, `paintTrim` / `core.pinShift`)
     var next = core().trimValue({
       value: t.value0,
       dx: dx,
@@ -611,6 +689,10 @@
       min: t.min,
       max: t.max,
     }).value;
+    if (t.photo) {
+      // ED-14: a photo's seconds sit on the ½ s magnet only (the screen keeps them so)
+      next = core().stepValue(next, t.min, t.max);
+    }
     if (next === t.value && t.painted) return;
     t.value = next;
     t.painted = true;
@@ -624,8 +706,9 @@
     var box = t.scroller.getBoundingClientRect();
     var step = core().autoScrollStep({ x: t.clientX, left: box.left, right: box.right });
     if (step) {
-      var max = t.scroller.scrollWidth - t.scroller.clientWidth;
-      var next = core().clampScroll(t.scroller.scrollLeft, step, max);
+      // ED-14: as far as the tracks went when the handle was taken — the box it draws
+      // never widens them, so the drag never pushes the timeline out of view
+      var next = core().clampScroll(t.scroller.scrollLeft, step, t.maxScroll);
       if (next !== t.scroller.scrollLeft) {
         t.scroller.scrollLeft = next;
         trimUpdate();
@@ -639,6 +722,7 @@
     var box = t.item.querySelector(":scope > .q-tl__trim");
     if (box) box.remove();
     t.handle.style.transform = "";
+    t.handle.style.removeProperty("--tl-bubble-x");
     t.handle.removeAttribute("data-tl-time");
     t.item.classList.remove("q-tl__item--trimming");
     t.root.removeAttribute("data-tl-trimming");
@@ -688,6 +772,8 @@
         edge: edge,
         id: handle.getAttribute("data-tl-id") || "",
         video: kind === "video",
+        photo: kind === "photo",
+        photoWords: handle.getAttribute("aria-valuetext") || "",
         index: Array.prototype.indexOf.call(lane.querySelectorAll(":scope > .q-tl__item"), item),
         pointer: e.pointerId,
         canvas: root.querySelector(".q-tl__canvas"),
@@ -716,6 +802,17 @@
       if (!isFinite(t.min)) t.min = undefined;
       if (!isFinite(t.max)) t.max = undefined;
       t.x0 = canvasX(t, e.clientX);
+      // ED-14: where the handle is now (canvas px) and how far the tracks scroll, for the
+      // drag's stop at what is seen of the timeline (`core.viewBounds`)
+      var handleBox = handle.getBoundingClientRect();
+      t.handleLeft = canvasX(t, handleBox.left);
+      t.handleWidth = handleBox.width;
+      // the block's edges at rest and its track (lane): where the silhouette may reach
+      var itemBox = item.getBoundingClientRect();
+      t.blockStart = canvasX(t, itemBox.left);
+      t.blockEnd = canvasX(t, itemBox.right);
+      t.lane = lane;
+      t.maxScroll = t.scroller ? t.scroller.scrollWidth - t.scroller.clientWidth : 0;
       t.targets = magnetTargets(root, item);
       t.seqRaw = "";
       var host = previewOf(root);
@@ -746,6 +843,35 @@
     { passive: false }
   );
 
+  // ED-14 option B: once the block is back at its new size, the tracks scroll so it is
+  // seen whole if it fits, else its dragged edge (`core.revealScroll`). A desktop's tracks
+  // do not scroll: the timeline lays itself out again at the new length.
+  function revealBlock(t) {
+    var scroller = t.scroller;
+    if (!scroller || !t.root.isConnected) return;
+    var max = scroller.scrollWidth - scroller.clientWidth;
+    if (max <= 0) return;
+    var block = null;
+    var blocks = t.root.querySelectorAll("[data-tl-block]");
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].getAttribute("data-tl-id") === t.id) block = blocks[i];
+    }
+    if (!block) return;
+    var box = block.getBoundingClientRect();
+    var view = viewBox(t);
+    var next = core().revealScroll({
+      scrollLeft: scroller.scrollLeft,
+      maxScroll: max,
+      viewLeft: view.left,
+      viewRight: view.right,
+      blockLeft: box.left,
+      blockRight: box.right,
+      edge: t.edge,
+      margin: 8,
+    });
+    if (next !== scroller.scrollLeft) scroller.scrollLeft = next;
+  }
+
   function trimRelease(e) {
     var t = trim;
     if (!t || e.pointerId !== t.pointer) return;
@@ -763,6 +889,9 @@
       done = true;
       observer.disconnect();
       trimClear(t);
+      window.requestAnimationFrame(function () {
+        revealBlock(t);
+      });
     });
     observer.observe(t.item, {
       subtree: true,
@@ -774,11 +903,13 @@
       done = true;
       observer.disconnect();
       trimClear(t);
+      revealBlock(t); // the block is seen even when its new size came unnoticed
     }, GIVE_UP_MS);
     report(t.root, t.id, t.edge, t.value);
     // «Al soltar, reproduce el bloque»: from where it starts once the screen answered
     var host = previewOf(t.root);
-    var start = t.video ? t.at : t.edge === "start" ? t.value : t.from;
+    // (a photo from where it starts on the final video, ED-14)
+    var start = t.video || t.photo ? t.at : t.edge === "start" ? t.value : t.from;
     playWhenReady(host, t.seqRaw, start, 150);
   }
 

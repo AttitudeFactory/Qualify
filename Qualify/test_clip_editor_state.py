@@ -738,8 +738,9 @@ def test_on_entering_everything_is_in_its_order(editor_on: None) -> None:
         "Video 3 de 3, usas de 0:00 a 0:08, dura 8 s",
     ]
     assert state.clip_tl_total == "25"
-    # ED-03: the own video has its trim handles; a photo and another video none yet
-    assert [r["handles"] for r in rows] == ["", "1", ""]
+    # ED-03: the own video has its trim handles; ED-14: a photo its end handle; another
+    # video none yet
+    assert [r["handles"] for r in rows] == ["1", "1", ""]
     assert [r["own"] for r in rows] == ["", "1", ""]
     assert state.clip_tl_text_rows == [] and state.clip_tl_effect_rows == []
     # the preview in sequence plays the same blocks, from the browser's backend

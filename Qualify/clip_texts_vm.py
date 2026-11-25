@@ -17,7 +17,7 @@ Clip takes up to `TEXTS_MAX` texts (contract v2, `TEXT_LAYERS_MAX`). Each text i
   today — the generated hook is never copied in; the owner taps «+ Texto» and writes.
 - ``blocks`` — the «Fotos y videos» blocks it is stuck to. Stuck, its seconds are its
   blocks': it follows them when they move, are cut, trimmed or removed. ``[]`` = its own
-  seconds (after a drag, ←/→ or «− ½ s / + ½ s», as an effect). The panel no longer
+  seconds (after a drag or ←/→ on its block or a handle, as an effect). The panel no longer
   asks «¿En qué partes va?» (Deivid 2026-11-23): nothing on screen writes ``blocks``
   any more and «+ Texto» puts a text with its own seconds, but a text that already
   carries them is still read and followed (`resolve_text_uses`, `follow_text_media`)
@@ -90,7 +90,7 @@ FADE_MIN = contract.VIDEO_TEXT_FADE_MIN_S
 FADE_MAX = contract.VIDEO_TEXT_FADE_MAX_S
 FADE_DEFAULT = contract.VIDEO_TEXT_FADE_DEFAULT_S
 FADE_STEP = 0.1
-#: ←/→ and «− ½ s / + ½ s» move a text by half a second; it lasts at least 1 s.
+#: ←/→ on its block or a handle move a text by half a second; it lasts at least 1 s.
 STEP_S = tl.STEP_S
 MIN_S = contract.SEGMENT_MIN_SECONDS
 #: The preview's tolerance for criterion 4 («cada texto solo en sus segundos ±0,1 s»).
@@ -115,15 +115,11 @@ PLACE_TEXTS: dict[str, str] = dict(cevm.TEXT_PLACES)
 PLACE_WORDS: dict[str, str] = {"top": "arriba", "middle": "en el medio", "bottom": "abajo"}
 #: Deivid 2026-11-23 (A1): no «Empieza»/«Termina» in the panel — the times change on the
 #: timeline (its block's handles); this line says when it shows and how to change it.
+#: The animation's length: a slider from 0,3 to 1 s, 0,1 s a step (Deivid 2026-11-24: no
+#: «− 0,1 s / + 0,1 s»), named by what it changes.
 FADE_LABEL = "Tarda en entrar y salir"
 FADE_IN_LABEL = "Tarda en entrar"
 FADE_OUT_LABEL = "Tarda en salir"
-FADE_LESS_NAME = "Que entre y salga más rápido"
-FADE_MORE_NAME = "Que entre y salga más despacio"
-FADE_IN_LESS_NAME = "Que entre más rápido"
-FADE_IN_MORE_NAME = "Que entre más despacio"
-FADE_OUT_LESS_NAME = "Que salga más rápido"
-FADE_OUT_MORE_NAME = "Que salga más despacio"
 
 # -- ED-13 C: the text's background («Fondo de las letras») --------------------------------
 
@@ -473,39 +469,34 @@ def fade_line(value: float, label: str = FADE_LABEL) -> str:
     return f"{label}: {fade_text(value)}"
 
 
-def fade_words(motion_in: str, motion_out: str) -> tuple[str, str, str]:
-    """What the length row says and its buttons' names, by what it changes: the entrance
-    and the exit; the entrance alone when it leaves «De golpe»; the exit alone with
-    «Letra por letra» (whose entrance takes its own time); `("", "", "")` when it changes
-    nothing (both)."""
+def fade_words(motion_in: str, motion_out: str) -> str:
+    """What the length slider is called, by what it changes: the entrance and the exit;
+    the entrance alone when it leaves «De golpe»; the exit alone with «Letra por letra»
+    (whose entrance takes its own time); "" when it changes nothing (both)."""
     typing = motion_in == TYPEWRITER
     still = motion_out == "none"
     if typing and still:
-        return "", "", ""
+        return ""
     if typing:
-        return FADE_OUT_LABEL, FADE_OUT_LESS_NAME, FADE_OUT_MORE_NAME
+        return FADE_OUT_LABEL
     if still:
-        return FADE_IN_LABEL, FADE_IN_LESS_NAME, FADE_IN_MORE_NAME
-    return FADE_LABEL, FADE_LESS_NAME, FADE_MORE_NAME
+        return FADE_IN_LABEL
+    return FADE_LABEL
 
 
-def fade_can_step(value: float, delta: float) -> bool:
-    """«− 0,1 s» / «+ 0,1 s» is on: one more step stays inside 0,3–1 s."""
-    current = normalize_fade(value)
-    if delta < 0:
-        return current > FADE_MIN + 1e-6
-    return current < FADE_MAX - 1e-6
-
-
-def step_fade(
-    uses: Sequence[Mapping[str, object]], uid: str, delta: float
-) -> list[dict[str, object]]:
-    """«− 0,1 s» / «+ 0,1 s»: the fade one step shorter or longer, never out of 0,3–1 s."""
-    use = next((u for u in uses if str(u.get("uid")) == uid), None)
-    if use is None:
-        return [dict(u) for u in uses]
-    current = normalize_fade(use.get("fade"))
-    return set_fade(uses, uid, current + (FADE_STEP if delta > 0 else -FADE_STEP))
+def fade_from_slider(value: object) -> float | None:
+    """The slider's value (Radix sends a list with one number) as a fade, on the 0,1 s
+    grid inside 0,3–1 s (`normalize_fade`); None when it is not a number (nothing to
+    change — never a jump back to the default)."""
+    if isinstance(value, list | tuple):
+        value = value[0] if value else None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return normalize_fade(number)
 
 
 def fade_choices() -> list[dict[str, str]]:
@@ -1305,7 +1296,7 @@ def text_panel_row(
     layout = normalize_layout(use.get("layout"))
     motion_in = normalize_motion_in(use.get("motion_in"))
     motion_out = normalize_motion_out(use.get("motion_out"))
-    fade_label, less_name, more_name = fade_words(motion_in, motion_out)
+    fade_label = fade_words(motion_in, motion_out)
     typing_ok = typewriter_allowed(text)
     in_name, out_name = MOTION_IN_NAMES[motion_in], MOTION_OUT_NAMES[motion_out]
     size = normalize_size(use.get("size"))
@@ -1324,12 +1315,7 @@ def text_panel_row(
         "fade_text": fade_text(fade),
         "fade_value": fade_line(fade, fade_label) if fade_label else "",
         "fade_label": fade_label,
-        "fade_less_name": less_name,
-        "fade_more_name": more_name,
         "fade_shown": "1" if fade_label else "",
-        # the buttons go off at the limits ("1" = off)
-        "fade_less_off": "" if fade_can_step(fade, -FADE_STEP) else "1",
-        "fade_more_off": "" if fade_can_step(fade, FADE_STEP) else "1",
         "bottom_off": "" if bottom_free else "1",
         "place_note": "" if bottom_free else SUBTITLES_BOTTOM_LINE,
         "covered_note": SUBTITLES_COVERED_LINE if covered else "",

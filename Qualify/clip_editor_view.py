@@ -46,6 +46,7 @@ from __future__ import annotations
 import reflex as rx
 
 from . import clip_editor_vm as vm
+from . import clip_photos_vm as photos_vm
 from . import clip_texts_vm
 from .creative_state import CreativeState
 from .parts_start_state import PartsStartState
@@ -178,7 +179,8 @@ def _text_panel() -> rx.Component:
         on_text=lambda value: S.set_clip_text_value(row["uid"], value),
         on_text_commit=lambda value: S.commit_clip_text(row["uid"], value),
         on_place=S.set_clip_text_place,
-        on_fade_step=S.step_clip_text_fade,
+        on_fade=S.set_clip_text_fade,
+        fade=S.clip_text_fade_s,
         on_layout=S.set_clip_text_layout,
         on_motion_in=S.set_clip_text_motion_in,
         on_motion_out=S.set_clip_text_motion_out,
@@ -522,11 +524,40 @@ def _own_video() -> rx.Component:
     )
 
 
+def _photo_block() -> rx.Component:
+    """A photo's panel (ED-14, m-25029109): «Duración · Se ve N s» and how to change it —
+    ONLY by dragging the end handle of its block (Deivid 2026-11-24: no «− ½ s / + ½ s»;
+    focused, the handle takes ←/→, ½ s each). At 1 s or 5 s the line under it says why
+    the handle stops, once (`photos_vm.LIMIT_ID`, the handle's `aria-describedby`: the
+    live line never repeats it). «Girar» is on the bar."""
+    row = S.clip_tl_chosen
+    return rx.vstack(
+        rx.text(
+            row["end_label"] + " · " + row["end_value"],
+            size="2",
+            weight="medium",
+            class_name="q-nums",
+        ),
+        rx.text(photos_vm.DRAG_HINT, size="1", color=T.TEXT_MUTED),
+        rx.text(
+            row["limit"],
+            size="1",
+            weight="medium",
+            id=photos_vm.LIMIT_ID,
+            display=rx.cond(row["limit"] != "", "block", "none"),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _block_extra() -> rx.Component:
     """The chosen block's own fields, by what it is."""
     row = S.clip_tl_chosen
     return rx.match(
         row["kind"],
+        ("photo", _photo_block()),
         (
             "video",
             rx.cond(
@@ -560,9 +591,11 @@ def _block_panel() -> rx.Component:
             on_nudge=S.nudge_clip_block,
             on_done=S.done_clip_block,
             extra=_block_extra(),
-            # an effect's times move with ±½ s; a video is cut with «Cortar» (Deivid
-            # 2026-11-17: no «Desde/Hasta»); a photo's length is ED-14's
-            nudges=row["kind"] == "effect",
+            # Deivid 2026-11-24 («quita todos los selectores para subir y bajar el
+            # tiempo»): no «− ½ s / + ½ s» anywhere — an effect's and a photo's times
+            # change by dragging their block's handles (focused, ←/→ ½ s); a video is cut
+            # with «Cortar» (Deivid 2026-11-17: no «Desde/Hasta»)
+            nudges=False,
         ),
     )
 

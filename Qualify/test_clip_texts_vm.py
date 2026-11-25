@@ -438,36 +438,33 @@ def test_the_length_row_says_what_it_changes() -> None:
     (use,) = vm.resolve_text_uses([_use("t1", "Hola", 0, 6)], MEDIA)
     row = vm.text_panel_row(use, MEDIA)
     assert row["fade_value"] == "Tarda en entrar y salir: 0,5 s" and row["fade_shown"] == "1"
-    assert (row["fade_less_name"], row["fade_more_name"]) == (
-        "Que entre y salga más rápido",
-        "Que entre y salga más despacio",
-    )
-    assert (row["fade_less_off"], row["fade_more_off"]) == ("", "")
+    # the slider is named by what it changes (Deivid 2026-11-24: no «− 0,1 s / + 0,1 s»)
+    assert row["fade_label"] == "Tarda en entrar y salir"
+    assert not any(key.startswith(("fade_less", "fade_more")) for key in row)
     still = vm.text_panel_row({**use, "motion_out": "none"}, MEDIA)
     assert still["fade_value"] == "Tarda en entrar: 0,5 s"
-    assert still["fade_less_name"] == "Que entre más rápido"
+    assert still["fade_label"] == "Tarda en entrar"
     typing = vm.text_panel_row({**use, "motion_in": "typewriter"}, MEDIA)
     assert typing["fade_value"] == "Tarda en salir: 0,5 s"
     both = vm.text_panel_row({**use, "motion_in": "typewriter", "motion_out": "none"}, MEDIA)
     assert both["fade_shown"] == "" and both["fade_value"] == ""
 
 
-@pytest.mark.parametrize(("fade", "less_off", "more_off"), [(0.3, "1", ""), (1.0, "", "1")])
-def test_fade_buttons_go_off_at_the_limits(fade: float, less_off: str, more_off: str) -> None:
-    (use,) = vm.resolve_text_uses([_use("t1", "Hola", 0, 2, fade=fade)], MEDIA)
-    row = vm.text_panel_row(use, MEDIA)
-    assert (row["fade_less_off"], row["fade_more_off"]) == (less_off, more_off)
+@pytest.mark.parametrize(
+    ("raw", "fade"),
+    [([0.4], 0.4), ([0.6000000000000001], 0.6), ([0.2], 0.3), ([1.4], 1.0), (0.7, 0.7),
+     ("0.8", 0.8), ([], None), (None, None), (["x"], None), ([float("nan")], None)],
+)  # fmt: skip
+def test_the_fade_slider_stays_on_its_tenths_and_in_range(raw: object, fade: float | None) -> None:
+    # Deivid 2026-11-24: a slider from 0,3 to 1 s, 0,1 s a step (Radix sends a list)
+    assert vm.fade_from_slider(raw) == fade
 
 
-def test_fade_steps_a_tenth_and_stays_in_range() -> None:
-    uses = [_use("t1", "Hola", 0, 2)]
-    assert vm.step_fade(uses, "t1", -0.1)[0]["fade"] == 0.4
-    assert vm.step_fade(uses, "t1", 0.1)[0]["fade"] == 0.6
-    low = [_use("t1", "Hola", 0, 2, fade=0.3)]
-    assert vm.step_fade(low, "t1", -0.1)[0]["fade"] == 0.3
-    high = [_use("t1", "Hola", 0, 2, fade=1.0)]
-    assert vm.step_fade(high, "t1", 0.1)[0]["fade"] == 1.0
-    assert vm.step_fade(uses, "t9", 0.1) == uses
+def test_the_fade_slider_sets_only_that_text() -> None:
+    uses = [_use("t1", "Hola", 0, 2), _use("t2", "Chao", 2, 4)]
+    out = vm.set_fade(uses, "t1", vm.fade_from_slider([0.8]))
+    assert (out[0]["fade"], out[1]["fade"]) == (0.8, uses[1]["fade"])
+    assert vm.set_fade(uses, "t9", 0.8) == uses
 
 
 # -- subtitles take «Abajo» (Deivid 2026-11-23) ---------------------------------------------

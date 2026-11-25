@@ -336,10 +336,6 @@ def fast_proposal(duration: float) -> tuple[float, float, int]:
 
 FROM_LABEL = "Desde"
 TO_LABEL = "Hasta"
-EARLIER = "Medio segundo antes"
-LATER = "Medio segundo después"
-EARLIER_TEXT = "− ½ s"
-LATER_TEXT = "+ ½ s"
 ROTATE = "Girar"
 ROTATE_LABEL = "Girar el video un cuarto de vuelta"
 WHOLE_VIDEO = "Usar el video entero"
@@ -923,8 +919,14 @@ def timeline_segments(media: Sequence[Mapping[str, object]]) -> tuple[contract.S
             continue
         if item.get("kind") == "photo":
             seconds = round(float(item.get("dur") or 0.0), 2)  # type: ignore[arg-type]
+            try:
+                turn = int(item.get("rotate") or 0)  # type: ignore[call-overload]
+            except (TypeError, ValueError):
+                turn = 0
+            if turn not in contract.ROTATIONS:
+                turn = 0  # ED-14: only a quarter turn travels; anything else is upright
             if seconds > 0:
-                out.append(contract.SourceSegment(key, 0.0, seconds, 1.0, 0, "photo"))
+                out.append(contract.SourceSegment(key, 0.0, seconds, 1.0, turn, "photo"))
             continue
         start = round(float(item.get("src_start") or 0.0), 2)  # type: ignore[arg-type]
         end = round(float(item.get("src_end") or 0.0), 2)  # type: ignore[arg-type]
@@ -1124,15 +1126,16 @@ BLOCK_PARAM = "bloque"
 PHOTO_SECONDS = 2.0
 #: An effect's block id is this plus its library id (`efecto-vapor_capa`).
 EFFECT_ID_PREFIX = "efecto-"
-#: The chosen block's bar in the editor: only what works on this screen today. «Girar»
-#: of a photo and «Duración» (ED-14) come with their tickets; «Cortar» (where the
-#: marker is), «Girar» and «Velocidad» of the video are in its panel (one place each).
+#: The chosen block's bar in the editor: only what works on this screen today. A photo's
+#: bar is «Girar · Quitar» (ED-14); its seconds change only by dragging its end handle
+#: (Deivid 2026-11-20: no «Duración» in the bar; 2026-11-24: no «− ½ s / + ½ s»). «Cortar» (where
+#: the marker is), «Girar» and «Velocidad» of the video are in its panel (one place each).
 #: ED-13: a text's bar is «Editar texto» (to its field) · «Quitar».
 REMOVE = "Quitar"
 TEXT_EDIT = "Editar texto"
 EDITOR_ACTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "video": ((REMOVE, "trash-2"),),
-    "photo": ((REMOVE, "trash-2"),),
+    "photo": ((ROTATE, "rotate-cw"), (REMOVE, "trash-2")),
     "text": ((TEXT_EDIT, "pencil"), (REMOVE, "trash-2")),
     "effect": ((REMOVE, "trash-2"),),
 }

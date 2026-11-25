@@ -22,8 +22,8 @@ first), each header a ≥ 44 px button with the section's title, what is chosen 
   de las letras» (white until another is picked);
 - «Cómo entra y sale» · «Aparece · Desaparece» (folds since round 3): two compact
   radiogroups (44 px) «Cómo entra» / «Cómo sale», and ONE length
-  «Tarda en entrar y salir: 0,5 s» with «− 0,1 s / + 0,1 s» (0,3 to 1 s, each button off
-  at its limit). «Letra por letra» past 40 characters is off but focusable
+  «Tarda en entrar y salir: 0,5 s» over a slider (0,3 to 1 s, 0,1 s a step; Deivid
+  2026-11-24: no «− 0,1 s / + 0,1 s»). «Letra por letra» past 40 characters is off but focusable
   (`aria-disabled`, its reason under the grid), as «Abajo» with the subtitles; chosen, it
   warns the video takes a bit longer.
 
@@ -83,51 +83,44 @@ WIDE_NOTE_ID = "clip-text-wide-note"
 FIT_SCRIPT = "text-fit.js"
 #: «Si tu video es claro…» under the grid while «Sin fondo» is chosen.
 SHADOW_NOTE_ID = "clip-text-shadow-note"
-FADE_LESS = "− 0,1 s"
-FADE_MORE = "+ 0,1 s"
+#: The length slider's visible line (its accessible name is the same words).
+FADE_LINE_ID = "clip-text-fade-line"
 #: One tab stop per radiogroup, the arrows move and choose (`assets/choice-radio.js`).
 RADIO_SCRIPT = "choice-radio.js"
 SHOW_MOTION = "Ver cómo se mueve"
 
 
-def _step_button(
-    text: str, on_click: Any, name: Any = "", disabled: rx.Var[bool] | bool = False
+def _fade_row(
+    row: rx.Var, fade: rx.Var[float] | float, on_fade: Callable[[Any, Any], Any]
 ) -> rx.Component:
-    return rx.button(
-        text,
-        variant="soft",
-        color_scheme="gray",
-        type="button",
-        class_name="q-tl-actions__btn",
-        on_click=on_click,
-        disabled=disabled,
-        **({"aria_label": name} if isinstance(name, rx.Var) or name else {}),
-    )
-
-
-def _fade_row(row: rx.Var, on_fade_step: Callable[[Any, float], Any]) -> rx.Component:
-    """«Tarda en entrar y salir: 0,5 s [− 0,1 s] [+ 0,1 s]» (Deivid 2026-11-23: one
-    length for both; «Tarda en entrar» when it leaves «De golpe»). From 0,3 to 1 s: each
-    button is off at its limit. Not drawn when it changes nothing."""
+    """«Tarda en entrar y salir: 0,5 s» over a slider (Deivid 2026-11-23: one length for
+    both; «Tarda en entrar» when it leaves «De golpe»; 2026-11-24: a slider, no
+    «− 0,1 s / + 0,1 s»). From 0,3 to 1 s, 0,1 s a step — the arrows move it a step;
+    it stops at its ends by itself. Radix's slider (`rx.slider`, as Crear's tone
+    sliders), named by the same words as its line. Not drawn when it changes nothing."""
     return rx.cond(
         row["fade_shown"] == "1",
         rx.el.div(
-            rx.text(row["fade_value"], size="2", weight="medium", class_name="q-nums"),
-            _step_button(
-                FADE_LESS,
-                on_fade_step(row["uid"], -vm.FADE_STEP),
-                row["fade_less_name"],
-                disabled=row["fade_less_off"] == "1",
+            rx.text(
+                row["fade_value"],
+                size="2",
+                weight="medium",
+                class_name="q-nums",
+                id=FADE_LINE_ID,
             ),
-            _step_button(
-                FADE_MORE,
-                on_fade_step(row["uid"], vm.FADE_STEP),
-                row["fade_more_name"],
-                disabled=row["fade_more_off"] == "1",
+            rx.slider(
+                # controlled by ``fade``; Radix's own default (50) would sit off the range
+                default_value=[vm.FADE_DEFAULT],
+                value=[fade],
+                min=vm.FADE_MIN,
+                max=vm.FADE_MAX,
+                step=vm.FADE_STEP,
+                on_change=lambda value: on_fade(row["uid"], value),
+                size="2",
+                width="100%",
+                aria_label=row["fade_label"],
             ),
-            class_name="q-tl-panel__row",
-            role="group",
-            aria_label=row["fade_label"],
+            class_name="q-tl-panel__field",
         ),
     )
 
@@ -377,7 +370,8 @@ def _motion_section(
     *,
     on_motion_in: Callable[[Any, str], Any],
     on_motion_out: Callable[[Any, str], Any],
-    on_fade_step: Callable[[Any, float], Any],
+    on_fade: Callable[[Any, Any], Any],
+    fade: rx.Var[float] | float,
     on_show_motion: Callable[[Any], Any],
 ) -> rx.Component:
     """«Cómo entra y sale» · «Aparece · Desaparece» (ED-13 D; folds since round 3, Deivid
@@ -417,7 +411,7 @@ def _motion_section(
             on_choose=lambda key: on_motion_out(row["uid"], key),
             compact=True,
         ),
-        _fade_row(row, on_fade_step),
+        _fade_row(row, fade, on_fade),
         rx.cond(row["cut_note"] != "", rx.text(row["cut_note"], **muted)),
         # with prefers-reduced-motion nothing plays by itself: the owner asks for it
         rx.button(
@@ -506,12 +500,13 @@ def text_panel(
     on_text: Callable[[Any], Any],
     on_text_commit: Callable[[Any], Any],
     on_place: Callable[[Any, Any], Any],
-    on_fade_step: Callable[[Any, float], Any],
+    on_fade: Callable[[Any, Any], Any],
     on_layout: Callable[[Any, str], Any],
     on_motion_in: Callable[[Any, str], Any],
     on_motion_out: Callable[[Any, str], Any],
     on_show_motion: Callable[[Any], Any],
     on_done: Any,
+    fade: rx.Var[float] | float = vm.FADE_DEFAULT,
     warning: rx.Var[str] | str = "",
     colors: rx.Var | None = None,
     on_color: Callable[[Any, Any], Any] | None = None,
@@ -520,7 +515,8 @@ def text_panel(
 ) -> rx.Component:
     """The chosen text's panel. ``row`` is `clip_texts_vm.text_panel_row` (as a Var);
     ``on_text(value)`` while typing, ``on_text_commit(value)`` when the field is left,
-    ``on_place(uid, place)``, ``on_fade_step(uid, delta)``, ``on_layout(uid, layout)``,
+    ``on_place(uid, place)``, ``on_fade(uid, value)`` (the length slider, at ``fade``
+    seconds; Radix sends a list), ``on_layout(uid, layout)``,
     ``on_motion_in(uid, motion)`` / ``on_motion_out(uid, motion)`` and
     ``on_show_motion(uid)`` («Ver cómo se mueve»); ``warning`` (`texts_problem`, or
     why the last choice was not taken) shows as a warning callout when not empty.
@@ -537,7 +533,8 @@ def text_panel(
             row,
             on_motion_in=on_motion_in,
             on_motion_out=on_motion_out,
-            on_fade_step=on_fade_step,
+            on_fade=on_fade,
+            fade=fade,
             on_show_motion=on_show_motion,
         ),
     ]
