@@ -284,6 +284,19 @@ class DiscoverReelsState(rx.State):
             choice, self._accounts, ideas=len(shown), more=len(self.more_reels)
         ).kind
 
+    @rx.var
+    def no_ideas_left(self) -> bool:
+        """RF-13: with no filter on, the run's ideas are all gone (their accounts now «No
+        va contigo») but reviewed reels are left: the list says so over them, with
+        «Elegir cuentas» (`NO_IDEAS_LEFT`). The vars are read here, not via helpers."""
+        if self.screen != SCREEN_IDEAS or not self.more_reels:
+            return False
+        if self.filter_network or self.filter_kind or self.filter_duration:
+            return False
+        if self.filter_accounts:
+            return False
+        return not any(c.get("affinity") in reels_ai.FITS for c in self._cards)
+
     @rx.event
     def open_sheet(self, axis: str) -> None:
         """A phone chip: open its axis' sheet (and remember the chip, for the focus)."""
@@ -1271,12 +1284,17 @@ def _option_row(
     its mark always drawn: the empty ring or square when it is not chosen (RF-13)."""
     on, off = _MARKS[role]
     return rx.button(
-        rx.icon(
-            rx.cond(chosen, on, off),
-            size=T.ICON_MD,
-            color=rx.cond(chosen, T.tone_color("accent", 11), T.TEXT_MUTED),
-            flex_shrink="0",
-            aria_hidden="true",
+        # two static icons, not one named at run time: the mark paints with the row
+        rx.cond(
+            chosen,
+            rx.icon(
+                on,
+                size=T.ICON_MD,
+                color=T.tone_color("accent", 11),
+                flex_shrink="0",
+                aria_hidden="true",
+            ),
+            rx.icon(off, size=T.ICON_MD, color=T.TEXT_MUTED, flex_shrink="0", aria_hidden="true"),
         ),
         rx.vstack(
             rx.text(
@@ -1606,20 +1624,24 @@ def _empty_lists() -> rx.Component:
                 class_name="q-empty",
             ),
         ),
-        (
-            EMPTY_NO_IDEAS,
-            rx.vstack(
-                rx.text(reels_filters_vm.NO_IDEAS_LEFT, size="2", color=T.TEXT_MUTED),
-                rx.link(
-                    rx.button(reels_filters_vm.NO_IDEAS_LEFT_ACTION, variant="soft", size="3"),
-                    href=ACCOUNTS_HREF,
-                ),
-                spacing="3",
-                align_items="start",
-                width="100%",
-            ),
-        ),
+        (EMPTY_NO_IDEAS, _no_ideas_left()),
         rx.fragment(),
+    )
+
+
+def _no_ideas_left() -> rx.Component:
+    """No idea of the run is left with no filter on (their accounts are now «No va
+    contigo»): says so with the way on, «Elegir cuentas» — never a dead end (UX review 2).
+    Alone when nothing else is left; over the reviewed reels when some are (RF-13)."""
+    return rx.vstack(
+        rx.text(reels_filters_vm.NO_IDEAS_LEFT, size="2", color=T.TEXT_MUTED),
+        rx.link(
+            rx.button(reels_filters_vm.NO_IDEAS_LEFT_ACTION, variant="soft", size="3"),
+            href=ACCOUNTS_HREF,
+        ),
+        spacing="3",
+        align_items="start",
+        width="100%",
     )
 
 
@@ -1666,7 +1688,15 @@ def _ideas() -> rx.Component:
     lists = rx.cond(
         S.empty_kind != "",
         _empty_lists(),
-        rx.vstack(grid, _pager(), spacing="4", width="100%"),
+        rx.vstack(
+            # no idea left, but reviewed reels are: they show, and the owner is told why
+            # none offers «Hacer uno parecido» and how to get ideas again
+            rx.cond(S.no_ideas_left, _no_ideas_left()),
+            grid,
+            _pager(),
+            spacing="4",
+            width="100%",
+        ),
     )
     return rx.vstack(
         rx.cond(

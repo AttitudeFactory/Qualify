@@ -11,7 +11,7 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
   Postgres only, never a write. RF-02 (m-25119460): the ideas and one page of «Más reels
   revisados» come narrowed by the owner's filters through RF-01's read
   (`reviewed_reels.reviewed_reels`) — filtering reads only what is stored, never pays;
-- `more_reviewed` — the next page of «Más reels revisados», the same read;
+- `more_reviewed` — the next page of the reviewed reels after the ideas (RF-13), the same read;
 - RF-05 (m-25119465): `competitor_rows` (the panel over the filter bar, Postgres only),
   `choose_competitors` (which 6 the Monday run reads, the brand's own labels) and
   `read_competitor_now` («Ver sus reels ahora»: it only QUEUES the read, inside the daily
@@ -136,7 +136,7 @@ def stored_ideas(
     """Everything «Ideas para tus reels» shows, read from Postgres — never the vendor,
     never the model, never a write. `now` is the moment the screen reads at (the run's
     retry and «Replicar» are judged at it); the real clock when not given. `filters`
-    (RF-02) narrow the ideas and «Más reels revisados» (RF-01's read, first page); the
+    (RF-02) narrow the ideas and the reviewed reels (RF-01's read, first page); the
     run's state — which screen, its notice — never depends on them."""
     runs = store or reel_runs.default_store()
     repo = repository or referentes_provider.REPOSITORY

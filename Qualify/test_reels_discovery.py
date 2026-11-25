@@ -1252,6 +1252,35 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     assert "section(" not in ideas and "_pager()" in ideas
 
 
+async def test_no_idea_left_but_reviewed_reels_says_so_never_a_dead_end(world: _World) -> None:
+    """RF-13 review: no idea left with no filter on, reviewed reels shown — the list says
+    why none offers «Hacer uno parecido» and how to get ideas («Elegir cuentas»)."""
+    import inspect
+
+    from . import discover_reels
+
+    world.ok_run(ideas=0)
+    _reviewed(world, [("instagram", "foodie", "M1", 12.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.reels == [] and len(state.more_reels) == 1 and state.empty_kind == ""
+    assert state.no_ideas_left
+    await _filter(proxy, state.set_filter("network", "instagram"))
+    assert not state.no_ideas_left  # a filter left the ideas out: nothing to explain
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "rx.cond(S.no_ideas_left, _no_ideas_left())" in ideas
+    shown = inspect.getsource(discover_reels._no_ideas_left)
+    assert "NO_IDEAS_LEFT_ACTION" in shown and "ACCOUNTS_HREF" in shown
+
+
+async def test_ideas_hide_the_no_ideas_note(world: _World) -> None:
+    world.ok_run()
+    _reviewed(world, [("instagram", "foodie", "M1", 12.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.reels and not state.no_ideas_left
+
+
 async def test_the_sheet_remembers_its_chip_for_the_focus(world: _World) -> None:
     """Escape (or the backdrop, «Cerrar», «Listo») closes the sheet; the chip that
     opened it stays marked so the focus goes back to it — and another business starts
