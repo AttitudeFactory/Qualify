@@ -412,10 +412,23 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
   - Cada caso puede traer el Brand Kit de su negocio (paleta y tipografías).
   - Un caso con `"photo": null` es un hueco que espera su foto: la prueba en seco lo deja
     fuera y lo nombra, y la corrida pagada se niega hasta que llegue.
-  - **nibbles burger:** la foto principal de «Smash doble» (1080×1620), copiada en solo
+  - **Origen del material (decisión de Deivid, 2026-11-25, m-25120474).** Cada caso declara
+    `"material_origin": "own" | "stock" | "client"`: `own` es material nuestro (nibbles),
+    `stock` el de un banco de imágenes y `client` el de un cliente (Bianki). Si el campo falta
+    o trae otro valor, se toma como `client`, lo más estricto (un valor que no esté en la
+    lista, escrito en un `casos.json`, se rechaza con `CasesError`). Se pueden seguir usando
+    nibbles y Bianki para **medir y juzgar** los efectos; pero **ningún «Así se ve» hecho con
+    material de un cliente se sube a `platform/`**. Se hace cumplir en el código:
+    `upload_previews` (`qualify_api/evals/effects_bench.py`) exige `origins` y no sube un
+    video cuyo origen no sea `own` o `stock`; `library --upload` elige, entre el final y los
+    borradores ganadores de cada efecto, el primero hecho con material propio o de stock, y si
+    no hay ninguno lo dice en la salida, no sube nada y no escribe la v6 (código de salida 6).
+    Cada fila de `pruebas.json` guarda el `material_origin` de su caso.
+  - **nibbles burger** (`"material_origin": "own"`): la foto principal de «Smash doble» (1080×1620), copiada en solo
     lectura del volumen local de subidas de la base de desarrollo, como en EF-11, con la
     paleta y las tipografías de su Brand Kit (Baloo 2 y Nunito).
-  - **Bianki:** hueco; la foto la pasa Deivid.
+  - **Bianki** (`"material_origin": "client"`): hueco; la foto la pasa Deivid. Sirve para
+    juzgar, no para el «Así se ve».
   - El `casos.json` está en `%TEMP%\m-25026587\casos.json` y la foto en
     `%TEMP%\m-25026587\fotos\`. No entra al repositorio.
 - **Salidas:** todo va a `%TEMP%\m-25026587\<corrida>\`: videos, prompts y `pruebas.json`.

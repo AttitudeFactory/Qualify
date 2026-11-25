@@ -276,21 +276,82 @@ def _store() -> Any:
 def test_previews_go_to_r2_retried_and_read_back() -> None:
     store = _store()
     store.fail_puts = 2  # two passing R2 failures: the third try lands
-    done = upload_previews(store, {"humo_denso": (1, b"video-1")})
+    done = upload_previews(store, {"humo_denso": (1, b"video-1")}, origins={"humo_denso": "own"})
     key = "platform/effects/humo_denso/v1/preview.mp4"
     assert done["humo_denso"]["key"] == key and store.objects[key] == b"video-1"
     assert store.content_types[key] == "video/mp4"
     # idempotent: the same bytes are not written again
     puts = len(store.puts)
-    upload_previews(store, {"humo_denso": (1, b"video-1")})
+    upload_previews(store, {"humo_denso": (1, b"video-1")}, origins={"humo_denso": "own"})
     assert len(store.puts) == puts
+
+
+@pytest.mark.parametrize("origin", ["client", None, "", "cliente", "OWN"])
+def test_a_clients_material_is_never_uploaded(origin: str | None) -> None:
+    store = _store()
+    refused: dict[str, str] = {}
+    done = upload_previews(
+        store,
+        {"humo_denso": (1, b"bianki")},
+        origins={} if origin is None else {"humo_denso": origin},
+        refused=refused,
+    )
+    assert done == {} and not store.objects and not store.puts
+    assert refused == {"humo_denso": "client"}  # missing or unknown = the strictest
+
+
+@pytest.mark.parametrize("origin", ["own", "stock"])
+def test_own_and_stock_material_is_uploaded(origin: str) -> None:
+    store = _store()
+    refused: dict[str, str] = {}
+    done = upload_previews(
+        store, {"humo_denso": (1, b"nibbles")}, origins={"humo_denso": origin}, refused=refused
+    )
+    assert done["humo_denso"]["key"] == "platform/effects/humo_denso/v1/preview.mp4"
+    assert store.objects[done["humo_denso"]["key"]] == b"nibbles" and not refused
+
+
+def test_only_the_allowed_one_of_a_mixed_batch_is_uploaded() -> None:
+    store = _store()
+    refused: dict[str, str] = {}
+    done = upload_previews(
+        store,
+        {"humo_denso": (1, b"a"), "brasas": (1, b"b")},
+        origins={"humo_denso": "own", "brasas": "client"},
+        refused=refused,
+    )
+    assert list(done) == ["humo_denso"] and refused == {"brasas": "client"}
+    assert list(store.objects) == ["platform/effects/humo_denso/v1/preview.mp4"]
+
+
+def test_a_case_origin_is_read_from_casos_json(tmp_path: Path) -> None:
+    runner = _runner()
+    photo = tmp_path / "f.jpg"
+    photo.write_bytes(b"jpg")
+    base = {"product": "p", "description": "d", "photo": "f.jpg"}
+    cases = [
+        {**base, "id": "nibbles", "material_origin": "own"},
+        {**base, "id": "bianki", "material_origin": "client"},
+        {**base, "id": "sin-campo"},
+    ]
+    file = tmp_path / "casos.json"
+    file.write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    ready, _, _, _ = runner._load_cases(str(file))
+    assert {c["id"]: c["material_origin"] for c in ready} == {
+        "nibbles": "own",
+        "bianki": "client",
+        "sin-campo": "client",  # missing = client
+    }
+    file.write_text(json.dumps({"cases": [{**base, "id": "x", "material_origin": "mio"}]}))
+    with pytest.raises(runner.CasesError):
+        runner._load_cases(str(file))
 
 
 def test_a_preview_that_never_lands_stops_the_library() -> None:
     store = _store()
     store.fail_puts = 3
     with pytest.raises(PreviewUploadError):
-        upload_previews(store, {"brasas": (1, b"x")})
+        upload_previews(store, {"brasas": (1, b"x")}, origins={"brasas": "stock"})
     assert not store.objects
 
 
@@ -405,8 +466,17 @@ def test_cases_take_local_photos_outside_the_repo_and_wait_for_missing_ones(
         runner._load_cases(str(file))
 
 
+_FAKE_RUN_ORIGINS: list[dict[str, str | None]] = [
+    {"a": "own", "b": "own"},
+    {"a": "client", "b": "stock"},  # a client's winners are skipped for a stock one
+    {"a": "client", "b": "client"},
+    {"a": None, "b": None},  # no declared origin = client
+]
+
+
+@pytest.mark.parametrize("origins", _FAKE_RUN_ORIGINS)
 def test_judge_then_score_then_library_on_a_fake_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, origins: dict[str, str | None]
 ) -> None:
     runner = _runner()
     run = tmp_path / "run"
@@ -424,6 +494,7 @@ def test_judge_then_score_then_library_on_a_fake_run(
                     "kind": kind,
                     "compared_with": "humo_denso" if kind == "atmosferico" else None,
                     "case": case,
+                    **({} if origins[case] is None else {"material_origin": origins[case]}),
                     "asked": "Humo",
                     "video": name,
                     "model_billed": "dreamina-seedance-2-5-260628",
@@ -462,9 +533,18 @@ def test_judge_then_score_then_library_on_a_fake_run(
     assert runner.main(["library", "--run", str(run)]) == 0  # plan only
     assert not store.objects and not (creative / "effects_data" / "v6.json").exists()
     assert (run / "biblioteca-v6.json").is_file()
+    allowed = [
+        label
+        for label in results["winners"]["humo_denso"]
+        if origins[label.split("/")[1]] in ("own", "stock")
+    ]
+    if not allowed:  # only client (or undeclared) material: nothing goes to platform/
+        assert runner.main(["library", "--run", str(run), "--upload"]) == 6
+        assert not store.objects and not (creative / "effects_data" / "v6.json").exists()
+        return
     assert runner.main(["library", "--run", str(run), "--upload"]) == 0
     key_r2 = "platform/effects/humo_denso/v1/preview.mp4"
-    winner = results["winners"]["humo_denso"][0]
+    winner = allowed[0]  # the first winning draft made with own or stock material
     assert store.objects[key_r2] == winner.encode()  # the winning draft's bytes
     v6 = json.loads((creative / "effects_data" / "v6.json").read_text(encoding="utf-8"))
     smoke = next(e for e in v6["entries"] if e["id"] == "humo_denso")

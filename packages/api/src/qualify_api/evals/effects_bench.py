@@ -33,6 +33,12 @@ ones that pass, and the `preview_asset` of each offered one: its winning video, 
 to R2 under a platform key (`platform/effects/<id>/v<n>/preview.mp4`, Deivid 2026-11-25),
 never into the repository — it shows a business's product (`upload_previews`).
 
+Origin rule (Deivid, 2026-11-25, m-25120474): a preview that goes to `platform/` is made
+ONLY with our own material (nibbles) or stock, never with a client's photos (Bianki…).
+Judging may use any case; uploading may not. Each case declares `material_origin`
+(`own` | `stock` | `client`); missing or unknown counts as `client`, the strictest, and
+`upload_previews` refuses to write a preview whose origin is not `own` or `stock`.
+
 The judges (Deivid, 2026-11-25): Deivid and Herwin (`JUDGES`), blind, each on their own.
 """
 
@@ -470,6 +476,22 @@ def object_vs_atmospheric(scores: Mapping[str, ArmScore]) -> list[dict[str, Any]
 # -- the library v6 --------------------------------------------------------------------
 
 
+#: Where a case's material comes from. Only `own` and `stock` may become a platform preview.
+MATERIAL_ORIGINS: tuple[str, ...] = ("own", "stock", "client")
+PLATFORM_PREVIEW_ORIGINS: tuple[str, ...] = ("own", "stock")
+
+
+def material_origin(value: object) -> str:
+    """A case's declared origin; anything missing or not in `MATERIAL_ORIGINS` is `client`
+    (the strictest: its previews never reach `platform/`)."""
+    return value if isinstance(value, str) and value in MATERIAL_ORIGINS else "client"
+
+
+def may_be_platform_preview(origin: object) -> bool:
+    """Whether a preview made with material of this origin may be uploaded to `platform/`."""
+    return material_origin(origin) in PLATFORM_PREVIEW_ORIGINS
+
+
 def preview_asset_path(effect_id: str, version: int) -> str:
     """Where an offered effect's «Así se ve» lives: an R2 PLATFORM key (no tenant, never a
     file in the repository — the winning video shows a business's product)."""
@@ -485,16 +507,28 @@ def upload_previews(
     store: Any,
     videos: Mapping[str, tuple[int, bytes]],
     *,
+    origins: Mapping[str, str | None],
     attempts: int = 3,
+    refused: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Write each winning video (`effect_id → (entry version, mp4 bytes)`) to its platform
     key (`preview_asset_path`) through `store` (`put(key, fileobj, content_type)` and
     `open(key)`, as `R2ObjectStore`), each write retried up to `attempts` times (rule 3),
     then read back and compared by sha256. Idempotent: an object already there with the
     same bytes is not written again. Returns `{effect_id: {"key", "sha256", "bytes"}}`;
-    raises `PreviewUploadError` naming the effect when one cannot be made to match."""
+    raises `PreviewUploadError` naming the effect when one cannot be made to match.
+
+    `origins` (`effect_id → material_origin`, required) is the platform rule: a video made
+    with material that is not `own` or `stock` (a missing origin counts as `client`) is NOT
+    uploaded; it is left out of the result and, when `refused` is given, listed there as
+    `effect_id → origin`."""
     done: dict[str, dict[str, Any]] = {}
     for effect_id, (version, data) in videos.items():
+        origin = material_origin(origins.get(effect_id))
+        if not may_be_platform_preview(origin):
+            if refused is not None:
+                refused[effect_id] = origin
+            continue
         key = preview_asset_path(effect_id, version)
         digest = hashlib.sha256(data).hexdigest()
         if _stored_sha256(store, key) != digest:
@@ -563,6 +597,8 @@ __all__ = [
     "JudgmentError",
     "NEW_LIBRARY_VERSION",
     "JUDGES",
+    "MATERIAL_ORIGINS",
+    "PLATFORM_PREVIEW_ORIGINS",
     "PreviewUploadError",
     "Trial",
     "bench_arms",
@@ -571,6 +607,8 @@ __all__ = [
     "control_entry",
     "judgment_template_rows",
     "library_v6",
+    "material_origin",
+    "may_be_platform_preview",
     "min_trials_per_effect",
     "object_vs_atmospheric",
     "parse_judgments",

@@ -42,6 +42,9 @@ Subcommands (all outputs OUTSIDE the repo, `%TEMP%/m-25026587/<run>/` by default
 `casos.json` (outside the repo): `{"kit": {...}, "cases": [{"id", "business", "product",
 "description", "photo", "kit"}]}` — `photo` relative to the file or an absolute local path
 outside the repo; null = the case waits for its photo (left out; a paid run refuses).
+`material_origin` (`own` | `stock` | `client`, Deivid 2026-11-25): whose material the photo
+is. Missing = `client`. Only `own` (nibbles) and `stock` cases may become a preview in
+`platform/`; a client's case (Bianki…) can still be asked and judged, never uploaded.
 
     # dry run: compiles and quotes every draft, sends nothing (no key needed)
     just eval-efectos drafts
@@ -98,12 +101,14 @@ SAMPLE_CASES: tuple[dict[str, Any], ...] = (
         "id": "muestra-fresa",
         "product": "Dona glaseada de fresa",
         "photo": "packages/render/public/sample/photo-1.jpg",
+        "material_origin": "own",
         "description": "La dona en primer plano sobre la mesa; la cámara se acerca despacio.",
     },
     {
         "id": "muestra-mango",
         "product": "Dona glaseada de mango",
         "photo": "packages/render/public/sample/photo-2.jpg",
+        "material_origin": "own",
         "description": "La dona en primer plano sobre la mesa; la cámara se acerca despacio.",
     },
 )
@@ -214,7 +219,15 @@ def _load_cases(
     data = json.loads(file.read_text(encoding="utf-8"))
     ready: list[dict[str, Any]] = []
     waiting: list[str] = []
+    from qualify_api.evals.effects_bench import MATERIAL_ORIGINS, material_origin
+
     for case in data["cases"]:
+        declared = case.get("material_origin")
+        if declared is not None and declared not in MATERIAL_ORIGINS:
+            raise CasesError(
+                f"{case['id']}: material_origin «{declared}» no es válido "
+                f"({', '.join(MATERIAL_ORIGINS)}); si falta se toma como client"
+            )
         if not case.get("photo"):
             waiting.append(str(case["id"]))
             continue
@@ -223,8 +236,14 @@ def _load_cases(
             raise CasesError(f"{case['id']}: la foto tiene que estar fuera del repositorio")
         if not photo.is_file():
             raise CasesError(f"{case['id']}: no existe la foto {photo}")
-        ready.append({**case, "photo": str(photo)})
+        ready.append({**case, "photo": str(photo), "material_origin": material_origin(declared)})
     return ready, dict(data.get("kit") or {}), file.parent, waiting
+
+
+def _origin_of(case: dict[str, Any]) -> str:
+    from qualify_api.evals.effects_bench import material_origin
+
+    return material_origin(case.get("material_origin"))
 
 
 def _photo_key(case: dict[str, Any]) -> str:
@@ -500,6 +519,8 @@ def _drafts_pass(
             "compared_with": trial.arm.compared_with,
             "case": trial.case_id,
             "business": case.get("business", "muestra del repositorio"),
+            # whose material the photo is; the platform-upload rule reads it (library)
+            "material_origin": _origin_of(case),
             "rep": trial.rep,
             "asked": trial.arm.asked(),
             "zone": trial.arm.zone(),
@@ -1046,6 +1067,8 @@ def cmd_library(args: argparse.Namespace) -> int:
     from qualify_api.evals.effects_bench import (
         PreviewUploadError,
         library_v6,
+        material_origin,
+        may_be_platform_preview,
         preview_asset_path,
         upload_previews,
     )
@@ -1064,11 +1087,23 @@ def cmd_library(args: argparse.Namespace) -> int:
     versions = {e["id"]: int(e["version"]) for e in base["entries"]}
     videos: dict[str, tuple[int, bytes]] = {}
     sources: dict[str, str] = {}
+    origins: dict[str, str] = {}
     for arm, labels in results.get("winners", {}).items():
         if not measured.get(arm) or not measured[arm].passes:
             continue
-        relative = finals.get(arm, {}).get("video") or trials[labels[0]]["video"]
+        # Candidates, best first: the 1080p final (made from its draft's trial), then each
+        # winning draft. Origin rule: the first one made with own/stock material; if none,
+        # the first one is kept so `upload_previews` refuses it out loud.
+        final = finals.get(arm, {})
+        candidates = [(trials[label]["video"], label) for label in labels]
+        if final.get("video"):
+            candidates.insert(0, (final["video"], str(final.get("from_trial") or labels[0])))
+        relative, label = next(
+            (c for c in candidates if may_be_platform_preview(trials[c[1]].get("material_origin"))),
+            candidates[0],
+        )
         videos[arm] = (versions[arm], (run / relative).read_bytes())
+        origins[arm] = material_origin(trials[label].get("material_origin"))
         sources[arm] = relative
     notes = (
         f"EF-12 / {TICKET} (ADR 50 D5/D6): the effects library v6. The SAME entries as v5, "
@@ -1080,14 +1115,34 @@ def cmd_library(args: argparse.Namespace) -> int:
     document = library_v6(base, measured, notes=notes)
     parse_library(document)  # an R2 preview has its exact platform shape
     for arm, (version, data) in videos.items():
-        print(f"  {arm}: {sources[arm]} → {preview_asset_path(arm, version)} ({len(data)} B)")
+        print(
+            f"  {arm}: {sources[arm]} → {preview_asset_path(arm, version)} "
+            f"({len(data)} B, material: {origins[arm]})"
+        )
+    blocked = {arm: o for arm, o in origins.items() if not may_be_platform_preview(o)}
+    if blocked and args.upload:
+        # An offered effect needs its preview (parse_library): no v6 without it.
+        for arm, origin in blocked.items():
+            print(
+                f"NO SE SUBE {arm}: su material es «{origin}» y a platform/ solo va material "
+                "propio (own) o de stock (stock), nunca de clientes.",
+                file=sys.stderr,
+            )
+        print("La biblioteca v6 no se escribe: nada se subió.", file=sys.stderr)
+        return 6
     if not args.upload:
         draft = run / "biblioteca-v6.json"
         _write_json(draft, document)
         print(f"Sin subir: nada escrito en R2 ni en el repositorio. Borrador en {draft}")
+        for arm, origin in blocked.items():
+            print(
+                f"AVISO {arm}: su material es «{origin}»; con --upload NO se subiría "
+                "(a platform/ solo va material own o stock).",
+                file=sys.stderr,
+            )
         return 0
     try:
-        uploaded = upload_previews(_r2_store(), videos)
+        uploaded = upload_previews(_r2_store(), videos, origins=origins)
     except PreviewUploadError as exc:
         print(f"No se subió a R2: {exc}. La biblioteca v6 no se escribe.", file=sys.stderr)
         return 5

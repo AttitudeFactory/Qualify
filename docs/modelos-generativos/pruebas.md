@@ -40,7 +40,10 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   (preparado en `%TEMP%\m-25026587\casos.json`, en seco: 14 borradores, US$7,196098) y Bianki
   (falta su foto); el «Así se ve» de cada efecto ofrecido va a R2
   (`platform/effects/<id>/v<n>/preview.mp4`), nunca al repositorio. Todavía no se sube nada, y
-  falta una ruta que sirva esas claves.
+  falta una ruta que sirva esas claves. Esos previews se hacen solo con material nuestro o
+  de stock (`material_origin` `own` o `stock` en cada caso; si falta, `client`): nada hecho con
+  fotos de un cliente (Bianki) se sube a `platform/`, aunque sí sirve para medir. Lo hace
+  cumplir `upload_previews`.
 - **Pendiente:** el OK escrito de Deivid en el ticket, la foto de Bianki y la corrida
   de 23:00 a 05:00 (hora de Bogotá), salvo OK de Herwin para el día o de Deivid en la sesión.
   Método, cotización, rúbrica y resultados «PENDIENTES»: [`seedance-2-5.md`](seedance-2-5.md#ef12-001).
