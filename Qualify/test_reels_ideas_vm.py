@@ -4,6 +4,7 @@ Pure: no database, no network, a fixed clock."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -24,6 +25,7 @@ from qualify_api.referentes.reel_store import (
     RunRecord,
     StoredVerdict,
 )
+from qualify_api.referentes.reviewed_reels import NO_FILTERS, ReviewedReel, ReviewedReels
 
 from . import reels_ideas_vm as vm
 
@@ -597,3 +599,58 @@ def test_the_screen_never_names_credits_vendors_reads_or_errors(text: str) -> No
     for english in ("post", "feed", "insight", "brand kit", "refresh"):
         assert english not in lowered
     assert not set("()[]?¿") & set(text)
+
+
+# --------------------------------------------------------------------------------------
+# RF-02 (m-25119460): the filtered read of RF-01
+# --------------------------------------------------------------------------------------
+
+
+def _filtered(
+    stored: vm.StoredIdeas,
+    *,
+    ideas: list[Idea],
+    more: tuple[Idea, ...] = (),
+    has_more: bool = False,
+) -> vm.StoredIdeas:
+    reviewed = ReviewedReels(
+        view=stored.view,
+        ideas=ideas,
+        more=[
+            ReviewedReel(reel=i.reel, verdict=i.verdict, account_kind="referente")
+            for i in more
+            if i.verdict is not None
+        ],
+        filters=NO_FILTERS,
+        offset=0,
+        limit=12,
+        has_more=has_more,
+        accounts={("instagram", "heladosdonde"): "referente"},
+    )
+    return replace(stored, reviewed=reviewed)
+
+
+def test_the_cards_are_the_filtered_ideas_and_the_screen_stays_on_ideas() -> None:
+    """RF-02: the ideas shown are RF-01's `ideas` (filtered), never `view.ideas`; a filter
+    that leaves none keeps the screen on the ideas (with its bar), not «no encontramos»."""
+    stored = _with_ideas(_run(NOW - timedelta(hours=2)))
+    screen = vm.ideas_screen(_filtered(stored, ideas=[stored.view.ideas[1]]), now=NOW)
+    assert screen.screen == vm.SCREEN_IDEAS and [c["id"] for c in screen.cards] == ["B"]
+    assert screen.accounts == {"instagram:heladosdonde": "referente"}
+    none_left = vm.ideas_screen(_filtered(stored, ideas=[]), now=NOW)
+    assert none_left.screen == vm.SCREEN_IDEAS and none_left.cards == []
+
+
+def test_a_run_without_ideas_but_more_reviewed_reels_shows_them() -> None:
+    run = _run(NOW - timedelta(hours=2))
+    stored = _filtered(
+        _stored(shown=run, ideas=[]), ideas=[], more=(_idea(0, _reel("M")),), has_more=True
+    )
+    screen = vm.ideas_screen(stored, now=NOW)
+    assert screen.screen == vm.SCREEN_IDEAS and screen.cards == []
+    assert [c["id"] for c in screen.more_cards] == ["M"] and screen.has_more
+    card = screen.more_cards[0]
+    assert card["can_replicate"] == "" and card["lift"] == "" and card["rank"] == ""
+    # without a second list either, the run found nothing: as before RF-02
+    empty = vm.ideas_screen(_filtered(_stored(shown=run, ideas=[]), ideas=[]), now=NOW)
+    assert empty.screen == vm.SCREEN_NO_IDEAS

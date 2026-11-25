@@ -38,8 +38,10 @@ from qualify_api.referentes.reel_store import (
     PublicReel,
     RunRecord,
 )
+from qualify_api.referentes.reviewed_reels import ReviewedReel, ReviewedReels
 from qualify_api.vendors.cdn_media import cover_url_fresh
 
+from . import reels_filters_vm
 from .avatar_proxy import reel_cover_path, stored_reel_cover_path
 
 # --------------------------------------------------------------------------------------
@@ -211,6 +213,11 @@ class StoredIdeas:
     #: Every stored reel of the ideas' accounts in the shown run's window — what each
     #: idea's «x3 sobre su media» is measured against (`reels.account_lifts`).
     account_reels: Sequence[PublicReel] = ()
+    #: RF-02 (m-25119460): the filtered read of RF-01 (`reviewed_reels.reviewed_reels`) —
+    #: the ideas to show (`reviewed.ideas`, filtered, never a detractor's) and one page of
+    #: «Más reels revisados». None only for a caller that does not filter (the ideas are
+    #: then `view.ideas`, as before RF-02).
+    reviewed: ReviewedReels | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +243,12 @@ class IdeasScreen:
     #: worker to try it again (`RunView.next_retry_at`, for up to `PREPARING_LIMIT` past
     #: that moment).
     waiting: bool = False
+    #: RF-02: one page of «Más reels revisados» in the card shape, and whether a next
+    #: page exists (`ReviewedReels.has_more`).
+    more_cards: list[dict[str, str]] = field(default_factory=list)
+    has_more: bool = False
+    #: RF-02: the accounts «Cuenta» offers, `reels_filters_vm.accounts_by_key`'s shape.
+    accounts: dict[str, str] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------------------
@@ -415,14 +428,42 @@ def idea_card(idea: Idea, *, now: datetime, lift: float | None = None) -> dict[s
     return card
 
 
+def _fits(idea: Idea) -> bool:
+    return idea.verdict is not None and idea.verdict.fits and idea.verdict.affinity in reels_ai.FITS
+
+
 def idea_cards(stored: StoredIdeas, *, now: datetime) -> list[dict[str, str]]:
     """The shown run's ideas that the check kept for the product or its category (the
-    run stores only those; checked again so another product never reaches the screen)."""
+    run stores only those; checked again so another product never reaches the screen).
+    RF-02: the filtered ideas of RF-01 (`reviewed.ideas`) when the screen read them."""
     lifts = idea_lifts(stored.account_reels)
+    ideas = stored.reviewed.ideas if stored.reviewed is not None else stored.view.ideas
     return [
         idea_card(idea, now=now, lift=lifts.get(f"{idea.reel.network}:{idea.reel.reel_id}"))
-        for idea in stored.view.ideas
-        if idea.verdict is not None and idea.verdict.fits and idea.verdict.affinity in reels_ai.FITS
+        for idea in ideas
+        if _fits(idea)
+    ]
+
+
+def more_card(item: ReviewedReel, *, now: datetime) -> dict[str, str]:
+    """One reel of «Más reels revisados» (RF-02) in the ideas' card shape: its cover only
+    while the CDN link is fresh (`cover_path`: no copy in R2 — the placeholder otherwise),
+    no lift (measured for the ideas only) and never «Hacer uno parecido» (its video was
+    not kept)."""
+    idea = Idea(rank=0, window_days=0, reel=item.reel, verdict=item.verdict)
+    card = idea_card(idea, now=now)
+    card["rank"] = ""
+    card["can_replicate"] = ""
+    return card
+
+
+def more_cards(items: Sequence[ReviewedReel], *, now: datetime) -> list[dict[str, str]]:
+    """The page's reels that keep the strict product filter (RF-01 already asks for it;
+    checked again so another product never reaches the screen)."""
+    return [
+        more_card(item, now=now)
+        for item in items
+        if item.verdict.fits and item.verdict.affinity in reels_ai.FITS
     ]
 
 
@@ -502,8 +543,12 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
     zone = business_zone(stored.timezone)
     view = stored.view
     shown, latest = view.shown, view.latest
+    reviewed = stored.reviewed
     cards = idea_cards(stored, now=now) if shown is not None else []
-    if shown is not None and cards:
+    more = more_cards(reviewed.more, now=now) if shown is not None and reviewed else []
+    # RF-02: the run HAS ideas whatever the filters leave — the screen stays on them (with
+    # the bar and an empty message) instead of saying the run found none
+    if shown is not None and (cards or more or any(_fits(i) for i in view.ideas)):
         notice_title, notice_body = _notice(stored, now, zone)
         title, body = header(shown, now, zone, next_ones=not notice_title)
         return IdeasScreen(
@@ -514,6 +559,9 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
             notice_body=notice_body,
             cards=cards,
             data_iso=run_moment(shown).astimezone(UTC).isoformat(),
+            more_cards=more,
+            has_more=bool(reviewed and reviewed.has_more),
+            accounts=reels_filters_vm.accounts_by_key(reviewed.accounts) if reviewed else {},
         )
     if stored.accounts == 0:
         return IdeasScreen(
@@ -637,6 +685,8 @@ __all__ = [
     "idea_card",
     "idea_cards",
     "idea_lifts",
+    "more_card",
+    "more_cards",
     "ideas_screen",
     "next_monday",
     "retries_soon",
