@@ -2,8 +2,8 @@
 
 EF-12 (m-25026587, Deivid 2026-11-25) keeps the «Así se ve» video of a «Con IA» effect —
 its winning bench video — in R2 under a PLATFORM key, never in the repository:
-exactly `platform/effects/<id>/v<version>/preview.mp4`
-(`qualify_creative.effects.platform_preview_key`). No tenant, no business in the key, and
+exactly `platform/effects/<id>/v<version>/preview.mp4` (the key the effects bench of EF-12
+writes, on its own branch). No tenant, no business in the key, and
 outside the bucket lock on `t/`.
 
 `ObjectGate` only knows `t/{tenant}/…`, so these keys need a door of their own instead of

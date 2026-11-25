@@ -19,15 +19,19 @@ serves exactly that key shape and nothing else:
   re-made, so the cache is long but not `immutable`: one day, `public` (it is the same
   bytes for everyone).
 - Range requests (one range, at most `MAX_RANGE_BYTES` per answer) so `<video>` can seek.
+  A public GET never loads a big object whole: without `Range`, an object over
+  `MAX_WHOLE_BYTES` answers 206 with its first `MAX_RANGE_BYTES`, as `bytes=0-` would.
+  A 404 or 416 is `no-store`.
 
-Mounted on the Reflex backend next to `/r2media` (`Qualify/Qualify.py`), and routed there by
-the production Caddy (`deploy/Caddyfile`, `@reflex_backend`).
+Routed to the Reflex backend by the production Caddy (`deploy/Caddyfile`,
+`@reflex_backend`). Mounting the router on the Reflex backend app next to `/r2media`
+(`avatar_api.include_router` in `Qualify/Qualify.py`) is done by the editor's lane
+(carril B) in its own PR; until then the route is not served.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 from functools import cache
 from typing import Any
@@ -38,10 +42,9 @@ from qualify_shared.objects.platform_effects import (
     PREVIEW_CONTENT_TYPE,
     NotAnEffectPreview,
     PlatformEffectsReader,
+    is_effect_preview_key,
     preview_key,
 )
-
-logger = logging.getLogger(__name__)
 
 R2_EFFECTS_ROUTE = "/r2effects"
 #: One day, shared caches allowed (see the module docstring for why not `immutable`).
@@ -49,6 +52,9 @@ CACHE_CONTROL = "public, max-age=86400"
 _BASE_HEADERS = {"Cache-Control": CACHE_CONTROL, "Accept-Ranges": "bytes"}
 #: The most one ranged answer returns (the same 1 MiB as `/r2media`).
 MAX_RANGE_BYTES = 1024 * 1024
+#: Above this, a GET without `Range` gets the first `MAX_RANGE_BYTES` as a 206 instead of
+#: the whole object loaded in memory (a public route: no caller makes us buffer 300 MB).
+MAX_WHOLE_BYTES = 8 * 1024 * 1024
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
@@ -63,8 +69,6 @@ def effect_preview_path(effect_id: str, version: int | str) -> str:
 
 def path_for_key(key: object) -> str:
     """The route for an R2 key `platform/effects/<id>/v<n>/preview.mp4`, else ""."""
-    from qualify_shared.objects.platform_effects import is_effect_preview_key  # noqa: PLC0415
-
     if not is_effect_preview_key(key):
         return ""
     effect_id, folder, _file = str(key).split("/")[2:5]
@@ -132,8 +136,10 @@ async def serve(effect_id: str, version: str, request: Request, reader: Any) -> 
     door = reader()
     header = request.headers.get("range", "")
     try:
+        size = await asyncio.to_thread(door.size, effect_id, number)
+        if not header and request.method == "GET" and size > MAX_WHOLE_BYTES:
+            header = "bytes=0-"  # too big to buffer: the first piece, as a 206
         if header or request.method == "HEAD":
-            size = await asyncio.to_thread(door.size, effect_id, number)
             if request.method == "HEAD":
                 return Response(
                     status_code=200,
@@ -148,7 +154,11 @@ async def serve(effect_id: str, version: str, request: Request, reader: Any) -> 
                 if wanted is None:
                     return Response(
                         status_code=416,
-                        headers={**_BASE_HEADERS, "Content-Range": f"bytes */{size}"},
+                        headers={
+                            **_BASE_HEADERS,
+                            "Cache-Control": "no-store",
+                            "Content-Range": f"bytes */{size}",
+                        },
                     )
                 start, end = wanted
                 body = await asyncio.to_thread(

@@ -70,7 +70,7 @@ def test_a_valid_effect_version_is_served_as_mp4_with_a_long_cache(
     assert response.headers["cache-control"] == "public, max-age=86400"
     assert response.headers["accept-ranges"] == "bytes"
     assert response.content == VIDEO
-    assert store.calls == [("open", KEY)]
+    assert store.calls == [("size", KEY), ("open", KEY)]
 
 
 def test_head_and_ranges_read_only_the_preview_key(
@@ -90,7 +90,32 @@ def test_head_and_ranges_read_only_the_preview_key(
 
     past = client.get("/r2effects/humo_denso/v1", headers={"Range": f"bytes={len(VIDEO)}-"})
     assert past.status_code == 416
+    assert past.headers["cache-control"] == "no-store"
+    assert past.headers["content-range"] == f"bytes */{len(VIDEO)}"
     assert {key for _op, key in store.calls} == {KEY}
+
+
+def test_a_big_object_without_range_is_never_loaded_whole(
+    served: tuple[TestClient, _CountingStore],
+) -> None:
+    """A public GET with no `Range` on an object over 8 MiB: the first MiB as a 206."""
+    client, store = served
+    big = bytes(range(256)) * (routes.MAX_WHOLE_BYTES // 256 + 1)
+    key = "platform/effects/brasas/v2/preview.mp4"
+    store.objects[key] = big
+    response = client.get("/r2effects/brasas/v2")
+    assert response.status_code == 206
+    assert response.content == big[: routes.MAX_RANGE_BYTES]
+    assert response.headers["content-range"] == (f"bytes 0-{routes.MAX_RANGE_BYTES - 1}/{len(big)}")
+    assert response.headers["content-type"] == "video/mp4"
+    assert response.headers["cache-control"] == "public, max-age=86400"
+    assert store.calls == [("size", key), ("open_range", key)]
+    # exactly at the limit it is still served whole
+    store.calls.clear()
+    store.objects[key] = big[: routes.MAX_WHOLE_BYTES]
+    whole = client.get("/r2effects/brasas/v2")
+    assert whole.status_code == 200 and len(whole.content) == routes.MAX_WHOLE_BYTES
+    assert store.calls == [("size", key), ("open", key)]
 
 
 def test_a_missing_version_is_a_404(served: tuple[TestClient, _CountingStore]) -> None:
@@ -98,7 +123,7 @@ def test_a_missing_version_is_a_404(served: tuple[TestClient, _CountingStore]) -
     response = client.get("/r2effects/humo_denso/v2")
     assert response.status_code == 404
     assert response.headers["cache-control"] == "no-store"
-    assert store.calls == [("open", "platform/effects/humo_denso/v2/preview.mp4")]
+    assert store.calls == [("size", "platform/effects/humo_denso/v2/preview.mp4")]
 
 
 @pytest.mark.parametrize(
