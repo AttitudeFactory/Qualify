@@ -320,7 +320,11 @@ def test_a_text_over_a_planned_block_is_checked_on_the_estimated_timeline() -> N
 @pytest.mark.parametrize(
     ("used", "words"),
     [
-        (3, "Ya creaste 3 avatares hoy. Mañana puedes crear más."),
+        (
+            3,
+            "Ya creaste 3 avatares hoy. Mañana puedes crear más. "
+            "Quita el avatar para crear tu video ahora.",
+        ),
         (2, "Hoy solo puedes crear 1 avatar más. Quita 2 avatares para crear tu video."),
         (1, "Hoy solo puedes crear 2 avatares más. Quita 1 avatar para crear tu video."),
     ],
@@ -335,8 +339,11 @@ def test_todays_cap_is_checked_for_every_block_of_the_create(used: int, words: s
     _nothing_written(world)
 
 
-def test_the_daily_cap_words_at_the_first_create_are_section_9s() -> None:
-    assert ca.FIRST_CREATE_DAILY_CAP_TEXT == "Ya creaste 3 avatares hoy. Mañana puedes crear más."
+def test_the_daily_cap_words_at_the_first_create_say_what_to_do_now() -> None:
+    assert ca.FIRST_CREATE_DAILY_CAP_TEXT == (
+        "Ya creaste 3 avatares hoy. Mañana puedes crear más. "
+        "Quita el avatar para crear tu video ahora."
+    )
 
 
 def test_more_stretches_than_a_clip_holds_are_refused_by_code() -> None:

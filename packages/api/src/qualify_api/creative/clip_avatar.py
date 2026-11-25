@@ -175,9 +175,11 @@ BLOCK_MODEL_TEXT = (
 
 #: At most this many blocks in one «Crear» (the daily cap: more could never be made).
 BLOCKS_PER_CREATE = AVATAR_DAILY_CAP
-#: The daily cap's words at the first «Crear», ADR 50 §9 exactly: there is no video yet.
+#: The daily cap's words at the first «Crear»: ADR 50 §9's, plus what to do now, since there is
+#: no video yet (Deivid, 2026-11-25, ADR 50 §11). Option A keeps its own words.
 FIRST_CREATE_DAILY_CAP_TEXT = (
-    f"Ya creaste {AVATAR_DAILY_CAP} avatares hoy. Mañana puedes crear más."
+    f"Ya creaste {AVATAR_DAILY_CAP} avatares hoy. Mañana puedes crear más. "
+    "Quita el avatar para crear tu video ahora."
 )
 FIRST_CREATE_SWITCHED_OFF_TEXT = (
     "Este tipo de avatar todavía no está disponible. Quítalo para crear tu video."
