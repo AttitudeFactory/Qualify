@@ -91,7 +91,7 @@ class AttemptStore(PlanStore):
             return None
         return replace(row, failure_detail=self.repo.drafts[clip_id].failure_detail)
 
-    def clips_needing_attention(self, *, tenant_id: UUID) -> int:
+    def clips_needing_attention(self, *, tenant_id: UUID, off_kinds: Any = ()) -> int:
         service = self.service
         return sum(
             1
@@ -598,3 +598,87 @@ def test_option_a_blocks_offer_no_buttons() -> None:
     assert all(b.actions == () for b in wait.blocks)
     for status in (APPROVED, REJECTED):
         assert status  # option A's own states are untouched by PR 2
+
+
+# ---------------------------------------------------------------------------
+# review of 84b2ea1e
+
+
+def test_the_72_hours_never_fail_a_clip_retried_meanwhile() -> None:
+    """The deadline's write is fenced by the Clip's brief too: a retry between the pass's
+    read and its write (it changes the brief, not the revision) keeps the Clip waiting."""
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    world, made = _failed_world()
+    stale = world.repo.drafts[made.clip_id]
+    world.retry(made)
+    with pytest.raises(CheckpointError):
+        world.content._fail_waiting_clip(  # noqa: SLF001
+            TENANT_ID, stale, reason=ca.AVATAR_BLOCK_FAILED, detail=ca.AVATAR_BLOCK_FAILED_TEXT
+        )
+    assert world.repo.drafts[made.clip_id].status == DRAFTING
+
+
+def test_a_block_removed_meanwhile_is_never_made_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    world, made = _failed_world()
+    checks = world.service._refuse_planned_recipe  # noqa: SLF001
+
+    def another_tab_removes_it(*args: Any, **kwargs: Any) -> None:
+        checks(*args, **kwargs)
+        world.store.removed.add(made.block_ids[0])  # «Quitar avatar» won the race
+
+    monkeypatch.setattr(world.service, "_refuse_planned_recipe", another_tab_removes_it)
+    before = (dict(world.ledger.rows), list(world.dispatcher.calls))
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        world.retry(made)
+    assert refused.value.code == "clip_not_waiting"
+    assert (dict(world.ledger.rows), list(world.dispatcher.calls)) == before
+    assert world.repo.drafts[made.block_ids[0]].revision == 1
+
+
+def test_a_brief_stamped_meanwhile_is_read_again_not_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Clip's pass stamps another failure between the retry's read and its lock: the
+    retry reads the Clip again once and goes on — never «ya no está esperando»."""
+    world = World()
+    made = world.create(_at(_presenter(), 0), _at(_presenter(script="Hola."), 1))
+    world.fail(made.block_ids[0])
+    world.run(made.clip_id)  # the first failure is seen
+    world.fail(made.block_ids[1])  # the second is not yet
+    checks = world.service._refuse_planned_recipe  # noqa: SLF001
+    passes: list[int] = []
+
+    def the_clips_pass_runs_meanwhile(*args: Any, **kwargs: Any) -> None:
+        checks(*args, **kwargs)
+        if not passes:
+            passes.append(1)
+            world.run(made.clip_id)  # stamps the second failure: a new brief
+
+    monkeypatch.setattr(world.service, "_refuse_planned_recipe", the_clips_pass_runs_meanwhile)
+    assert world.retry(made) == made.block_ids[0]
+    assert world.repo.drafts[made.block_ids[0]].status == DRAFTING
+    plan = {e.slot: e for e in _clip_brief(world, made.clip_id).media.clip_avatar_plan}
+    assert plan[1].failed_at is None and plan[2].failed_at is not None
+
+
+def test_remove_says_not_removable_only_for_a_block_that_did_not_fail() -> None:
+    world = World()
+    made = world.create(_at(_presenter(), 0))
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        world.remove(made)
+    assert refused.value.owner_message == ca.BLOCK_NOT_REMOVABLE_TEXT
+    world.fail(made.block_ids[0])
+    world.repo.drafts[made.clip_id] = replace(world.repo.drafts[made.clip_id], status=FAILED)
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        world.remove(made)
+    assert refused.value.code == "clip_not_waiting"
+    assert refused.value.owner_message == ca.CLIP_NOT_WAITING_TEXT
+
+
+def test_the_owner_facing_words_of_the_review() -> None:
+    assert "«Crear publicación»" in ca.RECREATE_FROM_EDITOR_TEXT
+    assert "editor" not in ca.RECREATE_FROM_EDITOR_TEXT
+    assert "mientras sale el avatar" in ca.AVATAR_EFFECT_TEXT
+    assert "No se cobró nada de los avatares" in ca.AVATAR_BLOCK_FAILED_TEXT
+    assert "presentador o avatar animado" in ca.KIND_CHANGE_TEXT

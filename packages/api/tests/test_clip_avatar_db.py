@@ -727,3 +727,50 @@ def test_the_reaper_never_fails_a_clip_waiting_for_its_avatars(
             text("SELECT status FROM content_drafts WHERE id = :c"), {"c": made.clip_id}
         )
     assert status == "drafting"  # its job is queued: spared, whatever its stamp
+
+
+def test_the_72_hours_never_fail_a_clip_retried_meanwhile_on_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    world = _first_create(monkeypatch)
+    tenant, content, service = world["tenant"], world["content"], world["service"]
+    made = _create_b(world)
+    _fail_block(tenant, made.block_ids[0])
+    _pass(world, made.clip_id)
+    stale = content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id)
+    service.retry_block(
+        tenant_id=tenant, user_id=world["user"], clip_id=made.clip_id, block_id=made.block_ids[0]
+    )
+    with pytest.raises(CheckpointError):
+        content._fail_waiting_clip(
+            tenant, stale, reason=ca.AVATAR_BLOCK_FAILED, detail=ca.AVATAR_BLOCK_FAILED_TEXT
+        )
+    with tenant_session(tenant) as session:
+        status = session.scalar(
+            text("SELECT status FROM content_drafts WHERE id = :c"), {"c": made.clip_id}
+        )
+    assert status == "drafting"
+
+
+def test_attention_counts_what_clip_wait_says(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`clips_needing_attention` and `ClipWait.needs_attention` agree: a block of a kind
+    switched off, and an entry with no block, need the owner too."""
+    world = _first_create(monkeypatch)
+    tenant, service = world["tenant"], world["service"]
+    made = _create_b(world)
+    assert service.clips_needing_attention(tenant_id=tenant) == 0
+    service._env = {}  # the presenter switched off while the Clip waits
+    wait = service.clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.needs_attention
+    assert service.clips_needing_attention(tenant_id=tenant) == 1
+    service._env = {ca.PRESENTER_SWITCH: "on"}
+    with tenant_session(tenant) as session:  # the plan's slot has no block any more
+        session.execute(
+            text("UPDATE content_drafts SET part_index = 6 WHERE id = :b"),
+            {"b": made.block_ids[0]},
+        )
+    wait = service.clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.needs_attention
+    assert service.clips_needing_attention(tenant_id=tenant) == 1

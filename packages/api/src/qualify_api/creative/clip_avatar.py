@@ -219,21 +219,28 @@ BLOCK_TIMEOUT_TEXT = (
 BLOCK_FAILED_TEXT = "Tu avatar no se pudo crear. Puedes intentarlo de nuevo o quitarlo."
 #: m-25119867 PR 2: what «Intentar de nuevo» / «Quitar avatar» refuse with, and the rest.
 BLOCK_NOT_FAILED_TEXT = "Este avatar no falló, así que no hace falta intentarlo de nuevo."
-BLOCK_NOT_REMOVABLE_TEXT = "Solo puedes quitar un avatar que no se pudo crear."
+BLOCK_NOT_REMOVABLE_TEXT = "Este avatar no falló, así que no hace falta quitarlo."
 CLIP_NOT_WAITING_TEXT = "Tu video ya no está esperando a este avatar."
-KIND_CHANGE_TEXT = "Para usar otro tipo de avatar, quita este y crea tu video de nuevo."
+KIND_CHANGE_TEXT = (
+    "Al intentar de nuevo se usa el mismo tipo de avatar (presentador o avatar animado). Si "
+    "quieres otro, toca «Quitar avatar» y crea tu video de nuevo con el que prefieras."
+)
 #: ADR 50 §11 (Deivid, 2026-11-25): «Textos sí, efectos no» — a smoke, embers or steam
 #: layer never crosses an avatar block.
 AVATAR_EFFECT_CODE = "avatar_block_effect"
 AVATAR_EFFECT_TEXT = (
-    "Los efectos de humo, brasas y vapor no se pueden poner sobre el avatar. Muévelos a otra "
-    "parte de tu video o quítalos."
+    "Los efectos de humo, brasas y vapor no se pueden poner mientras sale el avatar. Muévelos "
+    "a otra parte de tu video o quítalos."
 )
 #: The layers that never cross a block (the library's `compose` layers).
 AVATAR_FORBIDDEN_EFFECTS = frozenset({"humo_capa", "brasas_capa", "vapor_capa"})
 #: «Crearla otra vez» of a Clip with avatars, or a brief with a plan sent by hand.
 RECREATE_FROM_EDITOR_CODE = "avatar_clip_from_editor"
-RECREATE_FROM_EDITOR_TEXT = "Vuelve a crear este video desde el editor."
+#: The screen's own entry to a new piece is «Crear publicación» (`Qualify/ui/layout.py`).
+RECREATE_FROM_EDITOR_TEXT = (
+    "Los videos con avatar se crean de nuevo desde cero. Toca «Crear publicación» para "
+    "empezar uno nuevo."
+)
 #: A block that, at its real length, makes the Clip pass 60 s (`clip_too_long`). The
 #: owner cannot edit the Clip's stretches while it waits (`drafting` has no EDIT edge),
 #: so the words only ask about the avatar.
@@ -771,12 +778,15 @@ class PostgresClipAvatarStore:
             )
             return int(counted or 0)
 
-    def clips_needing_attention(self, *, tenant_id: UUID) -> int:
+    def clips_needing_attention(self, *, tenant_id: UUID, off_kinds: Sequence[str] = ()) -> int:
         """m-25119867: the business's Clips waiting for the blocks of their plan (`drafting`,
-        a plan) with a block that failed, or that the Clip refused as it came out, and
-        that the owner did not take out — «Necesita tu atención». RLS: this business only."""
+        a plan) with a block the owner has to choose about — exactly what
+        `ClipWait.needs_attention` says (`plan_states`): an entry whose block is missing, or
+        whose block (not taken out) the Clip refused, failed, or is of a kind switched off
+        (`off_kinds`: the draft kinds whose switch the server reads off). «Necesita tu
+        atención». RLS: this business only."""
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
-        from sqlalchemy import text  # noqa: PLC0415
+        from sqlalchemy import bindparam, text  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
             counted = session.scalar(
@@ -787,11 +797,17 @@ class PostgresClipAvatarStore:
                   AND jsonb_array_length(COALESCE(pb.media->'clip_avatar_plan', '[]'::jsonb)) > 0
                   AND EXISTS (
                     SELECT 1 FROM jsonb_array_elements(pb.media->'clip_avatar_plan') e
-                    JOIN content_drafts c
+                    LEFT JOIN content_drafts c
                       ON c.parent_draft_id = p.id AND c.part_index = (e->>'slot')::int
-                    WHERE c.part_removed_at IS NULL
-                      AND (c.status = 'failed' OR e->>'refused' IS NOT NULL))
-            """)
+                    LEFT JOIN content_briefs cb ON cb.id = c.brief_id
+                    WHERE c.id IS NULL
+                       OR (c.part_removed_at IS NULL
+                           AND (e->>'refused' IS NOT NULL
+                                OR c.status = 'failed'
+                                OR cb.kind IN :off)))
+            """).bindparams(bindparam("off", expanding=True)),
+                # an empty list still binds: no kind is switched off
+                {"off": list(off_kinds) or ["-"]},
             )
         return int(counted or 0)
 
@@ -1349,9 +1365,12 @@ CLIP_AVATAR_OWNER_WAIT = timedelta(hours=72)
 #: The Clip's failure reason then (a typed code; kept out of `FailureReason` until the
 #: screens map it — m-25112921 reads it with `failure_detail`).
 AVATAR_BLOCK_FAILED = "avatar_block_failed"
+#: «No se cobró nada de los avatares» holds: a block's charge row is of weight 0 and its
+#: seconds are only taken when its Clip is approved — a Clip that fails never is; the
+#: Clip's own creations are given back by the run's refund.
 AVATAR_BLOCK_FAILED_TEXT = (
-    "Tu video no se armó porque uno de tus avatares no se pudo crear y no elegiste qué "
-    "hacer. Créalo de nuevo cuando quieras."
+    "Tu video no se armó: uno de tus avatares no se pudo crear y pasaron 3 días sin que "
+    "eligieras qué hacer. No se cobró nada de los avatares. Créalo de nuevo cuando quieras."
 )
 
 
@@ -1553,6 +1572,23 @@ def _default_brand_avatar_key(tenant_id: UUID, brand_id: UUID) -> str | None:
     if avatar is None or avatar.status is not AvatarStatus.READY or not avatar.object_key:
         return None
     return avatar.object_key
+
+
+@dataclass(frozen=True)
+class _Locked:
+    """A block as `_lock_rows` found it under the lock."""
+
+    status: str
+    revision: int
+    removed: bool
+
+
+class _ClipBriefMoved(ClipAvatarRefused):
+    """The Clip still waits but its brief changed under us (its pass stamped a failure):
+    the action reads the Clip again once, never shows «ya no está esperando» for it."""
+
+    def __init__(self) -> None:
+        super().__init__("clip_not_waiting", CLIP_NOT_WAITING_TEXT, raw="brief moved")
 
 
 class ClipAvatarService:
@@ -2222,6 +2258,45 @@ class ClipAvatarService:
         block_id: UUID,
         request: AvatarBlockRequest | None = None,
     ) -> UUID:
+        """«Intentar de nuevo» (`_retry_block_once`), read again once when the Clip's
+        brief changed under the lock (its pass stamped a failure meanwhile)."""
+        args = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "clip_id": clip_id,
+            "block_id": block_id,
+            "request": request,
+        }
+        try:
+            return self._retry_block_once(**args)
+        except _ClipBriefMoved:
+            return self._retry_block_once(**args)
+
+    def remove_block(
+        self, *, tenant_id: UUID, user_id: UUID, clip_id: UUID, block_id: UUID
+    ) -> bool:
+        """«Quitar avatar» (`_remove_block_once`), read again once when the Clip's brief
+        changed under the lock."""
+        args = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "clip_id": clip_id,
+            "block_id": block_id,
+        }
+        try:
+            return self._remove_block_once(**args)
+        except _ClipBriefMoved:
+            return self._remove_block_once(**args)
+
+    def _retry_block_once(
+        self,
+        *,
+        tenant_id: UUID,
+        user_id: UUID,
+        clip_id: UUID,
+        block_id: UUID,
+        request: AvatarBlockRequest | None = None,
+    ) -> UUID:
         """«Intentar de nuevo» of a failed avatar block of a Clip waiting for its plan (a
         block that failed, or one the Clip refused as it came out — `clip_too_long`):
         a NEW revision of the block (`PART_RETRY`; a refused one through reject and
@@ -2316,9 +2391,14 @@ class ClipAvatarService:
             )
 
             current = self._lock_rows(tenant_id, clip, block_id)
-            if current is not None and current[0] == "drafting":
+            if current is None:
+                raise ClipAvatarRefused("clip_not_waiting", CLIP_NOT_WAITING_TEXT, raw="gone")
+            if current.removed:
+                # «Quitar avatar» won meanwhile (another tab): never made again
+                raise ClipAvatarRefused("clip_not_waiting", CLIP_NOT_WAITING_TEXT, raw="removed")
+            if current.status == "drafting":
                 return []  # made again meanwhile: nothing more
-            status, revision = current if current is not None else (record.status, record.revision)
+            status, revision = current.status, current.revision
             check_avatar_daily_cap(self._store, tenant_id=tenant_id, first_create=True)
             self._refuse_without_quota(tenant_id, clip.brand_id, owed)
             if status == FAILED:
@@ -2340,7 +2420,7 @@ class ClipAvatarService:
                 repo.replace_brief(
                     tenant_id=tenant_id, draft_id=block_id, user_id=user_id, brief=fresh
                 )
-            if pipeline_version is not None and current is not None:
+            if pipeline_version is not None and self._is_postgres():
                 repo.bump_revision(
                     tenant_id=tenant_id, draft_id=block_id, pipeline_version=pipeline_version
                 )
@@ -2359,7 +2439,7 @@ class ClipAvatarService:
         logger.info("clip %s: avatar block %s asked for again", clip_id, block_id)
         return block_id
 
-    def remove_block(
+    def _remove_block_once(
         self, *, tenant_id: UUID, user_id: UUID, clip_id: UUID, block_id: UUID
     ) -> bool:
         """«Quitar avatar» of a failed block of a Clip waiting for its plan: MARKED removed
@@ -2379,13 +2459,14 @@ class ClipAvatarService:
         clip, clip_brief = self._waiting_clip(tenant_id, clip_id)
         _row, planned = self._planned_block(tenant_id, clip_id, clip_brief, block_id)
         if planned.state != "failed":
+            # the Clip still waits (checked above): this block simply did not fail
             raise ClipAvatarRefused("block_not_removable", BLOCK_NOT_REMOVABLE_TEXT)
         repo = self._content.repository
         removed: list[bool] = []
 
         def write() -> list[UUID]:
-            current = self._lock_rows(tenant_id, clip, block_id, removable=True)
-            if current is None and self._is_postgres():
+            current = self._lock_rows(tenant_id, clip, block_id)
+            if current is None or current.removed:
                 removed.append(False)  # another tab removed it while we waited
                 return []
             removed.append(
@@ -2406,7 +2487,14 @@ class ClipAvatarService:
         block failed): what «Por aprobar» marks «Necesita tu atención» and Inicio adds to
         its count. Free."""
         counter = getattr(self._store, "clips_needing_attention", None)
-        return int(counter(tenant_id=tenant_id)) if counter is not None else 0
+        if counter is None:
+            return 0
+        off = tuple(
+            BLOCK_DRAFT_KINDS[kind].value
+            for kind in BLOCK_SWITCHES
+            if not block_enabled(kind, self._env)
+        )
+        return int(counter(tenant_id=tenant_id, off_kinds=off))
 
     def _waiting_clip(self, tenant_id: UUID, clip_id: UUID) -> tuple[ClipRow, ContentBrief]:
         """The Clip, still waiting for the blocks of its plan (`drafting`) — else
@@ -2478,16 +2566,33 @@ class ClipAvatarService:
 
         return isinstance(self._content.repository, PostgresContentRepository)
 
-    def _lock_rows(
-        self, tenant_id: UUID, clip: ClipRow, block_id: UUID, *, removable: bool = False
-    ) -> tuple[str, int] | None:
+    def _lock_rows(self, tenant_id: UUID, clip: ClipRow, block_id: UUID) -> _Locked | None:
         """Inside the unit of work (Postgres): the Clip, then the block, `FOR UPDATE` — the
         order the Clip's own wait takes them, so the two never cross. The Clip must still
-        wait with the brief we read (else `clip_not_waiting`). The block's (status,
-        revision) now; None when `removable` and it is no longer there to remove. Nothing
-        to lock elsewhere (None)."""
+        wait (`drafting`, else `clip_not_waiting`) with the brief we read: another brief —
+        the Clip's pass stamped a failure meanwhile — is `_ClipBriefMoved`, which the
+        caller reads again ONCE. The block as it is now (status, revision, removed); None
+        when it is not this Clip's any more. Without Postgres, the same read of the
+        doubles."""
         if not self._is_postgres():
-            return None
+            repo = self._content.repository
+            now = repo.get_draft(tenant_id=tenant_id, draft_id=clip.id)
+            if now is None or now.status != "drafting":
+                raise ClipAvatarRefused("clip_not_waiting", CLIP_NOT_WAITING_TEXT, raw="moved")
+            if now.brief_id != clip.brief_id:
+                raise _ClipBriefMoved()
+            block = repo.get_draft(tenant_id=tenant_id, draft_id=block_id)
+            row = next(
+                (
+                    r
+                    for r in self._store.blocks_of(tenant_id=tenant_id, clip_id=clip.id)
+                    if r.id == block_id
+                ),
+                None,
+            )
+            if block is None or row is None:
+                return None
+            return _Locked(str(block.status), int(block.revision), bool(row.removed))
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
@@ -2496,12 +2601,10 @@ class ClipAvatarService:
                 text("SELECT status, brief_id FROM content_drafts WHERE id = :c FOR UPDATE"),
                 {"c": clip.id},
             ).first()
-            if (
-                locked is None
-                or str(locked.status) != "drafting"
-                or locked.brief_id != clip.brief_id
-            ):
+            if locked is None or str(locked.status) != "drafting":
                 raise ClipAvatarRefused("clip_not_waiting", CLIP_NOT_WAITING_TEXT, raw="moved")
+            if locked.brief_id != clip.brief_id:
+                raise _ClipBriefMoved()
             block = session.execute(
                 text("""
                 SELECT status, revision, part_removed_at IS NOT NULL AS removed
@@ -2509,9 +2612,9 @@ class ClipAvatarService:
             """),
                 {"b": block_id, "c": clip.id},
             ).first()
-        if block is None or (removable and block.removed):
+        if block is None:
             return None
-        return str(block.status), int(block.revision)
+        return _Locked(str(block.status), int(block.revision), bool(block.removed))
 
     def _clear_failure_detail(self, tenant_id: UUID, block_id: UUID) -> None:
         """The block's last failure words go with its new attempt."""

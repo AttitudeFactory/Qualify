@@ -3171,13 +3171,19 @@ class ContentService:
                 if run is not None:
                     PipelineStore().fence(session, run)
                 row = session.execute(
-                    text("SELECT status, revision FROM content_drafts WHERE id = :d FOR UPDATE"),
+                    text("""
+                    SELECT status, revision, brief_id FROM content_drafts
+                    WHERE id = :d FOR UPDATE
+                """),
                     {"d": draft.id},
                 ).first()
+                # «Intentar de nuevo» changes the Clip's brief, not its revision: a retry
+                # between this pass's read and its write keeps the Clip waiting
                 if (
                     row is None
                     or str(row.status) != DRAFTING
-                    or int(row.revision) != (draft.revision)
+                    or int(row.revision) != draft.revision
+                    or row.brief_id != draft.brief_id
                 ):
                     raise CheckpointError("the Clip moved while it was failed")
                 session.execute(
@@ -3189,6 +3195,14 @@ class ContentService:
                     {"s": new_status, "r": reason, "t": detail, "d": draft.id},
                 )
             return
+        now = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
+        if (
+            now is None
+            or now.status != DRAFTING
+            or now.revision != draft.revision
+            or now.brief_id != draft.brief_id
+        ):
+            raise CheckpointError("the Clip moved while it was failed")
         repo.update_status(
             tenant_id=tenant_id, draft_id=draft.id, new_status=new_status, failure_reason=reason
         )
