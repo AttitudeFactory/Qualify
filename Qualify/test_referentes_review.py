@@ -203,6 +203,128 @@ def test_a_shortlist_goes_out_as_parallel_calls_of_ten() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# RF-04 (m-25119461): the review's rubro reaches the shared pool; its country never
+# --------------------------------------------------------------------------------------
+
+
+class RubroReview(FakeReview):
+    """A review that also answers rubro and country (prompt version 2)."""
+
+    def __init__(self, answers: dict[str, tuple[str, str]]) -> None:
+        super().__init__({})
+        self.rubros = answers
+
+    def __call__(self, brief: Any, items: list[AccountToReview], **kwargs: Any) -> Any:
+        self.calls.append((brief, list(items), kwargs["api_key"]))
+        out = [
+            AccountReview(id=i.id, kind="marca", fits=True, reason="", rubro=r, country=c)
+            for i in items
+            if i.id in self.rubros
+            for r, c in [self.rubros[i.id]]
+        ]
+        return out, CallStats(kwargs["config"].model_id, None, 100, 20)
+
+
+def test_the_reviewer_hands_the_rubro_to_the_pool_but_never_the_country() -> None:
+    bianki = _candidate("instagram", "Bianki", 5_000, bio="Shawarma en San Cristóbal")
+    quiet = _candidate("tiktok", "callado", 100)
+    hand = _candidate("tiktok", "nada", 100)
+    fake = RubroReview(
+        {
+            "instagram:bianki": ("food_drink", "VE"),
+            "tiktok:callado": ("otro", ""),
+            "tiktok:nada": ("", "CO"),
+        }
+    )
+    stored: list[tuple[Any, list[Any]]] = []
+    paid = _Attribution(tenant_id=TENANT, feature="referentes-revision")
+    reviewer = rr.make_reviewer(
+        rr.brand_brief(_seed()),
+        api_key="k",
+        review=fake,
+        attribution=paid,
+        record=lambda tenant, rows: stored.append((tenant, list(rows))) or len(rows),
+    )
+    assert reviewer is not None
+    reviewer("sector", [bianki, quiet, hand])
+
+    assert len(fake.calls) == 1  # the same call as the verdict, nothing extra
+    tenant, rows = stored[0]
+    assert tenant == TENANT
+    # an answer without a rubro stores nothing, whatever country it gave; and the
+    # country the model gave is never handed over (free sources only, 2026-11-25)
+    assert [(r.network, r.handle, r.rubro) for r in rows] == [
+        ("instagram", "bianki", "food_drink"),
+        ("tiktok", "callado", "otro"),
+    ]
+    assert not any(hasattr(r, "country") for r in rows)
+    assert {r.model for r in rows} == {"claude-sonnet-5"}
+    assert {r.version for r in rows} == {"referentes-review-3"}
+    assert all(r.source_ref.startswith("review-input:") for r in rows)
+
+
+def test_a_pool_that_cannot_learn_never_fails_the_review() -> None:
+    fake = RubroReview({"tiktok:a": ("food_drink", "CO")})
+
+    def broken(_tenant: Any, _rows: Any) -> int:
+        raise RuntimeError("db down")
+
+    reviewer = rr.make_reviewer(
+        rr.brand_brief(_seed()),
+        api_key="k",
+        review=fake,
+        attribution=TEST_ATTRIBUTION,
+        record=broken,
+    )
+    assert reviewer is not None
+    verdicts = reviewer("sector", [_candidate("tiktok", "a", 10)])
+    assert list(verdicts.values())[0].fits is True
+
+
+def test_a_manual_add_also_teaches_the_pool() -> None:
+    fake = RubroReview({"tiktok:elchef": ("food_drink", "CO")})
+    stored: list[list[Any]] = []
+
+    def lookup(network: str, handle: str, **_: Any) -> tuple[cd.Candidate, bool, None]:
+        return _candidate(network, handle, 1_000), True, None
+
+    rr.add_manual_account(
+        rr.parse_manual("@elchef", "tiktok"),
+        rr.brand_brief(_seed()),
+        api_key="k",
+        lookup=lookup,
+        review=fake,
+        attribution=TEST_ATTRIBUTION,
+        record=lambda _t, rows: stored.append(list(rows)) or len(rows),
+    )
+    assert [(r.handle, r.rubro) for r in stored[0]] == [("elchef", "food_drink")]
+    # the provenance digests what the model actually read (manual, no note)
+    sent = rr.to_review(_candidate("tiktok", "elchef", 1_000), manual=True)
+    assert stored[0][0].source_ref == rr.review_ai.review_input_ref(sent)
+
+
+def test_what_the_model_read_in_an_operator_note_never_reaches_the_shared_pool() -> None:
+    fake = RubroReview({"tiktok:elchef": ("food_drink", "CO")})
+    stored: list[list[Any]] = []
+
+    def lookup(network: str, handle: str, **_: Any) -> tuple[cd.Candidate, bool, None]:
+        return _candidate(network, handle, 1_000), True, None
+
+    result = rr.add_manual_account(
+        rr.parse_manual("@elchef", "tiktok"),
+        rr.brand_brief(_seed()),
+        note="Es el chef de mi barrio en Medellín",
+        api_key="k",
+        lookup=lookup,
+        review=fake,
+        attribution=TEST_ATTRIBUTION,
+        record=lambda _t, rows: stored.append(list(rows)) or len(rows),
+    )
+    assert stored == []  # the note is the business's private text
+    assert result.candidate.reviewed_by  # the verdict itself still applies
+
+
+# --------------------------------------------------------------------------------------
 # manual referentes: parsing
 # --------------------------------------------------------------------------------------
 
