@@ -461,6 +461,33 @@ Decisión: no se cambia el código. AUTO×2 ahorra ~20 %, FRAME×2 y FRAME×4 no
 escritorio con carga variable esas diferencias son ruido. Ningún caso se acerca a 768m. Vale la
 pena repetirlo en arm64.
 
+## Transiciones entre los bloques de un Clip (m-25114465, medido 2026-11-24)
+
+Un bloque puede unirse con el anterior con «Fundido» o «Barrido». El armado pega los bloques con
+corte, como siempre, y después mezcla las uniones con el código de la unión de partes de EF-16
+(`video_pipeline/block_join.py`: segmentos, 1 hilo, un decodificador a la vez). Un Clip con solo
+cortes no pasa por ese paso.
+
+Harness: `deploy/measure/local-video-memory.sh` con los casos nuevos `blocks3_cut`,
+`blocks3_fade2` y `blocks3_wipe2` (y `CPUS=1`, nuevo), imagen `qualify-memtest:deps`,
+`--memory 768m --memory-swap 768m --cpus 1`, amd64, en el volumen temporal `m25114465-clips`
+(borrado al terminar). Bloques: 20 s de 4K H.264 a ×2, 15 s de 1080p a ×1 y 20 s de 4K a ×2.
+
+| Caso | Salida s | Pico anon MiB | prepare / speed / unión, anon MiB | RSS MiB | CPU s | Pared s | OOM |
+|---|---|---|---|---|---|---|---|
+| blocks3_cut (referencia) | 35,0 | 327 | 327 / 295 / — | 370 | 537 | 542 | no |
+| blocks3_fade2 (2 × 0,8 s) | 33,4 | **341** | 341 / 284 / 275 | 384 | 908 | 914 | no |
+| blocks3_wipe2 (2 × 0,8 s) | 33,4 | 338 | 338 / 280 / 262 | 381 | 1053 | 1060 | no |
+
+El pico de cgroup llega a 768 MiB en los tres casos: es la caché de páginas de los archivos
+copiados y escritos, que el kernel suelta antes de un OOM (`oom_kill` 0).
+
+Lectura: cabe con holgura en 768m (pico anónimo 341 MiB, el mismo paso `prepare` de siempre). El
+paso de unión usa ~275 MiB. El costo es el tiempo: +372 s con fundidos y +518 s con barridos a
+1 CPU, porque vuelve a codificar el Clip entero y cada transición decodifica el tramo anterior
+desde su comienzo (sin buscar). Si hiciera falta bajar ese tiempo, la opción es buscar el
+cuadro clave más cercano en `encode_transition`; queda anotado, sin ticket.
+
 ## Pendiente
 
 - **Medir el normalizador con un video real de iPhone de 10 bits** (HEVC, 4K): necesita el
