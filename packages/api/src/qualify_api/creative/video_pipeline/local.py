@@ -90,10 +90,13 @@ from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
 from qualify_api.creative.clip_avatar import (
+    AVATAR_EFFECT_TEXT,
     AVATAR_JOIN_TEXT,
     ai_stretches,
+    avatar_effect_problems,
     avatar_join_problems,
     block_stretches,
+    block_windows,
     stretch_problem,
 )
 from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
@@ -966,6 +969,17 @@ def produce_local(
     if avatar_join_problems(part.segments, [stretch.index for stretch in blocks]):
         logger.warning("draft %s: a blending join next to an avatar block, refused", draft_id)
         return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_JOIN_TEXT)
+    # m-25119867 (ADR 50 §11, «Textos sí, efectos no»): no smoke, embers or steam layer
+    # over an avatar block, whatever path put it there
+    windows = block_windows(
+        [segment.output_seconds for segment in part.segments],
+        [stretch.index for stretch in blocks],
+    )
+    if avatar_effect_problems(part.effects, windows):
+        logger.warning("draft %s: an effect over an avatar block, refused", draft_id)
+        return MediaOutcome(
+            failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_EFFECT_TEXT
+        )
     # ADR 50 §9 (Deivid, 2026-11-24): «hecho con IA» read from what was made — ONE
     # stretch whose file is AI imagery (Seedance, Seedream, OmniHuman) makes the whole
     # video AI, with the avatar switches on or off; a generator file with no asset row and
