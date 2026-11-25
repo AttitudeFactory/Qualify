@@ -135,6 +135,9 @@ def ended(before: Mapping[str, str], table: Iterable[Mapping[str, str]]) -> list
             continue
         if state == rivals.STATE_DONE:
             out.append(("ok", TOAST_DONE.format(account=row["label"])))
+        elif state == rivals.STATE_LIMIT and row.get("message"):
+            # stopped by the cap: «try again in a few minutes» would be wrong today
+            out.append(("warn", row["message"]))
         else:
             out.append(("error", TOAST_FAILED.format(account=row["label"])))
     return out

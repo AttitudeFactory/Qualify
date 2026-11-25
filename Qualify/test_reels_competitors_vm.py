@@ -94,3 +94,22 @@ def test_the_last_one_cannot_be_unticked() -> None:
     table = vm.rows(_accounts(3, weekly=1, picked=True))
     kept = vm.toggle(table, "instagram:rival0")
     assert kept is not None and kept.error == vm.KEEP_ONE
+
+
+def test_a_read_that_ends_says_how_in_its_toast() -> None:
+    label = "@rival7"
+    before = {"tiktok:rival7": rivals.STATE_READING}
+
+    def row(state: str, message: str = "") -> list[dict[str, str]]:
+        return [{"key": "tiktok:rival7", "label": label, "state": state, "message": message}]
+
+    assert vm.ended(before, row(rivals.STATE_READING)) == []
+    assert vm.ended(before, row(rivals.STATE_DONE)) == [("ok", vm.TOAST_DONE.format(account=label))]
+    assert vm.ended(before, row(rivals.STATE_FAILED)) == [
+        ("error", vm.TOAST_FAILED.format(account=label))
+    ]
+    # stopped by the cap: the limit's own words, never «inténtalo en unos minutos»
+    assert vm.ended(before, row(rivals.STATE_LIMIT, rivals.DAILY_LIMIT_TEXT)) == [
+        ("warn", rivals.DAILY_LIMIT_TEXT)
+    ]
+    assert vm.ended({}, row(rivals.STATE_DONE)) == []  # never reading here: no toast

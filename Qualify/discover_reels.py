@@ -211,6 +211,7 @@ class DiscoverReelsState(rx.State):
             self.competitor_busy = ""
             self.competitor_error = ""
             self.competitors_open = False
+            self.competitors_bottom = False
             self._cards_tenant_id = tenant_id
 
     # -- RF-02: the filter bar ------------------------------------------------------------
@@ -633,7 +634,11 @@ class DiscoverReelsState(rx.State):
         if not finished:
             return None
         toasts = [
-            rx.toast.success(text) if tone == "ok" else rx.toast.error(text)
+            rx.toast.success(text)
+            if tone == "ok"
+            else rx.toast.warning(text)
+            if tone == "warn"
+            else rx.toast.error(text)
             for tone, text in finished
         ]
         return [DiscoverReelsState.refilter, *(toasts if closed else [])]

@@ -59,7 +59,8 @@ logger = logging.getLogger(__name__)
 MAX_WEEKLY = reels.MAX_WEEKLY_COMPETITORS
 
 # -- what the owner reads (exact, ticket m-25119465; plain Spanish per qualify-copy-es) --
-#: The selector's title.
+#: The ticket's selector title. NOT shown any more: option A (Deivid, 2026-11-25) moved
+#: the panel into a drawer titled «Tus competidores» (`Qualify/reels_competitors_vm`).
 WEEKLY_PICKER_TITLE = "Elige cuáles 6 competidores leemos cada lunes"
 #: The button of a competitor outside the 6.
 READ_NOW_BUTTON = "Ver sus reels ahora"
