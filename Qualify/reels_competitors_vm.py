@@ -40,6 +40,8 @@ TOO_MANY = rivals.TOO_MANY_TEXT
 KEEP_ONE = "Deja marcado al menos un competidor."
 #: The choice or the read could not be saved (Postgres down).
 SAVE_FAILED = "No pudimos guardar tu elección. Inténtalo de nuevo."
+#: «Ver sus reels ahora» could not be asked for (Postgres down): the read's own failure.
+READ_FAILED = rivals.FAILED_TEXT
 #: The row of an account the Monday run reads.
 WEEKLY_DETAIL = "Lo revisamos cada lunes"
 
@@ -94,14 +96,14 @@ def rows(
 def with_answer(
     table: Sequence[Mapping[str, str]], key: str, answer: ReadState | None
 ) -> list[dict[str, str]]:
-    """`table` with the press's `answer` on `key`'s row when the stored rows say nothing
-    of it — a press the daily cap refused queues no read, so only its answer can tell the
-    owner why nothing happens."""
+    """`table` with the press's `answer` on `key`'s row: it is the newest word on that
+    account — a press the cap refused queues no read, so only its answer can tell the
+    owner why nothing happens, even over an earlier read of the day that failed."""
     out = [dict(row) for row in table]
     if answer is None:
         return out
     for row in out:
-        if row["key"] == key and not row.get("state"):
+        if row["key"] == key:
             row.update(
                 state=answer.state,
                 message=answer.message,
@@ -153,6 +155,7 @@ __all__ = [
     "PICKED_COUNT",
     "PICKER_BODY",
     "PICKER_TITLE",
+    "READ_FAILED",
     "READ_NOW",
     "SAVE_FAILED",
     "STATE_TONES",

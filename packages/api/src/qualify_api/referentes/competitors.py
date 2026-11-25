@@ -71,7 +71,7 @@ MONTHLY_LIMIT_TEXT = (
     "Podrás intentarlo de nuevo desde el {renewal}."
 )
 #: The read is queued or running.
-READING_TEXT = "Estamos leyendo sus reels. En unos minutos aparecen aquí."
+READING_TEXT = "Estamos leyendo sus reels. En unos minutos los verás en «Más reels revisados»."
 #: The read ended: its reels that fit the business are in «Más reels revisados».
 DONE_TEXT = "Listo. Sus reels ya están en «Más reels revisados»."
 #: The read could not be done (no way to review them now, or the reads are paused).

@@ -565,7 +565,7 @@ class DiscoverReelsState(rx.State):
             logger.warning("competitor read not queued: %s: %s", type(exc).__name__, exc)
             async with self:
                 self.competitor_busy = ""
-                self.competitor_error = reels_competitors_vm.SAVE_FAILED
+                self.competitor_error = reels_competitors_vm.READ_FAILED
             return
         rivals = await _competitor_rows(tenant_id, brand_id)
         async with self:

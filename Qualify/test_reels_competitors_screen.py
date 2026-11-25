@@ -152,6 +152,78 @@ async def test_read_now_with_the_daily_cap_spent_says_so(world: _World) -> None:
     assert world.paid == []
 
 
+def _finish(world: _World, key: str, status: str) -> None:
+    """What the reels-worker leaves: today's manual read of `key` ended `status`."""
+    (run,) = [
+        r
+        for r in world.runs.competitor_runs(TENANT, world.brand)
+        if f"{r.account_network}:{r.account_handle}" == key
+    ]
+    claimed = world.runs.claim(TENANT, run.id, now=CLOCK)
+    assert claimed is not None and claimed.started_at is not None
+    world.runs.finish(
+        TENANT,
+        run.id,
+        status=status,
+        now=CLOCK,
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash="b",
+        started_at=claimed.started_at,
+    )
+
+
+async def test_a_read_that_ends_refreshes_the_panel_and_the_lists(world: _World) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    # still reading: the clock reads the rows again and asks for nothing else
+    assert await DiscoverReelsState.refresh_competitors.fn(proxy) is None
+    _finish(world, outside["key"], STATUS_OK)
+    follow = await DiscoverReelsState.refresh_competitors.fn(proxy)
+    assert follow is DiscoverReelsState.refilter  # the new reels reach the lists
+    row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
+    assert row["state"] == rivals.STATE_DONE and row["message"] == rivals.DONE_TEXT
+    assert not state.competitors_reading
+    assert world.paid == []
+
+
+async def test_a_press_the_cap_refuses_says_so_even_after_a_failed_read(
+    world: _World,
+) -> None:
+    world.ok_run()
+    _competitors(world, *(f"rival{i}" for i in range(7)))
+    state, proxy = _screen_state()
+    await _open(proxy)
+    outside = next(r for r in state.competitor_rows if not r["weekly"])
+    await _read_now(proxy, outside["key"])
+    _finish(world, outside["key"], "error")  # today's read failed
+    ledger = usage.InMemoryUsageStore()
+    usage.configure_store(ledger)  # the conftest puts the default back after the test
+    ledger.events.append(
+        usage.UsageEvent(
+            tenant_id=TENANT,
+            brand_id=None,
+            vendor=usage.SCRAPECREATORS,
+            feature="reels_list",
+            credits=usage.DAILY_CAP,
+            usd_estimate=Decimal("0"),
+            pricing_table_version=usage.PRICING_TABLE_VERSION,
+            request_key=f"seed:{uuid4()}",
+            created_at=CLOCK,
+        )
+    )
+    await _read_now(proxy, outside["key"])
+    row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
+    assert row["state"] == rivals.STATE_LIMIT
+    assert row["message"] == rivals.DAILY_LIMIT_TEXT
+
+
 async def test_the_competitors_filter_shows_their_reels_once_read(world: _World) -> None:
     world.ok_run()
     world.runs.upsert_reels(
