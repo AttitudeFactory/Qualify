@@ -165,6 +165,13 @@ LOCAL_PART_LAYER_FAILED_TEXT = (
     "No pudimos poner el efecto en esta parte por un problema nuestro. No se descontó de tus "
     "creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
 )
+#: m-25114465: the transitions between the blocks could not be made for a reason of ours
+#: (`block_join`, `JoinError`): the way out is a cut at those joins.
+LOCAL_TRANSITION_FAILED_TEXT = (
+    "No pudimos hacer las transiciones de tu video por un problema nuestro. No se descontó "
+    "de tus creaciones. Inténtalo de nuevo en unos minutos o deja las uniones con «Corte» "
+    "para terminarlo ya."
+)
 #: m-25042483: a video stretch takes over `SEGMENT_SOURCE_MAX_S` (60 s) of its video —
 #: the owner's to fix (refused before anything is created, `segment_source_too_long`;
 #: this is the worker's backstop and the words the editor shows in «Cortar»). Reviewed
@@ -462,7 +469,9 @@ def render_local_part(
         ) from exc
     release_memory()  # the speed step's decoder and encoder, before the layers and texts
     # m-25114465: the blocks' transitions, before the layers and the texts (their clock)
-    joins = _blend_blocks(part, result, root, beat)
+    joins = _blend_blocks(part, result, root, beat, draft_id)
+    if joins is not None:
+        warnings.extend(joins.warnings)  # a join made a cut instead of its transition
     # EF-08: the library's layers (smoke, embers, steam) BEFORE the texts, so the words
     # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
     # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
@@ -519,24 +528,38 @@ def render_local_part(
     )
 
 
-def _blend_blocks(part: PartRecipe, result: Any, root: Path, beat: Any) -> Any:
+def _blend_blocks(
+    part: PartRecipe, result: Any, root: Path, beat: Any, draft_id: UUID | None
+) -> Any:
     """m-25114465: `result` (the speed step's) with its blocks' transitions blended
     (`block_join.blend_block_joins`), the speed step's file removed once replaced; None
-    when every join is a cut (nothing re-encoded)."""
+    when every join is a cut (nothing re-encoded). A join that cannot be made for a
+    reason of ours (`JoinError`, the disk) is `LocalVideoFailed` with
+    `LOCAL_TRANSITION_FAILED_TEXT`: never charged, the way out offered."""
+    from qualify_creative.video.join import JoinError  # noqa: PLC0415
     from qualify_creative.video.memory import release_memory  # noqa: PLC0415
 
     from qualify_api.creative.video_pipeline.block_join import blend_block_joins  # noqa: PLC0415
 
-    joins = blend_block_joins(
-        part,
-        result.path,
-        [planned.frames for planned in result.plan.segments],
-        size=(result.width, result.height),
-        rate=result.fps,
-        root=root,
-        beat=beat,
-    )
-    if joins is not None:
+    try:
+        joins = blend_block_joins(
+            part,
+            result.path,
+            [planned.frames for planned in result.plan.segments],
+            size=(result.width, result.height),
+            rate=result.fps,
+            root=root,
+            beat=beat,
+            draft_id=draft_id,
+        )
+    except (JoinError, OSError) as exc:
+        raise LocalVideoFailed(
+            FailureReason.RENDER_ERROR.value,
+            LOCAL_TRANSITION_FAILED_TEXT,
+            raw=f"{type(exc).__name__}: {exc}",
+            code="block_join_failed",
+        ) from exc
+    if joins is not None and joins.blended:
         Path(result.path).unlink(missing_ok=True)  # never two large files without need
         release_memory()
     return joins
@@ -964,6 +987,7 @@ __all__ = [
     "LOCAL_PART_LAYER_FAILED_TEXT",
     "LOCAL_PART_SOURCE_TOO_LONG_TEXT",
     "LOCAL_SOURCE_TOO_LONG_TEXT",
+    "LOCAL_TRANSITION_FAILED_TEXT",
     "LOCAL_EFFECTS_PIPELINE_VERSION",
     "LOCAL_PART_COMPOSE_FAILED_TEXT",
     "LOCAL_MODEL_ID",

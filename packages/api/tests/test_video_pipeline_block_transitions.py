@@ -27,7 +27,9 @@ from qualify_creative.schemas import (
 
 from qualify_api.creative.video_pipeline import PartRecipe, RecipeRefused, validate_recipe
 from qualify_api.creative.video_pipeline.recipe import (
+    BLOCK_MIN_FREE_FRAMES,
     BLOCK_TRANSITION_UNAVAILABLE_TEXT,
+    CLIP_BLOCK_TRANSITIONS_SWITCH,
     TRANSITION_ON_CLIP_TEXT,
     TRANSITION_ON_FIRST_BLOCK_TEXT,
     TRANSITIONS_LONGER_THAN_BLOCK_TEXT,
@@ -35,8 +37,10 @@ from qualify_api.creative.video_pipeline.recipe import (
     block_transition_room_problems,
     block_transition_room_s,
     block_transitions_seconds,
+    clip_block_transitions_on,
     clip_seconds,
     refuse_unbuilt_recipe,
+    transition_duration_range,
     transitions_longer_than_block_text,
     unbuilt_recipe_problems,
     validate_brief_recipe,
@@ -49,6 +53,13 @@ PHOTO = f"uploads/{TENANT_ID}/mi-plato.png"
 FADE = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
 WIPE = EffectUse(effect_id="barrido", version=2, params={"duration_s": 0.8, "direction": "up"})
 CUT = EffectUse(effect_id="corte", version=1)
+
+
+@pytest.fixture(autouse=True)
+def transitions_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The coordinator's switch, on for these tests (off is the default:
+    `test_with_the_switch_off_*`)."""
+    monkeypatch.setenv(CLIP_BLOCK_TRANSITIONS_SWITCH, "on")
 
 
 def _video(start: float = 0.0, end: float = 4.0, speed: float = 1.0, **extra: Any) -> SourceSegment:
@@ -193,17 +204,45 @@ def test_blocks_shorter_than_their_transitions_are_refused_with_the_block_text()
         validate_recipe((part,), video_by_parts=False)
     )
     assert transitions_longer_than_block_text(2) == (
-        "El bloque 2 es más corto que sus transiciones. "
-        "Hazlo más largo o elige transiciones más cortas."
+        "El bloque 2 es muy corto para sus transiciones. Alárgalo, acorta sus "
+        "transiciones o deja una de sus uniones con «Corte»."
     )
+
+
+HALF_FADE = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
+HALF_WIPE = EffectUse(effect_id="barrido", version=2, params={"duration_s": 0.5})
+
+
+def test_a_block_eaten_whole_by_its_transitions_is_refused() -> None:
+    """Review (blocking): a 1 s photo with a 0.5 s fade in and a 0.5 s wipe out keeps 0
+    frames of its own — the join used to fail on it. It must keep 9 (0.3 s)."""
+    part = _part(_photo(2), _photo(1, transition_in=HALF_FADE), _photo(2, transition_in=HALF_WIPE))
+    assert _codes(block_transition_room_problems(part)) == [
+        ("transitions_longer_than_block", "segments[1]")
+    ]
+    brief = _clip(*part.segments)
+    with pytest.raises(RecipeRefused) as refused:
+        refuse_unbuilt_recipe(brief, tenant_id=TENANT_ID)
+    assert ("transitions_longer_than_block", "segments[1]") in _codes(refused.value.problems)
+
+
+def test_a_block_keeping_exactly_its_free_frames_fits() -> None:
+    """30 frames = 9 (0.3 s fade in) + 12 (0.4 s wipe out) + 9 of its own."""
+    fade = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.3})
+    wipe = EffectUse(effect_id="barrido", version=2, params={"duration_s": 0.4})
+    part = _part(_photo(2), _photo(1, transition_in=fade), _photo(2, transition_in=wipe))
+    assert BLOCK_MIN_FREE_FRAMES == 9
+    assert block_transition_room_problems(part) == ()
+    refuse_unbuilt_recipe(_clip(*part.segments), tenant_id=TENANT_ID)  # does not raise
 
 
 def test_the_room_per_block_says_what_fits_before_the_owner_chooses() -> None:
     part = _part(_photo(2), _photo(1, transition_in=FADE), _photo(2, transition_in=WIPE))
-    # into block 1: block 0 has 60 frames free, block 1 has 30 - 24 (the wipe out of it)
-    assert block_transition_room_s(part, 1) == pytest.approx(6 / 30)  # under 0.3 s: «Corte»
-    # into block 2: block 1 has 30 - 15 (the fade into it), block 2 has 60
-    assert block_transition_room_s(part, 2) == pytest.approx(15 / 30)
+    # into block 1: block 0 has 60 frames, block 1 has 30 - 24 (the wipe out of it), and
+    # each keeps 9 of its own: nothing fits, only «Corte»
+    assert block_transition_room_s(part, 1) == 0.0
+    # into block 2: block 1 has 30 - 15 (the fade into it) - 9, block 2 has 60 - 9
+    assert block_transition_room_s(part, 2) == pytest.approx(6 / 30)
     assert block_transition_room_s(part, 0) == 0.0
     assert block_transition_room_s(part, 3) == 0.0
 
@@ -278,7 +317,11 @@ def test_the_block_codes_are_appended() -> None:
 def test_the_texts_are_plain_spanish_about_blocks() -> None:
     assert TRANSITIONS_LONGER_THAN_BLOCK_TEXT.startswith("El bloque {block} ")
     assert TRANSITION_ON_FIRST_BLOCK_TEXT == (
-        "El primer bloque no tiene otro antes con el cual unirse. Déjalo con «Corte»."
+        "Antes del primer bloque no hay nada que unir. Déjalo con «Corte»."
+    )
+    assert BLOCK_TRANSITION_UNAVAILABLE_TEXT == (
+        "Por ahora las transiciones solo funcionan en videos armados con tus fotos y videos. "
+        "Deja esa unión con «Corte»."
     )
     assert "unión entre dos bloques" in TRANSITION_ON_CLIP_TEXT
     assert "«Corte»" in BLOCK_TRANSITION_UNAVAILABLE_TEXT
@@ -300,3 +343,47 @@ def test_another_business_stretch_is_still_foreign_with_a_transition() -> None:
         (_part(_photo(), foreign),), video_by_parts=False, tenant_id=TENANT_ID
     )
     assert ("foreign_key", "segments[1].key") in _codes(problems)
+
+
+# ---------------------------------------------------------------------------
+# the switch (off by default while ADR 50 §10 is unsigned) and the library's ranges
+
+
+def test_with_the_switch_off_a_block_transition_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    brief = _clip(_video(), _photo(transition_in=FADE))
+    for value in (None, "off", "", "yes"):  # unset, off, empty, a typo: all off
+        if value is None:
+            monkeypatch.delenv(CLIP_BLOCK_TRANSITIONS_SWITCH, raising=False)
+        else:
+            monkeypatch.setenv(CLIP_BLOCK_TRANSITIONS_SWITCH, value)
+        assert clip_block_transitions_on() is False
+        assert _codes(unbuilt_recipe_problems(brief)) == [
+            ("recipe_unavailable", "segments[1].transition_in")
+        ]
+        with pytest.raises(RecipeRefused):
+            refuse_unbuilt_recipe(brief, tenant_id=TENANT_ID)
+
+
+def test_with_the_switch_off_a_clip_of_cuts_is_made_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CLIP_BLOCK_TRANSITIONS_SWITCH, "off")
+    brief = _clip(_video(), _photo(transition_in=CUT))
+    assert unbuilt_recipe_problems(brief) == ()
+    refuse_unbuilt_recipe(brief, tenant_id=TENANT_ID)  # does not raise
+
+
+def test_with_the_switch_on_a_block_transition_passes() -> None:
+    assert clip_block_transitions_on() is True
+    assert unbuilt_recipe_problems(_clip(_video(), _photo(transition_in=FADE))) == ()
+
+
+def test_the_duration_ranges_are_the_librarys() -> None:
+    """The library v5 is the only source: fundido and barrido v2 last 0.3-0.8 s (their v1,
+    0.2-1.5 and 0.2-1.0 s, is not offered); `corte` has none."""
+    assert transition_duration_range("fundido") == (0.3, 0.8)
+    assert transition_duration_range("barrido") == (0.3, 0.8)
+    assert transition_duration_range("corte") is None
+    assert transition_duration_range("disolver") is None

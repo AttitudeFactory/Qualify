@@ -38,6 +38,8 @@ parent's `VideoRecipe` holds it) and is re-exported here under the same name.
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -71,6 +73,8 @@ from qualify_creative.video.speed import SPEED_FPS
 from qualify_creative.video.speed import segment_frames as speed_frames
 
 from qualify_api.creative.media import owned_by, parse_tenant_key
+
+logger = logging.getLogger(__name__)
 
 #: Float noise allowed over `SEGMENT_SOURCE_MAX_S` («Usar el video entero» of a 60.03 s file
 #: whose browser length was rounded): under a frame at 30 fps.
@@ -523,24 +527,65 @@ def transition_room_problems(
 #: the screen to show (`qualify-copy-es`; the screen calls the blocks «bloques» and the
 #: place where two meet «la unión»). `{block}` is the block as the owner counts it, from 1.
 TRANSITIONS_LONGER_THAN_BLOCK_TEXT = (
-    "El bloque {block} es más corto que sus transiciones. "
-    "Hazlo más largo o elige transiciones más cortas."
+    "El bloque {block} es muy corto para sus transiciones. Alárgalo, acorta sus "
+    "transiciones o deja una de sus uniones con «Corte»."
 )
 #: `transition_on_first_block`: the screen offers no join before the first block.
-TRANSITION_ON_FIRST_BLOCK_TEXT = (
-    "El primer bloque no tiene otro antes con el cual unirse. Déjalo con «Corte»."
-)
+TRANSITION_ON_FIRST_BLOCK_TEXT = "Antes del primer bloque no hay nada que unir. Déjalo con «Corte»."
 #: `transition_on_clip`: a transition chosen as an effect of the whole Clip.
 TRANSITION_ON_CLIP_TEXT = (
     "Las transiciones van en la unión entre dos bloques. "
     "Toca esa unión y elige «Fundido» o «Barrido»."
 )
 #: `recipe_unavailable` on `segments[i].transition_in`: a join the server does not blend
-#: (a Clip not made from the owner's photos and videos, or a part of a video by parts).
+#: (a Clip not made from the owner's photos and videos, a part of a video by parts, or
+#: `QUALIFY_CLIP_BLOCK_TRANSITIONS` off).
 BLOCK_TRANSITION_UNAVAILABLE_TEXT = (
-    "Por ahora las transiciones entre bloques solo se pueden usar en videos hechos con tus "
-    "fotos y videos. Deja esa unión con «Corte»."
+    "Por ahora las transiciones solo funcionan en videos armados con tus fotos y videos. "
+    "Deja esa unión con «Corte»."
 )
+#: m-25114465: the coordinator's switch while ADR 50 §10 is unsigned — `off` (the default)
+#: refuses every block transition but «Corte» (`recipe_unavailable`); `on` lets the
+#: drawn ones through. Read on every new request (`unbuilt_recipe_problems`).
+CLIP_BLOCK_TRANSITIONS_SWITCH = "QUALIFY_CLIP_BLOCK_TRANSITIONS"
+#: m-25114465 (review): a block keeps at least this many frames of its own — shown alone,
+#: not blended — besides the transitions eating into it (0.3 s at 30 fps, the shortest
+#: transition): with fewer, the join's middle segment is empty or a few frames and the
+#: assembly fails. The room checks and the join's safety net use the same number.
+BLOCK_MIN_FREE_FRAMES = 9
+
+
+def clip_block_transitions_on() -> bool:
+    """Whether `QUALIFY_CLIP_BLOCK_TRANSITIONS` is `on`. Anything but `off`/empty/`on` is
+    logged and read as off: never a transition by a typo."""
+    value = os.environ.get(CLIP_BLOCK_TRANSITIONS_SWITCH, "off").strip().lower()
+    if value in ("", "off"):
+        return False
+    if value == "on":
+        return True
+    logger.error("%s must be off or on, not %r: read as off", CLIP_BLOCK_TRANSITIONS_SWITCH, value)
+    return False
+
+
+def transition_duration_range(
+    effect_id: str, library: EffectsLibrary | None = None
+) -> tuple[float, float] | None:
+    """m-25114465: the `duration_s` range the screen may offer for a drawn transition
+    (`fundido`, `barrido`), read from the library — its newest offered entry the join
+    draws (`DRAWN_TRANSITIONS`) — so the library is the only source. None when there is
+    none (`corte`, an unknown id). Pure (the library is cached)."""
+    library = library or load_effects()
+    drawn = [
+        entry
+        for entry in library.offered()
+        if entry.id == effect_id and (entry.id, entry.version) in DRAWN_TRANSITIONS
+    ]
+    if not drawn:
+        return None
+    spec = max(drawn, key=lambda entry: entry.version).params.get("duration_s")
+    if spec is None or spec.min is None or spec.max is None:
+        return None
+    return (float(spec.min), float(spec.max))
 
 
 def transitions_longer_than_block_text(block: int) -> str:
@@ -575,17 +620,19 @@ def block_transitions_seconds(part: PartRecipe, library: EffectsLibrary | None =
 def block_transition_room_problems(
     part: PartRecipe, library: EffectsLibrary | None = None
 ) -> tuple[RecipeProblem, ...]:
-    """m-25114465, before anything is made: every block of a normal Clip lasts at least
-    the transitions that eat into it — the one blending it with the block before and the
-    one blending the next block into it —, counted in the speed step's frames as the
-    block join counts them. A block too short is `transitions_longer_than_block` on
-    `segments[i]` (block `i + 1`: `transitions_longer_than_block_text`), with its length
-    in `duration_s`. Pure — the screen may call it on every change to warn first."""
+    """m-25114465, before anything is made: every block of a normal Clip that blends
+    lasts the transitions that eat into it — the one blending it with the block before
+    and the one blending the next block into it — plus `BLOCK_MIN_FREE_FRAMES` of its
+    own, counted in the speed step's frames as the block join counts them. A block too
+    short is `transitions_longer_than_block` on `segments[i]` (block `i + 1`:
+    `transitions_longer_than_block_text`), with its length in `duration_s`. Pure — the
+    screen may call it on every change to warn first."""
     overlaps = block_overlaps(part, library)
     found: list[RecipeProblem] = []
     for at, frames in enumerate(block_frames(part)):
         after = overlaps[at + 1] if at + 1 < len(overlaps) else 0
-        if overlaps[at] + after > frames:
+        eaten = overlaps[at] + after
+        if eaten and eaten + BLOCK_MIN_FREE_FRAMES > frames:
             found.append(
                 RecipeProblem(
                     code="transitions_longer_than_block",
@@ -601,17 +648,18 @@ def block_transition_room_s(
     part: PartRecipe, block: int, library: EffectsLibrary | None = None
 ) -> float:
     """m-25114465: the longest transition, in seconds, the join INTO `block` (0-based
-    index of `part.segments`, 1 or more) may last without eating past either of its two
-    blocks, given the other transitions as they are now — so the screen can offer only
-    what fits (0.0 when it is the first block or out of range; under
-    `JoinTransition`'s 0.3 s nothing fits: only «Corte»). Pure."""
+    index of `part.segments`, 1 or more) may last while both of its blocks keep
+    `BLOCK_MIN_FREE_FRAMES` of their own, given the other transitions as they are now —
+    so the screen can offer only what fits (0.0 when it is the first block or out of
+    range; under the library's shortest, `transition_duration_range`, nothing fits: only
+    «Corte»). Pure."""
     frames = block_frames(part)
     if not 1 <= block < len(frames):
         return 0.0
     overlaps = block_overlaps(part, library)
     after = overlaps[block + 1] if block + 1 < len(overlaps) else 0
     room = min(frames[block - 1] - overlaps[block - 1], frames[block] - after)
-    return max(0, room) / SPEED_FPS
+    return max(0, room - BLOCK_MIN_FREE_FRAMES) / SPEED_FPS
 
 
 def is_built_transition(use: EffectUse | None) -> bool:
@@ -723,7 +771,8 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
                 found.append(RecipeProblem(code="recipe_unavailable", part=number, field=field))
         # m-25114465: the block join blends a normal `local` Clip's blocks — never a part's
         # (its stretches are joined with cuts) nor a Clip made by Seedance
-        blends = in_clip and part.mode == "local"
+        # m-25114465: only with `QUALIFY_CLIP_BLOCK_TRANSITIONS` on (ADR 50 §10 unsigned)
+        blends = in_clip and part.mode == "local" and clip_block_transitions_on()
         for block, segment in enumerate(part.segments):
             use = segment.transition_in
             if use is not None and not (blends and is_built_transition(use)):
@@ -754,8 +803,12 @@ def refuse_unbuilt_recipe(brief: ContentBrief, *, tenant_id: UUID) -> None:
 
 
 __all__ = [
+    "BLOCK_MIN_FREE_FRAMES",
     "BLOCK_TRANSITION_UNAVAILABLE_TEXT",
+    "CLIP_BLOCK_TRANSITIONS_SWITCH",
     "PartRecipe",
+    "clip_block_transitions_on",
+    "transition_duration_range",
     "RecipeRefused",
     "TRANSITIONS_LONGER_THAN_BLOCK_TEXT",
     "TRANSITION_ON_CLIP_TEXT",
