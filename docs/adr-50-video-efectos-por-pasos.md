@@ -319,3 +319,20 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 **Interruptores.** `QUALIFY_CLIP_AVATAR_PRESENTER` y `QUALIFY_CLIP_AVATAR_ANIMATED`, apagados en todos los entornos. El servidor rechaza crear o poner un bloque de un tipo apagado. Con los dos apagados no puede existir ningún bloque, así que nada más cambia. Los borradores `avatar_video` y `animated_avatar_video` sueltos siguen igual.
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), la música y el volumen entre bloques, y la medición pagada (m-25112919).
+
+## 11. Enmienda `[PROPUESTO]`: el avatar desde el primer «Crear» del Clip (m-25119867, opción B)
+
+**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas de Deivid del 2026-11-25 a las preguntas P1–P6 de `docs/contrato-avatar-primer-crear.md` §3, que llegaron por «creacion de tickets», y su decisión sobre las uniones. (El número §10 lo usa la enmienda de transiciones de m-25114465, #804, que todavía no está en `main`.)
+
+**Firma de Deivid:** `[ ]` «Firmo el §11», escrito por Deivid en la sesión «quailify-deivid» · fecha: ____
+
+**Qué cambia del §9.**
+
+- **Opción B.** El dueño puede elegir hasta 3 avatares en el primer «Crear» de un Clip local. El Clip y sus bloques se crean juntos, en una sola transacción. Los bloques se hacen primero. El Clip **espera en `drafting`** hasta que todos terminan y después se arma una sola vez. Se revisan las mismas reglas del §9 antes de escribir nada y antes de pagar: interruptores, 30 s, tope diario, cupo de todos los bloques sin cobrar, cobro al aprobar y `ai_generated=True`. La opción A sigue igual.
+- **P1. «Intentar de nuevo» un avatar cuenta para el tope de 3 al día.** Cada intento pagado es un avatar más del día. Se construye con `retry_block` (PR 2).
+- **P2.** Si un avatar falló, el Clip espera **72 h** a que el dueño elija. Después falla con `avatar_block_failed` y se devuelve lo cobrado (PR 2).
+- **P5.** No hay Clip hecho solo de avatares: las fotos y videos del dueño tienen que sumar **3 s o más** por sí solos.
+- **P6. Cupo.** Un bloque cuyo Clip **falló** deja de contar en el cupo en ese momento. Esto completa la regla del §9, según la cual un bloque deja de contar «al aprobarse su Clip o con la retención». Se lee del estado del Clip, así que vale para las dos opciones.
+- **Uniones (decisión de Deivid, 2026-11-25).** Una unión junto a un avatar solo puede ser «Corte», en las dos opciones y también en el armado. Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente. El código es `avatar_join_cut_only`. En `main` los tramos de un Clip todavía no tienen unión propia, así que todas son corte. La regla lee el campo que trae #804 (`SourceSegment.transition_in`), de modo que vale desde que ese campo exista. Es condición para encender `QUALIFY_CLIP_BLOCK_TRANSITIONS`.
+
+**Fuera de esta enmienda.** Los efectos y textos sobre el tramo del avatar (pregunta abierta en `docs/contrato-avatar-primer-crear.md` §3), la pantalla (m-25112921) y la medición pagada (m-25112919).
