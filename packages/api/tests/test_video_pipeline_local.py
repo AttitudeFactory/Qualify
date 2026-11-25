@@ -450,6 +450,272 @@ def test_a_photo_and_a_video_make_one_video_with_no_gaps(
     assert [(s["out_start_s"], s["out_end_s"]) for s in speed] == [(0.0, 2.0), (2.0, 3.5)]
 
 
+def _blended_clip(how: dict[str, Any]) -> ContentBrief:
+    """m-25114465: 2 s of green video (60 frames), then a red photo held 1.5 s (45 frames)
+    blending into it for 0.5 s (15 frames)."""
+    photo = SourceSegment(key=PHOTO_KEY, start_s=0.0, end_s=1.5, kind="photo", transition_in=how)
+    return _stamped(_local_clip(_video(), photo))
+
+
+@pytest.mark.parametrize("effect", ["fundido", "barrido"])
+def test_a_block_blends_into_the_one_before_it_and_the_clip_is_shorter(
+    queue_on: None, sources: dict[str, bytes], effect: str
+) -> None:
+    """m-25114465: the two blocks overlap 15 frames — 105 − 15 = 90 frames (3.0 s), green
+    before the join, red after it, the 15 frames between both mixed (fade) or split (wipe,
+    the photo entering from the right edge), one sound track; recorded in
+    `params.local.transitions` and `steps["block_join"]`."""
+    store = ReadingStore(sources)
+    how = {"effect_id": effect, "version": 2, "params": {"duration_s": 0.5}}
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip(how),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert write.params["duration_seconds"] == pytest.approx(3.0)
+    frames = _decoded(store.files[write.object_key])
+    assert len(frames) == 90
+    assert [f.pts for f in frames] == sorted(f.pts for f in frames)
+    pixel = [f.to_ndarray(format="rgb24") for f in (frames[10], frames[52], frames[80])]
+    green, mixed, red = (p[160, 90] for p in pixel)
+    assert green[1] > 150 and green[0] < 90
+    assert red[0] > 150 and red[1] < 90
+    if effect == "fundido":
+        assert 70 < mixed[0] < 190 and 70 < mixed[1] < 190  # both at once
+    else:
+        left, right = pixel[1][160, 5], pixel[1][160, 175]
+        assert left[1] > 150 and right[0] > 150  # green stays left, red came in from the right
+    meta = write.params["local"]
+    assert meta["steps"]["block_join"] == "block-join-v1"
+    joins = meta["transitions"]
+    assert joins["fps"] == 30 and joins["frames"] == 90 and joins["fallback_cuts"] == []
+    kind = {"fundido": "fade", "barrido": "wipe"}[effect]
+    assert joins["joins"] == [
+        {
+            "block": 1,
+            "effect_id": effect,
+            "version": 2,
+            "kind": kind,
+            "duration_s": 0.5,
+            "direction": "left",
+            "frames": 15,
+        }
+    ]
+    # the chosen transition is in the recipe's provenance too
+    assert meta["segments"][1]["transition_in"]["effect_id"] == effect
+
+
+def test_a_clip_of_cuts_records_no_block_join(queue_on: None, sources: dict[str, bytes]) -> None:
+    store = ReadingStore(sources)
+    cut = {"effect_id": "corte", "version": 1}
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip(cut),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    (write,) = outcome.media
+    assert write.params["duration_seconds"] == pytest.approx(3.5)
+    assert "transitions" not in write.params["local"]
+    assert "block_join" not in write.params["local"]["steps"]
+    assert all("transition_in" not in s for s in write.params["local"]["segments"])
+
+
+def test_a_blended_run_retried_makes_the_same_video(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """Idempotent: the same draft blended twice writes the same key and the same bytes."""
+    store = ReadingStore(sources)
+    producer = _producer(store, ExplodingByteplus())
+    draft_id = uuid4()
+    brief = _blended_clip({"effect_id": "fundido", "version": 2})
+    made = []
+    for _ in range(2):
+        (write,) = producer.produce(
+            tenant_id=TENANT_ID,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        ).media
+        made.append((write.object_key, store.files[write.object_key]))
+    assert made[0] == made[1]
+
+
+BLUE, YELLOW, WHITE = (30, 40, 210), (220, 210, 30), (235, 235, 235)
+
+
+def _coloured(name: str, colour: tuple[int, int, int], seconds: float, how: Any = None) -> Any:
+    return SourceSegment(
+        key=f"uploads/{TENANT_ID}/{name}.png",
+        start_s=0.0,
+        end_s=seconds,
+        kind="photo",
+        transition_in=how,
+    )
+
+
+def _rgb(frame: Any, x: int = 90, y: int = 160) -> Any:
+    return frame.to_ndarray(format="rgb24")[y, x]
+
+
+def _near(pixel: Any, colour: tuple[int, int, int], tolerance: int = 45) -> bool:
+    return all(abs(int(p) - c) <= tolerance for p, c in zip(pixel, colour, strict=True))
+
+
+def test_five_blocks_cut_fade_cut_wipe_land_where_the_recipe_says(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """Review #5: green video 2 s (60) | cut | red 1 s (30) | fade 0.5 | blue 1.5 s (45) |
+    cut | yellow 1 s (30) | wipe 0.5 | white 1.5 s (45): 210 − 15 − 15 = 180 frames. Each
+    cut is exact, each blend sits on its 15 frames, nothing else is touched."""
+    fade = {"effect_id": "fundido", "version": 2, "params": {"duration_s": 0.5}}
+    wipe = {"effect_id": "barrido", "version": 2, "params": {"duration_s": 0.5}}
+    files = dict(sources)
+    for name, colour in (("rojo", RED), ("azul", BLUE), ("amarillo", YELLOW), ("blanco", WHITE)):
+        files[f"uploads/{TENANT_ID}/{name}.png"] = _png_bytes(colour)
+    store = ReadingStore(files)
+    brief = _stamped(
+        _local_clip(
+            _video(),
+            _coloured("rojo", RED, 1.0),
+            _coloured("azul", BLUE, 1.5, fade),
+            _coloured("amarillo", YELLOW, 1.0),
+            _coloured("blanco", WHITE, 1.5, wipe),
+        )
+    )
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit(), copy=COPY, budget=BUDGET
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    frames = _decoded(store.files[write.object_key])
+    assert len(frames) == 180
+    assert _near(_rgb(frames[0]), GREEN) and _near(_rgb(frames[59]), GREEN)
+    assert _near(_rgb(frames[60]), RED) and _near(_rgb(frames[74]), RED)  # the cut, exact
+    mixed = _rgb(frames[82])  # the fade, red into blue
+    assert 60 < int(mixed[0]) < 190 and 60 < int(mixed[2]) < 190
+    assert _near(_rgb(frames[90]), BLUE) and _near(_rgb(frames[119]), BLUE)
+    assert _near(_rgb(frames[120]), YELLOW) and _near(_rgb(frames[134]), YELLOW)  # the cut
+    wiping = frames[142]  # the wipe: yellow stays left, white came in from the right
+    assert _near(_rgb(wiping, x=5), YELLOW) and _near(_rgb(wiping, x=175), WHITE)
+    assert _near(_rgb(frames[150]), WHITE) and _near(_rgb(frames[179]), WHITE)
+    joins = write.params["local"]["transitions"]["joins"]
+    assert [(j["block"], j["effect_id"], j["frames"]) for j in joins] == [
+        (2, "fundido", 15),
+        (4, "barrido", 15),
+    ]
+
+
+def test_a_block_a_frame_short_is_joined_with_a_cut_and_said_in_the_warnings(
+    sources: dict[str, bytes], tmp_path: Path
+) -> None:
+    """The safety net (the recipe refuses this before: here it is rendered straight): a
+    1 s photo with 0.5 s in and 0.5 s out keeps no frame of its own, so the transition
+    out of it becomes a cut — recorded in `fallback_cuts` and the warnings."""
+    half = {"effect_id": "fundido", "version": 2, "params": {"duration_s": 0.5}}
+    part = local.recipe_of(
+        _stamped(
+            _local_clip(
+                _photo(2.0),
+                SourceSegment(
+                    key=PHOTO_KEY, start_s=0, end_s=1.0, kind="photo", transition_in=half
+                ),
+                SourceSegment(
+                    key=PHOTO_KEY, start_s=0, end_s=2.0, kind="photo", transition_in=half
+                ),
+            )
+        )
+    )[0]
+    made = local.render_local_part(
+        part, tenant_id=TENANT_ID, store=ReadingStore(sources), root=tmp_path, draft_id=uuid4()
+    )
+    assert made.frames == 60 + 30 + 60 - 15
+    assert made.transitions is not None and made.transitions["fallback_cuts"] == [2]
+    assert {"block": 2, "code": "transition_fallback_cut"} in made.warnings
+
+
+def test_the_join_keeps_the_draft_alive_while_it_runs(
+    sources: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review #3: the heartbeat right before the join, after every run and transition, and
+    from a thread every `BEAT_EVERY_S` while it runs (`reap_stale_drafts` fails a draft
+    whose `updated_at` stops for 20 min)."""
+    import threading
+
+    from qualify_api.creative.video_pipeline import block_join
+
+    monkeypatch.setattr(block_join, "BEAT_EVERY_S", 0.001)
+    beats: list[str] = []
+    part = local.recipe_of(_blended_clip({"effect_id": "fundido", "version": 2}))[0]
+    local.render_local_part(
+        part,
+        tenant_id=TENANT_ID,
+        store=ReadingStore(sources),
+        root=tmp_path,
+        beat=lambda: beats.append(threading.current_thread().name),
+    )
+    on_thread = [name for name in beats if name == "creative-final-beat"]
+    in_line = [name for name in beats if name != "creative-final-beat"]
+    # 1 for the video stretch, 1 before the join, 2 runs + 1 transition
+    assert len(in_line) >= 5
+    assert on_thread  # the thread beat while the encodes ran
+
+
+def test_a_join_that_fails_on_our_side_tells_the_owner_and_offers_the_cut(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review #2: a `JoinError` of the block join reaches the owner in Spanish, uncharged,
+    with «Corte» as the way out — never a stack trace."""
+    from qualify_creative.video import join
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise join.JoinError("the segments could not be laid end to end")
+
+    monkeypatch.setattr(join, "concat_segments", broken)
+    outcome = _producer(ReadingStore(sources), ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip({"effect_id": "fundido", "version": 2}),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.media == () or not outcome.media
+    assert outcome.detail == local.LOCAL_TRANSITION_FAILED_TEXT
+    assert "«Corte»" in outcome.detail and "No se descontó" in outcome.detail
+
+
+def test_fitting_cuts_where_a_block_would_keep_too_few_frames() -> None:
+    """Review #4: the join's safety net, unit by unit (30 fps, 9 frames of its own)."""
+    from qualify_creative.video.join import JoinTransition
+
+    from qualify_api.creative.video_pipeline.block_join import fitting
+
+    half = JoinTransition(kind="fade", duration_s=0.5)  # 15 frames
+    # all fit: nothing changes
+    assert fitting([60, 60, 60], [None, half, half], 30) == ([None, half, half], [])
+    # the middle block (30) eaten 15 + 15 + 9 > 30: the transition out of it gives way
+    assert fitting([60, 30, 60], [None, half, half], 30) == ([None, half, None], [2])
+    # a block too short for its own transition in: that one becomes a cut
+    assert fitting([60, 20], [None, half], 30) == ([None, None], [1])
+    # a block with no transition needs nothing of its own
+    assert fitting([60, 1, 60], [None, None, None], 30) == ([None, None, None], [])
+    # with no frames of its own required, 15 + 15 = 30 fits exactly
+    assert fitting([60, 30, 60], [None, half, half], 30, min_free=0) == (
+        [None, half, half],
+        [],
+    )
+
+
 def test_a_retried_run_makes_the_same_single_asset(
     queue_on: None, sources: dict[str, bytes]
 ) -> None:

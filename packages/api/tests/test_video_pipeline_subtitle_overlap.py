@@ -68,8 +68,9 @@ def _problems(exc: RecipeRefused) -> list[tuple[str, int | None, str]]:
 
 
 def test_the_code_is_appended_and_the_text_is_plain_spanish() -> None:
-    # appended after its predecessors; ED-13 (m-25029108) appended six more after it
-    assert RECIPE_REFUSALS[-7:] == (
+    # appended after its predecessors; ED-13 (m-25029108) appended six more after it and
+    # m-25114465 two more after those
+    assert RECIPE_REFUSALS[-9:-2] == (
         "text_bottom_with_subtitles",
         "unknown_text_motion",
         "typewriter_text_too_long",

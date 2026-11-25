@@ -1,5 +1,5 @@
 {
- "_doc": "Gold labels for `qualify_api.referentes.ai.review_accounts`. Accounts are REAL: the ones the stored referentes searches found (brand_discovered_accounts, 2026-09-25), with the caption the search surfaced; except the four marked `synthetic` in the fine-dining case. fit: y = a real peer of the brand, n = not (a trap when it shares a word or topic), m = ambiguous, not scored. kinds: the accepted `tipo` answers ([] = kind not scored).",
+ "_doc": "Gold labels for `qualify_api.referentes.ai.review_accounts`. Accounts are REAL: the ones the stored referentes searches found (brand_discovered_accounts, 2026-09-25), with the caption the search surfaced; except the four marked `synthetic` in the fine-dining case. fit: y = a real peer of the brand, n = not (a trap when it shares a word or topic), m = ambiguous, not scored. kinds: the accepted `tipo` answers ([] = kind not scored). rubro / pais / split (REFERENTES-RUBRO-001, m-25119461, 2026-11-25): labeled by an agent (Claude); the RUBRO gold then had a human sample by Deivid (2026-11-25), who reviewed the rubro doubts and set the rules below; the PAIS gold is still agent-only (its doubts, marked dudoso, belong to RF-12). rubro = a key of discovery_seed.NICHE_LABELS or otro, by what the account IS (its business or its subject), not by one post. Deivid's rules (2026-11-25): whoever TEACHES programming or a technique (courses, tutorials, masterclasses) = education, even when the subject is technology; sport (NBA, football) = entertainment; GENERAL news media (NPR, UN24, Bloomberg) = entertainment, while a news medium of ONE topic goes to that topic's rubro (rule 6, e.g. instagram:technology = technology); government, banks, police, parties, automotive = otro. rubro_sin_evidencia = true: nothing in the account's texts supports a rubro; kept out of the rubro score. pais = ISO alpha-2 only when the account's own bio, name, captions or place hashtags say where it is (a city or state of one country counts, e.g. Tachira or Maracaibo = VE; a currency like COP or a US street address with zip counts); language alone, a sponsor's country or a place merely visited do not; else ''. The same account in two brands carries the same labels. split: dev/test over UNIQUE accounts, stratified by rubro (within each rubro, ordered by sha256 of network:handle, alternating). dudoso = the agent's least sure COUNTRY labels, still to be reviewed (RF-12).",
  "cases": [
   {
    "id": "smash-burger-tachira",
@@ -35,7 +35,10 @@
      "kinds": [
       "medio",
       "otro"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -51,7 +54,10 @@
       "medio",
       "otro",
       "creador"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -65,7 +71,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -79,7 +88,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -93,7 +105,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -107,7 +122,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -121,7 +139,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -135,7 +156,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -149,7 +173,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -163,7 +190,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -177,7 +207,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -191,7 +224,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -205,7 +241,11 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -219,7 +259,11 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -233,7 +277,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -245,7 +292,10 @@
       "‼️QUÉDATE VIENDO EL VIDEO HASTA EL FINAL‼️ LLEGANDO ESTACIONES DE ENERGÍA⚡️ PORTATIL🔋 MARSRIVA ✅300W/153.6WH M…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -259,7 +309,11 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "instagram",
@@ -274,7 +328,10 @@
      "kinds": [
       "marca",
       "otro"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -288,7 +345,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -302,7 +362,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -316,7 +379,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -330,7 +396,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -344,7 +413,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -359,7 +431,10 @@
      "kinds": [
       "otro",
       "medio"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -371,7 +446,10 @@
       "Buenos días mi gente del estado táchira San Cristóbal y los municipios por acá les dejo el reporte de la gasol…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -385,7 +463,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -397,7 +478,10 @@
       "#greenscreen Estamos a 7 dias de que arranque la #ligafutve para nuestro #deportivotachira se enfrentará a anz…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "entertainment",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -412,7 +496,10 @@
      "kinds": [
       "otro",
       "medio"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -426,7 +513,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -440,7 +530,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -454,7 +547,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -468,7 +564,11 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "instagram",
@@ -482,7 +582,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "US",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -496,7 +599,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -510,7 +616,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "MX",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -524,7 +633,11 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "US",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -536,7 +649,10 @@
       "Bajo de Precio La Triple en @thebestofthebest022 Solo Por El Mes de Julio Podrás Disfrutar de La Hamburguesa T…"
      ],
      "fit": "m",
-     "kinds": []
+     "kinds": [],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -550,7 +666,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -564,7 +683,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -578,7 +700,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -592,7 +717,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -606,7 +734,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -620,7 +751,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -634,7 +768,11 @@
      "fit": "m",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "US",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -648,7 +786,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -662,7 +803,11 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "CO",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -676,7 +821,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -688,7 +836,10 @@
       "Combo de hamgurguesas, barquillas y refresco por 30Mil pesos. #hamburguesas #comidarapida #capacho #tachira @Y…"
      ],
      "fit": "y",
-     "kinds": []
+     "kinds": [],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -702,7 +853,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -716,7 +870,11 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -728,7 +886,10 @@
       "Las mejores hamburguesas al grill #Viral #comida #creatorsearchinsights #rubio #tachira #viral"
      ],
      "fit": "y",
-     "kinds": []
+     "kinds": [],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -742,7 +903,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     }
    ]
   },
@@ -778,7 +942,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -792,7 +959,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -806,7 +976,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -820,7 +993,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -834,7 +1010,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -848,7 +1027,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -862,7 +1044,11 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev",
+     "rubro_sin_evidencia": true
     },
     {
      "network": "instagram",
@@ -877,7 +1063,10 @@
      "kinds": [
       "marca",
       "otro"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "US",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -891,7 +1080,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -905,7 +1097,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -919,7 +1114,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -933,7 +1131,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -947,7 +1148,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -961,7 +1165,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "DO",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -975,7 +1182,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -989,7 +1199,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1003,7 +1216,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1017,7 +1233,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1029,7 +1248,10 @@
       "#CapCut @Sistemas Financieros se encuentran en busquedad de personal tienes vacante de Programador Junior. Env…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "otro",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1043,7 +1265,10 @@
      "fit": "m",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1057,7 +1282,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1072,7 +1300,10 @@
      "kinds": [
       "creador",
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1086,7 +1317,10 @@
      "fit": "m",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1100,7 +1334,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1112,7 +1349,10 @@
       "Información: Fútbol @318performance 04125567770 Llega a Táchira una experiencia única para el futuro del fútbo…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "entertainment",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1126,7 +1366,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1138,7 +1381,10 @@
       "¿Quieres conocer el destino turístico más atractivo del estado Táchira? 🛣️⛰️ Ahora desde Rubio o San Cristóbal…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1153,7 +1399,10 @@
      "kinds": [
       "otro",
       "medio"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1165,7 +1414,10 @@
       "¿Cansado de los lunes aburridos? Te tenemos un plan para transformar el día más pesado en el mejor día de la s…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "otro",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1177,7 +1429,10 @@
       "Buenos días mi gente del estado táchira San Cristóbal y los municipios por acá les dejo el reporte de la gasol…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1192,7 +1447,10 @@
      "kinds": [
       "otro",
       "medio"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1206,7 +1464,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1220,7 +1481,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1234,7 +1498,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1249,7 +1516,10 @@
      "kinds": [
       "marca",
       "otro"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "US",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1263,7 +1533,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1277,7 +1550,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1291,7 +1567,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1305,7 +1584,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1317,7 +1599,11 @@
       "¿Deseas aprender a ingresar al sistema de atención al cliente y programación de producción (SACPPRO)? No te pi…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "instagram",
@@ -1332,7 +1618,10 @@
      "kinds": [
       "medio",
       "otro"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1344,7 +1633,11 @@
       "táchira Venezuela 🇻🇪🗻🔥❤️ #táchira #venezuela #fyp #🔥🔥🔥 #parati #⚠️⚠️⚠️"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "dev",
+     "rubro_sin_evidencia": true
     },
     {
      "network": "tiktok",
@@ -1356,7 +1649,10 @@
       "𝐄𝐬𝐭𝐚𝐝𝐨 𝐓á𝐜𝐡𝐢𝐫𝐚 ‎𝐄𝐧 𝐞𝐬𝐭𝐞 𝐞𝐬𝐭𝐚𝐝𝐨 𝐧𝐨 𝐬𝐨𝐥𝐨 𝐬𝐞 𝐫𝐞𝐜𝐨𝐫𝐫𝐞, 𝐬𝐞 𝐬𝐢𝐞𝐧𝐭𝐞 𝐞𝐧 𝐞𝐥 𝐜𝐚𝐥𝐨𝐫 𝐝𝐞 𝐬𝐮 𝐠𝐞𝐧𝐭𝐞; 𝐚𝐪𝐮í 𝐜𝐚𝐝𝐚 𝐩𝐮𝐞𝐫𝐭𝐚 𝐚𝐛𝐢𝐞𝐫𝐭𝐚…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1370,7 +1666,10 @@
      "fit": "m",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1385,7 +1684,10 @@
      "kinds": [
       "otro",
       "medio"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1399,7 +1701,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1413,7 +1718,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1425,7 +1733,10 @@
       "Become a tech expert with these awesome hack for your phone 😉📲 #techtok #howtotiktok #hack #gadget #funnytikto…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1439,7 +1750,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1454,7 +1768,10 @@
      "kinds": [
       "marca",
       "otro"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "US",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1469,7 +1786,10 @@
      "kinds": [
       "medio",
       "otro"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1485,7 +1805,10 @@
       "medio",
       "otro",
       "creador"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1499,7 +1822,10 @@
      "fit": "m",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1511,7 +1837,10 @@
       "DECOM NACIONAL CONVENCIÓN REGIÓN TÁCHIRA"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1525,7 +1854,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "VE",
+     "split": "test"
     }
    ]
   },
@@ -1563,7 +1895,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1577,7 +1912,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1591,7 +1929,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1605,7 +1946,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "US",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1619,7 +1963,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "MX",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1633,7 +1980,11 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "US",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -1645,7 +1996,10 @@
       "Bajo de Precio La Triple en @thebestofthebest022 Solo Por El Mes de Julio Podrás Disfrutar de La Hamburguesa T…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1659,7 +2013,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1673,7 +2030,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1687,7 +2047,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1701,7 +2064,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1715,7 +2081,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1729,7 +2098,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1743,7 +2115,11 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "US",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -1757,7 +2133,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1771,7 +2150,11 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "CO",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -1785,7 +2168,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1797,7 +2183,10 @@
       "Combo de hamgurguesas, barquillas y refresco por 30Mil pesos. #hamburguesas #comidarapida #capacho #tachira @Y…"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1811,7 +2200,11 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -1823,7 +2216,10 @@
       "Las mejores hamburguesas al grill #Viral #comida #creatorsearchinsights #rubio #tachira #viral"
      ],
      "fit": "n",
-     "kinds": []
+     "kinds": [],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1837,7 +2233,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -1851,7 +2250,11 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "",
+     "split": "dev",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -1865,7 +2268,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "food_drink",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1880,7 +2286,10 @@
      "kinds": [
       "marca"
      ],
-     "synthetic": true
+     "synthetic": true,
+     "rubro": "food_drink",
+     "pais": "CO",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1895,7 +2304,10 @@
      "kinds": [
       "creador"
      ],
-     "synthetic": true
+     "synthetic": true,
+     "rubro": "food_drink",
+     "pais": "CO",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -1909,7 +2321,10 @@
      "kinds": [
       "creador"
      ],
-     "synthetic": true
+     "synthetic": true,
+     "rubro": "food_drink",
+     "pais": "CO",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -1924,7 +2339,11 @@
      "kinds": [
       "marca"
      ],
-     "synthetic": true
+     "synthetic": true,
+     "rubro": "food_drink",
+     "pais": "CO",
+     "split": "test",
+     "dudoso": true
     }
    ]
   },
@@ -1960,7 +2379,11 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -1974,7 +2397,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -1988,7 +2414,10 @@
      "fit": "y",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2002,7 +2431,11 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "instagram",
@@ -2016,7 +2449,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2030,7 +2466,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2044,7 +2483,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2058,7 +2500,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2072,7 +2517,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2086,7 +2534,10 @@
      "fit": "y",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2100,7 +2551,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2114,7 +2568,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2126,7 +2583,10 @@
       "Become a tech expert with these awesome hack for your phone 😉📲 #techtok #howtotiktok #hack #gadget #funnytikto…"
      ],
      "fit": "y",
-     "kinds": []
+     "kinds": [],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2140,7 +2600,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2152,7 +2615,10 @@
       "‼️QUÉDATE VIENDO EL VIDEO HASTA EL FINAL‼️ LLEGANDO ESTACIONES DE ENERGÍA⚡️ PORTATIL🔋 MARSRIVA ✅300W/153.6WH M…"
      ],
      "fit": "m",
-     "kinds": []
+     "kinds": [],
+     "rubro": "technology",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2166,7 +2632,11 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test",
+     "dudoso": true
     },
     {
      "network": "tiktok",
@@ -2180,7 +2650,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2194,7 +2667,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2208,7 +2684,10 @@
      "fit": "m",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "travel_lifestyle",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "instagram",
@@ -2222,7 +2701,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "DO",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2236,7 +2718,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2251,7 +2736,10 @@
      "kinds": [
       "creador",
       "marca"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2266,7 +2754,10 @@
      "kinds": [
       "marca",
       "otro"
-     ]
+     ],
+     "rubro": "education",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2280,7 +2771,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "dev"
     },
     {
      "network": "instagram",
@@ -2294,7 +2788,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2308,7 +2805,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2322,7 +2822,10 @@
      "fit": "n",
      "kinds": [
       "medio"
-     ]
+     ],
+     "rubro": "entertainment",
+     "pais": "",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2336,7 +2839,10 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev"
     },
     {
      "network": "tiktok",
@@ -2350,7 +2856,10 @@
      "fit": "n",
      "kinds": [
       "marca"
-     ]
+     ],
+     "rubro": "otro",
+     "pais": "VE",
+     "split": "test"
     },
     {
      "network": "tiktok",
@@ -2364,7 +2873,11 @@
      "fit": "n",
      "kinds": [
       "creador"
-     ]
+     ],
+     "rubro": "technology",
+     "pais": "",
+     "split": "dev",
+     "rubro_sin_evidencia": true
     }
    ]
   }

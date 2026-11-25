@@ -70,6 +70,7 @@ from qualify_creative.schemas import (
     TEXT_LAYERS_MAX,
     EffectUse,
     RecipeRefusal,
+    SourceSegment,
     VideoTextLayer,
 )
 
@@ -586,7 +587,9 @@ def part_effect_problems(
     where no other use of it is — two uses covering the same seconds are
     `effect_uses_overlap` (a use with no span covers the whole part, so a repeated effect
     names its start and end). Over `max_per_part` is `too_many_of_effect` alone.
-    `in_clip`: a normal Clip, where a transition is `transition_on_clip`. Pure."""
+    `in_clip`: a normal Clip, where a transition among the effects is `transition_on_clip`
+    (m-25114465: a Clip's transitions go on its blocks, `SourceSegment.transition_in`).
+    Pure."""
     found: list[RecipeProblem] = []
     ai = 0
     counts: dict[tuple[str, int], int] = {}
@@ -712,8 +715,10 @@ def transition_problems(
     first: bool,
     in_clip: bool,
 ) -> tuple[RecipeProblem, ...]:
-    """A part's `transition_in` (pure): only between parts — never in a normal Clip, nor
-    on the first part —, and only an effect of stage `transition`."""
+    """A part's `transition_in` (pure): only between parts — never on a normal Clip as a
+    whole (`transition_on_clip`: a Clip has no part before it; m-25114465 puts a Clip's
+    transitions on its blocks, `block_transition_problems`), nor on the first part —, and
+    only an effect of stage `transition`."""
     if transition is None:
         return ()
 
@@ -730,6 +735,45 @@ def transition_problems(
         found.append(problem("transition_not_a_transition"))
     if first:
         found.append(problem("transition_on_first_part"))
+    return tuple(found)
+
+
+def block_transition_problems(
+    segments: tuple[SourceSegment, ...], library: EffectsLibrary, *, part: int | None
+) -> tuple[RecipeProblem, ...]:
+    """m-25114465: each block's `transition_in` (pure), field `segments[i].transition_in`:
+    a use the library knows, offers and takes the parameters of (`effect_use_problems`),
+    of stage `transition` (`transition_not_a_transition`), and never on the first block,
+    which has no block before it to blend with (`transition_on_first_block`). A cut is
+    None (`SourceSegment` reads `corte` as None), so it is never a problem. Whether the
+    join draws it here and whether the blocks are long enough is the recipe's
+    (`video_pipeline.recipe`)."""
+    found: list[RecipeProblem] = []
+    for at, segment in enumerate(segments):
+        use = segment.transition_in
+        if use is None:
+            continue
+        field = f"segments[{at}].transition_in"
+        found.extend(effect_use_problems(use, library, part=part, field=field))
+        entry = library.get(use.effect_id, use.version)
+        if entry is not None and entry.stage != "transition":
+            found.append(
+                RecipeProblem(
+                    code="transition_not_a_transition",
+                    part=part,
+                    field=field,
+                    effect_id=use.effect_id,
+                )
+            )
+        if at == 0:
+            found.append(
+                RecipeProblem(
+                    code="transition_on_first_block",
+                    part=part,
+                    field=field,
+                    effect_id=use.effect_id,
+                )
+            )
     return tuple(found)
 
 
@@ -754,6 +798,7 @@ __all__ = [
     "SEEDANCE_EFFECT_FILL_VERSION",
     "ZONE_WORDS",
     "ai_effect_cost_text",
+    "block_transition_problems",
     "effect_subject",
     "effect_use_problems",
     "effect_zone",

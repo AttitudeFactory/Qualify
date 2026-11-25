@@ -320,9 +320,69 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), la música y el volumen entre bloques, y la medición pagada (m-25112919).
 
+## 10. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]`: transiciones en la unión de los bloques del Clip
+
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactado por creative-engineer el 2026-11-24 (m-25114465, épica m-25026566, carril A). Firmado por Deivid el 2026-11-25.
+
+**Interruptor:** el código está detrás de `QUALIFY_CLIP_BLOCK_TRANSITIONS`, que queda **apagado** (`off`, por defecto) en todos los entornos. La firma no lo enciende: encenderlo es otra decisión, y no se enciende hasta que la regla «uniones con avatar = solo corte» (m-25119867) esté en `main`. Apagado, el servidor rechaza cualquier transición entre bloques distinta de «Corte» con `recipe_unavailable` y el texto de «no disponible».
+
+**Firma de Deivid:** `[x]` «Firmo el §10», escrito por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-25
+
+### 10.1 Contexto
+
+- Hasta hoy, en un Clip normal no había transiciones: el servidor rechazaba cualquiera con `transition_on_clip`, y el armado local pegaba los bloques de «Fotos y videos» con corte.
+- EF-16 (m-25026594) ya hace `fundido` y `barrido` en la unión de **partes** (`video/join.py`), pero la pantalla del Clip nunca tuvo el selector.
+- Deivid lo pidió el 2026-11-24 al armar un Clip (m-25114465): entre cada dos bloques hay un punto en la línea de tiempo, y al tocarlo se elige «Corte», «Fundido» o «Barrido». Por defecto, «Corte».
+
+### 10.2 Decisión propuesta
+
+- **Dónde vive:** en cada bloque, `SourceSegment.transition_in`. Es una entrada de la biblioteca de etapa `transition` y dice cómo se une ese bloque con el anterior. No lleva tramo propio (`start_s`/`end_s`).
+- **Corte no cambia nada:** «Corte» es `None`. Si llega `corte` explícito, se lee como `None`, y un `None` nunca se escribe en el JSON. Un Clip con solo cortes se guarda, se serializa y tiene el mismo digest que antes de este cambio.
+- **Qué se dibuja:** `fundido` y `barrido` en versión 2 (biblioteca v5, 0,3–0,8 s), los mismos de EF-16. No hay clases nuevas de transición.
+- **Cómo se une:** el paso local arma los bloques con corte, como siempre (`speed`). Si hay al menos una transición, corta ese video en las uniones que mezclan y lo vuelve a unir con el mismo código de EF-16 (`encode_segment`, `encode_transition`, `JoinTransition`, `concat_segments`), con un decodificador a la vez y 1 hilo. Va antes de las capas y los textos (`video_pipeline/block_join.py`). Los bloques se solapan lo que dura la transición y el sonido se cruza en esos mismos milisegundos. El Clip dura la suma de sus bloques menos cada transición (`clip_seconds`). Los textos y efectos se miden sobre ese largo. Sigue siendo costo 0.
+- **Procedencia:** `params.local.transitions` guarda la versión del paso, los cuadros por segundo y cada unión mezclada (bloque, efecto, versión, tipo, duración, dirección y cuadros). `params.local.steps.block_join` guarda la versión, y la transición elegida queda también en `params.local.segments`.
+- **Rangos:** los da la biblioteca, que es la única fuente (`transition_duration_range`). En la v5, `fundido` v2 y `barrido` v2 van de 0,3 a 0,8 s, con 0,5 y 0,4 s por defecto. Las entradas v1 (0,2–1,5 y 0,2–1,0 s) siguen en la biblioteca, pero no se ofrecen.
+- **Holgura:** cada bloque que se une con otro debe durar las transiciones que lo comen, la de entrada y la de salida, **más 9 cuadros propios** (0,3 s a 30 fps, `BLOCK_MIN_FREE_FRAMES`). Con menos, la unión quedaba vacía o de pocos cuadros y el armado fallaba (revisión de código). Si no cabe, el servidor lo rechaza antes de crear la pieza con `transitions_longer_than_block` y el texto «El bloque N es muy corto para sus transiciones. Alárgalo, acorta sus transiciones o deja una de sus uniones con «Corte».». La pantalla puede avisar antes con `block_transition_room_s` y `block_transition_room_problems`. Si un bloque real sale un cuadro más corto que en la receta, la unión se hace con corte y queda anotado en `fallback_cuts` y en `params.local.warnings`. El video no falla. Si la unión falla por algo nuestro, el dueño lee «No pudimos hacer las transiciones de tu video por un problema nuestro…», sin cobro y con «Corte» como salida. Mientras corre, el borrador da señal de vida antes, durante (cada 60 s) y después de cada tramo, para que `reap_stale_drafts` no lo dé por muerto.
+
+### 10.3 Qué sigue rechazado
+
+- Una transición sobre el Clip entero o entre sus efectos: `transition_on_clip`, con el texto «Las transiciones van en la unión entre dos bloques…».
+- Con el interruptor apagado: cualquier transición entre bloques distinta de «Corte» (`recipe_unavailable`).
+- Una transición en el primer bloque: `transition_on_first_block`.
+- Una transición en los bloques de un Clip que no se arma con fotos y videos propios (`local`), o de una parte de «Video por partes»: `recipe_unavailable` en `segments[i].transition_in`. Las partes siguen uniendo sus bloques con corte. Sus transiciones son las de la unión de partes (EF-16, ED-07).
+- Una versión que la unión no dibuja (`fundido`/`barrido` v1), un efecto que no es transición, o una duración fuera de rango: `not_offered`, `transition_not_a_transition`, `param_out_of_range`.
+
+### 10.4 Memoria
+
+Medido el 2026-11-24 con `deploy/measure/local-video-memory.sh` (casos nuevos `blocks3_*`), `--memory 768m --memory-swap 768m --cpus 1`, amd64. Clip de 1080×1920 con 3 bloques: 20 s de 4K a ×2, 15 s de 1080p a ×1 y 20 s de 4K a ×2, o sea 35 s con corte y 33,4 s con 2 uniones de 0,8 s. Detalle en `docs/armado-local-medicion.md`.
+
+| Caso | Pico anon MiB (tope 768) | Paso de unión, anon MiB | CPU s | Pared s | OOM |
+|---|---|---|---|---|---|
+| Solo cortes (referencia) | 327 | no corre | 537 | 542 | no |
+| 2 fundidos de 0,8 s | **341** | 275 | 908 | 914 | no |
+| 2 barridos de 0,8 s | 338 | 262 | 1053 | 1060 | no |
+
+Lectura: el pico sigue siendo el paso `prepare` del 4K. La unión no lo sube: queda en ~275 MiB anónimos, lejos de los ~600 de §8. Lo que cuesta es el tiempo: con 1 CPU suma ~6 a 9 minutos a este Clip de 35 s, porque vuelve a codificar todo el video y lee el anterior desde el principio en cada unión. El lease del worker se renueva durante el armado (`produce_local`). En arm64 tardará más; no está medido.
+
+Medido de nuevo el 2026-11-25 (punta `cf3d0a53`, con la búsqueda del cuadro clave, mismas condiciones), con el Clip más largo: 60 s en 8 bloques que alternan 4K a ×2 y 1080p a ×1. El latido se midió pasando a `render_local_part` un `beat` que anota la hora, como el del worker.
+
+| Caso | Pico anon MiB (tope 768) | Paso de unión, anon MiB | CPU s | Pared s | Unión s | Hueco más largo sin latido | OOM |
+|---|---|---|---|---|---|---|---|
+| 2 barridos de 0,8 s (3 bloques, 33,4 s) | 333 | 259 | 1157 | 1162 | 422 | 474 s (`speed`) | no |
+| 8 bloques, solo cortes (60 s) | **343** | no corre | 1378 | 1385 | — | **867 s** (`speed`) | no |
+| 8 bloques, 7 uniones mezcladas (54,4 s) | 340 | 278 | 1706 | 1715 | 708 | 636 s (`speed`) | no |
+
+Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prepare`). El Clip más largo con 7 uniones tarda ~29 min a 1 CPU, 12 de ellos en la unión, y la unión da latido cada ≤60 s. El hueco largo está antes, en el paso `speed` (`render_speed`), que no da latidos: 14,5 min con 8 bloques y solo cortes, contra los 20 min del reaper. No lo trae esta enmienda (pasa igual sin transiciones), pero conviene un latido periódico ahí antes de medir en arm64. Detalle en `docs/armado-local-medicion.md`.
+
+### 10.5 Consecuencias
+
+- El Clip con transiciones se codifica una vez más entera (los segmentos de la unión, con los ajustes de `JOIN_SEGMENT_X264`). Un Clip con solo cortes no cambia: ni bytes ni tiempo.
+- La pantalla del Clip (selector en la unión, accesible y a 375 px) y el lugar automático de lo nuevo en la línea de tiempo quedan para el carril de la pantalla de m-25114465.
+- Esta sección se numera §10 y va después de §9 (avatar en el Clip, PR #795, ya firmado).
+
 ## 11. Enmienda `[PROPUESTO]`: el avatar desde el primer «Crear» del Clip (m-25119867, opción B)
 
-**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas de Deivid del 2026-11-25 a las preguntas P1–P6 de `docs/contrato-avatar-primer-crear.md` §3, que llegaron por «creacion de tickets», y su decisión sobre las uniones. (El número §10 lo usa la enmienda de transiciones de m-25114465, #804, que todavía no está en `main`.)
+**Estado:** `[PROPUESTO]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas de Deivid del 2026-11-25 a las preguntas P1–P6 de `docs/contrato-avatar-primer-crear.md` §3, que llegaron por «creacion de tickets», y su decisión sobre las uniones.
 
 **Firma de Deivid:** `[ ]` «Firmo el §11», escrito por Deivid en la sesión «quailify-deivid» · fecha: ____
 
@@ -333,6 +393,6 @@ Los umbrales numéricos marcados son propuesta del arquitecto (ver Estado).
 - **P2.** Si un avatar falló, el Clip espera **72 h** a que el dueño elija. Después falla con `avatar_block_failed` y se devuelve lo cobrado (PR 2).
 - **P5.** No hay Clip hecho solo de avatares: las fotos y videos del dueño tienen que sumar **3 s o más** por sí solos.
 - **P6. Cupo.** Un bloque cuyo Clip **falló** deja de contar en el cupo en ese momento. Esto completa la regla del §9, según la cual un bloque deja de contar «al aprobarse su Clip o con la retención». Se lee del estado del Clip, así que vale para las dos opciones.
-- **Uniones (decisión de Deivid, 2026-11-25).** Una unión junto a un avatar solo puede ser «Corte», en las dos opciones y también en el armado. Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente. El código es `avatar_join_cut_only`. En `main` los tramos de un Clip todavía no tienen unión propia, así que todas son corte. La regla lee el campo que trae #804 (`SourceSegment.transition_in`), de modo que vale desde que ese campo exista. Es condición para encender `QUALIFY_CLIP_BLOCK_TRANSITIONS`.
+- **Uniones (decisión de Deivid, 2026-11-25).** Una unión junto a un avatar solo puede ser «Corte», en las dos opciones y también en el armado. Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente. El código es `avatar_join_cut_only`. La regla lee la unión de cada tramo (`SourceSegment.transition_in`, del §10) y vale con `QUALIFY_CLIP_BLOCK_TRANSITIONS` apagado o encendido: es la condición para encenderlo.
 
 **Fuera de esta enmienda.** Los efectos y textos sobre el tramo del avatar (pregunta abierta en `docs/contrato-avatar-primer-crear.md` §3), la pantalla (m-25112921) y la medición pagada (m-25112919).

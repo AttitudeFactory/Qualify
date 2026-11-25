@@ -288,6 +288,17 @@ reels-worker *args:
 reel-purge *args:
     uv run --no-sync python -m qualify_api.referentes.reel_retention {{args}}
 
+# RF-04 (m-25119461): fill the region of the shared `creators` pool from FREE sources only —
+# the network's own country, TikTok's per-video region and Instagram reel locations already
+# cached in vendor_payloads, the search country of creator_sightings. No ScrapeCreators, no
+# Claude; idempotent (a re-run writes nothing new). Prints the business's coverage of
+# referente/competencia accounts before and after. The rubro only comes from the account
+# review (referentes.ai), never from here.
+#   just creators-region-backfill --tenant <uuid>          # that business's labeled accounts
+#   just creators-region-backfill --tenant <uuid> --pool   # the whole shared pool
+creators-region-backfill *args:
+    uv run --no-sync python -m qualify_api.creators.region_rubro {{args}}
+
 # m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
 # download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
 # for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.

@@ -122,7 +122,42 @@ CASES: dict[str, tuple[list[tuple[str, float, float, float, str]], int]] = {
         ],
         0,
     ),
+    # m-25114465: a 1080x1920 Clip of 3 blocks (35 s) — cuts, then 2 joins blended
+    "blocks3_cut": (
+        [
+            ("k4_h264_60.mp4", 0, 20, 2, "video"),
+            ("hd_h264_15.mp4", 0, 15, 1, "video"),
+            ("k4_h264_60.mp4", 20, 40, 2, "video"),
+        ],
+        0,
+    ),
+    # m-25114465 (review #3): the longest Clip, 60 s in 8 blocks of 7.5 s
+    "blocks8_cut": (
+        [
+            ("k4_h264_60.mp4", 0, 15, 2, "video"),
+            ("hd_h264_15.mp4", 0, 7.5, 1, "video"),
+            ("k4_h264_60.mp4", 15, 30, 2, "video"),
+            ("hd_h264_15.mp4", 7.5, 15, 1, "video"),
+            ("k4_h264_60.mp4", 30, 45, 2, "video"),
+            ("hd_h264_15.mp4", 0, 7.5, 1, "video"),
+            ("k4_h264_60.mp4", 45, 60, 2, "video"),
+            ("hd_h264_15.mp4", 7.5, 15, 1, "video"),
+        ],
+        0,
+    ),
 }
+#: m-25114465: the cases whose blocks blend (`SourceSegment.transition_in` of each block,
+#: in order; the first is always None). Same stretches as `blocks3_cut`.
+_FADE = {"effect_id": "fundido", "version": 2, "params": {"duration_s": 0.8}}
+_WIPE = {"effect_id": "barrido", "version": 2, "params": {"duration_s": 0.8}}
+TRANSITIONS: dict[str, tuple[dict[str, Any] | None, ...]] = {
+    "blocks3_fade2": (None, _FADE, _FADE),
+    "blocks3_wipe2": (None, _WIPE, _WIPE),
+    # 7 joins blended, fades and wipes in turn
+    "blocks8_mixed7": (None, _FADE, _WIPE, _FADE, _WIPE, _FADE, _WIPE, _FADE),
+}
+for _name in TRANSITIONS:
+    CASES[_name] = CASES["blocks8_cut" if _name.startswith("blocks8") else "blocks3_cut"]
 
 
 # ---------------------------------------------------------------------------------- make
@@ -364,11 +399,21 @@ def _assemble(
     _wrap(prepare, "apply_prepare", sampler, "prepare")
     _wrap(photo_hold, "render_photo_hold", sampler, "photo_hold")
     _wrap(speed, "render_speed", sampler, "speed")
+    from qualify_api.creative.video_pipeline import block_join
+
+    # m-25114465: the blocks' transitions (looked up at call time by `local`)
+    _wrap(block_join, "blend_block_joins", sampler, "block_join")
+    joins = TRANSITIONS.get(case) or (None,) * len(stretches)
     segments = tuple(
         SourceSegment(
-            key=f"uploads/{TENANT}/{name}", start_s=start, end_s=end, speed=rate, kind=kind
+            key=f"uploads/{TENANT}/{name}",
+            start_s=start,
+            end_s=end,
+            speed=rate,
+            kind=kind,
+            transition_in=how,
         )
-        for name, start, end, rate, kind in stretches
+        for (name, start, end, rate, kind), how in zip(stretches, joins, strict=True)
     )
     out_s = sum((end - start) / rate for _, start, end, rate, _ in stretches)
     part = PartRecipe(index=1, mode="local", seconds=out_s, segments=segments)
@@ -549,7 +594,8 @@ def table(raw: Path) -> None:
             )
     print(
         "| caso | fuente | s fuente | velocidad | rotación | textos | salida s | pico RSS MiB "
-        "| pico anon MiB | pico cgroup MiB | prepare/speed/compose anon MiB | CPU s | pared s "
+        "| pico anon MiB | pico cgroup MiB | prepare/speed/block_join/compose anon MiB | CPU s "
+        "| pared s "
         "| plataforma | OOM |"
     )
     print("|" + "---|" * 15)
@@ -563,7 +609,8 @@ def table(raw: Path) -> None:
             continue
         steps = row["steps"]
         split = "/".join(
-            str(steps.get(p, {}).get("anon", "-")) for p in ("prepare", "speed", "compose")
+            str(steps.get(p, {}).get("anon", "-"))
+            for p in ("prepare", "speed", "block_join", "compose")
         )
         oom = "sí" if row["memory_events"].get("oom_kill") else "no"
         err = f" ({row['error'][:60]})" if row["error"] else ""
