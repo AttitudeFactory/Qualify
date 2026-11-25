@@ -22,6 +22,26 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="ef12-001"></a>
+
+## EF12-001 — Banco pagado de los efectos «Con IA» de Seedance (m-25026587) — 2026-11-25 · PREPARADO, SIN GASTO
+
+- **Qué hay:** el arnés `packages/api/evals/banco_efectos/run_experiment.py`
+  (`just eval-efectos`), que pide al productor real cada plantilla de Seedance de la
+  biblioteca («objeto en una zona del cuadro», EF-13) y dos controles atmosféricos (humo y
+  vapor). Tiene juicio humano a ciegas (formulario o CSV), puntuación con Wilson y κ, y
+  escribe la biblioteca nueva v6 con `measured`.
+- **Prueba en seco (sin llave, nada enviado):** 28 borradores (7 brazos × 2 casos × 2
+  tiradas), `dreamina-seedance-2-5-260628`, 480p, 5 s, tabla `v8`: **US$14,392196**
+  (US$0,514007 cada uno; US$15,834 con el margen del 10 %). Con la fase B (≤ 10 borradores) y
+  ≤ 3 finales 1080p (US$2,8431 cada uno), el banco completo cotiza ≤ US$28,06. Tope duro
+  US$30.
+- **Pendiente:** el OK escrito de Deivid en el ticket, la aprobación de las fotos y la corrida
+  de 23:00 a 05:00 (hora de Bogotá), salvo OK de Herwin para el día o de Deivid en la sesión.
+  Método, cotización, rúbrica y resultados «PENDIENTES»: [`seedance-2-5.md`](seedance-2-5.md#ef12-001).
+
+---
+
 <a id="capa-004"></a>
 
 ## CAPA-004 — Primera imagen real con la capa encendida en producción: Bianki, «Shawarma mixto», una imagen y un carrusel (m-25040499, m-25042157) — 2026-11-17 · DOS PIEZAS, NO ES UNA MEDICIÓN

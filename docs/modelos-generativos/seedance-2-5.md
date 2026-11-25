@@ -339,3 +339,159 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 - Corrida sin repetición: con la misma entrada Seedance puede dar otro resultado.
 - El material real se descargó a `%TEMP%` y se borró al terminar, con todas las salidas. No
   quedó nada en el repositorio.
+
+<a id="ef12-001"></a>
+
+## Prueba EF12-001 — banco pagado de los efectos «Con IA» («objeto en una zona del cuadro») — PREPARADA, SIN CORRER (m-25026587)
+
+> **Estado: preparada, sin gasto.** Solo se corrió la prueba en seco (2026-11-25). La corrida
+> pagada necesita el **OK escrito de Deivid en el ticket** antes del primer gasto (D6), y la
+> lanza la sesión coordinadora, no el agente que preparó el arnés.
+
+- **Qué se mide:** cada plantilla de Seedance de la biblioteca de efectos (las cinco
+  `seedance_prompt` de la v5: `fuego_lena_base`, `quemadores_brillan`, `vapor_sobre_comida`,
+  `humo_denso` y `brasas`), escrita como «objeto en una zona del cuadro» (EF-13, m-25026589).
+  D5 (ADR 50): un efecto se ofrece solo si sale en **≥ 2/3 de ≥ 4 intentos, en el modelo en
+  que se midió** (`Measured.passes`, `measured_on_model`).
+- **Pregunta del ticket:** ¿«objeto en una zona» supera al prompt atmosférico en humo y vapor?
+  Por eso hay **dos controles** (`humo_atmosferico` y `vapor_atmosferico`, versión
+  `control-atmosferico-v1`): el mismo humo y el mismo vapor pedidos «en el ambiente», sin
+  objeto ni zona. No son entradas de la biblioteca y nunca se ofrecen.
+- **Arnés:** `packages/api/evals/banco_efectos/run_experiment.py` (`just eval-efectos`). La
+  parte pura está en `qualify_api.evals.effects_bench` y sus pruebas en
+  `packages/api/tests/test_eval_effects_bench.py`. Llama al `MediaProducer.produce` real y al
+  `SeedanceVideoAdapter` real con una parte `reference` («Nueva») que lleva la foto del
+  producto y el efecto en `part.effects`. Así el prompt es el de la parte con
+  `seedance_effect_line(entry, use, subject=effect_subject(producto))` al final: la misma
+  plantilla, el mismo relleno (`fill_version` 1), el mismo orden y el mismo bloque de
+  procedencia `seedance_effect` que en producción.
+- **Lo único que cambia frente a producción, y solo dentro del proceso del arnés:**
+  - `QUALIFY_SEEDANCE_EFFECTS=on`;
+  - el guardia de modelo de D5 (`media.measured_on_model`) deja pasar el modelo del banco (ese
+    guardia existe justamente para esperar este banco);
+  - la biblioteca que lee el productor suma los dos controles.
+
+  Todo lo demás del productor corre igual, guardia de precio incluido.
+- **Ajustes (D6):** `dreamina-seedance-2-5-260628`, borrador (`draft: true`) a 480p, **5 s**,
+  `ratio: 9:16`, `omni_reference_task_type: reference`. No se envía `seed`; el que devuelve
+  ModelArk se guarda. **Sin audio** por omisión (`--audio` lo enciende): evita los rechazos
+  `OutputAudioSensitiveContentDetected` y cuesta lo mismo. Cada efecto va en su zona por
+  omisión: fuego, quemadores y brasas abajo, vapor en el medio, humo arriba.
+- **Diseño:** 7 brazos (5 efectos + 2 controles) × 2 casos (fotos de producto) × 2 tiradas =
+  **28 borradores**, uno a la vez y efecto por efecto. Son n = 4 por efecto, el mínimo de D5:
+  con 4 intentos, un efecto pasa con 3 éxitos.
+  - Fase B opcional (hasta 10 borradores más), solo para efectos con resultado mixto:
+    `drafts --run <carpeta> --effect <id> --reps 3` agrega la tercera tirada sin repetir las
+    hechas.
+  - Finales 1080p solo para el mejor borrador de cada efecto que pase, como mucho 3
+    (`finals`), desde el id de tarea del borrador, como en producción.
+
+### Operación
+
+- **Llave:** `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` (`resolve_eval_key`, que se niega a usar la
+  de producción). La prueba en seco no lee ninguna llave.
+- **Horario:** los evals de video de Seedance corren **solo de 23:00 a 05:00, hora de
+  Bogotá**, salvo que **Herwin dé el OK para ese día** o que **Deivid lo apruebe en la
+  sesión**. En ese caso se pasa `--allow-daytime` y queda anotado. El arnés llama a
+  `off_hours_refusal` antes de leer la llave.
+- **Tareas a la vez:** una. El máximo permitido para evals es 3 (`cap_video_concurrency`).
+- **Tope duro:** `--max-usd`, 30 por omisión y nunca más de 30 (D6), para **todo el banco**:
+  borradores y finales juntos. `gasto.json`, en la carpeta de la corrida, suma lo cobrado en
+  cada fase.
+  - Cada tarea se cotiza con la fórmula del adaptador y la tabla `v8`, y se carga a un
+    `DollarMeter` con 10 % de margen **antes** de enviarla. Si no cabe, no se envía
+    (`BudgetExhausted`).
+  - Antes de la primera tarea, el plan entero con su margen tiene que caber en lo que queda
+    del tope.
+  - `SpendLedger` no sirve aquí: su techo técnico es de US$10 por corrida.
+- **Material:** solo fotos de negocios que administra el fundador, aprobadas antes (criterio
+  del ticket), en un `casos.json` **fuera del repositorio** (`--cases`). La corrida pagada se
+  niega sin él.
+- **Salidas:** todo va a `%TEMP%\m-25026587\<corrida>\`: videos, prompts y `pruebas.json`.
+  Este último guarda la procedencia de cada video: proveedor, modelo pedido y cobrado,
+  `effect_id`, versión, `prompt_version`, `fill_version`, biblioteca, tabla de precios, zona,
+  sha256 de la foto, id de tarea, `seed` devuelto, tokens, US$ y segundos.
+
+### Cotización (prueba en seco del 2026-11-25, tabla `v8`)
+
+Corrida con las fotos de muestra del repositorio (`packages/render/public/sample/`). El costo
+no depende de la foto: un borrador 480p 9:16 de 5 s son ≈ 48.038 tokens con cualquier foto.
+Las 28 solicitudes se compilaron con el productor real y ninguna quedó sin compilar.
+
+| Fase | Tareas | US$ por tarea | Cotizado | Con 10 % de margen |
+|---|---|---|---|---|
+| A: borradores 480p de 5 s | 28 | 0,514007 | **14,392196** | 15,8340 |
+| B: tiradas extra (opcional) | ≤ 10 | 0,514007 | ≤ 5,140070 | ≤ 5,6550 |
+| Finales 1080p de 5 s (ganadores) | ≤ 3 | 2,843100 | ≤ 8,529300 | ≤ 9,3825 |
+| **Total** | **≤ 41** | | **≤ 28,061566** | |
+
+Con margen, las tres fases suman 30,87. Pero el margen solo se retiene dentro de cada fase: la
+fase siguiente arranca con el tope menos lo **cobrado**, que fue ≈ 1 % más que la fórmula en
+SD25-002 y EF11-001. Así los finales caben; si no cupieran, el arnés no los manda.
+
+### Cómo se juzga
+
+- `judge` copia los videos con nombres ciegos (`v01`…, en orden al azar con semilla fija) y
+  deja un formulario sin conexión (`juicio.html`, que descarga `juicio-<nombre>.csv`) y una
+  `plantilla.csv`. La clave (`clave.json`) no se abre hasta puntuar.
+- **Rúbrica**, mirando el video completo:
+  1. Efecto visible: sí, dudoso o no. Lo dudoso cuenta como no.
+  2. En la zona pedida. Se deja vacío cuando se pidió «toda la escena».
+  3. El producto no cambió: forma, etiqueta, cantidad.
+  4. Sin letras ni logos que nadie pidió.
+  5. Creíble para un anuncio, de 1 a 3.
+
+  **«Salió» = 1 a 4 en sí.** La credibilidad no entra en el éxito; ordena los ganadores.
+- **Dos personas, a ciegas:** un video sale solo si las dos dicen que salió. Se informan el κ
+  de Cohen sobre «salió» y la lista de desacuerdos. Si κ < 0,6, se reescriben las reglas antes
+  de usar el resultado.
+- **Objeto contra atmósfera:** los dos brazos se comparan con los criterios que el control
+  admite (1, 3 y 4) y sus intervalos de Wilson. Con n = 4 por brazo, lo más probable es «no
+  concluyente», y así se informará.
+- `score` escribe `resultados.json`: por brazo, éxitos de n, intervalo de Wilson y si pasa
+  D5; además κ, la comparación y el `measured` de cada efecto, con modelo y fecha.
+- `library` escribe la **biblioteca nueva v6** (`effects_data/v6.json`; la v5 no se toca):
+  - las mismas entradas, a la misma versión, con `measured` en cada plantilla juzgada
+    (`measured` es el único campo que pasa una vez de nulo a valor);
+  - `offered: true` solo si pasa D5;
+  - su `preview_asset`: el video ganador, el final si lo hay.
+
+  Usar la v6 en producción (`EFFECTS_LIBRARY_VERSION`) es otro cambio.
+
+### Duración estimada
+
+Un borrador de 5 s tardó 66 s en SD25-002, y 4 tareas de 4 s tardaron 4 min 14 s en EF11-001.
+Con una tarea a la vez:
+
+- fase A (28 borradores): **≈ 30–40 min**;
+- fase B: ≈ 12 min;
+- los 3 finales: ≈ 3 min;
+- el juicio: ≈ 30–45 min por persona.
+
+### Comando de la corrida pagada
+
+```bash
+just eval-efectos drafts --env-file <checkout>/.env --cases <fuera>/casos.json \
+    --i-have-spend-authorization --max-usd 30
+just eval-efectos judge --run <fuera>/m-25026587/<corrida>
+just eval-efectos score --run <corrida> --juicio persona1=<csv> --juicio persona2=<csv>
+just eval-efectos finals --run <corrida> --env-file <checkout>/.env \
+    --i-have-spend-authorization --max-usd 30
+just eval-efectos library --run <corrida>
+```
+
+### Resultados — PENDIENTES
+
+| Efecto | Zona | Éxitos / n | Wilson 95 % | ¿Pasa D5? | Ids de tarea | US$ |
+|---|---|---|---|---|---|---|
+| `fuego_lena_base` | abajo | PENDIENTE | | | | |
+| `quemadores_brillan` | abajo | PENDIENTE | | | | |
+| `vapor_sobre_comida` | en el medio | PENDIENTE | | | | |
+| `vapor_atmosferico` (control) | toda la escena | PENDIENTE | | — | | |
+| `humo_denso` | arriba | PENDIENTE | | | | |
+| `humo_atmosferico` (control) | toda la escena | PENDIENTE | | — | | |
+| `brasas` | abajo | PENDIENTE | | | | |
+
+- κ entre las dos personas: PENDIENTE.
+- Objeto contra atmósfera en humo y vapor: PENDIENTE.
+- Gasto real, con `pricing_version`: PENDIENTE (tope US$30).

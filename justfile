@@ -653,6 +653,13 @@ eval-partes *args:
 eval-lugar *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/lugar_por_vision/run_experiment.py {{args}}
 
+# EF-12 (m-25026587): the paid bench of the «Con IA» Seedance effects. Subcommands: drafts,
+# judge, score, finals, library. `drafts`/`finals` only quote unless
+# `--i-have-spend-authorization` (then also `--cases` outside the repo, 23:00-05:00 Bogotá and
+# a hard ceiling `--max-usd`, at most 30, over the whole bench). `just eval-efectos drafts`.
+eval-efectos *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/banco_efectos/run_experiment.py {{args}}
+
 # Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
