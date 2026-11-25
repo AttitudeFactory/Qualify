@@ -15,10 +15,11 @@ This module reads what is already stored and returns, for one brand:
 
 **Source.** `brand_reel_verdicts` ⨝ `public_reels` ⨝ `brand_account_labels`, never
 `brand_reel_ideas` (which only keeps the 6-8). Per reel, only its NEWEST verdict for the
-shown run's `brief_hash` counts (a newer transcript or model may have judged it again),
-and it must keep the strict product filter: `fits` AND `affinity` in `reels_ai.FITS`
-(a verdict stored under an older rule cannot slip in). A brand with no `ok` run has no
-brief to judge against, so the list is empty.
+shown run's `brief_hash` (and the later manual reads', RF-05 below) counts (a newer
+transcript or model may have judged it again), and it must keep the strict product
+filter: `fits` AND `affinity` in `reels_ai.FITS` (a verdict stored under an older rule
+cannot slip in). A brand with no `ok` run nor `ok` manual read has no brief to judge
+against, so the list is empty.
 
 **Filters** (`ReelFilters`, every one optional, combinable): channel (Instagram /
 TikTok), account kind (`referente` = inspiradores, `competencia` = competidores — decision
@@ -28,43 +29,60 @@ duration is left out only when a duration filter is set). **Detractors never app
 (decision 3): their reels are never returned or counted, and a detractor kind is refused;
 an idea whose account is labelled `detractor` today is dropped too.
 
-**Region and niche — the gap, not invented.** `ReelFilters.regions` / `.niches` exist so
-RF-02b can wire them, but they are refused (`FilterUnavailable`) while
-`REGION_NICHE_READY` is False. The only candidate data today is the global `creators`
-row (`country_code`, `category`, migration 0036), whose fill on the brands' accounts is
-unmeasured (RF-00, m-25119446) and is not joined here; RF-04 (m-25119461) brings the
-region and rubro of each account, with provenance, and turns them on.
+**Region and niche (RF-02b, m-25119463).** Each account's country and rubro come from
+the GLOBAL `creators` row RF-04 (m-25119461, migration 0182) fills with provenance
+(`creators.region_rubro`): `region_code` (ISO-2, free sources only) and `rubro` (a key of
+`discovery_seed.NICHE_LABELS` or `otro`, from the account review). The reel's account is
+LEFT JOINed on `(network, handle)` — public data, no tenant, no policy — so a reel whose
+account the pool does not know, or knows without a country / rubro, still reads with
+`region_code = rubro = ''`. **An unknown value never matches a set filter and never hides
+a reel when that filter is off**: with no region chosen («Todas») every reel enters, with
+one or several regions only the reels of accounts known to be in one of them do; the same
+for the niche. The ideas follow the same rule. `REGION_OPTIONS` are the three markets of
+the business (`tenancy.locale.COUNTRIES`: Colombia, Venezuela, Uruguay — what signup and
+Configuración offer) plus «Todas»; `brand_niche` reads the brand's rubro from its Brand
+Kit (`connect.sector`, the rubro select, through `tenant_session`) for the fixed «Nicho: »
+label. The niche is NOT applied by default: rubro coverage is ~0 % until each account is
+reviewed again (RF-04), and a default niche filter would empty the list.
 
-**Competidores — a second data gap.** The run reads only `referente` accounts today
-(`reels.brand_referentes`), so no verdict exists yet for a `competencia` account: that
-kind and those accounts return nothing until RF-05 (m-25119465) reads them. The query
-already serves them; nothing here invents them.
+**Competidores** (RF-05, m-25119465). The Monday run also reads the 6 `competencia`
+accounts the owner picked (`reels.brand_competitors`) and stores their verdicts under the
+run's brief, and «Ver sus reels ahora» (`competitors.read_now`) reads any other one. A
+manual read judges with the brief of its own moment, so the list reads the shown run's
+brief plus the brief of every manual read that ended `ok` after it (`_briefs`); per reel
+the newest verdict decides. A brand with no `ok` weekly run still sees what its manual
+reads kept.
 
 **Free and read-only.** Opening the list never calls ScrapeCreators nor Claude, writes
 nothing (no `vendor_usage_events` row) and never queues the production reel analyzer,
 which only runs over the ideas (`reel_runs._analyze`). The `brand_*` tables are read only
-through `tenant_session` (RLS with the NULLIF policy); `public_reels` is global public
-data with no policy to scope. No migration: the verdicts are reached through
+through `tenant_session` (RLS with the NULLIF policy); `public_reels` and `creators` are
+global public data with no policy to scope. No migration: the verdicts are reached through
 `uq_brand_reel_verdict` (`brand_id` first), the reels through `uq_public_reel` and the
 labels through `uq_account_label`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import logging
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.creators.region_rubro import AccountFacts, account_facts
 from qualify_api.referentes import reel_runs, reels_ai
+from qualify_api.referentes.ai import RUBROS, normalize_country
+from qualify_api.referentes.discovery_seed import NICHE_LABELS
 from qualify_api.referentes.reel_runs import RunView
 from qualify_api.referentes.reel_store import (
     _REEL_COLUMNS,
     _VERDICT_COLUMNS,
+    STATUS_OK,
     Idea,
     MemoryReelRunStore,
     PublicReel,
@@ -98,19 +116,111 @@ DURATION_BUCKETS: dict[str, tuple[float, float | None]] = {
     DURATION_OVER_60: (60.0, None),
 }
 
-#: Region and niche need RF-04's per-account data; until then they are refused.
-REGION_NICHE_READY = False
+#: Region and niche read RF-04's per-account data (`creators.region_code` / `.rubro`).
+REGION_NICHE_READY = True
+
+#: What the bar reads (exact, ticket m-25119463).
+REGION_TITLE = "Región"
+REGION_ALL_LABEL = "Todas"
+NICHE_PREFIX = "Nicho: "
 
 PAGE_SIZE = 12
+#: RF-05: with no weekly run shown, the manual reads of this many days back are read.
+MANUAL_READS_DAYS = 30
 MAX_PAGE_SIZE = 48
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RegionOption:
+    """One choice of the «Región» filter: `code` is ISO-2, "" for «Todas»."""
+
+    code: str
+    label: str
+
+
+def _region_options() -> tuple[RegionOption, ...]:
+    from qualify_api.tenancy.locale import COUNTRIES  # the business's three markets
+
+    return (
+        *(RegionOption(country.code, country.name) for country in COUNTRIES),
+        RegionOption("", REGION_ALL_LABEL),
+    )
+
+
+#: «Colombia», «Venezuela», «Uruguay», then «Todas» (the default: no region filter).
+REGION_OPTIONS: tuple[RegionOption, ...] = _region_options()
+
+
+@dataclass(frozen=True)
+class NicheOption:
+    """The brand's rubro for the fixed «Nicho: …» label. `key` is a
+    `discovery_seed.NICHE_LABELS` key ("" when the Brand Kit has none — then `label` is
+    the owner's own words, `rubro_text`, or "" when there is nothing to show)."""
+
+    key: str
+    label: str
+
+    @property
+    def text(self) -> str:
+        """«Nicho: Comida y bebida», "" when the brand has no rubro yet."""
+        return f"{NICHE_PREFIX}{self.label}" if self.label else ""
+
+
+NO_NICHE = NicheOption("", "")
+
+#: `(tenant_id, brand_id) → the Brand Kit's connect document` (a mapping).
+ConnectLoader = Callable[[UUID, UUID], Mapping[str, Any]]
+
+
+def _load_connect(tenant_id: UUID, brand_id: UUID) -> Mapping[str, Any]:
+    """The brand's Brand Kit `connect` document, read through `tenant_session` (the
+    store's door: RLS hands back this business's row or nothing)."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore  # heavy: lazy
+
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
+    return connect if isinstance(connect, Mapping) else {}
+
+
+def brand_niche(
+    tenant_id: UUID, brand_id: UUID, *, connect: ConnectLoader | None = None
+) -> NicheOption:
+    """The brand's rubro as its Brand Kit keeps it (`connect.sector`, the rubro select;
+    `connect.rubro_text`, the owner's own words, when no catalog key was chosen). A kit
+    that cannot be read gives `NO_NICHE`: the label only disappears."""
+    try:
+        data = (connect or _load_connect)(tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001 — an unreadable kit only hides the label
+        logger.warning("brand kit unreadable for the niche label: %s", type(exc).__name__)
+        return NO_NICHE
+    sector = str(data.get("sector") or "").strip().lower()
+    if sector in NICHE_LABELS:
+        return NicheOption(sector, NICHE_LABELS[sector])
+    words = " ".join(str(data.get("rubro_text") or "").split())
+    return NicheOption("", words) if words else NO_NICHE
 
 
 class FilterUnavailable(ValueError):
-    """A filter whose data does not exist yet (region, niche — RF-04)."""
+    """A filter whose data does not exist yet (kept for callers; none is refused today)."""
 
 
 def _frozen(values: Iterable[str] | None) -> frozenset[str]:
     return frozenset(str(v).strip().lower() for v in (values or ()) if str(v).strip())
+
+
+def _regions(values: Iterable[str] | None) -> frozenset[str]:
+    """ISO-2 codes, upper case; a value that is not one is refused (ValueError)."""
+    out: set[str] = set()
+    for value in values or ():
+        raw = str(value).strip()
+        if not raw:
+            continue
+        code = normalize_country(raw)
+        if not code:
+            raise ValueError(f"not a region code: {raw!r}")
+        out.add(code)
+    return frozenset(out)
 
 
 @dataclass(frozen=True)
@@ -122,8 +232,9 @@ class ReelFilters:
     #: `(network, handle)` pairs; the handle is normalized (no «@», lowercase).
     accounts: frozenset[tuple[str, str]] = frozenset()
     durations: frozenset[str] = frozenset()
-    #: Prepared for RF-04 / RF-02b; refused while `REGION_NICHE_READY` is False.
+    #: ISO-2 codes (upper case) of `creators.region_code`; empty = «Todas».
     regions: frozenset[str] = frozenset()
+    #: `creators.rubro` keys (`ai.RUBROS`); empty = no niche narrowing.
     niches: frozenset[str] = frozenset()
 
     @classmethod
@@ -146,7 +257,7 @@ class ReelFilters:
                 for network, handle in (accounts or ())
             ),
             durations=frozenset(str(d).strip() for d in (durations or ()) if str(d).strip()),
-            regions=_frozen(regions),
+            regions=_regions(regions),
             niches=_frozen(niches),
         )
 
@@ -159,8 +270,12 @@ class ReelFilters:
             raise ValueError(f"unknown account network: {sorted(unknown)}")
         if unknown := self.durations - set(DURATION_BUCKETS):
             raise ValueError(f"unknown duration bucket: {sorted(unknown)}")
+        if bad := {r for r in self.regions if normalize_country(r) != r}:
+            raise ValueError(f"unknown region filter: {sorted(bad)}")
+        if unknown := self.niches - set(RUBROS):
+            raise ValueError(f"unknown niche filter: {sorted(unknown)}")
         if (self.regions or self.niches) and not REGION_NICHE_READY:
-            raise FilterUnavailable("region and niche filters wait for RF-04 (m-25119461)")
+            raise FilterUnavailable("region and niche filters are switched off")
 
     @property
     def wanted_kinds(self) -> tuple[str, ...]:
@@ -181,10 +296,21 @@ def duration_bucket(seconds: float | None) -> str | None:
     return None
 
 
-def matches(reel: PublicReel, kind: str | None, filters: ReelFilters) -> bool:
+def matches(
+    reel: PublicReel,
+    kind: str | None,
+    filters: ReelFilters,
+    facts: AccountFacts | None = None,
+) -> bool:
     """Whether one reel of an account of `kind` (None = unlabelled) passes `filters`.
-    A detractor's reel never does."""
+    A detractor's reel never does. `facts` are the account's region and rubro (None =
+    the pool does not know the account): an unknown value never passes a set region or
+    niche filter, and never matters when that filter is off."""
     if kind == KIND_DETRACTOR:
+        return False
+    if filters.regions and (facts is None or facts.region_code not in filters.regions):
+        return False
+    if filters.niches and (facts is None or facts.rubro not in filters.niches):
         return False
     if filters.networks and reel.network not in filters.networks:
         return False
@@ -205,6 +331,9 @@ class ReviewedReel:
     reel: PublicReel
     verdict: StoredVerdict
     account_kind: str
+    #: The account's country (ISO-2) and rubro from `creators` (RF-04); "" = unknown.
+    region_code: str = ""
+    rubro: str = ""
 
 
 @dataclass(frozen=True)
@@ -225,11 +354,20 @@ class ReviewedReels:
     #: The accounts the «Cuenta» filter can offer: `(network, handle) → kind`, without
     #: detractors.
     accounts: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: Region and rubro (`creators`, RF-04) of the ideas' and offered accounts the pool
+    #: knows: `(network, handle) → AccountFacts`. An absent key = unknown.
+    facts: dict[tuple[str, str], AccountFacts] = field(default_factory=dict)
 
 
 class ReviewedReelsStore(Protocol):
     def account_kinds(self, tenant_id: UUID, brand_id: UUID) -> dict[tuple[str, str], str]:
         """`(network, handle) → label` of every labelled account of the brand."""
+        ...
+
+    def account_facts(
+        self, tenant_id: UUID, keys: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], AccountFacts]:
+        """Region and rubro of the `(network, handle)` accounts the global pool knows."""
         ...
 
     def fitting(
@@ -242,8 +380,10 @@ class ReviewedReelsStore(Protocol):
         exclude: Sequence[tuple[str, str]],
         offset: int,
         limit: int,
+        also_briefs: Sequence[str] = (),
     ) -> list[ReviewedReel]:
-        """The kept reels of the brand for `brief_hash`, newest verdict per reel, filtered,
+        """The kept reels of the brand for `brief_hash` (and `also_briefs`: the briefs of
+        the owner's later «Ver sus reels ahora», RF-05), newest verdict per reel, filtered,
         without `exclude` (`(network, reel_id)`), ordered by views then likes."""
         ...
 
@@ -259,17 +399,38 @@ def _strictly_fits(verdict: StoredVerdict) -> bool:
 
 class MemoryReviewedReelsStore:
     """The offline twin over a `MemoryReelRunStore` (its reels and verdicts) and a
-    referentes repository (its labels), tenant-scoped like Postgres."""
+    referentes repository (its labels), tenant-scoped like Postgres. `creators` is the
+    global pool's region / rubro per `(network, handle)` (shared by every business, like
+    the `creators` table): `set_facts` fills it."""
 
     def __init__(self, runs: MemoryReelRunStore, labels: Any) -> None:
         self.runs = runs
         self.labels = labels
+        self.creators: dict[tuple[str, str], AccountFacts] = {}
+
+    def set_facts(self, network: str, handle: str, *, region: str = "", rubro: str = "") -> None:
+        key = (network, normalize_handle(handle))
+        region = normalize_country(region)
+        self.creators[key] = AccountFacts(
+            network=key[0],
+            handle=key[1],
+            region_code=region,
+            region_source="sightings" if region else "",
+            rubro=rubro,
+            rubro_source="ai" if rubro else "",
+        )
 
     def account_kinds(self, tenant_id: UUID, brand_id: UUID) -> dict[tuple[str, str], str]:
         return {
             (lb.network, lb.handle): lb.label
             for lb in self.labels.labels(tenant_id=tenant_id, brand_id=brand_id)
         }
+
+    def account_facts(
+        self, tenant_id: UUID, keys: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], AccountFacts]:
+        wanted = {(network, normalize_handle(handle)) for network, handle in keys}
+        return {key: facts for key, facts in self.creators.items() if key in wanted}
 
     def fitting(
         self,
@@ -281,10 +442,12 @@ class MemoryReviewedReelsStore:
         exclude: Sequence[tuple[str, str]],
         offset: int,
         limit: int,
+        also_briefs: Sequence[str] = (),
     ) -> list[ReviewedReel]:
+        briefs = {brief_hash, *also_briefs}
         newest: dict[tuple[str, str], StoredVerdict] = {}
         for tenant, brand, verdict in self.runs.verdict_rows.values():  # insertion order
-            if (tenant, brand) == (tenant_id, brand_id) and verdict.brief_hash == brief_hash:
+            if (tenant, brand) == (tenant_id, brand_id) and verdict.brief_hash in briefs:
                 newest[(verdict.network, verdict.reel_id)] = verdict
         kinds = self.account_kinds(tenant_id, brand_id)
         skip = set(exclude)
@@ -294,16 +457,26 @@ class MemoryReviewedReelsStore:
             if reel is None or key in skip or not _strictly_fits(verdict):
                 continue
             kind = kinds.get((reel.network, reel.handle))
-            if kind not in filters.wanted_kinds or not matches(reel, kind, filters):
+            facts = self.creators.get((reel.network, reel.handle))
+            if kind not in filters.wanted_kinds or not matches(reel, kind, filters, facts):
                 continue
-            out.append(ReviewedReel(reel=reel, verdict=verdict, account_kind=kind))
+            out.append(
+                ReviewedReel(
+                    reel=reel,
+                    verdict=verdict,
+                    account_kind=kind,
+                    region_code=facts.region_code if facts else "",
+                    rubro=facts.rubro if facts else "",
+                )
+            )
         out.sort(key=lambda item: _rank(item.reel))
         return out[offset : offset + limit]
 
 
 class PostgresReviewedReelsStore:
-    """`ReviewedReelsStore` over 0020 + 0117, every statement inside `tenant_session`:
-    RLS scopes `brand_reel_verdicts` and `brand_account_labels`; `public_reels` is global."""
+    """`ReviewedReelsStore` over 0020 + 0117 + 0182, every statement inside
+    `tenant_session`: RLS scopes `brand_reel_verdicts` and `brand_account_labels`;
+    `public_reels` and `creators` are global."""
 
     def account_kinds(self, tenant_id: UUID, brand_id: UUID) -> dict[tuple[str, str], str]:
         with tenant_session(tenant_id) as session:
@@ -316,6 +489,15 @@ class PostgresReviewedReelsStore:
             ).all()
         return {(row.network, row.handle): row.label for row in rows}
 
+    def account_facts(
+        self, tenant_id: UUID, keys: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], AccountFacts]:
+        wanted = list(keys)
+        if not wanted:
+            return {}
+        with tenant_session(tenant_id) as session:
+            return account_facts(session, wanted)
+
     def fitting(
         self,
         tenant_id: UUID,
@@ -326,6 +508,7 @@ class PostgresReviewedReelsStore:
         exclude: Sequence[tuple[str, str]],
         offset: int,
         limit: int,
+        also_briefs: Sequence[str] = (),
     ) -> list[ReviewedReel]:
         reel_cols = ", ".join(f"r.{c.strip()} AS r_{c.strip()}" for c in _REEL_COLUMNS.split(","))
         verdict_names = [c.strip() for c in _VERDICT_COLUMNS.split(",")]
@@ -338,7 +521,7 @@ class PostgresReviewedReelsStore:
         ]
         params: dict[str, Any] = {
             "brand": brand_id,
-            "brief": brief_hash,
+            "briefs": sorted({brief_hash, *also_briefs}),
             "fits": sorted(reels_ai.FITS),
             "kinds": list(filters.wanted_kinds),
             "limit": limit,
@@ -363,6 +546,14 @@ class PostgresReviewedReelsStore:
                 upper = f" AND r.duration_s < {high:g}" if high is not None else ""
                 spans.append(f"(r.duration_s >= {low:g}{upper})")
             where.append(f"r.duration_s IS NOT NULL AND ({' OR '.join(spans)})")
+        # RF-02b: an account the pool does not know (no `creators` row) has c.* NULL and
+        # never matches a set region / niche; with the filter off it is never tested
+        if filters.regions:
+            where.append("c.region_code = ANY(CAST(:regions AS text[]))")
+            params["regions"] = sorted(filters.regions)
+        if filters.niches:
+            where.append("c.rubro = ANY(CAST(:niches AS text[]))")
+            params["niches"] = sorted(filters.niches)
         if exclude:
             skip = sorted(set(exclude))
             where.append(
@@ -377,13 +568,16 @@ class PostgresReviewedReelsStore:
             # prompt may have judged it again): that one decides
             "WITH latest AS (SELECT DISTINCT ON (v.network, v.reel_id) "
             f"{latest_cols} FROM brand_reel_verdicts v "
-            "WHERE v.brand_id = :brand AND v.brief_hash = :brief "
+            "WHERE v.brand_id = :brand AND v.brief_hash = ANY(CAST(:briefs AS text[])) "
             "ORDER BY v.network, v.reel_id, v.created_at DESC, v.id DESC) "
-            f"SELECT {reel_cols}, {verdict_cols}, l.label AS account_kind "
+            f"SELECT {reel_cols}, {verdict_cols}, l.label AS account_kind, "
+            "COALESCE(c.region_code, '') AS c_region_code, COALESCE(c.rubro, '') AS c_rubro "
             "FROM latest v "
             "JOIN public_reels r ON r.network = v.network AND r.reel_id = v.reel_id "
             "JOIN brand_account_labels l ON l.brand_id = :brand "
             "AND l.network = r.network AND l.handle = r.handle "
+            # the global pool (0182, uq_creator): one row per account at most
+            "LEFT JOIN creators c ON c.network = r.network AND c.handle = r.handle "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY COALESCE(r.views, 0) DESC, COALESCE(r.likes, 0) DESC, "
             # code-point tie-break, as the memory twin sorts
@@ -396,6 +590,8 @@ class PostgresReviewedReelsStore:
                 reel=_reel(row, "r_"),
                 verdict=_verdict(row, "v_"),
                 account_kind=row.account_kind,
+                region_code=row.c_region_code,
+                rubro=row.c_rubro,
             )
             for row in rows
         ]
@@ -409,6 +605,32 @@ def default_library() -> ReviewedReelsStore:
     if _library is None:
         _library = PostgresReviewedReelsStore()
     return _library
+
+
+def _briefs(
+    tenant_id: UUID,
+    brand_id: UUID,
+    seen: RunView,
+    store: ReelRunStore | None,
+    now: datetime | None = None,
+) -> list[str]:
+    """The briefs whose verdicts the second list reads: the shown run's, plus (RF-05) the
+    one of every «Ver sus reels ahora» that ended `ok` after it — a read the owner asked
+    for shows at once, even when the brief changed since Monday or there is no `ok`
+    weekly run yet. Per reel the newest verdict still decides."""
+    briefs: list[str] = []
+    if seen.shown is not None and seen.shown.brief_hash:
+        briefs.append(seen.shown.brief_hash)
+    after = seen.shown.finished_at if seen.shown is not None else None
+    if after is None:  # no weekly run yet: the manual reads of the last month only
+        after = (now or datetime.now(UTC)) - timedelta(days=MANUAL_READS_DAYS)
+    reads = (store or reel_runs.default_store()).competitor_runs(
+        tenant_id, brand_id, finished_after=after
+    )
+    for run in reads:
+        if run.status == STATUS_OK and run.brief_hash and run.brief_hash not in briefs:
+            briefs.append(run.brief_hash)
+    return briefs
 
 
 def reviewed_reels(
@@ -435,19 +657,32 @@ def reviewed_reels(
     lib = library or default_library()
     seen = reel_runs.view(tenant_id, brand_id, store=store, now=now)
     kinds = lib.account_kinds(tenant_id, brand_id)
+    offered = {key for key, kind in kinds.items() if kind in ACCOUNT_KINDS and key[0] in NETWORKS}
+    idea_keys = {
+        key
+        for key in ((idea.reel.network, idea.reel.handle) for idea in seen.ideas)
+        if kinds.get(key) != KIND_DETRACTOR
+    }
+    facts = lib.account_facts(tenant_id, sorted(offered | idea_keys))
     ideas = [
         idea
         for idea in seen.ideas
-        if matches(idea.reel, kinds.get((idea.reel.network, idea.reel.handle)), chosen)
+        if matches(
+            idea.reel,
+            kinds.get((idea.reel.network, idea.reel.handle)),
+            chosen,
+            facts.get((idea.reel.network, idea.reel.handle)),
+        )
     ]
     more: list[ReviewedReel] = []
     has_more = False
-    brief = seen.shown.brief_hash if seen.shown is not None else None
-    if brief:
+    briefs = _briefs(tenant_id, brand_id, seen, store, now)
+    if briefs:
         page = lib.fitting(
             tenant_id,
             brand_id,
-            brief_hash=brief,
+            brief_hash=briefs[0],
+            also_briefs=briefs[1:],
             filters=chosen,
             exclude=[(idea.reel.network, idea.reel.reel_id) for idea in seen.ideas],
             offset=offset,
@@ -467,6 +702,7 @@ def reviewed_reels(
             for key, kind in sorted(kinds.items())
             if kind in ACCOUNT_KINDS and key[0] in NETWORKS
         },
+        facts=facts,
     )
 
 
@@ -482,16 +718,24 @@ __all__ = [
     "MAX_PAGE_SIZE",
     "MORE_REVIEWED_TITLE",
     "NETWORKS",
+    "NICHE_PREFIX",
     "NO_FILTERS",
+    "NO_NICHE",
     "PAGE_SIZE",
+    "REGION_ALL_LABEL",
     "REGION_NICHE_READY",
+    "REGION_OPTIONS",
+    "REGION_TITLE",
     "FilterUnavailable",
     "MemoryReviewedReelsStore",
+    "NicheOption",
     "PostgresReviewedReelsStore",
     "ReelFilters",
+    "RegionOption",
     "ReviewedReel",
     "ReviewedReels",
     "ReviewedReelsStore",
+    "brand_niche",
     "default_library",
     "duration_bucket",
     "matches",

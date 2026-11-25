@@ -97,6 +97,32 @@ rubro en test 0,941 / 0,906 (v2: 0,894 / 0,847), sin regresión, USD 0,4287. Exc
 «Viajes y estilo de vida» 0,57 / 0,43 (n = 7, todo lauratuttman). El país por IA pasa a
 `referentes-review-4` en RF-12. #806 fusionado (main 9407a6a6); #807 fusionado (main ee64050b, migración 0182).
 
+**RF-05 construido (2026-11-25, m-25119465, migración 0183).** Backend completo, sin
+llamadas pagadas durante el desarrollo (pruebas sin red con fakes y `-m db` en una base
+aislada). La corrida del lunes lee las 6 cuentas `competencia` elegidas
+(`brand_account_labels.read_weekly`; sin elección, las 6 primeras por `position`) después
+de los referentes. «Ver sus reels ahora» es una corrida `competitor_now` de una cuenta, una
+por negocio, cuenta y día local (`referentes/competitors.py`). El gasto queda aparte:
+`competitor_reels_list` / `competitor_reels_transcript` en `vendor_usage_events` y
+`competitor_credits` / `competitor_cost_usd` en `brand_reel_runs`. El filtro
+«Competidores» de RF-01 ya trae sus reels (también los de una lectura manual, aunque no
+haya corrida del lunes). Peor caso de la corrida semanal: 130 créditos, antes 88. Costo
+estimado: ≈ USD 0,5 al mes por negocio y ≈ USD 0,01–0,02 por cada lectura manual. Detalle
+en la enmienda RF-05 de `docs/adr-42-ideas-reels-costo.md`. **La pantalla espera a RF-02
+(#810):** el selector y el botón van en `Qualify/discover_reels.py` cuando #810 esté en
+`main`.
+
+**RF-02b backend (2026-11-25, m-25119463):** `referentes/reviewed_reels.py` une `creators`
+(`region_code`, `rubro`, de RF-04) con `LEFT JOIN` en Postgres y en el gemelo en memoria.
+Filtros: `ReelFilters.of(regions=["CO", …])` (ISO-2, una o varias) y `niches=[clave]`.
+Opciones: `REGION_OPTIONS` = los tres mercados del negocio (`tenancy.locale.COUNTRIES`:
+Colombia, Venezuela, Uruguay) + «Todas»; `brand_niche(tenant, brand)` lee el rubro del Brand Kit
+(`connect.sector`; si no hay clave, `rubro_text`) con `tenant_session` y da «Nicho: …».
+**Cuentas sin país o sin rubro:** con el filtro apagado («Todas», sin nicho) entran siempre; con
+un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para las ideas. El nicho
+**no** se aplica por defecto: la cobertura de rubro es ~0 % hasta que las cuentas vuelvan a pasar
+por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
+
 Descartadas: RF-06 «Competencia del sector» (decisión 1), RF-08 «Buscar por producto»
 (decisión 2), RF-03 (fusionada en RF-01).
 

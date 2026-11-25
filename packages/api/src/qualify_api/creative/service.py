@@ -2441,8 +2441,11 @@ class ContentService:
         vendor_tasks: VendorTaskStore | None = None,
         clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
         clip_avatar_store: Any = None,
+        clip_avatar_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._media = media
+        #: m-25119867 PR 2: the clock the owner's 72 h are measured with (tests inject it).
+        self._clip_avatar_clock = clip_avatar_clock or (lambda: datetime.now(UTC))
         #: m-25119867: the avatar blocks a Clip waits for (`clip_avatar.ClipAvatarStore`;
         #: `PostgresClipAvatarStore` on Postgres when None).
         self._clip_avatar_store = clip_avatar_store
@@ -2649,8 +2652,20 @@ class ContentService:
                 return existing
         received_middle = len(brief.media.clip_image_keys)
         if brief.media.clip_avatar_plan:
-            # m-25119867: server-owned — only `clip_avatar.create_clip_with_blocks` plans
-            raise ValueError("a Clip's avatar blocks are planned by their own service")
+            # m-25119867: server-owned — only `clip_avatar.create_clip_with_blocks` plans; a
+            # brief sent with one (by hand, or «Crearla otra vez» of such a Clip) is refused
+            # with a stable code (PR 2)
+            from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+                RECREATE_FROM_EDITOR_CODE,
+                RECREATE_FROM_EDITOR_TEXT,
+                ClipAvatarRefused,
+            )
+
+            raise ClipAvatarRefused(
+                RECREATE_FROM_EDITOR_CODE,
+                RECREATE_FROM_EDITOR_TEXT,
+                raw="a Clip's avatar blocks are planned by their own service",
+            )
         inputs = self.new_draft_inputs(tenant_id=tenant_id, brand_id=brand_id, brief=brief)
         brief, price = inputs.brief, inputs.price
         voice_version, execution_version = inputs.voice_version, inputs.pipeline_version
@@ -3076,16 +3091,22 @@ class ContentService:
 
     def _clip_plan_ready(
         self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
-    ) -> tuple[DraftRecord, ContentBrief]:
+    ) -> tuple[DraftRecord, ContentBrief] | None:
         """m-25119867: a Clip with avatar blocks still in its plan. Every block made →
         the Clip gets ONE new brief with their videos as stretches (texts and effects
         moved to their real lengths) and is made from it. Otherwise it waits: its sign of
         life is stamped and `ClipBlocksWait` (a `LocalVideoWait`) leaves the worker's run
         not done, nothing read past the blocks, written or paid; a block that would pass
-        the 60 s is marked refused (`clip_too_long`) on a new brief first. Every write
-        is fenced by the run's lease and the Clip's revision."""
+        the 60 s is marked refused (`clip_too_long`) on a new brief first, and a failure
+        seen for the first time is stamped (`failed_at`). PR 2 (ADR 50 §11 P2): once the
+        owner's 72 h after the latest failure ran out, the Clip fails
+        (`avatar_block_failed`) and None is returned — the run settles it and gives its
+        creations back. Every write is fenced by the run's lease and the Clip's revision."""
         from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            AVATAR_BLOCK_FAILED,
+            AVATAR_BLOCK_FAILED_TEXT,
             ClipBlocksWait,
+            PlanExpired,
             PlanReady,
             PlanRefused,
             PostgresClipAvatarStore,
@@ -3097,7 +3118,19 @@ class ContentService:
             if not isinstance(self._repo, PostgresContentRepository):
                 raise RuntimeError("a Clip waiting for avatar blocks needs the blocks' store")
             store = PostgresClipAvatarStore()
-        verdict = plan_gate(tenant_id=tenant_id, clip_id=draft.id, brief=brief, store=store)
+        verdict = plan_gate(
+            tenant_id=tenant_id,
+            clip_id=draft.id,
+            brief=brief,
+            store=store,
+            now=self._clip_avatar_clock(),
+        )
+        if isinstance(verdict, PlanExpired):
+            self._fail_waiting_clip(
+                tenant_id, draft, reason=AVATAR_BLOCK_FAILED, detail=AVATAR_BLOCK_FAILED_TEXT
+            )
+            logger.info("clip %s: its owner chose nothing for a failed avatar; failed", draft.id)
+            return None
         if isinstance(verdict, PlanReady):
             fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
             # rule 6: the brief the owner sent stays (estimated times); this log says
@@ -3110,13 +3143,74 @@ class ContentService:
             )
             return fresh, made_from
         if isinstance(verdict, PlanRefused):
-            # a made block the Clip cannot take (over 60 s): refused on the plan, so the
-            # screen shows it failed; the Clip waits for the owner
+            # a made block the Clip cannot take (over 60 s), or a failure seen for the
+            # first time: kept on the plan, so the screen shows it and the owner's 72 h
+            # run from it; the Clip waits for the owner
             self._replace_clip_brief(tenant_id, draft, verdict.brief)
         beat = self._heartbeat(tenant_id, draft.id)
         if beat is not None:
             beat()
         raise ClipBlocksWait(f"clip {draft.id} waits for its avatar blocks ({verdict.reason})")
+
+    def _fail_waiting_clip(
+        self, tenant_id: UUID, draft: DraftRecord, *, reason: str, detail: str
+    ) -> None:
+        """A waiting Clip fails (`generate_fail`) with the owner's words, in a transaction
+        fenced as `_replace_clip_brief` is (still `drafting`, same revision). Its
+        creations come back with the run's own refund (`_refund_if_not_delivered`); its
+        blocks were never charged, and a failed Clip's blocks owe nothing (P6)."""
+        repo = self._repo
+        new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=reason)
+        if isinstance(repo, PostgresContentRepository):
+            from qualify_shared.db.session import tenant_unit_of_work  # noqa: PLC0415
+
+            from qualify_api.creative.pipeline import PipelineStore  # noqa: PLC0415
+
+            run = current_preparation()
+            with tenant_unit_of_work(tenant_id) as session:
+                if run is not None:
+                    PipelineStore().fence(session, run)
+                row = session.execute(
+                    text("""
+                    SELECT status, revision, brief_id FROM content_drafts
+                    WHERE id = :d FOR UPDATE
+                """),
+                    {"d": draft.id},
+                ).first()
+                # «Intentar de nuevo» changes the Clip's brief, not its revision: a retry
+                # between this pass's read and its write keeps the Clip waiting
+                if (
+                    row is None
+                    or str(row.status) != DRAFTING
+                    or int(row.revision) != draft.revision
+                    or row.brief_id != draft.brief_id
+                ):
+                    raise CheckpointError("the Clip moved while it was failed")
+                session.execute(
+                    text("""
+                    UPDATE content_drafts SET status = :s, failure_reason = :r,
+                        failure_detail = :t, updated_at = now()
+                    WHERE id = :d
+                """),
+                    {"s": new_status, "r": reason, "t": detail, "d": draft.id},
+                )
+            return
+        now = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
+        if (
+            now is None
+            or now.status != DRAFTING
+            or now.revision != draft.revision
+            or now.brief_id != draft.brief_id
+        ):
+            raise CheckpointError("the Clip moved while it was failed")
+        repo.update_status(
+            tenant_id=tenant_id, draft_id=draft.id, new_status=new_status, failure_reason=reason
+        )
+        drafts = getattr(repo, "drafts", None)
+        if isinstance(drafts, dict) and draft.id in drafts:
+            from dataclasses import replace as _replace  # noqa: PLC0415
+
+            drafts[draft.id] = _replace(drafts[draft.id], failure_detail=detail)
 
     def _replace_clip_brief(
         self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
@@ -3142,16 +3236,19 @@ class ContentService:
                     PipelineStore().fence(session, run)
                 row = session.execute(
                     text("""
-                    SELECT d.status, d.revision, b.created_by
+                    SELECT d.status, d.revision, d.brief_id, b.created_by
                     FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
                     WHERE d.id = :d FOR UPDATE OF d
                 """),
                     {"d": draft.id},
                 ).first()
+                # PR 2: «Intentar de nuevo» may have changed the plan meanwhile — never
+                # written over with a brief read before it
                 if (
                     row is None
                     or str(row.status) != DRAFTING
-                    or int(row.revision) != (draft.revision)
+                    or int(row.revision) != draft.revision
+                    or row.brief_id != draft.brief_id
                 ):
                     raise CheckpointError("the Clip moved while its avatar blocks were placed")
                 repo.replace_brief(
@@ -3174,7 +3271,10 @@ class ContentService:
             # m-25119867: a Clip waits for the avatar blocks chosen at its first «Crear»
             # (`ClipBlocksWait`, before any read or paid call), then is made ONCE from a
             # brief with their videos as stretches
-            draft, brief = self._clip_plan_ready(tenant_id, draft, brief)
+            ready = self._clip_plan_ready(tenant_id, draft, brief)
+            if ready is None:
+                return  # the owner's time ran out: failed, its creations given back
+            draft, brief = ready
         # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
         # draft is the session, so its regenerations sit together; every vendor call the
         # router makes inside is nested here (`observed.TracedProvider`). A no-op unless
@@ -4813,6 +4913,17 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft_id} has no readable brief")
+        if brief.media.clip_avatar_plan or brief.media.derived_from_brief_id is not None:
+            # m-25119867 (R6): a Clip with avatar blocks — waiting for them, or made from
+            # them (their videos belong to THIS Clip) — is made again from the editor,
+            # never copied: refused before anything is written or charged
+            from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+                RECREATE_FROM_EDITOR_CODE,
+                RECREATE_FROM_EDITOR_TEXT,
+                ClipAvatarRefused,
+            )
+
+            raise ClipAvatarRefused(RECREATE_FROM_EDITOR_CODE, RECREATE_FROM_EDITOR_TEXT)
         return self.create_draft(
             tenant_id=tenant_id, brand_id=record.brand_id, brief=brief, user_id=user_id
         )

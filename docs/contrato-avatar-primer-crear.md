@@ -1,6 +1,6 @@
 # Contrato y diseño: el avatar desde el primer «Crear» del Clip (opción B)
 
-**Ticket:** m-25119867 (hijo de m-25112920, épica m-25026566). **Fase:** 2. El PR 1 («crear y esperar») está construido en la rama `feat/m-25119867-avatar-primer-crear`. El PR 2 trae «Intentar de nuevo», «Quitar avatar» y la espera de 72 h.
+**Ticket:** m-25119867 (hijo de m-25112920, épica m-25026566). **Fase:** 2. El PR 1 («crear y esperar», #812) está en `main` (2e107f14). El PR 2 («Intentar de nuevo», «Quitar avatar», la espera de 72 h, efectos y «Necesita tu atención») está en la rama `feat/m-25119867-avatar-reintentar`.
 **Redactado por:** creative-engineer, 2026-11-25, sobre `main` en `06aed410`. Lo actualizó el mismo día con las respuestas de Deivid (§3) y lo que pidió la sesión del editor (§1.5–§1.7).
 
 **En qué PR queda cada cosa:**
@@ -8,20 +8,20 @@
 | Qué | PR |
 |---|---|
 | `create_clip_with_blocks` con todas las reglas de §1.1 y los errores de §1.3 | **PR 1** |
-| `clip_wait` (§1.2), con `actions` vacías y `wait_until=None` | **PR 1** |
+| `clip_wait` (§1.2) | **PR 1**; `actions`, `wait_until` y `needs_attention` en el **PR 2** |
 | La espera del Clip (`ClipBlocksWait`), el latido y el despertador (`mark_parent_dirty`) | **PR 1** |
 | P3 (bloques sin texto propio), P5 (3 s propios) y P6 (cupo de un Clip fallido) | **PR 1** |
 | Del plan a la receta real, con los tiempos corridos y `clip_too_long` | **PR 1** |
 | Uniones junto a un avatar = solo «Corte», en la opción B, en `place_block` y en el armado (§1.7) | **PR 1** |
 | Lecturas antes de «Crear» (§1.5): tope del día, cupo, costo, interruptores, avatar de la marca | **PR 1** |
-| `retry_block`, `remove_block`, `actions` en `BlockWait`, `wait_until` y la falla a las 72 h (P1, P2) | **PR 2** |
-| `recreate` de un Clip de la opción B (R6) | **PR 2** |
-| Aviso activo (correo o WhatsApp) cuando el video esté listo (§1.6) | pendiente, fuera de los dos PR |
-| Efectos sobre un avatar: `avatar_block_effect` («Textos sí, efectos no», §3.2) | **PR 2** |
-| `create_draft` con un brief que ya trae plan: hoy es un `ValueError` sin `code`; tendrá un rechazo con `code` estable (lo pidió el review-agent) | **PR 2** |
-| «Necesita tu atención» en la tarjeta de «Por aprobar» y en la cuenta de Inicio cuando un avatar falla (§1.6) | **PR 2** |
+| `retry_block`, `remove_block`, `actions` en `BlockWait`, `wait_until` y la falla a las 72 h (P1, P2) | **PR 2** (hecho) |
+| `recreate` de un Clip de la opción B (R6) | **PR 2** (hecho) |
+| Aviso activo (correo) cuando el video esté listo o un avatar falla (§1.6) | ticket aparte, m-25120319 |
+| Efectos sobre un avatar: `avatar_block_effect` («Textos sí, efectos no», §3.2) | **PR 2** (hecho) |
+| `create_draft` con un brief que ya trae plan: rechazo con `code` estable (`avatar_clip_from_editor`) | **PR 2** (hecho) |
+| «Necesita tu atención» en la tarjeta de «Por aprobar» y en la cuenta de Inicio cuando un avatar falla (§1.8): la lectura del servidor | **PR 2** (hecho); la pantalla es del carril B |
 
-> **No encender `QUALIFY_CLIP_AVATAR_PRESENTER` ni `QUALIFY_CLIP_AVATAR_ANIMATED` antes del PR 2.** Hasta entonces, un Clip cuyo avatar falla espera para siempre: no hay «Intentar de nuevo», «Quitar avatar» ni el plazo de 72 h. Está escrito también junto a los interruptores, en `.env.example`, en `deploy/.env.prod.example` y en `clip_avatar.py`.
+> `QUALIFY_CLIP_AVATAR_PRESENTER` y `QUALIFY_CLIP_AVATAR_ANIMATED` **siguen apagados** en todos los entornos. Con el PR 2 un Clip con un avatar fallido ya no espera para siempre (72 h), pero encenderlos es una decisión aparte.
 **Reglas de partida:** ADR 50 §9 (`docs/adr-50-video-efectos-por-pasos.md`, firmado por Deivid el 2026-11-25) y ADR 44 (`docs/diseno-video-por-planos.md`).
 **Pantalla:** m-25112921 (carril B). Este documento es su contrato.
 
@@ -174,7 +174,7 @@ Errores de las acciones (§1.4):
 | `code` | Texto | |
 |---|---|---|
 | `block_not_failed` | «Este avatar no falló, así que no hace falta intentarlo de nuevo.» | **Nuevo** |
-| `block_not_removable` | «Solo puedes quitar un avatar que no salió.» | **Nuevo** |
+| `block_not_removable` | «Este avatar no falló, así que no hace falta quitarlo.» | **Nuevo**. Solo cuando el bloque no falló; si el Clip ya no espera, es `clip_not_waiting`. |
 | `clip_not_waiting` | «Tu video ya no está esperando a este avatar.» | **Nuevo** |
 | `switched_off`, `too_long`, `avatar_daily_cap_reached` y `NotEnoughCreations` | Los de la tabla de arriba. | Al intentar de nuevo se revisan otra vez, antes de pagar. |
 
@@ -198,8 +198,36 @@ Botones (verbos, `qualify-copy-es`): «Intentar de nuevo», «Quitar avatar».
   ```
 
   Solo sirve con un bloque `failed`. Marca `part_removed_at`, como «Quitar parte»: no se borra nada y no se cobra nada. El bloque sale del plan del Clip. Devuelve `True` si lo quitó y `False` si ya estaba quitado (se puede llamar dos veces). Si los demás avatares ya están listos, o no queda ninguno, el Clip pasa a `assembling` y se arma con lo que hay.
-- **Si el dueño no elige.** Pasado `wait_until`, el Clip falla con `failure_reason="avatar_block_failed"`. Se devuelve lo que se cobró por el Clip, nada de los bloques se cobra, y el `failure_detail` dice: «Tu video no se armó porque uno de tus avatares no salió y no elegiste qué hacer. Créalo de nuevo cuando quieras.» (**nuevo**). La espera dura 72 h (P2, decidido) y queda en el **PR 2**. Hasta entonces, un Clip con un avatar fallido sigue esperando, con latido. Los dos interruptores están apagados en todos los entornos, así que no le pasa a ningún cliente.
+- **Si el dueño no elige.** Pasado `wait_until`, el Clip falla con `failure_reason="avatar_block_failed"`. Se devuelve lo que se cobró por el Clip, nada de los bloques se cobra, y el `failure_detail` dice: «Tu video no se armó: uno de tus avatares no se pudo crear y pasaron 3 días sin que eligieras qué hacer. No se cobró nada de los avatares. Créalo de nuevo cuando quieras.» (**nuevo**). La espera dura 72 h (P2, decidido) y está en el **PR 2**.
 - **Un bloque que salió pero no cabe** (con su largo real el Clip pasa de 60 s; el texto se mantiene porque el dueño no puede editar las fotos y videos del Clip mientras espera: `drafting` no tiene borde de edición) se muestra como fallido con `failure_code="clip_too_long"` y el texto «Con tu avatar, el video pasa de 60 segundos. Acorta lo que dice el avatar o quítalo.» (**nuevo**). También se muestra fallido un bloque cuyo tipo se apagó mientras el Clip esperaba (`switched_off`).
+
+### 1.4 bis Cómo quedó en el PR 2 (`feat/m-25119867-avatar-reintentar`)
+
+- **«Intentar de nuevo»:** `ClipAvatarService.retry_block(tenant_id, user_id, clip_id, block_id, request=None) -> UUID`.
+  - Sirve con un bloque fallido o con uno que el Clip rechazó como salió (`clip_too_long`, `block_not_ready`). El fallido pasa por `PART_RETRY`; el rechazado, que está `generated`, pasa por `reject` y `regenerate`.
+  - Crea una revisión nueva del bloque con su fila de cobro en cero, y se despacha después del commit. La entrada del plan queda sin `refused` ni `failed_at` y con la estimación nueva.
+  - Antes de escribir nada y antes de pagar revisa, en este orden: que el Clip siga esperando, que el bloque haya fallado, que no cambie el tipo (`kind_change`), el interruptor, los 30 s, las uniones, los efectos y la receta con la estimación nueva. Después, ya con el candado del negocio, revisa el tope diario y el cupo.
+  - **P1:** cada reintento cuenta para el tope de 3 al día. `blocks_made_today` cuenta **intentos**: la creación del bloque y cada revisión por su fila de cobro. No cuenta un intento que falló sin pagar nada entre su inicio y el siguiente.
+  - **Idempotente:** con el bloque ya en `drafting`, devuelve su id sin escribir.
+- **«Quitar avatar»:** `remove_block(tenant_id, user_id, clip_id, block_id) -> bool`. Marca `part_removed_at` y despierta el Clip (`mark_parent_dirty`). Devuelve `False` si ya estaba quitado. Solo sirve con un bloque fallido o rechazado (`block_not_removable`).
+- **Los 72 h (P2):** la primera pasada que ve un bloque fallido le escribe `failed_at` en el plan (un brief nuevo, con valla). `wait_until` son 72 h desde el `failed_at` más reciente. Al vencer, el Clip falla con `failure_reason="avatar_block_failed"` y `failure_detail` igual a «Tu video no se armó: uno de tus avatares no se pudo crear y pasaron 3 días sin que eligieras qué hacer. No se cobró nada de los avatares. Créalo de nuevo cuando quieras.» La frase «No se cobró nada de los avatares» es cierta: la fila de cobro de un bloque pesa 0, y sus segundos solo se descuentan al aprobar su Clip, que aquí nunca se aprueba. Lo cobrado por el Clip se devuelve. Sus bloques nunca se cobraron y dejan de contar en el cupo (P6). Un reintento borra el `failed_at` de su bloque, así que el plazo empieza de nuevo cuando vuelve a fallar.
+  - `avatar_block_failed` no se agregó a `FailureReason`: la prueba de la pantalla (`Qualify/test_creative_vm.py`) exige un texto para cada valor del enum, y `Qualify/` es del carril B. Hasta que el carril B lo agregue, la pantalla muestra `failure_detail`.
+- **`BlockWait.actions`:** `("retry", "remove")` en un bloque fallido de un Clip que espera. Solo `("remove",)` si su tipo se apagó. Vacío en cualquier otro caso, en la opción A incluida.
+- **Textos con botones** (ya no los del PR 1):
+  - estado `block_failed`: «Uno de tus avatares no se pudo crear. Toca «Intentar de nuevo» o «Quitar avatar», y armamos tu video con lo demás.»;
+  - bloque sin detalle: «Tu avatar no se pudo crear. Puedes intentarlo de nuevo o quitarlo.»;
+  - `timeout`: «Tu avatar tardó demasiado y no se pudo crear. Puedes intentarlo de nuevo o quitarlo.».
+- **Errores nuevos de las acciones:**
+
+| `code` | Texto |
+|---|---|
+| `block_not_failed` | «Este avatar no falló, así que no hace falta intentarlo de nuevo.» |
+| `block_not_removable` | «Este avatar no falló, así que no hace falta quitarlo.» Solo cuando el bloque no falló; si el Clip ya no espera, es `clip_not_waiting`. |
+| `clip_not_waiting` | «Tu video ya no está esperando a este avatar.» |
+| `kind_change` | «Al intentar de nuevo se usa el mismo tipo de avatar (presentador o avatar animado). Si quieres otro, toca «Quitar avatar» y crea tu video de nuevo con el que prefieras.» Usa los nombres de la pantalla: «Presentador» y «Avatar animado». |
+| `switched_off`, `too_long`, `avatar_daily_cap_reached`, `NotEnoughCreations`, `RecipeRefused`, `avatar_join_cut_only`, `avatar_block_effect` | Los mismos de §1.3 y §1.7. |
+
+- **«Crearla otra vez» y `create_draft` con plan (R6):** se rechazan con `code="avatar_clip_from_editor"` y el texto «Los videos con avatar se crean de nuevo desde cero. Toca «Crear publicación» para empezar uno nuevo.» «Crear publicación» es la entrada del menú (`Qualify/ui/layout.py`). `recreate` lo rechaza para un Clip que esperaba sus avatares, para uno ya armado con ellos (opción B) y para uno de la opción A con un avatar ya puesto (`derived_from_brief_id`). Es a propósito: los videos de esos avatares son de ese Clip, y una copia los pediría para otro Clip, que el armado rechazaría.
 
 ### 1.5 Lo que la pantalla puede leer antes de «Crear» (todo en el PR 1, gratis y sin red)
 
@@ -244,6 +272,19 @@ Después de «Crear», el dueño va a «Por aprobar». La tarjeta del Clip muest
 - **Con el interruptor apagado o encendido.** La regla no depende de `QUALIFY_CLIP_BLOCK_TRANSITIONS`. Responde antes que la regla del interruptor (`recipe_unavailable`), así que el dueño lee siempre `avatar_join_cut_only`. Es la condición para encenderlo. Las pruebas corren con los dos valores: `test_the_first_create_refuses_a_blend_next_to_an_avatar` (avatar antes de un tramo con fundido, y avatar primero), `test_the_first_create_takes_a_cut_next_to_an_avatar` y `test_place_block_refuses_a_blend_into_an_avatar`. Con el interruptor encendido, `test_the_assembly_refuses_a_blend_next_to_an_avatar_whatever_path_put_it_there` prueba el armado: apagado, la receta ya la rechaza antes.
 - **Al convertir el plan en tramos (§2.4)** las uniones de los tramos del dueño quedan como él las dejó. El tramo del avatar entra sin `transition_in`, es decir con corte. Las uniones que tocan un avatar ya son corte, porque lo demás se rechazó en el «Crear».
 - **Si un bloque sigue creándose mucho tiempo**, no hace falta hacer nada. El bloque mismo termina siempre: sale, falla, o el reaper lo falla con `timeout` después de la espera de OmniHuman o de las 49 h de la tarea. Entonces el Clip pasa a `block_failed`.
+
+### 1.8 «Necesita tu atención» (PR 2, solo del lado del servidor)
+
+- **Por Clip:** `ClipWait.needs_attention` es `True` cuando `state == "block_failed"`, es decir cuando el dueño tiene que elegir. La tarjeta de «Por aprobar» lo marca con «Necesita tu atención» y puede mostrar `wait_until`.
+- **Por negocio:** `ClipAvatarService.clips_needing_attention(tenant_id=…) -> int`, una lectura gratis por `tenant_session` (RLS). Cuenta exactamente lo que dice `ClipWait.needs_attention` (`plan_states`): Clips en `drafting` con plan que tienen una entrada sin bloque (`block_missing`), o con un bloque no quitado que falló, que el Clip rechazó o cuyo tipo está apagado (`switched_off`, según los interruptores que lee el servidor). Es lo que Inicio suma a su cuenta.
+- La pantalla y la cuenta de Inicio (`Qualify/`, `home.summary`) son del carril B: este PR no las toca.
+
+### 1.9 «Textos sí, efectos no» (PR 2)
+
+Una capa `humo_capa`, `brasas_capa` o `vapor_capa` no puede cruzarse con el tramo de un avatar. Una capa sin tramo cubre todo el Clip, así que también se rechaza. Los textos sí se aceptan. Se rechaza con `code="avatar_block_effect"` y el texto «Los efectos de humo, brasas y vapor no se pueden poner mientras sale el avatar. Muévelos a otra parte de tu video o quítalos.»
+- Se revisa en el primer «Crear», sobre la línea de tiempo con cada avatar a su largo estimado, en `retry_block` con la estimación nueva, y en `place_block`, contra todos los avatares de la receta.
+- También se revisa en el armado local, donde el Clip falla con el mismo texto sin leer nada.
+- Las ventanas se calculan sumando los largos de los tramos (`block_windows`). Con transiciones del §10 los tramos se solapan un poco, así que la regla es un poco más estricta que el video real.
 
 ## 2. Diseño de backend
 
@@ -338,7 +379,7 @@ Es el patrón de espera que ya usa el armado local (`LocalVideoWait`) más el de
 | R3 | Los bloques de un Clip que falló antes de armarse siguen contando en el cupo según §9 («deja de contar al aprobarse su Clip o con la retención»). Un Clip que falló no se aprueba nunca. | Resuelto en el PR 1 (P6): un bloque cuyo Clip está `failed` deja de contar. Se lee del estado del Clip, sin marcar nada. Enmienda §11 del ADR 50, `[PROPUESTO]`. |
 | R4 | La voz real dura distinto de lo estimado: los textos se corren y el Clip podría pasar de 60 s. | §2.4: se corren y se recortan con registro, y lo que pasa de 60 s se vuelve una falla del bloque que el dueño resuelve. Pruebas de la función pura con largos más cortos y más largos. |
 | R5 | La cola de OmniHuman es de 1 tarea a la vez (ADR 44 §6): 3 bloques hacen fila de unos 12 min o más, y el Clip espera todo ese tiempo. | Lo dice la pantalla («Estamos creando tus avatares…»). El tope de 3 al día lo acota. No cuesta más, solo tiempo. |
-| R6 | «Crearla otra vez» (`recreate`) sobre un Clip de la opción B que falló copiaría `clip_avatar_plan` por `create_draft`. | `create_draft` rechaza un brief con plan (§2.1). `recreate` de un Clip de la opción B se rechaza con «Vuelve a crear este video desde el editor.» (**nuevo**). |
+| R6 | «Crearla otra vez» (`recreate`) sobre un Clip de la opción B que falló copiaría `clip_avatar_plan` por `create_draft`. | `create_draft` rechaza un brief con plan (§2.1). `recreate` se rechaza con `avatar_clip_from_editor` y «Los videos con avatar se crean de nuevo desde cero. Toca «Crear publicación» para empezar uno nuevo.» Vale para la opción B y, a propósito, también para un Clip de la opción A con un avatar puesto: sus videos son de ese Clip (§1.4 bis). |
 | R7 | Que la espera se rompa sin que nadie lo vea. | Registro `creative.pipeline.local_waits reason=ClipBlocksWait` (ya existe para las otras esperas), y una prueba que simula el reinicio: se pierde el `hold` y el resultado es el mismo. |
 | R8 | Si un interruptor se apaga mientras el Clip espera, sus bloques de ese tipo ya están pagados o en curso. | §2.2: el bloque se trata como fallido con `switched_off` y el dueño lo quita. Nunca se pega un bloque de un tipo apagado. |
 

@@ -6,6 +6,7 @@ settling opens no `join` on its Clip (only a video by parts joins). No vendor is
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -572,3 +573,204 @@ def test_the_clip_waits_then_takes_its_blocks_video_in_a_new_brief(
     assert content.repository.get_brief(tenant_id=tenant, brief_id=record.brief_id) == asked
     wait = world["service"].clip_wait(tenant_id=tenant, clip_id=made.clip_id)
     assert wait is not None and wait.state == "assembling"
+
+
+# ---------------------------------------------------------------------------
+# m-25119867 PR 2: retry, remove, the owner's 72 h, attention, the reaper — on Postgres
+
+
+def _fail_block(tenant: UUID, block: UUID, *, paid: bool = False) -> None:
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""
+            UPDATE content_drafts SET status = 'failed', failure_reason = 'provider_error'
+            WHERE id = :b
+        """),
+            {"b": block},
+        )
+        if paid:
+            brand = session.scalar(
+                text("SELECT brand_id FROM content_drafts WHERE id = :b"), {"b": block}
+            )
+            session.add(
+                orm.CreativeUsageEvent(
+                    tenant_id=tenant,
+                    brand_id=brand,
+                    draft_id=block,
+                    provider="seedream",
+                    model_id="seedream-4",
+                    unit="piece",
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    pieces=1,
+                    cost_usd=0.03,
+                    paid_by="platform",
+                    pricing_table_version="v9",
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+
+
+def _pass(world: dict[str, Any], clip: UUID) -> None:
+    """One pass of the Clip's run outside the worker (no lease: the same writes)."""
+    content, tenant = world["content"], world["tenant"]
+    try:
+        content.run_generation(tenant_id=tenant, draft_id=clip)
+    except ca.ClipBlocksWait:
+        pass
+
+
+def test_retry_and_remove_on_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = _first_create(monkeypatch)
+    tenant, service = world["tenant"], world["service"]
+    made = _create_b(world)
+    block = made.block_ids[0]
+    _fail_block(tenant, block, paid=True)
+    _pass(world, made.clip_id)  # the failure is seen: its 72 h start
+    wait = service.clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.needs_attention and wait.wait_until is not None
+    assert service.clips_needing_attention(tenant_id=tenant) == 1
+    used = ca.PostgresClipAvatarStore().blocks_made_today(tenant_id=tenant)
+    assert used == 1  # the first attempt paid: it counts
+    args = {"tenant_id": tenant, "user_id": world["user"], "clip_id": made.clip_id}
+    assert service.retry_block(block_id=block, **args) == block
+    assert service.retry_block(block_id=block, **args) == block  # a double tap: one attempt
+    with tenant_session(tenant) as session:
+        row = session.execute(
+            text("SELECT status, revision, failure_detail FROM content_drafts WHERE id = :b"),
+            {"b": block},
+        ).one()
+        charges = session.execute(
+            text("SELECT revision, weight FROM creation_charges WHERE draft_id = :b ORDER BY 1"),
+            {"b": block},
+        ).all()
+        jobs = session.scalar(
+            text("""
+            SELECT count(*) FROM creative_jobs
+            WHERE draft_id = :b AND revision = 2 AND status = 'queued'
+        """),
+            {"b": block},
+        )
+    assert (row.status, row.revision, row.failure_detail) == ("drafting", 2, None)
+    assert [(c.revision, c.weight) for c in charges] == [(1, 0), (2, 0)] and jobs == 1
+    # ADR 50 §11 P1: the retry is one more avatar of the day
+    assert ca.PostgresClipAvatarStore().blocks_made_today(tenant_id=tenant) == used + 1
+    assert service.clips_needing_attention(tenant_id=tenant) == 0
+    # it fails again before paying anything: that attempt no longer counts
+    _fail_block(tenant, block)
+    assert ca.PostgresClipAvatarStore().blocks_made_today(tenant_id=tenant) == used
+    _pass(world, made.clip_id)
+    remove = {k: v for k, v in args.items()}
+    assert service.remove_block(block_id=block, **remove) is True
+    assert service.remove_block(block_id=block, **remove) is False
+    with tenant_session(tenant) as session:
+        removed = session.scalar(
+            text("SELECT part_removed_at IS NOT NULL FROM content_drafts WHERE id = :b"),
+            {"b": block},
+        )
+        dirty = session.scalar(
+            text("""
+            SELECT dirty_version > prepared_version FROM creative_pipeline_runs
+            WHERE draft_id = :c AND phase = 'generation'
+        """),
+            {"c": made.clip_id},
+        )
+    assert removed and dirty
+    wait = service.clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.state == "assembling" and not wait.needs_attention
+
+
+def test_the_owners_72_hours_on_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import timedelta
+
+    world = _first_create(monkeypatch)
+    tenant, content = world["tenant"], world["content"]
+    t0 = datetime.now(UTC)
+    content._clip_avatar_clock = lambda: t0
+    made = _create_b(world)
+    _fail_block(tenant, made.block_ids[0])
+    _pass(world, made.clip_id)
+    content._clip_avatar_clock = lambda: t0 + timedelta(hours=72)
+    _pass(world, made.clip_id)
+    with tenant_session(tenant) as session:
+        clip = session.execute(
+            text("SELECT status, failure_reason, failure_detail FROM content_drafts WHERE id = :c"),
+            {"c": made.clip_id},
+        ).one()
+        charge = session.scalar(
+            text("SELECT status FROM creation_charges WHERE draft_id = :c AND revision = 1"),
+            {"c": made.clip_id},
+        )
+    assert (clip.status, clip.failure_reason) == ("failed", ca.AVATAR_BLOCK_FAILED)
+    assert clip.failure_detail == ca.AVATAR_BLOCK_FAILED_TEXT and charge == "refunded"
+    assert world["service"].clips_needing_attention(tenant_id=tenant) == 0
+
+
+def test_the_reaper_never_fails_a_clip_waiting_for_its_avatars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.dispatch import reap_stale_drafts
+
+    world = _first_create(monkeypatch)
+    tenant = world["tenant"]
+    made = _create_b(world)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET updated_at = now() - interval '3 hours' WHERE id = :c"),
+            {"c": made.clip_id},
+        )
+    reap_stale_drafts(tenant_id=tenant)
+    with tenant_session(tenant) as session:
+        status = session.scalar(
+            text("SELECT status FROM content_drafts WHERE id = :c"), {"c": made.clip_id}
+        )
+    assert status == "drafting"  # its job is queued: spared, whatever its stamp
+
+
+def test_the_72_hours_never_fail_a_clip_retried_meanwhile_on_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    world = _first_create(monkeypatch)
+    tenant, content, service = world["tenant"], world["content"], world["service"]
+    made = _create_b(world)
+    _fail_block(tenant, made.block_ids[0])
+    _pass(world, made.clip_id)
+    stale = content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id)
+    service.retry_block(
+        tenant_id=tenant, user_id=world["user"], clip_id=made.clip_id, block_id=made.block_ids[0]
+    )
+    with pytest.raises(CheckpointError):
+        content._fail_waiting_clip(
+            tenant, stale, reason=ca.AVATAR_BLOCK_FAILED, detail=ca.AVATAR_BLOCK_FAILED_TEXT
+        )
+    with tenant_session(tenant) as session:
+        status = session.scalar(
+            text("SELECT status FROM content_drafts WHERE id = :c"), {"c": made.clip_id}
+        )
+    assert status == "drafting"
+
+
+def test_attention_counts_what_clip_wait_says(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`clips_needing_attention` and `ClipWait.needs_attention` agree: a block of a kind
+    switched off, and an entry with no block, need the owner too."""
+    world = _first_create(monkeypatch)
+    tenant, service = world["tenant"], world["service"]
+    made = _create_b(world)
+    assert service.clips_needing_attention(tenant_id=tenant) == 0
+    service._env = {}  # the presenter switched off while the Clip waits
+    wait = service.clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.needs_attention
+    assert service.clips_needing_attention(tenant_id=tenant) == 1
+    service._env = {ca.PRESENTER_SWITCH: "on"}
+    with tenant_session(tenant) as session:  # the plan's slot has no block any more
+        session.execute(
+            text("UPDATE content_drafts SET part_index = 6 WHERE id = :b"),
+            {"b": made.block_ids[0]},
+        )
+    wait = service.clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.needs_attention
+    assert service.clips_needing_attention(tenant_id=tenant) == 1

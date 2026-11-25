@@ -2009,7 +2009,7 @@ class CreativeState(rx.State):
     #: The dead path each of those had, by key: a renewal that gives it back (its token
     #: was still alive: the file itself does not play here) leaves the video broken.
     _clip_media_dead: dict[str, str] = {}
-    #: Why a trim handle stopped short («El pedazo tiene que durar al menos 1 s.»), "" =
+    #: Why a trim handle stopped short («El bloque tiene que durar al menos 1 s.»), "" =
     #: nothing to say.
     clip_cut_error: str = ""
     #: ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): the owner already
@@ -2452,6 +2452,16 @@ class CreativeState(rx.State):
         if draft is not None and draft.video_draft.state == VIDEO_DRAFT:
             return APPROVE_VERSION_LABEL
         return "Aprobar"
+
+    @rx.var
+    def review_video_key(self) -> str:
+        """EF-18 (m-25026598): the key of the video the piece's page shows — what its
+        contact sheet must have been made from ("" = no video, or a previous version on
+        screen: the sheet belongs to the version that would be approved)."""
+        draft = self.draft
+        if draft is None or draft.viewing_previous_version:
+            return ""
+        return next((item.key for item in draft.media if item.media_type == "video"), "")
 
     @rx.var
     def kind_is_video(self) -> bool:

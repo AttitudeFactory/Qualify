@@ -27,7 +27,7 @@ from typing import Any
 
 #: The magnet (§3.3): every edge lands on a half second.
 STEP_S = 0.5
-#: «Cada pedazo dura al menos 1 segundo.»
+#: «Cada bloque dura al menos 1 segundo.»
 MIN_S = 1.0
 #: A photo's length (§1.2: from 1 to 5 s, 2 s by default — hypothesis to measure).
 PHOTO_MIN_S = 1.0

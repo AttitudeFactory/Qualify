@@ -129,7 +129,7 @@ Decisión de Deivid (2026-11-17), textual: «Bajarlos a 4K 8 bits (Recomendado)�
   Queda en la procedencia de cada tramo.
 - **60 s de video por tramo** (`SEGMENT_SOURCE_MAX_S`), a cualquier velocidad: se rechaza antes
   de crear la pieza (`segment_source_too_long`). El worker lo vuelve a revisar y muestra el
-  aviso revisado por ux-designer: «Cada pedazo puede tomar hasta 1 minuto de tu video, aunque
+  aviso revisado por ux-designer: «Cada bloque puede tomar hasta 1 minuto de tu video, aunque
   lo aceleres…».
 - **No arma a la vez que una unión de partes.** La unión espera su turno y el armado local se
   reintenta en la pasada siguiente, sin fallar (`creative/heavy_video.py`).

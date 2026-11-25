@@ -361,17 +361,173 @@ def test_an_idea_of_an_account_now_labelled_detractor_is_dropped(world: Any) -> 
     assert "long" not in _ids(result)
 
 
-def test_region_and_niche_wait_for_rf04() -> None:
-    assert rv.REGION_NICHE_READY is False
-    with pytest.raises(rv.FilterUnavailable):
-        rv.ReelFilters.of(regions=["CO"])
-    with pytest.raises(rv.FilterUnavailable):
-        rv.ReelFilters.of(niches=["comida"])
+# --------------------------------------------------------------------------------------
+# region and niche (RF-02b, m-25119463) — `creators.region_code` / `.rubro` of RF-04
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def placed(world: Any) -> tuple[World, tuple[UUID, UUID]]:
+    """The world with RF-04's facts: `inspira` in Colombia (food), `tiktoker` in
+    Venezuela (no rubro yet), `rival` with a rubro but no country; `nada` (detractor) in
+    Colombia. Nothing is known of any other account."""
+    w, a = world
+    w.library.set_facts("instagram", "inspira", region="CO", rubro="food_drink")
+    w.library.set_facts("tiktok", "tiktoker", region="VE")
+    w.library.set_facts("instagram", "rival", rubro="food_drink")
+    w.library.set_facts("instagram", "nada", region="CO", rubro="food_drink")
+    return w, a
+
+
+def test_region_and_niche_are_on() -> None:
+    assert rv.REGION_NICHE_READY is True
+    chosen = rv.ReelFilters.of(regions=[" co", "VE"], niches=["Food_Drink"])
+    assert chosen.regions == {"CO", "VE"} and chosen.niches == {"food_drink"}
+
+
+def test_without_a_region_or_niche_filter_unknown_accounts_still_enter(placed: Any) -> None:
+    w, a = placed
+    known = w.read(a)
+    w.library.creators.clear()  # the pool knows nothing
+    unknown = w.read(a)
+    assert _ids(unknown) == _ids(known)
+    assert [i.reel.reel_id for i in unknown.ideas] == [i.reel.reel_id for i in known.ideas]
+    assert "comp" in _ids(unknown) and "long" in _ids(unknown)
+
+
+def test_filter_one_region(placed: Any) -> None:
+    w, a = placed
+    result = w.read(a, filters=rv.ReelFilters.of(regions=["CO"]))
+    # only the Colombian referente; `rival` (no country) and the detractor stay out, and
+    # the strict product check still drops the `rubro`-only reel
+    assert _ids(result) == ["short", "mid_tie", "mid", "nodur", "categoria"]
+    assert [i.reel.reel_id for i in result.ideas] == ["idea1"]
+    assert {item.region_code for item in result.more} == {"CO"}
+
+
+def test_filter_several_regions(placed: Any) -> None:
+    w, a = placed
+    result = w.read(a, filters=rv.ReelFilters.of(regions=["CO", "VE"]))
+    assert "long" in _ids(result) and "comp" not in _ids(result)
+    assert [i.reel.reel_id for i in result.ideas] == ["idea1", "idea2"]
+
+
+def test_filter_region_of_nobody_empties_the_list(placed: Any) -> None:
+    w, a = placed
+    result = w.read(a, filters=rv.ReelFilters.of(regions=["UY"]))
+    assert _ids(result) == [] and result.ideas == []
+
+
+def test_filter_niche_leaves_out_accounts_without_rubro(placed: Any) -> None:
+    w, a = placed
+    result = w.read(a, filters=rv.ReelFilters.of(niches=["food_drink"]))
+    assert "comp" in _ids(result) and "short" in _ids(result)
+    assert "long" not in _ids(result)  # tiktoker: country, no rubro
+    assert [i.reel.reel_id for i in result.ideas] == ["idea1"]
+
+
+def test_region_and_niche_combine_with_the_other_filters(placed: Any) -> None:
+    w, a = placed
+    combined = rv.ReelFilters.of(
+        regions=["CO"], niches=["food_drink"], durations=[rv.DURATION_UNDER_15]
+    )
+    result = w.read(a, filters=combined)
+    assert _ids(result) == ["short"]
+    assert [i.reel.reel_id for i in result.ideas] == ["idea1"]  # 12 s
+    assert _ids(w.read(a, filters=rv.ReelFilters.of(regions=["CO"], kinds=["competencia"]))) == []
+
+
+def test_a_detractor_in_the_chosen_region_never_appears(placed: Any) -> None:
+    w, a = placed
+    assert "hater" not in _ids(w.read(a, filters=rv.ReelFilters.of(regions=["CO"])))
+    assert ("instagram", "nada") not in w.read(a).facts
+
+
+def test_the_ideas_stay_six_to_eight_and_in_order_with_region_off(placed: Any) -> None:
+    w, a = placed
+    result = w.read(a)
+    assert [i.reel.reel_id for i in result.ideas] == ["idea1", "idea2"]
+    assert result.facts[("instagram", "inspira")].region_code == "CO"
+    assert ("instagram", "nadie") not in result.facts
+
+
+def test_each_reel_carries_its_accounts_region_and_rubro(placed: Any) -> None:
+    w, a = placed
+    by_id = {item.reel.reel_id: item for item in w.read(a).more}
+    assert (by_id["short"].region_code, by_id["short"].rubro) == ("CO", "food_drink")
+    assert (by_id["long"].region_code, by_id["long"].rubro) == ("VE", "")
+    assert (by_id["comp"].region_code, by_id["comp"].rubro) == ("", "food_drink")
+
+
+def test_region_options_are_the_three_markets_then_all() -> None:
+    assert [(o.code, o.label) for o in rv.REGION_OPTIONS] == [
+        ("CO", "Colombia"),
+        ("VE", "Venezuela"),
+        ("UY", "Uruguay"),
+        ("", "Todas"),
+    ]
+    assert rv.REGION_TITLE == "Región" and rv.REGION_ALL_LABEL == "Todas"
+
+
+@pytest.mark.parametrize(
+    ("connect", "key", "text"),
+    [
+        ({"sector": "food_drink", "rubro_text": "arepas"}, "food_drink", "Nicho: Comida y bebida"),
+        ({"sector": "", "rubro_text": "  peluquería   canina "}, "", "Nicho: peluquería canina"),
+        ({"sector": "no_such"}, "", ""),
+        ({}, "", ""),
+    ],
+)
+def test_brand_niche_from_the_brand_kit(connect: dict[str, str], key: str, text: str) -> None:
+    niche = rv.brand_niche(uuid4(), uuid4(), connect=lambda _t, _b: connect)
+    assert (niche.key, niche.text) == (key, text)
+
+
+def test_brand_niche_reads_only_its_own_business() -> None:
+    a, b = (uuid4(), uuid4()), (uuid4(), uuid4())
+    kits = {a: {"sector": "food_drink"}, b: {"sector": "real_estate"}}
+
+    def scoped(tenant: UUID, brand: UUID) -> dict[str, str]:
+        # the store's `tenant_session`: another business's brand reads as no kit
+        return kits.get((tenant, brand), {})
+
+    assert rv.brand_niche(*a, connect=scoped).key == "food_drink"
+    assert rv.brand_niche(*b, connect=scoped).key == "real_estate"
+    assert rv.brand_niche(b[0], a[1], connect=scoped) == rv.NO_NICHE
+
+
+def test_an_unreadable_kit_only_hides_the_niche_label() -> None:
+    def broken(_t: UUID, _b: UUID) -> dict[str, str]:
+        raise RuntimeError("db down")
+
+    assert rv.brand_niche(uuid4(), uuid4(), connect=broken) == rv.NO_NICHE
+
+
+def test_two_businesses_share_public_facts_but_never_labels_or_verdicts(placed: Any) -> None:
+    w, a = placed
+    b = w.business()
+    w.label(b, "instagram", "rival", "referente")  # B follows A's competitor
+    w.reel("instagram", "only_b", "rival", views=50_000)
+    w.verdict(b, "instagram", "only_b")
+    w.ok_run(b, [])
+    colombia = rv.ReelFilters.of(regions=["CO"])
+    assert _ids(w.read(b, filters=colombia)) == []  # rival has no country
+    assert _ids(w.read(b, filters=rv.ReelFilters.of(niches=["food_drink"]))) == ["only_b"]
+    result_b = w.read(b)
+    assert set(result_b.facts) == {("instagram", "rival")}  # none of A's accounts
+    assert "only_b" not in _ids(w.read(a, filters=rv.ReelFilters.of(niches=["food_drink"])))
 
 
 @pytest.mark.parametrize(
     "kwargs",
-    [{"networks": ["youtube"]}, {"durations": ["90_120"]}, {"accounts": [("x", "h")]}],
+    [
+        {"networks": ["youtube"]},
+        {"durations": ["90_120"]},
+        {"accounts": [("x", "h")]},
+        {"regions": ["Colombia"]},
+        {"regions": ["C0"]},
+        {"niches": ["comida"]},
+    ],
 )
 def test_unknown_filter_values_are_refused(kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
