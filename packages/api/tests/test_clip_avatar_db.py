@@ -435,3 +435,140 @@ def test_the_same_request_key_gives_the_same_block_one_after_the_other_and_at_on
         thread.join(timeout=60)
     assert errors == [] and len(answers) == 2
     assert answers[0] == answers[1] and rows(at_once) == 1
+
+
+# ---------------------------------------------------------------------------
+# m-25119867 (option B): the avatar chosen at the Clip's first «Crear», on Postgres
+
+
+def _first_create(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from qualify_api.creative.queue_dispatch import SWITCH
+
+    monkeypatch.setenv(SWITCH, "queue")
+    for switch in (ca.PRESENTER_SWITCH, ca.ANIMATED_SWITCH):
+        monkeypatch.setenv(switch, "on")
+    tenant, brand, user = _business(monkeypatch)
+    service, content = _service({ca.PRESENTER_SWITCH: "on"})
+    return {"tenant": tenant, "brand": brand, "user": user, "service": service, "content": content}
+
+
+def _create_b(world: dict[str, Any], **kw: Any) -> ca.ClipWithBlocks:
+    return world["service"].create_clip_with_blocks(
+        tenant_id=world["tenant"],
+        brand_id=world["brand"],
+        user_id=world["user"],
+        brief=_clip(world["brand"], world["tenant"]),
+        blocks=[ca.ClipAvatarPlacement(block=_request(), at=0)],
+        **kw,
+    )
+
+
+def _count(tenant: UUID, sql: str, **params: Any) -> int:
+    with tenant_session(tenant) as session:
+        return int(session.scalar(text(sql), params) or 0)
+
+
+def test_the_first_create_writes_the_clip_and_its_blocks_in_one_go(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = _first_create(monkeypatch)
+    tenant = world["tenant"]
+    key = uuid4()
+    made = _create_b(world, request_key=key)
+    assert _create_b(world, request_key=key) == made  # the same «Crear» again
+    store = ca.PostgresClipAvatarStore()
+    clip = store.clip(tenant_id=tenant, clip_id=made.clip_id)
+    assert clip is not None and clip.status == "drafting" and clip.parent_draft_id is None
+    (block,) = store.blocks_of(tenant_id=tenant, clip_id=made.clip_id)
+    assert block.id == made.block_ids[0] and block.slot == 1 and block.status == "drafting"
+    brief = world["content"].repository.get_brief(tenant_id=tenant, brief_id=clip.brief_id)
+    assert [(e.slot, e.at) for e in brief.media.clip_avatar_plan] == [(1, 0)]
+    # each has its queued job (the reaper spares a draft with one) and its charge row
+    for draft in (made.clip_id, made.block_ids[0]):
+        queued = "SELECT count(*) FROM creative_jobs WHERE draft_id = :d AND status = 'queued'"
+        assert _count(tenant, queued, d=draft) == 1
+        charges = "SELECT count(*) FROM creation_charges WHERE draft_id = :d"
+        assert _count(tenant, charges, d=draft) == 1
+
+
+def test_a_refused_first_create_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = _first_create(monkeypatch)
+    tenant = world["tenant"]
+    for _ in range(ca.AVATAR_DAILY_CAP):
+        _create_b(world)
+    drafts = _count(tenant, "SELECT count(*) FROM content_drafts")
+    jobs = _count(tenant, "SELECT count(*) FROM creative_jobs")
+    with pytest.raises(ca.AvatarDailyCapReached) as refused:
+        _create_b(world)
+    assert refused.value.owner_message == ca.FIRST_CREATE_DAILY_CAP_TEXT
+    assert _count(tenant, "SELECT count(*) FROM content_drafts") == drafts
+    assert _count(tenant, "SELECT count(*) FROM creative_jobs") == jobs
+
+
+def test_a_block_settling_wakes_its_waiting_clip(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = _first_create(monkeypatch)
+    tenant = world["tenant"]
+    made = _create_b(world)
+    sql = (
+        "SELECT dirty_version FROM creative_pipeline_runs "
+        "WHERE draft_id = :c AND phase = 'generation'"
+    )
+    before = _count(tenant, sql, c=made.clip_id)
+    with tenant_session(tenant) as session:
+        mark_parent_dirty(session, made.block_ids[0])
+    assert _count(tenant, sql, c=made.clip_id) == before + 1
+    joins = "SELECT count(*) FROM creative_pipeline_runs WHERE draft_id = :c AND phase = 'join'"
+    assert _count(tenant, joins, c=made.clip_id) == 0  # never a join on a Clip
+
+
+def test_a_failed_clips_blocks_owe_nothing_on_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P6 (Deivid 2026-11-25): from the moment the Clip fails its blocks free the month."""
+    world = _first_create(monkeypatch)
+    tenant = world["tenant"]
+    made = _create_b(world)
+    store = ca.PostgresClipAvatarStore()
+    assert store.pending_block_seconds(tenant_id=tenant, brand_id=world["brand"])[0] == 1
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET status = 'failed' WHERE id = :c"), {"c": made.clip_id}
+        )
+    assert store.pending_block_seconds(tenant_id=tenant, brand_id=world["brand"]) == (0, 0)
+
+
+def test_the_clip_waits_then_takes_its_blocks_video_in_a_new_brief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = _first_create(monkeypatch)
+    tenant, content = world["tenant"], world["content"]
+    made = _create_b(world)
+    block = made.block_ids[0]
+    record = content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id)
+    asked = content.repository.get_brief(tenant_id=tenant, brief_id=record.brief_id)
+    with pytest.raises(ca.ClipBlocksWait):
+        content._clip_plan_ready(tenant, record, asked)
+    key = f"t/{tenant}/generated/{block}/r1/video.mp4"
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET status = 'generated' WHERE id = :b"), {"b": block}
+        )
+        session.add(
+            orm.ImageAsset(
+                tenant_id=tenant,
+                draft_id=block,
+                media_url=key,
+                object_key=key,
+                media_type="video",
+                provider="omnihuman",
+                model_id="omnihuman-1.5",
+                params={"duration_seconds": 3.6},
+            )
+        )
+    fresh, brief = content._clip_plan_ready(tenant, record, asked)
+    assert fresh.brief_id != record.brief_id and fresh.status == "drafting"
+    assert brief.media.clip_avatar_plan == ()
+    assert brief.media.segments[0].key == key
+    assert content.repository.get_brief(tenant_id=tenant, brief_id=fresh.brief_id) == brief
+    # the brief the owner sent is still there
+    assert content.repository.get_brief(tenant_id=tenant, brief_id=record.brief_id) == asked
+    wait = world["service"].clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None and wait.state == "assembling"

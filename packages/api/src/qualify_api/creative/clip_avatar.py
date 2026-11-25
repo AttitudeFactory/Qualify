@@ -59,7 +59,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
@@ -75,17 +75,27 @@ from qualify_creative.enums import (
     VideoEngine,
 )
 from qualify_creative.schemas import (
+    CUT_EFFECT_ID,
     DURATIONS_SECONDS,
+    LOCAL_TOTAL_MAX_S,
+    LOCAL_TOTAL_MIN_S,
     SCRIPT_MAX,
+    SEGMENTS_MAX,
+    ClipAvatarSlot,
     ContentBrief,
     MediaInputs,
     SourceSegment,
 )
 
+from qualify_api.creative.heavy_video import LocalVideoWait
+
 logger = logging.getLogger(__name__)
 
 #: The two switches (house convention: `1`/`on`/`true` turn a switch on; anything else,
 #: or nothing, leaves it off — a typo never turns it on).
+#: NEVER turned on before PR 2 of m-25119867: until then a Clip whose avatar block of its
+#: first «Crear» fails waits forever (no «Intentar de nuevo», «Quitar avatar» nor the 72 h
+#: limit yet). Said next to them in `.env.example` and `deploy/.env.prod.example` too.
 PRESENTER_SWITCH = "QUALIFY_CLIP_AVATAR_PRESENTER"
 ANIMATED_SWITCH = "QUALIFY_CLIP_AVATAR_ANIMATED"
 _ON_VALUES = ("1", "on", "true")
@@ -160,38 +170,131 @@ BLOCK_MODEL_TEXT = (
     "Por ahora no podemos crear este avatar. Inténtalo más tarde. No se gastó nada de tu plan."
 )
 
+# -- option B (m-25119867): the avatar chosen at the Clip's first «Crear» -----------------
+# The contract is `docs/contrato-avatar-primer-crear.md` §1; the screen is m-25112921.
+
+#: At most this many blocks in one «Crear» (the daily cap: more could never be made).
+BLOCKS_PER_CREATE = AVATAR_DAILY_CAP
+#: The daily cap's words at the first «Crear»: ADR 50 §9's, plus what to do now, since there is
+#: no video yet (Deivid, 2026-11-25, ADR 50 §11). Option A keeps its own words.
+FIRST_CREATE_DAILY_CAP_TEXT = (
+    f"Ya creaste {AVATAR_DAILY_CAP} avatares hoy. Mañana puedes crear más. "
+    "Quita el avatar para crear tu video ahora."
+)
+FIRST_CREATE_SWITCHED_OFF_TEXT = (
+    "Este tipo de avatar todavía no está disponible. Quítalo para crear tu video."
+)
+TOO_MANY_BLOCKS_TEXT = (
+    f"Un video puede tener hasta {BLOCKS_PER_CREATE} avatares. Quita los que sobren."
+)
+#: The owner's stretches and the avatars together pass `SEGMENTS_MAX` (8).
+TOO_MANY_SEGMENTS_TEXT = (
+    f"Tu video puede tener hasta {SEGMENTS_MAX} entre fotos, videos y avatares. "
+    "Quita alguno y vuelve a crear tu video."
+)
+NEEDS_OWN_MEDIA_TEXT = "Agrega al menos 3 segundos de tus fotos o videos para acompañar al avatar."
+FILE_NOT_OWNED_TEXT = "No pudimos usar una de las imágenes del avatar. Súbela de nuevo."
+#: `clip_wait`'s words (`ClipWait.owner_text`).
+WAITING_ONE_TEXT = (
+    "Estamos creando tu avatar. Puede tardar varios minutos. Puedes salir: tu video te "
+    "espera en Por aprobar."
+)
+WAITING_MANY_TEXT = (
+    "Estamos creando tus avatares. Puede tardar varios minutos. Puedes salir: tu video te "
+    "espera en Por aprobar."
+)
+#: PR 1 of m-25119867 has no «Intentar de nuevo» / «Quitar avatar» yet: the words never
+#: promise a button the screen cannot show (the PR 2 wording is in the contract §1.2).
+BLOCK_FAILED_STATE_TEXT = (
+    "Uno de tus avatares no se pudo crear. Tu video espera. Pronto podrás intentarlo de "
+    "nuevo o quitarlo."
+)
+ASSEMBLING_WITH_BLOCKS_TEXT = "Tus avatares están listos. Estamos armando tu video."
+ASSEMBLING_TEXT = "Estamos armando tu video."
+READY_TEXT = "Tu video está listo. Revísalo y apruébalo."
+#: Ready and already approved (or scheduled, or published): nothing left to ask.
+READY_DONE_TEXT = "Tu video está listo."
+#: A block's own words when it failed without a detail of its own (no buttons yet, PR 1).
+BLOCK_TIMEOUT_TEXT = (
+    "Tu avatar tardó demasiado y no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo."
+)
+BLOCK_FAILED_TEXT = "Tu avatar no se pudo crear. Pronto podrás intentarlo de nuevo o quitarlo."
+#: A block that, at its real length, makes the Clip pass 60 s (`clip_too_long`). The
+#: owner cannot edit the Clip's stretches while it waits (`drafting` has no EDIT edge),
+#: so the words only ask about the avatar.
+CLIP_TOO_LONG_TEXT = (
+    "Con tu avatar, el video pasa de 60 segundos. Acorta lo que dice el avatar o quítalo."
+)
+
+
+def daily_left_text(left: int, asking: int) -> str:
+    """The cap's words when fewer blocks are left today (`left`, at least 1) than the
+    «Crear» asks for (`asking`): how many there are room for, and how many to take out."""
+    extra = max(1, asking - left)
+    return (
+        f"Hoy solo puedes crear {_avatars(left)} más. Quita {_avatars(extra)} para crear tu video."
+    )
+
+
+def _avatars(count: int) -> str:
+    return "1 avatar" if count == 1 else f"{count} avatares"
+
 
 class ClipAvatarRefused(ValueError):
     """A block refused before anything was written or paid: a stable `code` for the
-    screen and the owner's `owner_message` (never `str(exc)`, which is English)."""
+    screen and the owner's `owner_message` (never `str(exc)`, which is English).
+    `block`: at the first «Crear», the refused block's place in the list (from 0)."""
 
-    def __init__(self, code: str, owner_message: str, raw: str = "") -> None:
+    def __init__(
+        self, code: str, owner_message: str, raw: str = "", *, block: int | None = None
+    ) -> None:
         super().__init__(raw or code)
         self.code = code
         self.owner_message = owner_message
+        self.block = block
 
 
 class AvatarDailyCapReached(ClipAvatarRefused):
     """Today's avatar blocks of this business are spent: nothing read past the count,
-    written, charged or paid. `used` today's blocks, `cap` the cap."""
+    written, charged or paid. `used` today's blocks, `cap` the cap, `asking` how many
+    the refused request wanted."""
 
-    def __init__(self, *, used: int, cap: int = AVATAR_DAILY_CAP) -> None:
+    def __init__(
+        self,
+        *,
+        used: int,
+        cap: int = AVATAR_DAILY_CAP,
+        asking: int = 1,
+        owner_message: str = DAILY_CAP_TEXT,
+    ) -> None:
         super().__init__(
-            AVATAR_DAILY_CAP_CODE, DAILY_CAP_TEXT, raw=f"{used} avatar blocks today, cap {cap}"
+            AVATAR_DAILY_CAP_CODE,
+            owner_message,
+            raw=f"{used} avatar blocks today, cap {cap}, asking {asking}",
         )
         self.used = used
         self.cap = cap
+        self.asking = asking
 
 
-def check_avatar_daily_cap(store: Any, *, tenant_id: UUID, asking: int = 1) -> None:
+def check_avatar_daily_cap(
+    store: Any, *, tenant_id: UUID, asking: int = 1, first_create: bool = False
+) -> None:
     """Refuse `asking` new blocks when they do not fit in today's cap (the model is
-    `local_cap.check_local_daily_cap`). A store that cannot count is not capped."""
+    `local_cap.check_local_daily_cap`). A store that cannot count is not capped.
+    `first_create` (m-25119867): the words of the Clip's first «Crear», where there is
+    no video yet — §9's own sentence when nothing is left, else how many are."""
     counter = getattr(store, "blocks_made_today", None)
     if counter is None or asking < 1:
         return
     used = int(counter(tenant_id=tenant_id))
-    if used + asking > AVATAR_DAILY_CAP:
-        raise AvatarDailyCapReached(used=used)
+    if used + asking <= AVATAR_DAILY_CAP:
+        return
+    left = max(0, AVATAR_DAILY_CAP - used)
+    if not first_create:
+        raise AvatarDailyCapReached(used=used, asking=asking)
+    words = FIRST_CREATE_DAILY_CAP_TEXT if left == 0 else daily_left_text(left, asking)
+    raise AvatarDailyCapReached(used=used, asking=asking, owner_message=words)
 
 
 def switch_on(value: str | None) -> bool:
@@ -391,6 +494,8 @@ class ClipRow:
     revision: int
     parent_draft_id: UUID | None
     purged: bool = False
+    #: m-25119867: what the owner reads when the Clip failed (`failure_detail`).
+    failure_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -404,6 +509,9 @@ class BlockRow:
     kind: str
     script_seconds: int
     removed: bool = False
+    #: m-25119867: why it failed (`failure_reason`) and the owner's words for it.
+    failure_reason: str | None = None
+    failure_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -508,7 +616,7 @@ class PostgresClipAvatarStore:
             row = session.execute(
                 text("""
                 SELECT id, brand_id, brief_id, status, revision, parent_draft_id,
-                       media_purged_at IS NOT NULL AS purged
+                       media_purged_at IS NOT NULL AS purged, failure_detail
                 FROM content_drafts WHERE id = :d
             """),
                 {"d": clip_id},
@@ -523,6 +631,7 @@ class PostgresClipAvatarStore:
             revision=int(row.revision),
             parent_draft_id=row.parent_draft_id,
             purged=bool(row.purged),
+            failure_detail=row.failure_detail,
         )
 
     def blocks_of(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[BlockRow, ...]:
@@ -534,7 +643,8 @@ class PostgresClipAvatarStore:
                 text("""
                 SELECT d.id, d.part_index, d.status, b.kind,
                        COALESCE(b.media->>'own_script', '') AS script,
-                       d.part_removed_at IS NOT NULL AS removed
+                       d.part_removed_at IS NOT NULL AS removed,
+                       d.failure_reason, d.failure_detail
                 FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
                 WHERE d.parent_draft_id = :c
                   AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
@@ -550,6 +660,8 @@ class PostgresClipAvatarStore:
                 kind=_block_kind(str(row.kind)),
                 script_seconds=script_seconds(str(row.script)),
                 removed=bool(row.removed),
+                failure_reason=row.failure_reason,
+                failure_detail=row.failure_detail,
             )
             for row in rows
         )
@@ -560,7 +672,11 @@ class PostgresClipAvatarStore:
         whatever month it was made in (a block made on the 31st and approved on the 1st
         still owes). A block of a Clip already approved (charged then, or never placed:
         never charged) owes nothing, nor does one that failed or was taken out; an old
-        one leaves with its Clip's approval or its retention."""
+        one leaves with its Clip's approval or its retention.
+
+        m-25119867 (P6, Deivid 2026-11-25): nor does a block whose Clip FAILED — a failed
+        Clip is never approved, so its blocks would hold the month until the retention.
+        Read from the Clip's status, so it holds from the moment it fails."""
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
@@ -574,7 +690,7 @@ class PostgresClipAvatarStore:
                 WHERE d.brand_id = :brand
                   AND d.part_removed_at IS NULL AND d.status <> 'failed'
                   AND COALESCE((b.media->>'clip_avatar_block')::boolean, false)
-                  AND p.status NOT IN ('approved', 'staged', 'published')
+                  AND p.status NOT IN ('approved', 'staged', 'published', 'failed')
                   AND p.media_purged_at IS NULL AND d.media_purged_at IS NULL
                   AND NOT EXISTS (SELECT 1 FROM creation_charges c
                                   WHERE c.draft_id = d.id AND c.videos > 0)
@@ -815,6 +931,48 @@ def stretch_problem(stretch: BlockStretch, clip_id: UUID) -> tuple[str, str] | N
     return None
 
 
+#: m-25119867 (Deivid, 2026-11-25): a join next to an avatar block is only «Corte» —
+#: a blend would mix up to 0.8 s of the voice's end with the next stretch. The code the
+#: screen reads, and the owner's words.
+AVATAR_JOIN_CODE = "avatar_join_cut_only"
+AVATAR_JOIN_TEXT = (
+    "Al lado de un avatar, la unión tiene que ser «Corte», para que su voz se escuche "
+    "completa. Cambia la unión de esa foto o video a «Corte» y vuelve a crear tu video."
+)
+
+
+def avatar_join_problems(
+    segments: Sequence[SourceSegment | None], blocks: Iterable[int]
+) -> tuple[int, ...]:
+    """The indexes of the stretches whose join touches an avatar block and is not a cut
+    (ADR 50 §10's `SourceSegment.transition_in`): the block's own (its join with the
+    stretch before it) and the one of the stretch right after it. `blocks` are the
+    blocks' indexes in `segments`; None is a block not made yet (its join is always a
+    cut). Holds with `QUALIFY_CLIP_BLOCK_TRANSITIONS` off or on — it is the condition to
+    turn it on — on every path that checks it: the first «Crear», `place_block` and the
+    local assembly. Pure."""
+    found: list[int] = []
+    for index in sorted(set(blocks)):
+        for at in (index, index + 1):
+            if not 0 <= at < len(segments) or at in found:
+                continue
+            segment = segments[at]
+            join = segment.transition_in if segment is not None else None
+            # `corte` is read as None by the type already; kept explicit for clarity
+            if join is not None and join.effect_id != CUT_EFFECT_ID:
+                found.append(at)
+    return tuple(sorted(found))
+
+
+def refuse_avatar_joins(segments: Sequence[SourceSegment | None], blocks: Iterable[int]) -> None:
+    """`ClipAvatarRefused` (`avatar_join_cut_only`) when a join next to a block blends."""
+    bad = avatar_join_problems(segments, blocks)
+    if bad:
+        raise ClipAvatarRefused(
+            AVATAR_JOIN_CODE, AVATAR_JOIN_TEXT, raw=f"blending joins at stretches {list(bad)}"
+        )
+
+
 def charged_seconds(stretches: Sequence[BlockStretch]) -> int:
     """The month's video seconds approving a Clip with these blocks uses: each block's
     stretch as it plays (×1), rounded up to the whole second."""
@@ -826,6 +984,389 @@ def block_segment(video: BlockVideo) -> SourceSegment:
     return SourceSegment(
         key=video.object_key, start_s=0.0, end_s=round(video.seconds, 3), speed=1.0
     )
+
+
+# -- option B: the blocks a Clip waits for (m-25119867) ---------------------------------
+
+
+class ClipAvatarPlacement(BaseModel):
+    """One avatar block asked for at a Clip's first «Crear»: what it says and who says
+    it (`block`), and BEFORE which of the owner's stretches it goes (`at`, 0 = first,
+    `len(segments)` = at the end; equal `at` keep the list's order)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    block: AvatarBlockRequest
+    at: int = Field(ge=0, le=SEGMENTS_MAX)
+
+
+@dataclass(frozen=True)
+class ClipWithBlocks:
+    """What `create_clip_with_blocks` gives back: the Clip and its blocks, by slot."""
+
+    clip_id: UUID
+    block_ids: tuple[UUID, ...]
+
+
+def avatar_kind_enabled(kind: str, env: Mapping[str, str] | None = None) -> bool:
+    """Whether the screen offers blocks of `kind` (`presenter` / `animated`) — the same
+    switch the server refuses with (`refuse_if_off`). Free: no read, no network."""
+    return block_enabled(kind, env)
+
+
+def plan_seconds(blocks: Sequence[AvatarBlockRequest | ClipAvatarPlacement]) -> int:
+    """The video seconds the blocks of a «Crear» will owe when the Clip is approved, from
+    their scripts read aloud (`script_seconds`) — what the screen shows before «Crear»
+    and EXACTLY what the quota check of `create_clip_with_blocks` adds. Pure."""
+    return sum(
+        script_seconds((b.block if isinstance(b, ClipAvatarPlacement) else b).script)
+        for b in blocks
+    )
+
+
+@dataclass(frozen=True)
+class AvatarQuota:
+    """The month's video and what avatar blocks already hold of it, for the screen to say
+    before «Crear». `pending_seconds` (or `pending_blocks` when the plan counts videos,
+    not seconds) are the brand's blocks made and not charged yet, in any of its Clips
+    (ADR 50 §9). `free` is what a new «Crear» may still ask for: seconds (or videos)
+    left in the month minus what is pending; None when the month sets no limit."""
+
+    pending_blocks: int
+    pending_seconds: int
+    video_in_seconds: bool
+    left: int | None
+    free: int | None
+
+
+@dataclass(frozen=True)
+class PlannedBlock:
+    """One entry of a Clip's plan as it stands now: its block's row (None if there is
+    none), what the screen calls its state and, when failed, why (`code`)."""
+
+    entry: ClipAvatarSlot
+    row: BlockRow | None
+    state: Literal["creating", "ready", "failed", "removed"]
+    code: str | None = None
+
+
+def plan_states(
+    plan: Sequence[ClipAvatarSlot],
+    blocks: Sequence[BlockRow],
+    env: Mapping[str, str] | None = None,
+) -> tuple[PlannedBlock, ...]:
+    """Each plan entry's state, derived from its block's row (nothing stored): removed
+    by the owner, refused by the server (`clip_too_long`), its kind switched off since
+    (never placed), still being made, failed, or made. Pure."""
+    by_slot = {row.slot: row for row in blocks}
+    found: list[PlannedBlock] = []
+    for entry in sorted(plan, key=lambda e: e.slot):
+        row = by_slot.get(entry.slot)
+        if row is None:
+            found.append(PlannedBlock(entry, None, "failed", "block_missing"))
+        elif row.removed:
+            found.append(PlannedBlock(entry, row, "removed"))
+        elif entry.refused:
+            found.append(PlannedBlock(entry, row, "failed", entry.refused))
+        elif row.status == "failed":
+            found.append(PlannedBlock(entry, row, "failed", row.failure_reason or "failed"))
+        elif not block_enabled(row.kind, env):
+            found.append(PlannedBlock(entry, row, "failed", "switched_off"))
+        elif row.status == "drafting":
+            found.append(PlannedBlock(entry, row, "creating"))
+        else:
+            found.append(PlannedBlock(entry, row, "ready"))
+    return tuple(found)
+
+
+def _row_state(row: BlockRow) -> PlannedBlock:
+    """A block with no plan entry (option A, or a Clip already made from its plan) as
+    its row stands: removed, being made, failed (its reason) or made."""
+    entry = ClipAvatarSlot(slot=row.slot, at=0, seconds_estimate=max(1, row.script_seconds))
+    if row.removed:
+        return PlannedBlock(entry, row, "removed")
+    if row.status == "drafting":
+        return PlannedBlock(entry, row, "creating")
+    if row.status == "failed":
+        return PlannedBlock(entry, row, "failed", row.failure_reason or "failed")
+    return PlannedBlock(entry, row, "ready")
+
+
+#: The placeholder stretch of a block not made yet, only to check the recipe the owner
+#: sees (`virtual_brief`): never stored, never read.
+_PLAN_NAMESPACE = UUID("0b6a3f2e-25e1-4c9b-8f67-251198670001")
+
+
+def _placeholder(tenant_id: UUID, entry: ClipAvatarSlot) -> SourceSegment:
+    from uuid import uuid5  # noqa: PLC0415
+
+    folder = uuid5(_PLAN_NAMESPACE, f"{tenant_id}:{entry.slot}")
+    return SourceSegment(
+        key=f"t/{tenant_id}/generated/{folder}/avatar-plan.mp4",
+        start_s=0.0,
+        end_s=float(entry.seconds_estimate),
+        speed=1.0,
+    )
+
+
+def _ordered(
+    segments: Sequence[SourceSegment], plan: Sequence[ClipAvatarSlot]
+) -> list[tuple[SourceSegment | None, ClipAvatarSlot | None]]:
+    """The Clip's timeline: each block before the owner's stretch at its `at` (equal
+    `at` in slot order), the owner's stretches in their order."""
+    order: list[tuple[SourceSegment | None, ClipAvatarSlot | None]] = []
+    by_at = sorted(plan, key=lambda e: (e.at, e.slot))
+    for index in range(len(segments) + 1):
+        order.extend((None, entry) for entry in by_at if min(entry.at, len(segments)) == index)
+        if index < len(segments):
+            order.append((segments[index], None))
+    return order
+
+
+def virtual_brief(
+    brief: ContentBrief, plan: Sequence[ClipAvatarSlot], tenant_id: UUID
+) -> ContentBrief:
+    """The recipe as the owner sees it before «Crear»: each block a stretch at its
+    estimated length, in its place. Only to check it (`refuse_unbuilt_recipe`)."""
+    segments = tuple(
+        segment if segment is not None else _placeholder(tenant_id, entry)  # type: ignore[arg-type]
+        for segment, entry in _ordered(brief.media.segments, plan)
+    )
+    return brief.model_copy(
+        update={
+            "media": brief.media.model_copy(update={"segments": segments, "clip_avatar_plan": ()})
+        }
+    )
+
+
+@dataclass(frozen=True)
+class PlanFit:
+    """`fit_plan`'s answer: the brief the Clip is made from, or the slot of the block that
+    makes it pass `LOCAL_TOTAL_MAX_S` (`too_long`) — then `brief` is None."""
+
+    brief: ContentBrief | None
+    too_long: int | None = None
+    moved: int = 0
+    dropped: int = 0
+
+
+def _mapper(points: Sequence[tuple[float, float]]) -> Callable[[float], float]:
+    """A piecewise-linear map from the estimated timeline to the real one, through the
+    item boundaries `(estimated, real)`: a time inside a block keeps its place in it, a
+    time over the owner's stretch moves with what came before."""
+
+    def at(t: float) -> float:
+        for (e0, r0), (e1, r1) in zip(points, points[1:], strict=False):
+            if t <= e1:
+                if e1 <= e0:
+                    return r0
+                return r0 + (max(t, e0) - e0) * (r1 - r0) / (e1 - e0)
+        last_e, last_r = points[-1]
+        return last_r + (t - last_e)
+
+    return at
+
+
+def fit_plan(
+    brief: ContentBrief, made: Mapping[int, BlockVideo], *, keep: Sequence[ClipAvatarSlot]
+) -> PlanFit:
+    """The Clip's recipe with its blocks made (`made`: slot → its kept video; `keep`: the
+    plan entries still in it): each block a stretch of its whole video at ×1, in its
+    place; every text and effect timed on the estimated timeline moved to the real one
+    (a time inside a block keeps its place in it), cut at the new end, and dropped when it
+    would start at or after it. Over `LOCAL_TOTAL_MAX_S`: the slot of the first block
+    that passes it, nothing else. Pure."""
+    media = brief.media
+    order = _ordered(media.segments, keep)
+    points: list[tuple[float, float]] = [(0.0, 0.0)]
+    segments: list[SourceSegment] = []
+    for segment, entry in order:
+        e, r = points[-1]
+        if segment is not None:
+            length = segment.output_seconds
+            segments.append(segment)
+            points.append((e + length, r + length))
+            continue
+        assert entry is not None
+        stretch = block_segment(made[entry.slot])
+        segments.append(stretch)
+        points.append((e + entry.seconds_estimate, r + stretch.output_seconds))
+        if r + stretch.output_seconds > LOCAL_TOTAL_MAX_S + 1e-6:
+            return PlanFit(brief=None, too_long=entry.slot)
+    total = points[-1][1]
+    move = _mapper(points)
+    moved = dropped = 0
+    texts = []
+    for layer in media.text_layers:
+        start = round(move(layer.start_s), 3)
+        end = None if layer.end_s is None else round(min(move(layer.end_s), total), 3)
+        if start >= total or (end is not None and end <= start):
+            dropped += 1
+            continue
+        moved += int((start, end) != (layer.start_s, layer.end_s))
+        texts.append(layer.model_copy(update={"start_s": start, "end_s": end}))
+    effects = []
+    for effect in media.effects:
+        if effect.start_s is None or effect.end_s is None:
+            effects.append(effect)
+            continue
+        start = round(move(effect.start_s), 3)
+        end = round(min(move(effect.end_s), total), 3)
+        if start >= total or end <= start:
+            dropped += 1
+            continue
+        moved += int((start, end) != (effect.start_s, effect.end_s))
+        effects.append(effect.model_copy(update={"start_s": start, "end_s": end}))
+    fresh = ContentBrief.model_validate(
+        {
+            **brief.model_dump(),
+            "media": {
+                **media.model_dump(),
+                "segments": tuple(s.model_dump() for s in segments),
+                "text_layers": tuple(t.model_dump() for t in texts),
+                "effects": tuple(f.model_dump() for f in effects),
+                "clip_avatar_plan": (),
+            },
+        }
+    )
+    return PlanFit(brief=fresh, moved=moved, dropped=dropped)
+
+
+class ClipBlocksWait(LocalVideoWait):
+    """A Clip waits for its avatar blocks (m-25119867): its run is released NOT done and
+    tried again no sooner than `retry_after_s` — nothing read past the blocks, written
+    or paid. Its sign of life is stamped first, so it is never reaped while it waits
+    (its job also stays queued)."""
+
+    retry_after_s = 30.0
+
+
+@dataclass(frozen=True)
+class PlanWait:
+    """The Clip goes on waiting: `reason` is `creating` or `block_failed`."""
+
+    reason: str
+    brief: ContentBrief | None = None
+
+
+@dataclass(frozen=True)
+class PlanReady:
+    """Every block made: the brief the Clip is made from."""
+
+    brief: ContentBrief
+    moved: int = 0
+    dropped: int = 0
+
+
+@dataclass(frozen=True)
+class PlanRefused:
+    """A made block the Clip cannot take as it came out: the Clip's brief with that plan
+    entry refused (`code`), and it waits for the owner."""
+
+    brief: ContentBrief
+    slot: int
+    code: str
+
+    @property
+    def reason(self) -> str:
+        return self.code
+
+
+def _refused(brief: ContentBrief, slot: int, code: str) -> ContentBrief:
+    plan = tuple(
+        entry.model_copy(update={"refused": code}) if entry.slot == slot else entry
+        for entry in brief.media.clip_avatar_plan
+    )
+    return brief.model_copy(
+        update={"media": brief.media.model_copy(update={"clip_avatar_plan": plan})}
+    )
+
+
+def plan_gate(
+    *,
+    tenant_id: UUID,
+    clip_id: UUID,
+    brief: ContentBrief,
+    store: ClipAvatarStore,
+    env: Mapping[str, str] | None = None,
+) -> PlanWait | PlanReady | PlanRefused:
+    """What a Clip with a plan does on this pass: wait (a block still being made, or one
+    failed — the owner retries or removes it), take a made block it cannot use as
+    refused, or be made from the blocks' videos. Reads the blocks once (and each made
+    block's video); writes nothing."""
+    states = plan_states(
+        brief.media.clip_avatar_plan, store.blocks_of(tenant_id=tenant_id, clip_id=clip_id), env
+    )
+    live = [s for s in states if s.state != "removed"]
+    if any(s.state == "creating" for s in live):
+        return PlanWait("creating")
+    if any(s.state == "failed" for s in live):
+        return PlanWait("block_failed")
+    made: dict[int, BlockVideo] = {}
+    for planned in live:
+        assert planned.row is not None
+        video = store.block_video(tenant_id=tenant_id, block_id=planned.row.id)
+        if video is None:
+            return PlanRefused(
+                _refused(brief, planned.entry.slot, "block_not_ready"),
+                planned.entry.slot,
+                "block_not_ready",
+            )
+        made[planned.entry.slot] = video
+    fit = fit_plan(brief, made, keep=[s.entry for s in live])
+    if fit.brief is None:
+        assert fit.too_long is not None
+        return PlanRefused(
+            _refused(brief, fit.too_long, "clip_too_long"), fit.too_long, "clip_too_long"
+        )
+    return PlanReady(fit.brief, moved=fit.moved, dropped=fit.dropped)
+
+
+@dataclass(frozen=True)
+class BlockWait:
+    """One avatar of a Clip as the screen shows it while the Clip waits
+    (`docs/contrato-avatar-primer-crear.md` §1.2)."""
+
+    block_id: UUID | None
+    slot: int
+    at: int
+    kind: str
+    state: Literal["creating", "ready", "failed", "removed"]
+    seconds_estimate: int
+    seconds: float | None = None
+    failure_code: str | None = None
+    owner_text: str | None = None
+    #: PR 1 of m-25119867 offers none yet: «Intentar de nuevo» and «Quitar avatar» come
+    #: with `retry_block` / `remove_block`.
+    actions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ClipWait:
+    """A Clip with avatar blocks as the screen reads it (§1.2)."""
+
+    clip_id: UUID
+    clip_status: str
+    state: Literal["waiting_blocks", "block_failed", "assembling", "ready", "failed"]
+    owner_text: str
+    blocks: tuple[BlockWait, ...]
+    wait_until: Any = None
+
+
+def block_failure_text(code: str | None, detail: str | None) -> str:
+    """A failed block's words: its own detail when it has one, else by its code."""
+    if detail:
+        return detail
+    if code == "clip_too_long":
+        return CLIP_TOO_LONG_TEXT
+    if code == "switched_off":
+        return FIRST_CREATE_SWITCHED_OFF_TEXT
+    if code == "timeout":
+        return BLOCK_TIMEOUT_TEXT
+    return BLOCK_FAILED_TEXT
+
+
+_READY_STATUSES = frozenset({"generated", "rejected", "approved", "staged", "published"})
 
 
 # -- the service -------------------------------------------------------------------------
@@ -1124,10 +1665,12 @@ class ClipAvatarService:
             raise ClipAvatarRefused("clip_not_ready", CLIP_NOT_READY_TEXT, raw="purged")
         return clip, brief
 
-    def _refuse_without_quota(self, tenant_id: UUID, brand_id: UUID, seconds: int) -> None:
-        """No paid call without quota: the month must be able to pay, at approval, this
-        block and EVERY live block of the brand not charged yet — in any of its Clips —,
-        so blocks are never piled up past the balance."""
+    def _refuse_without_quota(
+        self, tenant_id: UUID, brand_id: UUID, seconds: int, blocks: int = 1
+    ) -> None:
+        """No paid call without quota: the month must be able to pay, at approval, these
+        `blocks` (`seconds` in all) and EVERY live block of the brand not charged yet — in
+        any of its Clips —, so blocks are never piled up past the balance."""
         creations = self._content.creations
         if creations is None:
             return
@@ -1138,10 +1681,368 @@ class ClipAvatarService:
         if balance.video_in_seconds:
             needed = seconds + pending_seconds
         else:
-            needed = 1 + pending
+            needed = blocks + pending
         short = balance.video_shortfall(needed)
         if short is not None:
             raise short
+
+    # -- option B: the avatar at the Clip's first «Crear» (m-25119867) -------------------
+
+    def create_clip_with_blocks(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        user_id: UUID,
+        brief: ContentBrief,
+        blocks: Sequence[ClipAvatarPlacement],
+        request_key: UUID | None = None,
+    ) -> ClipWithBlocks:
+        """A `local` Clip and its avatar blocks, born together: the Clip in `drafting`
+        with its plan (`media.clip_avatar_plan`), each block under it in slots 1..N, all
+        dispatched after ONE commit — the blocks are made, the Clip waits for them
+        (`ClipBlocksWait`) and is assembled once. Every rule of ADR 50 §9 and of the
+        recipe is checked BEFORE anything is written and before any paid call (paid calls
+        only start in the worker, after the commit): the switches, 30 s per block, the
+        number of blocks, an own-video Clip with 3 s of the owner's own, the recipe with
+        the blocks at their estimated length, the brand, today's cap, the month's video
+        for every uncharged block, the Clip's own price. `request_key`: the same «Crear»
+        again returns what it made and dispatches nothing."""
+        from qualify_api.creative.service import DuplicateDraftRequest  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.local import is_local_recipe  # noqa: PLC0415
+
+        placements = tuple(blocks)
+        # 1. what needs no read
+        if not placements:
+            raise ValueError("a Clip with avatars has at least one")
+        if len(placements) > BLOCKS_PER_CREATE:
+            raise ClipAvatarRefused(
+                "too_many_blocks", TOO_MANY_BLOCKS_TEXT, raw=f"{len(placements)} blocks"
+            )
+        for index, placement in enumerate(placements):
+            if not block_enabled(placement.block.kind, self._env):
+                raise ClipAvatarRefused(
+                    "switched_off",
+                    FIRST_CREATE_SWITCHED_OFF_TEXT,
+                    raw=f"clip avatar block {placement.block.kind!r} is off",
+                    block=index,
+                )
+        for index, placement in enumerate(placements):
+            seconds = script_seconds(placement.block.script)
+            if seconds > AVATAR_BLOCK_MAX_SECONDS:
+                raise ClipAvatarRefused(
+                    "too_long",
+                    TOO_LONG_TEXT,
+                    raw=f"script of ~{seconds}s > {AVATAR_BLOCK_MAX_SECONDS}s",
+                    block=index,
+                )
+        if brief.brand_id != brand_id:
+            raise ValueError("brief.brand_id does not match brand_id")
+        media = brief.media
+        if media.clip_avatar_plan or media.clip_avatar_block:
+            raise ValueError("a Clip's avatar plan is the server's to write")
+        if media.part is not None or not is_local_recipe(brief):
+            raise ClipAvatarRefused("clip_not_local", CLIP_NOT_LOCAL_TEXT)
+        own = sum(segment.output_seconds for segment in media.segments)
+        if own < LOCAL_TOTAL_MIN_S:
+            # P5 (Deivid 2026-11-25): never a Clip of avatars alone
+            raise ClipAvatarRefused(
+                "avatar_needs_own_media", NEEDS_OWN_MEDIA_TEXT, raw=f"own stretches {own:.1f}s"
+            )
+        if any(placement.at > len(media.segments) for placement in placements):
+            raise ValueError("an avatar goes before one of the owner's stretches, or at the end")
+        if len(media.segments) + len(placements) > SEGMENTS_MAX:
+            # checked here, by its code: the recipe with the blocks is built by
+            # `model_copy` (no validation) and would otherwise fail as a bare
+            # ValidationError when its parts are read
+            raise ClipAvatarRefused(
+                "too_many_segments",
+                TOO_MANY_SEGMENTS_TEXT,
+                raw=f"{len(media.segments)} stretches + {len(placements)} avatars",
+            )
+        plan = tuple(
+            ClipAvatarSlot(
+                slot=slot,
+                at=placement.at,
+                seconds_estimate=max(1, script_seconds(placement.block.script)),
+            )
+            for slot, placement in enumerate(placements, 1)
+        )
+        planned = brief.model_copy(
+            update={"media": media.model_copy(update={"clip_avatar_plan": plan})}
+        )
+        # a join next to an avatar is only «Corte» (Deivid, 2026-11-25)
+        timeline = _ordered(media.segments, plan)
+        refuse_avatar_joins(
+            [segment for segment, _ in timeline],
+            [index for index, (_, entry) in enumerate(timeline) if entry is not None],
+        )
+        # 2. reads, nothing written: the same request again, the brand, the recipe as the
+        # owner sees it (blocks at their estimated length), the queue, today's local cap,
+        # the Clip's price — then each block's brief and its files
+        repo = self._content.repository
+        if request_key is not None:
+            existing = repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+            if existing is not None:
+                return self._made(tenant_id, existing)
+        inputs = self._content.new_draft_inputs(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            brief=planned,
+            recipe_brief=virtual_brief(brief, plan, tenant_id),
+        )
+        clip_brief = inputs.brief
+        if not clip_brief.media.clip_avatar_plan:  # the producer's stamp never drops it
+            raise RuntimeError("a Clip's avatar plan was lost while being prepared")
+        avatar_key = (
+            self._brand_avatar_key(tenant_id, brand_id)
+            if any(p.block.use_brand_avatar for p in placements)
+            else None
+        )
+        prepared: list[tuple[ContentBrief, int, str]] = []
+        for index, placement in enumerate(placements):
+            try:
+                block = block_brief(clip_brief, placement.block, brand_avatar_key=avatar_key)
+            except ClipAvatarRefused as refused:
+                raise ClipAvatarRefused(
+                    refused.code, refused.owner_message, block=index
+                ) from refused
+            self._refuse_foreign_files(tenant_id, block, index)
+            prepared.append(
+                self._content.prepare_new_generation(
+                    tenant_id=tenant_id, brand_id=brand_id, brief=block
+                )
+            )
+        if any(not stamped.media.clip_avatar_block for stamped, _, _ in prepared):
+            raise RuntimeError("a block's brief lost its mark while being prepared")
+        seconds = plan_seconds(placements)
+
+        # 3. one transaction under the business's lock
+        def write() -> list[UUID]:
+            if request_key is not None:
+                existing = repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+                if existing is not None:
+                    raise DuplicateDraftRequest(existing)
+            check_avatar_daily_cap(
+                self._store, tenant_id=tenant_id, asking=len(placements), first_create=True
+            )
+            self._refuse_without_quota(tenant_id, brand_id, seconds, blocks=len(placements))
+            insert = self._bare_insert()
+            clip_id = insert(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                brief=clip_brief,
+                voice_profile_version=inputs.voice_version,
+                pipeline_version=inputs.pipeline_version,
+                request_key=request_key,
+            )
+            creations = self._content.creations
+            if creations is not None and inputs.price is not None:
+                creations.charge(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    draft_id=clip_id,
+                    revision=1,
+                    price=inputs.price,
+                )
+            made: list[UUID] = []
+            for entry, (stamped, voice_version, pipeline_version) in zip(
+                plan, prepared, strict=True
+            ):
+                block_id = insert(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    brief=stamped,
+                    voice_profile_version=voice_version,
+                    pipeline_version=pipeline_version,
+                    request_key=None,
+                    parent_draft_id=clip_id,
+                    part_index=entry.slot,
+                )
+                if creations is not None:
+                    creations.charge(
+                        tenant_id=tenant_id,
+                        brand_id=brand_id,
+                        draft_id=block_id,
+                        revision=1,
+                        price=weight_for(stamped),
+                    )
+                made.append(block_id)
+            # the blocks first, then the Clip (it waits for them)
+            return [*made, clip_id]
+
+        try:
+            ids = self._write_and_dispatch(tenant_id, write)
+        except DuplicateDraftRequest as duplicate:
+            return self._made(tenant_id, duplicate.draft_id)
+        clip_id, block_ids = ids[-1], tuple(ids[:-1])
+        logger.info(
+            "clip %s: created with %d avatar block(s) (~%ss) it waits for",
+            clip_id,
+            len(block_ids),
+            seconds,
+        )
+        return ClipWithBlocks(clip_id=clip_id, block_ids=block_ids)
+
+    def _made(self, tenant_id: UUID, clip_id: UUID) -> ClipWithBlocks:
+        """What an earlier «Crear» with the same key made: the Clip and its blocks."""
+        rows = self._store.blocks_of(tenant_id=tenant_id, clip_id=clip_id)
+        return ClipWithBlocks(clip_id=clip_id, block_ids=tuple(row.id for row in rows))
+
+    def _bare_insert(self) -> Callable[..., UUID]:
+        """The repository's insert: on Postgres the bare one (inside the unit of work a
+        failed insert never runs a lookup on an aborted transaction)."""
+        from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
+
+        repo = self._content.repository
+        if isinstance(repo, PostgresContentRepository):
+            return repo._insert_brief_and_draft  # noqa: SLF001
+        return repo.insert_brief_and_draft
+
+    def _write_and_dispatch(self, tenant_id: UUID, write: Callable[[], list[UUID]]) -> list[UUID]:
+        """`write` in ONE transaction under the business's lock on Postgres (anything
+        refused writes nothing), then each draft dispatched in order after the commit."""
+        from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
+
+        dispatcher = self._content.dispatcher
+        if isinstance(self._content.repository, PostgresContentRepository):
+            from qualify_shared.db.session import (  # noqa: PLC0415
+                after_tenant_commit,
+                tenant_unit_of_work,
+            )
+
+            with tenant_unit_of_work(tenant_id):
+                self._lock(tenant_id)
+                ids = write()
+                if dispatcher is not None:
+                    for draft_id in ids:
+                        after_tenant_commit(
+                            tenant_id,
+                            lambda d=draft_id: dispatcher.dispatch_generation(
+                                tenant_id=tenant_id, draft_id=d
+                            ),
+                        )
+            return ids
+        ids = write()
+        if dispatcher is not None:
+            for draft_id in ids:
+                dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
+        return ids
+
+    def _refuse_foreign_files(self, tenant_id: UUID, block: ContentBrief, index: int) -> None:
+        """A block's files (the character's image, the background, the products) must be
+        this business's (`media.owned_by`) — checked before anything is written; the
+        producer checks them again before it reads any."""
+        from qualify_api.creative.media import owned_by  # noqa: PLC0415
+
+        media = block.media
+        keys = [media.avatar_image_key, media.background_key, *media.product_keys]
+        if any(key and not owned_by(tenant_id, key) for key in keys):
+            raise ClipAvatarRefused(
+                "avatar_file_not_owned", FILE_NOT_OWNED_TEXT, raw="a file of another", block=index
+            )
+
+    def clip_wait(self, *, tenant_id: UUID, clip_id: UUID) -> ClipWait | None:
+        """A Clip with avatar blocks as the screen shows it (§1.2), derived from the rows
+        each time (nothing stored): its state, its words and each block's. None for no
+        Clip of this business (RLS) or one with no avatar block at all. Free."""
+        clip = self._store.clip(tenant_id=tenant_id, clip_id=clip_id)
+        if clip is None:
+            return None
+        brief = self._content.repository.get_brief(tenant_id=tenant_id, brief_id=clip.brief_id)
+        if brief is None:
+            return None
+        rows = self._store.blocks_of(tenant_id=tenant_id, clip_id=clip_id)
+        plan = brief.media.clip_avatar_plan
+        if not plan and not rows:
+            return None
+        if plan:
+            planned = plan_states(plan, rows, self._env)
+        else:
+            # already made from its blocks (or option A's): each block as its row says —
+            # being made, failed (with its own words) or made; never guessed
+            planned = tuple(_row_state(row) for row in rows)
+        blocks = tuple(self._block_wait(tenant_id, planned_block) for planned_block in planned)
+        live = [b for b in blocks if b.state != "removed"]
+        state: Literal["waiting_blocks", "block_failed", "assembling", "ready", "failed"]
+        if clip.status == "failed":
+            state, words = "failed", clip.failure_detail or BLOCK_FAILED_TEXT
+        elif clip.status in _READY_STATUSES:
+            # «Revísalo y apruébalo» only while it waits for the owner's approval
+            state, words = "ready", READY_TEXT if clip.status == "generated" else READY_DONE_TEXT
+        elif any(b.state == "failed" for b in live) and plan:
+            state, words = "block_failed", BLOCK_FAILED_STATE_TEXT
+        elif any(b.state == "creating" for b in live) and plan:
+            state = "waiting_blocks"
+            words = WAITING_MANY_TEXT if len(live) > 1 else WAITING_ONE_TEXT
+        else:
+            state = "assembling"
+            words = ASSEMBLING_WITH_BLOCKS_TEXT if live else ASSEMBLING_TEXT
+        return ClipWait(
+            clip_id=clip_id,
+            clip_status=clip.status,
+            state=state,
+            owner_text=words,
+            blocks=blocks,
+        )
+
+    def _block_wait(self, tenant_id: UUID, planned: PlannedBlock) -> BlockWait:
+        row = planned.row
+        seconds = None
+        if row is not None and planned.state == "ready":
+            video = self._store.block_video(tenant_id=tenant_id, block_id=row.id)
+            seconds = video.seconds if video is not None else None
+        failed = planned.state == "failed"
+        return BlockWait(
+            block_id=row.id if row is not None else None,
+            slot=planned.entry.slot,
+            at=planned.entry.at,
+            kind=row.kind if row is not None else "presenter",
+            state=planned.state,
+            seconds_estimate=planned.entry.seconds_estimate,
+            seconds=seconds,
+            failure_code=planned.code if failed else None,
+            owner_text=(
+                block_failure_text(
+                    planned.code,
+                    # a refusal of ours speaks for itself, never the block's own detail
+                    row.failure_detail if row is not None and not planned.entry.refused else None,
+                )
+                if failed
+                else None
+            ),
+        )
+
+    def avatar_daily_left(self, *, tenant_id: UUID) -> tuple[int, int]:
+        """(used, cap): today's avatar blocks of this business and the cap the server
+        refuses with — for the screen to say how many are left before «Crear». Free."""
+        counter = getattr(self._store, "blocks_made_today", None)
+        used = int(counter(tenant_id=tenant_id)) if counter is not None else 0
+        return used, AVATAR_DAILY_CAP
+
+    def avatar_quota(self, *, tenant_id: UUID, brand_id: UUID) -> AvatarQuota | None:
+        """What the month's video still allows for avatars, with what the brand's
+        uncharged blocks already hold (ADR 50 §9) — None without a monthly quota. The
+        check of `create_clip_with_blocks` refuses when `plan_seconds` (or the number of
+        blocks) passes `free`. Free."""
+        creations = self._content.creations
+        if creations is None:
+            return None
+        pending, pending_seconds = self._store.pending_block_seconds(
+            tenant_id=tenant_id, brand_id=brand_id
+        )
+        balance = creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+        if balance.unlimited or balance.video_quota <= 0:
+            return AvatarQuota(pending, pending_seconds, balance.video_in_seconds, None, None)
+        left = int(balance.videos_left)
+        held = pending_seconds if balance.video_in_seconds else pending
+        return AvatarQuota(
+            pending, pending_seconds, balance.video_in_seconds, left, max(0, left - held)
+        )
+
+    def brand_avatar_ready(self, *, tenant_id: UUID, brand_id: UUID) -> bool:
+        """Whether the brand has its own avatar ready (`use_brand_avatar`). Free."""
+        return bool(self._brand_avatar_key(tenant_id, brand_id))
 
     # -- place --------------------------------------------------------------------------
 
@@ -1187,10 +2088,18 @@ class ClipAvatarService:
             raise ClipAvatarRefused("already_placed", ALREADY_PLACED_TEXT)
         position = max(0, min(at, len(segments)))
         segments.insert(position, block_segment(video))
+        # m-25119867: a join next to an avatar is only «Corte» — the stretch the block now
+        # goes before keeps no blend into the voice
+        refuse_avatar_joins(segments, [position])
         fresh = ContentBrief.model_validate(
             {
                 **brief.model_dump(),
-                "media": {**brief.media.model_dump(), "segments": tuple(segments)},
+                "media": {
+                    **brief.media.model_dump(),
+                    "segments": tuple(segments),
+                    # provenance: a brief the server derives points to the owner's one
+                    "derived_from_brief_id": brief.media.derived_from_brief_id or clip.brief_id,
+                },
             }
         )
         problems = validate_recipe(recipe_of(fresh), video_by_parts=False, tenant_id=tenant_id)
@@ -1342,6 +2251,24 @@ def _slot_taken(exc: BaseException) -> bool:
 
 
 __all__ = [
+    "BLOCKS_PER_CREATE",
+    "AvatarQuota",
+    "BlockWait",
+    "ClipAvatarPlacement",
+    "ClipBlocksWait",
+    "ClipWait",
+    "ClipWithBlocks",
+    "PlanReady",
+    "PlanRefused",
+    "PlanWait",
+    "PlannedBlock",
+    "avatar_kind_enabled",
+    "block_failure_text",
+    "fit_plan",
+    "plan_gate",
+    "plan_seconds",
+    "plan_states",
+    "virtual_brief",
     "ANIMATED_SWITCH",
     "AVATAR_BLOCK_MAX_SECONDS",
     "AVATAR_BLOCK_REQ_KEY",

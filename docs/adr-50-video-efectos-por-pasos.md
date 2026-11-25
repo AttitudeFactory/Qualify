@@ -379,3 +379,24 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 - El Clip con transiciones se codifica una vez más entera (los segmentos de la unión, con los ajustes de `JOIN_SEGMENT_X264`). Un Clip con solo cortes no cambia: ni bytes ni tiempo.
 - La pantalla del Clip (selector en la unión, accesible y a 375 px) y el lugar automático de lo nuevo en la línea de tiempo quedan para el carril de la pantalla de m-25114465.
 - Esta sección se numera §10 y va después de §9 (avatar en el Clip, PR #795, ya firmado).
+
+## 11. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-25]`: el avatar desde el primer «Crear» del Clip (m-25119867, opción B)
+
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-25]` · redactado por creative-engineer el 2026-11-25 (m-25119867, épica m-25026566). Recoge las respuestas de Deivid del 2026-11-25 a las preguntas P1–P6 de `docs/contrato-avatar-primer-crear.md` §3, que llegaron por «creacion de tickets», y su decisión sobre las uniones.
+
+**Firma de Deivid:** `[x]` «Firmo el §11», elegido por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-25. Los interruptores del avatar siguen apagados: no se encienden antes del PR 2 de m-25119867.
+
+**Qué cambia del §9.**
+
+- **Opción B.** El dueño puede elegir hasta 3 avatares en el primer «Crear» de un Clip local. El Clip y sus bloques se crean juntos, en una sola transacción. Los bloques se hacen primero. El Clip **espera en `drafting`** hasta que todos terminan y después se arma una sola vez. Se revisan las mismas reglas del §9 antes de escribir nada y antes de pagar: interruptores, 30 s, tope diario, cupo de todos los bloques sin cobrar, cobro al aprobar y `ai_generated=True`. La opción A sigue igual.
+- **P1. «Intentar de nuevo» un avatar cuenta para el tope de 3 al día.** Cada intento pagado es un avatar más del día. Se construye con `retry_block` (PR 2).
+- **Tope diario en el primer «Crear».** Con 3 avatares ya creados en el día, la opción B dice: «Ya creaste 3 avatares hoy. Mañana puedes crear más. Quita el avatar para crear tu video ahora.» Es el texto del §9 más qué hacer ahora, porque todavía no hay video (decisión de Deivid, 2026-11-25). La opción A queda igual.
+- **P2.** Si un avatar falló, el Clip espera **72 h** a que el dueño elija. Después falla con `avatar_block_failed` y se devuelve lo cobrado (PR 2).
+- **P5.** No hay Clip hecho solo de avatares: las fotos y videos del dueño tienen que sumar **3 s o más** por sí solos.
+- **P6. Cupo.** Un bloque cuyo Clip **falló** deja de contar en el cupo en ese momento. Esto completa la regla del §9, según la cual un bloque deja de contar «al aprobarse su Clip o con la retención». Se lee del estado del Clip, así que vale para las dos opciones.
+- **Uniones (decisión de Deivid, 2026-11-25).** Una unión junto a un avatar solo puede ser «Corte», en las dos opciones y también en el armado. Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente. El código es `avatar_join_cut_only`. La regla lee la unión de cada tramo (`SourceSegment.transition_in`, del §10) y vale con `QUALIFY_CLIP_BLOCK_TRANSITIONS` apagado o encendido: es la condición para encenderlo.
+
+- **Efectos y textos sobre un avatar (punto 8, decidido por Deivid el 2026-11-25, según informó el coordinador; se construye en el PR 2).** «Textos sí, efectos no». Se aceptan textos sobre el tramo de un avatar. Se rechazan `humo_capa`, `brasas_capa` y `vapor_capa` cuando se cruzan con un bloque de avatar, con `avatar_block_effect`.
+- **No se encienden** `QUALIFY_CLIP_AVATAR_PRESENTER` ni `QUALIFY_CLIP_AVATAR_ANIMATED` antes del PR 2. Hasta entonces, un Clip cuyo avatar falla espera para siempre.
+
+**Fuera de esta enmienda.** La pantalla (m-25112921), la medición pagada (m-25112919) y el correo de aviso, que va en un ticket aparte.

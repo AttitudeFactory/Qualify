@@ -1565,6 +1565,33 @@ def refit_video_recipe(recipe: VideoRecipe, parts: Sequence[PartRecipe]) -> Refi
     return RefitVideoRecipe(refit, tuple(dropped_texts), tuple(dropped_effects))
 
 
+#: m-25119867: a refusal code a plan entry may carry (`ClipAvatarSlot.refused`).
+_PLAN_REFUSAL = r"^[a-z0-9_]*$"
+
+
+class ClipAvatarSlot(BaseModel):
+    """m-25119867 (option B of m-25112920): one avatar block a `local` Clip waits for,
+    chosen at its first «Crear». `slot` is the block's `part_index` under the Clip (1 to
+    `PARTS_MAX`, migration 0119's range); `at` the index of the owner's stretch it goes
+    BEFORE (`len(segments)` = at the end; equal `at` keep slot order); `seconds_estimate`
+    its script read aloud, the length the screen drew it with. `refused` is the server's
+    code when the block cannot go into the Clip as it came out (`clip_too_long`): the
+    owner retries or removes it. Pure data, server-owned, in `content_briefs.media`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    slot: int = Field(ge=1, le=PARTS_MAX)
+    at: int = Field(ge=0, le=SEGMENTS_MAX)
+    seconds_estimate: int = Field(ge=1, le=int(LOCAL_TOTAL_MAX_S))
+    refused: str | None = Field(default=None, max_length=40, pattern=_PLAN_REFUSAL)
+
+
+def _plan_slots_unique(plan: tuple[ClipAvatarSlot, ...]) -> tuple[ClipAvatarSlot, ...]:
+    if len({entry.slot for entry in plan}) != len(plan):
+        raise ValueError("each avatar block of a Clip has its own slot")
+    return plan
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -1716,6 +1743,22 @@ class MediaInputs(BaseModel):
     #: `content_briefs.media` (no migration); False for
     #: every brief stored before it, which reads exactly as it did.
     clip_avatar_block: bool = False
+    #: Server-owned (m-25119867, option B): the avatar blocks a `local` Clip chosen at
+    #: its first «Crear» waits for, before it is assembled once
+    #: (`qualify_api.creative.clip_avatar.create_clip_with_blocks`). Only that service sets
+    #: it; `create_draft` refuses a brief that carries it. When every block is made, the
+    #: Clip gets a new brief with their videos as stretches and this plan empty. Empty on
+    #: every brief stored before it, which reads exactly as it did.
+    clip_avatar_plan: Annotated[tuple[ClipAvatarSlot, ...], AfterValidator(_plan_slots_unique)] = (
+        Field(default=(), max_length=PARTS_MAX)
+    )
+    #: Server-owned (m-25119867, provenance): the brief the owner sent that the server
+    #: derived this one from (`content_briefs.id`) — a Clip's brief with its avatar blocks'
+    #: videos put in its recipe (option B, `ContentService._replace_clip_brief`) or with a
+    #: block placed (option A, `ClipAvatarService.place_block`); a brief derived from a
+    #: derived one keeps pointing to the owner's. `create_draft` clears it. None on every
+    #: brief the owner sent and on every one stored before it.
+    derived_from_brief_id: UUID | None = None
     #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
     #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
     #: default; read only by the edit-clip prompt compiler 1 (`prompt_compiler_version`).
@@ -2208,6 +2251,13 @@ class ContentBrief(BaseModel):
             raise PydanticCustomError(
                 "effects_not_for_kind", "effects and stretches of video are for a video"
             )
+        if media.clip_avatar_plan and (
+            self.kind is not ContentKind.CLIP
+            or media.part is not None
+            or media.clip_reference_mode != "local"
+        ):
+            # m-25119867: only a Clip of the owner's own photos and videos waits for blocks
+            raise ValueError("avatar blocks are planned only in a local Clip")
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`

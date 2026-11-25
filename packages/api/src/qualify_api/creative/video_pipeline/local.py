@@ -90,7 +90,9 @@ from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
 from qualify_api.creative.clip_avatar import (
+    AVATAR_JOIN_TEXT,
     ai_stretches,
+    avatar_join_problems,
     block_stretches,
     stretch_problem,
 )
@@ -959,6 +961,11 @@ def produce_local(
                 code,
             )
             return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
+    # m-25119867 (Deivid, 2026-11-25): a join next to an avatar block is only «Corte»,
+    # whatever path put it there — never a blend into its voice
+    if avatar_join_problems(part.segments, [stretch.index for stretch in blocks]):
+        logger.warning("draft %s: a blending join next to an avatar block, refused", draft_id)
+        return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_JOIN_TEXT)
     # ADR 50 §9 (Deivid, 2026-11-24): «hecho con IA» read from what was made — ONE
     # stretch whose file is AI imagery (Seedance, Seedream, OmniHuman) makes the whole
     # video AI, with the avatar switches on or off; a generator file with no asset row and
