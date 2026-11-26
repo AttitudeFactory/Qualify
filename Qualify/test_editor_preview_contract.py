@@ -318,6 +318,82 @@ def test_a_missing_preview_loop_gives_no_address(tmp_path: Path) -> None:
     assert c.preview_effect_url(vapor, tmp_path) == "/effects/vapor_capa/v1/preview.webm"
     sneaky = c.PreviewEffect("x", "X", "compose", preview_asset="effects/../secret.webm")
     assert c.preview_effect_url(sneaky, tmp_path) == ""
+    assert not c.is_backend_effect_url("/effects/vapor_capa/v1/preview.webm")
+
+
+def _platform(key: str) -> c.PreviewEffect:
+    return c.PreviewEffect("humo_denso", "Humo denso", "compose", preview_asset=key)
+
+
+def test_an_r2_platform_preview_is_its_r2effects_route(tmp_path: Path) -> None:
+    """m-25120474: `platform/effects/<id>/v<n>/preview.mp4` → `/r2effects/<id>/v<n>`, a
+    path on the BACKEND's origin (the caller puts the origin in front); offered without a
+    local file — nothing in `assets/` is needed."""
+    effect = _platform("platform/effects/humo_denso/v1/preview.mp4")
+    url = c.preview_effect_url(effect, tmp_path)
+    assert url == "/r2effects/humo_denso/v1"
+    assert c.is_backend_effect_url(url)
+    assert c.effect_available(effect, tmp_path)
+    assert c.preview_effect_url(_platform("platform/effects/a1_b/v9999/preview.mp4"), tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "platform/effects/../v1/preview.mp4",
+        "platform/effects/humo_denso/../../secret/preview.mp4",
+        "platform/effects/humo_denso/v1/../preview.mp4",
+        "platform/effects/Humo_Denso/v1/preview.mp4",
+        "PLATFORM/effects/humo_denso/v1/preview.mp4",
+        "platform/effects/humo_denso/V1/preview.mp4",
+        "platform/effects/humo_denso/v0/preview.mp4",
+        "platform/effects/humo_denso/v01/preview.mp4",
+        "platform/effects/humo_denso/v10000/preview.mp4",
+        "platform/effects/humo_denso/v1/preview.webm",
+        "platform/effects/humo_denso/v1/other.mp4",
+        "platform/effects/humo_denso/v1/preview.mp4/x",
+        "platform/effects/humo_denso/preview.mp4",
+        "platform/effects/1humo/v1/preview.mp4",
+        "platform/effects/" + "a" * 41 + "/v1/preview.mp4",
+        "/platform/effects/humo_denso/v1/preview.mp4",
+        "t/tenant/platform/effects/humo_denso/v1/preview.mp4",
+    ],
+)
+def test_a_malformed_platform_key_gives_no_address(tmp_path: Path, key: str) -> None:
+    effect = _platform(key)
+    assert c.preview_effect_url(effect, tmp_path) == ""
+    assert not c.effect_available(effect, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "platform/effects/humo_denso/v1/preview.mp4",
+        "platform/effects/z/v42/preview.mp4",
+        "platform/effects/Humo/v1/preview.mp4",
+        "platform/effects/humo/v01/preview.mp4",
+        "platform/effects/humo/v1/preview.webm",
+        "platform/effects/../v1/preview.mp4",
+    ],
+)
+def test_the_editor_and_the_route_agree_on_every_key(tmp_path: Path, key: str) -> None:
+    """The editor's pattern is the server's (`effect_preview_routes.path_for_key`)."""
+    from qualify_api.http.effect_preview_routes import path_for_key  # noqa: PLC0415
+
+    assert c.preview_effect_url(_platform(key), tmp_path) == path_for_key(key)
+
+
+def test_the_local_layers_keep_their_assets_address(tmp_path: Path) -> None:
+    """The three library loops already under `assets/effects/` do not change."""
+    for effect_id in ("vapor_capa", "humo_capa", "brasas_capa"):
+        effect = c.effect_of(effect_id)
+        assert effect is not None and effect.preview_asset
+        loop = tmp_path / effect.preview_asset
+        loop.parent.mkdir(parents=True)
+        loop.write_bytes(b"x")
+        url = c.preview_effect_url(effect, tmp_path)
+        assert url == "/" + effect.preview_asset
+        assert url.startswith("/effects/") and not c.is_backend_effect_url(url)
 
 
 def test_text_design_is_674s_scrim() -> None:

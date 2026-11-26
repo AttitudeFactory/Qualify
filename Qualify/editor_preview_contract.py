@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, get_args
 
+from qualify_shared.objects import platform_effects as _platform_effects
+
 # -- EF-02's limits (qualify_creative.schemas, same values) ---------------------------------
 
 EFFECTS_MAX = 8
@@ -297,8 +299,9 @@ class PreviewSource:
 class PreviewEffect:
     """A library effect as the screen offers it: its Spanish `label`, the stage it acts
     in (EF-02 `stage`), what it needs, and the preview loop (`preview_asset`, a path under
-    `effects/`) laid over the video with `blend`. None = the preview simulates it with no
-    file (`camara_rapida` = `playbackRate`)."""
+    `effects/` or an R2 platform key `platform/effects/<id>/v<n>/preview.mp4`, m-25120474)
+    laid over the video with `blend`. None = the preview simulates it with no file
+    (`camara_rapida` = `playbackRate`)."""
 
     effect_id: str
     label: str
@@ -657,19 +660,48 @@ def effects_offered(*, has_own_video: bool) -> tuple[PreviewEffect, ...]:
     return tuple(e for e in CLIP_EFFECTS if has_own_video or not e.needs_own_video)
 
 
+#: The backend route that serves an effect's «Así se ve» video from R2 (m-25120474,
+#: `qualify_api.http.effect_preview_routes`). Its addresses are paths on the BACKEND's
+#: origin, not the frontend's: the caller puts the backend origin in front
+#: (`is_backend_effect_url`).
+R2_EFFECTS_ROUTE = "/r2effects"
+#: Exactly the key the route serves, built from the route's own expressions
+#: (`qualify_shared.objects.platform_effects`: the library's effect id, a version 1..9999
+#: with no leading zero, the fixed `preview.mp4`), so the two cannot drift apart.
+_PLATFORM_PREVIEW_KEY = re.compile(
+    re.escape(_platform_effects.PLATFORM_EFFECTS_PREFIX)
+    + f"({_platform_effects.EFFECT_ID_RE.pattern})"
+    + f"/v({_platform_effects.VERSION_RE.pattern})/"
+    + re.escape(_platform_effects.PREVIEW_FILE)
+)
+
+
 def preview_effect_url(effect: PreviewEffect, assets_root: Path) -> str:
-    """The address the browser loads the effect's loop from — only when the file is
-    really there (today none is: the layer is then not drawn, and nothing 404s in the
-    console). Never `..`, never outside `effects/`."""
+    """The address the browser loads the effect's loop from — a local loop only when the
+    file is really there (else the layer is not drawn, and nothing 404s in the console);
+    an R2 platform preview as its `/r2effects/<id>/v<n>` route (backend origin). Never
+    `..`, never outside `effects/` or the exact platform key."""
     asset = effect.preview_asset or ""
+    if m := _PLATFORM_PREVIEW_KEY.fullmatch(asset):
+        return f"{R2_EFFECTS_ROUTE}/{m[1]}/v{m[2]}"  # m-25120474: R2 platform preview
     if not asset.startswith("effects/") or ".." in asset.split("/"):
         return ""
     return "/" + asset if (assets_root / asset).is_file() else ""
 
 
+def is_backend_effect_url(url: str) -> bool:
+    """Whether `url` (from `preview_effect_url`) is served by the backend, so the browser
+    needs the backend's origin in front of it (in development the two are separate)."""
+    return url.startswith(R2_EFFECTS_ROUTE + "/")
+
+
 def effect_available(effect: PreviewEffect, assets_root: Path) -> bool:
     """Whether the screen offers the effect: a layer only once its loop exists (an
-    effect with no file — «Cámara rápida» — always)."""
+    effect with no file — «Cámara rápida» — always). An R2 platform preview cannot be
+    checked from here without a store call: it is offered when its key is exactly one the
+    route serves. If the object is missing the route answers 404 without touching any
+    business data, the layer's `<video>` stays empty and the preview keeps playing the
+    blocks under it (a layer has no broken state of its own)."""
     return not effect.preview_asset or bool(preview_effect_url(effect, assets_root))
 
 
