@@ -94,6 +94,49 @@ def test_clock_text() -> None:
     ]
 
 
+#: m-25129389: halves up, float noise, the minute's carry — the cases that differed.
+_CLOCK_CASES = (0, 0.04, 0.05, 1.15, 1.25, 1.48, 1.75, 3.05, 4.5, 4.7, 9.96, 12.04)
+_CLOCK_CASES += (59.95, 59.96, 61.25, 62, 119.96, -1)
+
+
+def test_the_preview_clock_matches_python() -> None:
+    from . import editor_preview_contract as contract
+
+    got = _run(f"return {json.dumps(_CLOCK_CASES)}.map(core.clock);")
+    assert got == [contract.clock_text(s) for s in _CLOCK_CASES]
+    assert got[_CLOCK_CASES.index(59.96)] == "1:00"
+    assert got[_CLOCK_CASES.index(119.96)] == "2:00"
+    assert got[_CLOCK_CASES.index(1.15)] == "0:01,2"
+    assert got[_CLOCK_CASES.index(3.05)] == "0:03,1"
+
+
+def _own_clock(name: str) -> list[object]:
+    """The `clock` copied inside `name` (an IIFE that needs a page), run alone by node."""
+    import re
+
+    source = (_ASSETS / name).read_text(encoding="utf-8")
+    found = re.search(r"\n  function clock\(\w+\) \{\n.*?\n  \}\n", source, re.S)
+    assert found, f"{name} has no clock"
+    cases = json.dumps(_CLOCK_CASES)
+    script = f"{found.group(0)}\nconsole.log(JSON.stringify({cases}.map(clock)));"
+    out = subprocess.run(
+        [_NODE], input=script, capture_output=True, text=True, timeout=30, check=True
+    )
+    return json.loads(out.stdout)
+
+
+def test_the_page_clocks_match_python() -> None:
+    """`edit-preview.js` keeps its own copy of the clock and `timeline.js` the playhead's
+    (`timeline_vm.playhead_text`): both read as Python, to the tenth (m-25129389)."""
+    from . import editor_preview_contract as contract
+    from .ui import timeline_vm as vm
+
+    want = [contract.clock_text(s) for s in _CLOCK_CASES]
+    assert _own_clock("edit-preview.js") == want
+    assert _own_clock("timeline.js") == want
+    assert want == [vm.clock_tenth(s) for s in _CLOCK_CASES]
+
+
 def test_rewinding_by_a_slide_sticks_and_is_not_scrolled_back() -> None:
     # The founder's bug: paused at 0:04,6 (the clock put the tracks at 4.6 × 44 = 202 px),
     # the owner slides back to 194 px. The slide is the owner's (not where the clock put

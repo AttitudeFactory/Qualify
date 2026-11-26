@@ -116,8 +116,10 @@ def test_numbered_words() -> None:
     assert vm.duration_line(4) == "Tu video durará 4 s."
     assert vm.usage_line(8) == "Usas 8 s de tu video."
     assert vm.usage_line(8.5) == "Usas 8,5 s de tu video."
-    # the timeline's ½ s rounding, as the chosen block's heading (Deivid, 2026-11-16)
-    assert vm.usage_line(6.6) == "Usas 6,5 s de tu video."
+    # the timeline's rounding, as the chosen video's heading (Deivid, 2026-11-16) — to
+    # the tenth since m-25129389
+    assert vm.usage_line(6.6) == "Usas 6,6 s de tu video."
+    assert vm.usage_line(3.22) == "Usas 3,2 s de tu video."
     assert vm.usage_line(12.04) == "Usas 12 s de tu video."
     assert vm.range_line(4, 12) == "Desde 0:04 · Hasta 0:12"
     assert not hasattr(vm, "card_title")  # ED-10: the card «Tu video» is gone

@@ -411,6 +411,12 @@ def test_words() -> None:
     assert c.clock_text(4) == "0:04"
     assert c.clock_text(62) == "1:02"
     assert c.clock_text(4.5) == "0:04,5"
+    # m-25129389: a half tenth rounds up, float noise never flips it, a minute carries
+    assert c.seconds_text(1.25) == "1,3" and c.seconds_text(1.75) == "1,8"
+    assert c.seconds_text(4.7) == "4,7" and c.seconds_text(1.15) == "1,2"
+    assert c.clock_text(1.25) == "0:01,3" and c.clock_text(1.75) == "0:01,8"
+    assert c.clock_text(59.96) == "1:00" and c.clock_text(119.96) == "2:00"
+    assert c.tenths(4.7) == 47 and c.tenths(-1) == 0
 
 
 def test_a_text_without_start_begins_with_its_part() -> None:
