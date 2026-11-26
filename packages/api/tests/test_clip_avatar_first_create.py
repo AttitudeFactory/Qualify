@@ -622,11 +622,21 @@ def test_a_text_past_the_new_end_is_cut_or_dropped() -> None:
     assert fit.dropped == 1
 
 
-def test_over_60_seconds_names_the_block_that_passes_them() -> None:
+def test_over_60_seconds_names_the_block_that_grew_most_not_the_one_that_crosses() -> None:
     plan = _plan((1, 0, 20), (2, 1, 20))
     brief = _clip(_own(25.0), clip_avatar_plan=plan)
+    # slot 1 grew 0 s, slot 2 shrank 4.5 s yet is the one whose end crosses 60 s
     fit = ca.fit_plan(brief, {1: _video(20.0), 2: _video(15.5)}, keep=plan)
-    assert fit.brief is None and fit.too_long == 2
+    assert fit.brief is None and fit.too_long == 1
+
+
+def test_over_60_seconds_blames_the_block_that_grew_even_when_another_crosses() -> None:
+    """m-25129382 (option A, Deivid): A estimated 10 s came out 25 s; B estimated 40 s
+    came out 38 s and is the one whose end crosses (25 + 2 + 38 = 65 s): A is named."""
+    plan = _plan((1, 0, 10), (2, 1, 40))
+    brief = _clip(_own(2.0), clip_avatar_plan=plan)
+    fit = ca.fit_plan(brief, {1: _video(25.0), 2: _video(38.0)}, keep=plan)
+    assert fit.brief is None and fit.too_long == 1
 
 
 def test_over_60_seconds_counts_the_owners_video_after_the_block() -> None:
