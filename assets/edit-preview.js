@@ -58,16 +58,14 @@
     return { start: start, end: end > start ? end : NaN };
   }
 
+  // As `edit-sequence-core.js` `clock` and Python's `editor_preview_contract.clock_text`
+  // (m-25129389): to the tenth, a half rounded up, a 60th second carried into the minute.
   function clock(seconds) {
-    var value = Math.max(seconds, 0);
-    var minutes = Math.floor(value / 60);
-    var rest = value - minutes * 60;
-    var whole = Math.floor(rest);
-    var tenth = Math.round((rest - whole) * 10);
-    if (tenth >= 10) {
-      whole += 1;
-      tenth = 0;
-    }
+    var tenths = Math.floor(Number((Math.max(seconds, 0) * 10).toFixed(6)) + 0.5);
+    var minutes = Math.floor(tenths / 600);
+    var rest = tenths % 600;
+    var whole = Math.floor(rest / 10);
+    var tenth = rest % 10;
     var text = minutes + ":" + (whole < 10 ? "0" : "") + whole;
     return tenth ? text + "," + tenth : text;
   }

@@ -614,12 +614,12 @@ def test_what_the_owner_reads_ends_with_the_video(editor_on: None) -> None:
 
 def test_the_heading_and_usas_round_the_same_stretch_alike(editor_on: None) -> None:
     """Deivid, 2026-11-16: the chosen video's heading said «6,5 s» and «Usas» «6,6 s»
-    for the same stretch — both now round with the timeline's ½ s."""
+    for the same stretch — both now round alike, to the tenth (m-25129389)."""
     state = _measured(6.6)
     CreativeState.select_clip_block.fn(state, state.clip_tl_media_rows[0]["id"])
     heading = state.clip_tl_chosen["panel"]
-    assert heading.endswith("· 6,5 s"), heading
-    assert state.clip_cut_usage_text == "Usas 6,5 s de tu video."
+    assert heading.endswith("· 6,6 s"), heading
+    assert state.clip_cut_usage_text == "Usas 6,6 s de tu video."
 
 
 async def test_a_failing_session_never_leaves_the_preview_pending(

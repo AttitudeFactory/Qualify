@@ -25,6 +25,10 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+# m-25129389: one rounding to the tenth (a half up) for the blocks, the total and the
+# preview's clock — the contract's, never a copy (no Reflex there either)
+from ..editor_preview_contract import tenths as _tenths
+
 #: The magnet (§3.3): every edge lands on a half second.
 STEP_S = 0.5
 #: «Cada bloque dura al menos 1 segundo.»
@@ -129,16 +133,37 @@ def clock_exact(seconds: float) -> str:
 
 
 def amount(seconds: float) -> str:
-    """«5», «4,5» — a length in seconds, for «dura {s} s»."""
+    """«5», «4,5» — a length in seconds on the ½ s magnet (a photo's «se ve {s} s»)."""
     seconds = snap(seconds)
     if seconds == int(seconds):
         return str(int(seconds))
     return f"{seconds:.1f}".replace(".", ",")
 
 
+def amount_tenth(seconds: float) -> str:
+    """«4,7», «3,2», «5» — a video block's length to the tenth (m-25129389), rounded as
+    «Tu video durará» rounds the total (`editor_preview_contract.seconds_text`), so the
+    number the owner reads beside a block is the one the total uses. A half tenth rounds
+    up (1,25 → «1,3»)."""
+    whole, tenth = divmod(_tenths(seconds), 10)
+    return str(whole) if not tenth else f"{whole},{tenth}"
+
+
+def clock_tenth(seconds: float) -> str:
+    """«0:04,7», «0:01,5», «1:02» — a time of a video to the tenth, off the ½ s magnet
+    (m-25129389), as the preview's clock reads it (`editor_preview_contract.clock_text`);
+    59,96 s reads «1:00»."""
+    minutes, rest = divmod(_tenths(seconds), 600)
+    whole, tenth = divmod(rest, 10)
+    text = f"{minutes}:{whole:02d}"
+    return f"{text},{tenth}" if tenth else text
+
+
 def playhead_text(t: float, total: float) -> str:
-    """The playhead's `aria-valuetext`: «0:05 de 0:12»."""
-    return f"{clock(t)} de {clock(total)}"
+    """The playhead's `aria-valuetext` and clock: «0:05 de 0:12», «0:00 de 0:04,7» — to
+    the tenth, as the blocks and the total (m-25129389; `assets/timeline.js` `clock` says
+    the same). Only the words: the playhead still moves on the ½ s magnet."""
+    return f"{clock_tenth(t)} de {clock_tenth(total)}"
 
 
 def exact(value: float) -> str:
@@ -220,15 +245,17 @@ def media_label(item: Mapping[str, Any], n: int) -> str:
 
 
 def _media_name(item: dict[str, Any], n: int, m: int) -> tuple[str, str, str]:
-    """(short label, full accessible name, panel title)."""
-    length = amount(media_length(item))
+    """(short label, full accessible name, panel title). A photo on the ½ s magnet; a
+    video to the tenth (m-25129389: it read «dura 4,5 s» beside a total of 0:04,7)."""
     if item["kind"] == "photo":
+        length = amount(media_length(item))
         return (
             f"Foto {n}",
             f"Foto {n} de {m}, se ve {length} s",
             f"Foto {n} · {length} s",
         )
-    start, end = clock(item["src_start"]), clock(item["src_end"])
+    length = amount_tenth(media_length(item))
+    start, end = clock_tenth(item["src_start"]), clock_tenth(item["src_end"])
     return (
         f"Video {n}",
         f"Video {n} de {m}, usas de {start} a {end}, dura {length} s",
@@ -246,7 +273,15 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
     Every value is a string: ``start``/``length`` (seconds of the final video, for the
     CSS), ``label``/``name``/``panel`` (copy), and the two handles (``*_handle`` name,
     ``*_text`` value text, ``*_now``/``*_min``/``*_max`` for ARIA; a photo has no start
-    handle: ``has_start`` is "")."""
+    handle: ``has_start`` is "").
+
+    m-25129389: a video's ``name``, ``panel``, ``secs`` and ``*_text`` read its seconds to
+    the tenth, with the same rounding as the total (`editor_preview_contract`), so the
+    number seen on the block is the number heard in its name and panel; a photo's stay
+    on the ½ s magnet. Each block is rounded on its own: with three pieces or more, or
+    with transitions, their tenths may differ from the total by a tenth. The handles'
+    ``*_value`` (``aria-valuetext`` and the drag's bubble) keep `clock_exact`, to the
+    hundredth, on purpose: they say exactly where the handle rests (¼ s magnet)."""
     rows: list[dict[str, str]] = []
     at = 0.0
     m = len(media)
@@ -279,8 +314,8 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "has_start": "1",
                 "start_label": "Desde",
                 "end_label": "Hasta",
-                "start_text": clock(item["src_start"]),
-                "end_text": clock(item["src_end"]),
+                "start_text": clock_tenth(item["src_start"]),
+                "end_text": clock_tenth(item["src_end"]),
                 # the handles' `aria-valuetext` and the drag's bubble (ED-03 UX review)
                 "start_value": f"Desde {clock_exact(item['src_start'])}",
                 "end_value": f"Hasta {clock_exact(item['src_end'])}",
@@ -306,7 +341,8 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "thumb": str(item.get("thumb", "")),
                 # ED-11b: its frame strip ("" until the screen lays one, `strip_style`)
                 **_NO_STRIP,
-                "secs": f"{amount(length)} s",
+                # m-25129389: a video's seconds to the tenth, a photo's on the ½ s
+                "secs": f"{amount(length) if item['kind'] == 'photo' else amount_tenth(length)} s",
                 "speed": _speed_value(item),
                 "speed_tag": f"×{_speed_value(item)}" if speed_of(item) > 1 else "",
                 "place": "",
