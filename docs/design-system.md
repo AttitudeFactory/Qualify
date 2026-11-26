@@ -829,6 +829,21 @@ todo lo que está en la pista se ve gratis en la vista previa antes de crear; lo
 al tocar «Crear». En la pantalla nunca se escriben «timeline», «track», «clip», «capa», «frame»,
 «render», «split» ni «trim»; «Cortar» es la palabra del dueño.
 
+**Reglas del editor** (m-25026602). Son las reglas E1–E6 que ux-designer propuso el 2026-11-13
+en el ticket ED-00 (m-25026602), a pedido de Deivid. No son las decisiones D-E1…D-E6 del ADR 50
+§2.2, aunque nacieron el mismo día. La línea de tiempo editable que Deivid firmó el 2026-11-14
+(D-T1…D-T6, «Escritorio y celular adaptado») cambió algunas. Deivid firmó esta versión el
+2026-11-26. Así quedan:
+
+| Regla | Qué dice hoy | Firmada |
+|---|---|---|
+| E1 | El editor es **un paso, no el flujo**: vive dentro del marco de pasos de §4.5 («‹ destino · Paso N de M», pie «Atrás · Siguiente»). | Propuesta el 2026-11-13; sigue el 2026-11-14 |
+| E2 | **Un bloque elegido a la vez:** el panel trabaja siempre sobre una sola cosa. Antes era «una herramienta abierta a la vez». Absorbe la antigua E4: las fichas «Todo · 1 · 2…» ya no hacen falta. | Forma nueva, 2026-11-14 |
+| E3 | **Todo viene armado:** lo que eligió el dueño llega en su orden y «Siguiente» funciona sin tocar nada. Lo único obligatorio es tener algo que mostrar. | Propuesta el 2026-11-13; sigue el 2026-11-14 |
+| ~~E4~~ | *Absorbida por E2:* «se elige qué editar antes de editarlo» («Todo el video» o «Parte 2»). | 2026-11-14 |
+| E5 | **Lo que se ve es lo que sale.** Cuando no es así, la pantalla lo dice. | Propuesta el 2026-11-13; sigue el 2026-11-14 |
+| ~~E6~~ | *Retirada:* «nada de precisión de mouse: sin arrastrar bordes en la línea, sin zoom». Ahora los bordes se arrastran con tiradores de 44 px (D-T1…D-T6). El zoom sigue fuera (ver «Lo que NO hace»). | Retirada el 2026-11-14 |
+
 **Decisiones de Deivid (2026-11-14), textuales, y cómo quedaron.**
 
 | Decisión | Respuesta de Deivid | Qué fija hoy |

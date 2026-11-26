@@ -11,6 +11,10 @@ through `admin_session`, and the tables it reads are invisible to `qualify_app`.
 Packs (m-24852129): every pack granted in the month to a business of the subscription
 is a line, at what the team recorded as paid (`creation_payments`; the table's price
 when no payment row exists), with the prices version the pack was read from.
+
+Reconciliation (m-25129422): expected (the month's lines) against paid — the monthly-fee
+payments recorded in `subscription_payments` (`just plan-payment`) plus the packs that
+already have a `creation_payments` row — and what is still pending.
 """
 
 from __future__ import annotations
@@ -46,6 +50,29 @@ class SubscriptionMonth:
     #: False for an internal plan (`ilimitado`): no charge by design, cost still shown.
     plan_sellable: bool = True
     plan_name: str = ""
+    #: Monthly-fee payments recorded for the month (`subscription_payments`).
+    fee_paid_usd: Decimal = Decimal(0)
+    #: Packs of the month already paid (`creation_payments`).
+    packs_paid_usd: Decimal = Decimal(0)
+
+    @property
+    def paid_usd(self) -> Decimal:
+        return self.fee_paid_usd + self.packs_paid_usd
+
+    @property
+    def pending_usd(self) -> Decimal:
+        """Negative = paid more than expected (a balance in the client's favour)."""
+        return self.charged_usd - self.paid_usd
+
+    @property
+    def payment_status(self) -> str:
+        if self.charged_usd == 0 and self.paid_usd == 0:
+            return "sin cobro"
+        if self.pending_usd == 0:
+            return "pagado"
+        if self.pending_usd < 0:
+            return "pagó de más"
+        return "pago parcial" if self.paid_usd > 0 else "sin pago"
 
     @property
     def charged_usd(self) -> Decimal:
@@ -73,6 +100,7 @@ def build_month(
     packs: Sequence[PackPurchase] = (),
     cost_by_business: dict[str, Decimal] | None = None,
     catalog: PlansCatalog | None = None,
+    fee_paid_usd: Decimal = Decimal(0),
 ) -> SubscriptionMonth:
     plans = catalog or load_plans()
     code = plan_code_at(assignments, period, plans.default_code)
@@ -86,6 +114,11 @@ def build_month(
         cost_by_business=dict(cost_by_business or {}),
         plan_sellable=plan.sellable,
         plan_name=plan.name,
+        fee_paid_usd=fee_paid_usd,
+        packs_paid_usd=sum(
+            (p.usd for p in packs if p.usd is not None and month_of(p.purchased_at) == period),
+            Decimal(0),
+        ),
     )
 
 
@@ -109,6 +142,11 @@ def render(months: Sequence[SubscriptionMonth]) -> str:
         out.append(
             f"    total  cobro USD {m.charged_usd:.2f} · costo USD {m.cost_usd:.2f} · "
             f"margen USD {m.margin_usd:.2f}  [{m.prices_versions}]"
+        )
+        out.append(
+            f"    pago   esperado USD {m.charged_usd:.2f} · pagado USD {m.paid_usd:.2f} "
+            f"(mensualidad {m.fee_paid_usd:.2f}, paquetes {m.packs_paid_usd:.2f}) · "
+            f"pendiente USD {m.pending_usd:.2f} · {m.payment_status}"
         )
     return "\n".join(out)
 
@@ -162,6 +200,13 @@ def fetch(period: date, tenant_id: UUID | None = None) -> list[SubscriptionMonth
                     {"sid": sub.id, "start": start, "end": end},
                 )
             ]
+            fee_paid = session.scalar(
+                text(
+                    "SELECT COALESCE(SUM(usd_paid), 0) FROM subscription_payments "
+                    "WHERE subscription_id = :sid AND period_month = :period"
+                ),
+                {"sid": sub.id, "period": period},
+            )
             months.append(
                 build_month(
                     subscription_id=sub.id,
@@ -170,6 +215,7 @@ def fetch(period: date, tenant_id: UUID | None = None) -> list[SubscriptionMonth
                     assignments=_assignments(_history(session, sub.id)),
                     packs=packs,
                     cost_by_business=costs,
+                    fee_paid_usd=Decimal(fee_paid or 0),
                 )
             )
     return months
