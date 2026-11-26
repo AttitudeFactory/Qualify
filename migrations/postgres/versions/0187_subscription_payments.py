@@ -12,7 +12,7 @@ WhatsApp or email (`just plan-invoice`) and records each payment it receives
 Packs keep their own payment row (`creation_payments`, 0095).
 
 The table is shaped so a payment provider's webhook (KunfuPay, dLocal, Mercado Pago —
-`.claude/kunfupay-research-2026-11-26.md` §7) can later insert into it idempotently with
+epic m-25120476) can later insert into it idempotently with
 no schema change: `provider` + `provider_payment_id` UNIQUE (`INSERT … ON CONFLICT DO
 NOTHING`), the raw payload kept to re-parse, and our own `reference`
 (`<subscription_id>:YYYY-MM`) the provider echoes back. No provider is built here; a

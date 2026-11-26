@@ -16,6 +16,7 @@ same table with its own provider name and payment id.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -131,6 +132,17 @@ class PaymentRefused(ValueError):
     pass
 
 
+def _check_amount(value: Decimal, flag: str) -> None:
+    """At most 2 decimals: «470.000» (470 mil written the Colombian way) is refused, never
+    stored as 470."""
+    exponent = value.as_tuple().exponent
+    if not value.is_finite() or value <= 0 or (isinstance(exponent, int) and exponent < -2):
+        raise PaymentRefused(
+            f"{flag} {value} no es un monto válido: mayor que cero, sin separador de miles "
+            "y con dos decimales como máximo (470000 o 149.50)"
+        )
+
+
 @dataclass(frozen=True)
 class RecordedPayment:
     payment_id: UUID
@@ -165,12 +177,15 @@ def record_payment(
         raise PaymentRefused("falta --payment-ref: es lo que evita registrar un pago dos veces")
     if not recorded_by.strip():
         raise PaymentRefused("falta --by")
-    if usd_paid <= 0:
-        raise PaymentRefused("el monto en USD debe ser mayor que cero")
+    _check_amount(usd_paid, "--usd")
     if method not in METHODS:
         raise PaymentRefused(f"método desconocido {method!r}; usa uno de {', '.join(METHODS)}")
     if (local_amount is None) != (local_currency is None):
         raise PaymentRefused("--local y --currency van juntos")
+    if local_amount is not None:
+        _check_amount(local_amount, "--local")
+    if local_currency is not None and not re.fullmatch(r"[A-Z]{3}", local_currency.upper()):
+        raise PaymentRefused(f"moneda {local_currency!r}: usa el código de 3 letras (COP, UYU)")
     with admin_session() as session:
         sid = session.scalar(
             text("SELECT subscription_id FROM tenants WHERE id = :id"), {"id": tenant_id}
@@ -247,7 +262,12 @@ def build_parser() -> argparse.ArgumentParser:
     pay.add_argument("--month", required=True, type=_month, help="YYYY-MM the payment covers")
     pay.add_argument("--usd", required=True, type=_amount)
     pay.add_argument("--method", required=True, choices=METHODS)
-    pay.add_argument("--payment-ref", required=True, help="the receipt / Zelle / pago móvil ref")
+    pay.add_argument(
+        "--payment-ref",
+        required=True,
+        help="the receipt / Zelle / pago móvil ref — unique per payment: it is the "
+        "idempotency key (cash: add the date and who received it)",
+    )
     pay.add_argument("--by", required=True, help="who recorded it (team email)")
     pay.add_argument("--local", type=_amount, help="amount in local currency, if any")
     pay.add_argument("--currency", help="ISO code of --local: COP, UYU, VES")

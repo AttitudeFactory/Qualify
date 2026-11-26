@@ -151,3 +151,30 @@ def test_an_empty_reference_is_refused_before_touching_the_database() -> None:
             recorded_by="a@b.co",
             paid_at=_at(3, 11),
         )
+
+
+@pytest.mark.parametrize(
+    ("usd", "local", "currency"),
+    [
+        ("1.250", None, None),  # 1.250 dólares escrito con punto de miles
+        ("149", "470.000", "COP"),  # 470 mil pesos, never stored as 470
+        ("149", "0", "COP"),
+        ("NaN", None, None),
+        ("149", "470000", "pesos"),
+    ],
+)
+def test_an_ambiguous_amount_or_currency_is_refused(
+    usd: str, local: str | None, currency: str | None
+) -> None:
+    with pytest.raises(payments.PaymentRefused):
+        payments.record_payment(
+            tenant_id=uuid4(),
+            period=NOV,
+            usd_paid=Decimal(usd),
+            method="transfer",
+            payment_ref="Bancolombia 991",
+            recorded_by="a@b.co",
+            paid_at=_at(3, 11),
+            local_amount=Decimal(local) if local else None,
+            local_currency=currency,
+        )
