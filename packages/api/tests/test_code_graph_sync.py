@@ -1,26 +1,30 @@
 """dev/code-graph-sync.py against a temp clone with a linked worktree and a stub `gh` (m-25129388).
 
-Offline: the stub serves a release + assets from a temp dir and logs every call. The shared
-store is the temp clone's own graphify-out/, never the developer's real one.
+Offline and hermetic: PATH holds only a temp bin dir (stub gh, stub graphify, a link to git),
+never a system dir — ubuntu-latest ships a real `gh` in /usr/bin. The stub serves a release
+and its assets from a temp dir and logs every call. The shared store is the temp clone's own
+graphify-out/, never the developer's real one.
 """
 
 from __future__ import annotations
 
+import fcntl
 import io
 import json
-import os
 import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[3] / "dev" / "code-graph-sync.py"
 COMMIT = "c" * 40
+BUILT_AT = "2026-11-26T11:17:00Z"
 
-STUB_GH = """import os, sys
+STUB_GH = """import os, sys, time
 d = os.environ["STUB_GH_DIR"]
 with open(os.path.join(d, "calls.log"), "a") as fh:
     fh.write(" ".join(sys.argv[1:]) + "\\n")
@@ -28,6 +32,7 @@ endpoint = sys.argv[2]
 if os.path.exists(os.path.join(d, "no-release")):
     sys.stderr.write("gh: Not Found (HTTP 404)\\n")
     sys.exit(1)
+time.sleep(float(os.environ.get("STUB_GH_SLEEP", "0")))
 if endpoint.endswith("/releases/tags/code-graph"):
     sys.stdout.write(open(os.path.join(d, "release.json")).read())
 elif "/releases/assets/" in endpoint:
@@ -42,44 +47,46 @@ def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
 
 
-def _publish(stub: Path, commit: str, graph: bytes) -> None:
+def _member(tar: tarfile.TarFile, name: str, data: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
+
+
+def _publish(stub: Path, built_at: str = BUILT_AT, graph: bytes = b'{"nodes": [1, 2]}') -> dict:
+    meta = {"commit": COMMIT, "built_at": built_at, "nodes": 2, "edges": 1}
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, data in (("graph.json", graph), ("GRAPH_REPORT.md", b"# report\n")):
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-        evil = tarfile.TarInfo("../escape.txt")  # must be ignored by the installer
-        evil.size = 1
-        tar.addfile(evil, io.BytesIO(b"x"))
-    meta = {"commit": commit, "built_at": "2026-11-26T11:17:00Z", "nodes": 2, "edges": 1}
+        _member(tar, "code-graph.json", json.dumps(meta).encode())
+        _member(tar, "graph.json", graph)
+        _member(tar, "GRAPH_REPORT.md", b"# report\n")
+        # Hostile members the installer must ignore.
+        _member(tar, "../escape.txt", b"x")
+        sym = tarfile.TarInfo(".graphify_labels.json")
+        sym.type, sym.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        tar.addfile(sym)
+        hard = tarfile.TarInfo("GRAPH_REPORT.md")
+        hard.type, hard.linkname = tarfile.LNKTYPE, "graph.json"
+        tar.addfile(hard)
     (stub / "asset-11").write_text(json.dumps(meta))
     (stub / "asset-12").write_bytes(buf.getvalue())
     release = {
         "assets": [{"id": 11, "name": "code-graph.json"}, {"id": 12, "name": "code-graph.tar.gz"}]
     }
     (stub / "release.json").write_text(json.dumps(release))
+    return meta
 
 
 @pytest.fixture
-def env(tmp_path: Path) -> dict[str, object]:
-    if not shutil.which("git"):
+def env(tmp_path: Path) -> dict:
+    git = shutil.which("git")
+    if not git:
         pytest.skip("git not available")
     main = tmp_path / "clone"
     main.mkdir()
     _git(main, "init", "-q", "-b", "main")
-    _git(
-        main,
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "user.name=t",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "init",
-    )
+    _git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty",
+         "-m", "init")  # fmt: skip
     worktree = tmp_path / "wt"
     _git(main, "worktree", "add", "-q", "-b", "feature", str(worktree))
 
@@ -93,20 +100,21 @@ def env(tmp_path: Path) -> dict[str, object]:
     graphify = bin_dir / "graphify"
     graphify.write_text("#!/bin/sh\nexit 0\n")
     graphify.chmod(0o755)
-    _publish(stub, COMMIT, b'{"nodes": [1, 2]}')
+    (bin_dir / "git").symlink_to(git)  # the only real tool the script needs
+    _publish(stub)
 
-    # Only the stubs + git on PATH: git's own dir may also hold the real gh (Homebrew).
-    (bin_dir / "git").symlink_to(shutil.which("git") or "/usr/bin/git")
     run_env = {
-        "PATH": f"{bin_dir}{os.pathsep}/bin",
+        "PATH": str(bin_dir),
         "HOME": str(tmp_path),
         "STUB_GH_DIR": str(stub),
         "CODE_GRAPH_EXACT_PATH": "1",
     }
-    return {"main": main, "wt": worktree, "stub": stub, "bin": bin_dir, "env": run_env}
+    store = main.resolve() / "graphify-out"
+    return {"main": main, "wt": worktree, "stub": stub, "bin": bin_dir, "env": run_env,
+            "store": store}  # fmt: skip
 
 
-def _run(env: dict[str, object], *args: str, stdin: str = "") -> subprocess.CompletedProcess:
+def _run(env: dict, *args: str, stdin: str = "") -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=env["wt"],
@@ -118,35 +126,65 @@ def _run(env: dict[str, object], *args: str, stdin: str = "") -> subprocess.Comp
     )
 
 
-def _calls(env: dict[str, object]) -> list[str]:
+def _calls(env: dict) -> list[str]:
     log = env["stub"] / "calls.log"
     return log.read_text().splitlines() if log.exists() else []
 
 
-def test_first_run_installs_and_links_then_same_commit_downloads_nothing(env) -> None:
-    store = env["main"].resolve() / "graphify-out"
+def _tarball_downloads(env: dict) -> int:
+    return sum("assets/12" in call for call in _calls(env))
+
+
+def test_first_run_installs_and_links_then_same_build_downloads_nothing(env) -> None:
+    store = env["store"]
 
     first = _run(env, "--now")
     assert first.returncode == 0, first.stderr
     assert "code graph installed" in first.stdout
     assert (store / "graph.json").read_bytes() == b'{"nodes": [1, 2]}'
-    assert json.loads((store / ".code-graph-installed.json").read_text())["commit"] == COMMIT
-    assert not (env["main"].parent / "escape.txt").exists()
-    assert not (store.parent / "escape.txt").exists()
+    marker = json.loads((store / ".code-graph-installed.json").read_text())
+    assert marker["installed"] == {"commit": COMMIT, "built_at": BUILT_AT, "nodes": 2, "edges": 1}
     for name in ("graph.json", "GRAPH_REPORT.md", ".graphify_labels.json"):
         link = env["wt"] / "graphify-out" / name
-        assert link.is_symlink() and os.readlink(link) == str(store / name)
+        assert link.is_symlink() and Path(link.readlink()) == store / name
     assert (env["wt"] / "graphify-out" / "graph.json").read_bytes() == b'{"nodes": [1, 2]}'
-    assert any("assets/12" in call for call in _calls(env))
+    assert _tarball_downloads(env) == 1
 
-    (env["stub"] / "calls.log").unlink()
     second = _run(env, "--now")
     assert second.returncode == 0, second.stderr
     assert "already up to date" in second.stdout
-    assert not any("assets/12" in call for call in _calls(env))  # no tarball download
+    assert _tarball_downloads(env) == 1  # no second download
 
 
-def test_regular_graph_in_worktree_is_left_alone(env) -> None:
+def test_hostile_tar_members_are_ignored(env) -> None:
+    store = env["store"]
+    assert _run(env, "--now").returncode == 0
+    # `../escape.txt` relative to the temp dir would land in the store itself.
+    assert not (store / "escape.txt").exists()
+    assert not (store.parent / "escape.txt").exists()
+    assert not (store / ".graphify_labels.json").exists()  # symlink member skipped
+    assert (store / "GRAPH_REPORT.md").read_text() == "# report\n"  # hardlink member skipped
+    assert not list(store.glob(".code-graph-tmp-*"))
+
+
+def test_forced_rebuild_of_the_same_commit_is_downloaded(env) -> None:
+    assert _run(env, "--now").returncode == 0
+    _publish(env["stub"], built_at="2026-11-26T16:17:00Z", graph=b'{"nodes": [1, 2, 3]}')
+    result = _run(env, "--now")
+    assert "code graph installed" in result.stdout
+    assert (env["store"] / "graph.json").read_bytes() == b'{"nodes": [1, 2, 3]}'
+    assert _tarball_downloads(env) == 2
+
+
+def test_stale_temp_dirs_are_swept(env) -> None:
+    leftover = env["store"] / ".code-graph-tmp-killed"
+    leftover.mkdir(parents=True)
+    (leftover / "graph.json").write_text("half")
+    assert _run(env, "--now").returncode == 0
+    assert not leftover.exists()
+
+
+def test_regular_graph_in_worktree_is_left_alone_and_named_in_now_mode(env) -> None:
     out = env["wt"] / "graphify-out"
     out.mkdir()
     (out / "graph.json").write_text("local graph")
@@ -156,6 +194,45 @@ def test_regular_graph_in_worktree_is_left_alone(env) -> None:
     assert not (out / "graph.json").is_symlink()
     assert (out / "graph.json").read_text() == "local graph"
     assert (out / "GRAPH_REPORT.md").is_symlink()
+    assert "keeps its own graph.json" in result.stdout and "just graph-sync" in result.stdout
+
+    (env["bin"] / "gh").unlink()  # hook mode stays silent about it (one line: the gh hint)
+    hook = _run(env, stdin=json.dumps({"cwd": str(env["wt"])}))
+    assert "keeps its own" not in hook.stdout
+
+
+def test_hook_mode_returns_at_once_then_throttles(env) -> None:
+    env["env"]["STUB_GH_SLEEP"] = "3"
+    payload = json.dumps({"hook_event_name": "SessionStart", "cwd": str(env["wt"])})
+
+    started = time.monotonic()
+    result = _run(env, stdin=payload)
+    assert result.returncode == 0 and result.stdout == ""
+    assert time.monotonic() - started < 2.5  # the sync runs detached, not in the hook
+    assert (env["wt"] / "graphify-out" / "graph.json").is_symlink()
+
+    marker = env["store"] / ".code-graph-installed.json"
+    deadline = time.monotonic() + 30
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert marker.exists(), "background sync did not finish"
+    calls = len(_calls(env))
+
+    again = _run(env, stdin=payload)
+    assert again.returncode == 0 and again.stdout == ""
+    time.sleep(1)
+    assert len(_calls(env)) == calls  # throttled: no GitHub call within 30 minutes
+
+
+def test_lock_prevents_a_second_concurrent_sync(env) -> None:
+    store = env["store"]
+    store.mkdir(parents=True)
+    with open(store / ".code-graph.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = _run(env, "--now")
+    assert result.returncode == 0
+    assert "another session is syncing" in result.stdout
+    assert _calls(env) == []
 
 
 def test_missing_gh_exits_zero_with_one_hint_and_still_links(env) -> None:
@@ -165,7 +242,7 @@ def test_missing_gh_exits_zero_with_one_hint_and_still_links(env) -> None:
     result = _run(env, stdin=payload)
     assert result.returncode == 0
     lines = result.stdout.strip().splitlines()
-    assert len(lines) == 1 and "gh" in lines[0] and "brew install gh" in lines[0]
+    assert len(lines) == 1 and "`gh` is missing" in lines[0]
     assert (env["wt"] / "graphify-out" / "graph.json").is_symlink()
 
 

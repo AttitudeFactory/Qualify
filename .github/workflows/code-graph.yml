@@ -19,7 +19,9 @@
 # says what was built. Not moving it matters: the Meegle GitHub plugin receives this repo's
 # `push` webhooks (tags included), and no other workflow reacts to tags or releases.
 # Assets are uploaded under a temporary name, then swapped in (delete old + rename), meta
-# last, so a client mid-download never sees a missing tarball for more than a moment.
+# last. Not atomic, so: the tarball carries its own code-graph.json (what a client records
+# as installed), the skip needs BOTH assets present (a run that died mid-swap is redone),
+# and clients compare commit + built_at, so a forced same-commit rebuild still reaches them.
 #
 # Every third-party action is pinned to a commit SHA (the tag is kept in the comment so
 # Dependabot can bump both). The graphify version is pinned in ONE place:
@@ -68,12 +70,17 @@ jobs:
           repo="repos/${GITHUB_REPOSITORY}"
           tip=$(gh api "$repo/commits/main" --jq .sha)
           echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          # Both assets must exist: a run that died mid-swap leaves no tarball, and must not
+          # make every later run skip.
           published=""
-          if meta_id=$(gh api "$repo/releases/tags/$TAG" \
-              --jq '.assets[] | select(.name == "code-graph.json") | .id' 2>/dev/null) &&
-             [ -n "$meta_id" ]; then
-            published=$(gh api -H "Accept: application/octet-stream" \
-              "$repo/releases/assets/$meta_id" | jq -r '.commit // ""' || true)
+          if assets=$(gh api "$repo/releases/tags/$TAG" \
+              --jq '[.assets[] | {(.name): .id}] | add // {}' 2>/dev/null); then
+            meta_id=$(jq -r '."code-graph.json" // empty' <<<"$assets")
+            tar_id=$(jq -r '."code-graph.tar.gz" // empty' <<<"$assets")
+            if [ -n "$meta_id" ] && [ -n "$tar_id" ]; then
+              published=$(gh api -H "Accept: application/octet-stream" \
+                "$repo/releases/assets/$meta_id" | jq -r '.commit // ""' || true)
+            fi
           fi
           if [ "$published" = "$tip" ] && [ "$FORCE" != "true" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
@@ -87,6 +94,9 @@ jobs:
         if: steps.plan.outputs.build == 'true'
         with:
           ref: ${{ steps.plan.outputs.tip }}
+          # A PyPI tool (unlocked transitive deps) runs over this tree next: no write token in
+          # .git/config. The publish step authenticates through GH_TOKEN only.
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: steps.plan.outputs.build == 'true'
@@ -139,7 +149,10 @@ jobs:
           json.dump(meta, open("code-graph.json", "w"), indent=2)
           print(json.dumps(meta))
           PY
-          files=(graph.json GRAPH_REPORT.md)
+          # code-graph.json travels INSIDE the tarball too: it is what clients record as
+          # installed; the separate asset is only the cheap pointer they poll.
+          cp code-graph.json graphify-out/code-graph.json
+          files=(code-graph.json graph.json GRAPH_REPORT.md)
           if [ -f graphify-out/.graphify_labels.json ]; then files+=(.graphify_labels.json); fi
           tar -czf code-graph.tar.gz -C graphify-out "${files[@]}"
           ls -l code-graph.tar.gz code-graph.json

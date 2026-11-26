@@ -31,8 +31,10 @@ Runs outside any venv on macOS and Linux: system `python3`, standard library onl
 from __future__ import annotations
 
 import fcntl
+import glob
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -59,6 +61,11 @@ HINT = ".code-graph-hint"
 LOCK = ".code-graph.lock"
 
 INSTALL_HINT = f"uv tool install graphifyy=={GRAPHIFY_VERSION}"
+GH_HINT = "code-graph: the GitHub CLI `gh` is missing — run: " + (
+    "brew install gh"
+    if platform.system() == "Darwin"
+    else "see https://cli.github.com (then gh auth login)"
+)
 
 # Hooks launched from a desktop app may not inherit the login shell's PATH.
 _EXTRA_PATH = (os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin")
@@ -105,18 +112,22 @@ def resolve(start: str) -> tuple[str, str] | None:
     return os.path.realpath(top), os.path.realpath(store)
 
 
-def link(worktree: str, store: str) -> list[str]:
-    """Point the worktree's graphify-out/<file> at the store; returns what changed."""
+def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
+    """Point the worktree's graphify-out/<file> at the store.
+
+    Returns (names linked now, names kept as this worktree's own regular files).
+    """
     out_dir = os.path.join(worktree, OUT_DIR)
+    changed: list[str] = []
+    kept: list[str] = []
     if os.path.realpath(out_dir) == store:
-        return []  # this is the checkout that owns the store
+        return changed, kept  # this is the checkout that owns the store
     if os.path.islink(out_dir):
-        return []  # someone linked the whole directory on purpose; leave it
-    changed = []
+        return changed, kept  # someone linked the whole directory on purpose; leave it
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
-        return []
+        return changed, kept
     for name in FILES:
         path = os.path.join(out_dir, name)
         target = os.path.join(store, name)
@@ -124,7 +135,8 @@ def link(worktree: str, store: str) -> list[str]:
             if os.readlink(path) == target:
                 continue
         elif os.path.lexists(path):
-            continue  # a regular file: this worktree keeps its own graph
+            kept.append(name)  # a regular file: this worktree keeps its own graph
+            continue
         tmp = f"{path}.link-{os.getpid()}"
         try:
             os.symlink(target, tmp)
@@ -135,7 +147,7 @@ def link(worktree: str, store: str) -> list[str]:
                 os.unlink(tmp)
             except OSError:
                 pass
-    return changed
+    return changed, kept
 
 
 def _read(path: str) -> str:
@@ -153,11 +165,23 @@ def _write(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _installed_commit(store: str) -> str:
+def _key(meta: object) -> tuple[str, str] | None:
+    """What identifies a build: commit AND built_at (a forced rebuild keeps the commit)."""
+    if not isinstance(meta, dict) or not meta.get("commit"):
+        return None
+    return str(meta["commit"]), str(meta.get("built_at", ""))
+
+
+def _installed_keys(store: str) -> set[tuple[str, str]]:
+    """Keys of the installed build: the meta inside its tarball, and the release meta seen."""
     try:
-        return str(json.loads(_read(os.path.join(store, INSTALLED)) or "{}").get("commit", ""))
+        marker = json.loads(_read(os.path.join(store, INSTALLED)) or "{}")
     except ValueError:
-        return ""
+        return set()
+    if not isinstance(marker, dict):
+        return set()
+    keys = {_key(marker.get("installed")), _key(marker.get("seen"))}
+    return {k for k in keys if k}
 
 
 def _throttled(store: str) -> bool:
@@ -176,7 +200,7 @@ class GhError(Exception):
 def _gh(*args: str, binary: bool = False) -> bytes:
     gh = _which("gh")
     if not gh:
-        raise GhError("code-graph: the GitHub CLI `gh` is missing — run: brew install gh")
+        raise GhError(GH_HINT)
     try:
         out = subprocess.run(
             [gh, "api", *args], capture_output=True, timeout=GH_TIMEOUT, env=_env()
@@ -206,11 +230,13 @@ def _download(asset_id: int) -> bytes:
     )
 
 
-def _install(store: str, blob: bytes, meta: dict) -> None:
+def _install(store: str, blob: bytes, seen: dict) -> dict:
     """Extract only FILES from the tarball into a temp dir in the store, then rename.
 
-    Files are written by hand (no `extractall`): nothing outside FILES, no links, no paths.
-    Their mtime is the install time, not the build time: see the code-graph.yml header.
+    Files are written by hand (no `extractall`): only regular members named in FILES (or the
+    tarball's own code-graph.json), no links, no paths. Their mtime is the install time, not
+    the build time: see the code-graph.yml header. Returns the installed build's meta — the
+    copy inside the tarball, which is the truth about what was installed.
     """
     tmp = tempfile.mkdtemp(prefix=".code-graph-tmp-", dir=store)
     try:
@@ -218,24 +244,39 @@ def _install(store: str, blob: bytes, meta: dict) -> None:
         with open(blob_path, "wb") as fh:
             fh.write(blob)
         got = []
+        inner: object = None
         with tarfile.open(blob_path, "r:gz") as tar:
             for member in tar.getmembers():
                 name = member.name[2:] if member.name.startswith("./") else member.name
-                if name not in FILES or not member.isfile():
+                if name not in (*FILES, META_ASSET) or not member.isfile():
                     continue
                 src = tar.extractfile(member)
                 if src is None:
+                    continue
+                if name == META_ASSET:
+                    with src:
+                        inner = json.loads(src.read().decode("utf-8"))
                     continue
                 with src, open(os.path.join(tmp, name), "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 got.append(name)
         if "graph.json" not in got or os.path.getsize(os.path.join(tmp, "graph.json")) == 0:
             raise GhError()
+        installed = inner if isinstance(inner, dict) and _key(inner) else seen
         for name in got:
             os.replace(os.path.join(tmp, name), os.path.join(store, name))
-        _write(os.path.join(store, INSTALLED), json.dumps(meta, indent=2) + "\n")
+        marker = {"installed": installed, "seen": seen}
+        _write(os.path.join(store, INSTALLED), json.dumps(marker, indent=2) + "\n")
+        return installed
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _summary(meta: dict) -> str:
+    return (
+        f"{str(meta.get('commit', '?'))[:12]} (built {meta.get('built_at', '?')}, "
+        f"{meta.get('nodes', '?')} nodes, graphify {meta.get('graphify_version', '?')})"
+    )
 
 
 def sync(store: str) -> str:
@@ -247,20 +288,19 @@ def sync(store: str) -> str:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             return "another session is syncing the code graph right now"
+        # Under the lock nobody else is installing: any temp dir left is from a killed run.
+        for stale in glob.glob(os.path.join(store, ".code-graph-tmp-*")):
+            shutil.rmtree(stale, ignore_errors=True)
         _write(os.path.join(store, CHECKED), str(int(time.time())))
         release = json.loads(_gh(f"{REPO}/releases/tags/{TAG}"))
         meta = json.loads(_download(_asset(release, META_ASSET)))
-        commit = str(meta.get("commit", ""))
-        if not commit:
+        key = _key(meta)
+        if key is None:
             raise GhError()
-        summary = (
-            f"{commit[:12]} (built {meta.get('built_at', '?')}, "
-            f"{meta.get('nodes', '?')} nodes, graphify {meta.get('graphify_version', '?')})"
-        )
-        if commit == _installed_commit(store) and os.path.isfile(os.path.join(store, "graph.json")):
-            return f"code graph already up to date: {summary}"
-        _install(store, _download(_asset(release, TARBALL_ASSET)), meta)
-        return f"code graph installed: {summary} -> {store}"
+        if key in _installed_keys(store) and os.path.isfile(os.path.join(store, "graph.json")):
+            return f"code graph already up to date: {_summary(meta)}"
+        installed = _install(store, _download(_asset(release, TARBALL_ASSET)), meta)
+        return f"code graph installed: {_summary(installed)} -> {store}"
     finally:
         lock.close()
 
@@ -285,10 +325,13 @@ def _run_sync(store: str, *, verbose: bool) -> None:
     except GhError as exc:
         _record_hint(store, exc.hint)
         if verbose:
-            print(exc.hint or "code-graph: could not reach the code-graph release (try later)")
+            print(
+                exc.hint
+                or "code-graph: could not reach the code-graph release — retry: just graph-sync"
+            )
     except Exception as exc:  # a hook must never fail the session
         if verbose:
-            print(f"code-graph: sync failed ({type(exc).__name__}: {exc})")
+            print(f"code-graph: sync failed ({type(exc).__name__}: {exc}) — retry: just graph-sync")
 
 
 def _hook_cwd() -> str:
@@ -315,13 +358,23 @@ def main(argv: list[str]) -> int:
         where = resolve(start)
         if where is None:
             if now:
-                print(f"code-graph: {start} is not inside a git checkout")
+                print(
+                    f"code-graph: {start} is not inside a git checkout — "
+                    "run it from the repo or a worktree"
+                )
             return 0
         worktree, store = where
-        changed = link(worktree, store)
+        changed, kept = link(worktree, store)
         if now:
             if changed:
                 print(f"linked {', '.join(changed)} in {worktree}/{OUT_DIR} -> {store}")
+            if kept:
+                own = os.path.join(worktree, OUT_DIR)
+                print(
+                    f"code-graph: {own} keeps its own {', '.join(kept)} (regular files, not "
+                    f"synced) — to use the CI graph: rm {' '.join(kept)} there, "
+                    "then just graph-sync"
+                )
             if not _which("graphify"):
                 print(f"code-graph: graphify is not installed — run: {INSTALL_HINT}")
             _run_sync(store, verbose=True)
@@ -331,7 +384,7 @@ def main(argv: list[str]) -> int:
             print(f"code-graph: graphify is not installed — run: {INSTALL_HINT}")
             return 0
         if not _which("gh"):
-            print("code-graph: the GitHub CLI `gh` is missing — run: brew install gh")
+            print(GH_HINT)
             return 0
         hint = _read(os.path.join(store, HINT))
         if hint:
