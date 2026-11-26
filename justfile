@@ -622,6 +622,12 @@ eval-escenas *args:
 eval-avatar-escena *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/run_experiment.py {{args}}
 
+# m-25129385 (ADR 50 §12.12): the realistic character drawn from a real person's photo
+# (written permission required, photos never in the repo). Same guards as eval-avatar-escena.
+# --estilo realista (AVFOTO-001, default) | animado (AVFOTO-002).
+eval-avatar-foto *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/personaje_foto.py {{args}}
+
 # m-24849234: Seedream 5.0 pro color/texture matrix. `--dry-run` quotes it and sends nothing;
 # a paid run needs --i-have-spend-authorization (the founder authorizes each one).
 eval-plantillas *args:
