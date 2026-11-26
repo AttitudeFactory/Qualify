@@ -382,6 +382,10 @@ class _World:
         self.reads: list[bool] = []
         self.paid: list[str] = []
         self.analyses: Any = None
+        #: RF-02b: what the Brand Kit's rubro gives as «Nicho: …» ("" = none), and the
+        #: (tenant, brand) pairs it was read for.
+        self.niche = ""
+        self.niche_reads: list[tuple[UUID, UUID]] = []
 
     def ok_run(self, *, finished: datetime = MONDAY, ideas: int = 2) -> UUID:
         """What the worker leaves after a weekly run: reels, verdicts, ideas, `ok`."""
@@ -473,6 +477,13 @@ def world(store: Any, monkeypatch: pytest.MonkeyPatch) -> _World:
         lambda: reviewed_reels.MemoryReviewedReelsStore(world.runs, repo),
     )
     monkeypatch.setattr(rd, "_business_timezone", lambda tenant: "America/Bogota")
+
+    # RF-02b: the Brand Kit's rubro, offline (`brand_niche` itself is tested in the API)
+    def niche_line(tenant: UUID, brand: UUID) -> str:
+        world.niche_reads.append((tenant, brand))
+        return world.niche
+
+    monkeypatch.setattr(rd, "brand_niche_line", niche_line)
     # UI-1: the reels' shared analyses (global tables) in memory
     from qualify_api.referentes import reel_analysis
     from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
@@ -1014,6 +1025,7 @@ async def test_filtering_reads_what_is_stored_and_never_pays(world: _World) -> N
         "kind": "Todos",
         "account": "Todas",
         "duration": "Todas",
+        "region": "Todas",
     }
     opened, writes = list(world.opened), world.runs.writes
 
@@ -1232,12 +1244,17 @@ def test_the_bar_has_every_filter_in_plain_spanish() -> None:
         "No hay reels con estos filtros. Prueba quitando alguno.",
         "Ver más",
         "La imagen ya no está disponible",
+        # RF-02b (m-25119463)
+        "Región",
+        "Colombia",
+        "Venezuela",
+        "Uruguay",
     ):
         assert shown(text), text
     assert '"search"' in rendered and "radiogroup" in rendered  # labelled, focusable
     assert "q-drawer--bottom" in rendered  # the phone's sheet from the bottom
-    for gone in ("Ordenar", "Región", "Nicho", "Detractor", "Últimos"):
-        assert not shown(gone), gone  # out of RF-02 (decision 2 and 3; RF-02b)
+    for gone in ("Ordenar", "Detractor", "Últimos", "Objetivo"):
+        assert not shown(gone), gone  # out (decision 2 and 3; RF-11 waits)
     # RF-13: no heading over the list, no line under it (Deivid, 2026-11-25)
     for gone in (
         "Más reels revisados",
@@ -1429,6 +1446,7 @@ def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
         "kind": "Tipo",
         "account": "Cuenta",
         "duration": "Duración",
+        "region": "Región",
     }
     face = inspect.getsource(discover_reels._chip_face)
     # the face is the state's `chip_texts` (`reels_filters_vm.phone_chip`, tested there)
@@ -1444,7 +1462,8 @@ def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
     for needed in ('flex="1 1 auto"', 'justify_content="space-between"', "min_width=_CHIP_MIN"):
         assert needed in button, needed
     # the popovers' options keep the long words («Menos de 15 segundos»)
-    assert "_single_options(axis, close=True)" in inspect.getsource(discover_reels._dropdown)
+    assert "_axis_options(axis, close=True)" in inspect.getsource(discover_reels._dropdown)
+    assert "_single_options(axis, close=close)" in inspect.getsource(discover_reels._axis_options)
 
 
 async def test_the_chip_texts_follow_the_filters(world: _World) -> None:
@@ -1524,7 +1543,8 @@ def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
     assert ".q-reels-bar .q-reels-bar__wide { display: none; }" in css
     assert ".q-reels-bar .q-reels-bar__narrow { display: flex; }" in css
     query = re.search(r"@container \(min-width: (\d+)px\) \{(.*?)\n\}", css, re.S)
-    assert query and int(query.group(1)) == 760
+    # RF-02b raised the cut: five chips no longer fit at 760 px (sum in the CSS comment)
+    assert query and int(query.group(1)) == discover_reels.WIDE_FROM_PX == 930
     assert ".q-reels-bar .q-reels-bar__wide { display: flex; }" in query.group(2)
     assert ".q-reels-bar .q-reels-bar__narrow { display: none; }" in query.group(2)
     rule_block = css[css.index(".q-reels-bar {") : css.index("@container")]
@@ -1588,3 +1608,178 @@ def test_the_search_button_sits_after_competitors_with_one_live_region() -> None
     ideas = inspect.getsource(discover_reels._ideas)
     assert ideas.count('role="status"') == 1
     assert 'callout(reels_search_vm.SEARCHING_NOTICE, "info", live=False)' in ideas
+
+
+# --------------------------------------------------------------------------------------
+# RF-02b (m-25119463): «Región» and «Nicho: …»
+# --------------------------------------------------------------------------------------
+
+
+def _library_with_facts(world: _World, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """ONE in-memory RF-01 library for the whole test, so the accounts' countries
+    (`creators.region_code`, RF-04) set on it are the ones every read sees."""
+    from qualify_api.referentes import reviewed_reels
+
+    library = reviewed_reels.MemoryReviewedReelsStore(world.runs, world.repo)
+    monkeypatch.setattr(reviewed_reels, "default_library", lambda: library)
+    return library
+
+
+async def test_region_narrows_what_is_stored_and_todas_keeps_the_unknown(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Todas»: every reel, also of accounts with no known country; a country: only the
+    accounts known to be there; «Restablecer filtros» puts «Todas» back. Postgres only:
+    never the vendor, the model, a first run nor a write."""
+    library = _library_with_facts(world, monkeypatch)
+    world.ok_run()  # the ideas are @foodie's, whose country is unknown
+    _reviewed(
+        world,
+        [
+            ("instagram", "makeupqueen", "M2", 40.0),  # Venezuela
+            ("tiktok", "vecino", "T1", 20.0),  # Colombia
+        ],
+    )
+    library.set_facts("instagram", "makeupqueen", region="VE")
+    library.set_facts("tiktok", "vecino", region="CO")
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert {c["key"] for c in state.more_reels} == {"instagram:M2", "tiktok:T1"}
+    assert state.filter_values["region"] == "Todas"
+    opened, writes = list(world.opened), world.runs.writes
+
+    await _filter(proxy, state.set_filter("region", "VE"))
+    assert state.filter_region == "VE" and state.filters_on
+    assert state.reels == []  # an unknown country never matches a chosen one
+    assert [c["key"] for c in state.more_reels] == ["instagram:M2"]
+    assert state.filter_values["region"] == "Venezuela"
+    assert state.chip_texts["region"] == "Venezuela"
+    assert state.chip_texts["region_name"] == "Región: Venezuela"
+    assert state.filters_texts == {"face": "Filtros · 1", "name": "Filtros: 1 activo"}
+    assert state.no_ideas_filtered and not state.no_ideas_left
+
+    await _filter(proxy, state.set_filter("region", "UY"))
+    assert state.reels == [] and state.more_reels == []
+    assert state.empty_kind == reels_filters_vm.EMPTY_FILTERS  # said, never a mute list
+
+    await _filter(proxy, state.set_filter("region", "AR"))  # not offered: «Todas»
+    assert state.filter_region == ""
+    await _filter(proxy, state.set_filter("region", "CO"))
+    assert [c["key"] for c in state.more_reels] == ["tiktok:T1"]
+    await _filter(proxy, state.reset_filters())
+    assert state.filter_region == "" and not state.filters_on
+    assert state.filter_values["region"] == "Todas"
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+
+    assert world.paid == [] and world.first_runs == [] and world.opened == opened
+    assert world.runs.writes == writes  # read-only
+
+
+async def test_ver_mas_keeps_the_region(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Ver más» reads the next page with the same «Región»."""
+    from .discover_reels import DiscoverReelsState
+
+    library = _library_with_facts(world, monkeypatch)
+    world.ok_run(ideas=0)
+    specs = [("tiktok", "vecino", f"T{n}", 20.0) for n in range(20)]
+    _reviewed(world, [*specs, ("instagram", "makeupqueen", "M2", 40.0)])
+    library.set_facts("tiktok", "vecino", region="CO")
+    library.set_facts("instagram", "makeupqueen", region="VE")
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("region", "CO"))
+    assert len(state.more_reels) == reels_filters_vm.LIST_PAGE and state.has_more
+    await DiscoverReelsState.load_more.fn(proxy)
+    keys = [c["key"] for c in state.more_reels]
+    assert len(keys) == 20 and all(k.startswith("tiktok:") for k in keys)
+    assert world.paid == []
+
+
+async def test_the_niche_line_is_the_brands_and_goes_with_the_business(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Nicho: …» comes from the session's own brand; another business in the same tab
+    never keeps it, and a brand with no rubro shows no line."""
+    from . import discover_reels
+
+    world.ok_run()
+    world.niche = "Nicho: Comida y bebida"
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.niche == "Nicho: Comida y bebida"
+    assert world.niche_reads == [(TENANT, world.brand)]
+    other = UUID("b0000000-0000-4000-8000-000000000002")
+    other_brand = uuid4()
+    world.repo.add_brand(tenant_id=other, brand_id=other_brand)
+    monkeypatch.setattr(
+        discover_reels,
+        "default_brand_id",
+        lambda tenant: world.brand if tenant == TENANT else other_brand,
+    )
+    world.niche = ""  # B's kit has no rubro
+    proxy.auth.session_tenant_id = str(other)
+    await _open(proxy)
+    assert state.niche == ""
+    assert world.niche_reads[-1] == (other, other_brand)
+    state.niche = "Nicho: Comida y bebida"
+    state._claim_cards("another-tenant")
+    assert state.niche == ""  # never carried over to another business
+    assert world.paid == []
+
+
+def test_the_niche_reads_the_brand_kit_through_its_own_door() -> None:
+    """The provider asks `reviewed_reels.brand_niche` (the Brand Kit through
+    `tenant_session`) for the session's tenant and brand; an unreadable kit gives no line."""
+    tenant, brand = uuid4(), uuid4()
+    seen: list[tuple[UUID, UUID]] = []
+
+    def connect(t: UUID, b: UUID) -> dict[str, str]:
+        seen.append((t, b))
+        return {"sector": "food_drink"}
+
+    assert rd.brand_niche_line(tenant, brand, connect=connect) == "Nicho: Comida y bebida"
+    assert seen == [(tenant, brand)]
+
+    def broken(_t: UUID, _b: UUID) -> dict[str, str]:
+        raise RuntimeError("db down")
+
+    assert rd.brand_niche_line(tenant, brand, connect=broken) == ""
+
+
+def test_region_is_a_chip_on_the_wide_bar_and_a_group_in_the_sheet() -> None:
+    """«Región» is the bar's fifth chip and the sheet's fifth group, with the radio rows
+    of Canal and Duración; «Nicho: …» closes that group in both — words in a group, never
+    a chip nor a line of its own in the bar."""
+    import inspect
+
+    from . import discover_reels
+
+    rendered = str(discover_reels.discover_view().render())
+    assert rendered.count("Venezuela") >= 2  # the dropdown and the sheet
+    assert reels_filters_vm.AXIS_REGION in discover_reels._STATE_VALUE
+    options = inspect.getsource(discover_reels._axis_options)
+    assert "axis == AXIS_REGION" in options and "_niche_note()" in options
+    note = inspect.getsource(discover_reels._niche_note)
+    assert "S.niche" in note and "rx.button" not in note and "role=" not in note
+    assert "border_top=T.BORDER" in note and "T.TEXT_MUTED" in note
+    bar = inspect.getsource(discover_reels._filter_bar)
+    assert "_niche_note" not in bar and "S.niche" not in bar  # never on the bar's lines
+    for door in (discover_reels._dropdown, discover_reels._sheet_group):
+        assert "_axis_options(axis" in inspect.getsource(door)
+
+
+def test_the_search_words_wait_for_a_wider_bar_with_five_chips() -> None:
+    """RF-14's words show from `SEARCH_WORDS_FROM_PX` of bar (was 1000 with four chips)."""
+    import re
+
+    from . import discover_reels
+
+    css = (Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css").read_text(
+        encoding="utf-8"
+    )
+    words = re.search(
+        r"@container \(min-width: (\d+)px\) \{\n  \.q-reels-bar \.q-reels-bar__search-words", css
+    )
+    assert words and int(words.group(1)) == discover_reels.SEARCH_WORDS_FROM_PX == 1070
+    assert discover_reels.SEARCH_WORDS_FROM_PX > discover_reels.WIDE_FROM_PX

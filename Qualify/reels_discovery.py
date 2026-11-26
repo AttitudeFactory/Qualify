@@ -261,6 +261,26 @@ def more_reviewed(
 
 
 # --------------------------------------------------------------------------------------
+# RF-02b (m-25119463): «Nicho: …», the brand's rubro over the filters
+# --------------------------------------------------------------------------------------
+
+
+def brand_niche_line(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    connect: reviewed_reels.ConnectLoader | None = None,
+) -> str:
+    """«Nicho: Comida y bebida», read from the brand's Brand Kit through `tenant_session`
+    (`reviewed_reels.brand_niche`; RLS hands back this business's kit or nothing). ""
+    when the kit has no rubro or cannot be read — the line only disappears. Postgres only:
+    never the vendor nor the model."""
+    return reels_filters_vm.niche_line(
+        reviewed_reels.brand_niche(tenant_id, brand_id, connect=connect)
+    )
+
+
+# --------------------------------------------------------------------------------------
 # the shared reel analysis (ADR 44 UI-1, m-24921075) — the screen only reads and enqueues
 # --------------------------------------------------------------------------------------
 
@@ -403,6 +423,7 @@ def search_reels_now(
 __all__ = [
     "BRIEF_HASHTAGS",
     "brand_brief",
+    "brand_niche_line",
     "choose_competitors",
     "competitor_rows",
     "cover_path",

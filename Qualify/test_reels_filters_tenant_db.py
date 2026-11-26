@@ -363,3 +363,24 @@ def test_filtering_writes_no_usage_event(world: Any) -> None:
             e.load(who, filters)
             e.more(who, filters, 1)
     assert _usage_events(a[0], b[0]) == before
+
+
+def test_each_business_reads_only_its_own_niche_and_regions(world: Any) -> None:
+    """RF-02b (m-25119463), the screen's own path: «Nicho: …» from the session's Brand Kit
+    through `tenant_session` (A's kit is never B's, even naming A's brand), and a
+    «Región» filter never lets A's reels reach B — nor writes a usage event."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+
+    e, a, b = world
+    store = BrandKitStore()
+    store.save_details(
+        tenant_id=a[0], brand_id=a[1], user_id=None, documents={"connect": {"sector": "food_drink"}}
+    )
+    assert reels_discovery.brand_niche_line(*a) == "Nicho: Comida y bebida"
+    assert reels_discovery.brand_niche_line(*b) == ""  # B's brand has no kit yet
+    assert reels_discovery.brand_niche_line(b[0], a[1]) == ""  # RLS: not B's to read
+    before = _usage_events(a[0], b[0])
+    for region in ("CO", "VE", "UY"):
+        filters = reels_filters_vm.FilterChoice.of(region=region).to_filters()
+        assert not (_everything_seen(e, b, filters) & A_ONLY_REELS), region
+    assert _usage_events(a[0], b[0]) == before

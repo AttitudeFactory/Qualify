@@ -19,7 +19,13 @@ ACCOUNTS = {
 
 
 def test_the_bar_says_exactly_what_the_ticket_says() -> None:
-    assert [vm.AXIS_LABELS[a] for a in vm.AXES] == ["Canal", "Tipo de cuenta", "Cuenta", "Duración"]
+    assert [vm.AXIS_LABELS[a] for a in vm.AXES] == [
+        "Canal",
+        "Tipo de cuenta",
+        "Cuenta",
+        "Duración",
+        "Región",  # RF-02b (m-25119463), last so RF-02's four keep their places
+    ]
     assert [label for _, label in vm.NETWORK_OPTIONS] == ["Instagram", "TikTok"]
     assert [label for _, label in vm.KIND_OPTIONS] == ["Inspiradores", "Competidores"]
     assert [label for _, label in vm.DURATION_OPTIONS] == [
@@ -136,7 +142,13 @@ def test_every_single_choice_axis_starts_with_all() -> None:
 def test_by_default_nothing_is_narrowed() -> None:
     assert not vm.NO_CHOICE.active
     assert vm.NO_CHOICE.to_filters() == NO_FILTERS
-    assert [c["value"] for c in vm.chips(vm.NO_CHOICE)] == ["Todos", "Todos", "Todas", "Todas"]
+    assert [c["value"] for c in vm.chips(vm.NO_CHOICE)] == [
+        "Todos",
+        "Todos",
+        "Todas",
+        "Todas",
+        "Todas",
+    ]
     assert all(c["on"] == "" for c in vm.chips(vm.NO_CHOICE))
 
 
@@ -176,7 +188,19 @@ def test_axes_change_one_at_a_time_and_accounts_toggle() -> None:
     assert choice.accounts == ("tiktok:rival",)
     assert vm.clear_accounts(choice).accounts == ()
     assert vm.set_axis(choice, vm.AXIS_NETWORK, "").network == ""
-    assert vm.set_axis(choice, "region", "co") == choice  # RF-02b's, not here
+    assert vm.set_axis(choice, "objective", "sell") == choice  # RF-11's, not here
+    # RF-02b: «Región» is one more single-choice axis; the others stay as they were
+    in_ve = vm.set_axis(choice, vm.AXIS_REGION, "VE")
+    assert (in_ve.region, in_ve.network, in_ve.duration, in_ve.accounts) == (
+        "VE",
+        "instagram",
+        "lt15",
+        ("tiktok:rival",),
+    )
+    assert vm.toggle_account(in_ve, "instagram:foodie").region == "VE"
+    assert vm.clear_accounts(in_ve).region == "VE"
+    assert vm.known_accounts(in_ve, ACCOUNTS).region == "VE"
+    assert vm.set_axis(in_ve, vm.AXIS_REGION, "").region == ""
 
 
 def test_the_chips_say_what_each_axis_is_set_to() -> None:
@@ -187,10 +211,11 @@ def test_the_chips_say_what_each_axis_is_set_to() -> None:
         "kind": "Inspiradores",
         "account": "@abc",
         "duration": "Todas",
+        "region": "Todas",
     }
     two = vm.toggle_account(one, "instagram:foodie")
     assert vm.value_label(vm.AXIS_ACCOUNT, two, options) == "2 cuentas"
-    assert [c["on"] for c in vm.chips(two, options)] == ["1", "1", "1", ""]
+    assert [c["on"] for c in vm.chips(two, options)] == ["1", "1", "1", "", ""]
 
 
 def test_the_account_options_are_the_labelled_ones_inspiradores_first() -> None:
@@ -239,6 +264,70 @@ def test_other_filters_that_leave_nothing_say_the_tickets_sentence() -> None:
     assert (left.kind, left.action) == (vm.EMPTY_NO_IDEAS, "Elegir cuentas")  # no dead end
 
 
+# --------------------------------------------------------------------------------------
+# RF-02b (m-25119463): «Región» and «Nicho: …»
+# --------------------------------------------------------------------------------------
+
+
+def test_region_says_exactly_what_the_ticket_says() -> None:
+    """«Región» with «Colombia», «Venezuela», «Uruguay» and «Todas» — «Todas» first, as
+    on every other axis of the bar (the sheet and the dropdowns share the pattern)."""
+    assert vm.AXIS_LABELS[vm.AXIS_REGION] == "Región"
+    assert vm.CHIP_LABELS[vm.AXIS_REGION] == "Región"
+    assert vm.single_options(vm.AXIS_REGION) == [
+        {"value": "", "label": "Todas"},
+        {"value": "CO", "label": "Colombia"},
+        {"value": "VE", "label": "Venezuela"},
+        {"value": "UY", "label": "Uruguay"},
+    ]
+
+
+def test_a_region_narrows_rf01s_read_and_todas_narrows_nothing() -> None:
+    """«Todas» sends no region (accounts with no known country still show); a country
+    sends only that one (RF-02b's backend keeps only accounts known to be there)."""
+    assert vm.FilterChoice.of(region="").to_filters() == NO_FILTERS
+    in_uy = vm.FilterChoice.of(region="UY", network="tiktok")
+    assert in_uy.active
+    assert in_uy.to_filters() == ReelFilters.of(networks=["tiktok"], regions=["UY"])
+    # a code the bar does not offer (lower case, another country) is «Todas»
+    for stale in ("uy", "AR", "Uruguay", " "):
+        assert vm.FilterChoice.of(region=stale).region == "", stale
+
+
+def test_restablecer_also_puts_region_back_to_todas() -> None:
+    """«Restablecer filtros» is `NO_CHOICE`: «Región» back to «Todas» too."""
+    assert vm.NO_CHOICE.region == ""
+    assert vm.value_label(vm.AXIS_REGION, vm.NO_CHOICE) == "Todas"
+
+
+def test_the_region_chip_and_the_filters_count() -> None:
+    in_ve = vm.FilterChoice.of(region="VE")
+    assert vm.value_label(vm.AXIS_REGION, in_ve) == "Venezuela"
+    assert vm.phone_chip(vm.AXIS_REGION, vm.NO_CHOICE) == ("Región", "Región: Todas")
+    assert vm.phone_chip(vm.AXIS_REGION, in_ve) == ("Venezuela", "Región: Venezuela")
+    assert [c["on"] for c in vm.chips(in_ve)] == ["", "", "", "", "1"]
+    assert vm.filters_button(in_ve) == ("Filtros · 1", "Filtros: 1 activo")
+    every = vm.FilterChoice.of(
+        network="instagram",
+        kind="referente",
+        duration="lt15",
+        accounts=["instagram:a"],
+        region="CO",
+    )
+    assert vm.active_count(every) == 5
+
+
+def test_the_niche_is_a_fixed_line_never_a_filter() -> None:
+    """«Nicho: » and the brand's rubro, exact; nothing when the Brand Kit has none — and
+    no niche axis in the bar (out of scope: «Nicho como filtro elegible»)."""
+    from qualify_api.referentes.reviewed_reels import NO_NICHE, NicheOption
+
+    assert vm.niche_line(NicheOption("food_drink", "Comida y bebida")) == ("Nicho: Comida y bebida")
+    assert vm.niche_line(NicheOption("", "Venta de empanadas")) == "Nicho: Venta de empanadas"
+    assert vm.niche_line(NO_NICHE) == ""
+    assert "niche" not in vm.AXES and not vm.FilterChoice().to_filters().niches
+
+
 #: Words a client must not read (`qualify-copy-es`, `qualify-ux`'s banned list).
 _ANGLICISMS = re.compile(
     r"\b(reset|filter|filters|post|feed|inbox|creator|creators|brand|kit|trending|"
@@ -253,7 +342,15 @@ _COPY = sorted(
     value
     for name, value in vars(vm).items()
     if name.isupper() and isinstance(value, str) and not name.startswith(("AXIS_", "EMPTY_"))
-) + [label for _, label in (*vm.NETWORK_OPTIONS, *vm.KIND_OPTIONS, *vm.DURATION_OPTIONS)]
+) + [
+    label
+    for _, label in (
+        *vm.NETWORK_OPTIONS,
+        *vm.KIND_OPTIONS,
+        *vm.DURATION_OPTIONS,
+        *vm.REGION_OPTIONS,
+    )
+]
 
 
 @pytest.mark.parametrize("text", _COPY)

@@ -5,12 +5,15 @@ network — so every label, every option and every empty message is tested offli
 
 What the owner narrows, as TikTok Creative Center's Top Ads bar does: «Canal» (Instagram /
 TikTok), «Tipo de cuenta» (inspiradores = `referente`, competidores = `competencia`),
-«Cuenta» (one or several, from the accounts the brand labelled — `ReviewedReels.accounts`)
-and «Duración» (four buckets), plus «Restablecer filtros». Default: nothing narrowed.
+«Cuenta» (one or several, from the accounts the brand labelled — `ReviewedReels.accounts`),
+«Duración» (four buckets) and — RF-02b, m-25119463 — «Región» (the business's three
+markets, `reviewed_reels.REGION_OPTIONS`), plus «Restablecer filtros». Default: nothing
+narrowed. «Nicho: …» is the brand's rubro as a fixed, read-only line, never a filter
+(`niche_line`).
 
 Filtering only reads what is stored (`reviewed_reels.reviewed_reels`, RF-01): it never
-calls ScrapeCreators nor the model. Region and niche wait for RF-02b; «me gusta», dates,
-search by product, «ordenar por» and detractors are out (decision 2 and 3 of the epic).
+calls ScrapeCreators nor the model. «Me gusta», dates, search by product, «ordenar por»
+and detractors are out (decision 2 and 3 of the epic).
 
 `FilterChoice` is what the screen's state holds (plain strings, so it can live in Reflex
 state); `to_filters` turns it into RF-01's validated `ReelFilters`.
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from qualify_api.referentes.reviewed_reels import (
     DURATION_15_30,
@@ -29,8 +33,12 @@ from qualify_api.referentes.reviewed_reels import (
     KIND_COMPETENCIA,
     KIND_REFERENTE,
     NETWORKS,
+    REGION_ALL_LABEL,
+    REGION_TITLE,
+    NicheOption,
     ReelFilters,
 )
+from qualify_api.referentes.reviewed_reels import REGION_OPTIONS as _BACKEND_REGIONS
 
 # --------------------------------------------------------------------------------------
 # the copy (exact, ticket m-25119460)
@@ -40,17 +48,21 @@ AXIS_NETWORK = "network"
 AXIS_KIND = "kind"
 AXIS_ACCOUNT = "account"
 AXIS_DURATION = "duration"
-AXES = (AXIS_NETWORK, AXIS_KIND, AXIS_ACCOUNT, AXIS_DURATION)
+#: RF-02b (m-25119463): last of the filters, so the four of RF-02 keep their places.
+AXIS_REGION = "region"
+AXES = (AXIS_NETWORK, AXIS_KIND, AXIS_ACCOUNT, AXIS_DURATION, AXIS_REGION)
 
 NETWORK_LABEL = "Canal"
 KIND_LABEL = "Tipo de cuenta"
 ACCOUNT_LABEL = "Cuenta"
 DURATION_LABEL = "Duración"
+REGION_LABEL = REGION_TITLE  # «Región», exact (ticket m-25119463)
 AXIS_LABELS = {
     AXIS_NETWORK: NETWORK_LABEL,
     AXIS_KIND: KIND_LABEL,
     AXIS_ACCOUNT: ACCOUNT_LABEL,
     AXIS_DURATION: DURATION_LABEL,
+    AXIS_REGION: REGION_LABEL,
 }
 #: RF-13, option A (Deivid 2026-11-26): on a phone a chip with no filter shows only this
 #: short name («Tipo», not «Tipo de cuenta»), and a chip with a filter only its value —
@@ -61,6 +73,7 @@ CHIP_LABELS = {
     AXIS_KIND: "Tipo",
     AXIS_ACCOUNT: ACCOUNT_LABEL,
     AXIS_DURATION: DURATION_LABEL,
+    AXIS_REGION: REGION_LABEL,
 }
 RESET_LABEL = "Restablecer filtros"
 #: The same button on a phone (option A, Deivid 2026-11-26: «Quitar filtros» only if
@@ -76,6 +89,7 @@ ALL_LABELS = {
     AXIS_KIND: ALL_MASCULINE,
     AXIS_ACCOUNT: ALL_FEMININE,
     AXIS_DURATION: ALL_FEMININE,
+    AXIS_REGION: REGION_ALL_LABEL,  # «Todas», the backend's own word
 }
 
 NETWORK_OPTIONS: tuple[tuple[str, str], ...] = (("instagram", "Instagram"), ("tiktok", "TikTok"))
@@ -89,9 +103,16 @@ DURATION_OPTIONS: tuple[tuple[str, str], ...] = (
     (DURATION_30_60, "De 30 a 60 segundos"),
     (DURATION_OVER_60, "Más de 60 segundos"),
 )
+#: RF-02b: «Colombia», «Venezuela», «Uruguay» — ISO-2 codes, the business's three markets
+#: (`tenancy.locale.COUNTRIES`). «Todas» is the axis' first row, as on every other axis
+#: (`single_options`).
+REGION_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    (option.code, option.label) for option in _BACKEND_REGIONS if option.code
+)
 _NETWORK_NAMES = dict(NETWORK_OPTIONS)
 _KIND_NAMES = dict(KIND_OPTIONS)
 _DURATION_NAMES = dict(DURATION_OPTIONS)
+_REGION_NAMES = dict(REGION_OPTIONS)
 
 #: The bar's accessible name, and the phone sheet's head (drafted here, for the UX check).
 BAR_LABEL = "Filtrar reels"
@@ -181,6 +202,8 @@ class FilterChoice:
     kind: str = ""
     duration: str = ""
     accounts: tuple[str, ...] = ()
+    #: RF-02b: an ISO-2 code of `REGION_OPTIONS` ("" = «Todas»).
+    region: str = ""
 
     @classmethod
     def of(
@@ -190,6 +213,7 @@ class FilterChoice:
         kind: str = "",
         duration: str = "",
         accounts: Sequence[str] = (),
+        region: str = "",
     ) -> FilterChoice:
         """Keep only values the bar offers: an unknown one means «Todos» (a stale browser
         can never send a filter RF-01 would refuse)."""
@@ -198,41 +222,54 @@ class FilterChoice:
             kind=kind if kind in _KIND_NAMES else "",
             duration=duration if duration in _DURATION_NAMES else "",
             accounts=tuple(dict.fromkeys(a for a in accounts if parse_account_key(a))),
+            region=region if region in _REGION_NAMES else "",
         )
+
+    def but(self, **changes: Any) -> FilterChoice:
+        """This choice with some axes changed, validated as `of` does."""
+        values: dict[str, Any] = {
+            "network": self.network,
+            "kind": self.kind,
+            "duration": self.duration,
+            "accounts": self.accounts,
+            "region": self.region,
+        }
+        values.update(changes)
+        return FilterChoice.of(**values)
 
     @property
     def active(self) -> bool:
-        return bool(self.network or self.kind or self.duration or self.accounts)
+        return bool(self.network or self.kind or self.duration or self.accounts or self.region)
 
     def to_filters(self) -> ReelFilters:
-        """RF-01's validated filters; empty axes narrow nothing."""
+        """RF-01's validated filters; empty axes narrow nothing. With «Todas» in «Región»
+        the reels of accounts with no known country still show; with a country, only the
+        accounts known to be in it (RF-02b's backend, `reviewed_reels`)."""
         pairs = [pair for pair in (parse_account_key(a) for a in self.accounts) if pair]
         return ReelFilters.of(
             networks=[self.network] if self.network else None,
             kinds=[self.kind] if self.kind else None,
             accounts=pairs,
             durations=[self.duration] if self.duration else None,
+            regions=[self.region] if self.region else None,
         )
 
 
 NO_CHOICE = FilterChoice()
 
+#: Each single-choice axis → its `FilterChoice` field.
+_SINGLE_FIELDS = {
+    AXIS_NETWORK: "network",
+    AXIS_KIND: "kind",
+    AXIS_DURATION: "duration",
+    AXIS_REGION: "region",
+}
+
 
 def set_axis(choice: FilterChoice, axis: str, value: str) -> FilterChoice:
     """`choice` with one single-choice axis set to `value` ("" = «Todos»)."""
-    if axis == AXIS_NETWORK:
-        return FilterChoice.of(
-            network=value, kind=choice.kind, duration=choice.duration, accounts=choice.accounts
-        )
-    if axis == AXIS_KIND:
-        return FilterChoice.of(
-            network=choice.network, kind=value, duration=choice.duration, accounts=choice.accounts
-        )
-    if axis == AXIS_DURATION:
-        return FilterChoice.of(
-            network=choice.network, kind=choice.kind, duration=value, accounts=choice.accounts
-        )
-    return choice
+    field = _SINGLE_FIELDS.get(axis)
+    return choice.but(**{field: value}) if field else choice
 
 
 def toggle_account(choice: FilterChoice, key: str) -> FilterChoice:
@@ -242,13 +279,11 @@ def toggle_account(choice: FilterChoice, key: str) -> FilterChoice:
         if key in choice.accounts
         else (*choice.accounts, key)
     )
-    return FilterChoice.of(
-        network=choice.network, kind=choice.kind, duration=choice.duration, accounts=accounts
-    )
+    return choice.but(accounts=accounts)
 
 
 def clear_accounts(choice: FilterChoice) -> FilterChoice:
-    return FilterChoice.of(network=choice.network, kind=choice.kind, duration=choice.duration)
+    return choice.but(accounts=())
 
 
 def accounts_by_key(accounts: Mapping[tuple[str, str], str]) -> dict[str, str]:
@@ -264,9 +299,7 @@ def known_accounts(choice: FilterChoice, accounts: Mapping[str, str]) -> FilterC
     kept = tuple(a for a in choice.accounts if a in accounts)
     if kept == choice.accounts:
         return choice
-    return FilterChoice.of(
-        network=choice.network, kind=choice.kind, duration=choice.duration, accounts=kept
-    )
+    return choice.but(accounts=kept)
 
 
 # --------------------------------------------------------------------------------------
@@ -300,6 +333,7 @@ def single_options(axis: str) -> list[dict[str, str]]:
         AXIS_NETWORK: NETWORK_OPTIONS,
         AXIS_KIND: KIND_OPTIONS,
         AXIS_DURATION: DURATION_OPTIONS,
+        AXIS_REGION: REGION_OPTIONS,
     }.get(axis, ())
     return [{"value": "", "label": ALL_LABELS[axis]}] + [
         {"value": value, "label": label} for value, label in options
@@ -314,6 +348,8 @@ def value_label(axis: str, choice: FilterChoice, options: Sequence[dict[str, str
         return _KIND_NAMES.get(choice.kind, ALL_LABELS[axis])
     if axis == AXIS_DURATION:
         return _DURATION_NAMES.get(choice.duration, ALL_LABELS[axis])
+    if axis == AXIS_REGION:
+        return _REGION_NAMES.get(choice.region, ALL_LABELS[axis])
     if axis == AXIS_ACCOUNT:
         if not choice.accounts:
             return ALL_LABELS[axis]
@@ -333,6 +369,7 @@ def chips(choice: FilterChoice, options: Sequence[dict[str, str]] = ()) -> list[
         AXIS_KIND: bool(choice.kind),
         AXIS_ACCOUNT: bool(choice.accounts),
         AXIS_DURATION: bool(choice.duration),
+        AXIS_REGION: bool(choice.region),
     }
     return [
         {
@@ -358,7 +395,10 @@ FILTERS_NAME_NONE = "{label}: ninguno activo"
 
 def active_count(choice: FilterChoice) -> int:
     """How many axes narrow the list (several accounts are one axis)."""
-    return sum(bool(v) for v in (choice.network, choice.kind, choice.accounts, choice.duration))
+    return sum(
+        bool(v)
+        for v in (choice.network, choice.kind, choice.accounts, choice.duration, choice.region)
+    )
 
 
 def filters_button(choice: FilterChoice) -> tuple[str, str]:
@@ -393,6 +433,7 @@ def _raw(axis: str, choice: FilterChoice) -> str:
         AXIS_NETWORK: choice.network,
         AXIS_KIND: choice.kind,
         AXIS_DURATION: choice.duration,
+        AXIS_REGION: choice.region,
     }.get(axis, "")
 
 
@@ -412,6 +453,20 @@ def phone_chip(
     if short == long:
         return long, f"{full}: {long}"
     return short, f"{full}: {short} ({long[:1].lower()}{long[1:]})"
+
+
+# --------------------------------------------------------------------------------------
+# «Nicho: …» (RF-02b) — the brand's rubro, read-only
+# --------------------------------------------------------------------------------------
+
+
+def niche_line(niche: NicheOption) -> str:
+    """«Nicho: Comida y bebida» (exact, ticket m-25119463): the brand's rubro, never a
+    filter. "" when the Brand Kit has no rubro yet — then no line is drawn. It goes under
+    the «Región» options, in the desktop dropdown and in the phone's sheet alike: words in
+    a group that is already there, never a chip nor a line of its own in the bar (Deivid,
+    2026-11-26: no element alone on a line, no wasted room)."""
+    return niche.text
 
 
 # --------------------------------------------------------------------------------------
@@ -510,6 +565,7 @@ __all__ = [
     "CHIP_LABELS",
     "CHIP_VALUES",
     "AXIS_NETWORK",
+    "AXIS_REGION",
     "BAR_LABEL",
     "COMPETITORS_EMPTY_ACTION",
     "COMPETITORS_EMPTY_BODY",
@@ -541,6 +597,8 @@ __all__ = [
     "NO_IDEAS_FILTERED",
     "NO_IDEAS_LEFT",
     "NO_IDEAS_LEFT_ACTION",
+    "REGION_LABEL",
+    "REGION_OPTIONS",
     "RESET_LABEL",
     "RESET_SHORT",
     "SOME_ACCOUNTS",
@@ -563,6 +621,7 @@ __all__ = [
     "empty_message",
     "first_page",
     "known_accounts",
+    "niche_line",
     "only_competitors",
     "parse_account_key",
     "set_axis",

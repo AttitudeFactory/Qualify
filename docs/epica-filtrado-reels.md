@@ -161,8 +161,9 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   mientras busca, el texto y el nombre accesible dicen «Buscando…», y el aviso «Estamos
   buscando…» es un `callout` informativo dentro de la única región `role="status"`. Desde
   1000 px de barra lleva texto; entre 760 y 1000 px solo el ícono, para que la fila no se
-  parta (medido en vivo: a ~780 px los chips quedan entre 92 y 117 px y «Buscar» no cabe). En la versión angosta
-  es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
+  parta (medido en vivo: a ~780 px los chips quedan entre 92 y 117 px y «Buscar» no cabe).
+  Con RF-02b los cortes pasan a 930 px (fila ancha) y 1070 px (texto del botón). En la
+  versión angosta es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
   con su nombre en `aria-label` y `title`.
 - Sin migración y sin llamadas pagadas en las pruebas (fakes detrás de la compuerta real).
   Costo: ≈ USD 0,10–0,15 por búsqueda, aprobado por Deivid para producción.
@@ -177,6 +178,31 @@ Colombia, Venezuela, Uruguay) + «Todas»; `brand_niche(tenant, brand)` lee el r
 un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para las ideas. El nicho
 **no** se aplica por defecto: la cobertura de rubro es ~0 % hasta que las cuentas vuelvan a pasar
 por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
+
+**RF-02b pantalla (2026-11-26, m-25119463, rama `feat/m-25119463-region-nicho-ui`):**
+- **«Región»** es el quinto filtro, después de «Duración» (los cuatro de RF-02 no cambian de
+  lugar). Opciones: «Todas» (primera, como en los demás filtros), «Colombia», «Venezuela» y
+  «Uruguay». En la barra ancha es un chip más («Región» sin filtro, «Venezuela» con él); en
+  la hoja «Filtros» del celular es un grupo más, con las mismas filas de radio que Canal y
+  Duración, de 44 px. «Restablecer filtros» la deja en «Todas». Con «Todas» siguen las cuentas
+  sin país conocido; con un país, solo las de ese país (la regla del backend). Cambiar la
+  región es otra lectura de lo guardado, igual que los demás filtros: cero llamadas pagadas.
+- **«Nicho: …»** es una línea de solo lectura con el rubro del Brand Kit
+  (`reels_discovery.brand_niche_line` → `reviewed_reels.brand_niche`, con `tenant_session`).
+  Va al final del grupo «Región», debajo de sus opciones y tras una línea fina, en el
+  desplegable y en la hoja por igual. No es un chip ni una línea propia en la barra (regla de
+  Deivid: nada solo en una fila). Se lee al abrir la pantalla; sin rubro, no se dibuja; otro
+  negocio en la misma pestaña empieza sin ella.
+- **Cortes nuevos de la barra** (cuenta completa en `assets/qualify-creative.css`): la fila
+  ancha pasa de 760 a **930 px** de contenido. Con «Región: Venezuela» activa, «Quitar
+  filtros» visible y los otros cuatro sin filtro: 88 + 88 + 88 + 98 + ~110 + 133 + 44 + 116 +
+  7 × 12 ≈ 849 px. Pero el peor caso con un solo filtro es «Tipo: Compiten contigo» (~157 px):
+  ≈ 896 px. Con «Compiten contigo» y «Venezuela» a la vez: ≈ 918 px. Con margen por el
+  dibujo de la letra → 930 px (lo encontró la revisión independiente). El texto de «Buscar
+  reels nuevos» pasa de 1000 a **1070 px** (896 + ~133 de las palabras ≈ 1029 px, más margen). Los anchos de los
+  chips son estimaciones; falta medirlos en vivo. Sin cubrir: tres o más valores largos a la
+  vez (≈ 955 px con los cinco); ahí el chip más largo termina en «…».
+- Sin migración, sin backend nuevo, sin llamadas pagadas.
 
 **RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
 ni llamadas pagadas; se recalcula al leer, desde `public_reels` y `creators` (globales).

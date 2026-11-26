@@ -79,6 +79,7 @@ from .reels_filters_vm import (
     AXIS_KIND,
     AXIS_LABELS,
     AXIS_NETWORK,
+    AXIS_REGION,
     EMPTY_COMPETITORS,
     EMPTY_FILTERS,
     EMPTY_NO_COMPETITORS,
@@ -167,6 +168,10 @@ class DiscoverReelsState(rx.State):
     filter_kind: str = ""
     filter_duration: str = ""
     filter_accounts: list[str] = []
+    #: RF-02b (m-25119463): «Región» (an ISO-2 code, "" = «Todas»), and the brand's rubro
+    #: as the fixed «Nicho: …» line ("" none: the line is not drawn).
+    filter_region: str = ""
+    niche: str = ""
     #: The accounts «Cuenta» offers (`reels_filters_vm.account_options`) and their kinds.
     account_options: list[dict[str, str]] = []
     _accounts: dict[str, str] = {}
@@ -229,6 +234,7 @@ class DiscoverReelsState(rx.State):
             self.expanded = []
             # another business: its filters, accounts and reels are not this one's
             self._set_choice(reels_filters_vm.NO_CHOICE)
+            self.niche = ""
             self.account_options = []
             self._accounts = {}
             self.more_reels = []
@@ -250,6 +256,7 @@ class DiscoverReelsState(rx.State):
             kind=self.filter_kind,
             duration=self.filter_duration,
             accounts=self.filter_accounts,
+            region=self.filter_region,
         )
 
     def _set_choice(self, choice: FilterChoice) -> None:
@@ -257,12 +264,17 @@ class DiscoverReelsState(rx.State):
         self.filter_kind = choice.kind
         self.filter_duration = choice.duration
         self.filter_accounts = list(choice.accounts)
+        self.filter_region = choice.region
 
     @rx.var
     def filters_on(self) -> bool:
         """Some filter narrows the lists («Restablecer filtros» is offered)."""
         return bool(
-            self.filter_network or self.filter_kind or self.filter_duration or self.filter_accounts
+            self.filter_network
+            or self.filter_kind
+            or self.filter_duration
+            or self.filter_accounts
+            or self.filter_region
         )
 
     @rx.var
@@ -275,6 +287,7 @@ class DiscoverReelsState(rx.State):
             kind=self.filter_kind,
             duration=self.filter_duration,
             accounts=self.filter_accounts,
+            region=self.filter_region,
         )
         return {
             chip["axis"]: chip["value"]
@@ -291,6 +304,7 @@ class DiscoverReelsState(rx.State):
             kind=self.filter_kind,
             duration=self.filter_duration,
             accounts=self.filter_accounts,
+            region=self.filter_region,
         )
         out: dict[str, str] = {}
         for axis in reels_filters_vm.AXES:
@@ -309,6 +323,7 @@ class DiscoverReelsState(rx.State):
                 kind=self.filter_kind,
                 duration=self.filter_duration,
                 accounts=self.filter_accounts,
+                region=self.filter_region,
             )
         )
         return {"face": face, "name": name}
@@ -325,6 +340,7 @@ class DiscoverReelsState(rx.State):
             kind=self.filter_kind,
             duration=self.filter_duration,
             accounts=self.filter_accounts,
+            region=self.filter_region,
         )
         shown = [c for c in self._cards if c.get("affinity") in reels_ai.FITS]
         return reels_filters_vm.empty_message(
@@ -340,7 +356,7 @@ class DiscoverReelsState(rx.State):
             return False
         if self.filter_network or self.filter_kind or self.filter_duration:
             return False
-        if self.filter_accounts:
+        if self.filter_accounts or self.filter_region:
             return False
         return not any(c.get("affinity") in reels_ai.FITS for c in self._cards)
 
@@ -353,7 +369,11 @@ class DiscoverReelsState(rx.State):
         if self.screen != SCREEN_IDEAS or self.filtering:
             return False
         filtered = bool(
-            self.filter_network or self.filter_kind or self.filter_duration or self.filter_accounts
+            self.filter_network
+            or self.filter_kind
+            or self.filter_duration
+            or self.filter_accounts
+            or self.filter_region
         )
         if not filtered:
             return False
@@ -591,6 +611,8 @@ class DiscoverReelsState(rx.State):
             )
             rivals = await _competitor_rows(tenant_id, brand_id)
             search = await _search_state(tenant_id, brand_id)
+            # RF-02b: «Nicho: …» from the Brand Kit (never raises: "" hides the line)
+            niche = await asyncio.to_thread(reels_discovery.brand_niche_line, tenant_id, brand_id)
         except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
             logger.warning("stored reel ideas unreadable: %s: %s", type(exc).__name__, exc)
             async with self:
@@ -607,6 +629,7 @@ class DiscoverReelsState(rx.State):
                 self._claim_cards(str(tenant_id))
                 self._brand_id = str(brand_id)
                 self._show(shown)
+                self.niche = niche
                 if rivals is not None:
                     self.competitor_rows = rivals
                 # RF-14: a search of today still running keeps the button busy. Only ever
@@ -1436,18 +1459,23 @@ _STATE_VALUE = {
     AXIS_NETWORK: lambda: DiscoverReelsState.filter_network,
     AXIS_KIND: lambda: DiscoverReelsState.filter_kind,
     AXIS_DURATION: lambda: DiscoverReelsState.filter_duration,
+    AXIS_REGION: lambda: DiscoverReelsState.filter_region,
 }
 #: Which row of the bar shows depends on the BAR's width, not the window's (Deivid's live
 #: tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave it ~376 px): the
 #: bar is a CSS size container (`.q-reels-bar`, assets/qualify-creative.css) and from
-#: 760 px of it the chips row (`__wide`) shows, below it the two buttons (`__narrow`).
+#: `WIDE_FROM_PX` of it the chips row (`__wide`) shows, below it the three buttons
+#: (`__narrow`). RF-02b (m-25119463) raised it from 760 px: with «Región», five chips no
+#: longer fit there — the sum is in the CSS rule's comment.
 BAR_CLASS = "q-reels-bar"
 _WIDE_CLASS = "q-reels-bar__wide"
 _NARROW_CLASS = "q-reels-bar__narrow"
-#: RF-14: the words of «Buscar reels nuevos» on the wide bar show only from 1000 px of bar
-#: (`.q-reels-bar__search-words`, assets/qualify-creative.css): between 760 and 1000 px the
-#: four chips, «Competidores» and «Quitar filtros» leave no room for them, and the line
-#: must never wrap — the button keeps its icon, its accessible name and its `title`.
+WIDE_FROM_PX = 930
+#: RF-14: the words of «Buscar reels nuevos» on the wide bar show only from
+#: `SEARCH_WORDS_FROM_PX` of bar (`.q-reels-bar__search-words`, assets/qualify-creative.css):
+#: below it the five chips, «Competidores» and «Quitar filtros» leave no room for them, and
+#: the line must never wrap — the button keeps its icon, its accessible name and its `title`.
+SEARCH_WORDS_FROM_PX = 1070
 _SEARCH_WORDS_CLASS = "q-reels-bar__search-words"
 #: An option row of the «Filtros» sheet, the desktop dropdowns and the competitors drawer:
 #: `.q-reels-option.rt-Button` (assets/qualify-creative.css) puts its mark and words on the
@@ -1468,7 +1496,7 @@ _CHIP_PAD = {"padding_left": "0.625rem", "padding_right": "0.625rem"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
 #: The least width of a filter chip on the wide bar: it holds a short name with no filter
-#: («Duración ▾»). The four grow from their content (`flex: 1 1 auto`), so a chosen value
+#: («Duración ▾»). The five grow from their content (`flex: 1 1 auto`), so a chosen value
 #: takes more of the bar and only ends in «…» when there is no room; whole in `title`.
 _CHIP_MIN = "5.5rem"
 
@@ -1588,6 +1616,38 @@ def _account_options() -> rx.Component:
     )
 
 
+def _niche_note() -> rx.Component:
+    """RF-02b (m-25119463): «Nicho: Comida y bebida», the brand's rubro — words, never a
+    filter nor a button — closing the «Región» group: under its options, past a hairline,
+    in the desktop dropdown and in the phone's sheet alike (`_axis_options`). Never a chip
+    or a line of its own in the bar (Deivid, 2026-11-26: nothing alone on a line, no
+    wasted room). Not drawn while the brand has no rubro (`DiscoverReelsState.niche`)."""
+    S = DiscoverReelsState
+    return rx.cond(
+        S.niche != "",
+        rx.text(
+            S.niche,
+            size="2",
+            color=T.TEXT_MUTED,
+            as_="p",
+            margin="0.25rem 0 0",
+            padding="0.6rem 0.75rem 0.25rem",
+            border_top=T.BORDER,
+        ),
+    )
+
+
+def _axis_options(axis: str, *, close: bool) -> rx.Component:
+    """An axis' options, in its desktop dropdown (`close`) or its group of the sheet:
+    «Cuenta» picks several; «Región» ends with «Nicho: …» (`_niche_note`)."""
+    if axis == AXIS_ACCOUNT:
+        return _account_options()
+    options = _single_options(axis, close=close)
+    if axis == AXIS_REGION:
+        return rx.fragment(options, _niche_note())
+    return options
+
+
 def _axis_value(axis: str) -> rx.Var[str]:
     return DiscoverReelsState.filter_values[axis].to(str)
 
@@ -1630,7 +1690,7 @@ def _filter_button(axis: str) -> rx.Component:
     """A filter's chip on the wide bar — «Canal ▾», «Instagram ▾» (`_chip_face`) — as a
     Radix button with the skin: `soft` (the accent wash) while the axis narrows the list,
     `surface` otherwise; `size="2"`, the target stays 44 px. Like a select (Deivid,
-    2026-11-26: the chips looked crammed in the middle): the four filters fill the
+    2026-11-26: the chips looked crammed in the middle): the five filters fill the
     bar, growing from their content (`flex: 1 1 auto`: a long value takes more), the
     word on the left and the chevron on the right. Below its content only the word ends
     in «…», the whole name in `title`."""
@@ -1655,7 +1715,7 @@ def _filter_button(axis: str) -> rx.Component:
 def _dropdown(axis: str) -> rx.Component:
     """A desktop filter: its chip opens the options under it (Radix popover, the skin's
     glass; Escape gives the focus back to the chip). The options keep the long words."""
-    options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=True)
+    options = _axis_options(axis, close=True)
     return rx.popover.root(
         rx.popover.trigger(_filter_button(axis)),
         rx.popover.content(
@@ -1732,7 +1792,8 @@ def _reset_button() -> rx.Component:
 def _search_button(*, icon_only: bool) -> rx.Component:
     """RF-14's «Buscar reels nuevos», right after «Competidores» on the bar's line (before
     «Quitar filtros», so it never moves when that one shows): on the wide bar with its
-    words (only its icon while the bar is under 1000 px, so the line never wraps); on the
+    words (only its icon while the bar is under `SEARCH_WORDS_FROM_PX`, so the line never
+    wraps); on the
     narrow bar a third button of only its icon, the 44 px square, with the words as its
     accessible name and `title`. The icon is `search` (ux-designer: `refresh-cw` read as
     «Intentar de nuevo»). While the search runs it is busy — the spinner in place of its
@@ -1782,8 +1843,8 @@ def _search_button(*, icon_only: bool) -> rx.Component:
 
 def _sheet_group(axis: str) -> rx.Component:
     """One axis in the «Filtros» sheet: its full name over its options (the same rows as
-    the desktop dropdowns; «Cuenta» picks several)."""
-    options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=False)
+    the desktop dropdowns; «Cuenta» picks several; «Región» ends with «Nicho: …»)."""
+    options = _axis_options(axis, close=False)
     return rx.vstack(
         rx.text(AXIS_LABELS[axis], size="2", weight="medium", as_="div", padding_x="0.75rem"),
         options,
@@ -1795,7 +1856,8 @@ def _sheet_group(axis: str) -> rx.Component:
 
 def _sheet() -> rx.Component:
     """The phone's «Filtros» sheet (RF-13, Deivid 2026-11-26): every axis — Canal, Tipo de
-    cuenta, Cuenta (several) and Duración — each under its name, with the long words;
+    cuenta, Cuenta (several), Duración and Región (RF-02b, with «Nicho: …» under its
+    options) — each under its name, with the long words;
     each choice applies at once and the sheet stays open. Its foot: «Quitar filtros»
     while a filter is on, and «Listo». The body scrolls when it is long. However it
     closes, the focus goes back to «Filtros»."""
@@ -1841,10 +1903,10 @@ def _sheet() -> rx.Component:
 
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
-    «Cuenta», «Duración» and «Quitar filtros». On a wide bar, chips that open a
-    dropdown; on a narrow bar (under 760 px), «Filtros» + «Competidores», «Filtros»
-    opening one sheet from the bottom with every axis. Every change is one
-    more read of what is stored — never a paid call.
+    «Cuenta», «Duración», «Región» (RF-02b) and «Quitar filtros». On a wide bar, chips
+    that open a dropdown; on a narrow bar (under `WIDE_FROM_PX`), «Filtros» +
+    «Competidores», «Filtros» opening one sheet from the bottom with every axis. Every
+    change is one more read of what is stored — never a paid call.
 
     RF-13: only the system's pieces (Radix buttons, popovers, `drawer`) on a soft panel
     of the system (`T.CARD_BG`, the card radius; Deivid 2026-11-26 — never the dark box
@@ -1855,10 +1917,10 @@ def _filter_bar() -> rx.Component:
     phone, ONE line of equal buttons: «Filtros» (every axis in one sheet) and
     «Competidores» — «Filtros» takes the whole line for a brand with no competitor to
     show; no text broken, no sideways scroll (Deivid, 2026-11-26). Which row shows is a
-    container query on the bar's own width (`BAR_CLASS`): below 760 px of bar — phones,
-    tablets, narrow panels — the two buttons; from 760 px, the chips."""
+    container query on the bar's own width (`BAR_CLASS`): below `WIDE_FROM_PX` of bar —
+    phones, tablets, narrow panels — the buttons; from there, the chips."""
     return rx.box(
-        # the wide bar: ONE line that fills the bar — the four filters share what is left,
+        # the wide bar: ONE line that fills the bar — the five filters share what is left,
         # then «Competidores» and «Quitar filtros» at their natural width; it never
         # wraps, so no chip is ever alone on a line (Deivid, 2026-11-26)
         rx.flex(
@@ -1873,7 +1935,7 @@ def _filter_bar() -> rx.Component:
             width="100%",
             min_width="0",
         ),
-        # a bar under 760 px wide (phones, tablets, narrow panels; Deivid 2026-11-26): one
+        # a bar under `WIDE_FROM_PX` (phones, tablets, narrow panels; Deivid 2026-11-26): one
         # line, equal parts — «Filtros» and «Competidores» — and RF-14's «Buscar reels
         # nuevos» as a third button of only its icon, at the end of the same line
         rx.flex(

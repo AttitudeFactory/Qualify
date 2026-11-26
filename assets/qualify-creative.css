@@ -688,15 +688,33 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    (RF-13, m-25120327 — see docs/design-system.md §5.8). The one rule of its own: which of
    its two rows shows depends on the width of the BAR, not of the window (Deivid's live
    tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
-   The bar is a size container; below 760 px of it, the two buttons («Filtros» +
-   «Competidores»); from 760 px, ONE line that fills the bar — the four filters share it
-   (`flex: 1 1 auto`: the longest value takes more), then «Competidores» and «Quitar
-   filtros»: at 760 px each filter still has ~107 px for its short word and chevron.
-   Two classes, so it beats Radix's `.rt-Flex` display. */
+   The bar is a size container; below 930 px of it, the narrow row («Filtros · N» +
+   «Competidores» + the search icon); from 930 px, ONE line that fills the bar — the five
+   filters share it (`flex: 1 1 auto`: the longest value takes more), then «Competidores»,
+   the search button and «Quitar filtros». Two classes, so it beats Radix's `.rt-Flex`
+   display.
+   RF-02b (m-25119463) raised the cut from 760 px: with «Región» one more chip, the line no
+   longer fits there. The sum (the container query reads the CONTENT box, the bar's 8 px
+   padding on each side excluded). Measured live by Deivid, 2026-11-26, bar ~780 px with
+   one filter on: chips 92-117 px (their least, with no filter, ~88-98 px), «Competidores»
+   133, search icon 44, «Quitar filtros» 116, gap 12 — 764 px of content, it checks out.
+   Chip widths are estimates (words in IBM Plex Sans 14 px, ~7.2 px a letter, + 10 + 10
+   padding, 8 gap, 14 chevron, 2 border): «Venezuela» ~110, «Compiten contigo» ~157.
+   Case asked for: «Región: Venezuela» (so «Quitar filtros» shows), the other four with no
+   filter — 88 + 88 + 88 + 98 + 110 + (133 + 44 + 116) + 7 x 12 gaps = 849 px.
+   The worst case with ONE filter (independent review): «Tipo: Compiten contigo» —
+     Canal 88 + Tipo 157 + Cuenta 88 + Duración 98 + Región 88  = 519
+     «Competidores» 133 + search icon 44 + «Quitar filtros» 116 = 293
+     7 gaps x 12                                                =  84
+                                                                = 896 px
+   «Compiten contigo» + «Venezuela» together = 918 px. 918 + ~1.3 % (896 + ~3.8 %) for font
+   rendering → 930 px. Not covered: three or more long values at once (all five on their
+   longest fixed values ≈ 955 px): there the longest chip ends in «…» (its whole name stays
+   in `title` and the accessible name). An account handle has no upper bound and always may. */
 .q-reels-bar { container-type: inline-size; }
 .q-reels-bar .q-reels-bar__wide { display: none; }
 .q-reels-bar .q-reels-bar__narrow { display: flex; }
-@container (min-width: 760px) {
+@container (min-width: 930px) {
   .q-reels-bar .q-reels-bar__wide { display: flex; }
   .q-reels-bar .q-reels-bar__narrow { display: none; }
 }
@@ -706,11 +724,14 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-reels-option.rt-Button { justify-content: flex-start; text-align: start; }
 .q-reels-option.rt-Button > .rt-Flex { align-items: flex-start; text-align: start; }
 /* RF-14 (m-25129383): «Buscar reels nuevos» goes after «Competidores», before «Quitar
-   filtros». Its words show from 1000 px of bar; between 760 and 1000 px it is its icon only
+   filtros». Its words show from 1070 px of bar; between 930 and 1070 px it is its icon only
    (44 px, its words in `aria-label` and `title`), so the line never wraps (measured live at
-   ~780 px: the chips keep 92-117 px). */
+   ~780 px: the chips keep 92-117 px). RF-02b's sum: the 896 px of the one-filter worst case
+   above, with the words «Buscar reels nuevos» (~133 px more than the 44 px icon: words ~133
+   + 14 icon + 8 gap + 20 padding + 2 border ≈ 177) = ~1029 px + ~3.8 % → 1070 px (was 1000
+   with four chips; «Compiten contigo» + «Venezuela» with the words ≈ 1051 px, covered). */
 .q-reels-bar .q-reels-bar__search-words { display: none; }
-@container (min-width: 1000px) {
+@container (min-width: 1070px) {
   .q-reels-bar .q-reels-bar__search-words { display: inline; }
 }
 /* Stock on the product screen (plan-integracion-stock R2, 2026-10-16): the bank's name
