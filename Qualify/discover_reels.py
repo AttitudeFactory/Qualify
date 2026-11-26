@@ -301,8 +301,10 @@ class DiscoverReelsState(rx.State):
 
     @rx.var
     def empty_kind(self) -> str:
-        """Which `reels_filters_vm.EMPTY_*` replaces both lists when they are empty."""
-        if self.screen != SCREEN_IDEAS:
+        """Which `reels_filters_vm.EMPTY_*` replaces both lists when they are empty —
+        none while a filtered read is in flight: the old lists stay, dimmed, until the
+        new ones land (never a flash of an empty state)."""
+        if self.screen != SCREEN_IDEAS or self.filtering:
             return ""
         choice = FilterChoice.of(
             network=self.filter_network,
@@ -320,7 +322,7 @@ class DiscoverReelsState(rx.State):
         """RF-13: with no filter on, the run's ideas are all gone (their accounts now «No
         va contigo») but reviewed reels are left: the list says so over them, with
         «Elegir cuentas» (`NO_IDEAS_LEFT`). The vars are read here, not via helpers."""
-        if self.screen != SCREEN_IDEAS or not self.more_reels:
+        if self.screen != SCREEN_IDEAS or self.filtering or not self.more_reels:
             return False
         if self.filter_network or self.filter_kind or self.filter_duration:
             return False
@@ -332,8 +334,9 @@ class DiscoverReelsState(rx.State):
     def no_ideas_filtered(self) -> bool:
         """RF-13 (ux-designer, Deivid 2026-11-26): with a filter on, no idea left (so none
         to make again with «Hacer uno parecido»): the list says so over what it shows
-        (`NO_IDEAS_FILTERED`); «Quitar filtros» is in the bar or the sheet's foot."""
-        if self.screen != SCREEN_IDEAS:
+        (`NO_IDEAS_FILTERED`); «Quitar filtros» is in the bar or the sheet's foot. None
+        while a filtered read is in flight."""
+        if self.screen != SCREEN_IDEAS or self.filtering:
             return False
         filtered = bool(
             self.filter_network or self.filter_kind or self.filter_duration or self.filter_accounts
@@ -369,7 +372,7 @@ class DiscoverReelsState(rx.State):
         if choice == before:
             return None
         self._set_choice(choice)
-        return DiscoverReelsState.refilter
+        return self._start_refilter()
 
     @rx.event
     def toggle_account(self, key: str) -> Any:
@@ -377,7 +380,7 @@ class DiscoverReelsState(rx.State):
         if key not in self._accounts and key not in self.filter_accounts:
             return None
         self._set_choice(reels_filters_vm.toggle_account(self._choice(), key))
-        return DiscoverReelsState.refilter
+        return self._start_refilter()
 
     @rx.event
     def all_accounts(self) -> Any:
@@ -385,7 +388,7 @@ class DiscoverReelsState(rx.State):
         if not self.filter_accounts:
             return None
         self._set_choice(reels_filters_vm.clear_accounts(self._choice()))
-        return DiscoverReelsState.refilter
+        return self._start_refilter()
 
     @rx.event
     def show_inspiring(self) -> Any:
@@ -400,7 +403,7 @@ class DiscoverReelsState(rx.State):
         if choice == before:
             return None
         self._set_choice(choice)
-        return DiscoverReelsState.refilter
+        return self._start_refilter()
 
     @rx.event
     def reset_filters(self) -> Any:
@@ -409,6 +412,14 @@ class DiscoverReelsState(rx.State):
         if not self._choice().active:
             return None
         self._set_choice(reels_filters_vm.NO_CHOICE)
+        return self._start_refilter()
+
+    def _start_refilter(self) -> Any:
+        """A filter changed: the lists are being read again. `filtering` goes up in the
+        same state change as the bar's new values — otherwise, for a moment, the new
+        filters would be judged against the old lists and an empty state (e.g. «Elegir
+        cuentas» when going back to «Todas») would flash (Deivid, 2026-11-26)."""
+        self.filtering = True
         return DiscoverReelsState.refilter
 
     @rx.event(background=True)
@@ -418,6 +429,7 @@ class DiscoverReelsState(rx.State):
         model. A newer read supersedes it (`_load_id`)."""
         async with self:
             if not self._brand_id or not self._cards_tenant_id:
+                self.filtering = False
                 return
             self._load_id += 1
             load_id = self._load_id
@@ -496,6 +508,8 @@ class DiscoverReelsState(rx.State):
             self._more_next = offset + LIST_PAGE
 
     def _show(self, shown: reels_ideas_vm.IdeasScreen) -> None:
+        # only the live read paints: whatever was in flight is over
+        self.filtering = False
         self.screen = shown.screen
         self.title = shown.title
         self.body = shown.body
@@ -564,6 +578,7 @@ class DiscoverReelsState(rx.State):
             async with self:
                 if self._load_id == load_id:
                     self.load_error = reels_ideas_vm.LOAD_ERROR
+                    self.filtering = False
             await _settle(opened)
             return
         async with self:

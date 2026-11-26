@@ -1031,6 +1031,37 @@ async def test_filtering_reads_what_is_stored_and_never_pays(world: _World) -> N
     assert world.reads[0] is True and set(world.reads[1:]) == {False}  # never queues
 
 
+async def test_no_empty_state_flashes_while_a_filter_is_applied(world: _World) -> None:
+    """Deivid, 2026-11-26: a Duración filter that left nothing, then «Todas» — for a moment
+    «Elegir cuentas» flashed: the bar's new values reached the screen before the read
+    began, and were judged against the old (empty) lists. Now the change itself marks the
+    read in flight, and no empty state nor note shows until the new lists land."""
+    world.ok_run()
+    _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    await _filter(proxy, state.set_filter("duration", "gte60"))
+    assert state.reels == [] and state.more_reels == []
+    assert state.empty_kind == reels_filters_vm.EMPTY_FILTERS and not state.filtering
+    # «Todas»: the handler's own state change, before the read runs
+    asked = state.set_filter("duration", "")
+    assert state.filtering  # same delta as the new value
+    assert state.empty_kind == "" and not state.no_ideas_left and not state.no_ideas_filtered
+    for handler in (lambda: state.toggle_account("tiktok:vecino"), state.reset_filters):
+        state.filtering = False
+        if handler() is not None:
+            assert state.filtering
+    state.filtering = True
+    await _filter(proxy, asked)  # the new lists land
+    assert not state.filtering and [c["key"] for c in state.more_reels] == ["tiktok:T1"]
+    assert state.empty_kind == ""
+    # a newer full read supersedes a filtered one: the screen never stays busy
+    state.filtering = True
+    await _open(proxy)
+    assert not state.filtering
+
+
 async def test_reset_brings_everything_back_to_all(world: _World) -> None:
     world.ok_run()
     _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
