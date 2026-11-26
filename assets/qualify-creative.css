@@ -1465,6 +1465,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   width: 2px;
   transform: translateX(-1px);
   background: var(--accent-9);
+  /* ED-11b UX review: a thin dark edge, so the line reads over any frame of a strip */
+  box-shadow: 0 0 0 1px var(--black-a8);
   pointer-events: none;
 }
 .q-tl__head::before {
@@ -1590,8 +1592,52 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    restored right after with one attribute more (0,3,0): it keeps its 2 px accent border. */
 .q-tl__block[data-tl-pic="1"] { border-color: var(--gray-a8); }
 .q-tl__block[aria-pressed="true"][data-tl-pic="1"] { border-color: var(--accent-9); }
+/* ED-11b (m-25029110): an uploaded video's frame strip — the server's ONE JPEG, a tile per
+   second of the video — under the whole block (never shifted by a transition's veil: each
+   frame stays on its second of the ruler). Each cell is placed in seconds from the block's
+   start, as a share of the block (`--c-at` / `--b-len`), so it follows the phone's 44 px a
+   second, the desktop's fitted width and any scale. Its picture crops one tile out of the
+   image (`--s-size` = the image over one tile, `background-position` in percentages),
+   at its own aspect and the track's height (`--s-w`), centred; a cell wider than a tile
+   grows it and crops it top and bottom. Static: nothing moves.
+   UX review: the strip is drawn OVER the block's picture of before (same z, later in the
+   tree) with no background of its own, so that picture shows until the frames load — and
+   whenever they do not (a `/r2media` path past its hour): no grey flash, no bare box. */
+.q-tl__strip {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: block;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+/* UX review: over real frames the transition's veil needs stronger stripes to read */
+.q-tl__item:has(.q-tl__block[data-tl-strip="1"]) .q-tl__overlap {
+  background: repeating-linear-gradient(135deg, var(--accent-a8) 0 4px, var(--black-a5) 4px 8px);
+}
+.q-tl__frame-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--c-at) / var(--b-len) * 100%);
+  width: calc(var(--c-len) / var(--b-len) * 100%);
+  overflow: hidden;
+}
+.q-tl__frame-pic {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, var(--s-w));
+  aspect-ratio: var(--s-ratio);
+  transform: translate(-50%, -50%);
+  background-image: var(--s-img);
+  background-repeat: no-repeat;
+  background-size: var(--s-size);
+}
 /* High contrast: no picture under the name (it would sit on a photo); the icon shows. */
 @media (forced-colors: active) {
+  .q-tl__strip { display: none; }
   .q-tl__pic { display: none; }
   .q-tl__pic-fallback { color: CanvasText; }
 }

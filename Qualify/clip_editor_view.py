@@ -788,7 +788,9 @@ def _timeline_body() -> rx.Component:
     # due: once per Clip, `load_clip_placement`), so «+ Texto» already knows where the
     # product shows and puts the new text where it does not cover it
     reader = rx.box(display="none", key=S.clip_placement_videos, on_mount=S.load_clip_placement)
-    return rx.fragment(_timeline_layout(), reader)
+    # ED-11b: the frame strips' reader, mounted again when the Clip's videos change
+    strips = rx.box(display="none", key=S.clip_strip_videos, on_mount=S.watch_clip_frame_strips)
+    return rx.fragment(_timeline_layout(), reader, strips)
 
 
 def _timeline_layout() -> rx.Component:
@@ -810,6 +812,8 @@ def _timeline_layout() -> rx.Component:
             effect_lane_names=S.clip_tl_effect_lane_names,
             # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
             thumb_base=BACKEND_BASE,
+            # ED-11b: each uploaded video's frame strip, by block (its path after BACKEND_BASE)
+            frames=S.clip_tl_frames,
             # m-25114465: «la unión» between every two blocks ([] off the switch)
             joins=S.clip_tl_joins,
             on_join=S.open_clip_join,
