@@ -877,6 +877,22 @@ migration-guard pr base="main" sha="":
 protect-main:
     gh api -X POST repos/AttitudeFactory/Qualify/rulesets --input infra/github/ruleset-main.json
 
+# --- Code graph (graphify, m-25129388) -------------------------------------------------
+# The graph is built by .github/workflows/code-graph.yml from main (3×/day) and synced by
+# the SessionStart hook; never `graphify update` locally (minutes, and through the worktree
+# symlinks it would overwrite the shared copy with branch code).
+
+# Sync now, in the foreground: link this worktree, download the latest graph if it changed.
+graph-sync:
+    python3 dev/code-graph-sync.py --now
+
+#   just graph-build          # skips if the published graph is already main's tip
+#   just graph-build true     # rebuild anyway
+# Ask CI to build and publish the graph of main now (REST dispatch, ~6 min of Actions).
+graph-build force="false":
+    gh api -X POST repos/AttitudeFactory/Qualify/actions/workflows/code-graph.yml/dispatches -f ref=main -f "inputs[force]={{force}}"
+    @echo "Dispatched code-graph (force={{force}}): gh api 'repos/AttitudeFactory/Qualify/actions/workflows/code-graph.yml/runs?per_page=1' --jq '.workflow_runs[0].html_url'"
+
 # Playwright browser tests (tests/e2e) — never part of CI. Boots the app on 3390/8390 with
 # fake auth and open signup, or uses QUALIFY_E2E_BASE_URL. Needs the compose Postgres
 # (`just up`) and a Chromium (`uv run --with playwright playwright install chromium`).

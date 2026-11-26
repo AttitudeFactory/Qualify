@@ -3,6 +3,17 @@
     "reflex@reflex-agent-skills": true
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/dev/code-graph-sync.py\"; [ -f \"$f\" ] || f=\"$PWD/dev/code-graph-sync.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null && python3 \"$f\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash|Grep",

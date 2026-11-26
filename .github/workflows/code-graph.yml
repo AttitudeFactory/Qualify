@@ -1,0 +1,193 @@
+# Code graph (m-25129388) — builds the graphify knowledge graph of the tip of main and
+# publishes it for every developer machine; `dev/code-graph-sync.py` (SessionStart hook,
+# `just graph-sync`) downloads it into each clone's shared store and links every worktree.
+# Nobody builds the graph on a laptop: a full build takes ~3 min and a no-change re-run ~2 min.
+#
+# Minutes (GitHub Free from 2026-11: 2,000/month, every job rounded UP to the whole minute):
+#   - a skip (published graph == tip of main) = 1 billed minute (runner boot + two REST calls);
+#   - a build = ESTIMATED 6 billed minutes (measured 2 min 46 s on an M-series Mac, mostly
+#     single-threaded; a hosted runner is slower per core, plus checkout and the uv tool);
+#   - worst case, a build on all 3 runs every day: 3 × 6 × 31 = ~560 min/month (28 % of
+#     the budget); with weekends skipping, ~420. Replace the estimate with the first runs'
+#     durations (`gh api repos/AttitudeFactory/Qualify/actions/workflows/code-graph.yml/runs`).
+#   Not on push: main gets many merges a day; three snapshots a day are fresh enough, and the
+#   graph describes main only (files a branch changed are read directly).
+#
+# Publication: ONE fixed release, tag `code-graph`, prerelease, never marked latest; its two
+# assets are replaced in place on every build. The tag is created once (first run, at that
+# run's commit) and never moved: the commit it points to means nothing — `code-graph.json`
+# says what was built. Not moving it matters: the Meegle GitHub plugin receives this repo's
+# `push` webhooks (tags included), and no other workflow reacts to tags or releases.
+# Assets are uploaded under a temporary name, then swapped in (delete old + rename), meta
+# last. Not atomic, so: the tarball carries its own code-graph.json (what a client records
+# as installed), the skip needs BOTH assets present (a run that died mid-swap is redone),
+# and clients compare commit + built_at, so a forced same-commit rebuild still reaches them.
+#
+# Every third-party action is pinned to a commit SHA (the tag is kept in the comment so
+# Dependabot can bump both). The graphify version is pinned in ONE place:
+# GRAPHIFY_VERSION in dev/code-graph-sync.py.
+name: code-graph
+
+on:
+  schedule:
+    # 11:17, 16:17, 21:17 UTC = 06:17, 11:17, 16:17 Colombia — off the hour (GitHub delays
+    # on-the-hour crons), before, during and after the working day.
+    - cron: "17 11,16,21 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build and publish even if the published graph is already the tip of main"
+        type: boolean
+        required: false
+        default: false
+
+# One build at a time; a queued run waits rather than cancelling a half-done asset swap.
+concurrency:
+  group: code-graph
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create/update the `code-graph` release and its assets
+
+env:
+  TAG: code-graph
+  # A healthy graph of main has ~80,000 nodes (2026-11-26); far fewer means a broken build
+  # (wrong cwd, an ignore file eating the repo), which must never replace a good graph.
+  MIN_NODES: "20000"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Before installing anything: two REST calls with the runner's preinstalled gh.
+      - name: Skip if the published graph is already the tip of main
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || 'false' }}
+        run: |
+          repo="repos/${GITHUB_REPOSITORY}"
+          tip=$(gh api "$repo/commits/main" --jq .sha)
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          # Both assets must exist: a run that died mid-swap leaves no tarball, and must not
+          # make every later run skip.
+          published=""
+          if assets=$(gh api "$repo/releases/tags/$TAG" \
+              --jq '[.assets[] | {(.name): .id}] | add // {}' 2>/dev/null); then
+            meta_id=$(jq -r '."code-graph.json" // empty' <<<"$assets")
+            tar_id=$(jq -r '."code-graph.tar.gz" // empty' <<<"$assets")
+            if [ -n "$meta_id" ] && [ -n "$tar_id" ]; then
+              published=$(gh api -H "Accept: application/octet-stream" \
+                "$repo/releases/assets/$meta_id" | jq -r '.commit // ""' || true)
+            fi
+          fi
+          if [ "$published" = "$tip" ] && [ "$FORCE" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Published code graph is already main@${tip:0:12}; nothing to do."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Building main@${tip:0:12} (published: ${published:-none}, force: $FORCE)."
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.plan.outputs.build == 'true'
+        with:
+          ref: ${{ steps.plan.outputs.tip }}
+          # A PyPI tool (unlocked transitive deps) runs over this tree next: no write token in
+          # .git/config. The publish step authenticates through GH_TOKEN only.
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.plan.outputs.build == 'true'
+        with:
+          enable-cache: true
+          # The version pin lives in this file; a bump invalidates the cached wheels.
+          cache-dependency-glob: "dev/code-graph-sync.py"
+
+      - name: Install graphify (pinned in dev/code-graph-sync.py)
+        if: steps.plan.outputs.build == 'true'
+        id: tool
+        run: |
+          version=$(sed -n 's/^GRAPHIFY_VERSION = "\([^"]*\)"$/\1/p' dev/code-graph-sync.py)
+          [ -n "$version" ] || { echo "::error::GRAPHIFY_VERSION not found in dev/code-graph-sync.py"; exit 1; }
+          uv tool install "graphifyy==$version"
+          uv tool dir --bin >> "$GITHUB_PATH"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # AST only: no LLM, no API key. `.graphifyignore` at the root keeps vendored and
+      # generated trees out.
+      - name: Build the graph
+        if: steps.plan.outputs.build == 'true'
+        run: graphify update .
+
+      - name: Check and pack
+        if: steps.plan.outputs.build == 'true'
+        env:
+          COMMIT: ${{ steps.plan.outputs.tip }}
+          GRAPHIFY_VERSION: ${{ steps.tool.outputs.version }}
+        run: |
+          [ -s graphify-out/graph.json ] || { echo "::error::graphify-out/graph.json is missing or empty"; exit 1; }
+          [ -s graphify-out/GRAPH_REPORT.md ] || { echo "::error::graphify-out/GRAPH_REPORT.md is missing"; exit 1; }
+          python3 - <<'PY'
+          import json, os, time
+          graph = json.load(open("graphify-out/graph.json"))
+          nodes = len(graph.get("nodes", []))
+          edges = len(graph.get("links", graph.get("edges", [])))
+          if nodes < int(os.environ["MIN_NODES"]):
+              raise SystemExit(f"::error::only {nodes} nodes (< {os.environ['MIN_NODES']}): not publishing")
+          built = graph.get("built_at_commit")
+          if built and built != os.environ["COMMIT"]:
+              raise SystemExit(f"::error::graph built at {built}, expected {os.environ['COMMIT']}")
+          meta = {
+              "commit": os.environ["COMMIT"],
+              "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "graphify_version": os.environ["GRAPHIFY_VERSION"],
+              "nodes": nodes,
+              "edges": edges,
+          }
+          json.dump(meta, open("code-graph.json", "w"), indent=2)
+          print(json.dumps(meta))
+          PY
+          # code-graph.json travels INSIDE the tarball too: it is what clients record as
+          # installed; the separate asset is only the cheap pointer they poll.
+          cp code-graph.json graphify-out/code-graph.json
+          files=(code-graph.json graph.json GRAPH_REPORT.md)
+          if [ -f graphify-out/.graphify_labels.json ]; then files+=(.graphify_labels.json); fi
+          tar -czf code-graph.tar.gz -C graphify-out "${files[@]}"
+          ls -l code-graph.tar.gz code-graph.json
+          {
+            echo "### Code graph main@${COMMIT:0:12}"
+            echo '```json'; cat code-graph.json; echo; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish to the code-graph release
+        if: steps.plan.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.plan.outputs.tip }}
+        run: |
+          set -euo pipefail
+          repo="repos/${GITHUB_REPOSITORY}"
+          body="Code graph of main, built by .github/workflows/code-graph.yml. Synced by dev/code-graph-sync.py; do not download by hand. The tag is a fixed anchor: code-graph.json says which commit was built."
+          if ! id=$(gh api "$repo/releases/tags/$TAG" --jq .id 2>/dev/null); then
+            id=$(gh api -X POST "$repo/releases" -f tag_name="$TAG" -f target_commitish="$COMMIT" \
+              -f name="Code graph" -f body="$body" -F prerelease=true -f make_latest=false --jq .id)
+          fi
+          upload() {  # $1 = asset name, $2 = content type
+            local tmp="$1.new" old new
+            for stale in $(gh api "$repo/releases/$id/assets?per_page=100" \
+                --jq ".[] | select(.name == \"$tmp\") | .id"); do
+              gh api -X DELETE "$repo/releases/assets/$stale"
+            done
+            new=$(gh api -X POST -H "Content-Type: $2" --input "$1" \
+              "https://uploads.github.com/$repo/releases/$id/assets?name=$tmp" --jq .id)
+            for old in $(gh api "$repo/releases/$id/assets?per_page=100" \
+                --jq ".[] | select(.name == \"$1\") | .id"); do
+              gh api -X DELETE "$repo/releases/assets/$old"
+            done
+            gh api -X PATCH "$repo/releases/assets/$new" -f name="$1" --silent
+          }
+          upload code-graph.tar.gz application/gzip
+          upload code-graph.json application/json  # the pointer clients read: always last
+          echo "::notice::Published code graph main@${COMMIT:0:12} to release $TAG."

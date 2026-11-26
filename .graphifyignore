@@ -1,0 +1,17 @@
+# What graphify leaves OUT of the knowledge graph (gitignore syntax).
+# The graph is a map of Qualify's own code and docs; everything below is
+# vendored, duplicated or generated, and only adds noise to queries.
+
+# Vendored design kit (781 docs, ~10k nodes in the old graph)
+reference/
+
+# Agent tooling: skills, agent definitions, session notes (duplicated across tools)
+.agents/
+.claude/
+.opencode/
+
+# Evidence, logs and generated output
+testing/evidence/
+bitacora/
+graphify-out/
+reflex.lock/
