@@ -1295,6 +1295,9 @@ _MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "squar
 #: One line that ends in «…» when it has no room (Radix's `truncate` prop reaches Reflex
 #: 0.10 as an invalid `truncate: true` CSS rule, so the three properties are written out).
 _ELLIPSIS = {"white_space": "nowrap", "overflow": "hidden", "text_overflow": "ellipsis"}
+#: The phone's chips: a little less side padding than Radix's size 2 (12 px), so the
+#: lines hold 2 or 3 of them at 375 px; the height stays the 44 px target.
+_CHIP_PAD = {"padding_left": "0.625rem", "padding_right": "0.625rem"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
 #: In the «Duración» + «Tus competidores» pair (`_with_rivals`), the `flex-shrink` weight
@@ -1539,6 +1542,7 @@ def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
         axis,
         shrink=shrink,
         compact=True,
+        **_CHIP_PAD,
         on_click=S.open_sheet(axis),
         aria_haspopup="dialog",
         aria_expanded=rx.cond(S.sheet == axis, "true", "false"),
@@ -1554,14 +1558,18 @@ def _reset_button(*, chip: bool = False) -> rx.Component:
         DiscoverReelsState.filters_on,
         rx.button(
             rx.icon("rotate-ccw", size=T.ICON_SM, aria_hidden="true"),
-            reels_filters_vm.RESET_LABEL,
+            reels_filters_vm.RESET_SHORT if chip else reels_filters_vm.RESET_LABEL,
             type="button",
             variant="ghost",
             size="2",
             min_height=_TARGET,
             margin="0",
             on_click=DiscoverReelsState.reset_filters,
-            **({"flex_shrink": "0", "white_space": "nowrap", "max_width": "100%"} if chip else {}),
+            **(
+                {"flex_shrink": "0", "white_space": "nowrap", "max_width": "100%", **_CHIP_PAD}
+                if chip
+                else {}
+            ),
         ),
     )
 
@@ -1939,7 +1947,12 @@ def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
             ),
             # the label may end in «…» only on a very narrow phone (320 px), once
             # «Duración» beside it has given way all it can: never a sideways scroll
-            rx.text(reels_competitors_vm.PICKER_TITLE, as_="span", min_width="0", **_ELLIPSIS),
+            rx.text(
+                reels_competitors_vm.PICKER_SHORT if chip else reels_competitors_vm.PICKER_TITLE,
+                as_="span",
+                min_width="0",
+                **_ELLIPSIS,
+            ),
             type="button",
             id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
             on_click=S.open_competitors(chip),
@@ -1953,6 +1966,7 @@ def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
             min_width="0",
             overflow="hidden",
             title=reels_competitors_vm.PICKER_TITLE,
+            **(_CHIP_PAD if chip else {}),
             aria_label=S.competitors_label,
             aria_haspopup="dialog",
             aria_expanded=rx.cond(S.competitors_open, "true", "false"),

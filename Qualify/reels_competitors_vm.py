@@ -32,6 +32,9 @@ from .reels_filters_vm import account_key, parse_account_key
 #: replaces the ticket's «Elige cuáles 6 competidores leemos cada lunes».
 PICKER_TITLE = "Tus competidores"
 READ_NOW = rivals.READ_NOW_BUTTON
+#: The bar's button on a phone (option A, Deivid 2026-11-26: short only if needed so
+#: nothing is alone on a line); its accessible name still starts «Tus competidores».
+PICKER_SHORT = "Competidores"
 #: What the panel says under its title (Deivid, option A).
 PICKER_BODY = (
     "Marca hasta 6: cada lunes te traemos sus reels nuevos. Para ver ya los de otro, "
@@ -196,6 +199,7 @@ __all__ = [
     "KEEP_ONE",
     "PICKED_COUNT",
     "PICKER_BODY",
+    "PICKER_SHORT",
     "PICKER_TITLE",
     "READ_FAILED",
     "READ_NOW",

@@ -63,6 +63,9 @@ CHIP_LABELS = {
     AXIS_DURATION: DURATION_LABEL,
 }
 RESET_LABEL = "Restablecer filtros"
+#: The same button on a phone (option A, Deivid 2026-11-26: «Quitar filtros» only if
+#: it is needed to fit): first on its line beside «Competidores», never alone.
+RESET_SHORT = "Quitar filtros"
 
 #: What an axis says when nothing is narrowed on it. «Todos» / «Todas» agree with the
 #: axis' noun («Canal», «Tipo de cuenta» / «Cuenta», «Duración»).
@@ -469,6 +472,7 @@ __all__ = [
     "NO_IDEAS_LEFT",
     "NO_IDEAS_LEFT_ACTION",
     "RESET_LABEL",
+    "RESET_SHORT",
     "SOME_ACCOUNTS",
     "EmptyMessage",
     "FirstPage",

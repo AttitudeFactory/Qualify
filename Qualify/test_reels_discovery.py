@@ -1407,8 +1407,36 @@ def test_a_phone_chip_shows_one_word_and_names_itself_in_full() -> None:
     assert '"Tipo"' in rendered  # the short name reaches the phone's chip
 
 
-async def test_a_phone_chip_with_a_filter_shows_its_value(world: _World) -> None:
-    """The value a chip shows once it filters is the bar's own words (`filter_values`)."""
+def test_the_phone_row_uses_the_short_words_to_fit() -> None:
+    """Option A, measured by estimate at 375 px (review): with a filter on, «Restablecer
+    filtros» (~180 px) and «Tus competidores» (~166 px) would each sit alone on a line —
+    so on the phone they read «Quitar filtros» and «Competidores» (allowed by Deivid
+    «only if needed»), with a little less side padding; the accessible names stay full
+    and the desktop keeps the long words."""
+    import inspect
+
+    from . import discover_reels
+    from . import reels_competitors_vm as rc
+
+    assert reels_filters_vm.RESET_SHORT == "Quitar filtros"
+    assert rc.PICKER_SHORT == "Competidores"
+    reset = inspect.getsource(discover_reels._reset_button)
+    assert "RESET_SHORT if chip else reels_filters_vm.RESET_LABEL" in reset
+    rivals = inspect.getsource(discover_reels._rivals_button)
+    assert "PICKER_SHORT if chip else reels_competitors_vm.PICKER_TITLE" in rivals
+    assert "aria_label=S.competitors_label" in rivals  # «Tus competidores: …»
+    # WCAG 2.5.3 (label in name, case-insensitive): the visible word is in the name
+    for name in (rc.BUTTON_LABEL, rc.BUTTON_LABEL_READING):
+        assert rc.PICKER_SHORT.lower() in name.lower()
+    assert "**_CHIP_PAD" in inspect.getsource(discover_reels._chip)
+    assert discover_reels._CHIP_PAD == {"padding_left": "0.625rem", "padding_right": "0.625rem"}
+    sheet = inspect.getsource(discover_reels._sheet)
+    assert "RESET_LABEL" in sheet and "RESET_SHORT" not in sheet  # the sheet keeps it whole
+
+
+async def test_the_values_a_filtered_chip_shows(world: _World) -> None:
+    """The words a filtered phone chip shows are the bar's own (`filter_values`); the chip
+    face picks them over its short name (`test_a_phone_chip_shows_one_word…`)."""
     world.ok_run()
     state, proxy = _screen_state()
     await _open(proxy)
