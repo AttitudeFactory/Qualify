@@ -89,17 +89,15 @@
     return { t: next, index: blockAt(seq, next), wrapped: false };
   }
 
-  /* «0:04», «0:04,5» — the time as the preview writes it. */
+  /* «0:04», «0:04,5» — the time as the preview writes it, to the tenth with a half
+     rounded up and a 60th second carried into the minute (59,96 → «1:00»): the same
+     algorithm as Python's `editor_preview_contract.clock_text` (m-25129389). */
   function clock(seconds) {
-    var value = Math.max(seconds, 0);
-    var minutes = Math.floor(value / 60);
-    var rest = value - minutes * 60;
-    var whole = Math.floor(rest);
-    var tenth = Math.round((rest - whole) * 10);
-    if (tenth >= 10) {
-      whole += 1;
-      tenth = 0;
-    }
+    var tenths = Math.floor(Number((Math.max(seconds, 0) * 10).toFixed(6)) + 0.5);
+    var minutes = Math.floor(tenths / 600);
+    var rest = tenths % 600;
+    var whole = Math.floor(rest / 10);
+    var tenth = rest % 10;
     var text = minutes + ":" + (whole < 10 ? "0" : "") + whole;
     return tenth ? text + "," + tenth : text;
   }
@@ -348,7 +346,61 @@
     return { a: round4(Math.min(Math.max(a, 0), 1)), dy: round4(dy), s: round4(s), chars: chars };
   }
 
+  /* m-25114465 («la unión»): how a block that comes in with a transition (`join`
+     "fade" / "wipe", `join_s` seconds, a wipe towards `join_dir`) is drawn at final
+     time `t`, OVER the block before it — which goes on playing under it (`joinUnder`),
+     as the video that comes out blends them (Deivid 2026-11-26: no cut before it).
+     `{ a, clip }`: its opacity (0–1) and its CSS `clip-path` ("" = none). Outside its
+     first `join_s` seconds, or with `reduced` (prefers-reduced-motion), it is just
+     there: `{ a: 1, clip: "" }`. */
+  function joinFrame(block, t, reduced) {
+    var none = { a: 1, clip: "" };
+    if (!block || reduced) return none;
+    var len = Number(block.join_s) || 0;
+    var into = t - (Number(block.out_start) || 0);
+    if (!block.join || len <= 0 || into < 0 || into >= len) return none;
+    var p = into / len;
+    if (block.join === "fade") return { a: round4(p), clip: "" };
+    if (block.join !== "wipe") return none;
+    var hidden = round4((1 - p) * 100) + "%";
+    // the new block slides in towards `join_dir`: «left» uncovers it from the right
+    var sides = {
+      left: "0 0 0 " + hidden,
+      right: "0 " + hidden + " 0 0",
+      up: hidden + " 0 0 0",
+      down: "0 0 " + hidden + " 0",
+    };
+    return { a: 1, clip: "inset(" + (sides[block.join_dir] || sides.left) + ")" };
+  }
+
+  /* m-25114465 (Deivid's test, «quiero que la transición sea suave»): the block that
+     goes on UNDER block `index` while it comes in (its `join_s` first seconds), as the
+     final video blends them — the one before it, whose track span ends where `index`
+     starts but whose picture keeps playing through the transition. -1 for a cut, the
+     first block, outside the transition, or with `reduced` (a clean cut). */
+  function joinUnder(seq, index, t, reduced) {
+    var blocks = (seq && seq.blocks) || [];
+    var block = blocks[index];
+    if (reduced || !block || index < 1) return -1;
+    var len = Number(block.join_s) || 0;
+    var into = t - (Number(block.out_start) || 0);
+    if (!block.join || len <= 0 || into < 0 || into >= len) return -1;
+    return index - 1;
+  }
+
+  /* The source second the block UNDER shows at final time `t`: its stretch goes on past
+     its span's end (`out_end`) into the seconds the transition overlaps — never past
+     `src_end`. */
+  function underSourceTime(block, t) {
+    var speed = block.speed > 0 ? block.speed : 1;
+    var at = block.src_start + Math.max(t - block.out_start, 0) * speed;
+    return Math.min(at, block.src_end > block.src_start ? block.src_end : at);
+  }
+
   var api = {
+    joinFrame: joinFrame,
+    joinUnder: joinUnder,
+    underSourceTime: underSourceTime,
     textFrame: textFrame,
     typedChars: typedChars,
     RATE_MAX: RATE_MAX,

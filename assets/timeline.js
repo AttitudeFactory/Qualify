@@ -27,12 +27,17 @@
   var STEP = 0.5;
   var roots = []; // the timelines attached, each with its observers (`root.__qTlObs`)
 
+  // The playhead's «0:01,3 de 0:04,7»: to the tenth, a half rounded up, a 60th second
+  // carried into the minute — as Python's `timeline_vm.playhead_text` and
+  // `editor_preview_contract.clock_text` (m-25129389). Only the words: the playhead
+  // still moves on its ½ s `STEP`.
   function clock(s) {
-    s = Math.max(Math.round(s / STEP) * STEP, 0);
-    var whole = Math.floor(s);
-    var m = Math.floor(whole / 60);
-    var sec = whole % 60;
-    return m + ":" + (sec < 10 ? "0" : "") + sec + (s - whole >= STEP ? ",5" : "");
+    var tenths = Math.floor(Number((Math.max(Number(s) || 0, 0) * 10).toFixed(6)) + 0.5);
+    var m = Math.floor(tenths / 600);
+    var rest = tenths % 600;
+    var sec = Math.floor(rest / 10);
+    var tenth = rest % 10;
+    return m + ":" + (sec < 10 ? "0" : "") + sec + (tenth ? "," + tenth : "");
   }
 
   function reduceMotion() {
@@ -188,6 +193,36 @@
     return isPhone(p) ? "phone" : "desk";
   }
 
+  // m-25114465 (ux review): a join point that really sits under the chosen block's trim
+  // handles (measured in px, as laid out: a desktop's scale is not a phone's) is dimmed
+  // and lets the handle have the taps (`data-join-near`). The points touching the chosen
+  // block are hidden by the screen itself (`data-join-off`).
+  function markJoins(root) {
+    var core = window.__qTimelineDragCore;
+    var points = root.querySelectorAll("[data-join-id]");
+    if (!points.length || !core || !core.joinsNear) return;
+    var boxes = function (list) {
+      return Array.prototype.map.call(list, function (el) {
+        var r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right };
+      });
+    };
+    var near = core.joinsNear({
+      points: boxes(points),
+      handles: boxes(root.querySelectorAll('.q-tl__item[data-tl-chosen="true"] .q-tl__handle')),
+    });
+    Array.prototype.forEach.call(points, function (el, i) {
+      if (near[i] !== el.hasAttribute("data-join-near")) el.toggleAttribute("data-join-near", near[i]);
+    });
+    // a point that just hid (it touches the block chosen) never keeps the focus: it goes
+    // to that block
+    var now = document.activeElement;
+    if (now && now.getAttribute && now.getAttribute("data-join-off") === "1") {
+      var chosen = root.querySelector('.q-tl__item[data-tl-chosen="true"] [data-tl-block]');
+      if (chosen) chosen.focus({ preventScroll: true });
+    }
+  }
+
   function init(root) {
     if (root.__qTlReady) return;
     root.__qTlReady = true;
@@ -211,7 +246,10 @@
         pending = true;
         window.requestAnimationFrame(function () {
           pending = false;
-          if (root.isConnected) placeLens(root, false);
+          if (root.isConnected) {
+            placeLens(root, false);
+            markJoins(root);
+          }
         });
       });
       lensWatch.observe(root, {
@@ -235,6 +273,7 @@
           scrollTo(q);
         }
         placeLens(root, true);
+        markJoins(root);
       });
       sized.observe(p.canvas);
       if (p.frame) sized.observe(p.frame);
@@ -379,6 +418,31 @@
       report(owner, pid, "", "Escape");
       return;
     }
+    // m-25114465: Escape inside a join's panel closes it, as «Listo», and the focus goes
+    // back to that join's point (edge "join" tells the screen it is a join, not a block)
+    var joinPanel = el.closest("[data-tl-join-panel]");
+    if (joinPanel && e.key === "Escape" && !e.defaultPrevented) {
+      if (el.closest('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')) {
+        return; // an open menu closes first
+      }
+      var joinOwner = timelineFor(joinPanel);
+      var jid = joinPanel.getAttribute("data-tl-join-panel") || "";
+      if (!joinOwner) return;
+      e.preventDefault();
+      var point = joinById(jid, joinOwner);
+      if (point) point.focus();
+      report(joinOwner, jid, "join", "Escape");
+      return;
+    }
+    // …and on its own point while its panel is open (review)
+    if (e.key === "Escape" && !e.defaultPrevented && el.matches &&
+        el.matches('[data-join-id][aria-expanded="true"]')) {
+      var openOwner = rootOf(el);
+      if (!openOwner) return;
+      e.preventDefault();
+      report(openOwner, el.getAttribute("data-join-id") || "", "join", "Escape");
+      return;
+    }
     var root = rootOf(el);
     if (!root) return;
     var arrow = e.key === "ArrowLeft" || e.key === "ArrowRight";
@@ -469,12 +533,104 @@
     }
   }
 
+  // m-25114465: a join's point by the id of the block after it (`ui.timeline._join`),
+  // inside its own timeline (`root`; the page's first when none is given).
+  function joinById(id, root) {
+    var scope = root || document.querySelector("[data-q-timeline]") || document;
+    var all = scope.querySelectorAll("[data-join-id]");
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].getAttribute("data-join-id") === id) return all[i];
+    }
+    return null;
+  }
+
+  // The duration bar's thumb says its value as words: «0,5 segundos» (Radix Themes
+  // passes no props to the thumb, so its `aria-valuenow` is read and written back).
+  function joinValueText(panel) {
+    if (!panel) return;
+    var thumbs = panel.querySelectorAll('[data-join-seconds] [role="slider"]');
+    for (var i = 0; i < thumbs.length; i++) {
+      var now = Number(thumbs[i].getAttribute("aria-valuenow"));
+      if (isNaN(now)) continue;
+      var text = now.toFixed(1).replace(".", ",") + " segundos";
+      if (thumbs[i].getAttribute("aria-valuetext") !== text) {
+        thumbs[i].setAttribute("aria-valuetext", text);
+      }
+    }
+  }
+
+  // The bar is controlled: its thumb's `aria-valuenow` changes when the state comes back
+  // (and the bar itself mounts when «Fundido» or «Barrido» is chosen). One observer per
+  // open panel, as the lens's and the scrub's (`attributeFilter`), keeps the words true.
+  function watchJoinValue(panel) {
+    if (!panel || panel.__qJoinWatch || !window.MutationObserver) return;
+    var watch = new MutationObserver(function () {
+      joinValueText(panel);
+    });
+    watch.observe(panel, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["aria-valuenow"],
+    });
+    panel.__qJoinWatch = watch;
+  }
+
+  // A join's panel just opened (ux review): it comes into view and the focus goes to the
+  // option marked (`role="radio"` checked), its bar's thumb said in words. Waits ~1 s.
+  function revealJoin(id, tries) {
+    var left = tries === undefined ? 60 : tries;
+    var panel = null;
+    var all = document.querySelectorAll("[data-tl-join-panel]");
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].getAttribute("data-tl-join-panel") === id) panel = all[i];
+    }
+    if (!panel) {
+      if (left > 0) {
+        window.requestAnimationFrame(function () {
+          revealJoin(id, left - 1);
+        });
+      }
+      return;
+    }
+    panel.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "nearest" });
+    var marked =
+      panel.querySelector('[role="radio"][aria-checked="true"]') ||
+      panel.querySelector('[role="radio"][data-state="on"], [role="radio"][data-state="checked"]');
+    (marked || panel).focus({ preventScroll: true });
+    joinValueText(panel);
+    watchJoinValue(panel);
+  }
+
+  // «Listo» on a join's panel: the focus goes back to that join's point once the panel
+  // is gone (up to ~1 s for the re-render); a focus the owner moved elsewhere stays.
+  function focusJoin(id, tries) {
+    var left = tries === undefined ? 60 : tries;
+    var target = id ? joinById(id) : null;
+    if (target) {
+      var now = document.activeElement;
+      var inPanel = now && now.closest && now.closest("[data-tl-join-panel]");
+      if (!now || now === document.body || inPanel || !now.isConnected) {
+        target.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (left > 0) {
+      window.requestAnimationFrame(function () {
+        focusJoin(id, left - 1);
+      });
+    }
+  }
+
   window.__qTimeline = {
     initAll: initAll,
     sweep: sweep,
     reveal: reveal,
     lens: lens,
     focusAfter: focusAfter,
+    focusJoin: focusJoin,
+    revealJoin: revealJoin,
+    markJoins: markJoins,
   };
   initAll();
 })();

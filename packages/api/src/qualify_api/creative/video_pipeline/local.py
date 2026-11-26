@@ -28,7 +28,10 @@ The steps, per stretch in the recipe's order:
    kbps track for the whole video — `join`'s format: a ×1 stretch keeps its original sound,
    trimmed to its picture; a sped-up stretch, a photo or a file without sound is silence of
    its length; 80 ms fades at the cuts. The layers and the texts (4, 5) copy that track as
-   it is;
+   it is; m-25114465: a block with a `transition_in` (`fundido`, `barrido`) is then
+   blended with the block before it (`block_join`, EF-16's own segment join) — the blocks
+   overlap, so the Clip lasts its blocks minus each transition; with only cuts nothing
+   changes;
 4. «Humo», «Brasas», «Vapor» (EF-08, `qualify_creative.video.layer_overlay`): each use of
    a library layer in the part's `effects` (its entry at its version, through
    `TimedEffectLayer.from_entry` and the read-only `effects.layer_loop_file`; its params, or
@@ -55,8 +58,15 @@ there are texts, the compose step's own `params["text_layers"]`, and, when there
 layers, `effect_layers` (each use's `TimedEffectLayer.params()`: effect, version,
 intensity, zone, span, the loop's sha256, cost 0) with `steps["layer_compose"]`. The
 asset carries no `draft` block (there is no Seedance final to order: it is publishable
-as it is) and `ai_generated=False` — Instagram's «hecho con IA» is read from what was
-made, not from the kind.
+as it is). Instagram's «hecho con IA» is read from what was made, not from the kind
+(m-25112920, ADR 50 §9, Deivid 2026-11-24): the video is `ai_generated=True` as soon as
+ONE stretch's file is AI imagery — a Seedance or Seedream piece of the generator the
+owner chose, an avatar block OmniHuman made —, read from the asset that made it
+(`clip_avatar.asset_is_ai`; a generator file with no asset row, or the brand's avatar,
+counts as AI: the label fails safe), whatever the avatar switches say; each such stretch is in
+`params.local.ai_sources`. Only the owner's own photos and videos: `ai_generated=False`.
+An avatar block (`clip_avatar`) is also in `params.local.avatar_blocks`, and its
+stretch must be its own Clip's and play at ×1 (its voice), else nothing is read.
 
 Idempotent: a retried preparation renders again into the same revision's keys and the
 service rewrites the same revision's assets; the charge is one zero row per revision.
@@ -67,7 +77,7 @@ from __future__ import annotations
 import io
 import logging
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -79,7 +89,18 @@ from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
+from qualify_api.creative.clip_avatar import (
+    AVATAR_EFFECT_TEXT,
+    AVATAR_JOIN_TEXT,
+    ai_stretches,
+    avatar_effect_problems,
+    avatar_join_problems,
+    block_stretches,
+    block_windows,
+    stretch_problem,
+)
 from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
+from qualify_api.creative.heartbeat import beating
 from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
     JPEG,
@@ -162,18 +183,25 @@ LOCAL_PART_LAYER_FAILED_TEXT = (
     "No pudimos poner el efecto en esta parte por un problema nuestro. No se descontó de tus "
     "creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
 )
+#: m-25114465: the transitions between the blocks could not be made for a reason of ours
+#: (`block_join`, `JoinError`): the way out is a cut at those joins.
+LOCAL_TRANSITION_FAILED_TEXT = (
+    "No pudimos hacer las transiciones de tu video por un problema nuestro. No se descontó "
+    "de tus creaciones. Inténtalo de nuevo en unos minutos o deja las uniones con «Corte» "
+    "para terminarlo ya."
+)
 #: m-25042483: a video stretch takes over `SEGMENT_SOURCE_MAX_S` (60 s) of its video —
 #: the owner's to fix (refused before anything is created, `segment_source_too_long`;
 #: this is the worker's backstop and the words the editor shows in «Cortar»). Reviewed
 #: by ux-designer 2026-11-17: «tomar … aunque lo aceleres» (the reel may last 9 s), «1
 #: minuto» (not compared with the reel's seconds), both ways out.
 LOCAL_SOURCE_TOO_LONG_TEXT = (
-    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
 )
 LOCAL_PART_SOURCE_TOO_LONG_TEXT = (
-    "Cada pedazo puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "pedazo más largo o pártelo en dos con «Cortar», y vuelve a crear esta parte."
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear esta parte."
 )
 #: A part says «esta parte» where the whole piece says «tu video».
 _PART_TEXTS = {
@@ -186,6 +214,10 @@ _PART_TEXTS = {
 #: How often the preparation's lease is renewed while the video is made (None =
 #: `lease_kept`'s own, a third of the lease). Tests shorten it.
 LEASE_RENEW_EVERY_S: float | None = None
+#: m-25119832: how often the draft's progress stamp (`beat`) is renewed while a step of
+#: the assembly runs (prepare, photo hold, speed, layers, texts) — well under the
+#: reaper's 20 min, as the parts' join. Tests shorten it.
+LOCAL_HEARTBEAT_EVERY_S = 60.0
 
 
 class LocalVideoFailed(Exception):
@@ -260,6 +292,9 @@ class LocalRender:
     sources: Any = None
     #: m-25049580: the sound's provenance (`_sound_provenance`), None for a silent render.
     sound: dict[str, Any] | None = None
+    #: m-25114465: the blocks' transitions as blended (`block_join.BlockJoins.params`),
+    #: None when every join is a cut (the step did not run).
+    transitions: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -329,7 +364,45 @@ def render_local_part(
     `brand` is the tenant's `BrandKit` (its typeface and palette draw the texts) and
     `render_client` the render service's `RemotionRenderClient` (or a callable that builds
     one): both used only when the part has a text. Without a client a text fails as the
-    service being down — never a video without the texts the owner chose."""
+    service being down — never a video without the texts the owner chose.
+
+    m-25119832: `beat` is also called every `LOCAL_HEARTBEAT_EVERY_S` on a side thread
+    for the whole assembly — the speed step alone measured 867 s without returning (8
+    stretches, 60 s, 768m and 1 CPU), and the reaper fails a draft after 20 min without a
+    stamp. The thread is stopped and waited for before this returns or raises."""
+    alive = (
+        beating(beat, LOCAL_HEARTBEAT_EVERY_S, name="creative-local-beat")
+        if beat is not None
+        else nullcontext()
+    )
+    with alive:
+        return _render_local_part(
+            part,
+            tenant_id=tenant_id,
+            store=store,
+            root=root,
+            beat=beat,
+            brand=brand,
+            render_client=render_client,
+            draft_id=draft_id,
+            source_jobs=source_jobs,
+        )
+
+
+def _render_local_part(
+    part: PartRecipe,
+    *,
+    tenant_id: UUID,
+    store: Any,
+    root: Path,
+    beat: Callable[[], None] | None,
+    brand: Any,
+    render_client: Any,
+    draft_id: UUID | None,
+    source_jobs: Any,
+) -> LocalRender:
+    """`render_local_part`'s steps, with a beat at the end of each long one (the side
+    thread covers the time inside them)."""
     from qualify_creative.video._source import VideoSourceError  # noqa: PLC0415
     from qualify_creative.video.memory import release_memory  # noqa: PLC0415
     from qualify_creative.video.photo_hold import HOLD_VERSION, render_photo_hold  # noqa: PLC0415
@@ -455,10 +528,14 @@ def render_local_part(
             code="unreadable",
         ) from exc
     release_memory()  # the speed step's decoder and encoder, before the layers and texts
+    # m-25114465: the blocks' transitions, before the layers and the texts (their clock)
+    joins = _blend_blocks(part, result, root, beat, draft_id)
+    if joins is not None:
+        warnings.extend(joins.warnings)  # a join made a cut instead of its transition
     # EF-08: the library's layers (smoke, embers, steam) BEFORE the texts, so the words
     # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
     # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
-    video = result.path
+    video = joins.path if joins is not None else result.path
     effect_layers = _effect_layers(part)
     layered: tuple[Path, dict[str, Any]] | None = None
     if effect_layers and not part.text_layers:
@@ -485,6 +562,8 @@ def render_local_part(
     }
     if photos:
         steps["photo_hold"] = HOLD_VERSION
+    if joins is not None:
+        steps["block_join"] = joins.params["version"]
     if layered is not None:
         steps["layer_compose"] = layered[1]["compose_version"]
     text_params: dict[str, Any] | None = None
@@ -496,8 +575,8 @@ def render_local_part(
         path=composed.path,
         width=result.width,
         height=result.height,
-        seconds=result.duration_s,
-        frames=result.frames,
+        seconds=joins.seconds if joins is not None else result.duration_s,
+        frames=joins.frames if joins is not None else result.frames,
         speed=result.params(),
         steps=steps,
         warnings=tuple(warnings),
@@ -505,7 +584,45 @@ def render_local_part(
         effect_layers=layered[1] if layered is not None else None,
         sources=sources,
         sound=_sound_provenance(part, result.sound),
+        transitions=joins.params if joins is not None else None,
     )
+
+
+def _blend_blocks(
+    part: PartRecipe, result: Any, root: Path, beat: Any, draft_id: UUID | None
+) -> Any:
+    """m-25114465: `result` (the speed step's) with its blocks' transitions blended
+    (`block_join.blend_block_joins`), the speed step's file removed once replaced; None
+    when every join is a cut (nothing re-encoded). A join that cannot be made for a
+    reason of ours (`JoinError`, the disk) is `LocalVideoFailed` with
+    `LOCAL_TRANSITION_FAILED_TEXT`: never charged, the way out offered."""
+    from qualify_creative.video.join import JoinError  # noqa: PLC0415
+    from qualify_creative.video.memory import release_memory  # noqa: PLC0415
+
+    from qualify_api.creative.video_pipeline.block_join import blend_block_joins  # noqa: PLC0415
+
+    try:
+        joins = blend_block_joins(
+            part,
+            result.path,
+            [planned.frames for planned in result.plan.segments],
+            size=(result.width, result.height),
+            rate=result.fps,
+            root=root,
+            beat=beat,
+            draft_id=draft_id,
+        )
+    except (JoinError, OSError) as exc:
+        raise LocalVideoFailed(
+            FailureReason.RENDER_ERROR.value,
+            LOCAL_TRANSITION_FAILED_TEXT,
+            raw=f"{type(exc).__name__}: {exc}",
+            code="block_join_failed",
+        ) from exc
+    if joins is not None and joins.blended:
+        Path(result.path).unlink(missing_ok=True)  # never two large files without need
+        release_memory()
+    return joins
 
 
 def _sound_provenance(
@@ -780,6 +897,7 @@ def produce_local(
     lease_store: Any = None,
     brand: Any = None,
     render_client: Any = None,
+    generated_sources: Mapping[str, Any] | None = None,
 ) -> MediaOutcome:
     """The `local` Clip of `brief` as the producer's outcome — never raises for the
     owner's files: the outcome carries the failure. `allowed` is False outside the
@@ -790,7 +908,12 @@ def produce_local(
     preparing and speeding up a minute of 1080×1920 can outlast it, and a lost lease
     would throw the video away at the final write and make it again on every pass.
     `lease_store` is the `PipelineStore` (a test's double). `brand` and `render_client`
-    draw the recipe's texts (`render_local_part`), inside the same kept lease."""
+    draw the recipe's texts (`render_local_part`), inside the same kept lease.
+
+    `generated_sources` (m-25112920) maps the recipe's stretch keys that are files of
+    the generator to their `clip_avatar.GeneratedSource` (the caller's lookup,
+    `MediaProducer`): which are AI imagery, which are avatar blocks. None or empty: only
+    the owner's own files."""
     part_ref = brief.media.part
     in_part = part_ref is not None
     failed_text = LOCAL_PART_FAILED_TEXT if in_part else LOCAL_SOURCE_FAILED_TEXT
@@ -826,6 +949,43 @@ def produce_local(
                 else failed_text
             ),
         )
+    # m-25112920: the avatar blocks the recipe plays — each its own Clip's (a part, or
+    # another Clip, never takes one) and at ×1, so its voice is heard; refused before
+    # anything is read
+    blocks = block_stretches(part.segments, generated_sources or {})
+    for stretch in blocks:
+        problem = stretch_problem(stretch, draft_id)
+        if problem is not None:
+            code, owner_text = problem
+            logger.warning(
+                "draft %s: avatar block %s refused before any read: %s",
+                draft_id,
+                stretch.source.block_id,
+                code,
+            )
+            return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
+    # m-25119867 (Deivid, 2026-11-25): a join next to an avatar block is only «Corte»,
+    # whatever path put it there — never a blend into its voice
+    if avatar_join_problems(part.segments, [stretch.index for stretch in blocks]):
+        logger.warning("draft %s: a blending join next to an avatar block, refused", draft_id)
+        return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_JOIN_TEXT)
+    # m-25119867 (ADR 50 §11, «Textos sí, efectos no»): no smoke, embers or steam layer
+    # over an avatar block, whatever path put it there
+    windows = block_windows(
+        [segment.output_seconds for segment in part.segments],
+        [stretch.index for stretch in blocks],
+    )
+    if avatar_effect_problems(part.effects, windows):
+        logger.warning("draft %s: an effect over an avatar block, refused", draft_id)
+        return MediaOutcome(
+            failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_EFFECT_TEXT
+        )
+    # ADR 50 §9 (Deivid, 2026-11-24): «hecho con IA» read from what was made — ONE
+    # stretch whose file is AI imagery (Seedance, Seedream, OmniHuman) makes the whole
+    # video AI, with the avatar switches on or off; a generator file with no asset row and
+    # the brand's avatar count as AI too (fail safe, `clip_avatar.ai_stretches`)
+    made_by_ai = ai_stretches(part.segments, generated_sources or {}, tenant_id=tenant_id)
+    ai_generated = bool(made_by_ai)
     try:
         with (
             # m-25042483: never alongside a part join — with one in flight this raises
@@ -866,7 +1026,7 @@ def produce_local(
         "duration_seconds": round(made.seconds, 3),
         "resolution": f"{made.height}p",
         "reference_mode": "local",
-        "ai_generated": False,
+        "ai_generated": ai_generated,
         "local": {
             "recipe_version": LOCAL_RECIPE_VERSION,
             "recipe_contract": RECIPE_CONTRACT_VERSION,
@@ -888,9 +1048,18 @@ def produce_local(
     }
     if sheet is not None:
         params[CONTACT_SHEET_PARAMS_KEY] = sheet
+    if made.transitions is not None:
+        # m-25114465: each join blended (block, effect, version, kind, duration, frames)
+        params["local"]["transitions"] = made.transitions
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers
+    if made_by_ai:
+        # m-25112920: the label's evidence — each AI stretch's asset, provider and model
+        params["local"]["ai_sources"] = [s.source.ai_provenance(s.index) for s in made_by_ai]
+    if blocks:
+        # m-25112920: each block played — its draft, revision, asset, model and length
+        params["local"]["avatar_blocks"] = [s.source.provenance(s.index) for s in blocks]
     if made.text_layers is not None:
         # EF-05's provenance: design, pixel revisions, fade chosen and applied, hashes
         params["local"]["text_layers"] = made.text_layers
@@ -907,7 +1076,7 @@ def produce_local(
         model_id=LOCAL_MODEL_ID,
         provider=LOCAL_PROVIDER,
         content_type=MP4,
-        ai_generated=False,
+        ai_generated=ai_generated,
         params=params,
     )
     usage = MediaUsage(
@@ -927,6 +1096,7 @@ __all__ = [
     "LOCAL_PART_LAYER_FAILED_TEXT",
     "LOCAL_PART_SOURCE_TOO_LONG_TEXT",
     "LOCAL_SOURCE_TOO_LONG_TEXT",
+    "LOCAL_TRANSITION_FAILED_TEXT",
     "LOCAL_EFFECTS_PIPELINE_VERSION",
     "LOCAL_PART_COMPOSE_FAILED_TEXT",
     "LOCAL_MODEL_ID",

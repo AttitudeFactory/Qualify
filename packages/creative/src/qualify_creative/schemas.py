@@ -82,6 +82,13 @@ MAX_PRODUCT_IMAGES = 10
 #: Brand Kit elements (not the logo) one piece may draw on (§ request 2026-10-06).
 MAX_BRAND_ELEMENTS = 6
 AVATAR_PROMPT_MAX = 600
+#: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
+#: «Hombre» are a described synthetic person, with this description — what «Crear pieza»
+#: and «Publicación del mes» (m-25121346) send as `avatar_prompt`.
+PRESENTER_DESCRIPTIONS: dict[str, str] = {
+    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
+    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
+}
 #: The scene an advertising image asks the image model for ("a hand holding the glass,
 #: the bar blurred behind").
 SCENE_PROMPT_MAX = 600
@@ -695,7 +702,7 @@ RecipeRefusal = Literal[
     "too_many_ai_effects",  # more than one `seedance_prompt` effect in one part
     "too_many_of_effect",  # the same effect more times than its `max_per_part`
     "effect_needs_own_video",  # an effect that works on the owner's video, without one
-    "transition_on_clip",  # a transition in a normal Clip (only between parts)
+    "transition_on_clip",  # a transition in a normal Clip outside a block's `transition_in`
     "transition_in_effects",  # a transition among a part's effects, not `transition_in`
     "transition_not_a_transition",  # `transition_in` names an effect that is not one
     "transition_on_first_part",  # the first part has no part before it to blend with
@@ -733,6 +740,9 @@ RecipeRefusal = Literal[
     # ED-13 round 4 (m-25029108): appended, never reordered
     "unknown_text_size",  # a text's size is not «Pequeña», «Mediana» or «Grande»
     "text_too_long_for_large",  # «Grande» on a text over `VIDEO_TEXT_LARGE_MAX_CHARS`
+    # m-25114465: appended, never reordered
+    "transition_on_first_block",  # a Clip's first block has no block before it to blend with
+    "transitions_longer_than_block",  # a Clip's block shorter than the transitions eating it
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -842,6 +852,9 @@ SEGMENT_SOURCE_MAX_S = 60.0
 SegmentRotation = Literal[0, 90, 180, 270]
 #: An effect id as the library writes it (`effects_data/vN.json`).
 EFFECT_ID_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+#: The library's hard cut (`corte`): no transition at all — a block's `transition_in`
+#: naming it reads as None (m-25114465).
+CUT_EFFECT_ID = "corte"
 EffectParamValue = bool | int | float | str
 
 
@@ -1057,7 +1070,15 @@ class SourceSegment(BaseModel):
     tuple, in the same order as the videos — no type of its own —, from `start_s` 0 to
     `end_s` = how long it shows (`PHOTO_SECONDS_MIN`-`PHOTO_SECONDS_MAX`), at `speed` 1,
     `rotate` allowed. Those rules need no library and never change, so the type checks
-    them, each with its `RecipeRefusal` code as the error's `type`."""
+    them, each with its `RecipeRefusal` code as the error's `type`.
+
+    m-25114465 (ADR 50 §10, proposed): `transition_in` is how this block blends with the
+    block BEFORE it in a normal Clip — a `transition` effect of the library (`fundido`,
+    `barrido`) with no span of its own. None is the hard cut (`corte`), and a `corte`
+    given explicitly is read as None: a cut is the absence of a transition, so a Clip
+    whose joins are all cuts serializes — and digests — exactly as before the field
+    existed (`transition_in` None is never dumped). Whether it is offered, built, not on
+    the first block and short enough for its blocks is `validate_recipe`'s."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1067,6 +1088,19 @@ class SourceSegment(BaseModel):
     speed: float = Field(default=1.0, ge=SEGMENT_SPEED_MIN, le=SEGMENT_SPEED_MAX)
     rotate: SegmentRotation = 0
     kind: SegmentKind = "video"
+    transition_in: EffectUse | None = None
+
+    @field_validator("transition_in", mode="after")
+    @classmethod
+    def _a_cut_is_no_transition(cls, value: EffectUse | None) -> EffectUse | None:
+        return None if value is not None and value.effect_id == CUT_EFFECT_ID else value
+
+    @model_serializer(mode="wrap")
+    def _without_a_cut(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict) and self.transition_in is None:
+            data.pop("transition_in", None)
+        return data
 
     @property
     def output_seconds(self) -> float:
@@ -1090,6 +1124,10 @@ class SourceSegment(BaseModel):
                     "a photo shows {low} to {high} seconds",
                     {"low": PHOTO_SECONDS_MIN, "high": PHOTO_SECONDS_MAX},
                 )
+        if self.transition_in is not None and (
+            self.transition_in.start_s is not None or self.transition_in.end_s is not None
+        ):
+            raise ValueError("a transition between blocks has no span of its own")
         return self
 
 
@@ -1534,6 +1572,38 @@ def refit_video_recipe(recipe: VideoRecipe, parts: Sequence[PartRecipe]) -> Refi
     return RefitVideoRecipe(refit, tuple(dropped_texts), tuple(dropped_effects))
 
 
+#: m-25119867: a refusal code a plan entry may carry (`ClipAvatarSlot.refused`).
+_PLAN_REFUSAL = r"^[a-z0-9_]*$"
+
+
+class ClipAvatarSlot(BaseModel):
+    """m-25119867 (option B of m-25112920): one avatar block a `local` Clip waits for,
+    chosen at its first «Crear». `slot` is the block's `part_index` under the Clip (1 to
+    `PARTS_MAX`, migration 0119's range); `at` the index of the owner's stretch it goes
+    BEFORE (`len(segments)` = at the end; equal `at` keep slot order); `seconds_estimate`
+    its script read aloud, the length the screen drew it with. `refused` is the server's
+    code when the block cannot go into the Clip as it came out (`clip_too_long`): the
+    owner retries or removes it (m-25119867 PR 2). Pure data, server-owned, in
+    `content_briefs.media`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    slot: int = Field(ge=1, le=PARTS_MAX)
+    at: int = Field(ge=0, le=SEGMENTS_MAX)
+    seconds_estimate: int = Field(ge=1, le=int(LOCAL_TOTAL_MAX_S))
+    refused: str | None = Field(default=None, max_length=40, pattern=_PLAN_REFUSAL)
+    #: When the server first saw this block failed (or refused it): the Clip waits for the
+    #: owner `CLIP_AVATAR_OWNER_WAIT` (72 h, ADR 50 §11 P2) from the latest one. None while
+    #: the block is fine; a retry clears it.
+    failed_at: datetime | None = None
+
+
+def _plan_slots_unique(plan: tuple[ClipAvatarSlot, ...]) -> tuple[ClipAvatarSlot, ...]:
+    if len({entry.slot for entry in plan}) != len(plan):
+        raise ValueError("each avatar block of a Clip has its own slot")
+    return plan
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -1677,6 +1747,30 @@ class MediaInputs(BaseModel):
     #: EF-06 —, produced byte for byte by today's `_clip`; ≥ 1 delegates to
     #: `qualify_api.creative.video_pipeline`. `create_draft` resets what a caller sends.
     effects_pipeline_version: int = Field(default=0, ge=0)
+    #: Server-owned (m-25112920, ADR 50 amendment [PROPUESTO]): this avatar brief is a
+    #: BLOCK of a Clip — a child `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` draft under the
+    #: Clip (`parent_draft_id`), whose talking video enters the Clip's recipe as a video
+    #: stretch. Only `qualify_api.creative.clip_avatar` sets it; `create_draft` refuses a
+    #: brief that carries it (`check_part_link`: a block never exists loose). Kept in
+    #: `content_briefs.media` (no migration); False for
+    #: every brief stored before it, which reads exactly as it did.
+    clip_avatar_block: bool = False
+    #: Server-owned (m-25119867, option B): the avatar blocks a `local` Clip chosen at
+    #: its first «Crear» waits for, before it is assembled once
+    #: (`qualify_api.creative.clip_avatar.create_clip_with_blocks`). Only that service sets
+    #: it; `create_draft` refuses a brief that carries it. When every block is made, the
+    #: Clip gets a new brief with their videos as stretches and this plan empty. Empty on
+    #: every brief stored before it, which reads exactly as it did.
+    clip_avatar_plan: Annotated[tuple[ClipAvatarSlot, ...], AfterValidator(_plan_slots_unique)] = (
+        Field(default=(), max_length=PARTS_MAX)
+    )
+    #: Server-owned (m-25119867, provenance): the brief the owner sent that the server
+    #: derived this one from (`content_briefs.id`) — a Clip's brief with its avatar blocks'
+    #: videos put in its recipe (option B, `ContentService._replace_clip_brief`) or with a
+    #: block placed (option A, `ClipAvatarService.place_block`); a brief derived from a
+    #: derived one keeps pointing to the owner's. `create_draft` clears it. None on every
+    #: brief the owner sent and on every one stored before it.
+    derived_from_brief_id: UUID | None = None
     #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
     #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
     #: default; read only by the edit-clip prompt compiler 1 (`prompt_compiler_version`).
@@ -2169,6 +2263,13 @@ class ContentBrief(BaseModel):
             raise PydanticCustomError(
                 "effects_not_for_kind", "effects and stretches of video are for a video"
             )
+        if media.clip_avatar_plan and (
+            self.kind is not ContentKind.CLIP
+            or media.part is not None
+            or media.clip_reference_mode != "local"
+        ):
+            # m-25119867: only a Clip of the owner's own photos and videos waits for blocks
+            raise ValueError("avatar blocks are planned only in a local Clip")
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`

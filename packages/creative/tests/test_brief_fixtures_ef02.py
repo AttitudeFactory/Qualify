@@ -29,7 +29,17 @@ _RECIPE_DEFAULTS: dict[str, Any] = {
     "mode_reason": "",
     "mode_changed_by_owner": False,
 }
-_MEDIA_DEFAULTS = {**_RECIPE_DEFAULTS, "effects_pipeline_version": 0, "video_recipe": None}
+_MEDIA_DEFAULTS = {
+    **_RECIPE_DEFAULTS,
+    "effects_pipeline_version": 0,
+    "video_recipe": None,
+    # m-25112920: no stored brief is a Clip's avatar block — an `avatar_video` /
+    # `animated_avatar_video` of before reads (and is made) exactly as it was
+    "clip_avatar_block": False,
+    # m-25119867: the avatar blocks a Clip waits for (option B), empty before it
+    "clip_avatar_plan": [],
+    "derived_from_brief_id": None,
+}
 _PLAN_DEFAULTS = {**_RECIPE_DEFAULTS, "transition_in": None}
 #: Brief fields main added after the fixtures were taken (`awareness_level`, 94fa4556).
 _LATER_BRIEF_DEFAULTS: dict[str, Any] = {"awareness_level": None}

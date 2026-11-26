@@ -22,12 +22,16 @@ the keyboard edits of §3.7 (½ s steps, 1 s minimum, no gaps).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
+
+# m-25129389: one rounding to the tenth (a half up) for the blocks, the total and the
+# preview's clock — the contract's, never a copy (no Reflex there either)
+from ..editor_preview_contract import tenths as _tenths
 
 #: The magnet (§3.3): every edge lands on a half second.
 STEP_S = 0.5
-#: «Cada pedazo dura al menos 1 segundo.»
+#: «Cada bloque dura al menos 1 segundo.»
 MIN_S = 1.0
 #: A photo's length (§1.2: from 1 to 5 s, 2 s by default — hypothesis to measure).
 PHOTO_MIN_S = 1.0
@@ -129,16 +133,37 @@ def clock_exact(seconds: float) -> str:
 
 
 def amount(seconds: float) -> str:
-    """«5», «4,5» — a length in seconds, for «dura {s} s»."""
+    """«5», «4,5» — a length in seconds on the ½ s magnet (a photo's «se ve {s} s»)."""
     seconds = snap(seconds)
     if seconds == int(seconds):
         return str(int(seconds))
     return f"{seconds:.1f}".replace(".", ",")
 
 
+def amount_tenth(seconds: float) -> str:
+    """«4,7», «3,2», «5» — a video block's length to the tenth (m-25129389), rounded as
+    «Tu video durará» rounds the total (`editor_preview_contract.seconds_text`), so the
+    number the owner reads beside a block is the one the total uses. A half tenth rounds
+    up (1,25 → «1,3»)."""
+    whole, tenth = divmod(_tenths(seconds), 10)
+    return str(whole) if not tenth else f"{whole},{tenth}"
+
+
+def clock_tenth(seconds: float) -> str:
+    """«0:04,7», «0:01,5», «1:02» — a time of a video to the tenth, off the ½ s magnet
+    (m-25129389), as the preview's clock reads it (`editor_preview_contract.clock_text`);
+    59,96 s reads «1:00»."""
+    minutes, rest = divmod(_tenths(seconds), 600)
+    whole, tenth = divmod(rest, 10)
+    text = f"{minutes}:{whole:02d}"
+    return f"{text},{tenth}" if tenth else text
+
+
 def playhead_text(t: float, total: float) -> str:
-    """The playhead's `aria-valuetext`: «0:05 de 0:12»."""
-    return f"{clock(t)} de {clock(total)}"
+    """The playhead's `aria-valuetext` and clock: «0:05 de 0:12», «0:00 de 0:04,7» — to
+    the tenth, as the blocks and the total (m-25129389; `assets/timeline.js` `clock` says
+    the same). Only the words: the playhead still moves on the ½ s magnet."""
+    return f"{clock_tenth(t)} de {clock_tenth(total)}"
 
 
 def exact(value: float) -> str:
@@ -192,26 +217,54 @@ def media_length(item: dict[str, Any]) -> float:
     return (float(item["src_end"]) - float(item["src_start"])) / speed_of(item)
 
 
+def tail_length(item: dict[str, Any]) -> float:
+    """Seconds the block's end overlaps the next block's transition (`tail_s`, m-25114465;
+    0 = a cut)."""
+    try:
+        return max(float(item.get("tail_s") or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def shown_length(item: dict[str, Any]) -> float:
+    """Seconds the block takes on the track: its length less its `tail_length` — the next
+    block starts where its transition starts (m-25114465)."""
+    return max(media_length(item) - tail_length(item), 0.0)
+
+
 def total_seconds(media: list[dict[str, Any]]) -> float:
-    """The video's length: the media track has no gaps, so it is the sum of its blocks."""
-    return sum(media_length(item) for item in media)
+    """The video's length: the media track has no gaps, so it is the sum of its blocks
+    (each less the transition into the next one, m-25114465)."""
+    return sum(shown_length(item) for item in media)
+
+
+def media_label(item: Mapping[str, Any], n: int) -> str:
+    """A «Fotos y videos» block's short name, as the track shows it: «Foto 2», «Video 1»
+    (`n`: its place on the track, from 1). The joins' words name blocks with it."""
+    return f"Foto {n}" if item.get("kind") == "photo" else f"Video {n}"
 
 
 def _media_name(item: dict[str, Any], n: int, m: int) -> tuple[str, str, str]:
-    """(short label, full accessible name, panel title)."""
-    length = amount(media_length(item))
+    """(short label, full accessible name, panel title). A photo on the ½ s magnet; a
+    video to the tenth (m-25129389: it read «dura 4,5 s» beside a total of 0:04,7)."""
     if item["kind"] == "photo":
+        length = amount(media_length(item))
         return (
             f"Foto {n}",
             f"Foto {n} de {m}, se ve {length} s",
             f"Foto {n} · {length} s",
         )
-    start, end = clock(item["src_start"]), clock(item["src_end"])
+    length = amount_tenth(media_length(item))
+    start, end = clock_tenth(item["src_start"]), clock_tenth(item["src_end"])
     return (
         f"Video {n}",
         f"Video {n} de {m}, usas de {start} a {end}, dura {length} s",
         f"Video {n} · usas {start} a {end} · {length} s",
     )
+
+
+#: A row with no frame strip (`strip_style`'s fields, empty).
+_NO_STRIP = {"strip": "", "strip_size": "", "strip_ratio": "", "strip_w": ""}
 
 
 def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -220,12 +273,24 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
     Every value is a string: ``start``/``length`` (seconds of the final video, for the
     CSS), ``label``/``name``/``panel`` (copy), and the two handles (``*_handle`` name,
     ``*_text`` value text, ``*_now``/``*_min``/``*_max`` for ARIA; a photo has no start
-    handle: ``has_start`` is "")."""
+    handle: ``has_start`` is "").
+
+    m-25129389: a video's ``name``, ``panel``, ``secs`` and ``*_text`` read its seconds to
+    the tenth, with the same rounding as the total (`editor_preview_contract`), so the
+    number seen on the block is the number heard in its name and panel; a photo's stay
+    on the ½ s magnet. Each block is rounded on its own: with three pieces or more, or
+    with transitions, their tenths may differ from the total by a tenth. The handles'
+    ``*_value`` (``aria-valuetext`` and the drag's bubble) keep `clock_exact`, to the
+    hundredth, on purpose: they say exactly where the handle rests (¼ s magnet)."""
     rows: list[dict[str, str]] = []
     at = 0.0
     m = len(media)
     for n, item in enumerate(media, start=1):
         length = media_length(item)
+        shown = shown_length(item)
+        # its own transition in (`join_s`, on the block that comes in: the block before it
+        # may be one of no length, skipped by the recipe — review)
+        join_in = max(float(item.get("join_s") or 0.0), 0.0) if item.get("join") else 0.0
         label, name, panel = _media_name(item, n, m)
         if item["kind"] == "photo":
             handles = {
@@ -249,8 +314,8 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "has_start": "1",
                 "start_label": "Desde",
                 "end_label": "Hasta",
-                "start_text": clock(item["src_start"]),
-                "end_text": clock(item["src_end"]),
+                "start_text": clock_tenth(item["src_start"]),
+                "end_text": clock_tenth(item["src_end"]),
                 # the handles' `aria-valuetext` and the drag's bubble (ED-03 UX review)
                 "start_value": f"Desde {clock_exact(item['src_start'])}",
                 "end_value": f"Hasta {clock_exact(item['src_end'])}",
@@ -274,15 +339,26 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 # ED-11 (m-25026650): its picture, a path the screen prefixes with the
                 # backend's origin ("" = the film / photo icon), and its seconds over it
                 "thumb": str(item.get("thumb", "")),
-                "secs": f"{amount(length)} s",
+                # ED-11b: its frame strip ("" until the screen lays one, `strip_style`)
+                **_NO_STRIP,
+                # m-25129389: a video's seconds to the tenth, a photo's on the ½ s
+                "secs": f"{amount(length) if item['kind'] == 'photo' else amount_tenth(length)} s",
                 "speed": _speed_value(item),
                 "speed_tag": f"×{_speed_value(item)}" if speed_of(item) > 1 else "",
                 "place": "",
                 "warn": "",
                 # ED-03: laid end to end to the hundredth, from the same running sum, so
-                # a block always ends exactly where the next one starts (no gap)
+                # a block always ends exactly where the next one starts (no gap).
+                # m-25114465 (Deivid 2026-11-26, «bloques enteros, encimados»): each
+                # block is drawn WHOLE; with a transition into the next one, that next
+                # block starts where it really starts (its end less the transition) and
+                # is drawn over this one's end — the overlap is the transition
                 "start": exact(at),
                 "length": exact(round(at + length, 2) - round(at, 2)),
+                # the seconds of its start laid over the block before (its transition
+                # in, "0" for a cut) and which transition it is (`join_kind`)
+                "join_in": exact(join_in),
+                "join_kind": str(item.get("join") or "") if join_in > 0 else "",
                 # ED-03: «Inicio de video 2» / «Final de video 2» (the noun in lower case)
                 "start_handle": f"Inicio de {label[:1].lower()}{label[1:]}",
                 "end_handle": f"Final de {label[:1].lower()}{label[1:]}",
@@ -297,8 +373,155 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 **handles,
             }
         )
-        at += length
+        at += shown
     return rows
+
+
+# -- ED-11b (m-25029110): the frame strip under a video block ---------------------------
+#
+# The server makes ONE JPEG per uploaded video: a tile per second of the video, `56` px
+# high, `columns` tiles a row (`qualify_api.creative.upload_previews.FrameStrip`). Tile `i`
+# shows the video at second `i * interval_s + offset_s` (the middle of `[i, i+1)`).
+#
+# The block shows the tiles of the stretch it uses, at its speed: a CELL per stretch of
+# `interval_s × speed` seconds of the video (one second of the ruler; at ×1 exactly the
+# tile's own second), each showing the tile nearest its middle. Everything is in SECONDS
+# from the block's start and the CSS turns them into a share of the block's own width
+# (`--c-at` / `--b-len`), so the cells follow the phone's 44 px a second, the desktop's
+# fitted width and any later scale without being computed again.
+
+#: The «Fotos y videos» track's height (`.q-tl__lane--media`): a tile is drawn this high.
+MEDIA_TRACK_PX = 56
+#: At most this many cells a block (review: a 5 min video before any cut, at ×1): past it,
+#: each cell takes several seconds of the ruler and shows the tile of its middle.
+MAX_STRIP_CELLS = 60
+
+
+def _pct(value: float) -> str:
+    """A CSS percentage, to the ten-thousandth («33.3333%», «0%»)."""
+    value = round(float(value), 4)
+    return f"{int(value)}%" if value == int(value) else f"{value:g}%"
+
+
+def strip_style(
+    url: str, *, columns: int, rows: int, tile_width: int, tile_height: int
+) -> dict[str, str]:
+    """The fields a video row gains when its file has a strip (strings, as every row's):
+    the picture's path (``strip``, prefixed with the backend's origin by the screen),
+    ``strip_size`` (the whole image over one tile: ``columns×100% rows×100%``),
+    ``strip_ratio`` (a tile's width over its height) and ``strip_w`` (a tile's width at
+    the track's height). Empty values for a strip that does not add up."""
+    if not url or columns < 1 or rows < 1 or tile_width < 1 or tile_height < 1:
+        return dict(_NO_STRIP)
+    ratio = tile_width / tile_height
+    return {
+        "strip": url,
+        "strip_size": f"{columns * 100}% {rows * 100}%",
+        "strip_ratio": f"{round(ratio, 4):g}",
+        "strip_w": f"{round(ratio * MEDIA_TRACK_PX, 2):g}px",
+    }
+
+
+def strip_cells(
+    src_start: float,
+    src_end: float,
+    speed: float,
+    *,
+    frames: int,
+    columns: int,
+    rows: int,
+    interval_s: float = 1.0,
+    offset_s: float = 0.5,
+    max_cells: int = MAX_STRIP_CELLS,
+) -> list[dict[str, str]]:
+    """What the screen draws of `strip_plan`: each cell's ``at``, ``len`` and ``pos``."""
+    plan = strip_plan(
+        src_start,
+        src_end,
+        speed,
+        frames=frames,
+        columns=columns,
+        rows=rows,
+        interval_s=interval_s,
+        offset_s=offset_s,
+        max_cells=max_cells,
+    )
+    return [{"at": c["at"], "len": c["len"], "pos": c["pos"]} for c in plan]
+
+
+def strip_plan(
+    src_start: float,
+    src_end: float,
+    speed: float,
+    *,
+    frames: int,
+    columns: int,
+    rows: int,
+    interval_s: float = 1.0,
+    offset_s: float = 0.5,
+    max_cells: int = MAX_STRIP_CELLS,
+) -> list[dict[str, str]]:
+    """The cells of a video block's strip — which tile goes where — for the stretch
+    ``src_start``…``src_end`` (seconds of the video) played at ``speed``.
+
+    Each cell: ``at`` and ``len`` (seconds of the ruler from the block's start, to the
+    hundredth), ``pos`` (the tile's ``background-position`` in the image, percentages
+    that hold at any drawn size), ``tile`` (its index) and ``shows`` (the second of the
+    video its picture is). The cells lie end to end over the whole block, never a gap;
+    each one's picture is the tile nearest its middle, so the frame of second *s* falls
+    on the ruler within ½ s of where the block plays it. A cell is one second of the
+    ruler; a block that would need more than ``max_cells`` groups several seconds a cell
+    (same rule: the tile of its middle).
+
+    A stretch past the strip (a video longer than the strip's hour, or the last part of a
+    second the strip has no tile for) takes the last tile when it is close (the tail of a
+    20,4 s video joins the cell before it) and no cell when it is far: never a wrong
+    frame. Pure."""
+    start, end = float(src_start), float(src_end)
+    speed = max(float(speed or 1.0), 1e-6)
+    if end - start <= 1e-6 or frames < 1 or columns < 1 or rows < 1 or interval_s <= 0:
+        return []
+    step = float(interval_s) * max(speed, 1.0)
+    needed = math.ceil(end / step - 1e-9) - math.floor(start / step + 1e-9)
+    if max_cells > 0 and needed > max_cells:
+        step *= math.ceil(needed / max_cells)
+    last = frames - 1
+    cells: list[dict[str, Any]] = []
+    k = math.floor(start / step + 1e-9)
+    while k * step < end - 1e-9:
+        a, b = max(k * step, start), min((k + 1) * step, end)
+        k += 1
+        if b - a <= 1e-9:
+            continue
+        middle = (a + b) / 2
+        tile = math.floor((middle - offset_s) / interval_s + 0.5)
+        tile = min(max(tile, 0), last)
+        shows = tile * interval_s + offset_s
+        off = abs(shows - middle)
+        if off > interval_s / 2 + 1e-9:  # the nearest tile is past the strip's end
+            if off > interval_s + 1e-9:
+                continue  # far past the strip: no frame rather than a wrong one
+            if cells and cells[-1]["tile"] == tile and abs(cells[-1]["b"] - a) < 1e-9:
+                cells[-1]["b"] = b  # a short tail joins the cell that shows its tile
+                continue
+        cells.append({"a": a, "b": b, "tile": tile, "shows": shows})
+    out: list[dict[str, str]] = []
+    for cell in cells:
+        tile = int(cell["tile"])
+        col, row = tile % columns, tile // columns
+        x = col / (columns - 1) * 100 if columns > 1 else 0.0
+        y = row / (rows - 1) * 100 if rows > 1 else 0.0
+        at = round((cell["a"] - start) / speed, 2)
+        out.append(
+            {
+                "at": exact(at),
+                "len": exact(round((cell["b"] - start) / speed, 2) - at),
+                "pos": f"{_pct(x)} {_pct(y)}",
+                "tile": str(tile),
+                "shows": exact(cell["shows"]),
+            }
+        )
+    return out
 
 
 def _overlay_names(item: dict[str, Any]) -> tuple[str, str, str]:
@@ -332,6 +555,7 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "help": EFFECT_HELP if kind == "effect" else TIME_HELP,
                 "help_id": HELP_IDS[EFFECT_HELP if kind == "effect" else TIME_HELP],
                 "thumb": "",
+                **_NO_STRIP,
                 "secs": "",
                 "speed": "1",
                 "speed_tag": "",

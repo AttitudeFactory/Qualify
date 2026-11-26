@@ -413,3 +413,57 @@ def test_the_final_transition_opens_one_decoder_at_a_time(
     assert made.frames == 12
     assert events == ["open a.mp4", "close a.mp4", "open b.mp4", "close b.mp4"]
     assert not list(tmp_path.glob("*.yuv")) and not list(tmp_path.glob("*.partial*"))
+
+
+def _ramp(path: Path, *, seconds: float = 4.0, fps: int = 30, keyint: int = 30) -> Path:
+    """m-25114465: a closed-GOP H.264 (as the local assembly writes it) whose frames each
+    have their own grey level, with B-frames and a key frame every `keyint` frames — a
+    decode that skipped or repeated a frame after a seek would show."""
+    width, height = 120, 214
+    with av.open(str(path), "w", format="mp4") as sink:
+        video = sink.add_stream("libx264", rate=fps)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        video.options = {"g": str(keyint), "bf": "2", "x264-params": "open-gop=0"}
+        for i in range(round(seconds * fps)):
+            pixels = np.full((height, width, 3), (i * 2) % 250, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            frame.pts, frame.time_base = i, Fraction(1, fps)
+            for packet in video.encode(frame):
+                sink.mux(packet)
+        for packet in video.encode():
+            sink.mux(packet)
+    return path
+
+
+@pytest.mark.parametrize("start_s", [0.5, 1.0, 1.9, 2.5])
+def test_a_seeking_part_encodes_the_same_frames_as_one_decoded_from_its_start(
+    tmp_path: Path, start_s: float
+) -> None:
+    """m-25114465: `JoinClip.seek` (from the key frame at or before `start_s`) gives the
+    same segment, byte for byte — on a key frame, between two, and in a transition's
+    overlap (`encode_transition`'s part before reads its tail the same way)."""
+    source = _ramp(tmp_path / "ramp.mp4")
+    made = {}
+    for seek in (False, True):
+        clip = JoinClip(source, start_s=start_s, end_s=start_s + 1.0, seek=seek)
+        segment = encode_segment(
+            clip,
+            out=tmp_path / f"seg-{seek}.mp4",
+            pcm_out=tmp_path / f"seg-{seek}.pcm",
+            size=SIZE,
+            fps=30,
+            threads=1,
+        )
+        after = JoinClip(source, start_s=3.0, end_s=4.0, transition_in=FADE, seek=seek)
+        blended = encode_transition(
+            clip,
+            after,
+            out=tmp_path / f"tr-{seek}.mp4",
+            pcm_out=tmp_path / f"tr-{seek}.pcm",
+            size=SIZE,
+            fps=30,
+            threads=1,
+        )
+        made[seek] = (segment.path.read_bytes(), blended.path.read_bytes(), segment.frames)
+    assert made[True] == made[False]
+    assert made[True][2] == 30

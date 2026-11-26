@@ -44,3 +44,7 @@ requirements.txt
 
 # Playwright suite (tests/e2e): the harness server log
 .e2e-reflex.log
+
+# graphify code graph (m-25129388): built by .github/workflows/code-graph.yml, synced by
+# dev/code-graph-sync.py. No trailing slash: in a worktree it may be a symlink.
+graphify-out

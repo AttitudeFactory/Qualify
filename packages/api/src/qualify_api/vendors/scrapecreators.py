@@ -186,9 +186,22 @@ FEATURE_CREATOR_REELS = "creator_reels"
 #: The weekly TikTok read per hashtag of a business's rubro (m-25026378,
 #: `qualify_api.hashtags.weekly`; migration 0167 widens the CHECK to ten).
 FEATURE_HASHTAG_WEEKLY = "hashtag_weekly"
+#: RF-05 (m-25119465; migration 0183 widens the CHECK to twelve): the reels list and the
+#: transcripts of an account labelled `competencia`, booked apart from the referentes'
+#: inside the same caps. A caller never asks for them: the gate turns `reels_list` /
+#: `reels_transcript` into these when the charge names the label (`labelled_feature`).
+FEATURE_COMPETITOR_REELS_LIST = "competitor_reels_list"
+FEATURE_COMPETITOR_REELS_TRANSCRIPT = "competitor_reels_transcript"
+#: «Buscar más cuentas en TikTok» of «Descubrir cuentas nuevas» (RF-07b, m-25119482): its
+#: own budget (50/day, 200/month, `creators.discover_paid`) is summed over this feature
+#: alone, inside the business's R5 cap (migration 0185 widens the CHECK to thirteen).
+FEATURE_DISCOVER_SEARCH = "discover_accounts_search"
 FEATURES = frozenset(
     {
+        FEATURE_COMPETITOR_REELS_LIST,
+        FEATURE_COMPETITOR_REELS_TRANSCRIPT,
         FEATURE_CREATOR_PROFILE,
+        FEATURE_DISCOVER_SEARCH,
         FEATURE_CREATOR_REELS,
         FEATURE_HASHTAG_WEEKLY,
         FEATURE_PROFILE,
@@ -200,6 +213,20 @@ FEATURES = frozenset(
         FEATURE_TRENDING,
     }
 )
+#: The features a competitor's read is booked under instead (RF-05).
+_COMPETITOR_FEATURES = {
+    FEATURE_REELS_LIST: FEATURE_COMPETITOR_REELS_LIST,
+    FEATURE_REELS_TRANSCRIPT: FEATURE_COMPETITOR_REELS_TRANSCRIPT,
+}
+
+
+def labelled_feature(feature: str, charge: usage.UsageCharge | None) -> str:
+    """The feature a call is booked under: a reels list or transcript charged with the
+    `competencia` label (`UsageCharge.account_label`) goes under its competitor twin, so
+    the competitors' spend sums apart (RF-05); anything else is booked as asked."""
+    if charge is not None and charge.account_label == usage.LABEL_COMPETITOR:
+        return _COMPETITOR_FEATURES.get(feature, feature)
+    return feature
 
 
 class ScrapeCreatorsBlocked(ScrapeCreatorsError):
@@ -472,6 +499,7 @@ def metered_get(
             f"Scrape Creators {path} not called: no business to charge",
             reason=usage.REASON_NO_TENANT,
         )
+    feature = labelled_feature(feature, charge)
     _admit(path)
     request_key = _book(charge, path, feature)
     _last_request_key.set(request_key)
@@ -2351,10 +2379,13 @@ __all__ = [
     "configure_balance_store",
     "halted",
     "is_vendor_host",
+    "labelled_feature",
     "metered_get",
     "paid_switch_on",
     "refresh_balance",
     "reset_halt",
+    "FEATURE_COMPETITOR_REELS_LIST",
+    "FEATURE_COMPETITOR_REELS_TRANSCRIPT",
     "FEATURE_CREATOR_PROFILE",
     "FEATURE_CREATOR_REELS",
     "PROFILE_PATHS",

@@ -15,8 +15,10 @@ from __future__ import annotations
 import reflex as rx
 from qualify_creative.ad_destination import AD_CTA_LABELS
 
+from . import contact_sheet_vm
 from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
 from .campaign_state import CampaignState
+from .contact_sheet_panel import contact_sheet_panel
 from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
@@ -1136,6 +1138,14 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
         ),
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
+            # m-25120706: why a «Publicación del mes» is here — «Te la preparamos para …»
+            rx.cond(
+                post.occasion_label != "",
+                rx.box(
+                    tone_badge(post.occasion_label, "info", icon="calendar-heart"),
+                    class_name="q-gcard-occasion",
+                ),
+            ),
             # founder 2026-11-16: a historia says so, glyph and word (never colour alone)
             rx.cond(post.is_story, destination_badge("story", STORY_BADGE)),
             rx.cond(
@@ -3005,6 +3015,25 @@ def _approved_schedule_next() -> rx.Component:
     )
 
 
+def _contact_sheet() -> rx.Component:
+    """«Revisa tu video antes de aprobarlo» (EF-18, m-25026598): only while the piece
+    still waits for a decision and shows a video; nothing at all without a sheet."""
+    draft = CreativeState.draft
+    deciding = draft.can_reject | draft.can_regenerate | draft.can_approve
+    return rx.cond(
+        deciding & ~CreativeState.show_approved_next & (CreativeState.review_video_key != ""),
+        contact_sheet_panel(
+            draft.draft_id,
+            CreativeState.review_video_key,
+            heading="h2",
+            framed=True,
+            # «Editar texto» edits the publication's copy, not the words on the video:
+            # the way is «Pedir otra versión», while the draft offers it
+            fix=rx.cond(draft.can_regenerate, contact_sheet_vm.FIX_CLIP, ""),
+        ),
+    )
+
+
 def _decision_bar() -> rx.Component:
     """The review decision (HITL #2), as three cards — each one says what it does right
     above its own button. Discarding asks first. It only exists while the draft waits
@@ -3667,6 +3696,9 @@ def _single_piece_detail() -> rx.Component:
                         callout(CreativeState.draft.failure_detail, "warn"),
                     ),
                     _review_panel(),
+                    # EF-18 (m-25026598): the video's frames with its texts and
+                    # effects, right before «Aprobar»; informative, never blocking
+                    _contact_sheet(),
                     _decision_bar(),
                     # m-24945889: the business's offer for its
                     # WhatsApp chats («Tu oferta»)

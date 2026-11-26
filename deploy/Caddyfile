@@ -31,6 +31,9 @@
 #                                     (Qualify/seasonal_media.py, m-24986798)
 #   /piece-download/* -> reflex:8000  api_transformer: «Descargar» a piece as .zip
 #                                     (Qualify/piece_download.py, m-24986798)
+#   /r2effects/*      -> reflex:8000  api_transformer: an effect's «Así se ve» video, read-only
+#                                     from R2 platform/effects/ (qualify_api/http/
+#                                     effect_preview_routes.py, m-25120474)
 #   Every route the backend app mounts (Qualify/avatar_proxy.py `avatar_api`) MUST be
 #   listed here: an unlisted one falls to the SPA's 404 page (Qualify/test_caddy_backend_routes.py).
 #   everything else   -> /srv         static Reflex export (SPA fallback to 404.html)
@@ -54,7 +57,7 @@
 		reverse_proxy api:8000
 	}
 
-	@reflex_backend path /_event /_event/* /_upload /_upload/* /ping /_health /_all_routes /avatar/* /r2media/* /r2seasonal/* /piece-download/*
+	@reflex_backend path /_event /_event/* /_upload /_upload/* /ping /_health /_all_routes /avatar/* /r2media/* /r2seasonal/* /piece-download/* /r2effects/*
 	@upload path /_upload /_upload/*
 	handle @reflex_backend {
 		# m-24957794: the edge proxy sets no body limit, so this is the only one.

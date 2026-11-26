@@ -37,6 +37,10 @@ written under the control (no tooltip) and read by `aria-describedby`; a text th
 «Abajo» says it is under the subtitles. The words are `clip_texts_vm`'s; the classes are
 the timeline panel's (`.q-tl-panel*`, `.q-tl-actions__btn`, `.q-seg-fill`), so it looks
 like every other block's panel.
+
+EF-20 phase 2 (m-25026599): above the sections, next to «Dónde va el texto», the warning
+that the chosen place may cover the product and the button that puts the text in the
+better place (`_placement_warning`) — only when the server kept advice for the Clip.
 """
 
 from __future__ import annotations
@@ -58,11 +62,16 @@ SECTION_SIZE = "size"
 SECTION_LAYOUT = "layout"
 SECTION_MOTION = "motion"
 #: «Dónde va el texto»'s title id (its segmented control's `aria-labelledby`).
-PLACE_TITLE_ID = "clip-text-place-title"
+PLACE_TITLE_ID = vm.PLACE_TITLE_ID
 #: Why «Abajo» is off (the subtitles go there): the option's `aria-describedby`.
 PLACE_NOTE_ID = "clip-text-place-note"
 #: «Este texto queda debajo de los subtítulos.»: the control's `aria-describedby`.
 COVERED_NOTE_ID = "clip-text-covered-note"
+#: EF-20 phase 2: «Abajo, el texto puede tapar tu producto…» (the control's
+#: `aria-describedby` too, while it shows).
+PLACEMENT_NOTE_ID = "clip-text-placement-note"
+#: The ONE live region of the warning and of what its button did (UX review).
+PLACEMENT_LIVE_ID = "clip-text-placement-live"
 #: The radiogroups' titles (`aria-labelledby`) and «Letra por letra»'s reason.
 LAYOUT_TITLE_ID = "clip-text-layout-title"
 MOTION_IN_TITLE_ID = "clip-text-motion-in-title"
@@ -459,6 +468,69 @@ def _size_section(row: rx.Var, on_size: Callable[[Any, str], Any]) -> rx.Compone
     )
 
 
+def _place_described(row: rx.Var) -> rx.Var:
+    """The place control's `aria-describedby`: the subtitles' line and the product warning,
+    each while it shows."""
+    covered = row["covered_note"] != ""
+    warned = row["placement_warning"] != ""
+    return rx.cond(
+        covered,
+        rx.cond(warned, f"{COVERED_NOTE_ID} {PLACEMENT_NOTE_ID}", COVERED_NOTE_ID),
+        rx.cond(warned, PLACEMENT_NOTE_ID, ""),
+    )
+
+
+def _placement_warning(row: rx.Var, on_use_placement: Callable[[Any], Any]) -> rx.Component:
+    """EF-20 phase 2 (m-25026599): right above «Dónde va el texto» — the first section,
+    so it is seen without opening it nor scrolling — the warning that the chosen place
+    may cover the product («Abajo, el texto puede tapar tu producto. Arriba no lo
+    tapa.») and the one button that puts the text in the better place («Poner el texto
+    arriba»); once tapped, the same place says what it did («Listo: el texto quedó
+    arriba, sin tapar tu producto.», no toast); with no free place that does not cover
+    the product, the warning shows without a button. Said in words with the warning
+    icon, never by colour alone. It never blocks «Siguiente» and never moves the text by
+    itself (Deivid 2026-11-23).
+
+    UX review (m-25026599): ONE live region (`role=status`, always in the page, so what
+    a change brings is read once), its callouts without a role of their own and the
+    button outside it (never read as part of the message). The advice arrives a moment
+    after the panel opens: the block unfolds smoothly (`.q-place-warn`, a grid row from
+    0 to its height; none with `prefers-reduced-motion`) instead of pushing «Dónde va el
+    texto» down at once."""
+    warned = row["placement_warning"] != ""
+    done = row["placement_done"] != ""
+    return rx.el.div(
+        rx.el.div(
+            rx.el.div(
+                rx.cond(
+                    warned,
+                    callout(
+                        row["placement_warning"], tone="warn", live=False, id=PLACEMENT_NOTE_ID
+                    ),
+                    rx.cond(done, callout(row["placement_done"], tone="ok", live=False)),
+                ),
+                role="status",
+                aria_atomic="true",
+                id=PLACEMENT_LIVE_ID,
+            ),
+            # no free place that does not cover the product: the warning alone
+            rx.cond(
+                warned & (row["placement_use"] != ""),
+                rx.button(
+                    row["placement_use"],
+                    type="button",
+                    variant="soft",
+                    on_click=on_use_placement(row["uid"]),
+                    class_name="q-tl-actions__btn",
+                ),
+            ),
+            class_name="q-place-warn__inner",
+        ),
+        class_name="q-place-warn",
+        custom_attrs={"data-open": rx.cond(warned | done, "1", "")},
+    )
+
+
 def _place_section(row: rx.Var, on_place: Callable[[Any, Any], Any]) -> rx.Component:
     """«Dónde va el texto» · «Abajo»: «Arriba · En el medio · Abajo», and under it — when
     they apply — that the text is under the subtitles and why «Abajo» is off."""
@@ -475,7 +547,7 @@ def _place_section(row: rx.Var, on_place: Callable[[Any, Any], Any]) -> rx.Compo
             class_name="q-tl-seg q-seg-fill",
             custom_attrs={
                 "aria-labelledby": PLACE_TITLE_ID,
-                "aria-describedby": rx.cond(row["covered_note"] != "", COVERED_NOTE_ID, ""),
+                "aria-describedby": _place_described(row),
             },
         ),
         # a text left «Abajo» when the subtitles were turned on: it is under them
@@ -515,6 +587,7 @@ def text_panel(
     on_color: Callable[[Any, Any], Any] | None = None,
     on_text_color: Callable[[Any, Any], Any] | None = None,
     on_size: Callable[[Any, str], Any] | None = None,
+    on_use_placement: Callable[[Any], Any] | None = None,
 ) -> rx.Component:
     """The chosen text's panel. ``row`` is `clip_texts_vm.text_panel_row` (as a Var);
     ``on_text(value)`` while typing, ``on_text_commit(value)`` when the field is left,
@@ -526,7 +599,9 @@ def text_panel(
     ``colors`` (`clip_texts_vm.box_color_rows`) with ``on_color(uid, hex)`` show the
     box's colour chips under «Franja» / «Recuadro de tu color»; ``on_text_color(uid,
     hex)`` the same chips under «Sin fondo», for its letters (round 3);
-    ``on_size(uid, size)`` shows «Tamaño de las letras» (round 4).
+    ``on_size(uid, size)`` shows «Tamaño de las letras» (round 4);
+    ``on_use_placement(uid)`` shows, when the row has one, the warning that the place may
+    cover the product and its button (EF-20 phase 2).
     Escape inside lets the text go, as the timeline panel (`data-tl-panel`)."""
     sections: list[rx.Component] = [
         _place_section(row, on_place),
@@ -597,6 +672,8 @@ def text_panel(
             id=ADDED_LINE_ID,
             aria_live="polite",
         ),
+        # EF-20 phase 2: next to «Dónde va el texto», seen with it shut
+        *([_placement_warning(row, on_use_placement)] if on_use_placement is not None else []),
         # every option folds (Deivid 2026-11-23, round 3); several may be open at once
         rx.accordion.root(
             *sections,

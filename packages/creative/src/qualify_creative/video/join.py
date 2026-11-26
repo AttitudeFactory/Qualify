@@ -154,12 +154,18 @@ class JoinTransition:
 class JoinClip:
     """One part: its MP4 on disk and the interval to keep, in seconds from its first
     video frame. `end_s=None` keeps it to its end; an `end_s` past the end is cut to it.
-    `transition_in` (EF-16): how it blends with the part before it — None is a cut."""
+    `transition_in` (EF-16): how it blends with the part before it — None is a cut.
+
+    `seek` (m-25114465): its picture is decoded from the key frame at or before `start_s`
+    instead of from the file's start. Only for a file whose key frames decode on their
+    own (a closed-GOP H.264 we encoded ourselves, the local assembly's): a part from a
+    vendor keeps the default, decoded from its start as before."""
 
     path: Path
     start_s: float = 0.0
     end_s: float | None = None
     transition_in: JoinTransition | None = None
+    seek: bool = False
 
     def __post_init__(self) -> None:
         if self.start_s < 0:
@@ -713,6 +719,12 @@ def _part_video_frames(
             layer_in.push(layer)
             layer_in.push(None)
 
+        if clip.seek and start > 0:
+            # m-25114465: from the key frame at or before the interval (a frame early, so
+            # float noise never lands past it); the frames before `start` are skipped below
+            target = max(0.0, span.origin + start - 1 / float(rate))
+            source.seek(int(target / base), stream=stream, backward=True, any_frame=False)
+
         written = 0
         shown: Any = None  # the last fitted frame, shown until the next one's time
 
@@ -1037,6 +1049,7 @@ def encode_transition(
                 before.path,
                 start_s=before.start_s + (frames_b - n) / rate,
                 end_s=before.start_s + frames_b / rate,
+                seek=before.seek,
             )
             # ONE decoder at a time (a 1080p 10-bit H.265 decoder is ~70 MiB): the part
             # before's `n` fitted frames go to a raw file beside `out`, its decoder is

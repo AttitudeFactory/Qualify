@@ -58,16 +58,14 @@
     return { start: start, end: end > start ? end : NaN };
   }
 
+  // As `edit-sequence-core.js` `clock` and Python's `editor_preview_contract.clock_text`
+  // (m-25129389): to the tenth, a half rounded up, a 60th second carried into the minute.
   function clock(seconds) {
-    var value = Math.max(seconds, 0);
-    var minutes = Math.floor(value / 60);
-    var rest = value - minutes * 60;
-    var whole = Math.floor(rest);
-    var tenth = Math.round((rest - whole) * 10);
-    if (tenth >= 10) {
-      whole += 1;
-      tenth = 0;
-    }
+    var tenths = Math.floor(Number((Math.max(seconds, 0) * 10).toFixed(6)) + 0.5);
+    var minutes = Math.floor(tenths / 600);
+    var rest = tenths % 600;
+    var whole = Math.floor(rest / 10);
+    var tenth = rest % 10;
     var text = minutes + ":" + (whole < 10 ? "0" : "") + whole;
     return tenth ? text + "," + tenth : text;
   }
@@ -535,6 +533,24 @@
     var texts = c.activeAt(st.seq.texts, st.t);
     var effects = c.activeAt(st.seq.effects, st.t);
     var still = reducedMotion();
+    // m-25114465: the block coming in with a fade or a wipe, OVER the block before it
+    // (which goes on under it, `seqShowUnder`) — only its picture layers, never the
+    // texts and effects over it, never the block under. Once the transition is over,
+    // the block under goes away.
+    var noJoin = seqNoJoin(st);
+    if (c.joinUnder(st.seq, st.idx, st.t, noJoin) < 0) seqReleaseUnder(host);
+    else seqGuardUnder(host);
+    var join = c.joinFrame((st.seq.blocks || [])[st.idx], st.t, noJoin);
+    var joinA = join.a < 1 ? String(join.a) : "";
+    Array.prototype.forEach.call(
+      host.querySelectorAll("[data-edit-seq-video], [data-edit-seq-photo], [data-edit-seq-card]"),
+      function (el) {
+        var mine = el.hasAttribute("data-under") ? "" : joinA;
+        var clip = el.hasAttribute("data-under") ? "" : join.clip;
+        if (el.style.opacity !== mine) el.style.opacity = mine;
+        if (el.style.clipPath !== clip) el.style.clipPath = clip;
+      }
+    );
     Array.prototype.forEach.call(host.querySelectorAll("[data-seq-text]"), function (el) {
       var index = parseInt(el.getAttribute("data-seq-text"), 10);
       var on = texts.indexOf(index) >= 0;
@@ -556,6 +572,131 @@
     seqPaintTimeline(host, st.t);
   }
 
+  /* Preload the next video in the player that is not showing, seeked to its start — also
+     when it is the same file as now if it comes in with a transition (m-25114465: it
+     must start in its own player while this one goes on under it). Never into a player
+     that is playing a block under the one coming in. */
+  function seqPreload(host) {
+    var st = seqState(host);
+    var c = core();
+    var blocks = st.seq.blocks || [];
+    var block = blocks[st.idx];
+    var j = c.nextVideo(st.seq, st.idx, st.broken);
+    if (!block || j < 0 || j === st.idx) return;
+    var next = blocks[j];
+    var other = st.mode === "video" ? seqIdleVideo(host) : seqActiveVideo(host);
+    if (!other || other.hasAttribute("data-under")) return;
+    var joined = j === st.idx + 1 && !!next.join && !reducedMotion();
+    if (st.mode === "video" && next.url === block.url && !joined) return;
+    setSrc(other, next.url);
+    other.__qSeqWant = next.src_start;
+    if (other.readyState >= 1 && Math.abs(other.currentTime - next.src_start) > SLACK) {
+      try {
+        other.currentTime = next.src_start;
+      } catch (err) {
+        /* seeks on loadedmetadata */
+      }
+    }
+  }
+
+  /* m-25114465: the block UNDER the one coming in (`under`, null = none): its video goes
+     on in `underVideo` (playing with the sequence, at its own rate, never seeked while
+     it already shows the right moment) or its picture in `[data-edit-seq-under]`. */
+  function seqShowUnder(host, under, underVideo, play) {
+    var st = seqState(host);
+    var c = core();
+    var img = host.querySelector("[data-edit-seq-under]");
+    if (underVideo) {
+      setSrc(underVideo, under.url);
+      underVideo.setAttribute("data-rotate", String(under.rotate || 0));
+      underVideo.playbackRate = c.rate(under.speed);
+      var want = c.underSourceTime(under, st.t);
+      // review: a player already going on under is never sought while it plays (at ×4
+      // and up its time runs ahead of the clock's) — only when the owner seeks into the
+      // transition, with a slack that grows with its speed
+      var going = underVideo.hasAttribute("data-under") && !underVideo.paused && play;
+      var slack = SLACK * 2 * Math.max(1, Number(under.speed) || 1);
+      if (
+        !going &&
+        underVideo.readyState >= 1 &&
+        !underVideo.__qMeasuring &&
+        Math.abs(underVideo.currentTime - want) > slack
+      ) {
+        try {
+          underVideo.currentTime = want; // only when the owner seeks into a transition
+        } catch (err) {
+          /* seeks on loadedmetadata */
+        }
+      }
+      underVideo.__qSeqWant = want;
+      underVideo.muted = true;
+      underVideo.setAttribute("data-on", "");
+      underVideo.setAttribute("data-under", "");
+      if (play) {
+        if (underVideo.paused && underVideo.currentTime < Number(under.src_end) - 0.001) {
+          var started = underVideo.play();
+          if (started && started.catch) started.catch(function () {});
+        }
+      } else if (!underVideo.paused) underVideo.pause();
+    }
+    if (img) {
+      var pic = "";
+      if (under && !underVideo) {
+        pic = under.kind === "photo" ? under.url || under.poster : under.poster;
+        if (pic && st.badPics && st.badPics[pic]) pic = "";
+      }
+      if (pic) {
+        if (img.getAttribute("src") !== pic) img.setAttribute("src", pic);
+        img.setAttribute("data-rotate", String(under.rotate || 0));
+        img.setAttribute("data-on", "");
+        img.setAttribute("data-under", "");
+      } else {
+        img.removeAttribute("data-on");
+        img.removeAttribute("data-under");
+      }
+    }
+  }
+
+  /* m-25114465: no transition drawn right now — the owner's reduced motion, or a frame
+     the owner asked for (a trim handle, a jump to a block just added: `st.noJoin`), who
+     must see the frame they cut, never the block before it. */
+  function seqNoJoin(st) {
+    return reducedMotion() || !!st.noJoin;
+  }
+
+  /* Review: the block under never plays past its own stretch (`src_end`), even when
+     the block coming in is still loading and the clock waits. */
+  function seqGuardUnder(host) {
+    var st = seqState(host);
+    var under = (st.seq.blocks || [])[st.idx - 1];
+    var v = seqVideos(host);
+    [v.a, v.b].forEach(function (el) {
+      if (!el || !under || !el.hasAttribute("data-under") || el.paused) return;
+      if (el.currentTime >= Number(under.src_end) - 0.001) el.pause();
+    });
+  }
+
+  /* The transition is over (or was left): the block under goes away, its player stops
+     and takes the next video in. */
+  function seqReleaseUnder(host) {
+    var v = seqVideos(host);
+    var released = false;
+    [v.a, v.b].forEach(function (el) {
+      if (el && el.hasAttribute("data-under")) {
+        el.removeAttribute("data-under");
+        el.removeAttribute("data-on");
+        if (!el.paused) el.pause();
+        released = true;
+      }
+    });
+    var img = host.querySelector("[data-edit-seq-under]");
+    if (img && img.hasAttribute("data-on")) {
+      img.removeAttribute("data-on");
+      img.removeAttribute("data-under");
+    }
+    if (released) seqPreload(host);
+  }
+
   /* Show what block `idx` shows at `st.t`: its video (seeked), picture or card. */
   function seqShow(host, play) {
     var st = seqState(host);
@@ -575,11 +716,40 @@
     if (block && block.kind === "video" && block.url && !st.broken[block.key]) mode = "video";
     else if (pic) mode = "photo";
     st.mode = mode;
+    // m-25114465 (Deivid: «quiero que la transición sea suave»): while this block fades or
+    // wipes in, the block before it goes on UNDER it — its video keeps playing in the
+    // player it was playing in (no seek, no pause), or its picture stays — never the
+    // frame's dark background, never a cut before the transition
+    var u = c.joinUnder(st.seq, st.idx, st.t, seqNoJoin(st));
+    var under = u >= 0 ? blocks[u] : null;
+    var underVideo = null;
+    if (under && under.kind === "video" && under.url && !st.broken[under.key]) {
+      // the player already UNDER (review: two stretches of one file must never swap
+      // roles), else the one showing it (the one that was playing), else the other one
+      var was = seqActiveVideo(host);
+      var idleNow = seqIdleVideo(host);
+      if (idleNow.hasAttribute("data-under")) underVideo = idleNow;
+      else if (was.hasAttribute("data-under")) underVideo = was;
+      else
+        underVideo =
+          (was.getAttribute("src") || "") === under.url && was.hasAttribute("data-on")
+            ? was
+            : idleNow;
+    }
     if (mode === "video") {
       var active = seqActiveVideo(host);
       var idle = seqIdleVideo(host);
-      // the next video is already in the idle player: take turns, no black frame
-      if ((idle.getAttribute("src") || "") === block.url && active.getAttribute("src") !== block.url) {
+      if (underVideo) {
+        // the block coming in plays in the OTHER player (preloaded there: `seqPreload`)
+        if (active === underVideo) {
+          st.active = st.active === "b" ? "a" : "b";
+          active = idle;
+        }
+      } else if (
+        // the next video is already in the idle player: take turns, no black frame
+        (idle.getAttribute("src") || "") === block.url &&
+        active.getAttribute("src") !== block.url
+      ) {
         st.active = st.active === "b" ? "a" : "b";
         active = idle;
       }
@@ -604,37 +774,27 @@
       var sound = host.querySelector("[data-edit-sound]");
       active.muted = !(sound && sound.getAttribute("aria-pressed") === "true");
       [v.a, v.b].forEach(function (el) {
-        if (!el) return;
+        if (!el || el === underVideo) return;
         var on = el === active;
         el.toggleAttribute("data-on", on);
+        el.removeAttribute("data-under");
         if (!on && !el.paused) el.pause();
       });
       if (play) {
         var started = active.play();
         if (started && started.catch) started.catch(function () {});
       } else if (!active.paused) active.pause();
-      // preload the next video in the other player, seeked to its start
-      var j = c.nextVideo(st.seq, st.idx, st.broken);
-      var other = active === v.a ? v.b : v.a;
-      if (j >= 0 && j !== st.idx && blocks[j].url !== block.url) {
-        setSrc(other, blocks[j].url);
-        other.__qSeqWant = blocks[j].src_start;
-        if (other.readyState >= 1) {
-          try {
-            other.currentTime = blocks[j].src_start;
-          } catch (err) {
-            /* seeks on loadedmetadata */
-          }
-        }
-      }
     } else {
       [v.a, v.b].forEach(function (el) {
-        if (el) {
+        if (el && el !== underVideo) {
           el.removeAttribute("data-on");
+          el.removeAttribute("data-under");
           if (!el.paused) el.pause();
         }
       });
     }
+    seqShowUnder(host, under, underVideo, play);
+    if (!underVideo) seqPreload(host);
     if (photo) {
       if (mode === "photo") {
         if (photo.getAttribute("src") !== pic) photo.setAttribute("src", pic);
@@ -767,6 +927,7 @@
     }
     if (st.t >= block.out_end - SEQ_END_SLACK) {
       var step = c.advance(st.seq, block.out_end, 0);
+      st.noJoin = false; // a new block while playing: its transition shows
       st.t = step.t; // the next block's start, or 0:00 after the last
       seqShow(host, true);
     } else {
@@ -780,6 +941,7 @@
   function seqPlay(host) {
     var st = seqState(host);
     if (!st.seq || !(st.seq.blocks || []).length) return;
+    st.noJoin = false; // playing, the transitions show again
     // one sound on the page: whatever else plays stops
     Array.prototype.forEach.call(document.querySelectorAll("video"), function (other) {
       if (!host.contains(other) && !other.paused && !other.hasAttribute("data-edit-effect")) {
@@ -806,6 +968,9 @@
     var video = seqActiveVideo(host);
     seqStopWaiting(st);
     if (video && !video.paused) video.pause();
+    // m-25114465: the block under a transition stops with it (it stays shown)
+    var idle = seqIdleVideo(host);
+    if (idle && idle.hasAttribute("data-under") && !idle.paused) idle.pause();
     Array.prototype.forEach.call(host.querySelectorAll("[data-seq-effect]"), function (el) {
       if (!el.paused) el.pause();
     });
@@ -842,9 +1007,12 @@
   /* «ir a t»: show the frame at `t`; playing goes on playing from there. `owner`: the
      owner moved the timeline (slide, its input, ←/→, the ruler), so the tracks are
      already there and are not scrolled back (only for this call: no flag survives it). */
-  function seqGoTo(host, t, owner) {
+  function seqGoTo(host, t, owner, noJoin) {
     var st = seqState(host);
     seqLoad(host);
+    // m-25114465 review: a frame asked for (a handle, a block just added) shows that
+    // block alone — never mid-transition over the block before it
+    st.noJoin = !!noJoin && !st.playing; // playing, the transitions always show
     var total = core().total(st.seq);
     st.t = Math.min(Math.max(Number(t) || 0, 0), Math.max(total - 0.001, 0));
     st.wall = 0;
@@ -867,7 +1035,8 @@
     var block = (st.seq.blocks || [])[index];
     if (!block) return;
     seqPause(host, true);
-    seqGoTo(host, edge === "end" ? Math.max(block.out_end - 0.05, block.out_start) : block.out_start);
+    var at = edge === "end" ? Math.max(block.out_end - 0.05, block.out_start) : block.out_start;
+    seqGoTo(host, at, false, true);
   }
 
   /* ED-03 (m-25026623): while a trim handle of video block `index` moves, its frame at
@@ -885,6 +1054,7 @@
     st.t = Math.min(Math.max(at, block.out_start), Math.max(block.out_end - 0.001, block.out_start));
     st.wall = 0;
     st.owner = true;
+    st.noJoin = true; // the frame the handle cuts, never the block before it
     try {
       seqShow(host, false);
     } finally {
@@ -1179,9 +1349,16 @@
       playFrom: seqPlayFrom,
       showMotion: seqShowMotion,
       pause: seqPause,
+      play: seqPlay,
+      tick: seqTick,
       time: function (host) {
         return seqState(host).t;
       },
+      // the engine's own steps, for `Qualify/test_clip_joins.py` (node, a DOM stub)
+      load: seqLoad,
+      show: seqShow,
+      paint: seqPaint,
+      state: seqState,
     },
   };
   attach();

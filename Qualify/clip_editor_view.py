@@ -46,6 +46,7 @@ from __future__ import annotations
 import reflex as rx
 
 from . import clip_editor_vm as vm
+from . import clip_joins_vm as joins_vm
 from . import clip_photos_vm as photos_vm
 from . import clip_texts_vm
 from .creative_state import CreativeState
@@ -69,6 +70,7 @@ from .ui.text_panel import text_panel
 from .ui.timeline import (
     timeline,
     timeline_actions,
+    timeline_join_panel,
     timeline_layout,
     timeline_panel,
     timeline_script,
@@ -91,6 +93,8 @@ def _preview() -> rx.Component:
             sequence=S.clip_seq_json.replace(vm.SEQ_BASE, BACKEND_BASE),
             texts=S.clip_seq_texts,
             effects=S.clip_seq_effects,
+            # m-25120474: an R2 «Así se ve» loop is on the backend's origin
+            effect_url_base=(vm.SEQ_BASE, BACKEND_BASE),
             slower=S.clip_seq_slower,
             on_duration=S.report_clip_media,
             on_time=S.hear_clip_time,
@@ -174,7 +178,7 @@ def _text_panel() -> rx.Component:
     while «+ Texto» puts it, or under the timeline when its block is chosen (A1, Deivid
     2026-11-23: its times change on the timeline; no «¿En qué partes va?»)."""
     row = S.clip_text_panel_row
-    return text_panel(
+    panel = text_panel(
         row,
         on_text=lambda value: S.set_clip_text_value(row["uid"], value),
         on_text_commit=lambda value: S.commit_clip_text(row["uid"], value),
@@ -191,7 +195,14 @@ def _text_panel() -> rx.Component:
         on_color=S.set_clip_text_box_color,
         on_text_color=S.set_clip_text_text_color,
         on_size=S.set_clip_text_size,
+        on_use_placement=S.use_clip_text_placement,
     )
+    # EF-20 phase 2: the Clip's placement advice is read when a text's panel opens, another
+    # text is chosen or the Clip's videos change (its React key), only when due — once
+    # per Clip, again for a video still waiting for its advice (`load_clip_placement`);
+    # never per key
+    reader = rx.box(display="none", key=S.clip_placement_mount, on_mount=S.load_clip_placement)
+    return rx.fragment(panel, reader)
 
 
 def _text_tab() -> rx.Component:
@@ -601,6 +612,25 @@ def _block_panel() -> rx.Component:
     )
 
 
+def _join_panel() -> rx.Component:
+    """m-25114465: the open join's panel («Corte · Fundido · Barrido»), under the bar."""
+    return timeline_join_panel(
+        S.clip_join_chosen,
+        S.clip_join_choices,
+        on_change=S.set_clip_join,
+        on_done=S.close_clip_join,
+        help_text=joins_vm.HELP,
+        # Deivid 2026-11-26: its duration and, a wipe, its direction
+        seconds=S.clip_join_seconds_value,
+        seconds_min=S.clip_join_seconds_min,
+        seconds_max=S.clip_join_seconds_max,
+        seconds_step=joins_vm.STEP_S,
+        on_seconds=S.set_clip_join_seconds,
+        directions=S.clip_join_directions,
+        on_direction=S.set_clip_join_direction,
+    )
+
+
 #: Where the focus goes when the side panel closes: what opened it — the «Producto»
 #: row's «Cambiar» (`data-flow-opener`) or the «+» (the orbit's options are gone by
 #: then) —, else the chosen block; never while another drawer took over.
@@ -754,6 +784,16 @@ def _timeline() -> rx.Component:
 
 
 def _timeline_body() -> rx.Component:
+    # EF-20 decision A: the Clip's placement advice is read with the timeline (only when
+    # due: once per Clip, `load_clip_placement`), so «+ Texto» already knows where the
+    # product shows and puts the new text where it does not cover it
+    reader = rx.box(display="none", key=S.clip_placement_videos, on_mount=S.load_clip_placement)
+    # ED-11b: the frame strips' reader, mounted again when the Clip's videos change
+    strips = rx.box(display="none", key=S.clip_strip_videos, on_mount=S.watch_clip_frame_strips)
+    return rx.fragment(_timeline_layout(), reader, strips)
+
+
+def _timeline_layout() -> rx.Component:
     return timeline_layout(
         timeline(
             media=S.clip_tl_media_rows,
@@ -772,6 +812,11 @@ def _timeline_body() -> rx.Component:
             effect_lane_names=S.clip_tl_effect_lane_names,
             # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
             thumb_base=BACKEND_BASE,
+            # ED-11b: each uploaded video's frame strip, by block (its path after BACKEND_BASE)
+            frames=S.clip_tl_frames,
+            # m-25114465: «la unión» between every two blocks ([] off the switch)
+            joins=S.clip_tl_joins,
+            on_join=S.open_clip_join,
         ),
         timeline_actions(
             S.clip_tl_chosen_kind,
@@ -814,8 +859,26 @@ def arma_tu_video(media_body: rx.Component) -> rx.Component:
         rx.box(_timeline(), class_name="q-edit__timeline"),
         rx.box(
             rx.cond(S.clip_tl_selected != "", _block_panel()),
+            rx.cond(S.clip_join_open != "", _join_panel()),
             _problem(),
             rx.text(vm.PREVIEW_FREE, size="1", color=T.TEXT_MUTED),
+            # m-25114465 (ux review): how to find the joins, until the first one; and,
+            # with any join that is not «Corte», that the video takes longer — the line
+            # nearest «Crear» on this step (its button is the step frame's)
+            rx.cond(
+                S.clip_join_hint != "",
+                rx.text(S.clip_join_hint, size="1", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                S.clip_join_slower != "",
+                rx.hstack(
+                    rx.icon("clock", size=T.ICON_SM, aria_hidden="true"),
+                    rx.text(S.clip_join_slower, size="1"),
+                    spacing="1",
+                    align="center",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
             upload_preview_notice(),  # ED-09: its 480p copy could not be made
             class_name="q-edit__main",
         ),

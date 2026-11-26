@@ -53,6 +53,7 @@ from qualify_api.creative.parts import (
     PartsOverBudget,
     PartsUnavailable,
 )
+from qualify_api.creative.placement_ai import placement_enabled
 from qualify_api.creative.queue_visibility import CANCEL_NOT_AVAILABLE, QueueCancellationUnavailable
 from qualify_api.creative.service import (
     ApprovalBlocked,
@@ -93,12 +94,14 @@ from qualify_creative.schemas import (
     HIGHLIGHTS_MAX,
     MAX_BRAND_ELEMENTS,
     MAX_PRODUCT_IMAGES,
+    PRESENTER_DESCRIPTIONS,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
     clip_editor_vm,
     clip_gallery_vm,
+    clip_joins_vm,
     clip_photos_vm,
     clip_texts_vm,
     edit_sequence,
@@ -137,6 +140,7 @@ from .catalog_vm import (
 )
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
+    ClipPlacementRead,
     PartsPreviewsShort,
     acting_user_id,
     approval_videos,
@@ -151,6 +155,7 @@ from .creative_provider import (
     business_kind,
     cancel_draft_queue,
     catalog_products,
+    clip_placement_advice,
     clip_text_look,
     configured_video_engine,
     creations_balance,
@@ -770,10 +775,7 @@ _GALLERY_MAX_VIDEOS = 1
 _GALLERY_ONE_VIDEO = "Un carrusel lleva como máximo 1 video: cambia la otra diapositiva primero."
 #: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
 #: «Hombre» are a described synthetic person like «Personalizado», with this description.
-_PRESENTERS = {
-    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
-    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
-}
+_PRESENTERS = PRESENTER_DESCRIPTIONS
 #: The formats each template use renders — ONE output, the one of this format.
 _TEMPLATE_FORMATS = {
     # «Video publicitario» (§ 2026-10-13): the template's video in every placement — a
@@ -1741,6 +1743,24 @@ class CreativeState(rx.State):
     #: That `/r2media` token lives 1 h and is NOT renewed: past it, the block stays grey
     #: with its icon and name. The real fix is ED-11b (posters of their own).
     _clip_posters: dict[str, str] = {}
+    #: ED-11b (m-25029110): each uploaded video's frame strip, by its key — its `/r2media`
+    #: path and layout (`upload_preview_state.read_strips`), read for the session's own
+    #: business (`_clip_strip_tenant`). Only to DRAW the timeline: never in the recipe.
+    _clip_frame_strips: dict[str, dict[str, Any]] = {}
+    _clip_strip_tenant: str = ""
+    #: The strips' reader now running, a `uuid4` hex (a newer one makes an older one stop;
+    #: never repeats, not even after the state is reset).
+    _clip_strip_watch: str = ""
+    #: When the running reader last checked in (`time.time()`; 0 = none running) and
+    #: which videos it reads — so a remount or a timeline change arms a reader only when
+    #: none is alive …
+    _clip_strip_beat: float = 0.0
+    _clip_strip_keys: str = ""
+    #: … and not when the last reader of THESE videos (of this business) ended with
+    #: nothing on its way a short while ago (`_clip_strip_done_at`): a video that will
+    #: never have a strip (failed for good, not an upload) costs no query per touch.
+    _clip_strip_done_keys: str = ""
+    _clip_strip_done_at: float = 0.0
     #: What «Elegir de tu Galería» could not add, under the reference grid.
     gallery_pick_note: str = ""
     #: Live-test 2026-11-03: each slot's «Inspiración» box has its own words (the
@@ -1899,6 +1919,18 @@ class CreativeState(rx.State):
     clip_photo_seconds: dict[str, float] = {}
     #: ED-14: each photo block's quarter turns («Girar»), by block id (missing = upright).
     clip_photo_turns: dict[str, int] = {}
+    #: m-25114465 «Tocar la unión»: how each block comes in over the one before it, by the
+    #: id of the block AFTER the join («fundido» / «barrido»; missing = «Corte»). Never the
+    #: first block's (`clip_joins_vm.clean_joins`). Always a new dict.
+    clip_block_joins: dict[str, str] = {}
+    #: Deivid 2026-11-26: each blending join's duration (s, 0,1 s a step) and a wipe's
+    #: direction, by the same block id (missing = the library's default). Always new dicts.
+    clip_join_seconds: dict[str, float] = {}
+    clip_join_dirs: dict[str, str] = {}
+    #: The join whose choices show under the timeline (its block id; "" = none).
+    clip_join_open: str = ""
+    #: The owner already chose a join once: the line on how to find them goes (ux review).
+    clip_join_used: bool = False
     #: ED-10's one text (legacy, see `clip_text_start`).
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
@@ -1931,6 +1963,21 @@ class CreativeState(rx.State):
     #: The editor before the first key of the text being typed: leaving the field says
     #: what changed (typing is not a change yet), {} = nothing typed.
     _clip_text_before: dict[str, Any] = {}
+    #: EF-20 phase 2 (m-25026599): the advice already kept for the Clip's uploaded videos
+    #: (`creative_provider.clip_placement_advice`, `PlacementAdvice.to_params` per source
+    #: key; {} = none, or the switch off), what it was read for (its business and videos,
+    #: `clip_texts_vm.placement_signature`), whether a video had none yet and when it was
+    #: read (`time.monotonic`): read once per Clip, never per key. Server-side only: it
+    #: lives in the session's state, which logout destroys.
+    _clip_placement: dict[str, dict[str, Any]] = {}
+    _clip_placement_asked: str = ""
+    _clip_placement_missing: bool = False
+    _clip_placement_at: float = 0.0
+    #: What the warning's button just did, said in that text's panel («Listo: el texto
+    #: quedó …», `clip_texts_vm.placement_done_line`) until the editor's next change,
+    #: another text chosen or the panel shut.
+    _clip_placement_done: str = ""
+    _clip_placement_done_line: str = ""
     clip_effect_ids: list[str] = []
     #: ED-04 m-25026627: the layer effects put on the video, each a block of the «Efectos»
     #: rows — `{uid, effect_id, start, end, lane, blocks}` (`clip_editor_vm`, «uses»):
@@ -1978,7 +2025,7 @@ class CreativeState(rx.State):
     #: The dead path each of those had, by key: a renewal that gives it back (its token
     #: was still alive: the file itself does not play here) leaves the video broken.
     _clip_media_dead: dict[str, str] = {}
-    #: Why a trim handle stopped short («El pedazo tiene que durar al menos 1 s.»), "" =
+    #: Why a trim handle stopped short («El bloque tiene que durar al menos 1 s.»), "" =
     #: nothing to say.
     clip_cut_error: str = ""
     #: ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): the owner already
@@ -2421,6 +2468,16 @@ class CreativeState(rx.State):
         if draft is not None and draft.video_draft.state == VIDEO_DRAFT:
             return APPROVE_VERSION_LABEL
         return "Aprobar"
+
+    @rx.var
+    def review_video_key(self) -> str:
+        """EF-18 (m-25026598): the key of the video the piece's page shows — what its
+        contact sheet must have been made from ("" = no video, or a previous version on
+        screen: the sheet belongs to the version that would be approved)."""
+        draft = self.draft
+        if draft is None or draft.viewing_previous_version:
+            return ""
+        return next((item.key for item in draft.media if item.media_type == "video"), "")
 
     @rx.var
     def kind_is_video(self) -> bool:
@@ -6723,9 +6780,181 @@ class CreativeState(rx.State):
             },
             pieces=self.clip_cut_pieces if known else [],
         )
-        return clip_photos_vm.apply_photo_settings(
+        media = clip_photos_vm.apply_photo_settings(
             media, self.clip_photo_seconds, self.clip_photo_turns
         )
+        # m-25114465: each join's choice, on the block after it (and its overlap on the
+        # block before): every reader then lays the blocks as the video comes out
+        return clip_joins_vm.apply_joins(
+            media,
+            self.clip_block_joins,
+            enabled=clip_joins_vm.joins_enabled(),
+            local=self.clip_editor_shown,
+            seconds=self.clip_join_seconds,
+            directions=self.clip_join_dirs,
+        )
+
+    # -- m-25114465 «Tocar la unión»: how two blocks of «Fotos y videos» meet -------------
+
+    def _clip_join_rows(self) -> list[dict[str, str]]:
+        """`clip_joins_vm.join_rows` of the timeline now ([] off the switch)."""
+        if not clip_joins_vm.joins_enabled() or not self.clip_editor_shown:
+            return []
+        media = self._clip_tl_media()
+        starts = [clip_editor_vm.block_start(media, index) for index in range(len(media))]
+        return clip_joins_vm.join_rows(
+            media,
+            clip_editor_vm.timeline_segments(media),
+            local=self.clip_editor_shown,
+            open_id=self.clip_join_open,
+            starts=starts,
+        )
+
+    @rx.var
+    def clip_tl_joins(self) -> list[dict[str, str]]:
+        """Every join between two blocks, as the timeline draws them (`join_rows`) — read
+        ONCE per change: the other join vars and the events read these rows."""
+        return self._clip_join_rows()
+
+    @rx.var
+    def clip_join_chosen(self) -> dict[str, str]:
+        """The open join's row ({} = none open)."""
+        open_id = self.clip_join_open
+        return next((row for row in self.clip_tl_joins if row["id"] == open_id), {})
+
+    @rx.var
+    def clip_join_hint(self) -> str:
+        """ux review: how to find the joins («Toca el punto…») — with two blocks or more,
+        until the owner chooses ANY join the first time, «Corte» included
+        (`clip_join_used`)."""
+        rows = self.clip_tl_joins
+        if not rows or self.clip_join_used:
+            return ""
+        return clip_joins_vm.FIND_HINT
+
+    @rx.var
+    def clip_join_slower(self) -> str:
+        """ux review: beside «Crear», only while some join is not «Corte» — and only with
+        the join's panel CLOSED (open, the panel says it itself: never twice)."""
+        if self.clip_join_open:
+            return ""
+        return clip_joins_vm.slower_line([row["kind"] for row in self.clip_tl_joins])
+
+    @rx.var
+    def clip_join_choices(self) -> list[dict[str, str]]:
+        """The open join's choices (`option_rows`: «Corte», then what fits)."""
+        row = self.clip_join_chosen
+        return clip_joins_vm.option_rows(row) if row else []
+
+    @rx.event
+    def open_clip_join(self, block_id: str) -> list[rx.event.EventSpec]:
+        """A join tapped (or Enter): its panel shows, nothing else chosen; tapped again,
+        it closes."""
+        if not any(row["id"] == block_id for row in self.clip_tl_joins):
+            return []
+        was = self.clip_join_open
+        events = list(self._clip_choose(""))  # (it closes any join too)
+        self.clip_join_open = "" if was == block_id else block_id
+        if self.clip_join_open:
+            # ux review: its panel comes into view, the focus on the option marked
+            events.append(rx.call_script(f"window.__qTimeline?.revealJoin({json.dumps(block_id)})"))
+        return events
+
+    @rx.event
+    def close_clip_join(self) -> list[rx.event.EventSpec]:
+        """«Listo» on a join's panel: it closes and the focus goes back to its point."""
+        block_id = self.clip_join_open
+        self.clip_join_open = ""
+        if not block_id:
+            return []
+        return [rx.call_script(f"window.__qTimeline?.focusJoin({json.dumps(block_id)})")]
+
+    @rx.event
+    def set_clip_join(self, value: str | list[str]) -> None:
+        """The open join takes `value` — only a kind it offers now («Corte» always)."""
+        kind = value[0] if isinstance(value, list) and value else value
+        row = self.clip_join_chosen
+        if not row or not isinstance(kind, str) or kind not in row["offered"].split(","):
+            return
+        media = self._clip_tl_media()
+        ids = clip_joins_vm.segment_ids(media)
+        at = ids.index(row["id"]) if row["id"] in ids else 1
+        joins = dict(self.clip_block_joins)
+        seconds = dict(self.clip_join_seconds)
+        if kind == clip_joins_vm.CUT:
+            joins.pop(row["id"], None)
+        else:
+            # Deivid 2026-11-26: it starts at the library's default, or at the longest
+            # that fits when the default does not
+            fit = clip_joins_vm.fit_seconds(clip_editor_vm.timeline_segments(media), at, kind)
+            start = clip_joins_vm.start_seconds(kind, fit)
+            if start is None:
+                return
+            joins[row["id"]] = kind
+            seconds[row["id"]] = start
+        self.clip_join_seconds = seconds
+        self.clip_join_used = True
+        self._clip_keep_joins(clip_joins_vm.clean_joins(joins, media))
+        self._clip_notice_done()
+        self.clip_edit_notice = clip_joins_vm.put_line(
+            row["before_label"], row["after_label"], kind
+        )
+
+    def _clip_keep_joins(self, joins: dict[str, str]) -> None:
+        """The joins kept, with only their own durations and directions."""
+        self.clip_block_joins = joins
+        self.clip_join_seconds = clip_joins_vm.clean_by_join(self.clip_join_seconds, joins)
+        self.clip_join_dirs = clip_joins_vm.clean_by_join(self.clip_join_dirs, joins)
+
+    @rx.var
+    def clip_join_seconds_value(self) -> float:
+        """The open join's duration bar: its value, and its ends (`join_rows`)."""
+        return float(self.clip_join_chosen.get("seconds") or 0.0)
+
+    @rx.var
+    def clip_join_seconds_min(self) -> float:
+        return float(self.clip_join_chosen.get("seconds_min") or 0.0)
+
+    @rx.var
+    def clip_join_seconds_max(self) -> float:
+        return float(self.clip_join_chosen.get("seconds_max") or 0.0)
+
+    @rx.var
+    def clip_join_directions(self) -> list[dict[str, str]]:
+        """The open wipe's directions (`direction_rows`)."""
+        row = self.clip_join_chosen
+        return clip_joins_vm.direction_rows(row) if row.get("has_direction") else []
+
+    @rx.event
+    def set_clip_join_seconds(self, value: list[float] | float | str) -> None:
+        """The duration bar (0,1 s a step; Radix sends a list). Never past what fits now
+        (`fit_seconds`, the server's room): a longer value is brought to it."""
+        row = self.clip_join_chosen
+        seconds = clip_joins_vm.seconds_from_slider(value)
+        if not row or not row.get("has_seconds") or seconds is None or not row.get("fit"):
+            return
+        low, fit = float(row["seconds_min"]), float(row["fit"])
+        chosen = min(max(clip_joins_vm.snap_seconds(seconds), low), fit)
+        if abs(chosen - float(row["seconds"] or 0)) < 1e-9:
+            return
+        self.clip_join_seconds = {**self.clip_join_seconds, row["id"]: chosen}
+        self._clip_notice_done()
+        self.clip_edit_notice = clip_joins_vm.seconds_put_line(
+            row["before_label"], row["after_label"], chosen
+        )
+
+    @rx.event
+    def set_clip_join_direction(self, value: str | list[str]) -> None:
+        """A wipe's direction («Izquierda · Derecha · Arriba · Abajo»)."""
+        way = value[0] if isinstance(value, list) and value else value
+        row = self.clip_join_chosen
+        if not row or not row.get("has_direction") or not isinstance(way, str):
+            return
+        if way not in row["directions"].split(",") or way == row["direction"]:
+            return
+        self.clip_join_dirs = {**self.clip_join_dirs, row["id"]: way}
+        self._clip_notice_done()
+        self.clip_edit_notice = clip_joins_vm.direction_put_line(row["after_label"], way)
 
     def _clip_effect_resolved(
         self, media: list[dict[str, object]] | None = None
@@ -6785,6 +7014,11 @@ class CreativeState(rx.State):
         for row, item in zip(rows, media, strict=True):
             # ED-11: the file's picture (every piece of a file shows the same one)
             row["thumb"] = thumbs.get(str(item["key"]), "")
+            # ED-11b: an uploaded video's frame strip, once the server made it (its cells:
+            # `clip_tl_frames`); until then the picture of before
+            drawn = self._clip_strip_draw(item)
+            if drawn is not None:
+                row.update(drawn[1])
             # `mine`: a piece of the editor's own video; `own`: …and it can be cut now
             key, index = clip_editor_vm.piece_of(row["id"])
             row["mine"] = "1" if mine and key == mine else ""
@@ -6803,6 +7037,194 @@ class CreativeState(rx.State):
             *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
             *timeline_vm.overlay_blocks(overlays, "effect", total),  # type: ignore[arg-type]
         ]
+
+    # -- ED-11b m-25029110: the frame strip under each uploaded video's block -------------
+
+    def _clip_strip_of(self, key: str) -> dict[str, Any]:
+        """`key`'s strip as read for the session's business ({} = none yet)."""
+        strip = self._clip_frame_strips.get(key)
+        return strip if isinstance(strip, dict) and strip.get("url") else {}
+
+    def _clip_strip_draw(
+        self, item: Mapping[str, object]
+    ) -> tuple[list[dict[str, str]], dict[str, str]] | None:
+        """One video block's strip, computed once: its cells (`timeline_vm.strip_cells`:
+        the tiles of the stretch it uses, at its speed) and its row's style
+        (`strip_style`); None without a strip or without a cell to draw."""
+        if item.get("kind") != "video":
+            return None
+        strip = self._clip_strip_of(str(item.get("key") or ""))
+        if not strip:
+            return None
+        try:
+            cells = timeline_vm.strip_cells(
+                float(item["src_start"]),  # type: ignore[arg-type]
+                float(item["src_end"]),  # type: ignore[arg-type]
+                timeline_vm.speed_of(dict(item)),
+                frames=int(strip["frames"]),
+                columns=int(strip["columns"]),
+                rows=int(strip["rows"]),
+                interval_s=float(strip.get("interval_s") or 1),
+                offset_s=float(strip.get("offset_s", 0.5)),
+            )
+            style = timeline_vm.strip_style(
+                str(strip["url"]),
+                columns=int(strip["columns"]),
+                rows=int(strip["rows"]),
+                tile_width=int(strip["tile_width"]),
+                tile_height=int(strip["tile_height"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return (cells, style) if cells and style["strip"] else None
+
+    @rx.var
+    def clip_tl_frames(self) -> dict[str, list[dict[str, str]]]:
+        """ED-11b: each video block's strip cells, by the block's id (a block with no
+        strip is left out: it keeps its picture)."""
+        if not self._clip_frame_strips:
+            return {}
+        frames: dict[str, list[dict[str, str]]] = {}
+        for item in self._clip_tl_media():
+            drawn = self._clip_strip_draw(item)
+            if drawn is not None:
+                frames[str(item["id"])] = drawn[0]
+        return frames
+
+    @rx.var
+    def clip_strip_videos(self) -> str:
+        """ED-11b: the hidden strip reader's React key — the Clip's videos AND the blocks
+        of «Fotos y videos» as laid now — so a video added or taken away, and any change
+        of the timeline (a trim, a cut, a move, a speed), mounts it again
+        (`watch_clip_frame_strips`, which arms a reader only when none is alive: live
+        test 2026-11-26, a reader that gave up is armed again when the owner touches the
+        editor)."""
+        if not self.clip_editor_shown:
+            return ""
+        keys = upload_preview_state.strip_video_keys(self.clip_videos)
+        if not keys:
+            return ""
+        laid = ";".join(
+            f"{row['id']}@{row['start']}+{row['length']}" for row in self.clip_tl_media_rows
+        )
+        return "|".join(keys) + "#" + laid
+
+    def _clip_strips_settled(self, keys: Sequence[str], tenant: str) -> bool:
+        """A reader need not start: one is alive for these videos and business (it keeps
+        its own waits), or the last reader of these videos ended with nothing on its way
+        a short while ago — strips made (their paths still good:
+        `PIECE_VIEWS_FRESH_SECONDS`) or never coming. Other videos: read again."""
+        if self._clip_strip_tenant != tenant:
+            return False
+        sig, now = "|".join(keys), time.time()
+        alive = self._clip_strip_beat > 0 and (
+            now - self._clip_strip_beat < upload_preview_state.STRIP_READER_ALIVE_SECONDS
+        )
+        if alive and self._clip_strip_watch and self._clip_strip_keys == sig:
+            return True
+        return (
+            self._clip_strip_done_keys == sig
+            and now - self._clip_strip_done_at < PIECE_VIEWS_FRESH_SECONDS
+        )
+
+    @rx.event
+    async def watch_clip_frame_strips(self) -> rx.event.EventSpec | None:
+        """ED-11b: the timeline (re)mounted, or changed: arm a reader — server-side, with
+        the session's own business — unless one is alive or the strips are all fresh
+        (`_clip_strips_settled`). A strip of another business, or of a video no longer
+        here, is forgotten."""
+        keys = upload_preview_state.strip_video_keys(self.clip_videos)
+        if not self.clip_editor_shown or not keys:
+            self._clip_strip_watch = ""  # a reader still running stops
+            return None
+        try:
+            tenant_id = await self._clip_preview_tenant()
+        except Exception as exc:  # noqa: BLE001 — a strip is not worth failing the step
+            logger.warning("frame strips tenant not read: %s", type(exc).__name__)
+            return None
+        if tenant_id is None:
+            self._clip_strip_watch = ""
+            self._clip_frame_strips = {}
+            return None
+        if self._clip_strips_settled(keys, str(tenant_id)):
+            return None
+        self._clip_strip_watch = uuid4().hex  # never repeats, not even after a reset
+        self._clip_strip_keys = "|".join(keys)
+        self._clip_strip_beat = time.time()
+        if str(tenant_id) != self._clip_strip_tenant:
+            self._clip_frame_strips = {}
+            self._clip_strip_done_keys = ""
+        self._clip_strip_tenant = str(tenant_id)
+        kept = {k: v for k, v in self._clip_frame_strips.items() if k in keys}
+        if kept != self._clip_frame_strips:
+            self._clip_frame_strips = kept
+        return CreativeState.read_clip_frame_strips(self._clip_strip_watch)
+
+    async def _clip_strip_still_mine(self, watch: str, tenant_id: UUID) -> bool:
+        """Under the lock: this reader still owns the timeline — no newer reader, the
+        editor still shown, and the session still in the business it read for (a logout
+        or another business in between stops it)."""
+        if watch != self._clip_strip_watch or not self.clip_editor_shown:
+            return False
+        if self._clip_strip_tenant != str(tenant_id):
+            return False
+        try:
+            return await self._clip_preview_tenant() == tenant_id
+        except Exception as exc:  # noqa: BLE001 — no session: stop, show nothing new
+            logger.warning("frame strips session not read: %s", type(exc).__name__)
+            return False
+
+    @rx.event(background=True)
+    async def read_clip_frame_strips(self, watch: str) -> None:
+        """Read the strips of the Clip's uploaded videos, again while one is still on its
+        way — waiting longer each time (`upload_preview_state.strip_waits`: 6 s, 12 s,
+        30 s, then a minute) for up to `STRIP_GIVE_UP_SECONDS` — and ask, in the
+        background, once per video and reader (the service never repeats work), for a
+        strip that is wanted. Before every read and every ask, and before keeping a read,
+        it checks it still owns the timeline (`_clip_strip_still_mine`: no newer reader,
+        the editor on screen, the same business). It checks in (`_clip_strip_beat`) so a
+        remount or a timeline change does not start a second one; when it ends, the next
+        change arms a new one. Nothing here fails the screen: the picture of before
+        stays."""
+        async with self:
+            keys = upload_preview_state.strip_video_keys(self.clip_videos)
+            tenant_id = tenant_uuid(self._clip_strip_tenant)
+            brand_hint = str(self._brand_id or "")
+        if tenant_id is None or not keys:
+            return
+        asked: set[str] = set()
+        waits = upload_preview_state.strip_waits()
+        try:
+            for attempt in range(len(waits) + 1):
+                if attempt:
+                    await asyncio.sleep(waits[attempt - 1])
+                async with self:
+                    if not await self._clip_strip_still_mine(watch, tenant_id):
+                        return
+                    self._clip_strip_beat = time.time()
+                read = await asyncio.to_thread(
+                    upload_preview_state.read_strips, tenant_id, keys, frozenset(asked)
+                )
+                async with self:
+                    if not await self._clip_strip_still_mine(watch, tenant_id):
+                        return  # drop the read: it may be of a business no longer here
+                    strips = {k: v for k, v in self._clip_frame_strips.items() if k in keys}
+                    strips.update(read.strips)
+                    if strips != self._clip_frame_strips:
+                        self._clip_frame_strips = strips
+                    if not read.waiting:  # these videos are settled for a while
+                        self._clip_strip_done_keys = "|".join(keys)
+                        self._clip_strip_done_at = time.time()
+                for key in read.ask:
+                    if key not in asked:
+                        asked.add(key)
+                        upload_preview_provider.ask_for_preview(tenant_id, brand_hint, key)
+                if not read.waiting:
+                    return
+        finally:
+            async with self:
+                if watch == self._clip_strip_watch:
+                    self._clip_strip_beat = 0.0  # ended: the next change arms a new one
 
     def _clip_cut_note(self, key: str) -> str:
         """m-25114465 (live test): the panel's line for a block of the own video that
@@ -6882,7 +7304,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_tl_total(self) -> str:
-        return timeline_vm.num(clip_editor_vm.media_total(self._clip_tl_media()))
+        media = self._clip_tl_media()
+        total = clip_editor_vm.media_total(media)
+        # m-25114465: a transition (0,4 s, 0,5 s…) leaves the video off the ½ s grid — the
+        # track's length is then exact, as each block's (`timeline_vm.exact`)
+        if any(clip_joins_vm.tail_of(item) for item in media):
+            return timeline_vm.exact(total)
+        return timeline_vm.num(total)
 
     @rx.var
     def clip_tl_ticks(self) -> list[dict[str, str]]:
@@ -7165,7 +7593,11 @@ class CreativeState(rx.State):
         for effect_id in self._clip_used_effect_ids():
             effect = editor_contract.effect_of(effect_id)
             if effect is not None and effect.preview_asset:
-                urls[effect_id] = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                url = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                # m-25120474: an R2 preview lives on the backend's origin, like the videos
+                if editor_contract.is_backend_effect_url(url):
+                    url = clip_editor_vm.SEQ_BASE + url
+                urls[effect_id] = url
         return edit_sequence.from_timeline(
             media, overlays, self._clip_seq_sources(), effect_urls=urls
         )
@@ -7250,6 +7682,9 @@ class CreativeState(rx.State):
             effect = editor_contract.effect_of(effect_id)
             if effect is not None and effect.preview_asset:
                 url = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                # m-25120474: an R2 preview lives on the backend's origin, like the videos
+                if editor_contract.is_backend_effect_url(url):
+                    url = clip_editor_vm.SEQ_BASE + url
                 if url and url not in srcs:
                     srcs.append(url)
         return srcs
@@ -7460,9 +7895,11 @@ class CreativeState(rx.State):
         known, or out of 3–60 s (the warning under the timeline says it then)."""
         if not self._clip_cut_known() or self.clip_cut_end <= self.clip_cut_start:
             return ""
-        seconds = clip_editor_vm.recipe_seconds(self._clip_edit_recipe().segments)
+        segments = self._clip_edit_recipe().segments
+        seconds = clip_editor_vm.recipe_seconds(segments)
         low, high = clip_editor_vm.LOCAL_MIN_SECONDS, clip_editor_vm.LOCAL_MAX_SECONDS
-        if not low - 1e-6 <= seconds <= high + 1e-6:
+        judged = clip_editor_vm.local_length(segments)  # as the server judges 3–60 s
+        if not low - 1e-6 <= judged <= high + 1e-6:
             return ""
         return clip_editor_vm.duration_line(seconds)
 
@@ -7494,6 +7931,13 @@ class CreativeState(rx.State):
         self._clip_notice_done()
         # m-25114465: once any change of a text just put was said, its next save speaks
         self._clip_text_quiet = ""
+        # EF-20: «Listo: el texto quedó …» was about the last change only
+        self._clip_placement_done = self._clip_placement_done_line = ""
+        # m-25114465: the joins follow the blocks — none on the first, none of a block gone
+        if self.clip_block_joins:
+            self._clip_keep_joins(
+                clip_joins_vm.clean_joins(self.clip_block_joins, self._clip_tl_media())
+            )
         after = self._clip_edit_snapshot()
         line = clip_editor_vm.change_message(before, after)
         if line:
@@ -7507,6 +7951,7 @@ class CreativeState(rx.State):
         self.clip_text_error = ""
         self._clip_text_put = []
         self._clip_text_fresh = self._clip_text_quiet = self._clip_text_fresh_line = ""
+        self._clip_placement_done = self._clip_placement_done_line = ""
         self._clip_text_before = {}
         self.clip_effect_times = {}
         self.clip_media_seconds = {}
@@ -7523,6 +7968,11 @@ class CreativeState(rx.State):
         self.clip_rotate = 0
         self.clip_photo_seconds = {}
         self.clip_photo_turns = {}
+        self.clip_block_joins = {}
+        self.clip_join_seconds = {}
+        self.clip_join_dirs = {}
+        self.clip_join_used = False
+        self.clip_join_open = ""
         self.clip_effect_ids = []
         self.clip_effect_uses = []
         self.clip_effect_parts = []
@@ -7926,16 +8376,108 @@ class CreativeState(rx.State):
         if not uid:
             return {}
         media = self._clip_tl_media()
-        use = next((u for u in self._clip_text_resolved(media) if u["uid"] == uid), None)
+        resolved = self._clip_text_resolved(media)
+        use = next((u for u in resolved if u["uid"] == uid), None)
         if use is None:
             return {}
         row = clip_texts_vm.text_panel_row(
-            use, media, subtitles=self._clip_subtitles_on(), palette=self.clip_brand_palette
+            use,
+            media,
+            subtitles=self._clip_subtitles_on(),
+            palette=self.clip_brand_palette,
+            placement=self._clip_placement_kept(),
+            taken=self._clip_text_places_taken(resolved, use),
         )
         # m-25114465: said inside the (modal) panel, where a screen reader still hears it
         # — the seconds it was PUT at, fixed then (it is said in the past tense)
         row["added_line"] = self._clip_text_fresh_line if uid == self._clip_text_fresh else ""
+        # EF-20 UX review: what «Poner el texto arriba» did, in the same live region as
+        # the warning it replaces (never both at once)
+        done = uid == self._clip_placement_done and not row["placement_warning"]
+        row["placement_done"] = self._clip_placement_done_line if done else ""
         return row
+
+    @staticmethod
+    def _clip_text_places_taken(
+        resolved: list[dict[str, object]], use: Mapping[str, object]
+    ) -> list[str]:
+        """EF-20: the places other written texts take at `use`'s seconds (the warning's
+        button never offers them: two texts in one place stop «Siguiente»)."""
+        return clip_texts_vm.places_taken(
+            resolved,
+            str(use["uid"]),
+            start=float(use["start"]),  # type: ignore[arg-type]
+            end=float(use["end"]),  # type: ignore[arg-type]
+        )
+
+    def _clip_placement_kept(self) -> list[dict[str, Any]]:
+        """EF-20 phase 2: the kept advice of the Clip's videos now, in their order (a video
+        taken out of the Clip no longer counts)."""
+        kept = self._clip_placement
+        return [kept[key] for key in clip_texts_vm.placement_keys(self.clip_videos) if key in kept]
+
+    @rx.event
+    async def load_clip_placement(self) -> None:
+        """EF-20 phase 2 (m-25026599): read the advice already kept for the Clip's uploaded
+        videos. Two hidden readers call it: the timeline's (`clip_placement_videos`, so
+        «+ Texto» already knows where a new text is born, decision A) and the text
+        panel's (`clip_placement_mount`, another text or video set). It reads only when
+        due — once per Clip (its business and videos), and again only when a video had
+        none yet and a minute went by (`clip_texts_vm.placement_ask_due`). With the switch
+        off (`QUALIFY_VIDEO_PLACEMENT_AI`) it does nothing at all: no session lookup, no
+        thread. Server-side with the session's own business; it only reads (the
+        `media-worker` made the advice). Whatever fails, the panel shows nothing new."""
+        if not placement_enabled():
+            return
+        keys = clip_texts_vm.placement_keys(self.clip_videos)
+        if not keys:
+            return
+        try:
+            tenant_id = await self._clip_preview_tenant()
+        except Exception as exc:  # noqa: BLE001 — a hint is never worth failing the panel
+            logger.warning("placement advice tenant not read: %s", type(exc).__name__)
+            return
+        if tenant_id is None:
+            return
+        signature = clip_texts_vm.placement_signature(str(tenant_id), keys)
+        now = time.monotonic()
+        if not clip_texts_vm.placement_ask_due(
+            signature,
+            asked=self._clip_placement_asked,
+            missing=self._clip_placement_missing,
+            asked_at=self._clip_placement_at,
+            now=now,
+        ):
+            return
+        if signature != self._clip_placement_asked:
+            self._clip_placement = {}  # another Clip or business: nothing of the last one
+        self._clip_placement_asked = signature
+        self._clip_placement_at = now
+        try:
+            read = await asyncio.to_thread(clip_placement_advice, tenant_id, keys)
+        except Exception as exc:  # noqa: BLE001 — the provider never raises; belt and braces
+            logger.warning("placement advice not read: %s", type(exc).__name__)
+            read = ClipPlacementRead(failed=True, waiting=True)
+        # a failed read keeps what this Clip already showed; a video still without advice
+        # (and only an uploaded one: the others never get it) is asked again later
+        if not read.failed:
+            self._clip_placement = dict(read.advice)
+        self._clip_placement_missing = read.waiting
+
+    @rx.var
+    def clip_placement_videos(self) -> str:
+        """EF-20 decision A: the timeline's hidden reader's React key — the Clip's videos
+        only — so the advice is already kept when «+ Texto» puts a text (it is born in the
+        recommended place), not just once a text's panel is open."""
+        return "|".join(clip_texts_vm.placement_keys(self.clip_videos))
+
+    @rx.var
+    def clip_placement_mount(self) -> str:
+        """EF-20 phase 2: the hidden reader's React key in the text's panel — the text and
+        the Clip's videos — so another text or another video set mounts it again and
+        `load_clip_placement` runs (it reads only when due)."""
+        keys = clip_texts_vm.placement_keys(self.clip_videos)
+        return f"{self._clip_text_current()}|" + "|".join(keys)
 
     @rx.var
     def clip_text_fade_s(self) -> float:
@@ -7993,6 +8535,18 @@ class CreativeState(rx.State):
         )
         if why:
             return ""
+        # EF-20, Deivid's decision A: with kept advice for the Clip it is born in the
+        # recommended place (or the next free one that does not cover the product); no
+        # advice: as before. Only this new text — one that has a place never moves.
+        subtitles = self._clip_subtitles_on()
+        born = clip_texts_vm.new_text_place(
+            self._clip_placement_kept(),
+            clip_texts_vm.resolve_text_uses(uses, media),
+            uid,
+            subtitles=subtitles,
+        )
+        if born != clip_texts_vm.default_place(subtitles=subtitles):
+            uses = clip_texts_vm.set_place(uses, uid, born, subtitles=subtitles)
         self.clip_text_uses = uses
         self._clip_text_put = [uid]
         self.clip_text_error = ""
@@ -8069,6 +8623,41 @@ class CreativeState(rx.State):
         """«Arriba · En el medio · Abajo». «Abajo» is off while the subtitles are on: it
         says why and the text stays where it is (Deivid 2026-11-23)."""
         value = place[0] if isinstance(place, list) and place else place
+        self._clip_text_set_place(uid, value)
+
+    @rx.event
+    def use_clip_text_placement(self, uid: str) -> rx.event.EventSpec | None:
+        """EF-20 phase 2: «Poner el texto arriba», the warning's button — the ONLY way the
+        advice moves a text, and only when the owner taps it (Deivid 2026-11-23: never by
+        itself, never blocking). The place is the one the warning shows now, worked out
+        here (never one the browser names); without a warning it does nothing. The
+        button then leaves the page: the focus goes to the place chosen (ux-designer)."""
+        if not isinstance(uid, str) or uid != self._clip_text_current():
+            return None
+        resolved = self._clip_text_resolved()
+        use = next((u for u in resolved if str(u.get("uid")) == uid), None)
+        if use is None:
+            return None
+        hint = clip_texts_vm.placement_hint(
+            self._clip_placement_kept(),
+            str(use.get("place")),
+            subtitles=self._clip_subtitles_on(),
+            taken=self._clip_text_places_taken(resolved, use),
+        )
+        if not hint["use_place"]:
+            return None
+        self._clip_text_set_place(uid, hint["use_place"])
+        # UX review: said once, inside the panel (its live region), not by a toast nor
+        # again by the timeline's line («Cambiaste el lugar del texto.»), which sits
+        # behind the modal panel
+        self.clip_edit_notice = ""
+        self._clip_placement_done = uid
+        self._clip_placement_done_line = hint["done"]
+        block = clip_texts_vm.text_block_id(uid)
+        return rx.call_script(clip_texts_vm.focus_place_script(block))
+
+    def _clip_text_set_place(self, uid: str, value: object) -> None:
+        """`set_clip_text_place`'s rule, shared with the warning's button."""
         if not isinstance(value, str) or not self._clip_text_has(uid):
             return
         subtitles = self._clip_subtitles_on()
@@ -8372,6 +8961,9 @@ class CreativeState(rx.State):
         sideways; else ""."""
         fresh = self._clip_text_fresh
         self._clip_text_leave(old)
+        # EF-20 review: «Listo: el texto quedó …» belongs to the panel it was said in —
+        # another text chosen or the panel closed lets it go
+        self._clip_placement_done = self._clip_placement_done_line = ""
         closing = not new or clip_editor_vm.is_flow(new)
         if closing and fresh and self._clip_text_has(fresh) and not self._clip_text_fresh:
             return clip_texts_vm.text_block_id(fresh)
@@ -8391,6 +8983,8 @@ class CreativeState(rx.State):
             and clip_editor_vm.flow_of(block) != media
         ):
             self._clip_insert_at = -1
+        # m-25114465: one thing under the timeline at a time — a block or a flow closes a join
+        self.clip_join_open = ""
         if block != self.clip_edit_block:
             # a handle's «hasta aquí» and an off speed's «why» belong to their block
             self.clip_cut_error = ""
@@ -8922,6 +9516,11 @@ class CreativeState(rx.State):
         or photo moves it one place (D-T6: no buttons), on a text or effect ½ s, and on a
         handle that edge ½ s."""
         self._clip_notice_done()
+        if key == "Escape" and edge == "join":
+            # m-25114465: Escape in a join's panel closes it, as «Listo» (the script has
+            # already put the focus back on its point)
+            self.clip_join_open = ""
+            return []
         if key == "Escape":
             return self._clip_choose("") if self.clip_edit_block else []
         if key in ("ArrowUp", "ArrowDown") and not edge:
@@ -9726,7 +10325,8 @@ class CreativeState(rx.State):
         rows: list[dict[str, str]] = []
         for row in timeline_vm.media_blocks(media):  # type: ignore[arg-type]
             start, end = spans.get(row["id"], (0.0, 0.0))
-            time = f"de {timeline_vm.clock(start)} a {timeline_vm.clock(end)}"
+            # m-25129389: to the tenth — a 4,7 s video ends at 0:04,7, never «0:04,5»
+            time = f"de {timeline_vm.clock_tenth(start)} a {timeline_vm.clock_tenth(end)}"
             rows.append(
                 {
                     "id": row["id"],
@@ -9893,6 +10493,21 @@ class CreativeState(rx.State):
         self._set_clip_frame("first", *((first["key"], first["name"]) if first else ("", "")))
         self._set_clip_frame("last", *((last["key"], last["name"]) if last else ("", "")))
         self._clip_prune_photos()
+        self._clip_prune_joins()
+
+    def _clip_prune_joins(self) -> None:
+        """m-25114465 review: every way a block leaves or moves (its ✕, «Quitar», the
+        strip reordered…) goes through `_sync_clip_frames` — a join whose block is gone or
+        now first is forgotten, and the open join's panel closes with its block."""
+        if not self.clip_block_joins and not self.clip_join_open:
+            return
+        media = self._clip_tl_media()
+        kept = clip_joins_vm.clean_joins(self.clip_block_joins, media)
+        if kept != self.clip_block_joins:
+            self._clip_keep_joins(kept)
+        after_first = set(clip_joins_vm.segment_ids(media)[1:])
+        if self.clip_join_open and self.clip_join_open not in after_first:
+            self.clip_join_open = ""
 
     def _clip_prune_photos(self) -> None:
         """ED-14: a photo that left the Clip (its ✕, «Quitar», unmarked in the Galería,
@@ -13554,6 +14169,12 @@ class CreativeState(rx.State):
         self._pinterest_context_epoch += 1
         self.gallery_pick_note = ""
         self._clip_posters = {}
+        self._clip_frame_strips = {}
+        self._clip_strip_watch = ""  # a reader still running stops
+        self._clip_strip_beat = 0.0
+        self._clip_strip_keys = ""
+        self._clip_strip_done_keys = ""
+        self._clip_strip_done_at = 0.0
         self.source_pins = []
         self.clear_product()
         self.brand_logo_key = ""

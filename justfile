@@ -288,6 +288,17 @@ reels-worker *args:
 reel-purge *args:
     uv run --no-sync python -m qualify_api.referentes.reel_retention {{args}}
 
+# RF-04 (m-25119461): fill the region of the shared `creators` pool from FREE sources only —
+# the network's own country, TikTok's per-video region and Instagram reel locations already
+# cached in vendor_payloads, the search country of creator_sightings. No ScrapeCreators, no
+# Claude; idempotent (a re-run writes nothing new). Prints the business's coverage of
+# referente/competencia accounts before and after. The rubro only comes from the account
+# review (referentes.ai), never from here.
+#   just creators-region-backfill --tenant <uuid>          # that business's labeled accounts
+#   just creators-region-backfill --tenant <uuid> --pool   # the whole shared pool
+creators-region-backfill *args:
+    uv run --no-sync python -m qualify_api.creators.region_rubro {{args}}
+
 # m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
 # download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
 # for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.
@@ -605,6 +616,12 @@ eval-documentos *args:
 eval-escenas *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/run_experiment.py {{args}}
 
+# m-25112921: the avatar as a character in its scene, path A (Seedance 2.5 omni). `plan` and
+# `--dry-run` quote it and send nothing; a paid run needs --i-have-spend-authorization and
+# --max-usd (Deivid's written OK), and scenes run 23:00-05:00 Bogotá unless --allow-daytime.
+eval-avatar-escena *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/run_experiment.py {{args}}
+
 # m-24849234: Seedream 5.0 pro color/texture matrix. `--dry-run` quotes it and sends nothing;
 # a paid run needs --i-have-spend-authorization (the founder authorizes each one).
 eval-plantillas *args:
@@ -872,6 +889,22 @@ migration-guard pr base="main" sha="":
 # Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
 protect-main:
     gh api -X POST repos/AttitudeFactory/Qualify/rulesets --input infra/github/ruleset-main.json
+
+# --- Code graph (graphify, m-25129388) -------------------------------------------------
+# The graph is built by .github/workflows/code-graph.yml from main (3×/day) and synced by
+# the SessionStart hook; never `graphify update` locally (minutes, and through the worktree
+# symlinks it would overwrite the shared copy with branch code).
+
+# Sync now, in the foreground: link this worktree, download the latest graph if it changed.
+graph-sync:
+    python3 dev/code-graph-sync.py --now
+
+#   just graph-build          # skips if the published graph is already main's tip
+#   just graph-build true     # rebuild anyway
+# Ask CI to build and publish the graph of main now (REST dispatch, ~6 min of Actions).
+graph-build force="false":
+    gh api -X POST repos/AttitudeFactory/Qualify/actions/workflows/code-graph.yml/dispatches -f ref=main -f "inputs[force]={{force}}"
+    @echo "Dispatched code-graph (force={{force}}): gh api 'repos/AttitudeFactory/Qualify/actions/workflows/code-graph.yml/runs?per_page=1' --jq '.workflow_runs[0].html_url'"
 
 # Playwright browser tests (tests/e2e) — never part of CI. Boots the app on 3390/8390 with
 # fake auth and open signup, or uses QUALIFY_E2E_BASE_URL. Needs the compose Postgres

@@ -18,6 +18,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from qualify_api.http import effect_preview_routes
 from qualify_shared.objects.gate import ObjectGate
 from qualify_shared.objects.memory import MemoryObjectStore
 
@@ -54,7 +55,12 @@ def test_the_app_mounts_exactly_the_routers_this_test_knows() -> None:
     """A new router on the backend app must be added here AND to the Caddyfile."""
     mounted = re.findall(r"avatar_api\.include_router\((\w+)\)", APP_MODULE.read_text())
     assert sorted(mounted) == sorted(
-        ["r2_media_router", "seasonal_media_router", "piece_download_router"]
+        [
+            "r2_media_router",
+            "seasonal_media_router",
+            "piece_download_router",
+            "effect_preview_router",
+        ]
     )
     # ...and the backend app is still `avatar_api` (plus the upload fallback) only.
     assert re.search(r"api_transformer=\[avatar_api, upload_fallback\]", APP_MODULE.read_text())
@@ -67,8 +73,9 @@ def test_the_app_mounts_exactly_the_routers_this_test_knows() -> None:
         r2_media.router.routes,
         seasonal_media.router.routes,
         piece_download.router.routes,
+        effect_preview_routes.router.routes,
     ],
-    ids=["avatar_api", "r2_media", "seasonal_media", "piece_download"],
+    ids=["avatar_api", "r2_media", "seasonal_media", "piece_download", "effect_preview"],
 )
 def test_every_backend_route_is_proxied_by_caddy(routes: list) -> None:
     matcher = _reflex_backend_matcher()

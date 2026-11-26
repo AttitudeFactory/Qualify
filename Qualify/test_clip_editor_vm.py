@@ -102,14 +102,13 @@ def test_fixed_words() -> None:
     assert vm.whole_label(15) == "Usar el video entero"
     assert vm.whole_label(15.5) == "Usar los primeros 15 s"
     assert vm.fast_too_short_line(2) == (
-        "Tu video durará 2 s: muy poco para un reel. Elige un pedazo más largo o una "
-        "velocidad menor."
+        "Tu video durará 2 s: muy poco para un reel. Alarga el bloque o elige una velocidad menor."
     )
     assert (vm.FROM_LABEL, vm.TO_LABEL) == ("Desde", "Hasta")
     assert vm.ROTATE == "Girar"
     assert vm.ROTATE_LABEL == "Girar el video un cuarto de vuelta"
     assert vm.WHOLE_VIDEO == "Usar el video entero"
-    assert vm.TOO_SHORT == "El pedazo tiene que durar al menos 1 s."
+    assert vm.TOO_SHORT == "El bloque tiene que durar al menos 1 s."
     assert not hasattr(vm, "UNDO")  # Deivid 2026-11-19: no «Deshacer»
 
 
@@ -117,8 +116,10 @@ def test_numbered_words() -> None:
     assert vm.duration_line(4) == "Tu video durará 4 s."
     assert vm.usage_line(8) == "Usas 8 s de tu video."
     assert vm.usage_line(8.5) == "Usas 8,5 s de tu video."
-    # the timeline's ½ s rounding, as the chosen block's heading (Deivid, 2026-11-16)
-    assert vm.usage_line(6.6) == "Usas 6,5 s de tu video."
+    # the timeline's rounding, as the chosen video's heading (Deivid, 2026-11-16) — to
+    # the tenth since m-25129389
+    assert vm.usage_line(6.6) == "Usas 6,6 s de tu video."
+    assert vm.usage_line(3.22) == "Usas 3,2 s de tu video."
     assert vm.usage_line(12.04) == "Usas 12 s de tu video."
     assert vm.range_line(4, 12) == "Desde 0:04 · Hasta 0:12"
     assert not hasattr(vm, "card_title")  # ED-10: the card «Tu video» is gone
@@ -126,7 +127,7 @@ def test_numbered_words() -> None:
 
 
 def test_refusals_and_low_resolution() -> None:
-    assert vm.refusal_text("too_short") == "El pedazo tiene que durar al menos 1 s."
+    assert vm.refusal_text("too_short") == "El bloque tiene que durar al menos 1 s."
     assert vm.refusal_text("outside_video") == (
         "No pudimos usar ese pedazo de tu video. Prueba con otro."
     )
@@ -316,7 +317,7 @@ def test_fast_motion_is_judged_by_ef04s_plan_speed() -> None:
     seconds, warning = vm.fast_check(key="k", start=0, end=7.5, speed=5)
     assert seconds == 1.5
     assert warning == (
-        "Tu video durará 1,5 s: muy poco para un reel. Elige un pedazo más largo o una "
+        "Tu video durará 1,5 s: muy poco para un reel. Alarga el bloque o elige una "
         "velocidad menor."
     )
     # 1300 s at ×20 = 65 s: past a reel's 60 s (EF-07's words)
@@ -324,7 +325,7 @@ def test_fast_motion_is_judged_by_ef04s_plan_speed() -> None:
     assert seconds == 65.0
     assert warning == (
         "Con esa velocidad tu video duraría 65 s: muy largo para un reel. Elige una velocidad "
-        "mayor o corta un pedazo más corto."
+        "mayor o acorta el bloque."
     )
     # what EF-04 cannot plan at all (here, an empty stretch) gets the generic line
     assert vm.fast_check(key="k", start=4, end=4, speed=10) == (0.0, vm.REFUSAL_GENERIC)
@@ -631,15 +632,15 @@ def test_the_length_line_offers_only_what_the_screen_has() -> None:
         "velocidad."
     )
     assert vm.length_out_of_range_line(75.0, video=True) == (
-        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video, o "
+        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o bloque de video, o "
         "hazlo más rápido en «Velocidad»."
     )
     assert vm.length_out_of_range_line(75.0, fast=True, video=True) == (
-        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video, o "
+        "Tu video dura 75 s y puede durar hasta 60 s. Quita alguna foto o bloque de video, o "
         "sube la velocidad."
     )
     assert vm.length_out_of_range_line(62.0) == (
-        "Tu video dura 62 s y puede durar hasta 60 s. Quita alguna foto o pedazo de video."
+        "Tu video dura 62 s y puede durar hasta 60 s. Quita alguna foto o bloque de video."
     )
 
 
@@ -652,7 +653,7 @@ def test_speed_facts_read_the_stretches() -> None:
     assert vm.speed_facts([faster]) == (True, True)
     # no speed is on for the own video (under 6 s): «Velocidad» is never offered as a way out
     assert vm.speed_facts([photo, video], speed_offered=False) == (False, False)
-    assert vm.length_out_of_range_line(110.0, video=False).endswith("pedazo de video.")
+    assert vm.length_out_of_range_line(110.0, video=False).endswith("bloque de video.")
     assert vm.refusal_line(["local_length_out_of_range"], 70.0, [faster]) == (
         vm.length_out_of_range_line(70.0, fast=True, video=True)
     )
@@ -700,7 +701,7 @@ def test_ed03_lines() -> None:
     assert vm.speed_changed_line(2, 10) == "Pusiste el video 2 ×10."
     assert vm.speed_changed_line(2, 1) == "Volviste el video 2 a la velocidad normal."
     assert vm.piece_too_short_line(20, 0.1) == (
-        "Con ×20 este pedazo duraría 0,1 s: es muy poco. Alárgalo o elige una velocidad menor."
+        "Con ×20 este bloque duraría 0,1 s: es muy poco. Alárgalo o elige una velocidad menor."
     )
 
 
@@ -718,7 +719,7 @@ def test_trim_bounds_inside_the_material_the_least_and_a9s_minute() -> None:
     assert vm.trim_value(3.204, (0.0, 14.0)) == 3.2
     assert vm.trim_value(-1, (0.0, 14.0)) == 0.0 and vm.trim_value(99, (0.0, 14.0)) == 14.0
     assert vm.too_short_text(1) == vm.TOO_SHORT
-    assert vm.too_short_text(10) == "El pedazo tiene que durar al menos ½ s."
+    assert vm.too_short_text(10) == "El bloque tiene que durar al menos ½ s."
 
 
 def test_a9_before_crear_and_as_a_refusal() -> None:

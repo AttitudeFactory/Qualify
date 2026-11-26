@@ -294,6 +294,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .chat_settings_state import ChatSettingsState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
+    from .contact_sheet_panel import ContactSheetState
     from .conversations_state import ConversationsState
     from .create_gallery_state import CreateGalleryState
     from .creative_state import CreativeState
@@ -313,6 +314,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .inbox_state import InboxState
     from .investment_profile_state import InvestmentProfileState
     from .leads_state import LeadsState
+    from .monthly_post_state import MonthlyPostState
     from .offer_mark_state import OfferMarkState
     from .part_progress_state import PartProgressState
     from .parts_start_state import PartsStartState
@@ -357,6 +359,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         InvestmentProfileState,
         # m-25091392: the month plan card on Anuncios
         AdMonthPlanState,
+        # m-25120704: «Publicación del mes» on the Planificador
+        MonthlyPostState,
         PromotionState,
         AdResultsState,
         ConnectionsState,
@@ -385,6 +389,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         UploadPreviewState,
         PinterestState,
         FinalVideoState,  # m-24921084: «Tu video completo» of a video by parts
+        # m-25026598 EF-18: the piece's contact sheet (`/r2media` paths of a tenant)
+        ContactSheetState,
         # «Descubrir reels» (2026-10-15): the brand's referentes' reels
         DiscoverReelsState,
         # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step, chosen

@@ -93,7 +93,10 @@ def test_shared_field_names_are_the_backends(screen: ModuleType) -> None:
     check(screen.SourceSegment, schemas.SourceSegment)
     check(screen.VideoTextLayer, schemas.VideoTextLayer)
     check(screen.EffectUse, schemas.EffectUse)
-    assert _fields(screen.SourceSegment) == list(schemas.SourceSegment.model_fields)
+    # m-25114465: the server reads a block's `transition_in` before the screen writes it
+    # (the Clip editor's join selector adds it to `editor_preview_contract.SourceSegment`)
+    full = list(schemas.SourceSegment.model_fields)
+    assert _fields(screen.SourceSegment) in (full, [f for f in full if f != "transition_in"])
     # the screen's PartRecipe is the subset it writes; `text_layer` is v1's key, which the
     # backend still reads (as `text_layers` of one)
     check(screen.PartRecipe, schemas.PartRecipe, legacy={"text_layer"})
@@ -213,7 +216,8 @@ def test_the_screens_text_backgrounds_and_motions_are_the_backends(screen: Modul
         "text_too_long_for_large",
     )
     assert get_args(screen.RecipeProblem)[-6:] == codes
-    assert schemas.RECIPE_REFUSALS[-6:] == codes
+    # m-25114465 appended two block codes after them (the screen has no use for them yet)
+    assert schemas.RECIPE_REFUSALS[-8:-2] == codes
     # the text's new fields close the list, in this order
     assert list(schemas.VideoTextLayer.model_fields)[-6:] == [
         "fade_s",

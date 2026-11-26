@@ -36,7 +36,15 @@ from qualify_api.claude_tools import Attribution
 from qualify_api.creative import models as orm
 from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.creative.brand_service import BrandKitService
-from qualify_api.creative.composition import media_root, production_content_service
+from qualify_api.creative.composition import (
+    PRESENTER_KEY_ENVS,
+    VIDEO_ENGINE_ENV,
+    VIDEO_ENGINES,
+    configured_video_engine,
+    media_root,
+    presenter_keys_ready,
+    production_content_service,
+)
 from qualify_api.creative.context_ai import FEATURE as CONTEXT_FEATURE
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
 from qualify_api.creative.creations import CreationsBalance
@@ -142,6 +150,11 @@ from .reel_parts_vm import QUEUE_OFF_TEXT
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PRESENTER_KEY_ENVS",
+    "VIDEO_ENGINE_ENV",
+    "VIDEO_ENGINES",
+    "configured_video_engine",
+    "presenter_keys_ready",
     "acting_user_id",
     "approval_videos",
     "creations_balance",
@@ -153,6 +166,7 @@ __all__ = [
     "brand_clone_voice",
     "brand_readiness",
     "catalog_products",
+    "clip_placement_advice",
     "default_brand_id",
     "draft_detail",
     "edit_variant",
@@ -197,6 +211,51 @@ def business_kind(tenant_id: UUID, brand_id: UUID) -> tuple[str, str]:
     connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
     data = connect if isinstance(connect, dict) else {}
     return str(data.get("sector") or ""), str(data.get("rubro_text") or "")
+
+
+@dataclasses.dataclass(frozen=True)
+class ClipPlacementRead:
+    """What `clip_placement_advice` read for a Clip's videos."""
+
+    #: The kept advice per source key (`PlacementAdvice.to_params`); {} = none.
+    advice: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+    #: A video the owner uploaded here has no advice yet (the `media-worker` makes it a
+    #: little after the upload): worth reading again later. Never for a video that will
+    #: never get one (Galería, stock, a publication) nor with the switch off.
+    waiting: bool = False
+    #: The read failed: keep what was shown, and try again later.
+    failed: bool = False
+
+
+def clip_placement_advice(
+    tenant_id: UUID, source_keys: Sequence[str], env: Mapping[str, str] | None = None
+) -> ClipPlacementRead:
+    """EF-20 phase 2 (m-25026599): the advice already kept for the Clip's uploaded videos —
+    where the product shows and which band the text should go to — as plain dicts,
+    keyed by source key. ONE query through `placement_advice_for` (`tenant_session`;
+    another business's key is left out, never looked up). Blocking (database): the state
+    calls it in a thread. It only READS: the advice is made by the `media-worker`;
+    nothing here asks the model.
+
+    With the switch off (`QUALIFY_VIDEO_PLACEMENT_AI`) or no key: no advice and nothing
+    to wait for — the editor shows nothing new. Never raises (a failure is `failed`)."""
+    from qualify_api.creative.placement_advice import placement_advice_for  # noqa: PLC0415
+    from qualify_api.creative.placement_ai import placement_enabled  # noqa: PLC0415
+    from qualify_api.creative.upload_previews import is_previewable  # noqa: PLC0415
+
+    keys = [str(key) for key in source_keys if key]
+    if not keys or not placement_enabled(env):
+        return ClipPlacementRead()
+    try:
+        found = placement_advice_for(tenant_id, keys)
+        advisable = [key for key in keys if is_previewable(tenant_id, key)]
+    except Exception as exc:  # noqa: BLE001 — a hint is never worth failing the editor
+        logger.warning("placement advice not read: %s", type(exc).__name__)
+        return ClipPlacementRead(failed=True, waiting=True)
+    return ClipPlacementRead(
+        advice={key: advice.to_params() for key, advice in found.items()},
+        waiting=any(key not in found for key in advisable),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -608,30 +667,10 @@ def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:
 
 
 def brand_character(tenant_id: UUID, brand_id: UUID) -> dict[str, str]:
-    """The «Avatar animado»'s character, from the Brand Kit (§ request 2026-10-20: no
-    picker any more): the brand's own drawn avatar when the kit has a ready one (an image
-    Qualify made for the brand, so its rights are the brand's), else a mascot described
-    from the kit — name, business, colours, tone. `{}` without a kit.
+    """The «Avatar animado»'s character (`qualify_api.creative.brand_avatar`)."""
+    from qualify_api.creative.brand_avatar import brand_character as character
 
-    `{source: "image", key, name}` or `{source: "ai", prompt, name}`."""
-    from qualify_api.creative.brand_avatar import (
-        AvatarStatus,
-        describe_character,
-        load_avatar_inputs,
-        load_brand_avatar,
-    )
-
-    avatar = load_brand_avatar(tenant_id, brand_id)
-    if avatar is not None and avatar.status is AvatarStatus.READY and avatar.object_key:
-        return {"source": "image", "key": avatar.object_key, "name": "El avatar de tu marca"}
-    inputs = load_avatar_inputs(tenant_id, brand_id)
-    if inputs is None:
-        return {}
-    return {
-        "source": "ai",
-        "prompt": describe_character(inputs),
-        "name": "La mascota de tu marca, creada con tu Brand Kit",
-    }
+    return character(tenant_id, brand_id)
 
 
 def enhance_generator_context(
@@ -1568,38 +1607,9 @@ def reject_draft(
 # ---------------------------------------------------------------------------
 # The avatar kinds' video engine (/create, § request 2026-10-07; ByteDance 2026-10-16)
 
-#: Which vendor renders the two avatar kinds. HeyGen is retired (2026-10-16): the
-#: talking presenter is OmniHuman (photo + Seed Speech voice, lips in sync), the scene
-#: video Seedance. Read per call, like the keys: an env change, nothing else.
-VIDEO_ENGINE_ENV = "QUALIFY_VIDEO_ENGINE"
-VIDEO_ENGINES = ("omnihuman", "seedance")
-#: The two keys the talking presenter needs (Seed Speech reads, OmniHuman animates).
-PRESENTER_KEY_ENVS = ("QUALIFY_BYTEPLUS_SPEECH_API_KEY", "QUALIFY_BYTEPLUS_CV_API_KEY")
+# the avatar kinds' engine lives in the backend (`composition.configured_video_engine`,
+# m-25121346): the monthly post reads the same one
 GENDERS = ("female", "male")
-
-
-def presenter_keys_ready() -> bool:
-    import os
-
-    return all(os.environ.get(name, "").strip() for name in PRESENTER_KEY_ENVS)
-
-
-def configured_video_engine() -> str:
-    """`QUALIFY_VIDEO_ENGINE` when it names a live engine; otherwise OmniHuman once both
-    of its keys are set (§ request 2026-10-16: «dejar todo preparado para cuando tenga
-    las api key»), Seedance until then. A stale `heygen` falls through the same way."""
-    import os
-
-    value = (os.environ.get(VIDEO_ENGINE_ENV) or "").strip().lower()
-    if value in VIDEO_ENGINES:
-        return value
-    if not presenter_keys_ready():
-        return "seedance"
-    # OmniHuman downloads the photo and the voice: without a public URL (a local run, no
-    # tunnel) every presenter would fail after its frame and voice were paid for
-    from qualify_api.creative.composition import public_media_ready
-
-    return "omnihuman" if public_media_ready() else "seedance"
 
 
 # ---------------------------------------------------------------------------
