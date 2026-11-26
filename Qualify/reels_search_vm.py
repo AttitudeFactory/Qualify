@@ -37,7 +37,7 @@ BUSY_LABEL = "Buscando…"
 #: Over the list while the search runs (the «preparando» state).
 SEARCHING_NOTICE = SEARCHING_TEXT
 #: The brand has nothing to search with yet (ux-designer, approved by Deivid 2026-11-26).
-NOT_READY_NOTICE = "Para buscar reels nuevos, primero elige al menos una cuenta en «Competidores»."
+NOT_READY_NOTICE = "Para buscar reels nuevos, primero agrega al menos una cuenta que te inspire."
 #: The press could not even be queued (the database did not answer).
 START_FAILED = "No pudimos empezar la búsqueda. Inténtalo de nuevo en unos minutos."
 #: The one toast id: a second notice replaces the first instead of stacking under it.

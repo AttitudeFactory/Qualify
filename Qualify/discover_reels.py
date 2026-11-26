@@ -2066,7 +2066,6 @@ def _ideas() -> rx.Component:
                 callout(reels_search_vm.SEARCHING_NOTICE, "info", live=False),
             ),
             role="status",
-            aria_live="polite",
             width="100%",
         ),
         rx.cond(S.searching, _ticker(S.refresh_search)),

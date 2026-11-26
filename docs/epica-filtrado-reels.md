@@ -142,8 +142,8 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   misma fila. Si falla la revisión y el worker la va a reintentar solo, sigue «buscando». Si
   lleva más de 15 min en cola, el botón se libera y avisa una vez: «La búsqueda está tardando
   más de lo normal. En un rato toca «Buscar reels nuevos» para ver si ya llegaron.» Sin
-  brief o sin cuentas, avisa: «Para buscar reels nuevos, primero elige al menos una cuenta en
-  «Competidores».»
+  brief o sin cuentas, avisa: «Para buscar reels nuevos, primero agrega al menos una cuenta que te
+  inspire.»
 - **Tope del negocio:** si ya se gastó (150 al día, 600 al mes), no se encola nada y aparece
   «Hoy ya se alcanzó el límite de lecturas de tu negocio. Inténtalo mañana.» (en el mensual, el
   texto mensual de RF-05). Si se alcanza a mitad de la corrida, la compuerta la para
@@ -161,7 +161,7 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   mientras busca, el texto y el nombre accesible dicen «Buscando…», y el aviso «Estamos
   buscando…» es un `callout` informativo dentro de la única región `role="status"`. Desde
   1000 px de barra lleva texto; entre 760 y 1000 px solo el ícono, para que la fila no se
-  parta (la palabra corta «Buscar» no se probó: medirla a 760 px necesita el navegador). En la versión angosta
+  parta (medido en vivo: a ~780 px los chips quedan entre 92 y 117 px y «Buscar» no cabe). En la versión angosta
   es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
   con su nombre en `aria-label` y `title`.
 - Sin migración y sin llamadas pagadas en las pruebas (fakes detrás de la compuerta real).

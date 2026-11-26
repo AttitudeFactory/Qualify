@@ -45,7 +45,7 @@ def test_a_brand_that_cannot_search_is_told_what_to_do() -> None:
         searching=False, reload=True, notice=vm.NOT_READY_NOTICE, tone=vm.TONE_INFO
     )
     assert vm.NOT_READY_NOTICE == (
-        "Para buscar reels nuevos, primero elige al menos una cuenta en «Competidores»."
+        "Para buscar reels nuevos, primero agrega al menos una cuenta que te inspire."
     )
 
 
