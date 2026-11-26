@@ -283,6 +283,33 @@ def test_an_idea_is_added_after_the_track_without_deleting_anything() -> None:
     assert blocks.problems(tenant_id=TENANT_ID) == ()
 
 
+@pytest.mark.usefixtures("ai_parts_on")
+def test_a_join_into_the_added_parts_cuts_what_the_track_had(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CLIP_BLOCK_TRANSITIONS_SWITCH, "on")
+    track = ClipBlocks(
+        segments=(_own(4.0),),
+        text_layers=(VideoTextLayer(text="Hola", start_s=0, end_s=4),),
+        effects=(SMOKE,),
+    )
+    added = (
+        VideoPartPlan(
+            seconds=5,
+            description="Una arepa en la plancha.",
+            transition_in=FADE,
+            text_layers=(VideoTextLayer(text="Pide la tuya"),),
+        ),
+    )
+    blocks = blocks_from_plan(added, after=track)
+
+    # the new part starts at 4 - 0.5 = 3.5 s: the old text and the old smoke («the whole
+    # video» of before) stop there, and the two texts never overlap
+    assert [(t.start_s, t.end_s) for t in blocks.text_layers] == [(0.0, 3.5), (3.5, 8.5)]
+    assert (blocks.effects[0].start_s, blocks.effects[0].end_s) == (0.0, 3.5)
+    assert blocks.problems(tenant_id=TENANT_ID) == ()
+
+
 def test_an_idea_that_does_not_fit_eight_blocks_is_refused() -> None:
     track = ClipBlocks(segments=tuple(_own(2.0) for _ in range(6)))
     with pytest.raises(PlanBlocksRefused) as refused:

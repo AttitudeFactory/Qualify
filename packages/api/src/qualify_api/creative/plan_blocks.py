@@ -25,7 +25,12 @@ of a Clip's timeline, in the shape of the contract of PR 1 (`docs/contrato-edito
 proposed parts at the end and deletes nothing — the blocks that exist keep their
 `ai_part:<n>`, the new entries go at the end of `ai_parts`, and the caps still hold (8
 blocks, 6 AI children with scenes and avatars, 3 texts, 8 effects): what does not fit is
-refused with those same codes (`PlanBlocksRefused`), never cut in silence.
+refused with those same codes (`PlanBlocksRefused`), never cut in silence. What the
+track had ends where the first new part starts (a transition into it overlaps the old
+end; «until the end» meant the old end). The plan is checked on its own, so an added
+part cannot be «Sigue a la anterior» (`extend_order`; `propose_parts` never proposes
+one). The provenance kept is the latest proposal's (`MediaInputs.parts_provenance` holds
+one); each call's cost stays in its own usage record.
 
 Pure: no database, no file but the cached effects library, no vendor, nothing written or
 paid. The plan is checked against its analysis first, as the parts flow checks it
@@ -36,6 +41,7 @@ contract's (`ClipBlocks.problems`, `validate_recipe`, which also reads the switc
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from uuid import UUID
@@ -62,6 +68,7 @@ from qualify_api.creative.parts_ai import PartsProposal
 from qualify_api.creative.parts_plan import _place, _same_text, _touch, check_edited_plan
 from qualify_api.creative.video_pipeline.ai_parts import AI_CHILDREN_MAX, AI_PART_TEXTS
 from qualify_api.creative.video_pipeline.recipe import (
+    block_frames,
     block_overlaps,
     clip_seconds,
     validate_recipe,
@@ -238,7 +245,27 @@ def _span(
     span = _place(start, end, part_start, part_start + length, window_end)
     if span is None:
         raise PlanBlocksRefused(BLOCKS_SPAN_LOST)
-    return round(span[0], 3), min(round(span[1], 3), window_end)
+    return round(span[0], 3), _rounded_end(span[1], window_end)
+
+
+def _rounded_end(end: float, window_end: float) -> float:
+    """`end` to the millisecond, never past `window_end` (rounded down when it is cut)."""
+    end = min(end, window_end)
+    rounded = round(end, 3)
+    return rounded if rounded <= window_end else math.floor(window_end * 1000) / 1000
+
+
+def _until[Use: (EffectUse, VideoTextLayer)](use: Use, cut: float) -> Use:
+    """A use the track already had, cut where the first new part starts: a transition
+    into that part overlaps the old end and belongs to the part coming in, and «until the
+    end» (`end_s` None) meant the OLD end. `span_lost` when it would start at `cut` or
+    later — never dropped in silence."""
+    if use.end_s is not None and use.end_s <= cut:
+        return use
+    start = use.start_s or 0.0
+    if start >= cut - 1e-6:
+        raise PlanBlocksRefused(BLOCKS_SPAN_LOST)
+    return use.model_copy(update={"start_s": start, "end_s": _rounded_end(cut, cut)})
 
 
 def _place_effect(use: EffectUse, start: float, length: float, end: float) -> EffectUse:
@@ -308,11 +335,13 @@ def blocks_from_plan(
     overlaps = block_overlaps(recipe, library)
     total = clip_seconds(recipe)
     # where each block starts in the final video: after the ones before, minus the
-    # transitions that overlap them (as the block join lays them, at 30 fps)
-    lengths = [s.output_seconds for s in segments]
+    # transitions that overlap them, in the frames the block join lays them in (30 fps)
+    frames = block_frames(recipe)
     starts = [
-        sum(lengths[:at]) - sum(overlaps[1 : at + 1]) / SPEED_FPS for at in range(len(segments))
+        (sum(frames[:at]) - sum(overlaps[1 : at + 1])) / SPEED_FPS for at in range(len(segments))
     ]
+    # what the track already had ends where the first new part starts (`_until`)
+    cut = starts[firsts[0]] if base.segments and firsts else total
     windows = [
         (
             starts[first],
@@ -322,7 +351,7 @@ def blocks_from_plan(
         for at, (entry, first) in enumerate(zip(plan, firsts, strict=True))
     ]
     effects = [
-        *base.effects,
+        *(_until(use, cut) for use in base.effects),
         *_carry(
             [entry.effects for entry in plan],
             windows,
@@ -333,7 +362,7 @@ def blocks_from_plan(
         ),
     ]
     texts = [
-        *base.text_layers,
+        *(_until(layer, cut) for layer in base.text_layers),
         *_carry(
             [entry.text_layers for entry in plan],
             windows,
