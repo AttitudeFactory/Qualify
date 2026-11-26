@@ -27,6 +27,7 @@ import reflex as rx
 
 from .final_review_panel import final_review_panel
 from .final_review_state import FinalReviewState
+from .monthly_post_ui import monthly_post_card
 from .planner_back import planner_back_link
 from .planner_drawer import (
     assign_drawer,
@@ -1570,6 +1571,8 @@ def planner_index() -> rx.Component:
                     align="start",
                 ),
             ),
+            # m-25120704: under the week, where the month's post will show up
+            monthly_post_card(),
             spacing="3",
         ),
         assign_drawer(),

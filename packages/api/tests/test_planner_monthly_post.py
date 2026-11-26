@@ -48,7 +48,7 @@ def test_set_then_get_round_trips_per_brand() -> None:
     assert get_monthly_post_setting(T, uuid4(), store=store).enabled is False
 
 
-@pytest.mark.parametrize("kind", ["nope", "shot_video", "own_media", ""])
+@pytest.mark.parametrize("kind", ["nope", "shot_video", "own_media", "creator_script", ""])
 def test_kind_is_validated_at_the_boundary(kind: str) -> None:
     store = FakeStore()
     with pytest.raises(ValueError):
@@ -71,6 +71,8 @@ def test_kinds_are_what_crear_pieza_offers() -> None:
     assert ContentKind.STATIC_FLYER in MONTHLY_POST_KINDS
     assert ContentKind.SHOT_VIDEO not in MONTHLY_POST_KINDS
     assert ContentKind.OWN_MEDIA not in MONTHLY_POST_KINDS
+    # founder, 2026-11-25: a script to record is not a ready-to-publish piece
+    assert ContentKind.CREATOR_SCRIPT not in MONTHLY_POST_KINDS
 
 
 def test_the_setting_survives_a_wizard_save() -> None:

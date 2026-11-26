@@ -3,7 +3,8 @@
 Each month Qualify may prepare one post for the brand, and every such post spends one of
 the client's monthly creations. So it is opt-in: `enabled` is **off** until the owner turns
 it on (founder, 2026-11-25), and `kind` is the piece type they want, one of the kinds
-«Crear pieza» offers (`ContentKind.is_offered`), the advertising image by default.
+«Crear pieza» offers (`ContentKind.is_offered`) except the script to record (it is not a
+ready-to-publish piece; founder, 2026-11-25), the advertising image by default.
 
 Stored without a table, like the seasons' «Ahora no» (`whatsapp.seasons`): ONE reserved key
 of the brand's `connect` details document, `brand_kit_details.connect.monthly_post =
@@ -25,9 +26,10 @@ from qualify_api.creative.brand_kit_store import BrandKitStore
 MONTHLY_POST_DOCUMENT: Final = "connect"
 MONTHLY_POST_KEY: Final = "monthly_post"
 DEFAULT_KIND: Final = ContentKind.STATIC_FLYER
-#: The kinds the owner can choose: exactly what «¿Qué creamos?» offers.
+#: The kinds the owner can choose: what «¿Qué creamos?» offers, minus the script to record
+#: (it yields a script for someone to film, not a piece ready to publish).
 MONTHLY_POST_KINDS: Final[tuple[ContentKind, ...]] = tuple(
-    kind for kind in ContentKind if kind.is_offered
+    kind for kind in ContentKind if kind.is_offered and kind is not ContentKind.CREATOR_SCRIPT
 )
 
 
@@ -38,12 +40,12 @@ class MonthlyPostSetting:
 
 
 def parse_kind(kind: str | ContentKind) -> ContentKind:
-    """The boundary check: a kind «Crear pieza» offers, else `ValueError`."""
+    """The boundary check: one of `MONTHLY_POST_KINDS`, else `ValueError`."""
     try:
         parsed = ContentKind(kind)
     except ValueError:
         raise ValueError(f"unknown piece kind {kind!r}") from None
-    if not parsed.is_offered:
+    if parsed not in MONTHLY_POST_KINDS:
         raise ValueError(f"piece kind {parsed.value!r} is not offered for the monthly post")
     return parsed
 
