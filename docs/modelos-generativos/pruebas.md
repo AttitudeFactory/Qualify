@@ -22,6 +22,19 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="avfoto-001"></a>
+
+## AVFOTO-001 — Personaje realista dibujado por Seedream desde la foto de una persona real, como referencia de Seedance 2.5 (m-25129385, ADR 50 §12.12) — 2026-11-26 · MEDIDO: NO VIABLE · Seedream 6 de 6, Seedance 0 de 3; US$0,27
+
+- **Qué:** 3 personas con permiso escrito (`p1`, `p2`, `p3`). Por foto, 2 dibujos de `dola-seedream-5-0-pro-260628` (imagen a imagen, la foto como única referencia, 1080×1920, prompt `personaje-desde-foto-v1`), y la opción 1 como «Image 1» de la escena e1 de AVESC-001 en `dreamina-seedance-2-5-260628` (5 s, borrador 480p, 9:16, con audio, prompt `avatar-escena-v1`, mismo producto y fondo dibujado). Tabla `v10`. Corrida `20261126-161128`, con el OK de Deivid («OK US$3, ahora»), tope US$3. Banco `packages/api/evals/avatar_escena/personaje_foto.py` (`just eval-avatar-foto`). Fotos, dibujos y planilla solo en `%TEMP%/avatar-foto-real/`.
+- **Resultado:** Seedream aceptó las 3 fotos y dibujó los 6 personajes (US$0,045 cada uno, 26 a 38 s). Seedance **rechazó las 3 escenas** al crear la tarea, en ≈ 5 s y sin cobro: `HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation: The request failed because the input image 'content[1]' may contain real person`. `content[1]` es el dibujo del personaje. Request ids: `02179572409229945c07e4ff35b1f55227084b3d76e9a8042e77d`, `0217957240976109ded32e803badef81244c2c5f5c7f1be339226`, `02179572410267116e812ea4822a09eb3d0e01cc9319ecd7bbb9e`.
+- **Costo real:** US$0,27 (dibujos); escenas US$0.
+- **Conclusión:** el camino «foto real → dibujo de Seedream → Seedance» **no funciona tal como se planteó**. Un dibujo hecho desde una foto no pasa como «salida propia de Seedream»; en AVESC-001 un rostro igual de realista hecho desde texto sí pasó. Por qué lo detecta (el origen imagen a imagen o el parecido con la persona) es **[inferencia]**.
+- **Lo reabriría (sin medir):** la verificación de identidad propia de BytePlus para personas reales (`docs/byteplus-datos-de-clientes.md` §1.4); o, como **hipótesis**, un dibujo estilizado o animado desde la foto (AVFOTO-002, planificada).
+- **Pendiente:** el parecido de los 6 dibujos, de 1 a 3, a juicio de Deivid (`juicio-deivid.csv` de la corrida). En las 2 opciones de `p3` Seedream inventó letras en el delantal pese a «No text». Detalle en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVFOTO-001»).
+
+---
+
 <a id="avesc-001"></a>
 
 ## AVESC-001 — Avatar como personaje en su escena, camino A: Seedance 2.5 omni en borrador (m-25112921) — 2026-11-26 · 6 de 6 referencias aceptadas; labios bien en las escenas (Deivid), 2 defectos; falta el juicio de Herwin; US$5,02
