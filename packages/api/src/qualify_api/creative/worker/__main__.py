@@ -83,6 +83,9 @@ def production_executors() -> dict[str, JobExecutor]:
     from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter
     from qualify_creative.adapters.byteplus_omnihuman import OmniHumanVideoAdapter
 
+    from qualify_api.creative.business_character_ai import (
+        production_business_character_executor,
+    )
     from qualify_api.creative.composition import (
         ARK_BASE_URL,
         ARK_BASE_URL_ENV,
@@ -120,7 +123,11 @@ def production_executors() -> dict[str, JobExecutor]:
         # their own pool (never a Seedance slot); the executor opens R2 on first use
         q.SEEDREAM_PRO_POOL: KindRoutedExecutor(
             UnknownKindExecutor(),
-            {KIND_STICKER_CHARACTER: production_character_executor},
+            {
+                KIND_STICKER_CHARACTER: production_character_executor,
+                # m-25129385: the business characters' options ride the same pool
+                q.KIND_BUSINESS_CHARACTER: production_business_character_executor,
+            },
         ),
         q.OMNIHUMAN_POOL: PipelineExecutor(
             service,
