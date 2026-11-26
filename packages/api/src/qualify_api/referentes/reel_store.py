@@ -86,8 +86,10 @@ RETRYABLE = frozenset({STATUS_CHECK_FAILED, STATUS_ERROR})
 def retryable(trigger: str) -> frozenset[str]:
     """What `enqueue(retry=True)` puts back in the queue for `trigger`. A manual read of a
     competitor (RF-05) also comes back from `budget_stopped`: the owner presses again once
-    the gate lets reads through (`competitors.read_now` checks the cap first)."""
-    if trigger == TRIGGER_COMPETITOR_NOW:
+    the gate lets reads through (`competitors.read_now` checks the cap first). So does the
+    owner's «Buscar reels nuevos» (RF-14) that the gate stopped before the business's cap
+    (`manual_search.search_now` re-queues only that case)."""
+    if trigger in (TRIGGER_COMPETITOR_NOW, TRIGGER_MANUAL):
         return RETRYABLE | {STATUS_BUDGET_STOPPED}
     return RETRYABLE
 
@@ -380,6 +382,11 @@ class ReelRunStore(Protocol):
     ) -> list[RunRecord]:
         """RF-05: the brand's `competitor_now` runs — of `run_date` when given, ended after
         `finished_after` when given — newest first."""
+        ...
+
+    def manual_run(self, tenant_id: UUID, brand_id: UUID, *, run_date: date) -> RunRecord | None:
+        """RF-14: the brand's `manual` run («Buscar reels nuevos») of `run_date` — at most
+        one (`uq_brand_reel_run`) — or None."""
         ...
 
     # -- the screen's opening and the tenant's clock (R8) ------------------------------
@@ -839,6 +846,19 @@ class MemoryReelRunStore:
         ]
         return sorted(
             mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at, r.id), reverse=True
+        )
+
+    def manual_run(self, tenant_id: UUID, brand_id: UUID, *, run_date: date) -> RunRecord | None:
+        return next(
+            (
+                r
+                for r in self.runs.values()
+                if r.tenant_id == tenant_id
+                and r.brand_id == brand_id
+                and r.trigger == TRIGGER_MANUAL
+                and r.run_date == run_date
+            ),
+            None,
         )
 
     # the screen's opening and the tenant's clock
@@ -1575,6 +1595,17 @@ class PostgresReelRunStore:
                 {"brand": brand_id, "run_date": run_date, "after": finished_after},
             ).all()
             return [_run(row) for row in rows]
+
+    def manual_run(self, tenant_id: UUID, brand_id: UUID, *, run_date: date) -> RunRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE brand_id = :brand "
+                    "AND trigger = 'manual' AND run_date = :run_date LIMIT 1"
+                ),
+                {"brand": brand_id, "run_date": run_date},
+            ).first()
+            return _run(row) if row is not None else None
 
     # the screen's opening and the tenant's clock
     def mark_opened(

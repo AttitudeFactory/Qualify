@@ -127,6 +127,40 @@ días», «Más reels revisados» y sus textos. Los textos de RF-05 que nombraba
 dicen «tus ideas». Sigue sin haber llamadas pagadas: es la misma lectura de RF-01, con
 `limit=16`.
 
+**RF-14 (m-25129383, 2026-11-26): «Buscar reels nuevos».** Es la R9 de ADR 42. El botón
+encola una corrida `manual` de la marca para el día local del negocio
+(`referentes/manual_search.py`). La paga el `reels-worker` con `reel_runs.run`, la única puerta
+que paga. Lee las mismas cuentas que la corrida del lunes: los referentes y los 6 competidores
+elegidos (`_run_claimed` ya no limita los competidores a `weekly`). Lo ya leído no se paga dos
+veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardados.
+
+- **Una al día por marca:** se busca la corrida con `ReelRunStore.manual_run`; el `UNIQUE
+  (brand_id, trigger, run_date)` de 0117 evita la segunda, aunque lleguen dos clics a la vez.
+  Una búsqueda terminada no se vuelve a encolar ese día, encuentre lo que encuentre. Hay una
+  excepción: si la compuerta la paró antes del tope del negocio (lecturas pagadas en pausa,
+  piso del proveedor), esa búsqueda no ocurrió y el siguiente toque la vuelve a encolar en la
+  misma fila. Si falla la revisión y el worker la va a reintentar solo, sigue «buscando». Si
+  lleva más de 15 min en cola, el botón se libera y avisa una vez: «La búsqueda está tardando
+  más de lo normal. Vuelve a mirar en un rato.»
+- **Tope del negocio:** si ya se gastó (150 al día, 600 al mes), no se encola nada y aparece
+  «Hoy ya se alcanzó el límite de lecturas de tu negocio. Inténtalo mañana.» (en el mensual, el
+  texto mensual de RF-05). Si se alcanza a mitad de la corrida, la compuerta la para
+  (`budget_stopped`).
+- **Pantalla:** abrir solo lee (`search_state`). Mientras corre, el botón queda ocupado (girador,
+  `aria-busy`) y sobre la lista sale «Estamos buscando reels nuevos. La lista se actualiza sola en
+  unos minutos.». Un reloj del navegador relee gratis cada 12 s y, al terminar, recarga la lista
+  sin mensajes. Si ya se buscó hoy o se llegó al tope, el botón no queda muerto: recarga gratis
+  y muestra una sola vez el aviso del día («Ya buscaste reels nuevos hoy. Vuelve a intentarlo
+  mañana.») o el del tope. Es un aviso con id fijo: el siguiente reemplaza al anterior.
+  Una búsqueda `manual` que termina mal no pone «No pudimos traer ideas nuevas» sobre las
+  ideas guardadas.
+- **Barra:** en la versión ancha, el botón va al final de la fila. Desde 1000 px de barra lleva
+  texto; entre 760 y 1000 px solo el ícono, para que la fila no se parta. En la versión angosta
+  es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
+  con su nombre en `aria-label` y `title`.
+- Sin migración y sin llamadas pagadas en las pruebas (fakes detrás de la compuerta real).
+  Costo: ≈ USD 0,10–0,15 por búsqueda, aprobado por Deivid para producción.
+
 **RF-02b backend (2026-11-25, m-25119463):** `referentes/reviewed_reels.py` une `creators`
 (`region_code`, `rubro`, de RF-04) con `LEFT JOIN` en Postgres y en el gemelo en memoria.
 Filtros: `ReelFilters.of(regions=["CO", …])` (ISO-2, una o varias) y `niches=[clave]`.

@@ -33,6 +33,13 @@ brand's labels — with «Ver sus reels ahora» for the others, which only QUEUE
 inside the daily cap (the reels-worker pays). While one is in flight a clock outside the
 drawer reads the rows again every `POLL_SECONDS` (free) and, when it ends, the lists too;
 with the drawer closed a toast says how it ended.
+
+RF-14 (m-25129383): «Buscar reels nuevos», last on the bar's line, only QUEUES the brand's
+search of the day (`manual_search`, inside the cap; the reels-worker pays). While it runs
+the button is busy, a «preparando» line sits over the list and a clock reads the search
+again every `POLL_SECONDS` (free); when it ends the list is read again with no message.
+Already searched today, or the cap spent: a press reads the list again and says so once
+(`reels_search_vm`).
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from uuid import UUID
 import reflex as rx
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.competitors import STATE_READING
+from qualify_api.referentes.manual_search import SearchNow
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 from qualify_api.referentes.reviewed_reels import KIND_REFERENTE
 
@@ -57,6 +65,7 @@ from . import (
     reels_discovery,
     reels_filters_vm,
     reels_ideas_vm,
+    reels_search_vm,
 )
 from .auth_state import AuthState
 from .catalog_vm import IDEAS_RETURN_PATH, brand_referentes_href
@@ -187,6 +196,11 @@ class DiscoverReelsState(rx.State):
     #: the right (the desktop button).
     competitors_open: bool = False
     competitors_bottom: bool = False
+    #: RF-14: today's «Buscar reels nuevos» is queued or running (the button busy, the
+    #: «preparando» line, the clock that reloads the list when it ends), and a press in
+    #: flight (a double click is one press).
+    searching: bool = False
+    search_pressing: bool = False
 
     #: The stored ideas, best first (backend only).
     _cards: list[dict[str, str]] = []
@@ -576,6 +590,7 @@ class DiscoverReelsState(rx.State):
                 reels_discovery.load_ideas, tenant_id, brand_id, filters=filters
             )
             rivals = await _competitor_rows(tenant_id, brand_id)
+            search = await _search_state(tenant_id, brand_id)
         except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
             logger.warning("stored reel ideas unreadable: %s: %s", type(exc).__name__, exc)
             async with self:
@@ -586,11 +601,19 @@ class DiscoverReelsState(rx.State):
             return
         async with self:
             if await _still_mine(self, load_id, tenant_id):
+                # RF-14: another business (or brand) starts with no search on screen
+                if self._cards_tenant_id != str(tenant_id) or self._brand_id != str(brand_id):
+                    self.searching = False
                 self._claim_cards(str(tenant_id))
                 self._brand_id = str(brand_id)
                 self._show(shown)
                 if rivals is not None:
                     self.competitor_rows = rivals
+                # RF-14: a search of today still running keeps the button busy. Only ever
+                # raised here: this read may predate a press, and the end of a search is
+                # `refresh_search`'s to see (it reloads the list then)
+                if reels_search_vm.is_searching(search):
+                    self.searching = True
             elif self._load_id == load_id:
                 self.filtering = False  # another business logged in meanwhile
         await _settle(opened)
@@ -738,6 +761,69 @@ class DiscoverReelsState(rx.State):
             for tone, text in finished
         ]
         return [DiscoverReelsState.refilter, *(toasts if closed else [])]
+
+    # -- RF-14: «Buscar reels nuevos» ----------------------------------------------------
+
+    @rx.var
+    def search_label(self) -> str:
+        """The button's accessible name: what it does, or that it is searching."""
+        return (
+            reels_search_vm.BUSY_LABEL
+            if self.searching or self.search_pressing
+            else reels_search_vm.BUTTON_LABEL
+        )
+
+    @rx.event(background=True)
+    async def search_reels(self) -> Any:
+        """«Buscar reels nuevos»: queue the brand's search of today — once — inside the
+        business's cap. It only QUEUES: the reels-worker pays (ADR 42 R4/R9). Once the day's
+        search was made, or with the cap spent, it reads the list again (free) and says
+        so once. A second press while the first is in flight is ignored."""
+        async with self:
+            if self.search_pressing or self.searching:
+                return None
+            target = self._session_brand()
+            if target is None:
+                return None
+            # the search pays: only for the business logged in NOW, never the cards' one
+            # while another session's read is still on its way
+            auth = await self.get_state(AuthState)
+            if str(target[0]) != auth.session_tenant_id:
+                return None
+            self.search_pressing = True
+        answer: SearchNow | None = None
+        try:
+            answer = await asyncio.to_thread(reels_discovery.search_reels_now, *target)
+        except Exception as exc:  # noqa: BLE001 — the toast says it, the log keeps why
+            logger.warning("reels search not queued: %s: %s", type(exc).__name__, exc)
+        outcome = reels_search_vm.after_press(answer)
+        async with self:
+            self.search_pressing = False
+            if self._session_brand() != target:
+                return None
+            self.searching = outcome.searching
+        reload = [DiscoverReelsState.refilter] if outcome.reload else []
+        return [*reload, *_search_toast(outcome)]
+
+    @rx.event(background=True)
+    async def refresh_search(self, _shown: str = "") -> Any:
+        """The search's browser clock, while it runs (`_ticker`, every `POLL_SECONDS`): look
+        at it again (Postgres, free). When it ended, the list is read again by itself — no
+        message, even when nothing new came; the cap's sentence when the cap stopped it."""
+        async with self:
+            if not self.searching:
+                return None
+            target = self._session_brand()
+        if target is None:
+            return None
+        outcome = reels_search_vm.after_look(await _search_state(*target))
+        async with self:
+            if self._session_brand() != target or not self.searching:
+                return None
+            self.searching = outcome.searching
+        if outcome.searching:
+            return None
+        return [DiscoverReelsState.refilter, *_search_toast(outcome)]
 
     @rx.event(background=True)
     async def tick(self, _shown: str = "") -> None:
@@ -908,6 +994,27 @@ async def _competitor_rows(tenant_id: UUID, brand_id: UUID) -> list[dict[str, st
     except Exception as exc:  # noqa: BLE001 — the ideas must show whatever happens here
         logger.warning("competitors panel unreadable: %s: %s", type(exc).__name__, exc)
         return None
+
+
+async def _search_state(tenant_id: UUID, brand_id: UUID) -> SearchNow | None:
+    """RF-14: today's «Buscar reels nuevos» of the brand (Postgres only, free); None when
+    it could not be read — the button keeps what it showed and the screen goes on."""
+    try:
+        return await asyncio.to_thread(reels_discovery.search_state, tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001 — the ideas must show whatever happens here
+        logger.warning("reels search state unreadable: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _search_toast(outcome: reels_search_vm.Outcome) -> list[Any]:
+    """The search's one notice, as a toast that replaces any earlier one (`TOAST_ID`)."""
+    if not outcome.notice:
+        return []
+    show = {
+        reels_search_vm.TONE_INFO: rx.toast.info,
+        reels_search_vm.TONE_WARN: rx.toast.warning,
+    }.get(outcome.tone, rx.toast.error)
+    return [show(outcome.notice, id=reels_search_vm.TOAST_ID)]
 
 
 async def _still_mine(state: Any, load_id: int, tenant_id: UUID) -> bool:
@@ -1337,6 +1444,13 @@ _STATE_VALUE = {
 BAR_CLASS = "q-reels-bar"
 _WIDE_CLASS = "q-reels-bar__wide"
 _NARROW_CLASS = "q-reels-bar__narrow"
+#: RF-14: the words of «Buscar reels nuevos» on the wide bar show only from 1000 px of bar
+#: (`.q-reels-bar__search-words`, assets/qualify-creative.css): between 760 and 1000 px the
+#: four chips, «Competidores» and «Quitar filtros» leave no room for them, and the line
+#: must never wrap — the button keeps its icon, its accessible name and its `title`.
+_SEARCH_WORDS_CLASS = "q-reels-bar__search-words"
+SEARCH_BUTTON_ID = "reels-search"
+SEARCH_CHIP_ID = "reels-search-chip"
 #: The marks of an option (lucide, painted with the system's tokens): a radio is a ring
 #: that fills, a checkbox an empty square that gets its check — never an empty gap.
 _MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "square")}
@@ -1558,8 +1672,8 @@ SHEET_FOCUS_SCRIPT = (
     "  if (b && b.offsetParent !== null) { b.focus(); }"
     "}, 0);"
 )
-#: The phone's line: its buttons share it in equal parts (`flex: 1 1 0`) — «Filtros» and
-#: «Competidores» today, room for a third later (RF-14's «Buscar reels nuevos»).
+#: The phone's line: «Filtros» and «Competidores» share it in equal parts (`flex: 1 1 0`);
+#: RF-14's «Buscar reels nuevos» is a third button of only its icon, 44 px, at the end.
 _PHONE_SLOT = {"flex": "1 1 0", "min_width": "0", "max_width": "100%", **_CHIP_PAD}
 
 
@@ -1605,6 +1719,53 @@ def _reset_button() -> rx.Component:
             white_space="nowrap",
             max_width="100%",
         ),
+    )
+
+
+def _search_button(*, icon_only: bool) -> rx.Component:
+    """RF-14's «Buscar reels nuevos», last on the bar's line: on the wide bar with its words
+    (only its icon while the bar is under `SEARCH_WORDS_FROM`, so the line never wraps);
+    on the narrow bar a third button of only its icon, the 44 px square, with the words as
+    its accessible name and `title`. While the search runs it is busy — the spinner in
+    place of its icon, a press ignored — and never dead otherwise: once the day's search was
+    made, a press reads the list again and says so (`reels_search_vm`)."""
+    S = DiscoverReelsState
+    busy = S.searching | S.search_pressing
+    icon = rx.cond(
+        busy,
+        loading_spinner("sm"),
+        rx.icon("refresh-cw", size=T.ICON_SM, aria_hidden="true"),
+    )
+    common: dict[str, Any] = {
+        "type": "button",
+        "id": SEARCH_CHIP_ID if icon_only else SEARCH_BUTTON_ID,
+        "on_click": S.search_reels,
+        # aria-disabled, not disabled: the focus stays on the button while it is busy
+        "aria_disabled": rx.cond(busy, "true", "false"),
+        "aria_busy": rx.cond(busy, "true", "false"),
+        "aria_label": S.search_label,
+        "title": S.search_label,
+        "variant": "surface",
+        "size": "2",
+        "min_height": _TARGET,
+    }
+    if icon_only:
+        return rx.icon_button(icon, min_width=_TARGET, flex="0 0 auto", **common)
+    return rx.button(
+        icon,
+        rx.text(
+            reels_search_vm.BUTTON_LABEL,
+            as_="span",
+            class_name=_SEARCH_WORDS_CLASS,
+            min_width="0",
+            **_ELLIPSIS,
+        ),
+        flex_shrink="0",
+        overflow="hidden",
+        min_width=_TARGET,
+        max_width="100%",
+        **_CHIP_PAD,
+        **common,
     )
 
 
@@ -1693,6 +1854,7 @@ def _filter_bar() -> rx.Component:
             *(_dropdown(axis) for axis in reels_filters_vm.AXES),
             _rivals_button(chip=False),
             _reset_button(),
+            _search_button(icon_only=False),
             class_name=_WIDE_CLASS,
             wrap="nowrap",
             align="center",
@@ -1701,10 +1863,12 @@ def _filter_bar() -> rx.Component:
             min_width="0",
         ),
         # a bar under 760 px wide (phones, tablets, narrow panels; Deivid 2026-11-26): one
-        # line, equal parts — «Filtros» and «Competidores» (RF-14 may add a third button)
+        # line, equal parts — «Filtros» and «Competidores» — and RF-14's «Buscar reels
+        # nuevos» as a third button of only its icon, at the end of the same line
         rx.flex(
             _filters_button(),
             _rivals_button(chip=True),
+            _search_button(icon_only=True),
             class_name=_NARROW_CLASS,
             wrap="nowrap",
             align="center",
@@ -1882,6 +2046,22 @@ def _ideas() -> rx.Component:
         # RF-05: the competitors' clock, outside their drawer — it keeps following a
         # manual read with the drawer closed (and says how it ended in a toast)
         rx.cond(S.competitors_reading, _ticker(S.refresh_competitors)),
+        # RF-14: while the owner's search runs, the «preparando» line over the list and
+        # the clock that reads the list again when it ends (free)
+        rx.cond(
+            S.searching,
+            rx.fragment(
+                rx.hstack(
+                    loading_spinner("sm"),
+                    rx.text(reels_search_vm.SEARCHING_NOTICE, size="2", color=T.TEXT_MUTED),
+                    spacing="2",
+                    align="center",
+                    width="100%",
+                    role="status",
+                ),
+                _ticker(S.refresh_search),
+            ),
+        ),
         rx.box(
             lists,
             # a filtered read in flight: the list dims and takes no clicks until it lands
