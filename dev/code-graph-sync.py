@@ -181,8 +181,9 @@ def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
                     continue
                 if _stamp(target) == rec[2:]:
                     continue  # our hardlink/copy of the current build
-            except OSError:
-                continue  # store file missing: keep ours until the sync brings it back
+            except (OSError, TypeError):
+                # store file missing, or a malformed record: keep ours, don't stop the other files
+                continue
         tmp = f"{path}.link-{os.getpid()}"
         try:
             stamp = _place(target, tmp)
