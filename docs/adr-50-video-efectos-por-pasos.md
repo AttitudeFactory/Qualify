@@ -401,11 +401,11 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), la medición pagada (m-25112919) y el correo de aviso, que va en un ticket aparte.
 
-## 12. Enmienda `[PROPUESTO]`: el personaje en su escena reemplaza al bloque de presentador (m-25128784)
+## 12. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-26]`: el personaje en su escena reemplaza al bloque de presentador (m-25128784)
 
-**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26), la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`) y la investigación de m-25129387 sobre los datos de clientes en BytePlus (`docs/byteplus-datos-de-clientes.md`, 2026-11-26). Deivid respondió P1 a P5 el 2026-11-26 (§12.11). Solo la firma Deivid (P5 del §6.3).
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-26]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26), la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`) y la investigación de m-25129387 sobre los datos de clientes en BytePlus (`docs/byteplus-datos-de-clientes.md`, 2026-11-26). Deivid respondió P1 a P5 el 2026-11-26 (§12.11). Solo la firma Deivid (P5 del §6.3).
 
-**Firma de Deivid:** `[ ]` «Firmo el §12» · fecha: ____
+**Firma de Deivid:** `[x]` «Firmo el §12», elegido por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-26. Firmar no enciende nada: el interruptor sigue apagado hasta cumplir §12.9.
 
 **Evidencia:** `main` en `f9e784b7` (2026-11-26): `qualify_api/creative/clip_avatar.py` (§9 y §11 construidos: `ClipAvatarPlacement`, `fit_plan`, `avatar_join_cut_only`, tope diario, espera de 72 h), migración `0186_clip_avatar_failure_mails` (correo de falla, m-25120319), tabla de precios `v10` y `pesos-creaciones-v3`. Las cifras marcadas «calculado» salen de la tabla `v10` y son `[V]`; las marcadas `[H]` son estimaciones.
 
