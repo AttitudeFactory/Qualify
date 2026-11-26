@@ -41,14 +41,24 @@ def test_default_is_off_with_the_advertising_image() -> None:
 
 def test_set_then_get_round_trips_per_brand() -> None:
     store = FakeStore()
-    set_monthly_post_setting(T, B, True, "carousel", store=store)
-    assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting(
-        True, ContentKind.CAROUSEL
-    )
+    set_monthly_post_setting(T, B, True, "clip", store=store)
+    assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting(True, ContentKind.CLIP)
     assert get_monthly_post_setting(T, uuid4(), store=store).enabled is False
 
 
-@pytest.mark.parametrize("kind", ["nope", "shot_video", "own_media", "creator_script", ""])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "nope",
+        "shot_video",
+        "own_media",
+        "creator_script",
+        "carousel",
+        "template",
+        "avatar_video",
+        "",
+    ],
+)
 def test_kind_is_validated_at_the_boundary(kind: str) -> None:
     store = FakeStore()
     with pytest.raises(ValueError):
@@ -67,12 +77,18 @@ def test_malformed_stored_value_reads_as_default() -> None:
     assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting()
 
 
-def test_kinds_are_what_crear_pieza_offers() -> None:
-    assert ContentKind.STATIC_FLYER in MONTHLY_POST_KINDS
-    assert ContentKind.SHOT_VIDEO not in MONTHLY_POST_KINDS
-    assert ContentKind.OWN_MEDIA not in MONTHLY_POST_KINDS
-    # founder, 2026-11-25: a script to record is not a ready-to-publish piece
-    assert ContentKind.CREATOR_SCRIPT not in MONTHLY_POST_KINDS
+def test_kinds_are_what_the_chore_makes_alone() -> None:
+    # founder, 2026-11-25: no kind that needs the owner's voice, photos or slides
+    assert MONTHLY_POST_KINDS == (ContentKind.STATIC_FLYER, ContentKind.CLIP)
+
+
+@pytest.mark.parametrize("kind", ["carousel", "template", "avatar_video", "animated_avatar_video"])
+def test_a_kind_no_longer_offered_stays_enabled_with_the_default_kind(kind: str) -> None:
+    store = FakeStore()  # saved while #825 offered six kinds
+    store.docs[(T, B)] = {"monthly_post": {"enabled": True, "kind": kind}}
+    assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting(
+        True, ContentKind.STATIC_FLYER
+    )
 
 
 def test_the_setting_survives_a_wizard_save() -> None:

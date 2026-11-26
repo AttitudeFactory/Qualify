@@ -28,8 +28,8 @@ from .monthly_post_vm import (
 def test_choices_are_ready_to_publish_kinds_with_their_spanish_names() -> None:
     options = kind_options()
     values = [o["value"] for o in options]
-    assert values[0] == "avatar_video" and "static_flyer" in values
-    assert "creator_script" not in values and "own_media" not in values
+    # founder, 2026-11-25: only what the monthly chore can make without the owner's inputs
+    assert values == ["static_flyer", "clip"]
     assert {"value": "static_flyer", "label": "Imagen publicitaria"} in options
     assert "Por aprobar" in EXPLAIN
 

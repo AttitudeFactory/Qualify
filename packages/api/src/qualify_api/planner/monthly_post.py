@@ -26,11 +26,10 @@ from qualify_api.creative.brand_kit_store import BrandKitStore
 MONTHLY_POST_DOCUMENT: Final = "connect"
 MONTHLY_POST_KEY: Final = "monthly_post"
 DEFAULT_KIND: Final = ContentKind.STATIC_FLYER
-#: The kinds the owner can choose: what «¿Qué creamos?» offers, minus the script to record
-#: (it yields a script for someone to film, not a piece ready to publish).
-MONTHLY_POST_KINDS: Final[tuple[ContentKind, ...]] = tuple(
-    kind for kind in ContentKind if kind.is_offered and kind is not ContentKind.CREATOR_SCRIPT
-)
+#: The kinds the owner can choose: only those the monthly chore can make with no input of
+#: the owner's (founder, 2026-11-25) — an avatar needs a voice, a template a product photo,
+#: a carousel its slides; a clip with no references is made from the words alone.
+MONTHLY_POST_KINDS: Final[tuple[ContentKind, ...]] = (ContentKind.STATIC_FLYER, ContentKind.CLIP)
 
 
 @dataclass(frozen=True)
@@ -51,7 +50,9 @@ def parse_kind(kind: str | ContentKind) -> ContentKind:
 
 
 def _from_document(value: Any) -> MonthlyPostSetting:
-    """A stored value read back; anything malformed reads as the default (off)."""
+    """A stored value read back; anything malformed reads as the default (off). A kind no
+    longer offered (saved before 2026-11-25: avatar, template, carousel) keeps the setting
+    as saved and falls back to `DEFAULT_KIND`."""
     if not isinstance(value, dict):
         return MonthlyPostSetting()
     try:
