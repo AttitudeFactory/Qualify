@@ -24,9 +24,8 @@ serves exactly that key shape and nothing else:
   A 404 or 416 is `no-store`.
 
 Routed to the Reflex backend by the production Caddy (`deploy/Caddyfile`,
-`@reflex_backend`). Mounting the router on the Reflex backend app next to `/r2media`
-(`avatar_api.include_router` in `Qualify/Qualify.py`) is done by the editor's lane
-(carril B) in its own PR; until then the route is not served.
+`@reflex_backend`) and mounted on the Reflex backend app next to `/r2media`
+(`avatar_api.include_router` in `Qualify/Qualify.py`, m-25120474).
 """
 
 from __future__ import annotations
