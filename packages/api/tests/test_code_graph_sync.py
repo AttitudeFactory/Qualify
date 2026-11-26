@@ -32,8 +32,8 @@ endpoint = sys.argv[2]
 if os.path.exists(os.path.join(d, "no-release")):
     sys.stderr.write("gh: Not Found (HTTP 404)\\n")
     sys.exit(1)
-time.sleep(float(os.environ.get("STUB_GH_SLEEP", "0")))
 if endpoint.endswith("/releases/tags/code-graph"):
+    time.sleep(float(os.environ.get("STUB_GH_SLEEP", "0")))  # the first call of a sync
     sys.stdout.write(open(os.path.join(d, "release.json")).read())
 elif "/releases/assets/" in endpoint:
     asset = os.path.join(d, "asset-" + endpoint.rsplit("/", 1)[1])
@@ -202,16 +202,16 @@ def test_regular_graph_in_worktree_is_left_alone_and_named_in_now_mode(env) -> N
 
 
 def test_hook_mode_returns_at_once_then_throttles(env) -> None:
-    env["env"]["STUB_GH_SLEEP"] = "3"
+    env["env"]["STUB_GH_SLEEP"] = "2"
     payload = json.dumps({"hook_event_name": "SessionStart", "cwd": str(env["wt"])})
 
-    started = time.monotonic()
+    marker = env["store"] / ".code-graph-installed.json"
     result = _run(env, stdin=payload)
     assert result.returncode == 0 and result.stdout == ""
-    assert time.monotonic() - started < 2.5  # the sync runs detached, not in the hook
+    # The hook returned before the (slowed) sync finished: it runs detached. No clock.
+    assert not marker.exists()
     assert (env["wt"] / "graphify-out" / "graph.json").is_symlink()
 
-    marker = env["store"] / ".code-graph-installed.json"
     deadline = time.monotonic() + 30
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.2)

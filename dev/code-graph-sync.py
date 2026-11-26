@@ -11,9 +11,9 @@ every linked worktree at it, so nobody ever runs `graphify update` by hand.
   symlink to the store for each of FILES. File-level links work on old branches that still
   track files under `graphify-out/` and on new ones where the directory does not exist. A
   regular file already there (a worktree with its own local graph) is never replaced.
-- Sync step: read the release's `code-graph.json`; when its commit differs from the one last
-  installed, download `code-graph.tar.gz` and install it into the store through a temp dir in
-  the store and `os.replace` (atomic per file). REST only (`gh api`): GraphQL is blocked in
+- Sync step: read the release's `code-graph.json`; when its build (commit + `built_at`)
+  differs from the one last installed, download `code-graph.tar.gz` and install it into the
+  store through a temp dir in the store and `os.replace` (atomic per file). REST only (`gh api`): GraphQL is blocked in
   cloud sessions, and `gh release` uses it.
 
 Guard rails: a lock (one download per clone at a time), a 30-minute throttle on GitHub calls
@@ -289,7 +289,7 @@ def sync(store: str) -> str:
         except OSError:
             return "another session is syncing the code graph right now"
         # Under the lock nobody else is installing: any temp dir left is from a killed run.
-        for stale in glob.glob(os.path.join(store, ".code-graph-tmp-*")):
+        for stale in glob.glob(os.path.join(glob.escape(store), ".code-graph-tmp-*")):
             shutil.rmtree(stale, ignore_errors=True)
         _write(os.path.join(store, CHECKED), str(int(time.time())))
         release = json.loads(_gh(f"{REPO}/releases/tags/{TAG}"))
