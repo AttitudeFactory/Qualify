@@ -311,7 +311,12 @@ def test_a_block_transition_inside_a_part_of_a_video_by_parts_is_unavailable() -
 
 
 def test_the_block_codes_are_appended() -> None:
-    assert RECIPE_REFUSALS[-2:] == ("transition_on_first_block", "transitions_longer_than_block")
+    at = RECIPE_REFUSALS.index("transition_on_first_block")
+    assert RECIPE_REFUSALS[at : at + 2] == (
+        "transition_on_first_block",
+        "transitions_longer_than_block",
+    )
+    assert RECIPE_REFUSALS[at - 1] == "text_too_long_for_large"
 
 
 def test_the_texts_are_plain_spanish_about_blocks() -> None:

@@ -139,6 +139,22 @@ def test_recipe_refusals_are_pinned() -> None:
         # m-25114465, appended
         "transition_on_first_block",
         "transitions_longer_than_block",
+        # m-25129405 (the «parte con IA» block), appended
+        "switched_off",
+        "too_many_blocks",
+        "too_many_ai_children",
+        "extend_needs_block_before",
+        "edit_needs_reel_window",
+        "ai_part_with_speed",
+        "own_media_too_short",
+        "ai_parts_mismatch",
+        "ai_part_length_mismatch",
+        "ai_part_outside_clip",
+        "ai_part_local",
+        "ai_part_own_recipe",
+        "ai_part_guide_type",
+        "extend_after_own_media",
+        "extend_not_same_moment",
     )
 
 

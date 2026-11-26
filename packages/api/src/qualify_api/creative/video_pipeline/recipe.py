@@ -73,6 +73,12 @@ from qualify_creative.video.speed import SPEED_FPS
 from qualify_creative.video.speed import segment_frames as speed_frames
 
 from qualify_api.creative.media import owned_by, parse_tenant_key
+from qualify_api.creative.video_pipeline.ai_parts import (
+    ai_children_of,
+    ai_part_blocks,
+    ai_part_problems,
+    switched_off_problems,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +149,8 @@ def _key_problems(part: PartRecipe, tenant_id: UUID) -> list[RecipeProblem]:
     found: list[RecipeProblem] = []
     for at, segment in enumerate(part.segments):
         field = f"segments[{at}].key"
+        if at in ai_part_blocks(part.segments):
+            continue  # m-25129405: an AI block names its `ai_parts` entry, never a file
         if parse_tenant_key(segment.key) is None:
             found.append(RecipeProblem(code="malformed_key", part=part.index, field=field))
         elif not owned_by(tenant_id, segment.key):
@@ -244,9 +252,17 @@ def validate_recipe(
     video_by_parts: bool,
     tenant_id: UUID | None = None,
     library: EffectsLibrary | None = None,
+    ai_parts: Sequence[VideoPartPlan] = (),
+    other_ai_children: int = 0,
 ) -> tuple[RecipeProblem, ...]:
     """Every problem of a recipe, in part order — `()` when it may be made. Pure: no
     network, no database; the library is the process's cached one unless given.
+
+    m-25129405 (ADR 50 §13.2): `ai_parts` — a normal Clip's `MediaInputs.ai_parts`, what
+    its `ai_part` blocks are made from; `other_ai_children` — its character scenes and
+    avatar blocks (`ai_parts.ai_children_of`). With `QUALIFY_CLIP_AI_PARTS` off, any AI
+    block is only `switched_off`, before the library is even loaded; on, its rules are
+    `ai_parts.ai_part_problems`'.
 
     `video_by_parts`: the parts of a video by parts (a transition is allowed between
     them, never on the first) — False for a normal Clip, whose transitions go between its
@@ -261,9 +277,12 @@ def validate_recipe(
     effect and text must fall in `[0, part_length]` (`span_outside_part`) — a part's
     `seconds`, a Clip's `clip_seconds`. What crosses parts (seconds of the whole video)
     belongs to the parent's recipe (`validate_video_recipe`, ED-15), not here."""
+    in_clip = not video_by_parts
+    switched_off = switched_off_problems(parts, ai_parts, in_clip=in_clip)
+    if switched_off:
+        return switched_off  # §13.6: before anything is read
     library = library or load_effects()
     found: list[RecipeProblem] = []
-    in_clip = not video_by_parts
     windows = [(0.0, part_length(part, video_by_parts=video_by_parts)) for part in parts]
     for at, (part, window) in enumerate(zip(parts, windows, strict=True)):
         number = None if in_clip else part.index
@@ -296,6 +315,18 @@ def validate_recipe(
             found.extend(
                 p.model_copy(update={"part": number}) for p in _key_problems(part, tenant_id)
             )
+        # m-25129405: the «parte con IA» blocks (only a normal Clip has `ai_parts`)
+        found.extend(
+            ai_part_problems(
+                part,
+                ai_parts if in_clip else (),
+                in_clip=in_clip,
+                other_children=other_ai_children,
+                tenant_id=tenant_id,
+            )
+        )
+    if ai_parts and not (in_clip and len(parts) == 1):
+        found.append(RecipeProblem(code="ai_part_outside_clip", part=None, field="ai_parts"))
     if video_by_parts:
         found.extend(transition_room_problems(parts, library))
     return tuple(found)
@@ -358,6 +389,17 @@ def validate_video_recipe(
     )
 
 
+def _switched_off(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
+    """m-25129405 (§13.6): `switched_off` for every AI block anywhere in `brief`'s recipe
+    (a parent's `video_recipe` too) or for its `ai_parts`, while the switch is off. Pure."""
+    media = brief.media
+    parts = recipe_of(brief)
+    if media.video_recipe is not None:
+        parts = (*parts, *media.video_recipe.parts)
+    in_clip = brief.kind is ContentKind.CLIP and media.part is None
+    return switched_off_problems(parts, media.ai_parts, in_clip=in_clip)
+
+
 def validate_brief_recipe(
     brief: ContentBrief,
     *,
@@ -369,11 +411,22 @@ def validate_brief_recipe(
     (`media.text_layers` of a `SHOT_VIDEO`) are checked too, as `part=None`, and so is
     its `video_recipe` (ED-15) when it has one: its parts, and what crosses them against
     the length of the plan that is made (`media.parts`). A normal Clip with subtitles is
-    checked against its texts too (`subtitle_overlap_problems`)."""
-    library = library or load_effects()
+    checked against its texts too (`subtitle_overlap_problems`).
+
+    m-25129405: a normal Clip's `ai_parts` and its other AI children go with it; with
+    `QUALIFY_CLIP_AI_PARTS` off, an AI block is only `switched_off` (nothing is read)."""
     by_parts = brief.kind is ContentKind.SHOT_VIDEO or brief.media.part is not None
+    switched_off = _switched_off(brief)
+    if switched_off:
+        return switched_off
+    library = library or load_effects()
     problems = validate_recipe(
-        recipe_of(brief), video_by_parts=by_parts, tenant_id=tenant_id, library=library
+        recipe_of(brief),
+        video_by_parts=by_parts,
+        tenant_id=tenant_id,
+        library=library,
+        ai_parts=brief.media.ai_parts,
+        other_ai_children=ai_children_of(brief.media),
     )
     if brief.kind is ContentKind.SHOT_VIDEO:
         media = brief.media
@@ -715,7 +768,15 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     references too only with `QUALIFY_PARTS_PREPARED_FRAME_REFS` on), the parent's
     whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
-    producing is refused."""
+    producing is refused.
+
+    m-25129405 (ADR 50 §13): an AI block (`kind="ai_part"`) is `switched_off` while
+    `QUALIFY_CLIP_AI_PARTS` is off — that alone, before anything is read. On, it is still
+    `recipe_unavailable` on `segments[i]` until the Clip with AI parts is created by its
+    own service (§13.7, PR 2: `create_clip_with_ai_parts`): `create_draft` never makes one."""
+    switched_off = _switched_off(brief)
+    if switched_off:
+        return switched_off
     from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
         stretches_wait_for_switch,
     )
@@ -773,6 +834,11 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
         # (its stretches are joined with cuts) nor a Clip made by Seedance
         # m-25114465: only with `QUALIFY_CLIP_BLOCK_TRANSITIONS` on (ADR 50 §10 unsigned)
         blends = in_clip and part.mode == "local" and clip_block_transitions_on()
+        # m-25129405: an AI block is not made through this gate yet (§13.7, PR 2)
+        found.extend(
+            RecipeProblem(code="recipe_unavailable", part=number, field=f"segments[{block}]")
+            for block in ai_part_blocks(part.segments)
+        )
         for block, segment in enumerate(part.segments):
             use = segment.transition_in
             if use is not None and not (blends and is_built_transition(use)):
@@ -795,7 +861,11 @@ def refuse_unbuilt_recipe(brief: ContentBrief, *, tenant_id: UUID) -> None:
     """The service's gate on a NEW request (`create_draft`, a part's
     `prepare_new_generation`), before any row, charge or vendor call: `RecipeRefused`
     when `validate_brief_recipe` finds a problem or `unbuilt_recipe_problems` does. A
-    brief with no recipe — every brief before EF-02 — passes untouched."""
+    brief with no recipe — every brief before EF-02 — passes untouched. m-25129405: an AI
+    block with `QUALIFY_CLIP_AI_PARTS` off is refused first, `switched_off` alone."""
+    switched_off = _switched_off(brief)
+    if switched_off:
+        raise RecipeRefused(switched_off)
     problems = validate_brief_recipe(brief, tenant_id=tenant_id)
     problems = (*problems, *unbuilt_recipe_problems(brief))
     if problems:
