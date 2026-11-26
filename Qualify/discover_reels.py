@@ -1328,8 +1328,9 @@ _ELLIPSIS = {"white_space": "nowrap", "overflow": "hidden", "text_overflow": "el
 _CHIP_PAD = {"padding_left": "0.625rem", "padding_right": "0.625rem"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
-#: The least width of a filter chip on the wide bar (its short word and the chevron):
-#: below it the word would end in «…» before the bar switches to the two buttons.
+#: The least width of a filter chip on the wide bar: it holds a short name with no filter
+#: («Duración ▾»). A chosen value («Instagram», «Compiten contigo») may still end in «…»
+#: on a bar of 760-900 px, where the four share the width equally; whole in `title`.
 _CHIP_MIN = "5.5rem"
 
 
