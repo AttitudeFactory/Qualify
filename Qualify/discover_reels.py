@@ -1589,8 +1589,8 @@ def _reset_button(*, chip: bool = False) -> rx.Component:
     button of the skin; last on a desktop, FIRST in the phone's centred lines (Deivid,
     2026-11-26). `chip`: it never shrinks nor wraps its words there — and it is not drawn
     for a brand with no competitor to show (option A, Deivid 2026-11-26): with no
-    «Competidores» beside it, it would sit alone on its line. Resetting stays one tap away
-    in each sheet's foot and in «No hay reels con estos filtros»."""
+    «Competidores» beside it, it would sit alone on its line. Resetting stays two taps away
+    (any chip, then its sheet's foot) and one in «No hay reels con estos filtros»."""
     S = DiscoverReelsState
     shown = S.filters_on & (S.competitor_rows.length() > 0) if chip else S.filters_on
     return rx.cond(
