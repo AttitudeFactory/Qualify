@@ -442,7 +442,8 @@ dos modelos oyen lo mismo, distinto de la línea: puede ser pronunciación (la m
 «hecha», la «j») o error de la transcripción. **Para juicio humano.**
 
 **Juicio preliminar por cuadros** (6 cuadros por video más 9 recortes de la cara durante el habla;
-sin oír). **Es preliminar: lo reemplaza la planilla de Deivid y Herwin.** Labios: en los seis la
+sin oír). **Es preliminar: lo reemplaza la planilla de Deivid y Herwin** (la de Deivid, abajo).
+Labios: en los seis la
 boca cambia de forma mientras hay voz y está quieta o sonriendo antes; la sincronía fina, el acento
 y la calidad de la voz quedan **para juicio humano**. La columna «Producto» compara con la foto
 de catálogo usada como super smash, no con el producto real.
@@ -456,11 +457,20 @@ de catálogo usada como super smash, no con el producto real.
 | animado e2 | sí | sí; mordida visible | sí | igual que e1 | ninguno visto | 3 (voz pendiente: «cruyente») |
 | animado e3 | sí | sí, salvo una grieta en el pan hacia el segundo 2 | sí: la sostiene en la palma y la señala | igual que e1 | grieta del pan; la hamburguesa se sostiene en una palma abierta | 3 |
 
-**Conclusión provisional (pendiente de la planilla).** El camino A sirve para un borrador: una sola
-tarea de 5 a 10 s pone al personaje dentro del local, con el producto reconocible, cumpliendo la
-acción (también comer) y diciendo la línea entera en español, por ≈ US$0,10 el segundo y en poco
-más de un minuto. Las 6 se aceptan en lo visual; 3 tienen una duda de pronunciación que solo se
-resuelve oyendo. Riesgos:
+**Juicio humano de Deivid (2026-11-26, visto y oído).** «Los labios van bien con las escenas»: la
+sincronía de labios queda **validada en los 6 videos**. Dos defectos:
+
+- **Saturación exagerada al masticar** (escena e2, el momento de la mordida).
+- **Animado, al girar la hamburguesa** (e3): la mano no gira con ella, solo gira la hamburguesa.
+
+Lo demás (personaje igual, producto, acción, voz en español, letras, creíble) no lo juzgó: queda
+vacío en `juicio-deivid.csv`. **El juicio de Herwin sigue pendiente.**
+
+**Conclusión provisional (falta el juicio de Herwin).** El camino A sirve para un borrador: una
+sola tarea de 5 a 10 s pone al personaje dentro del local, con el producto reconocible, cumpliendo
+la acción (también comer) y diciendo la línea entera en español con los labios sincronizados
+(validado por Deivid), por ≈ US$0,10 el segundo y en poco más de un minuto. Las 6 se aceptan en lo
+visual; 3 tienen una duda de pronunciación que solo se resuelve oyendo. Riesgos:
 
 1. **La voz no se controla:** cada tarea inventa la suya. El mismo personaje puede sonar distinto
    de una parte a otra del Clip, y el dueño no puede elegirla ni clonarla (eso era el camino B,
@@ -478,3 +488,6 @@ resuelve oyendo. Riesgos:
 8. **Datos del cliente:** la foto del producto viajó al id del modelo; antes de llevarlo a clientes
    hay que confirmar que esa vía no es una de las que ceden datos a BytePlus (regla del
    generador).
+9. **Saturación al masticar** (Deivid): en la mordida (e2) el color se exagera.
+10. **Manos que no acompañan al producto** (Deivid): en el animado, al girar la hamburguesa (e3) la
+    mano se queda quieta y solo gira la hamburguesa.

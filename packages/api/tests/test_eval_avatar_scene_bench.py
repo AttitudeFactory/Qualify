@@ -471,11 +471,14 @@ def test_a_phase_cut_after_a_charge_keeps_it_and_never_pays_twice(
     assert FakeSeedanceWithVideo.sent == ["5", "8"]
     spend = json.loads((run / "gasto.json").read_text("utf-8"))
     paid = [c for c in spend["calls"] if c["phase"] == "escenas"]
-    assert [c["label"] for c in paid] == ["animado/dibujado/e1", "animado/dibujado/e2"]
-    assert Decimal(spend["spent_usd"]) == after_drawings + sum(
-        (Decimal(c["cost_usd"]) for c in paid), Decimal(0)
-    )
+    assert list(dict.fromkeys(c["label"] for c in paid)) == [
+        "animado/dibujado/e1",
+        "animado/dibujado/e2",
+    ]
     results = json.loads((run / "resultados.json").read_text("utf-8"))
+    assert Decimal(spend["spent_usd"]) == after_drawings + sum(
+        (Decimal(r["cost_usd"]) for r in results.values()), Decimal(0)
+    )
     cut = results["animado/dibujado/e2"]
     assert cut["task_id"] == "cgt-2" and "video" not in cut
 
@@ -488,11 +491,182 @@ def test_a_phase_cut_after_a_charge_keeps_it_and_never_pays_twice(
     results = json.loads((run / "resultados.json").read_text("utf-8"))
     assert all(r.get("video") for r in results.values())
     spend = json.loads((run / "gasto.json").read_text("utf-8"))
-    assert [c["label"] for c in spend["calls"] if c["phase"] == "escenas"] == [
+    assert list(dict.fromkeys(c["label"] for c in spend["calls"] if c["phase"] == "escenas")) == [
         "animado/dibujado/e1",
         "animado/dibujado/e2",
         "animado/dibujado/e3",
     ]
+    assert Decimal(spend["spent_usd"]) == after_drawings + sum(
+        (Decimal(r["cost_usd"]) for r in results.values()), Decimal(0)
+    )
+
+
+class FakeSeedanceDiesWhilePolling:
+    """Accepts the task (tells the observer its id), then the process dies while polling
+    — the first time only. Asked again with `resume_task_id`, it answers that task."""
+
+    created: list[str] = []
+    resumed: list[str] = []
+    die_on: str | None = "8"
+    announce = True
+
+    def __init__(self, **_: Any) -> None:
+        pass
+
+    def generate(self, request: Any, *, api_key: str) -> GenerationResult:
+        from qualify_creative.adapters.byteplus_ark import estimate_video_tokens
+
+        cls = FakeSeedanceDiesWhilePolling
+        seconds = str(request.params["duration_seconds"])
+        resume = request.params.get("resume_task_id")
+        if resume:
+            cls.resumed.append(str(resume))
+            task_id = str(resume)
+        else:
+            task_id = f"cgt-{seconds}s"
+            cls.created.append(task_id)
+            if seconds == cls.die_on:
+                if cls.announce and request.observer is not None:
+                    request.observer.created(task_id)
+                raise KeyboardInterrupt
+        return GenerationResult(
+            payload={"task_id": task_id},
+            model_id=bench.SEEDANCE_MODEL,
+            provider="seedance",
+            usage=Usage(
+                output_tokens=estimate_video_tokens(
+                    bench.SEEDANCE_MODEL, "480p", "9:16", int(seconds)
+                )
+            ),
+            media_url=f"https://example.invalid/{task_id}.mp4",
+        )
+
+
+def _drawn_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Path:
+    from qualify_creative.adapters import byteplus_ark
+
+    monkeypatch.setenv("QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY", "fake-key")
+    monkeypatch.delenv("QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT", raising=False)
+    monkeypatch.setattr(byteplus_ark, "SeedreamImageAdapter", FakeSeedream)
+    monkeypatch.setattr(byteplus_ark, "SeedanceVideoAdapter", FakeSeedanceDiesWhilePolling)
+    monkeypatch.setattr(byteplus_eval_guard, "in_off_hours", lambda now: True)
+    monkeypatch.setattr(
+        runner, "_download_video", lambda url, target: target.write_bytes(b"mp4") and None
+    )
+    out = tmp_path / "out"
+    args = ["dibujar", "--i-have-spend-authorization", "--max-usd", "8"]
+    assert runner.main([*args, "--personaje", "animado", "--out", str(out)]) == 0
+    return next(p for p in out.iterdir() if p.is_dir())
+
+
+def _spent(run: Path) -> Decimal:
+    return Decimal(json.loads((run / "gasto.json").read_text("utf-8"))["spent_usd"])
+
+
+def test_killed_while_polling_is_recovered_by_task_id_and_counted_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    run = _drawn_run(tmp_path, monkeypatch, runner)
+    fake = FakeSeedanceDiesWhilePolling
+    fake.created, fake.resumed, fake.die_on, fake.announce = [], [], "8", True
+    scenes = [
+        "escenas",
+        "--i-have-spend-authorization",
+        "--max-usd",
+        "8",
+        "--personaje",
+        "animado",
+        "--material",
+        str(_material(tmp_path)),
+        "--run",
+        str(run),
+    ]
+    with pytest.raises(KeyboardInterrupt):
+        runner.main(scenes)
+    results = json.loads((run / "resultados.json").read_text("utf-8"))
+    cut = results["animado/dibujado/e2"]
+    assert cut["status"] == "enviada" and cut["task_id"] == "cgt-8s"
+    # its reservation is already counted although generate never returned
+    reserved_e2 = Decimal(cut["cost_usd"])
+    assert reserved_e2 > 0
+    assert (
+        _spent(run)
+        == Decimal("0.180") + Decimal(results["animado/dibujado/e1"]["cost_usd"]) + reserved_e2
+    )
+
+    assert runner.main(scenes) == 0
+    assert fake.created == ["cgt-5s", "cgt-8s", "cgt-10s"]  # e2 created ONCE
+    assert fake.resumed == ["cgt-8s"]  # and waited for by id
+    results = json.loads((run / "resultados.json").read_text("utf-8"))
+    assert all(r["status"] == "pagada" and r.get("video") for r in results.values())
+    assert Decimal(results["animado/dibujado/e2"]["cost_usd"]) < reserved_e2  # settled
+    assert _spent(run) == Decimal("0.180") + sum(
+        (Decimal(r["cost_usd"]) for r in results.values()), Decimal(0)
+    )
+
+
+def test_killed_before_the_task_id_is_never_resent_and_stays_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    run = _drawn_run(tmp_path, monkeypatch, runner)
+    fake = FakeSeedanceDiesWhilePolling
+    fake.created, fake.resumed, fake.die_on, fake.announce = [], [], "8", False
+    scenes = [
+        "escenas",
+        "--i-have-spend-authorization",
+        "--max-usd",
+        "8",
+        "--personaje",
+        "animado",
+        "--material",
+        str(_material(tmp_path)),
+        "--run",
+        str(run),
+    ]
+    with pytest.raises(KeyboardInterrupt):
+        runner.main(scenes)
+    assert runner.main(scenes) == 0
+    assert fake.created == ["cgt-5s", "cgt-8s", "cgt-10s"] and fake.resumed == []
+    results = json.loads((run / "resultados.json").read_text("utf-8"))
+    cut = results["animado/dibujado/e2"]
+    assert cut["status"] == "enviada" and not cut.get("task_id")
+    assert _spent(run) == Decimal("0.180") + sum(
+        (Decimal(r["cost_usd"]) for r in results.values()), Decimal(0)
+    )
+
+
+def test_a_resumed_phase_quotes_only_what_is_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    run = _drawn_run(tmp_path, monkeypatch, runner)
+    fake = FakeSeedanceDiesWhilePolling
+    fake.created, fake.resumed, fake.die_on, fake.announce = [], [], "10", False
+    base = [
+        "escenas",
+        "--i-have-spend-authorization",
+        "--personaje",
+        "animado",
+        "--material",
+        str(_material(tmp_path)),
+        "--run",
+        str(run),
+    ]
+    with pytest.raises(KeyboardInterrupt):
+        runner.main([*base, "--max-usd", "8"])
+    spent = _spent(run)  # drawings + e1 + e2 + e3's reservation (e3 not resent)
+    # the whole phase (US$2.6 with margin) no longer fits under spent + 0.5 ...
+    whole = bench.scene_items(
+        bench.case_matrix(local_photo=False, characters=["animado"]),
+        JsonPricingTable(bench.PRICING_VERSION),
+        "borrador",
+    )
+    assert sum((i.reserved_usd for i in whole), Decimal(0)) > Decimal("0.5")
+    # ... but nothing is left to pay, so the resumed run is not refused
+    assert runner.main([*base, "--max-usd", str(spent + Decimal("0.5"))]) == 0
+    assert fake.created == ["cgt-5s", "cgt-8s", "cgt-10s"]
 
 
 class _Answer:

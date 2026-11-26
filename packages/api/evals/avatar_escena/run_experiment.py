@@ -146,9 +146,13 @@ def _spent_before(run: Path | None) -> Decimal:
     return Decimal(str(_read_json(run / SPEND_FILE, {}).get("spent_usd", "0")))
 
 
-def _add_spend(run: Path, phase: str, label: str, cost_usd: Decimal | str) -> None:
-    """Add ONE call's cost to the run's `gasto.json` right after it is settled, so a phase
-    cut short keeps every charge and a resumed run never spends past the ceiling."""
+def _add_spend(
+    run: Path, phase: str, label: str, cost_usd: Decimal | str, *, kind: str = "cobro"
+) -> None:
+    """Add one entry to the run's `gasto.json`: a call's reservation BEFORE it is sent
+    («reserva»), then its adjustment once settled («ajuste», the difference) or released
+    («liberado», minus the reservation). A phase cut at any point keeps every charge that
+    may have gone through, and a resumed run never spends past the ceiling."""
     data = _read_json(run / SPEND_FILE, {"spent_usd": "0"})
     cost = Decimal(str(cost_usd))
     data["spent_usd"] = str(Decimal(str(data.get("spent_usd", "0"))) + cost)
@@ -156,6 +160,7 @@ def _add_spend(run: Path, phase: str, label: str, cost_usd: Decimal | str) -> No
         {
             "phase": phase,
             "label": label,
+            "kind": kind,
             "cost_usd": str(cost),
             "at": datetime.now(UTC).isoformat(),
         }
@@ -163,9 +168,77 @@ def _add_spend(run: Path, phase: str, label: str, cost_usd: Decimal | str) -> No
     _write_json(run / SPEND_FILE, data)
 
 
+#: A row's state: sent and not settled yet (may bill), settled (billed), released.
+SENT, PAID, RELEASED = "enviada", "pagada", "liberada"
+
+
 def _already_paid(row: dict[str, Any]) -> bool:
-    """A call that may have been billed (a task id, or a cost counted): never sent again."""
-    return bool(row.get("task_id")) or Decimal(str(row.get("cost_usd") or "0")) > 0
+    """A call that may have been billed (sent and not released, a task id, or a cost
+    counted): never sent again."""
+    return (
+        row.get("status") in (SENT, PAID)
+        or bool(row.get("task_id"))
+        or Decimal(str(row.get("cost_usd") or "0")) > 0
+    )
+
+
+def _finished(row: dict[str, Any]) -> bool:
+    """Nothing new to pay for this item: made, or a charge that may have gone through."""
+    return bool(row.get("video") or row.get("file")) or _already_paid(row)
+
+
+class _Charge:
+    """One paid call, on disk from BEFORE it is sent: the row («enviada», cost = the
+    reservation) is written first, then the reservation is added to `gasto.json`. A
+    process killed during the call (Ctrl-C, a closed window, the minute of polling)
+    leaves both behind, so the resumed run neither resends it nor forgets its cost.
+    `settle` and `release` adjust `gasto.json` by the difference."""
+
+    def __init__(
+        self,
+        *,
+        run: Path,
+        phase: str,
+        rows: dict[str, Any],
+        rows_file: Path,
+        row: dict[str, Any],
+        ledger: Any,
+        amount: Decimal,
+    ) -> None:
+        self.run, self.phase, self.rows, self.rows_file = run, phase, rows, rows_file
+        self.row, self.ledger, self.amount = row, ledger, amount
+        self.label = str(row["label"])
+        self.reservation = ledger.reserve(amount, label=self.label)  # may refuse: nothing sent
+        row.update(status=SENT, cost_usd=str(amount), sent_at=datetime.now(UTC).isoformat())
+        self.save()
+        _add_spend(run, phase, self.label, amount, kind="reserva")
+
+    def save(self) -> None:
+        self.rows[self.label] = self.row
+        _write_json(self.rows_file, self.rows)
+
+    def created(self, task_id: str) -> None:
+        """`VendorTaskObserver.created`: the vendor's task id, kept as soon as it exists so
+        a killed run can recover the task by id instead of paying for it again."""
+        self.row["task_id"] = task_id
+        self.save()
+
+    def polled(self, task_id: str, status: str) -> None:
+        return None
+
+    def settle(self, actual: Decimal | None = None) -> Decimal:
+        cost = self.ledger.settle(self.reservation, actual)
+        self.row.update(status=PAID, cost_usd=str(cost))
+        self.save()
+        if cost != self.amount:
+            _add_spend(self.run, self.phase, self.label, cost - self.amount, kind="ajuste")
+        return cost
+
+    def release(self) -> None:
+        self.ledger.release(self.reservation)
+        self.row.update(status=RELEASED, cost_usd="0")
+        self.save()
+        _add_spend(self.run, self.phase, self.label, -self.amount, kind="liberado")
 
 
 #: What a downloaded video may be served as (some storage answers octet-stream).
@@ -383,17 +456,20 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
     from qualify_api.evals.spend_control import CeilingExceededError
 
     pricing = _pricing()
-    items = _items(args, material, pricing)
     run = _run_dir(args, create=True)
+    done = _read_json(run / DRAWINGS_FILE, {})
+    for label, row in done.items():
+        if row.get("status") == SENT:
+            # Seedream answers in one call (no task id to recover): its reservation stays
+            # counted and it is not drawn again; check the console if it billed
+            print(f"  {label}: se cortó durante la llamada; cuenta como gastado, no se repite")
+    # only what is still to pay is quoted: `gasto.json` already counts the rest
+    items = [i for i in _items(args, material, pricing) if not _finished(done.get(i.label, {}))]
     key, max_usd = _paid_gate(args, run, items, video=False)
     ledger = _ledger(max_usd, run)
     adapter = SeedreamImageAdapter(model=SEEDREAM_MODEL)
-    done = _read_json(run / DRAWINGS_FILE, {})
     (run / "dibujos").mkdir(exist_ok=True)
     for item in items:
-        previous = done.get(item.label, {})
-        if previous.get("file") or _already_paid(previous):
-            continue  # resumed: drawn already, or a charge that may have gone through
         kind, ident, _ = item.label.split("/")
         prompt = (
             character_image_prompt(character(ident))
@@ -411,7 +487,15 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
             "quote_usd": str(item.quote_usd),
         }
         try:
-            reservation = ledger.reserve(item.reserved_usd, label=item.label)
+            charge = _Charge(
+                run=run,
+                phase="dibujar",
+                rows=done,
+                rows_file=run / DRAWINGS_FILE,
+                row=row,
+                ledger=ledger,
+                amount=item.reserved_usd,
+            )
         except CeilingExceededError as exc:
             print(f"TOPE: {exc}", file=sys.stderr)
             break
@@ -426,14 +510,11 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
                 api_key=key.value,
             )
         except ArkAPIError as exc:  # refused before generating: not billed
-            ledger.release(reservation)
-            row.update(error=str(exc)[:400], cost_usd="0")
+            row["error"] = str(exc)[:400]
+            charge.release()
         except Exception as exc:  # unknown: count the reservation as spent
-            row.update(
-                error=f"{type(exc).__name__}: {exc}"[:400],
-                cost_usd=str(ledger.settle(reservation)),
-            )
-            _add_spend(run, "dibujar", item.label, row["cost_usd"])
+            row["error"] = f"{type(exc).__name__}: {exc}"[:400]
+            charge.settle()
         else:
             try:
                 actual = seedream_image_cost(
@@ -445,11 +526,7 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
                 )
             except Exception:  # never lose a charge: the reservation stands for it
                 actual = None
-            row["cost_usd"] = str(ledger.settle(reservation, actual))
-            _add_spend(run, "dibujar", item.label, row["cost_usd"])
-            # the paid row is on disk before anything else can fail
-            done[item.label] = row
-            _write_json(run / DRAWINGS_FILE, done)
+            charge.settle(actual)
             images = list(result.payload["images"])  # type: ignore[index]
             name = f"{item.label.replace('/', '__')}.jpg"
             # kept byte for byte: Seedance 2.x accepts faces only in its own account's
@@ -505,31 +582,19 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
     if material["sample"]:
         raise SystemExit("«escenas» pagada necesita --material (foto del producto fuera del repo)")
     pricing = _pricing()
-    cases = _cases(args, material)
-    items = _items(args, material, pricing)
     run = _run_dir(args, create=False)
-    key, max_usd = _paid_gate(args, run, items, video=True)
+    done = _read_json(run / RESULTS_FILE, {})
+    pairs = list(zip(_cases(args, material), _items(args, material, pricing), strict=True))
+    # only what is still to pay is quoted: `gasto.json` already counts the rest
+    pending = [i for c, i in pairs if not _finished(done.get(c.label, {}))]
+    key, max_usd = _paid_gate(args, run, pending, video=True)
     ledger = _ledger(max_usd, run)
     adapter = SeedanceVideoAdapter(model=SEEDANCE_MODEL)
     product_url = reference_data_url(material["product"].read_bytes())
     local_url = reference_data_url(material["local"].read_bytes()) if material["local"] else None
-    done = _read_json(run / RESULTS_FILE, {})
     (run / "videos").mkdir(exist_ok=True)
-    for case, item in zip(cases, items, strict=True):
-        previous = done.get(case.label, {})
-        if previous.get("video"):
-            continue  # resumed
-        if _already_paid(previous):
-            # paid before: never sent again; only its video is fetched again if it can be
-            if previous.get("media_url"):
-                name = f"{case.file_stem}.mp4"
-                failure = _download_video(previous["media_url"], run / "videos" / name)
-                if failure is None:
-                    previous["video"] = f"videos/{name}"
-                previous["download_error"] = failure
-                _write_json(run / RESULTS_FILE, done)
-            print(f"  {case.label}: ya pagada, no se manda de nuevo")
-            continue
+
+    def scene_request(case: Any, **extra: Any) -> tuple[Path, dict[str, Any]]:
         char_path = _chosen_drawing(run, "personaje", case.character.id)
         bg_url = (
             local_url
@@ -543,6 +608,76 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             background_url=str(bg_url),
             resolution_mode=args.resolucion,
         )
+        return char_path, {**params, **extra}
+
+    def finish(row: dict[str, Any], result: Any) -> Decimal | None:
+        """The billed cost of a succeeded task (None: unknown, the reservation stands)."""
+        payload = dict(result.payload) if isinstance(result.payload, dict) else {}
+        tokens = int(result.usage.output_tokens or 0)
+        try:
+            actual = (
+                video_cost_usd(pricing, result.model_id, row["resolution"], tokens)
+                if tokens
+                else None
+            )
+        except Exception:  # never lose a charge: the reservation stands for it
+            actual = None
+        row.update(
+            task_id=payload.get("task_id") or row.get("task_id"),
+            billed_tokens=tokens,
+            cost_kind="facturado (tokens)" if actual is not None else "reservado",
+            model_revision=result.model_revision,
+            media_url=result.media_url,
+        )
+        return actual
+
+    def fetch(row: dict[str, Any], case: Any) -> None:
+        if row.get("media_url"):  # valid 24 h: copied at once
+            name = f"{case.file_stem}.mp4"
+            failure = _download_video(str(row["media_url"]), run / "videos" / name)
+            if failure is None:
+                row["video"] = f"videos/{name}"
+            row["download_error"] = failure
+
+    for case, item in pairs:
+        previous = done.get(case.label, {})
+        if previous.get("video"):
+            continue  # resumed
+        if previous.get("status") == SENT and previous.get("task_id"):
+            # cut while ModelArk worked on it: wait for THAT task by id, never a new one;
+            # its reservation is already in `gasto.json`, only the difference is added
+            print(f"  {case.label}: se recupera la tarea {previous['task_id']}, sin crear otra")
+            _, params = scene_request(case, resume_task_id=previous["task_id"])
+            reserved = Decimal(str(previous["cost_usd"]))
+            request = GenerationRequest(
+                task=GenerationTask.SCENE_VIDEO,
+                rendered_prompt=RenderedPrompt("", "", ""),
+                params=params,
+            )
+            try:
+                result = adapter.generate(request, api_key=key.value)
+            except (ArkAPIError, ArkTaskFailed) as exc:  # failed: not billed
+                previous.update(status=RELEASED, cost_usd="0", error=str(exc)[:600])
+                _add_spend(run, "escenas", case.label, -reserved, kind="liberado")
+            except Exception as exc:  # still going: stays sent, counted
+                previous["error"] = f"{type(exc).__name__}: {exc}"[:600]
+            else:
+                actual = finish(previous, result)
+                cost = reserved if actual is None else actual
+                previous.update(status=PAID, cost_usd=str(cost))
+                _write_json(run / RESULTS_FILE, done)
+                if cost != reserved:
+                    _add_spend(run, "escenas", case.label, cost - reserved, kind="ajuste")
+                fetch(previous, case)
+            _write_json(run / RESULTS_FILE, done)
+            continue
+        if _finished(previous):
+            # paid before (or may have been): never sent again; only its video is fetched
+            fetch(previous, case)
+            _write_json(run / RESULTS_FILE, done)
+            print(f"  {case.label}: ya pagada, no se manda de nuevo")
+            continue
+        char_path, params = scene_request(case)
         row: dict[str, Any] = {
             "label": case.label,
             "character": case.character.id,
@@ -562,7 +697,15 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             "quote_usd": str(item.quote_usd),
         }
         try:
-            reservation = ledger.reserve(item.reserved_usd, label=case.label)
+            charge = _Charge(
+                run=run,
+                phase="escenas",
+                rows=done,
+                rows_file=run / RESULTS_FILE,
+                row=row,
+                ledger=ledger,
+                amount=item.reserved_usd,
+            )
         except CeilingExceededError as exc:
             print(f"TOPE: {exc}", file=sys.stderr)
             break
@@ -571,49 +714,27 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             task=GenerationTask.SCENE_VIDEO,
             rendered_prompt=RenderedPrompt("", "", ""),
             params=params,
+            observer=charge,  # the task id is on disk as soon as ModelArk accepts it
         )
         try:
             result = adapter.generate(request, api_key=key.value)
         except (ArkAPIError, ArkTaskFailed) as exc:  # refused or failed: not billed
-            ledger.release(reservation)
-            row.update(error=str(exc)[:600], refusal=refusal_kind(str(exc)), cost_usd="0")
+            row.update(error=str(exc)[:600], refusal=refusal_kind(str(exc)))
+            charge.release()
         except Exception as exc:  # timeout or unknown: the task may still bill
-            row.update(
-                error=f"{type(exc).__name__}: {exc}"[:600],
-                task_id=getattr(exc, "task_id", None),
-                cost_usd=str(ledger.settle(reservation)),
-            )
-            _add_spend(run, "escenas", case.label, row["cost_usd"])
+            row["error"] = f"{type(exc).__name__}: {exc}"[:600]
+            row["task_id"] = getattr(exc, "task_id", None) or row.get("task_id")
+            charge.settle()
+            if row["task_id"]:
+                # the task may still finish (and bill): left «enviada», so the next run
+                # waits for it by id instead of creating another
+                row["status"] = SENT
+                charge.save()
         else:
-            payload = dict(result.payload) if isinstance(result.payload, dict) else {}
-            tokens = int(result.usage.output_tokens or 0)
-            try:
-                actual = (
-                    video_cost_usd(pricing, result.model_id, row["resolution"], tokens)
-                    if tokens
-                    else None
-                )
-            except Exception:  # never lose a charge: the reservation stands for it
-                actual = None
-            row["cost_usd"] = str(ledger.settle(reservation, actual))
-            _add_spend(run, "escenas", case.label, row["cost_usd"])
-            row.update(
-                task_id=payload.get("task_id"),
-                billed_tokens=tokens,
-                cost_kind="facturado (tokens)" if actual is not None else "reservado",
-                model_revision=result.model_revision,
-                media_url=result.media_url,
-            )
+            actual = finish(row, result)
             # the paid row is on disk BEFORE the download: a cut there never pays twice
-            done[case.label] = row
-            _write_json(run / RESULTS_FILE, done)
-            if result.media_url:  # valid 24 h: copied at once
-                name = f"{case.file_stem}.mp4"
-                failure = _download_video(result.media_url, run / "videos" / name)
-                if failure is None:
-                    row["video"] = f"videos/{name}"
-                else:
-                    row["download_error"] = failure
+            charge.settle(actual)
+            fetch(row, case)
         row["seconds_taken"] = round(time.monotonic() - started, 1)
         done[case.label] = row
         _write_json(run / RESULTS_FILE, done)
