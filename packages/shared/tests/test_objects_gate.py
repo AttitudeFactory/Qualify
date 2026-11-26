@@ -224,6 +224,11 @@ def test_gate_exposes_no_presign_method() -> None:
         "open_seasonal_media",
         "seasonal_key_for",
         "delete_seasonal_media",
+        # m-25129385: the business's characters, exact keys under
+        # seasonal/{tenant}/{brand}/personajes-negocio/ (written, read, deleted by key).
+        "put_business_character",
+        "open_business_character",
+        "delete_business_characters",
         "list_gallery_media",
         "put_media",
         "open_object",
@@ -810,6 +815,43 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
         gate.put_seasonal_media(
             _TENANT, brand, "Navidad 2026", media, "webp", io.BytesIO(b"x"), "x"
         )
+    assert store.deleted == [key]
+
+
+def test_business_characters_are_bounded_to_their_business_and_outside_the_purge() -> None:
+    """m-25129385: one exact `.jpg` per character under its business's seasonal library —
+    written, read and deleted only by that key; never a seasonal medium's shape."""
+    from qualify_shared.objects.gate import PURGEABLE_ROOTS
+    from qualify_shared.objects.keys import business_character_key
+
+    brand, character = uuid4(), uuid4()
+    store = _SeasonalStore()
+    gate = ObjectGate(store)  # type: ignore[arg-type]
+    key = gate.put_business_character(
+        _TENANT, brand, character, io.BytesIO(b"\xff\xd8x"), "image/jpeg"
+    )
+    assert key == f"seasonal/{_TENANT}/{brand}/personajes-negocio/{character}.jpg"
+    assert key == business_character_key(_TENANT, brand, character)
+    assert not any(key.startswith(root) for root in PURGEABLE_ROOTS)
+    gate.open_business_character(_TENANT, brand, key)
+    gate.delete_business_characters(_TENANT, brand, [key, key])
+    assert store.puts == [key] and store.opened == [key] and store.deleted == [key]
+    for bad in (
+        f"seasonal/{_TENANT}/{uuid4()}/personajes-negocio/{character}.jpg",  # other business
+        f"seasonal/{uuid4()}/{brand}/personajes-negocio/{character}.jpg",  # other tenant
+        f"seasonal/{_TENANT}/{brand}/personajes-negocio/{character}.png",
+        f"seasonal/{_TENANT}/{brand}/personajes-negocio/{character}-1.jpg",
+        f"seasonal/{_TENANT}/{brand}/personajes/{character}-1.webp",  # a sticker character
+        f"seasonal/{_TENANT}/{brand}/personajes-negocio/",
+        f"seasonal/{_TENANT}/{brand}/personajes-negocio/../{character}.jpg",
+        f"t/{_TENANT}/personajes-negocio/{character}.jpg",
+    ):
+        with pytest.raises(TenantPrefixViolation):
+            gate.open_business_character(_TENANT, brand, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.delete_business_characters(_TENANT, brand, [key, bad])  # all checked first
+    with pytest.raises(TenantPrefixViolation):
+        business_character_key(_TENANT, brand, str(character))  # type: ignore[arg-type]
     assert store.deleted == [key]
 
 

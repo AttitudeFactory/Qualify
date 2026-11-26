@@ -63,6 +63,10 @@ SEASONAL_JOB_REVISION = 1
 #: whose subject is `sticker_character_id` (`draft_id` and `seasonal_media_id` NULL).
 #: Enqueued only by `enqueue_character_job`; it rides its own pool (`SEEDREAM_PRO_POOL`).
 KIND_STICKER_CHARACTER = "sticker_character"
+#: m-25129385 (0187): one option of a business character — ONE synchronous Seedream 5.0 pro
+#: call whose subject is `business_character_id`. Enqueued only by
+#: `enqueue_business_character_job`, on the same Seedream pool as the sticker characters.
+KIND_BUSINESS_CHARACTER = "business_character"
 
 LANE_IMMEDIATE = "immediate"
 LANE_NIGHTLY = "nightly"
@@ -347,6 +351,58 @@ def enqueue_character_job(
         text(
             "SELECT id FROM creative_jobs WHERE tenant_id = :tenant_id"
             " AND sticker_character_id = :character"
+        ),
+        params,
+    ).scalar_one()
+    return Enqueued(job_id=existing, created=False)
+
+
+def enqueue_business_character_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    character_id: UUID,
+    pricing_version: str,
+    pipeline_version: str,
+    lane: str = LANE_IMMEDIATE,
+) -> Enqueued:
+    """Queue the ONE paid Seedream call of a business character option (m-25129385), inside
+    the transaction that inserts the option — once: `uq_creative_jobs_business_character`
+    makes a second call return the existing job."""
+    if lane not in LANES:
+        raise ValueError(f"unknown lane {lane!r}")
+    params = {"tenant_id": tenant_id, "character": character_id}
+    created = session.execute(
+        text(
+            """
+            INSERT INTO creative_jobs (
+                tenant_id, draft_id, business_character_id, kind, revision, position,
+                vendor_model, lane, priority, not_before, pricing_version, pipeline_version
+            ) VALUES (
+                :tenant_id, NULL, :character, :kind, :revision, 0, :vendor_model, :lane, 0,
+                now(), :pricing_version, :pipeline_version
+            )
+            ON CONFLICT (tenant_id, business_character_id)
+                WHERE business_character_id IS NOT NULL DO NOTHING
+            RETURNING id
+            """
+        ),
+        {
+            **params,
+            "kind": KIND_BUSINESS_CHARACTER,
+            "revision": SEASONAL_JOB_REVISION,
+            "vendor_model": SEEDREAM_PRO_POOL,
+            "lane": lane,
+            "pricing_version": pricing_version,
+            "pipeline_version": pipeline_version,
+        },
+    ).scalar_one_or_none()
+    if created is not None:
+        return Enqueued(job_id=created, created=True)
+    existing = session.execute(
+        text(
+            "SELECT id FROM creative_jobs WHERE tenant_id = :tenant_id"
+            " AND business_character_id = :character"
         ),
         params,
     ).scalar_one()
@@ -888,6 +944,8 @@ class JobRow:
     submitted_at: datetime | None = None
     #: m-25017372 (0155): a `sticker_character` job's subject.
     sticker_character_id: UUID | None = None
+    #: m-25129385 (0187): a `business_character` job's subject.
+    business_character_id: UUID | None = None
 
 
 def load_job(session: Session, job_id: UUID) -> JobRow | None:
@@ -898,7 +956,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
             SELECT id, tenant_id, draft_id, kind, revision, position, vendor_model, lane,
                    priority, status, claim_token, vendor_task_id, queued_at, deadline,
                    attempts, seasonal_media_id, attempt, pricing_version, submitted_at,
-                   sticker_character_id
+                   sticker_character_id, business_character_id
             FROM creative_jobs WHERE id = :id
             """
         ),
@@ -927,6 +985,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
         pricing_version=row.pricing_version,
         submitted_at=row.submitted_at,
         sticker_character_id=row.sticker_character_id,
+        business_character_id=row.business_character_id,
     )
 
 

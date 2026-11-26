@@ -61,6 +61,8 @@ class JobContext:
     submitted_at: datetime | None = None
     #: m-25017372: a `sticker_character` job's subject (read tenant-side with the job).
     sticker_character_id: UUID | None = None
+    #: m-25129385: a `business_character` job's subject (read tenant-side with the job).
+    business_character_id: UUID | None = None
 
 
 @dataclass(frozen=True)
