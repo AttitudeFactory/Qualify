@@ -1243,6 +1243,9 @@ class PostOptionVM:
     #: the card already says it in its label («Imagen · 9:16»). Other screens keep
     #: `media_label`, which names the format.
     card_media_label: str = ""
+    #: m-25120706: a «Publicación del mes» says the date it was made for
+    #: (`occasion_label_text`); "" for every other publication.
+    occasion_label: str = ""
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1822,6 +1825,7 @@ def build_post_option(
     content_kind: str = "",
     approved_at: str = "",
     reuse_type: str | None = None,
+    occasion_label: str = "",
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1918,7 +1922,16 @@ def build_post_option(
             video_url=video_url,
             thumbnail_url=thumbnail_url or "",
         ),
+        occasion_label=occasion_label,
     )
+
+
+def occasion_label_text(name: str, day: date) -> str:
+    """m-25120706: why a «Publicación del mes» is in «Por aprobar» — «Para el Día de la
+    Madre (9 de mayo)». «el» only before «Día …»: «Para Navidad», «Para Black Friday»
+    (calendar names in English stay as they are, proper names)."""
+    article = "el " if name.startswith("Día ") else ""
+    return f"Para {article}{name} ({day.day} de {_MONTHS_LONG[day.month - 1]})"
 
 
 # -- Historias (founder 2026-11-16): a label, a filter and «Abrir en Instagram» ----------

@@ -11,6 +11,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.ads.month_plan import PlanDate
+from qualify_api.planner.monthly_post import Occasion, occasions_of
 from qualify_api.planner.monthly_post_job import PostgresMonthlyPostStore
 from qualify_api.tenancy.models import Brand, Tenant
 
@@ -107,3 +108,38 @@ def test_a_retried_month_records_the_event_it_is_made_for() -> None:
     with tenant_session(tenant) as s:
         row = s.execute(text("SELECT status, event_id, event_date FROM monthly_posts")).one()
     assert tuple(row) == ("pending", "dia_madre", date(2026, 5, 10))
+
+
+def _draft(tenant_id, brand_id, topic: str):  # noqa: ANN001, ANN202
+    """A minimal piece (brief + draft), as the owner's app would write it."""
+    with tenant_session(tenant_id) as s:
+        brief = s.execute(
+            text(
+                "INSERT INTO content_briefs (tenant_id, brand_id, objective, topic, platform, "
+                "format, intent, content_type, image_route) VALUES (:t, :b, 'o', :topic, "
+                "'instagram', 'reel', 'i', 'video', 'r') RETURNING id"
+            ),
+            {"t": tenant_id, "b": brand_id, "topic": topic},
+        ).scalar_one()
+        return s.execute(
+            text(
+                "INSERT INTO content_drafts (tenant_id, brief_id, brand_id, status) "
+                "VALUES (:t, :brief, :b, 'drafting') RETURNING id"
+            ),
+            {"t": tenant_id, "brief": brief, "b": brand_id},
+        ).scalar_one()
+
+
+def test_occasions_of_reads_only_this_tenants_monthly_posts_in_one_batch() -> None:
+    store = PostgresMonthlyPostStore()
+    tenant, brand = _tenant_with_brand()
+    other, _ = _tenant_with_brand()
+    monthly, plain = _draft(tenant, brand, EVENT.name), _draft(tenant, brand, "Promo")
+    store.claim(tenant_id=tenant, brand_id=brand, period=MAY, event=EVENT, kind="clip")
+    store.settle(tenant_id=tenant, brand_id=brand, period=MAY, status="created",
+                 draft_id=monthly)  # fmt: skip
+    assert occasions_of(tenant, [monthly, plain]) == {
+        monthly: Occasion("Día de la Madre", date(2026, 5, 10))
+    }
+    assert occasions_of(other, [monthly, plain]) == {}  # RLS
+    assert occasions_of(tenant, []) == {}

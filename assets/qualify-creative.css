@@ -271,6 +271,9 @@
   background: var(--q-control-fill);
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
+/* m-25120706: the date label may be long («Para el Día de los Enamorados (14 de febrero)»):
+   it wraps on a narrow card instead of overflowing. */
+.q-gcard-occasion .rt-Badge { white-space: normal; height: auto; }
 .q-gcard-note { color: var(--amber-11); background: var(--amber-a2); border-radius: var(--q-radius-control); padding: 0.35rem 0.5rem; }
 /* m-24842981: ONE main button per card, full width, and «Descartar» under it as a quiet
    text button when the publication can still be thrown out. */
