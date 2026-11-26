@@ -65,6 +65,8 @@ SPEND_FILE = "gasto.json"
 DRAWINGS_FILE = "dibujos.json"
 RESULTS_FILE = "resultados.json"
 CHOICE_FILE = "eleccion.json"
+#: The smallest ceiling a ledger takes: with the run's ceiling used up, no reservation fits.
+NO_ROOM_USD = Decimal("0.000001")
 #: A placeholder image for the dry run's adapter validation (never sent).
 _DRY_IMAGE = "data:image/jpeg;base64,AAAA"
 
@@ -175,6 +177,8 @@ SENT, PAID, RELEASED = "enviada", "pagada", "liberada"
 def _already_paid(row: dict[str, Any]) -> bool:
     """A call that may have been billed (sent and not released, a task id, or a cost
     counted): never sent again."""
+    if row.get("status") == RELEASED:
+        return False  # ModelArk said it failed: not billed, it may be asked again
     return (
         row.get("status") in (SENT, PAID)
         or bool(row.get("task_id"))
@@ -434,7 +438,10 @@ def _paid_gate(args: argparse.Namespace, run: Path, items: list[Any], *, video: 
 def _ledger(max_usd: Decimal, run: Path) -> Any:
     from qualify_api.evals.spend_control import SpendLedger
 
-    return SpendLedger(ceiling_usd=max_usd - _spent_before(run))
+    # what is left of the ceiling after `gasto.json`; nothing left = a ledger that
+    # refuses every reservation (`_paid_gate` already said so when something was pending)
+    room = max_usd - _spent_before(run)
+    return SpendLedger(ceiling_usd=max(room, NO_ROOM_USD))
 
 
 def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
@@ -656,10 +663,11 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             )
             try:
                 result = adapter.generate(request, api_key=key.value)
-            except (ArkAPIError, ArkTaskFailed) as exc:  # failed: not billed
+            except ArkTaskFailed as exc:  # the task ended failed/expired: not billed
                 previous.update(status=RELEASED, cost_usd="0", error=str(exc)[:600])
+                _write_json(run / RESULTS_FILE, done)
                 _add_spend(run, "escenas", case.label, -reserved, kind="liberado")
-            except Exception as exc:  # still going: stays sent, counted
+            except Exception as exc:  # still going, or an API error: stays sent, counted
                 previous["error"] = f"{type(exc).__name__}: {exc}"[:600]
             else:
                 actual = finish(previous, result)
@@ -670,6 +678,8 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
                     _add_spend(run, "escenas", case.label, cost - reserved, kind="ajuste")
                 fetch(previous, case)
             _write_json(run / RESULTS_FILE, done)
+            # the ceiling again from `gasto.json`, the adjustment included
+            ledger = _ledger(max_usd, run)
             continue
         if _finished(previous):
             # paid before (or may have been): never sent again; only its video is fetched
@@ -718,9 +728,19 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
         )
         try:
             result = adapter.generate(request, api_key=key.value)
-        except (ArkAPIError, ArkTaskFailed) as exc:  # refused or failed: not billed
+        except ArkTaskFailed as exc:  # the task ended failed/expired: not billed
             row.update(error=str(exc)[:600], refusal=refusal_kind(str(exc)))
             charge.release()
+        except ArkAPIError as exc:
+            row.update(error=str(exc)[:600], refusal=refusal_kind(str(exc)))
+            if row.get("task_id"):
+                # the error came while polling a task that exists: it may still bill.
+                # Counted and left «enviada», recovered by id on the next run
+                charge.settle()
+                row["status"] = SENT
+                charge.save()
+            else:  # refused at creation: no task, nothing billed
+                charge.release()
         except Exception as exc:  # timeout or unknown: the task may still bill
             row["error"] = f"{type(exc).__name__}: {exc}"[:600]
             row["task_id"] = getattr(exc, "task_id", None) or row.get("task_id")

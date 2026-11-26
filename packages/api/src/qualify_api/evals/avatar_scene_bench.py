@@ -458,8 +458,16 @@ def fits_ceiling(
 ) -> str | None:
     """None when every item, reserved with its margin, fits under the ceiling minus what
     earlier phases of the same run spent; otherwise the refusal (nothing is sent)."""
+    if not items:
+        return None  # nothing left to pay
     need = sum((i.reserved_usd for i in items), Decimal(0))
     room = max_usd - spent_before
+    if room <= 0:
+        return (
+            f"Ya se gastó US${spent_before} y el tope es US${max_usd}: no queda nada para "
+            f"las {len(items)} llamadas que faltan. No se manda nada; para seguir hace falta "
+            "un tope mayor aprobado por Deivid."
+        )
     if need > room:
         return (
             f"El plan reserva US${need} (con 10 % de margen) y quedan US${room} del tope "

@@ -712,3 +712,183 @@ def test_the_dry_run_quote_never_lands_in_the_repo(tmp_path: Path) -> None:
     runner = _runner()
     with pytest.raises(SystemExit, match="fuera del repositorio"):
         runner.main(["plan", "--out", str(runner.REPO / "packages" / "api" / "evals")])
+
+
+class FakeSeedanceScripted:
+    """Each scene's first creation does what `script` says («timeout», «api_error» while
+    polling, «failed»), after telling the observer its task id; asked again by id
+    (`resume_task_id`) or created again, it succeeds."""
+
+    script: dict[str, str] = {}
+    created: list[str] = []
+    resumed: list[str] = []
+
+    def __init__(self, **_: Any) -> None:
+        pass
+
+    def generate(self, request: Any, *, api_key: str) -> GenerationResult:
+        from qualify_creative.adapters.byteplus_ark import (
+            ArkAPIError,
+            ArkTaskFailed,
+            ArkTaskTimeout,
+            estimate_video_tokens,
+        )
+
+        cls = FakeSeedanceScripted
+        seconds = str(request.params["duration_seconds"])
+        resume = request.params.get("resume_task_id")
+        if resume:
+            cls.resumed.append(str(resume))
+            task_id = str(resume)
+        else:
+            task_id = f"cgt-{seconds}s-{len(cls.created) + 1}"
+            cls.created.append(task_id)
+            action = cls.script.pop(seconds, None)
+            if action and request.observer is not None:
+                request.observer.created(task_id)
+            if action == "timeout":
+                raise ArkTaskTimeout(task_id, 480.0, "running")
+            if action == "api_error":
+                raise ArkAPIError(503, "ServiceUnavailable", "poll failed")
+            if action == "failed":
+                raise ArkTaskFailed(task_id, "failed", "InternalError", "x")
+        return GenerationResult(
+            payload={"task_id": task_id},
+            model_id=bench.SEEDANCE_MODEL,
+            provider="seedance",
+            usage=Usage(
+                output_tokens=estimate_video_tokens(
+                    bench.SEEDANCE_MODEL, "480p", "9:16", int(seconds)
+                )
+            ),
+            media_url=f"https://example.invalid/{task_id}.mp4",
+        )
+
+
+def _scenes_args(tmp_path: Path, run: Path, max_usd: str = "8") -> list[str]:
+    return [
+        "escenas",
+        "--i-have-spend-authorization",
+        "--max-usd",
+        max_usd,
+        "--personaje",
+        "animado",
+        "--material",
+        str(_material(tmp_path)),
+        "--run",
+        str(run),
+    ]
+
+
+def _scripted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: dict[str, str]
+) -> tuple[Any, Path]:
+    from qualify_creative.adapters import byteplus_ark
+
+    runner = _runner()
+    run = _drawn_run(tmp_path, monkeypatch, runner)
+    monkeypatch.setattr(byteplus_ark, "SeedanceVideoAdapter", FakeSeedanceScripted)
+    FakeSeedanceScripted.script = dict(script)
+    FakeSeedanceScripted.created, FakeSeedanceScripted.resumed = [], []
+    return runner, run
+
+
+def _results(run: Path) -> dict[str, Any]:
+    return json.loads((run / "resultados.json").read_text("utf-8"))
+
+
+def _all_counted_once(run: Path) -> bool:
+    rows = _results(run).values()
+    return _spent(run) == Decimal("0.180") + sum((Decimal(r["cost_usd"]) for r in rows), Decimal(0))
+
+
+@pytest.mark.parametrize("action", ["timeout", "api_error"])
+def test_an_error_while_polling_a_created_task_stays_counted_and_is_recovered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    runner, run = _scripted_run(tmp_path, monkeypatch, {"8": action})
+    assert runner.main(_scenes_args(tmp_path, run)) == 0
+    e2 = _results(run)["animado/dibujado/e2"]
+    assert e2["status"] == "enviada" and e2["task_id"].startswith("cgt-8s")
+    assert Decimal(e2["cost_usd"]) > 0  # not released: it may still bill
+    assert _all_counted_once(run)
+
+    assert runner.main(_scenes_args(tmp_path, run)) == 0
+    assert len(FakeSeedanceScripted.created) == 3  # e2 never created again
+    assert FakeSeedanceScripted.resumed == [e2["task_id"]]
+    assert all(r["status"] == "pagada" for r in _results(run).values())
+    assert _all_counted_once(run)
+
+
+def test_a_failed_task_is_released_and_asked_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, run = _scripted_run(tmp_path, monkeypatch, {"8": "failed"})
+    assert runner.main(_scenes_args(tmp_path, run)) == 0
+    e2 = _results(run)["animado/dibujado/e2"]
+    assert e2["status"] == "liberada" and e2["cost_usd"] == "0" and e2["task_id"]
+    assert _all_counted_once(run)
+
+    assert runner.main(_scenes_args(tmp_path, run)) == 0
+    assert len(FakeSeedanceScripted.created) == 4  # e2 asked again: it was not billed
+    assert FakeSeedanceScripted.resumed == []
+    assert _results(run)["animado/dibujado/e2"]["status"] == "pagada"
+    assert _all_counted_once(run)
+
+
+def test_an_old_run_without_states_is_resumed_without_resending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _ = _scripted_run(tmp_path, monkeypatch, {})
+    run = tmp_path / "vieja"
+    run.mkdir()
+    # the format of run 20261126-125745: no `kind` in gasto.json, no `status` in rows
+    (run / "gasto.json").write_text(
+        json.dumps({"spent_usd": "2.557", "phases": [{"phase": "escenas"}]}), "utf-8"
+    )
+    (run / "resultados.json").write_text(
+        json.dumps(
+            {
+                "animado/dibujado/e1": {"cost_usd": "0.518", "task_id": "a", "video": "v/1.mp4"},
+                "animado/dibujado/e2": {"cost_usd": "0.827", "task_id": "b"},
+                "animado/dibujado/e3": {"cost_usd": "1.032", "task_id": "c", "video": "v/3.mp4"},
+            }
+        ),
+        "utf-8",
+    )
+    assert runner.main(_scenes_args(tmp_path, run)) == 0
+    assert FakeSeedanceScripted.created == [] and FakeSeedanceScripted.resumed == []
+    assert _spent(run) == Decimal("2.557")
+
+
+def test_a_drawing_cut_during_its_call_is_not_drawn_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    run = _drawn_run(tmp_path, monkeypatch, runner)
+    drawings = json.loads((run / "dibujos.json").read_text("utf-8"))
+    cut = drawings["personaje/animado/opcion-2"]
+    cut.update(status="enviada", cost_usd="0.0495")
+    cut.pop("file")
+    (run / "dibujos.json").write_text(json.dumps(drawings), "utf-8")
+
+    calls: list[str] = []
+    original = FakeSeedream.generate
+
+    def counting(self: Any, request: Any, *, api_key: str) -> GenerationResult:
+        calls.append(str(request.params["prompt"])[:20])
+        return original(self, request, api_key=api_key)
+
+    monkeypatch.setattr(FakeSeedream, "generate", counting)
+    args = ["dibujar", "--i-have-spend-authorization", "--max-usd", "8", "--run", str(run)]
+    assert runner.main([*args, "--personaje", "animado"]) == 0
+    assert calls == []
+
+
+def test_a_used_up_ceiling_says_so_in_spanish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, run = _scripted_run(tmp_path, monkeypatch, {})
+    with pytest.raises(SystemExit, match="Ya se gastó"):
+        runner.main(_scenes_args(tmp_path, run, max_usd=str(_spent(run))))
+    assert FakeSeedanceScripted.created == []
