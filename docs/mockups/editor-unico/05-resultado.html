@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5 · El resultado — Editor único</title>
+<link rel="stylesheet" href="editor-unico.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <a href="01-pista.html">1 · Pista</a> · <a href="02-panel-bloque-ia.html">2 · Panel del bloque IA</a> · <a href="03-agregar.html">3 · Agregar</a> · <a href="04-crear.html">4 · Crear</a> · <b>5 · Resultado</b> · <a href="06-hacer-uno-parecido.html">6 · Hacer uno parecido</a></nav>
+  <h1 class="mk-title">5 · El resultado: cómo va cada parte, rehacer la que no gusta y aprobar</h1>
+  <p class="mk-sub">Después de «Crear», el dueño cae en la página de su video (<code>/drafts/&lt;id&gt;</code>, se enciende «Por aprobar») con <b>el mismo editor</b>: la misma pista, ahora con el estado de cada parte con IA. Sin «Paso N de M»: el asistente terminó en «Crear». Cambiar textos, uniones, capas, orden o recortes es gratis y vuelve a juntar el video. Solo cuesta rehacer una parte con IA.</p>
+
+  <div class="mk-variants">
+  <section class="mk-variant">
+    <h2>A · El progreso por parte <small>— una para revisar, una creándose, una que no salió y una que no se pudo con el original</small></h2>
+    <template id="s5a">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Por aprobar</a><span class="pill" data-tone="info"><span class="spin" style="width:10px;height:10px"></span>Creando</span></div><h1 class="step-h1" style="margin-top:6px">Tu video</h1></header>
+      <div class="step-body">
+        <div class="stack" role="status">
+          <p style="font-weight:600">Creando tus partes: van 1 de 4</p>
+          <div class="bar"><i style="width:25%"></i></div>
+        </div>
+        <div class="ed">
+          <script type="application/json" data-tl>
+          {"total":22,"t":4,"chosen":"",
+           "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},
+            {"id":"a1","kind":"ai","name":"Parte con IA 1","mode":"new","state":"review","start":2,"len":5,"pic":"pic-d"},
+            {"id":"a2","kind":"ai","name":"Parte con IA 2","mode":"follow","state":"creating","start":7,"len":3},
+            {"id":"v1","kind":"video","name":"Video 1","start":10,"len":4,"pic":"pic-b"},
+            {"id":"a3","kind":"ai","name":"Parte con IA 3","mode":"new","state":"failed","start":14,"len":4,"pic":"pic-c"},
+            {"id":"a4","kind":"ai","name":"Parte con IA 4","mode":"same","state":"refused","start":18,"len":4}],
+           "joins":[{"at":2,"kind":"corte","label":"Unión"},{"at":7,"kind":"corte","label":"Unión"},{"at":10,"kind":"corte","label":"Unión"},{"at":14,"kind":"corte","label":"Unión"},{"at":18,"kind":"corte","label":"Unión"}],
+           "texts":[{"id":"t1","name":"«2×1 hoy»","start":2,"len":5}],
+           "status":"La parte con IA 1 está para revisar."}
+          </script>
+          <section class="card stack" aria-labelledby="dec5">
+            <h3 class="sec" id="dec5">Falta que decidas qué hacer con 2 partes</h3>
+            <div class="bl-row">
+              <span class="thumb pic-c" aria-hidden="true"></span>
+              <div class="stack" style="gap:6px">
+                <span class="bl-row__name">Parte con IA 3 <span class="pill" data-tone="error">No salió</span></span>
+                <p style="font-size:13px">No pudimos crear esta parte. No se descontó de tus vistas previas.</p>
+                <div class="row"><button class="btn solid sm" type="button" aria-label="Intentar de nuevo la parte con IA 3"><span data-i="retry" data-c="sm"></span>Intentar de nuevo</button><button class="btn soft sm" type="button" aria-label="Quitar la parte con IA 3">Quitar parte</button></div>
+              </div>
+            </div>
+            <div class="bl-row">
+              <span class="thumb pic-reel" aria-hidden="true"></span>
+              <div class="stack" style="gap:6px">
+                <span class="bl-row__name">Parte con IA 4 <span class="pill" data-tone="warn">No se pudo con el original</span></span>
+                <p style="font-size:13px">No pudimos usar el original en esta parte porque parece haber una persona. Podemos hacerla nueva, inspirada en el original; la persona será otra. No se descontó de tus vistas previas.</p>
+                <div class="row"><button class="btn solid sm" type="button" aria-label="Hacer nueva la parte con IA 4"><span data-i="sparkles" data-c="sm"></span>Hacerla nueva</button><button class="btn soft sm" type="button" aria-label="Quitar la parte con IA 4">Quitar parte</button></div>
+                <p class="cost"><span data-i="wallet" data-c="sm"></span><span>«Hacerla nueva» usa 1 vista previa. Te quedan 10.</span></p>
+              </div>
+            </div>
+          </section>
+          <p class="live">La parte con IA 2 se crea cuando esté la parte con IA 1. Mientras, puedes cambiar textos, uniones y efectos: es gratis.</p>
+        </div>
+      </div>
+      <footer class="step-foot"><p class="step-foot__why">Para aprobar, espera a que estén todas las partes y decide qué hacer con las 2 que faltan.</p><div class="step-foot__row"><button class="btn solid off" aria-disabled="true" type="button">Aprobar mi video</button></div></footer>
+    </template>
+    <div class="mk-row" data-pair="s5a"
+      data-note-phone="El estado va sobre cada parte en la pista (palabra + tono, nunca solo color), y lo que pide una decisión baja a una tarjeta debajo, a lo ancho: en una parte de 4 s (176 px) no cabe un motivo ni dos botones. Tocar la tarjeta elige esa parte en la pista."
+      data-note-desk="Una sola línea viva role=status anuncia los cambios de estado («La parte con IA 1 está para revisar.»). Las palabras son las de part_progress_vm, con «la parte con IA n» en vez de «la parte n»."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>B · El panel de una parte ya creada <small>— versión 2 de 2, «Me gusta así» y «Rehacer esta parte» plegado</small></h2>
+    <template id="s5b">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Por aprobar</a><span class="pill" data-tone="warn">Para revisar</span></div><h1 class="step-h1" style="margin-top:6px">Tu video</h1></header>
+      <div class="step-body">
+        <div class="ed">
+          <script type="application/json" data-tl>
+          {"total":22,"t":4,"chosen":"a1",
+           "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},
+            {"id":"a1","kind":"ai","name":"Parte con IA 1","mode":"new","state":"review","start":2,"len":5,"pic":"pic-d"},
+            {"id":"a2","kind":"ai","name":"Parte con IA 2","mode":"follow","state":"review","start":7,"len":3,"pic":"pic-d"},
+            {"id":"v1","kind":"video","name":"Video 1","start":10,"len":4,"pic":"pic-b"},
+            {"id":"a3","kind":"ai","name":"Parte con IA 3","mode":"new","state":"liked","start":14,"len":4,"pic":"pic-c"},
+            {"id":"a4","kind":"ai","name":"Parte con IA 4","mode":"new","state":"liked","start":18,"len":4,"pic":"pic-a"}],
+           "joins":[{"at":10,"kind":"corte","label":"Unión"},{"at":14,"kind":"fundido","label":"Unión: Fundido"},{"at":18,"kind":"corte","label":"Unión"}],
+           "texts":[{"id":"t1","name":"«2×1 hoy»","start":2,"len":5}],
+           "status":"Elegiste la parte con IA 1."}
+          </script>
+          <div class="q-island q-tl-actions"><button class="btn surface" type="button"><span data-i="trash"></span>Quitar</button></div>
+          <section class="q-tl-panel" aria-labelledby="p5b">
+            <div class="q-tl-panel__head"><h2 class="q-tl-panel__title" id="p5b"><span data-i="sparkles"></span>Parte con IA 1 <span class="muted" style="font-weight:400">· Nueva</span></h2><span class="pill" data-tone="warn">Para revisar</span></div>
+            <div class="row" style="align-items:flex-start;flex-wrap:nowrap">
+              <div class="player pic-d"><span class="preview__play" style="width:40px;height:40px;margin:-20px 0 0 -20px"><span data-i="play"></span></span></div>
+              <div class="stack" style="min-width:0">
+                <div class="versions"><button class="btn ghost sm" type="button"><span data-i="left" data-c="sm"></span>Ver la anterior</button><span class="q-nums" style="font-size:13px">Versión 2 de 2</span></div>
+                <p class="muted" style="font-size:12.5px">Se hizo con: «Una mano acerca el vaso de yogur con fresas a la cámara.»</p>
+                <button class="btn solid" type="button"><span data-i="heart"></span>Me gusta así</button>
+              </div>
+            </div>
+            <p class="cost"><span data-i="scissors" data-c="sm"></span><span>Para usar otro pedazo de esta parte, arrastra sus barras en la línea de tiempo. Es gratis.</span></p>
+            <hr class="hr">
+            <button class="btn soft block" type="button" aria-expanded="false"><span data-i="retry"></span>Rehacer esta parte</button>
+            <div class="whole"><span data-i="sparkles"></span><div class="whole__body"><div class="whole__k">¿Cómo la hacemos?</div><div class="whole__v">Nueva, inspirada en el original</div></div><button class="btn ghost sm" type="button">Cambiar</button></div>
+            <div class="q-tl-panel__done"><button class="btn soft sm" type="button" style="min-height:44px">Listo</button></div>
+          </section>
+        </div>
+      </div>
+      <footer class="step-foot"><p class="step-foot__why">Tu video dura 22 s. Al aprobarlo usa 17 s de video, los de las partes con IA.</p><div class="step-foot__row"><button class="btn solid" type="button">Aprobar mi video</button></div></footer>
+    </template>
+    <div class="mk-row" data-pair="s5b"
+      data-note-phone="La acción principal del panel es «Me gusta así» (marca la parte como lista; no es condición para aprobar, como hoy). «Rehacer esta parte» queda plegado: abrirlo es la decisión que cuesta. El recorte de una parte ya creada es gratis y se hace en la pista, como con tu video."
+      data-note-desk="El dueño ve la parte en su propio cuadro (clip_player) y el video entero arriba (vista previa en secuencia). Al aprobar, el total de segundos ya está a la vista en el pie."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>C · «Rehacer esta parte», abierto <small>— descripción y fotos, con su costo antes de confirmar; y cambiar la forma</small></h2>
+    <template id="s5c">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Por aprobar</a><span class="pill" data-tone="warn">Para revisar</span></div><h1 class="step-h1" style="margin-top:6px">Tu video</h1></header>
+      <div class="step-body">
+        <section class="q-tl-panel" aria-labelledby="p5c">
+          <div class="q-tl-panel__head"><h2 class="q-tl-panel__title" id="p5c"><span data-i="sparkles"></span>Parte con IA 1 <span class="muted" style="font-weight:400">· Nueva</span></h2><span class="pill" data-tone="warn">Para revisar</span></div>
+          <div class="panel-grid">
+            <div class="stack span2">
+              <h3 class="sec">Rehacer esta parte</h3>
+              <p class="field-help" style="margin:0">Cambia solo esta parte; las demás quedan igual.</p>
+            </div>
+            <div class="stack">
+              <label class="field-label" for="d5c">¿Qué pasa en esta parte?</label>
+              <textarea class="field" id="d5c" rows="3">Una mano acerca el vaso de yogur con fresas y lo deja sobre la mesa.</textarea>
+              <span class="field-label">Fotos de tu producto</span>
+              <div class="thumbs"><span class="thumb pic-c" role="img" aria-label="Foto 1 de tu producto"><span class="x"><span data-i="x" data-c="sm"></span></span></span><button class="thumb thumb--add" type="button" aria-label="Agregar una foto de tu producto"><span data-i="plus"></span></button></div>
+            </div>
+            <div class="stack">
+              <span class="field-label">¿Cómo la hacemos?</span>
+              <div class="choices">
+                <button class="choice" role="radio" aria-checked="true" type="button"><span class="choice__dot"></span><span class="choice__title">Nueva, inspirada en el original</span></button>
+                <button class="choice" role="radio" aria-checked="false" type="button"><span class="choice__dot"></span><span class="choice__title">Sigue a la anterior</span><span class="choice__help">Empieza donde termina la parte anterior.</span></button>
+              </div>
+              <p class="field-help">Cambiar la forma también crea una versión nueva.</p>
+            </div>
+            <div class="span2 stack">
+              <p class="cost"><span data-i="wallet" data-c="sm"></span><span>Usa 1 vista previa. Te quedan 11.</span></p>
+              <div class="row"><button class="btn soft" type="button">Cancelar</button><button class="btn solid" type="button" style="flex:1">Crear otra versión</button></div>
+              <p class="field-help">La versión de ahora no se pierde: la puedes volver a usar con «Ver la anterior».</p>
+            </div>
+          </div>
+        </section>
+      </div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn solid" type="button">Aprobar mi video</button></div></footer>
+    </template>
+    <div class="mk-row" data-pair="s5c"
+      data-note-phone="La línea de costo es la de hoy, literal («Usa 1 vista previa. Te quedan {n}.»), pegada al botón que gasta. Sin diálogo extra: es 1 vista previa y la versión anterior se conserva."
+      data-note-desk="«Igual al original» no aparece porque esta parte no viene de un momento editable del reel; si se pudiera, se vería con su motivo como en el panel de antes de crear."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>D · Aprobar: el total de segundos antes de confirmar</h2>
+    <template id="s5d">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Por aprobar</a><span class="pill" data-tone="ok">Partes listas</span></div><h1 class="step-h1" style="margin-top:6px">Tu video</h1></header>
+      <div class="dialog-back" style="min-height:520px">
+        <div class="dialog" role="alertdialog" aria-labelledby="dg5" aria-describedby="dg5b">
+          <h2 id="dg5">¿Aprobamos tu video?</h2>
+          <div id="dg5b" class="stack">
+            <p>Tu video dura 22 s. Al aprobarlo usa <b>17 s de tus segundos de video</b>: solo los de las 4 partes con IA. Tus fotos y tu video no gastan nada.</p>
+            <p class="q-nums">Este mes te quedan 40 s. Te quedarían 23 s.</p>
+            <p class="muted" style="font-size:13px">Después preparamos la versión final en alta calidad. Tarda unos minutos y no gasta nada más. Nada se publica hasta que tú lo programes.</p>
+          </div>
+          <div class="row" style="justify-content:flex-end"><button class="btn soft" type="button">Todavía no</button><button class="btn solid" type="button">Aprobar y usar 17 s</button></div>
+        </div>
+      </div>
+    </template>
+    <div class="mk-row" data-pair="s5d"
+      data-note-phone="Un diálogo (rx.alert_dialog) porque gastar segundos no se deshace. El botón dice cuánto usa. Si no alcanza, el botón de aprobar queda apagado con la línea de hoy («Para aprobarlo, quita partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos.»)."
+      data-note-desk="Nunca promete publicar: aprobar deja el video listo para que el dueño lo programe (asistido, nunca autónomo)."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>E · La espera de los finales <small>— y F, el video listo</small></h2>
+    <template id="s5e">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Por aprobar</a><span class="pill" data-tone="info"><span class="spin" style="width:10px;height:10px"></span>Preparando</span></div><h1 class="step-h1" style="margin-top:6px">Tu video</h1></header>
+      <div class="step-body">
+        <div class="card stack">
+          <p style="font-size:12.5px;color:var(--gray-11)">Pidiendo tus partes en alta calidad: van 2 de 4</p>
+          <div class="bar"><i style="width:50%"></i></div>
+          <h3 class="sec">Preparando tu video final</h3>
+          <p style="font-size:13px">Tarda unos minutos. Puedes salir de aquí: te avisamos en Inicio cuando esté listo.</p>
+        </div>
+        <div class="blocks-list" aria-label="Tus partes con IA">
+          <div class="bl-row"><span class="thumb pic-d" aria-hidden="true"></span><div><span class="bl-row__name">Parte con IA 1 <span class="pill" data-tone="ok">Lista</span></span></div></div>
+          <div class="bl-row"><span class="thumb pic-d" aria-hidden="true"></span><div><span class="bl-row__name">Parte con IA 2 <span class="pill" data-tone="ok">Lista</span></span></div></div>
+          <div class="bl-row"><span class="thumb pic-c" aria-hidden="true"></span><div><span class="bl-row__name">Parte con IA 3 <span class="pill" data-tone="info"><span class="spin" style="width:10px;height:10px"></span>Preparando</span></span></div></div>
+          <div class="bl-row"><span class="thumb pic-a" aria-hidden="true"></span><div><span class="bl-row__name">Parte con IA 4 <span class="pill" data-tone="neutral">En fila</span></span></div></div>
+        </div>
+        <p class="muted" style="font-size:12.5px">Mientras se prepara, tu video no se puede cambiar.</p>
+        <p class="mk-cap" style="margin-top:14px">F · Cuando termina</p>
+        <div class="callout" data-tone="ok" role="status"><span data-i="check"></span><span>Tu video está listo. Míralo y prográmalo cuando quieras.</span></div>
+        <div class="preview"><div class="preview__frame pic-d"><div class="preview__text">2×1 hoy</div><span class="preview__play"><span data-i="play"></span></span></div></div>
+      </div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn soft" type="button">Descargar</button><button class="btn solid" type="button">Programar</button></div></footer>
+    </template>
+    <div class="mk-row" data-pair="s5e"
+      data-note-phone="La espera usa progress_panel con la etapa encima de la barra (sin cargador al lado), y la lista de partes con su estado. El pie solo aparece con el video listo: «Programar» es el siguiente paso (N13), nunca «Publicar» solo."
+      data-note-desk="Hipótesis (perfil §5, pregunta 3): el dueño no se queda mirando la espera; por eso la frase dice que puede salir y dónde lo avisamos."></div>
+  </section>
+  </div>
+</div>
+</body>
+</html>

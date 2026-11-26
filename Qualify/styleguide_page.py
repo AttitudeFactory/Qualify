@@ -12,9 +12,13 @@ from __future__ import annotations
 from typing import Any
 
 import reflex as rx
+from qualify_api.creative.part_progress import PartState
 
 from . import edit_sequence
+from . import part_progress_vm as pp_vm
+from . import reel_parts_vm as rp_vm
 from .ui import (
+    ai_mode_tag,
     app_shell,
     callout,
     card,
@@ -2067,6 +2071,248 @@ def _timeline_section() -> rx.Component:
     )
 
 
+# ---------------------------------------------------------------------------------------
+# m-25026602: the AI part on the timeline («parte con IA»), signed by Deivid on 2026-11-26
+# (mockups `docs/mockups/editor-unico/`, docs/design-system.md §5.10.1). Static: no
+# state, no calls — every block below is plain markup with the classes ED-07 will use.
+# The short mode words are the new signed ones (answer 8); the states' words and tones
+# are `part_progress_vm`'s and the full names `reel_parts_vm`'s, so nothing is retyped.
+# ---------------------------------------------------------------------------------------
+
+AI_PART_ANCHOR = "parte-con-ia"
+
+#: The block's name on screen: «Parte con IA n», counted apart like «Foto n» (D1).
+AI_PART_NAME = "Parte con IA {n}"
+
+#: The short mode badge on the timeline (answer 8): mode → (lucide icon, word). The full
+#: name goes in the panel (`AI_MODE_FULL`) and in the block's `aria-label`.
+AI_MODE_SHORT: dict[str, tuple[str, str]] = {
+    "reference": ("wand-sparkles", "Nueva"),
+    "edit": ("copy", "Igual al original"),
+    "extend": ("corner-down-right", "Sigue a la anterior"),
+}
+
+#: The full names of the panel badge, short word → the ones it covers (D4).
+AI_MODE_FULL: tuple[tuple[str, str], ...] = (
+    ("reference", rp_vm.FORM_INSPIRED),
+    ("reference", rp_vm.FORM_NEW),
+    ("reference", rp_vm.FORM_NEW_BRAND),
+    ("edit", rp_vm.FORM_EDIT),
+    ("extend", rp_vm.FORM_EXTEND),
+)
+
+#: `data-ai-state` → the part's state (`PartState`), for its word and its tone. `plan`
+#: (not created yet) has no `PartState`: its line says the name and the seconds.
+AI_STATES: dict[str, PartState] = {
+    "queued": PartState.QUEUED,
+    "creating": PartState.CREATING,
+    "review": PartState.TO_REVIEW,
+    "ready": PartState.READY,
+    "failed": PartState.FAILED,
+    "refused": PartState.ORIGINAL_REFUSED,
+    "redo": PartState.REDO,
+    "expired": PartState.EXPIRED,
+}
+
+#: Its word in the accessible name before «Crear».
+AI_PLAN_WORD = "sin crear"
+
+#: The mark on the preview while the playhead is on an AI part not created yet.
+AI_PREVIEW_MARK = "{name} · se crea al tocar «Crear»"
+
+# Posters drawn with theme variables (no picture files in the repo, no network).
+_AI_POSTER_REEL = "linear-gradient(135deg, var(--amber-a8), var(--tomato-a7) 55%, var(--iris-a7))"
+_AI_POSTER_MADE = "linear-gradient(160deg, var(--grass-a8), var(--cyan-a8) 60%, var(--blue-a7))"
+
+
+def ai_part_label(name: str, mode: str, start: float, seconds: float, state: str = "plan") -> str:
+    """The AI block's accessible name, everything in words (notas.md, «Accesibilidad»):
+    «Parte con IA 1, Nueva, de 0:06 a 0:11, sin crear». Times to the tenth
+    (`clock_tenth`, m-25129389): the track's blocks are no longer on the ½ s magnet."""
+    word = AI_MODE_SHORT[mode][1]
+    status = AI_PLAN_WORD if state == "plan" else pp_vm.STATE_WORDS[AI_STATES[state]].lower()
+    since, until = tl_vm.clock_tenth(start), tl_vm.clock_tenth(start + seconds)
+    return f"{name}, {word}, de {since} a {until}, {status}"
+
+
+#: The state's mark before its word: an icon with a shape where a narrow block may hide
+#: the word (errors and warnings, so a 1–2 s part never says it with colour alone); the
+#: rest keep the dot of `signal_pill`. `creating` shows the system's loader.
+AI_STATE_ICONS: dict[str, str] = {
+    "queued": "clock",
+    "ready": "check",
+    "failed": "circle-x",
+    "refused": "triangle-alert",
+    "redo": "triangle-alert",
+    "expired": "triangle-alert",
+}
+
+
+def _ai_state_chip(state: str) -> rx.Component:
+    part_state = AI_STATES[state]
+    if state == "creating":
+        lead = rx.el.span(loading_spinner("sm"), class_name="q-tl__state-spin", aria_hidden="true")
+    elif state in AI_STATE_ICONS:
+        lead = rx.icon(AI_STATE_ICONS[state], size=11, aria_hidden="true")
+    else:
+        lead = rx.el.span(class_name="q-tl__state-dot", aria_hidden="true")
+    return rx.el.span(
+        lead,
+        rx.el.span(pp_vm.STATE_WORDS[part_state], class_name="q-tl__state-word"),
+        class_name="q-tl__state",
+        custom_attrs={"data-tone": pp_vm.STATE_TONES[part_state]},
+    )
+
+
+def _ai_block(
+    n: int, mode: str, seconds: int, state: str = "plan", *, chosen: bool = False
+) -> rx.Component:
+    """One AI block as ED-07 draws it on «Fotos y videos»: poster, line 1 ✦ + the short
+    mode badge, line 2 the name and seconds (before «Crear») or the state (after)."""
+    name = AI_PART_NAME.format(n=n)
+    icon, word = AI_MODE_SHORT[mode]
+    made = state in ("review", "ready", "redo")
+    if state == "plan":
+        line2: rx.Component = rx.el.span(
+            rx.el.span(name, class_name="q-tl__label"),
+            rx.el.span(f" · {seconds} s", class_name="q-tl__secs"),
+            class_name="q-tl__ai-name",
+        )
+    else:
+        line2 = _ai_state_chip(state)
+    return rx.el.button(
+        rx.el.span(
+            class_name="q-tl__pic",
+            aria_hidden="true",
+            style={"backgroundImage": _AI_POSTER_MADE if made else _AI_POSTER_REEL},
+        ),
+        rx.el.span(
+            rx.el.span(
+                rx.icon(T.AI_ICON, size=11, aria_hidden="true"),
+                rx.icon(icon, size=11, aria_hidden="true"),
+                rx.el.span(word, class_name="q-tl__mode-word"),
+                class_name="q-tl__mode",
+            ),
+            class_name="q-tl__ai-line",
+            aria_hidden="true",
+        ),
+        rx.el.span(line2, class_name="q-tl__ai-line", aria_hidden="true"),
+        type="button",
+        class_name="q-tl__block",
+        aria_label=ai_part_label(name, mode, 0, seconds, state),
+        aria_pressed="true" if chosen else "false",
+        # it has a picture (its poster or its frame), as the track marks it (ED-11)
+        custom_attrs={"data-tl-block": "ai", "data-ai-state": state, "data-tl-pic": "1"},
+    )
+
+
+def _own_block(kind: str, name: str) -> rx.Component:
+    """An own block of today (video: the accent wash; photo: gray), to compare."""
+    return rx.el.button(
+        rx.el.span(
+            rx.icon("film" if kind == "video" else "image", size=T.ICON_SM),
+            class_name="q-tl__icon",
+            aria_hidden="true",
+        ),
+        rx.el.span(name, class_name="q-tl__label"),
+        type="button",
+        class_name="q-tl__block",
+        aria_pressed="false",
+        custom_attrs={"data-tl-block": kind},
+    )
+
+
+def _ai_sample(block: rx.Component, seconds: int, caption: str) -> rx.Component:
+    return rx.el.div(
+        rx.el.div(block, class_name="q-ai-sample__box", style={"--b-len": str(seconds)}),
+        rx.el.span(caption, class_name="q-ai-sample__cap"),
+        class_name="q-ai-sample",
+    )
+
+
+def _ai_part_section() -> rx.Component:
+    """The AI block in every state and width, next to an own video and photo, plus the
+    full mode badge of the panel and the preview's mark. Nothing is clickable for real."""
+    states = [
+        _ai_sample(_ai_block(1, "reference", 5), 5, "Sin crear · Nueva · 5 s"),
+        _ai_sample(_ai_block(2, "edit", 5), 5, "Sin crear · Igual al original"),
+        _ai_sample(_ai_block(1, "reference", 5, chosen=True), 5, "Elegida, sin crear"),
+        *[
+            _ai_sample(
+                _ai_block(1, "reference", 5, state),
+                5,
+                pp_vm.STATE_WORDS[AI_STATES[state]],
+            )
+            for state in AI_STATES
+        ],
+    ]
+    widths = [
+        _ai_sample(
+            _ai_block(3, "extend", 3, "ready"),
+            3,
+            "3 s (132 px), lista: la palabra del modo con «…»",
+        ),
+        _ai_sample(_ai_block(3, "extend", 3), 3, "3 s sin crear (borde de 2 px): íconos y nombre"),
+        _ai_sample(_ai_block(4, "extend", 2), 2, "2 s (88 px): íconos y nombre, con «…»"),
+        _ai_sample(_ai_block(4, "extend", 2, "creating"), 2, "2 s, creando: íconos y estado"),
+        _ai_sample(_ai_block(5, "reference", 1), 1, "1 s (44 px): ✦ e ícono del modo"),
+        _ai_sample(
+            _ai_block(5, "reference", 1, "failed"), 1, "1 s, no salió: íconos y la cruz del error"
+        ),
+    ]
+    compare = [
+        _ai_sample(_ai_block(1, "reference", 5), 5, "Parte con IA (iris, ✦ e insignia)"),
+        _ai_sample(_own_block("video", "Video 1"), 5, "Tu video (lavado del acento)"),
+        _ai_sample(_own_block("photo", "Foto 1"), 2, "Tu foto (gris)"),
+    ]
+    return rx.el.div(
+        section(
+            "Parte con IA en la línea de tiempo",
+            rx.text(
+                "Patrón firmado por Deivid el 2026-11-26 (m-25026602; §5.10.1 de "
+                "docs/design-system.md). Una parte con IA es un bloque más de «Fotos y "
+                "videos» con el rol «hecho con IA» (escala iris), el ícono ✦ y la insignia "
+                "corta de su modo. Antes de «Crear»: borde punteado, póster atenuado, "
+                "nombre y segundos. Después: borde lleno y su estado con la palabra. Los "
+                "anchos son los del celular (1 s = 44 px). Ejemplo estático: sin datos ni "
+                "llamadas; lo construye ED-07.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            card(
+                rx.vstack(
+                    rx.heading("Estados", size="3", as_="h3"),
+                    rx.el.div(*states, class_name="q-ai-samples"),
+                    rx.heading("Anchos", size="3", as_="h3"),
+                    rx.el.div(*widths, class_name="q-ai-samples"),
+                    rx.heading("Junto a tus bloques", size="3", as_="h3"),
+                    rx.el.div(*compare, class_name="q-ai-samples"),
+                    rx.heading("Insignia completa, en el panel", size="3", as_="h3"),
+                    rx.flex(
+                        *[ai_mode_tag(full, AI_MODE_SHORT[mode][0]) for mode, full in AI_MODE_FULL],
+                        wrap="wrap",
+                        gap="2",
+                    ),
+                    rx.heading("Marca en la vista previa", size="3", as_="h3"),
+                    rx.el.span(
+                        rx.icon(T.AI_ICON, size=T.ICON_SM, aria_hidden="true"),
+                        AI_PREVIEW_MARK.format(name=AI_PART_NAME.format(n=1)),
+                        class_name="q-ai-mark",
+                    ),
+                    spacing="3",
+                    width="100%",
+                    align_items="start",
+                ),
+            ),
+            description="Bloque IA: póster, insignia corta, estados y anchos angostos.",
+            spacing="3",
+        ),
+        id=AI_PART_ANCHOR,
+        width="100%",
+        min_width="0",
+    )
+
+
 def styleguide_index() -> rx.Component:
     return app_shell(
         page_header(
@@ -2083,6 +2329,7 @@ def styleguide_index() -> rx.Component:
             _motion_section(),
             _components_section(),
             _timeline_section(),
+            _ai_part_section(),
             spacing="6",
         ),
     )
