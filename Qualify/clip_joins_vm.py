@@ -80,7 +80,7 @@ LABELS = {CUT: "Corte", FADE: "Fundido", WIPE: "Barrido"}
 #: The join's button: «Unión entre Video 1 y Foto 2: Corte».
 _NAME = "Unión entre {a} y {b}: {kind}"
 _TITLE = "Unión entre {a} y {b}"
-HELP = "Elige cómo pasa tu video de un bloque al otro."
+HELP = "Elige cómo pasa tu video de una foto o video al siguiente."
 #: ux review (2026-11-26): how to find the joins, under the timeline, until the first one.
 FIND_HINT = "Toca el punto entre dos fotos o videos para elegir cómo pasa tu video de uno al otro."
 
@@ -116,7 +116,8 @@ def slower_line(kinds: Sequence[str]) -> str:
 
 #: No room for any transition between these two blocks (`block_transition_room_s`).
 NO_ROOM = (
-    "Estos bloques son muy cortos para unirlos con fundido o barrido. Alárgalos para elegirlos."
+    "Estas fotos o videos son muy cortos para unirlos con fundido o barrido. "
+    "Alárgalos para elegirlos."
 )
 #: A block of avatar on either side.
 WITH_AVATAR = "Con un bloque de avatar, la unión solo puede ser un corte."

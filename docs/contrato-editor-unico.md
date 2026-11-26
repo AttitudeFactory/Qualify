@@ -169,18 +169,18 @@ Deivid decidió en la D1 de las maquetas del editor que la palabra «bloque» no
 | `Qualify/clip_editor_vm.py` | `SOURCE_TOO_LONG` (el aviso de «Cortar» antes de crear) | El mismo texto, sin «, y vuelve a crear el video» |
 | `Qualify/clip_editor_vm.py` | `TOO_SHORT` / `too_short_text(speed)` | Cada foto o video tiene que durar al menos 1 s. (o «…al menos ½ s.» con cámara rápida; la duración sigue siendo variable). También se ve en `creative_state.clip_cut_error` |
 | `Qualify/clip_joins_vm.py` | `FIND_HINT` | Toca el punto entre dos fotos o videos para elegir cómo pasa tu video de uno al otro. |
+| `Qualify/clip_joins_vm.py` | `HELP` | Elige cómo pasa tu video de una foto o video al siguiente. |
+| `Qualify/clip_joins_vm.py` | `NO_ROOM` | Estas fotos o videos son muy cortos para unirlos con fundido o barrido. Alárgalos para elegirlos. |
 
 Pruebas ajustadas:
 
 - `Qualify/test_clip_editor_vm.py`, líneas 111, 128 y 720;
 - `Qualify/test_clip_editor_state.py:1513`;
-- `Qualify/test_clip_joins.py::test_the_names_follow_the_blocks_when_they_move`, que exigía «bloques» en `FIND_HINT` y ahora exige «entre dos fotos o videos»;
+- `Qualify/test_clip_joins.py::test_the_names_follow_the_blocks_when_they_move`, que exigía «bloques» en `FIND_HINT` y `NO_ROOM`. Ahora fija los textos nuevos de `HELP` y `NO_ROOM`, exige «entre dos fotos o videos» en `FIND_HINT` y que ninguno de los tres diga «bloque»;
 - la de paridad `Qualify/test_clip_editor_recipe_b6.py::test_the_editors_a9_words_and_minute_are_the_backends`, que además ahora fija que `SOURCE_TOO_LONG` es el mismo texto sin el último paso y que ninguno dice «bloque».
 
 **Textos que todavía dicen «bloque» y quedan fuera de este cambio:**
 
-- `Qualify/clip_joins_vm.py:83`, `HELP`: «Elige cómo pasa tu video de un bloque al otro.» Es del carril B y no estaba en la lista autorizada.
-- `Qualify/clip_joins_vm.py`, `NO_ROOM`: «Estos bloques son muy cortos para unirlos con fundido o barrido. Alárgalos para elegirlos.» Es del carril B y no estaba en la lista. `Qualify/test_clip_joins.py::test_the_names_follow_the_blocks_when_they_move` todavía exige «bloques» en ese texto.
 - `image_pipeline/layer.py:400`: «Esta pieza no lleva bloques de datos: lista vacía.» Es otro sentido de «bloque»; falta confirmar si llega a la pantalla.
 
 **Reglas que ya existían y ahora también cuentan los bloques con IA** (mismos códigos y textos de siempre):

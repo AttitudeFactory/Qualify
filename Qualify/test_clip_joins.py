@@ -1425,10 +1425,16 @@ def test_the_names_follow_the_blocks_when_they_move() -> None:
         ("p0", "Foto 1", "Foto 2"),
         ("p1", "Foto 2", "Foto 3"),
     ]
-    # «bloque» stays where no block in particular is meant, and the server's words
-    assert "bloques" in joins.NO_ROOM
-    # m-25129405 (D1 of the editor's mockups): the hint names what the owner sees
-    assert "entre dos fotos o videos" in joins.FIND_HINT and "bloque" not in joins.FIND_HINT
+    # m-25129405 (D1 of the editor's mockups): «bloque» never reaches the screen; the
+    # words name what the owner sees
+    assert joins.HELP == "Elige cómo pasa tu video de una foto o video al siguiente."
+    assert joins.NO_ROOM == (
+        "Estas fotos o videos son muy cortos para unirlos con fundido o barrido. "
+        "Alárgalos para elegirlos."
+    )
+    assert "entre dos fotos o videos" in joins.FIND_HINT
+    for text in (joins.HELP, joins.NO_ROOM, joins.FIND_HINT):
+        assert "bloque" not in text
     assert "Hacia dónde se mueve Foto 3" == joins.direction_title("Foto 3")
 
 
