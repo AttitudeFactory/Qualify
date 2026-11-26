@@ -192,11 +192,16 @@ FEATURE_HASHTAG_WEEKLY = "hashtag_weekly"
 #: `reels_transcript` into these when the charge names the label (`labelled_feature`).
 FEATURE_COMPETITOR_REELS_LIST = "competitor_reels_list"
 FEATURE_COMPETITOR_REELS_TRANSCRIPT = "competitor_reels_transcript"
+#: «Buscar más cuentas en TikTok» of «Descubrir cuentas nuevas» (RF-07b, m-25119482): its
+#: own budget (50/day, 200/month, `creators.discover_paid`) is summed over this feature
+#: alone, inside the business's R5 cap (migration 0185 widens the CHECK to thirteen).
+FEATURE_DISCOVER_SEARCH = "discover_accounts_search"
 FEATURES = frozenset(
     {
         FEATURE_COMPETITOR_REELS_LIST,
         FEATURE_COMPETITOR_REELS_TRANSCRIPT,
         FEATURE_CREATOR_PROFILE,
+        FEATURE_DISCOVER_SEARCH,
         FEATURE_CREATOR_REELS,
         FEATURE_HASHTAG_WEEKLY,
         FEATURE_PROFILE,

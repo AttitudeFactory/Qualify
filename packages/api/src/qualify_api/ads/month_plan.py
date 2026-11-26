@@ -262,6 +262,48 @@ def month_weeks(year: int, month: int, merge_fragment_days: int) -> list[tuple[d
     return weeks
 
 
+def calendar_dates(
+    table: CalendarTable, country: str, sector: str | None, year: int
+) -> list[PlanDate]:
+    """Pure: the country's dates of `year` ± 1 (windows cross the year) that count for
+    `sector`, sorted by start. A sector outside `NICHE_LABELS` (or None) counts every date."""
+    if country not in table.countries:
+        raise ValueError(f"no calendar for {country}")
+    sector = sector if sector in NICHE_LABELS else None
+    return sorted(
+        (
+            PlanDate(e.id, e.name, start, end, e.tier, e.status)
+            for e in table.countries[country]
+            if sector is None or sector in e.sectors
+            for y in (year - 1, year, year + 1)
+            for start, end in _resolve(e.rule, y)
+        ),
+        key=lambda d: (d.start, d.id),
+    )
+
+
+# Paydays, not posting themes: they weigh the budget but are no reason for a post (m-25120703).
+NOT_A_THEME = frozenset({"quincena", "prima", "utilidades", "sueldo", "aguinaldo"})
+
+
+def event_of_month(
+    country: str,
+    sector: str | None,
+    year: int,
+    month: int,
+    table: CalendarTable | None = None,
+) -> PlanDate | None:
+    """Pure: the month's most relevant date to post about (m-25120703) — the highest tier
+    among the dates that START in the month, paydays excluded; a tie goes to the earliest
+    start (then id). None when the month has none."""
+    dates = [
+        d
+        for d in calendar_dates(table or load_table(), country, sector, year)
+        if (d.start.year, d.start.month) == (year, month) and d.id not in NOT_A_THEME
+    ]
+    return min(dates, key=lambda d: (-TIERS.index(d.tier), d.start, d.id), default=None)
+
+
 def plan(
     *,
     country: str,
@@ -279,16 +321,7 @@ def plan(
     if type(monthly_cap_minor) is not int or monthly_cap_minor <= 0:
         raise ValueError("the monthly cap must be a positive integer")
     sector = sector if sector in NICHE_LABELS else None
-    dates = sorted(
-        (
-            PlanDate(e.id, e.name, start, end, e.tier, e.status)
-            for e in table.countries[country]
-            if sector is None or sector in e.sectors
-            for y in (year - 1, year, year + 1)
-            for start, end in _resolve(e.rule, y)
-        ),
-        key=lambda d: (d.start, d.id),
-    )
+    dates = calendar_dates(table, country, sector, year)
     rows = []
     for start, end in month_weeks(year, month, table.merge_fragment_days):
         driving = tuple(

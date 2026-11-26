@@ -93,6 +93,8 @@ def _preview() -> rx.Component:
             sequence=S.clip_seq_json.replace(vm.SEQ_BASE, BACKEND_BASE),
             texts=S.clip_seq_texts,
             effects=S.clip_seq_effects,
+            # m-25120474: an R2 «Así se ve» loop is on the backend's origin
+            effect_url_base=(vm.SEQ_BASE, BACKEND_BASE),
             slower=S.clip_seq_slower,
             on_duration=S.report_clip_media,
             on_time=S.hear_clip_time,

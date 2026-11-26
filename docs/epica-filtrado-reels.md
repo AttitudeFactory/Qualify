@@ -123,6 +123,32 @@ días», «Más reels revisados» y sus textos. Los textos de RF-05 que nombraba
 dicen «tus ideas». Sigue sin haber llamadas pagadas: es la misma lectura de RF-01, con
 `limit=16`.
 
+**RF-02b backend (2026-11-25, m-25119463):** `referentes/reviewed_reels.py` une `creators`
+(`region_code`, `rubro`, de RF-04) con `LEFT JOIN` en Postgres y en el gemelo en memoria.
+Filtros: `ReelFilters.of(regions=["CO", …])` (ISO-2, una o varias) y `niches=[clave]`.
+Opciones: `REGION_OPTIONS` = los tres mercados del negocio (`tenancy.locale.COUNTRIES`:
+Colombia, Venezuela, Uruguay) + «Todas»; `brand_niche(tenant, brand)` lee el rubro del Brand Kit
+(`connect.sector`; si no hay clave, `rubro_text`) con `tenant_session` y da «Nicho: …».
+**Cuentas sin país o sin rubro:** con el filtro apagado («Todas», sin nicho) entran siempre; con
+un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para las ideas. El nicho
+**no** se aplica por defecto: la cobertura de rubro es ~0 % hasta que las cuentas vuelvan a pasar
+por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
+
+**RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
+ni llamadas pagadas; se recalcula al leer, desde `public_reels` y `creators` (globales).
+«En ascenso»: `lift` de `creators/metrics.py` (cm-1) ≥ 2,0 (el mismo `LIFT_HIGHLIGHT` de
+«x2 sobre su media»), con la mediana de ≥ 3 reels medibles de la cuenta en 90 días. Ojo:
+la cifra «xN sobre su media» de hoy usa otra mediana (reels de la corrida, ~30 días, sin
+madurez), así que puede no coincidir con la insignia; para que coincidan, la pantalla
+muestra `provenance.value`.
+«Top 10 % de tu rubro»: vistas ≥ percentil 90 de los reels medibles de 90 días de las
+cuentas del mismo `creators.rubro`; muestra mínima 30 reels de ≥ 3 cuentas; sin rubro (o
+`otro`) nunca hay insignia; la pantalla debe pasar los rubros de la marca
+(`DiscoverySeed.niches`) para que «tu rubro» sea cierto: solo se otorga en esos, y una
+marca sin rubro conocido no recibe ninguna. Cada insignia lleva su procedencia (reel,
+`rb-1`, `cm-1`, ventana, muestra, umbral).
+La pantalla (RF-13) llama `reel_badges.badges_for_reviewed(...)` junto a `reviewed_reels`.
+
 Descartadas: RF-06 «Competencia del sector» (decisión 1), RF-08 «Buscar por producto»
 (decisión 2), RF-03 (fusionada en RF-01).
 
@@ -141,6 +167,18 @@ semana de R17 tras cada historia.
 Todas son puertas de dos vías (constantes y presupuestos). Medición: `vendor_usage_events`
 (`reels_list`, `reels_transcript`, `profile`, `referentes_search`), `brand_reel_runs.cost_usd`
 y Langfuse.
+
+### RF-07b: búsqueda pagada de cuentas nuevas
+
+Decisión de Deivid (2026-11-25, opción 1): el presupuesto propio de la búsqueda (50 créditos
+al día y 200 al mes por negocio, en su zona horaria) cuenta **dentro** del tope general del
+negocio (150/600). La puerta medida reserva cada crédito en ese tope antes de llamar. Se mide
+con su propia feature, `discover_accounts_search` (migración 0185), para leerla aparte de
+las demás. Por eso un día de muchas búsquedas puede dejar menos cupo para la corrida
+semanal de ideas de los lunes. Es una puerta de dos vías: sacar la feature del tope general
+es un cambio de código, sin migración. Cada búsqueda cuesta 1 crédito (≈ USD 0,0019), 2 como
+máximo, y repetirla en la misma semana cuesta 0 porque la respuesta queda en
+`vendor_payloads`. Código: `qualify_api.creators.discover_paid`.
 
 ## Restricciones y cuidados
 

@@ -354,12 +354,17 @@ def _seq_text(row: rx.Var) -> rx.Component:
     )
 
 
-def _seq_effect(row: rx.Var) -> rx.Component:
-    """An effect's loop (only when its file exists), shown while it is on."""
+def _seq_effect(row: rx.Var, url_base: tuple[str, rx.Var[str]] | None = None) -> rx.Component:
+    """An effect's loop (only when its file exists), shown while it is on. ``url_base``
+    `(mark, origin)` puts the origin the browser sees where a row's address carries the
+    mark (an effect served by the backend, m-25120474)."""
+    src = row["url"].to(str)
+    if url_base is not None:
+        src = src.replace(url_base[0], url_base[1])
     return rx.cond(
         row["url"] != "",
         rx.el.video(
-            src=row["url"],
+            src=src,
             muted=True,
             loop=True,
             plays_inline=True,
@@ -391,6 +396,7 @@ def edit_sequence_preview(
     mute_label: str,
     region_label: str,
     clock: bool = True,
+    effect_url_base: tuple[str, rx.Var[str]] | None = None,
 ) -> rx.Component:
     """The preview of a whole video in order (ED-01b): `sequence` is
     `edit_sequence.PreviewSequence.to_json()`; `texts`/`effects` its overlays as rows
@@ -404,7 +410,10 @@ def edit_sequence_preview(
 
     ``clock`` False (ED-10's editor): no «{t} de {total}» under the frame — the linked
     timeline's clock over the tracks is the only one; with ``note_text`` "" too, the
-    line under the frame is not drawn at all (the frame gets its height)."""
+    line under the frame is not drawn at all (the frame gets its height).
+
+    ``effect_url_base`` `(mark, origin)`: an effect row's address carrying `mark` gets
+    `origin` there (the R2 «Así se ve» videos live on the backend's origin, m-25120474)."""
     layer = "q-edit-preview__video q-edit-seq__layer"
     frame = rx.box(
         # m-25114465: the photo of the block that goes on UNDER the next one while that
@@ -435,7 +444,7 @@ def edit_sequence_preview(
             )
             for name in ("a", "b")
         ),
-        rx.foreach(effects, _seq_effect),
+        rx.foreach(effects, lambda row: _seq_effect(row, effect_url_base)),
         rx.foreach(texts, _seq_text),
         # the notice is announced when it appears: its live region is always rendered
         rx.el.div(
