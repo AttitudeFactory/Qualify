@@ -11,6 +11,7 @@ block's markup and CSS (decorative, under the whole block, cells in seconds of t
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -805,7 +806,9 @@ def test_the_block_draws_its_strip_decorative_with_its_name() -> None:
     assert "q-tl__strip" in rendered and "q-tl__frame-cell" in rendered
     assert "q-tl__frame-pic" in rendered and "data-tl-strip" in rendered
     assert "--c-at" in rendered and "--c-len" in rendered and "backgroundPosition" in rendered
-    assert "--s-img" in rendered and "https://api.example" in rendered
+    # the image is the backend's origin followed by the row's strip path, inside url(...)
+    image = re.escape('"--s-img"] : (("url(\\\\"https://api.example"+row_rx_state_?.["strip"]')
+    assert re.search(image, rendered)
     strip = rendered[rendered.index("q-tl__strip") - 400 : rendered.index("q-tl__strip") + 400]
     assert "aria-hidden" in strip.replace("ariaHidden", "aria-hidden")
     # the block keeps its name and its picture of before when it has no strip
