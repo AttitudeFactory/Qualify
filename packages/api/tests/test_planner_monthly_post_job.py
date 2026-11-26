@@ -33,7 +33,7 @@ class FakeStore:
         row = self.rows.get((brand_id, period))
         if row is None:
             attempt = 0
-        elif row["status"] == "skipped" and row["reason"] == "not_enough_creations":
+        elif row["status"] == "skipped" and row["reason"] in job_mod.RETRYABLE_SKIPS:
             attempt = row["attempt"] + 1
         else:
             return None
@@ -154,16 +154,46 @@ def test_quota_short_stops_retrying_once_the_date_is_close(monkeypatch) -> None:
     assert drafts.charges == 0
 
 
-def test_other_skip_reasons_are_final(monkeypatch) -> None:
+def test_brand_not_ready_is_retried_once_ready(monkeypatch) -> None:
     brand = _brand()
     store = FakeStore({T: [brand]})
     drafts = FakeDrafts(raise_=BrandNotReady(missing=("voice_profile",)))
     job = _job(store, drafts, monkeypatch)
     job.run([T], date(2026, 5, 1))
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["reason"] == "brand_not_ready"
+    drafts.raise_ = None  # the owner approved the voice
+    job.run([T], date(2026, 5, 2))
+    job.run([T], date(2026, 5, 3))
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["status"] == "created"
+    assert drafts.charges == 1
+
+
+def test_a_refused_brief_is_final(monkeypatch) -> None:
+    brand = _brand()
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts(raise_=ValueError("refused"))
+    job = _job(store, drafts, monkeypatch)
+    job.run([T], date(2026, 5, 1))
     drafts.raise_ = None
     job.run([T], date(2026, 5, 2))
-    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["reason"] == "brand_not_ready"
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["reason"] == "brief_refused"
     assert drafts.charges == 0
+
+
+def test_on_nov_25_christmas_is_left_to_december(monkeypatch) -> None:
+    christmas = PlanDate("navidad", "Navidad", date(2026, 12, 25), date(2026, 12, 25),
+                         "grande", "verified")  # fmt: skip
+    monkeypatch.setattr(
+        job_mod, "event_of_month", lambda c, s, y, m, *a: christmas if m == 12 else None
+    )
+    brand = _brand()
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts()
+    job = MonthlyPostJob(
+        store=store, drafts=lambda: drafts, country_of=lambda t: "CO", owner_of=lambda t: OWNER
+    )
+    job.run([T], date(2026, 11, 25))
+    assert (brand.brand_id, date(2026, 12, 1)) not in store.rows and drafts.charges == 0
+    job.run([T], date(2026, 12, 1))
+    assert store.rows[(brand.brand_id, date(2026, 12, 1))]["status"] == "created"
 
 
 def test_from_day_25_next_months_early_date_is_prepared(monkeypatch) -> None:

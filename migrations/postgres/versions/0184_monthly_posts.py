@@ -16,8 +16,9 @@ lock against a double charge.
 - `status`: `pending` (claimed, generator not settled yet; a stale claim is taken again by
   a later run, see `planner.monthly_post_job`), `created` (`draft_id` set) or `skipped`
   (`skip_reason`: no event, not enough creations, Brand Kit not ready… — nothing charged).
-  Only `not_enough_creations` is not final (founder, 2026-11-25): the next daily run claims
-  the row again while the date is still ahead, with `attempt + 1` — the attempt is part of
+  `not_enough_creations`, `no_country` and `brand_not_ready` are not final (founder,
+  2026-11-25; nothing was charged): the next daily run claims the row again while the date
+  is still ahead, with `attempt + 1` and the event read again — the attempt is part of
   the generator's request key, so a draft failed uncharged for lack of creations never
   blocks the retry, while a crashed `pending` run keeps its attempt (and its key).
 - Provenance (house rule): `event_id` + `event_date` + `calendar_version` (the calendar

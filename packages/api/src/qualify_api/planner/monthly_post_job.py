@@ -13,7 +13,8 @@ The post spends a monthly creation, so the order is the guarantee:
 2. **Not useful → nothing.** The event must start at least `LEAD_DAYS` from today; turning
    the setting on after the date passed writes no row and charges nothing. From day
    `NEXT_MONTH_FROM_DAY` the next month's period is considered too (founder, 2026-11-25),
-   so a date in a month's first days still gets its post.
+   only for a date in its first `LEAD_DAYS` days, so such a date still gets its post
+   (and nothing else of next month is charged to this one).
 3. **Claim** `monthly_posts` (`UNIQUE (brand_id, period)`, insert-on-conflict) BEFORE the
    generator: only the winner goes on. A `pending` claim older than `STALE_CLAIM` (a run
    that died midway) may be taken again by a later run.
@@ -24,10 +25,11 @@ The post spends a monthly creation, so the order is the guarantee:
 5. **Settle**: `created` + `draft_id`, or `skipped` + reason when nothing was charged —
    no event, no country/calendar, no owner, Brand Kit not ready, not enough creations, a
    brief the generator refuses (a kind that needs the owner's inputs: an avatar's voice, a
-   template's product photo, a carousel's slides). All final except `not_enough_creations`
-   (founder, 2026-11-25): while the date is still `LEAD_DAYS` ahead the next daily run
-   claims it again with `attempt + 1` — a new key, since `create_draft` may have left a
-   draft failed uncharged under the old one. Any OTHER error first looks the draft up
+   template's product photo, a carousel's slides). All final except `RETRYABLE_SKIPS`
+   (not enough creations, no country, Brand Kit not ready; founder, 2026-11-25): while
+   the date is still `LEAD_DAYS` ahead the next daily run claims it again, event re-read,
+   with `attempt + 1` — a new key, since `create_draft` may have left a draft failed
+   uncharged under the old one. Any OTHER error first looks the draft up
    by its key: found → `created` (it may be charged, so it is never redone); not found or
    the lookup failed → the row stays `pending`, retried by the next daily run once stale.
 
@@ -61,8 +63,9 @@ logger = logging.getLogger("qualify_api.planner.monthly_post_job")
 PIPELINE_VERSION: Final = "monthly-post-v1"
 LEAD_DAYS: Final = 3
 NEXT_MONTH_FROM_DAY: Final = 25
-#: The one skip reason a later run retries (the owner may get more creations).
-RETRYABLE_SKIP: Final = "not_enough_creations"
+#: The skip reasons a later run retries (the owner may fix them; nothing was charged).
+NOT_ENOUGH_CREATIONS: Final = "not_enough_creations"
+RETRYABLE_SKIPS: Final = (NOT_ENOUGH_CREATIONS, "no_country", "brand_not_ready")
 STALE_CLAIM: Final = timedelta(hours=1)
 #: Fixed namespace of the request keys: the same brand and month always give the same key.
 _KEY_NAMESPACE: Final = UUID("6f1d3c2a-5b0e-4f7a-9c61-0d2e8a4b7c15")
@@ -155,11 +158,15 @@ _CLAIM = text(
     ":event_date, :calendar, :kind, :pipeline) "
     "ON CONFLICT ON CONSTRAINT uq_monthly_post DO UPDATE SET claimed_at = now(), "
     "updated_at = now(), status = 'pending', skip_reason = NULL, kind = EXCLUDED.kind, "
+    "event_id = EXCLUDED.event_id, event_date = EXCLUDED.event_date, "
+    "calendar_version = EXCLUDED.calendar_version, "
+    "pipeline_version = EXCLUDED.pipeline_version, "
     "attempt = monthly_posts.attempt "
     "+ CASE WHEN monthly_posts.status = 'skipped' THEN 1 ELSE 0 END "
     "WHERE (monthly_posts.status = 'pending' "
     "AND monthly_posts.claimed_at < now() - make_interval(secs => :stale)) "
-    "OR (monthly_posts.status = 'skipped' AND monthly_posts.skip_reason = :retryable) "
+    "OR (monthly_posts.status = 'skipped' "
+    "AND monthly_posts.skip_reason = ANY(CAST(:retryable AS text[]))) "
     "RETURNING attempt"
 )
 _SETTLE = text(
@@ -201,7 +208,7 @@ class PostgresMonthlyPostStore:
                     "kind": kind,
                     "pipeline": PIPELINE_VERSION,
                     "stale": STALE_CLAIM.total_seconds(),
-                    "retryable": RETRYABLE_SKIP,
+                    "retryable": list(RETRYABLE_SKIPS),
                 },
             ).scalar_one_or_none()
 
@@ -270,6 +277,10 @@ class MonthlyPostJob:
                     reason = "no_event"
                 elif event.start < today + timedelta(days=LEAD_DAYS):
                     return "too_late"  # nothing written, nothing charged
+        if period > today and (event is None or event.start >= period + timedelta(days=LEAD_DAYS)):
+            # next month only for a date in its first days, out of reach of its own runs;
+            # anything else (no event, no country…) waits for the month itself
+            return "not_yet"
         attempt = self.store.claim(
             tenant_id=tenant_id,
             brand_id=brand.brand_id,
@@ -316,7 +327,7 @@ class MonthlyPostJob:
             return self._skip(tenant_id, brand, period, "brand_not_ready")
         except NotEnoughCreations:
             # refused before the row, or the draft was failed uncharged (`create_draft`)
-            return self._skip(tenant_id, brand, period, RETRYABLE_SKIP)  # retried daily
+            return self._skip(tenant_id, brand, period, NOT_ENOUGH_CREATIONS)  # retried daily
         except Exception as exc:
             # the draft may exist (and be charged): never assume, look it up by its key
             try:

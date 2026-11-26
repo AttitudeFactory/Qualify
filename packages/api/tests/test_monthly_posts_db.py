@@ -94,3 +94,16 @@ def test_a_month_short_of_creations_is_claimed_again_with_the_next_attempt() -> 
                  skip_reason="not_enough_creations")  # fmt: skip
     assert store.claim(**claim) == 1
     assert store.claim(**claim) is None  # pending again: one winner
+
+
+def test_a_retried_month_records_the_event_it_is_made_for() -> None:
+    store = PostgresMonthlyPostStore()
+    tenant, brand = _tenant_with_brand()
+    first = dict(tenant_id=tenant, brand_id=brand, period=MAY, event=None, kind="clip")
+    assert store.claim(**first) == 0
+    store.settle(tenant_id=tenant, brand_id=brand, period=MAY, status="skipped",
+                 skip_reason="no_country")  # fmt: skip
+    assert store.claim(**{**first, "event": EVENT}) == 1
+    with tenant_session(tenant) as s:
+        row = s.execute(text("SELECT status, event_id, event_date FROM monthly_posts")).one()
+    assert tuple(row) == ("pending", "dia_madre", date(2026, 5, 10))
