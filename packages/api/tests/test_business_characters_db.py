@@ -436,3 +436,60 @@ def test_rls_is_forced_and_the_grants_are_the_house_ones() -> None:
         ("qualify_app", "UPDATE"),
         ("qualify_admin", "SELECT"),
     }
+
+
+def _round_at(tenant: UUID, brand: UUID, at_sql: str) -> None:
+    """One pending option of a new round, created at `at_sql` (an SQL expression)."""
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                f"""
+                INSERT INTO business_characters (
+                    tenant_id, brand_id, round_id, option_index, request_key, style,
+                    description, prompt, model_id, prompt_version, pipeline_version,
+                    pricing_table_version, quoted_usd, created_at
+                ) VALUES (
+                    :t, :b, gen_random_uuid(), 1, :k, 'animado', 'una descripción', 'p',
+                    'm', 'v', 'p', 'v10', 0.045, {at_sql}
+                )
+                """
+            ),
+            {"t": tenant, "b": brand, "k": uuid4().hex},
+        )
+
+
+def _tenant_zone(tenant: UUID, zone: str) -> UUID:
+    from qualify_shared.db.admin import admin_session
+
+    brand, _user, _ = _provision(tenant, "characters-zone")
+    with admin_session() as session:
+        session.execute(
+            text("UPDATE tenants SET timezone = :z WHERE id = :t"), {"z": zone, "t": tenant}
+        )
+    _service(tenant)  # a fresh business: earlier rows pushed two days back
+    return brand
+
+
+def test_the_day_is_the_business_s_own_in_bogota() -> None:
+    tenant = UUID("c0000000-0000-4000-8000-0000251293b1")
+    brand = _tenant_zone(tenant, "America/Bogota")
+    midnight = (
+        "(date_trunc('day', now() AT TIME ZONE 'America/Bogota') AT TIME ZONE 'America/Bogota')"
+    )
+    # 23:30 of the day before, Bogota time (04:30 UTC of the Bogota day): not today
+    _round_at(tenant, brand, f"{midnight} - interval '30 minutes'")
+    repo = bc.PostgresCharacterRepository()
+    assert repo.rounds_today(tenant_id=tenant, brand_id=brand) == 0
+    _round_at(tenant, brand, f"{midnight} + interval '1 minute'")
+    assert repo.rounds_today(tenant_id=tenant, brand_id=brand) == 1
+
+
+def test_an_empty_timezone_counts_from_utc_midnight() -> None:
+    tenant = UUID("c0000000-0000-4000-8000-0000251293b2")
+    brand = _tenant_zone(tenant, "")
+    midnight = "(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+    _round_at(tenant, brand, f"{midnight} - interval '1 minute'")
+    repo = bc.PostgresCharacterRepository()
+    assert repo.rounds_today(tenant_id=tenant, brand_id=brand) == 0
+    _round_at(tenant, brand, f"{midnight} + interval '1 minute'")
+    assert repo.rounds_today(tenant_id=tenant, brand_id=brand) == 1

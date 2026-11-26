@@ -816,3 +816,61 @@ def test_a_description_of_exactly_300_letters_is_accepted() -> None:
 
 def test_videos_failed_or_rejected_still_hold_their_characters() -> None:
     assert set(bc.UNAPPROVED_DRAFT_STATUSES) == {"drafting", "generated", "failed", "rejected"}
+
+
+def _orphan(objects: Objects, option: bc.BusinessCharacter) -> str:
+    """A claim wrote the image and died before `mark_ready`: the row stays pending, no key."""
+    return objects.gate.put_business_character(
+        TENANT, BRAND, option.id, io.BytesIO(JPEG), "image/jpeg"
+    )
+
+
+def _gone(objects: Objects, key: str) -> bool:
+    try:
+        objects.store.open(key)
+    except Exception:  # noqa: BLE001 — not in the store
+        return True
+    return False
+
+
+def test_discarding_deletes_the_image_a_dead_claim_wrote_without_a_key() -> None:
+    _executor_, service, repo, _ledger, objects, _ = _executor()
+    round_ = _round(service)
+    key = _orphan(objects, round_.options[0])
+    assert repo.rows[round_.options[0].id].object_key is None
+    service.discard_round(TENANT, BRAND, round_.round_id)
+    assert key in objects.deleted and _gone(objects, key)
+
+
+def test_choosing_another_option_deletes_a_dead_claim_s_image_too() -> None:
+    executor, service, _repo, _ledger, objects, _ = _executor()
+    round_ = _round(service)
+    first, second, _third = round_.options
+    executor.submit(_job(first.id))
+    key = _orphan(objects, second)
+    service.choose_option(TENANT, BRAND, round_.round_id, first.id, name="Nina")
+    assert _gone(objects, key)
+
+
+def test_the_worker_deletes_the_image_of_an_option_found_discarded() -> None:
+    executor, service, repo, _ledger, objects, adapter = _executor()
+    round_ = _round(service)
+    option = round_.options[0]
+    repo.rows[option.id] = replace(option, status=bc.STATUS_DISCARDED)
+    key = _orphan(objects, option)  # written after the discard, e.g. by a late claim
+    executor.finish(_job(option.id), "t", SUCCEEDED)
+    assert _gone(objects, key)
+    _orphan(objects, option)
+    with pytest.raises(ValueError):
+        executor.submit(_job(option.id))
+    assert _gone(objects, key) and adapter.calls == []
+
+
+def test_a_put_that_exhausts_its_attempts_still_tries_to_delete_the_key() -> None:
+    executor, service, repo, _ledger, objects, _ = _executor(fail_puts=3)
+    option = _round(service).options[0]
+    with pytest.raises(OSError):
+        executor.submit(_job(option.id))
+    key = f"seasonal/{TENANT}/{BRAND}/personajes-negocio/{option.id}.jpg"
+    assert key in objects.deleted
+    assert repo.rows[option.id].fail_reason == bc.REASON_LOST_RESULT

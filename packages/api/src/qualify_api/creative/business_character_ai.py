@@ -58,6 +58,7 @@ from qualify_api.creative.business_characters import (
     REASON_SWITCHED_OFF,
     REASON_UNCERTAIN,
     REASON_VENDOR_FAILED,
+    STATUS_DISCARDED,
     STATUS_PENDING,
     STATUS_READY,
     STATUS_SAVED,
@@ -268,6 +269,7 @@ class BusinessCharacterExecutor:
     def submit(self, job: JobContext) -> str:
         option = self._runnable(job)
         if option is None:
+            self._clean_if_discarded(job)
             raise ValueError("not a pending business character option")
         if characters_unavailable_reason(self._env) is not None:
             self._fail(option, REASON_SWITCHED_OFF)
@@ -293,6 +295,7 @@ class BusinessCharacterExecutor:
             # (finish marks it ready); else book the quote, never repost
             current = self._reads.character(option.tenant_id, option.id)
             if current is None or current.status != STATUS_PENDING:
+                self._clean_if_discarded(job)
                 raise SubmissionAborted(str(option.id))
             if self._stored(option) is not None:
                 return task_id_of(option.id)
@@ -334,6 +337,8 @@ class BusinessCharacterExecutor:
         try:
             object_key = self._put(option, data)
         except Exception:
+            # R2 may have kept the file even though every attempt failed: never an orphan
+            self._delete_quietly(option, self._key(option))
             self._fail(option, REASON_LOST_RESULT)
             raise
         self._ready(option, object_key, data, getattr(result, "model_revision", None))
@@ -360,6 +365,7 @@ class BusinessCharacterExecutor:
     def finish(self, job: JobContext, vendor_task_id: str | None, status: str) -> None:
         option = self._runnable(job)
         if option is None:
+            self._clean_if_discarded(job)
             return  # settled by submit (ready or failed) or meanwhile
         if status != SUCCEEDED or vendor_task_id is None:
             self._fail(option, REASON_VENDOR_FAILED)
@@ -372,6 +378,28 @@ class BusinessCharacterExecutor:
         self._ready(option, object_key, data, None)
 
     # -- helpers -------------------------------------------------------------------------
+
+    def _clean_if_discarded(self, job: JobContext) -> None:
+        """A `discarded` option may still have an image a dead claim wrote before
+        `mark_ready`: delete its fixed key (a no-op when there is none)."""
+        character_id = getattr(job, "business_character_id", None)
+        if job.kind != KIND_BUSINESS_CHARACTER or character_id is None:
+            return
+        found = self._reads.character(job.tenant_id, character_id)
+        if found is not None and found.status == STATUS_DISCARDED:
+            self._delete_quietly(found, self._key(found))
+
+    def _delete_quietly(self, option: BusinessCharacter, object_key: str) -> None:
+        try:
+            self._objects.delete_business_characters(
+                option.tenant_id, option.brand_id, [object_key]
+            )
+        except Exception as exc:  # noqa: BLE001 — best effort, the row is settled
+            logger.warning(
+                "business_character_ai.orphan_not_deleted option=%s error=%s",
+                option.id,
+                type(exc).__name__,
+            )
 
     def _runnable(self, job: JobContext) -> BusinessCharacter | None:
         character_id = getattr(job, "business_character_id", None)

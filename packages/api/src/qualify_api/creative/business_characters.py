@@ -889,7 +889,21 @@ class BusinessCharacterService:
     def _delete_files(
         self, tenant_id: UUID, brand_id: UUID, rows: Sequence[BusinessCharacter]
     ) -> None:
-        keys = [r.object_key for r in rows if r.object_key]
+        from qualify_shared.objects.keys import business_character_key  # noqa: PLC0415
+
+        # a discarded option without `object_key` may still have its image: a claim that
+        # wrote it and died before `mark_ready` — delete the fixed key too (a no-op if
+        # there is nothing; review of m-25129385)
+        keys = [
+            r.object_key
+            or (
+                business_character_key(r.tenant_id, r.brand_id, r.id)
+                if r.status == STATUS_DISCARDED
+                else None
+            )
+            for r in rows
+        ]
+        keys = [k for k in keys if k]
         if not keys:
             return
         try:
