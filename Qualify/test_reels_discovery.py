@@ -1253,7 +1253,7 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     # never cut off, never broken letter by letter: a real ellipsis (Radix's `truncate`
     # reaches Reflex 0.10 as an invalid CSS rule — the bug seen live at 375 px)
     assert "**_ELLIPSIS" in inspect.getsource(discover_reels._chip_face)
-    assert 'max_width="100%"' in button
+    assert 'flex="1 1 0"' in button and 'overflow="hidden"' in button  # never past its share
     assert "**_ELLIPSIS" in inspect.getsource(discover_reels._filters_button)
     assert "truncate=" not in inspect.getsource(discover_reels)
     assert '"truncate"' not in rendered
@@ -1401,8 +1401,10 @@ def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
     assert "aria_label=_chip_text(axis, name=True)" in button
     assert "title=_chip_text(axis, name=True)" in button
     assert 'variant=rx.cond(on, "soft", "surface")' in button
-    # only the filtered chip of a group gives way (a long @handle)
-    assert '"flex_shrink": rx.cond(on, _SHRINK_FIRST, "0")' in button
+    # like a select (Deivid, 2026-11-26): the filters share the width in equal parts,
+    # the word on the left and the chevron on the right
+    for needed in ('flex="1 1 0"', 'justify_content="space-between"', "min_width=_CHIP_MIN"):
+        assert needed in button, needed
     # the popovers' options keep the long words («Menos de 15 segundos»)
     assert "_single_options(axis, close=True)" in inspect.getsource(discover_reels._dropdown)
 
@@ -1422,33 +1424,28 @@ async def test_the_chip_texts_follow_the_filters(world: _World) -> None:
     assert state.filter_values["duration"] == "Más de 60 segundos"  # the sheet's words
 
 
-def test_the_desktop_bar_is_one_line_of_groups_centred() -> None:
-    """Deivid at ~1180 px (2026-11-26): a filter on sent Duración, «Tus competidores» and
-    «Restablecer filtros» to a second row. Now: short chips, three groups that never
-    wrap apart — Canal + Tipo, Cuenta + Duración, «Competidores» + «Quitar filtros» — on
-    one line, and centred lines where a narrow panel cannot hold it."""
+def test_the_wide_bar_is_one_line_that_fills_the_bar() -> None:
+    """Deivid, 2026-11-26: a filter on sent chips to a second row at ~1180 px, and then
+    the five chips looked crammed in the middle of a wide bar. Now ONE line that never
+    wraps (so no chip is ever alone) and fills the bar: the four filters in equal parts,
+    then «Competidores» and «Quitar filtros» at their natural width."""
     import inspect
 
     from . import discover_reels
     from . import reels_competitors_vm as rc
 
     bar = inspect.getsource(discover_reels._filter_bar)
-    for needed in (
-        "_chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND))",
-        "_dropdown(AXIS_ACCOUNT),\n                _dropdown(AXIS_DURATION),",
-        # just one of «Competidores» / «Quitar filtros» showing joins Cuenta + Duración:
-        # it can never be alone on a line (review, 2026-11-26)
-        "rx.cond(~both, rx.fragment(_rivals_button(chip=False), _reset_button()))",
-        "rx.cond(both, _chip_group(_rivals_button(chip=False), _reset_button()))",
-        "both = S.filters_on & (S.competitor_rows.length() > 0)",
-    ):
-        assert needed in bar, needed
-    wide = bar[
-        bar.index("_chip_group(_dropdown(AXIS_NETWORK)") : bar.index("class_name=_NARROW_CLASS")
+    wide = bar[: bar.index("class_name=_WIDE_CLASS")]
+    order = [
+        wide.index("*(_dropdown(axis) for axis in reels_filters_vm.AXES)"),
+        wide.index("_rivals_button(chip=False)"),
+        wide.index("_reset_button()"),
     ]
-    assert 'justify="center"' in wide and 'wrap="wrap"' in wide
-    group = inspect.getsource(discover_reels._chip_group)
-    assert 'wrap="nowrap"' in group
+    assert order == sorted(order)
+    row = bar[bar.index("class_name=_WIDE_CLASS") : bar.index("class_name=_NARROW_CLASS")]
+    assert 'wrap="nowrap"' in row and 'width="100%"' in row and 'justify="center"' not in row
+    assert "_chip_group" not in inspect.getsource(discover_reels)
+    assert discover_reels._CHIP_MIN == "5.5rem"
     # the short words, the long ones in the accessible names (WCAG 2.5.3)
     assert reels_filters_vm.RESET_SHORT == "Quitar filtros" and rc.PICKER_SHORT == "Competidores"
     assert "reels_filters_vm.RESET_SHORT" in inspect.getsource(discover_reels._reset_button)
@@ -1490,7 +1487,7 @@ def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
     assert ".q-reels-bar .q-reels-bar__wide { display: none; }" in css
     assert ".q-reels-bar .q-reels-bar__narrow { display: flex; }" in css
     query = re.search(r"@container \(min-width: (\d+)px\) \{(.*?)\n\}", css, re.S)
-    assert query and int(query.group(1)) == 700
+    assert query and int(query.group(1)) == 760
     assert ".q-reels-bar .q-reels-bar__wide { display: flex; }" in query.group(2)
     assert ".q-reels-bar .q-reels-bar__narrow { display: none; }" in query.group(2)
     rule_block = css[css.index(".q-reels-bar {") : css.index("@container")]

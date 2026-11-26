@@ -1313,7 +1313,7 @@ _STATE_VALUE = {
 #: Which row of the bar shows depends on the BAR's width, not the window's (Deivid's live
 #: tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave it ~376 px): the
 #: bar is a CSS size container (`.q-reels-bar`, assets/qualify-creative.css) and from
-#: 700 px of it the chips row (`__wide`) shows, below it the two buttons (`__narrow`).
+#: 760 px of it the chips row (`__wide`) shows, below it the two buttons (`__narrow`).
 BAR_CLASS = "q-reels-bar"
 _WIDE_CLASS = "q-reels-bar__wide"
 _NARROW_CLASS = "q-reels-bar__narrow"
@@ -1328,10 +1328,9 @@ _ELLIPSIS = {"white_space": "nowrap", "overflow": "hidden", "text_overflow": "el
 _CHIP_PAD = {"padding_left": "0.625rem", "padding_right": "0.625rem"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
-#: In a group of chips that never wraps (`_chip_group`), the `flex-shrink` of the
-#: FILTERED chip (its neighbours have 0): when the group is wider than its line, only
-#: that chip's word ends in «…» — never a sideways scroll.
-_SHRINK_FIRST = "8"
+#: The least width of a filter chip on the wide bar (its short word and the chevron):
+#: below it the word would end in «…» before the bar switches to the two buttons.
+_CHIP_MIN = "5.5rem"
 
 
 def _option_row(
@@ -1485,13 +1484,13 @@ def _chip_face(axis: str) -> list[rx.Component]:
     ]
 
 
-def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Component:
-    """A filter's chip — «Canal ▾», «Instagram ▾» (`_chip_face`) — as a Radix button with
-    the skin: `soft` (the accent wash) while the axis narrows the list, `surface`
-    otherwise; `size="2"`, the target stays 44 px. It never overflows its row: it may
-    shrink to it, and only its word then ends in «…», the whole name in `title`.
-    `shrink`: in a group that never wraps (`_chip_group`), only the FILTERED chip gives
-    way (a long @handle), never its neighbour that still reads «Duración»."""
+def _filter_button(axis: str) -> rx.Component:
+    """A filter's chip on the wide bar — «Canal ▾», «Instagram ▾» (`_chip_face`) — as a
+    Radix button with the skin: `soft` (the accent wash) while the axis narrows the list,
+    `surface` otherwise; `size="2"`, the target stays 44 px. Like a select (Deivid,
+    2026-11-26: the chips looked crammed in the middle): the four filters share the
+    bar's width in equal parts (`flex: 1 1 0`), the word on the left and the chevron on
+    the right. Below its content only the word ends in «…», the whole name in `title`."""
     on = _axis_on(axis)
     return rx.button(
         *_chip_face(axis),
@@ -1500,16 +1499,13 @@ def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Compo
         variant=rx.cond(on, "soft", "surface"),
         size="2",
         min_height=_TARGET,
-        max_width="100%",
-        # never wider than its row: below its content, only the word ends in «…»
-        min_width="0",
-        **(
-            {"flex_shrink": rx.cond(on, _SHRINK_FIRST, "0"), "overflow": "hidden"} if shrink else {}
-        ),
+        flex="1 1 0",
+        min_width=_CHIP_MIN,
+        justify_content="space-between",
+        overflow="hidden",
         aria_label=_chip_text(axis, name=True),
         title=_chip_text(axis, name=True),
         **_CHIP_PAD,
-        **props,
     )
 
 
@@ -1518,7 +1514,7 @@ def _dropdown(axis: str) -> rx.Component:
     glass; Escape gives the focus back to the chip). The options keep the long words."""
     options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=True)
     return rx.popover.root(
-        rx.popover.trigger(_filter_button(axis, shrink=True)),
+        rx.popover.trigger(_filter_button(axis)),
         rx.popover.content(
             options,
             side="bottom",
@@ -1649,23 +1645,10 @@ def _sheet() -> rx.Component:
     )
 
 
-def _chip_group(*children: rx.Component) -> rx.Component:
-    """Desktop chips that move together on a line and never wrap apart, so none is left
-    alone on a line (Deivid, 2026-11-26)."""
-    return rx.flex(
-        *children,
-        wrap="nowrap",
-        align="center",
-        spacing="2",
-        min_width="0",
-        max_width="100%",
-    )
-
-
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
     «Cuenta», «Duración» and «Quitar filtros». On a wide bar, chips that open a
-    dropdown; on a narrow bar (under 700 px), «Filtros» + «Competidores», «Filtros»
+    dropdown; on a narrow bar (under 760 px), «Filtros» + «Competidores», «Filtros»
     opening one sheet from the bottom with every axis. Every change is one
     more read of what is stored — never a paid call.
 
@@ -1678,31 +1661,24 @@ def _filter_bar() -> rx.Component:
     phone, ONE line of equal buttons: «Filtros» (every axis in one sheet) and
     «Competidores» — «Filtros» takes the whole line for a brand with no competitor to
     show; no text broken, no sideways scroll (Deivid, 2026-11-26). Which row shows is a
-    container query on the bar's own width (`BAR_CLASS`): below 700 px of bar — phones,
-    tablets, narrow panels — the two buttons; from 700 px, the chips."""
-    S = DiscoverReelsState
-    both = S.filters_on & (S.competitor_rows.length() > 0)
+    container query on the bar's own width (`BAR_CLASS`): below 760 px of bar — phones,
+    tablets, narrow panels — the two buttons; from 760 px, the chips."""
     return rx.box(
+        # the wide bar: ONE line that fills the bar — the four filters in equal parts,
+        # then «Competidores» and «Quitar filtros» at their natural width; it never
+        # wraps, so no chip is ever alone on a line (Deivid, 2026-11-26)
         rx.flex(
-            _chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND)),
-            # «Competidores» and «Quitar filtros» are a group of their own only when both
-            # show; when just one does, it joins Cuenta + Duración, so it can never be
-            # alone on a line at any width (review, 2026-11-26)
-            _chip_group(
-                _dropdown(AXIS_ACCOUNT),
-                _dropdown(AXIS_DURATION),
-                rx.cond(~both, rx.fragment(_rivals_button(chip=False), _reset_button())),
-            ),
-            rx.cond(both, _chip_group(_rivals_button(chip=False), _reset_button())),
+            *(_dropdown(axis) for axis in reels_filters_vm.AXES),
+            _rivals_button(chip=False),
+            _reset_button(),
             class_name=_WIDE_CLASS,
-            wrap="wrap",
-            justify="center",
+            wrap="nowrap",
             align="center",
-            spacing="2",
+            spacing="3",
             width="100%",
             min_width="0",
         ),
-        # a bar under 700 px wide (phones, tablets, narrow panels; Deivid 2026-11-26): one
+        # a bar under 760 px wide (phones, tablets, narrow panels; Deivid 2026-11-26): one
         # line, equal parts — «Filtros» and «Competidores» (RF-14 may add a third button)
         rx.flex(
             _filters_button(),

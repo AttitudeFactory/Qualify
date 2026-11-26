@@ -685,13 +685,15 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    (RF-13, m-25120327 — see docs/design-system.md §5.8). The one rule of its own: which of
    its two rows shows depends on the width of the BAR, not of the window (Deivid's live
    tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
-   The bar is a size container; below 700 px of it, the two buttons («Filtros» +
-   «Competidores»); from 700 px, the short chips on one line (a filter on and «Quitar
-   filtros» fit in ~645 px). Two classes, so it beats Radix's `.rt-Flex` display. */
+   The bar is a size container; below 760 px of it, the two buttons («Filtros» +
+   «Competidores»); from 760 px, ONE line that fills the bar — the four filters in equal
+   parts (`flex: 1 1 0`), then «Competidores» and «Quitar filtros»: at 760 px each filter
+   still has ~107 px for its short word and chevron. Two classes, so it beats Radix's
+   `.rt-Flex` display. */
 .q-reels-bar { container-type: inline-size; }
 .q-reels-bar .q-reels-bar__wide { display: none; }
 .q-reels-bar .q-reels-bar__narrow { display: flex; }
-@container (min-width: 700px) {
+@container (min-width: 760px) {
   .q-reels-bar .q-reels-bar__wide { display: flex; }
   .q-reels-bar .q-reels-bar__narrow { display: none; }
 }

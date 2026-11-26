@@ -315,9 +315,9 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
 
     bar = inspect.getsource(discover_reels._filter_bar)
     desktop, phone = bar.split("class_name=_WIDE_CLASS")
-    # desktop (Deivid 2026-11-26): «Competidores» + «Quitar filtros» are one group of the
-    # single line, after the filters — never alone, no separator
-    assert "rx.cond(both, _chip_group(_rivals_button(chip=False), _reset_button()))" in desktop
+    # wide bar (Deivid 2026-11-26): «Competidores» then «Quitar filtros» end the one line
+    # that never wraps, after the filters — never alone, no separator
+    assert desktop.index("_rivals_button(chip=False)") < desktop.index("_reset_button()")
     assert "rx.separator" not in bar
     # phone: «Filtros» and «Competidores» share one line in equal parts
     assert phone.index("_filters_button()") < phone.index("_rivals_button(chip=True)")
@@ -329,9 +329,8 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
     # never wider than the panel: every chip may sit below its content and ellipsize
     rivals = inspect.getsource(discover_reels._rivals_button)
     button = inspect.getsource(discover_reels._filter_button)
-    assert 'max_width="100%"' in button and 'min_width="0"' in button
+    assert "min_width=_CHIP_MIN" in button and 'overflow="hidden"' in button
     assert 'overflow="hidden"' in rivals and "**_ELLIPSIS" in rivals
-    assert '"overflow": "hidden"' in button  # a shrinking filtered chip clips its word
     assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
     button = inspect.getsource(discover_reels._rivals_button)
     # RF-13: a Radix button of the skin, like the filters beside it — no class of its own
