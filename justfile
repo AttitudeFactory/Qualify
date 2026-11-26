@@ -890,7 +890,7 @@ protect-main:
 
 # Sync now, in the foreground: link this worktree, download the latest graph if it changed.
 graph-sync:
-    python3 dev/code-graph-sync.py --now
+    p=python3; "$p" -c '' 2>/dev/null || p=python; "$p" dev/code-graph-sync.py --now
 
 #   just graph-build          # skips if the published graph is already main's tip
 #   just graph-build true     # rebuild anyway

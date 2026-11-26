@@ -3,19 +3,23 @@
 Offline and hermetic: PATH holds only a temp bin dir (stub gh, stub graphify, a link to git),
 never a system dir — ubuntu-latest ships a real `gh` in /usr/bin. The stub serves a release
 and its assets from a temp dir and logs every call. The shared store is the temp clone's own
-graphify-out/, never the developer's real one.
+graphify-out/, never the developer's real one. Those end-to-end tests need shebang stubs and
+symlinks, so they run on POSIX only; the Windows fallbacks (lock, hardlink/copy, interpreter
+choice) have unit tests below that run on any OS (m-25129418).
 """
 
 from __future__ import annotations
 
-import fcntl
+import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tarfile
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -23,6 +27,7 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[3] / "dev" / "code-graph-sync.py"
 COMMIT = "c" * 40
 BUILT_AT = "2026-11-26T11:17:00Z"
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="shebang stubs and symlinks")
 
 STUB_GH = """import os, sys, time
 d = os.environ["STUB_GH_DIR"]
@@ -79,6 +84,8 @@ def _publish(stub: Path, built_at: str = BUILT_AT, graph: bytes = b'{"nodes": [1
 
 @pytest.fixture
 def env(tmp_path: Path) -> dict:
+    if sys.platform == "win32":
+        pytest.skip("shebang stubs and symlinks: POSIX only (unit tests below cover Windows)")
     git = shutil.which("git")
     if not git:
         pytest.skip("git not available")
@@ -224,7 +231,10 @@ def test_hook_mode_returns_at_once_then_throttles(env) -> None:
     assert len(_calls(env)) == calls  # throttled: no GitHub call within 30 minutes
 
 
+@posix_only
 def test_lock_prevents_a_second_concurrent_sync(env) -> None:
+    import fcntl
+
     store = env["store"]
     store.mkdir(parents=True)
     with open(store / ".code-graph.lock", "w") as held:
@@ -259,3 +269,146 @@ def test_no_release_yet_exits_zero_with_hint(env) -> None:
     result = _run(env, "--now")
     assert result.returncode == 0
     assert "just graph-build" in result.stdout
+
+
+# --- Cross-platform unit tests (m-25129418): run on any OS, no subprocess, no network. ---
+
+
+@pytest.fixture
+def mod():
+    spec = importlib.util.spec_from_file_location("code_graph_sync", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_lock_uses_msvcrt_on_windows_and_flock_elsewhere(mod, monkeypatch, tmp_path, platform):
+    held: set[str] = set()
+
+    def grab(key: str) -> None:
+        if key in held:
+            raise OSError("busy")
+        held.add(key)
+
+    fake_msvcrt = types.SimpleNamespace(LK_NBLCK=2, locking=lambda fd, mode, n: grab("msvcrt"))
+    fake_fcntl = types.SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=lambda fh, op: grab("fcntl"))
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    monkeypatch.setattr(mod.sys, "platform", platform)
+    with open(tmp_path / "lock", "w") as fh:
+        assert mod._try_lock(fh) is True
+        assert mod._try_lock(fh) is False  # busy -> skip quietly
+    assert held == {"msvcrt" if platform == "win32" else "fcntl"}
+
+
+def test_real_lock_is_exclusive_on_this_os(mod, tmp_path):
+    with open(tmp_path / "lock", "w") as first, open(tmp_path / "lock", "w") as second:
+        assert mod._try_lock(first) is True
+        assert mod._try_lock(second) is False
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_detach_kwargs_per_platform(mod, monkeypatch, platform):
+    monkeypatch.setattr(mod.sys, "platform", platform)
+    kwargs = mod._detach()
+    if platform == "win32":
+        assert kwargs == {"creationflags": 0x00000008 | 0x00000200}
+    else:
+        assert kwargs == {"start_new_session": True}
+
+
+def _no_symlinks(monkeypatch, mod) -> None:
+    def refuse(*args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(mod.os, "symlink", refuse)
+
+
+@pytest.mark.parametrize("hardlinks", [True, False])
+def test_link_falls_back_to_hardlink_or_copy_and_follows_new_builds(
+    mod, monkeypatch, tmp_path, hardlinks
+):
+    _no_symlinks(monkeypatch, mod)
+    if not hardlinks:
+        monkeypatch.setattr(mod.os, "link", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    store, wt = tmp_path / "store", tmp_path / "wt"
+    store.mkdir()
+    wt.mkdir()
+    out = wt / "graphify-out"
+
+    # Store still empty (first session): nothing to place, no error.
+    assert mod.link(str(wt), str(store)) == ([], [])
+
+    (store / "graph.json").write_text("build 1")
+    changed, kept = mod.link(str(wt), str(store))
+    assert changed == ["graph.json"] and kept == []
+    assert (out / "graph.json").read_text() == "build 1"
+    assert not (out / "graph.json").is_symlink()
+    assert os.path.samefile(out / "graph.json", store / "graph.json") is hardlinks
+    assert mod.link(str(wt), str(store)) == ([], [])  # current: untouched
+
+    new = store / "graph.json.new"  # the installer swaps files in with os.replace
+    new.write_text("build 2, longer")
+    os.replace(new, store / "graph.json")
+    assert mod.link(str(wt), str(store))[0] == ["graph.json"]
+    assert (out / "graph.json").read_text() == "build 2, longer"
+
+
+def test_link_fallback_never_replaces_a_worktrees_own_graph(mod, monkeypatch, tmp_path):
+    _no_symlinks(monkeypatch, mod)
+    store, out = tmp_path / "store", tmp_path / "wt" / "graphify-out"
+    store.mkdir()
+    out.mkdir(parents=True)
+    (store / "graph.json").write_text("ci build")
+    (store / "GRAPH_REPORT.md").write_text("ci report")
+    (out / "graph.json").write_text("local graph")
+
+    changed, kept = mod.link(str(tmp_path / "wt"), str(store))
+    assert kept == ["graph.json"] and changed == ["GRAPH_REPORT.md"]
+    assert (out / "graph.json").read_text() == "local graph"
+
+
+def test_windows_path_gets_the_github_cli_dir(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    spec = importlib.util.spec_from_file_location("code_graph_sync_win", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert r"C:\Program Files\GitHub CLI" in module._EXTRA_PATH
+
+
+def _hook_command() -> str:
+    settings = json.loads((SCRIPT.parents[1] / ".claude" / "settings.json").read_text())
+    return settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+
+
+@pytest.mark.parametrize("store_alias", [True, False])
+def test_hook_uses_python_when_python3_is_the_windows_store_alias(tmp_path, store_alias):
+    bash = shutil.which("bash")
+    if not bash or "system32" in bash.lower():  # WSL's bash cannot see this temp dir
+        pytest.skip("no POSIX bash")
+    project, bin_dir = tmp_path / "proj", tmp_path / "bin"
+    (project / "dev").mkdir(parents=True)
+    (project / "dev" / "code-graph-sync.py").write_text("")
+    bin_dir.mkdir()
+    # The Store alias: found by `command -v`, exits 49 without running anything.
+    py3 = "exit 49" if store_alias else '[ "$1" = -c ] || echo "python3 $*"'
+    for name, body in (("python3", py3), ("python", '[ "$1" = -c ] || echo "python $*"')):
+        stub = bin_dir / name
+        stub.write_text(f"#!/bin/sh\n{body}\n")
+        stub.chmod(0o755)
+    result = subprocess.run(
+        [bash, "-c", _hook_command()],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "CLAUDE_PROJECT_DIR": str(project),
+        },
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    expected = "python " if store_alias else "python3 "
+    assert result.stdout.startswith(expected) and "code-graph-sync.py" in result.stdout

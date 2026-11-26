@@ -10,7 +10,10 @@ every linked worktree at it, so nobody ever runs `graphify update` by hand.
 - Link step (synchronous, milliseconds): in a linked worktree, `graphify-out/<file>` becomes a
   symlink to the store for each of FILES. File-level links work on old branches that still
   track files under `graphify-out/` and on new ones where the directory does not exist. A
-  regular file already there (a worktree with its own local graph) is never replaced.
+  regular file already there (a worktree with its own local graph) is never replaced. Where
+  symlinks are not allowed (Windows without Developer Mode) the file is hardlinked, or copied,
+  and recorded in `graphify-out/.code-graph-placed.json` so it is re-placed when the store's
+  build changes; only files recorded there are ever replaced.
 - Sync step: read the release's `code-graph.json`; when its build (commit + `built_at`)
   differs from the one last installed, download `code-graph.tar.gz` and install it into the
   store through a temp dir in the store and `os.replace` (atomic per file). REST only
@@ -25,12 +28,12 @@ Modes:
              detached in the background and return at once.
   --now      foreground: ignore the throttle, link, sync and print what it did.
 
-Runs outside any venv on macOS and Linux: system `python3`, standard library only.
+Runs outside any venv on macOS, Linux and Windows (Git Bash): system `python3` — or `python`
+where `python3` is the Microsoft Store alias — standard library only.
 """
 
 from __future__ import annotations
 
-import fcntl
 import glob
 import json
 import os
@@ -59,6 +62,7 @@ INSTALLED = ".code-graph-installed.json"
 CHECKED = ".code-graph-checked"
 HINT = ".code-graph-hint"
 LOCK = ".code-graph.lock"
+PLACED = ".code-graph-placed.json"  # in a worktree's graphify-out/: our hardlinks/copies
 
 INSTALL_HINT = f"uv tool install graphifyy=={GRAPHIFY_VERSION}"
 GH_HINT = "code-graph: the GitHub CLI `gh` is missing — run: " + (
@@ -68,7 +72,9 @@ GH_HINT = "code-graph: the GitHub CLI `gh` is missing — run: " + (
 )
 
 # Hooks launched from a desktop app may not inherit the login shell's PATH.
-_EXTRA_PATH = (os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin")
+_EXTRA_PATH = (os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin") + (
+    (r"C:\Program Files\GitHub CLI",) if sys.platform == "win32" else ()
+)
 
 
 def _env() -> dict[str, str]:
@@ -112,6 +118,26 @@ def resolve(start: str) -> tuple[str, str] | None:
     return os.path.realpath(top), os.path.realpath(store)
 
 
+def _stamp(path: str) -> list[int]:
+    st = os.stat(path)
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _place(target: str, tmp: str) -> list[int] | None:
+    """Symlink tmp -> target; else hardlink, else copy. None for a symlink, else the stamp."""
+    try:
+        os.symlink(target, tmp)
+        return None
+    except OSError:
+        if not os.path.isfile(target):
+            raise  # nothing to hardlink or copy yet: the sync re-links after installing
+    try:
+        os.link(target, tmp)
+    except OSError:
+        shutil.copy2(target, tmp)
+    return _stamp(target)
+
+
 def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
     """Point the worktree's graphify-out/<file> at the store.
 
@@ -128,6 +154,14 @@ def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
         return changed, kept
+    marker = os.path.join(out_dir, PLACED)
+    try:
+        placed = json.loads(_read(marker) or "{}")
+    except ValueError:
+        placed = {}
+    if not isinstance(placed, dict):
+        placed = {}
+    before = dict(placed)
     for name in FILES:
         path = os.path.join(out_dir, name)
         target = os.path.join(store, name)
@@ -135,18 +169,33 @@ def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
             if os.readlink(path) == target:
                 continue
         elif os.path.lexists(path):
-            kept.append(name)  # a regular file: this worktree keeps its own graph
-            continue
+            if name not in placed:
+                kept.append(name)  # a regular file: this worktree keeps its own graph
+                continue
+            try:
+                if placed[name] == _stamp(target):
+                    continue  # our hardlink/copy of the current build
+            except OSError:
+                continue  # store file missing: keep ours until the sync brings it back
         tmp = f"{path}.link-{os.getpid()}"
         try:
-            os.symlink(target, tmp)
-            os.replace(tmp, path)
+            stamp = _place(target, tmp)
+            os.replace(tmp, path)  # Windows: fails while graphify holds it open; next run retries
             changed.append(name)
+            if stamp is None:
+                placed.pop(name, None)
+            else:
+                placed[name] = stamp
         except OSError:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+    if placed != before:
+        try:
+            _write(marker, json.dumps(placed) + "\n")
+        except OSError:
+            pass
     return changed, kept
 
 
@@ -279,14 +328,36 @@ def _summary(meta: dict) -> str:
     )
 
 
+def _try_lock(fh: object) -> bool:
+    """Non-blocking exclusive lock on an open file: flock on POSIX, msvcrt on Windows."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+        else:
+            import fcntl
+
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _detach() -> dict:
+    """Popen kwargs that let the background sync outlive the hook (and its console)."""
+    if sys.platform == "win32":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (literals: the names exist only on Windows)
+        return {"creationflags": 0x00000008 | 0x00000200}
+    return {"start_new_session": True}
+
+
 def sync(store: str) -> str:
     """One check against the release; returns a human summary. Raises GhError."""
     os.makedirs(store, exist_ok=True)
-    lock = open(os.path.join(store, LOCK), "w")  # held (and flocked) until return
+    lock = open(os.path.join(store, LOCK), "w")  # held (and locked) until return
     try:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not _try_lock(lock):
             return "another session is syncing the code graph right now"
         # Under the lock nobody else is installing: any temp dir left is from a killed run.
         for stale in glob.glob(os.path.join(glob.escape(store), ".code-graph-tmp-*")):
@@ -351,8 +422,14 @@ def main(argv: list[str]) -> int:
     now = "--now" in argv
     background = "--background" in argv
     try:
-        if background:  # the detached child of the hook mode: argv = [--background, store]
-            _run_sync(argv[argv.index("--background") + 1], verbose=False)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        if background:  # the detached child of the hook mode: [--background, store, worktree]
+            store, worktree = argv[argv.index("--background") + 1 :][:2]
+            _run_sync(store, verbose=False)
+            link(worktree, store)  # hardlinks/copies need the installed files
             return 0
         start = os.getcwd() if now else _hook_cwd()
         where = resolve(start)
@@ -366,6 +443,10 @@ def main(argv: list[str]) -> int:
         worktree, store = where
         changed, kept = link(worktree, store)
         if now:
+            if not _which("graphify"):
+                print(f"code-graph: graphify is not installed — run: {INSTALL_HINT}")
+            _run_sync(store, verbose=True)
+            changed += [n for n in link(worktree, store)[0] if n not in changed]
             if changed:
                 print(f"linked {', '.join(changed)} in {worktree}/{OUT_DIR} -> {store}")
             if kept:
@@ -375,9 +456,6 @@ def main(argv: list[str]) -> int:
                     f"synced) — to use the CI graph: rm {' '.join(kept)} there, "
                     "then just graph-sync"
                 )
-            if not _which("graphify"):
-                print(f"code-graph: graphify is not installed — run: {INSTALL_HINT}")
-            _run_sync(store, verbose=True)
             return 0
         # Hook mode: at most one line, and never wait on the network.
         if not _which("graphify"):
@@ -391,12 +469,12 @@ def main(argv: list[str]) -> int:
             print(hint)
         if not _throttled(store):
             subprocess.Popen(
-                [sys.executable, os.path.abspath(__file__), "--background", store],
+                [sys.executable, os.path.abspath(__file__), "--background", store, worktree],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
                 env=_env(),
+                **_detach(),
             )
     except Exception:  # every failure path exits 0
         pass
