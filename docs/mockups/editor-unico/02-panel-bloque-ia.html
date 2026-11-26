@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2 · Panel del bloque IA antes de crear — Editor único</title>
+<link rel="stylesheet" href="editor-unico.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <a href="01-pista.html">1 · Pista</a> · <b>2 · Panel del bloque IA</b> · <a href="03-agregar.html">3 · Agregar</a> · <a href="04-crear.html">4 · Crear</a> · <a href="05-resultado.html">5 · Resultado</a> · <a href="06-hacer-uno-parecido.html">6 · Hacer uno parecido</a></nav>
+  <h1 class="mk-title">2 · El panel de una parte con IA, antes de crear</h1>
+  <p class="mk-sub">Se abre al tocar la parte en la pista, debajo de la barra (como el panel de un video propio hoy) y termina en «Listo». Todo lo de aquí es gratis: nada se crea hasta «Crear» o «Probar esta parte». Orden pensado para el dueño: primero lo que ve (<b>qué pasa</b>, <b>fotos</b>, <b>cuánto dura</b>), después <b>cómo la hacemos</b>, que ya viene elegido con su motivo.</p>
+
+  <div class="mk-variants">
+  <section class="mk-variant">
+    <h2>A · Modo elegido por la regla, con su motivo y una opción que no se puede <small>— Parte con IA 1, de un reel donde aparece una persona</small></h2>
+    <template id="s2a">
+      <header class="step-head">
+        <div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div>
+        <div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div>
+        <h1 class="step-h1">Arma tu video</h1>
+      </header>
+      <div class="step-body">
+        <div class="ed">
+          <div class="ed__top">
+            <div class="preview"><div class="preview__frame pic-reel"><span class="preview__ai"><span class="ai-mark poster"><span data-i="sparkles" data-c="sm"></span>Parte con IA 1 · se crea al tocar «Crear»</span></span><div class="preview__text">2×1 hoy</div><span class="preview__play"><span data-i="play"></span></span></div></div>
+          </div>
+          <script type="application/json" data-tl>
+          {"total":16.5,"t":8,"chosen":"ai1",
+           "media":[
+            {"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},
+            {"id":"v1","kind":"video","name":"Video 1","start":2,"len":5,"pic":"pic-b"},
+            {"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":6.5,"len":5,"in":0.5,"pic":"pic-reel"},
+            {"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"follow","start":11.5,"len":3,"pic":"pic-reel"},
+            {"id":"f2","kind":"photo","name":"Foto 2","start":14.5,"len":2,"pic":"pic-c"}],
+           "joins":[{"at":2,"kind":"corte","label":"Unión: Corte"},{"at":6.75,"kind":"fundido","label":"Unión: Fundido"},{"at":11.5,"kind":"corte","label":"Unión: Corte"},{"at":14.5,"kind":"corte","label":"Unión: Corte"}],
+           "texts":[{"id":"t1","name":"«2×1 hoy»","start":6.5,"len":5}],
+           "effects":[{"id":"e1","name":"Humo","start":7,"len":5}],
+           "status":"Elegiste la parte con IA 1."}
+          </script>
+          <div class="q-island q-tl-actions" aria-label="Acciones de Parte con IA 1"><button class="btn surface" type="button"><span data-i="trash"></span>Quitar</button></div>
+
+          <section class="q-tl-panel" aria-labelledby="p2a-title">
+            <div class="q-tl-panel__head">
+              <h2 class="q-tl-panel__title" id="p2a-title"><span data-i="sparkles"></span>Parte con IA 1 <span class="muted q-nums" style="font-weight:400">· de 0:06 a 0:11</span></h2>
+              <span class="pill" data-tone="neutral">Sin crear · gratis hasta «Crear»</span>
+            </div>
+            <div class="panel-grid">
+              <div class="whole span2">
+                <span data-i="film"></span>
+                <div class="whole__body">
+                  <div class="whole__k">Todo el video</div>
+                  <div class="whole__v">«Promoción de 2×1 los martes»</div>
+                  <p class="rule-note">Esto guía el texto y el tono de todo el video. Lo que escribas abajo dice qué se ve en esta parte.</p>
+                </div>
+                <button class="btn ghost sm" type="button">Cambiar</button>
+              </div>
+              <div class="stack">
+                <label class="field-label" for="d2a">¿Qué pasa en esta parte?</label>
+                <textarea class="field" id="d2a" rows="3">Una mano acerca el vaso de yogur con fresas a la cámara.</textarea>
+                <p class="field-help">Ej.: «Una mano acerca el vaso».</p>
+                <div>
+                  <span class="field-label">Fotos de tu producto</span>
+                  <div class="thumbs"><span class="thumb pic-c" role="img" aria-label="Foto 1 de tu producto"><span class="x"><span data-i="x" data-c="sm"></span></span></span><span class="thumb pic-a" role="img" aria-label="Foto 2 de tu producto"><span class="x"><span data-i="x" data-c="sm"></span></span></span><button class="thumb thumb--add" type="button" aria-label="Agregar una foto de tu producto"><span data-i="plus"></span></button></div>
+                </div>
+                <div>
+                  <span class="field-label">Cuánto dura en tu video</span>
+                  <div class="row"><button class="btn soft" type="button" aria-label="Un segundo menos">− 1 s</button><span class="q-nums" style="font-weight:700;min-width:3rem;text-align:center">5 s</span><button class="btn soft" type="button" aria-label="Un segundo más">+ 1 s</button></div>
+                  <p class="field-help">De 1 a 10 s. También puedes arrastrar las barras de la parte en la línea de tiempo.</p>
+                </div>
+              </div>
+              <div class="stack" role="radiogroup" aria-labelledby="q2a">
+                <span class="field-label" id="q2a">¿Cómo la hacemos?</span>
+                <p class="why-line"><span data-i="info" data-c="sm"></span><span>Nueva, inspirada en el original: en el original aparece una persona.</span></p>
+                <div class="choices">
+                  <button class="choice" role="radio" aria-checked="false" aria-disabled="true" type="button"><span class="choice__dot"></span><span class="choice__title">Igual al original, con tu producto</span><span class="choice__help">Conservamos el movimiento, el fondo y el ritmo; ponemos tu producto y tu marca.</span><span class="choice__why"><span data-i="alert" data-c="sm"></span>Aquí aparece una persona y no podemos usar ese video.</span></button>
+                  <button class="choice" role="radio" aria-checked="true" type="button"><span class="choice__dot"></span><span class="choice__title">Nueva, inspirada en el original</span><span class="choice__help">Creamos una parte nueva con tu producto. La persona será otra.</span></button>
+                  <button class="choice" role="radio" aria-checked="false" type="button"><span class="choice__dot"></span><span class="choice__title">Sigue a la anterior</span><span class="choice__help">Empieza donde termina la parte anterior.</span></button>
+                </div>
+              </div>
+              <div class="span2 stack">
+                <hr class="hr">
+                <div class="row">
+                  <button class="btn soft accent" type="button"><span data-i="sparkles"></span>Probar esta parte</button>
+                  <button class="btn soft" type="button"><span data-i="merge"></span>Juntar con la siguiente</button>
+                </div>
+                <p class="cost"><span data-i="wallet" data-c="sm"></span><span>«Probar esta parte» la crea ahora y usa 1 vista previa. Te quedan 12. Las demás las creas con «Crear».</span></p>
+                <div class="q-tl-panel__done"><button class="btn solid sm" type="button" style="min-height:44px">Listo</button></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <footer class="step-foot">
+        <div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div>
+        <button class="btn ghost sm step-foot__later" type="button">Seguir después</button>
+      </footer>
+    </template>
+    <div class="mk-row" data-pair="s2a"
+      data-note-phone="Una sola columna. La caja «Todo el video» va arriba y plegada a una línea: lo general se escribe una vez (ED-06) y aquí solo se recuerda. La regla de precedencia está dicha en pantalla, en una frase."
+      data-note-desk="Dos columnas: lo que se ve (qué pasa, fotos, cuánto dura) a la izquierda y cómo la hacemos a la derecha. La opción que no se puede elegir sigue enfocable (aria-disabled) y dice por qué, como «q-button-off»."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>B · «Lo cambiaste tú.», el aviso de describir y «Juntar» que no se puede <small>— Parte con IA 2, de 3 s, antes «Sigue a la anterior»</small></h2>
+    <template id="s2b">
+      <header class="step-head">
+        <div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div>
+        <div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div>
+        <h1 class="step-h1">Arma tu video</h1>
+      </header>
+      <div class="step-body">
+        <div class="ed">
+          <script type="application/json" data-tl>
+          {"total":16.5,"t":13,"chosen":"ai2",
+           "media":[
+            {"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},
+            {"id":"v1","kind":"video","name":"Video 1","start":2,"len":5,"pic":"pic-b"},
+            {"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":6.5,"len":5,"in":0.5,"pic":"pic-reel"},
+            {"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"new","start":11.5,"len":3,"pic":"pic-reel"},
+            {"id":"f2","kind":"photo","name":"Foto 2","start":14.5,"len":2,"pic":"pic-c"}],
+           "joins":[{"at":2,"kind":"corte","label":"Unión: Corte"},{"at":6.75,"kind":"fundido","label":"Unión: Fundido"},{"at":11.5,"kind":"corte","label":"Unión: Corte"},{"at":14.5,"kind":"corte","label":"Unión: Corte"}],
+           "texts":[{"id":"t1","name":"«2×1 hoy»","start":6.5,"len":5}],
+           "effects":[{"id":"e1","name":"Humo","start":7,"len":5}],
+           "status":"Cambiaste cómo se hace la parte con IA 2."}
+          </script>
+          <div class="q-island q-tl-actions"><button class="btn surface" type="button"><span data-i="trash"></span>Quitar</button></div>
+          <section class="q-tl-panel" aria-labelledby="p2b-title">
+            <div class="q-tl-panel__head">
+              <h2 class="q-tl-panel__title" id="p2b-title"><span data-i="sparkles"></span>Parte con IA 2 <span class="muted q-nums" style="font-weight:400">· de 0:11 a 0:14</span></h2>
+              <span class="pill" data-tone="neutral">Sin crear · gratis hasta «Crear»</span>
+            </div>
+            <div class="panel-grid">
+              <div class="callout span2" data-tone="warn" role="status"><span data-i="alert"></span><span>No pudimos ver qué pasa en esta parte. Cuéntanos en una frase qué quieres que muestre.</span></div>
+              <div class="whole span2"><span data-i="film"></span><div class="whole__body"><div class="whole__k">Todo el video</div><div class="whole__v">«Promoción de 2×1 los martes»</div></div><button class="btn ghost sm" type="button">Cambiar</button></div>
+              <div class="stack">
+                <label class="field-label" for="d2b">¿Qué pasa en esta parte?</label>
+                <textarea class="field" id="d2b" rows="3" aria-describedby="d2b-h"></textarea>
+                <p class="field-help" id="d2b-h">Ej.: «Una mano acerca el vaso».</p>
+                <div>
+                  <span class="field-label">Cuánto dura en tu video</span>
+                  <div class="row"><button class="btn soft" type="button">− 1 s</button><span class="q-nums" style="font-weight:700;min-width:3rem;text-align:center">3 s</span><button class="btn soft" type="button">+ 1 s</button></div>
+                  <p class="field-help">Se crea de 4 s y usa 4 s de tu mes. Cuando esté lista, eliges qué 3 s usar arrastrando sus barras.</p>
+                </div>
+              </div>
+              <div class="stack" role="radiogroup" aria-labelledby="q2b">
+                <span class="field-label" id="q2b">¿Cómo la hacemos?</span>
+                <p class="why-line"><span data-i="pencil" data-c="sm"></span><span>Lo cambiaste tú. <button class="btn ghost sm" type="button" style="min-height:32px;padding:0 6px">Volver a lo que te propusimos</button></span></p>
+                <div class="choices">
+                  <button class="choice" role="radio" aria-checked="false" aria-disabled="true" type="button"><span class="choice__dot"></span><span class="choice__title">Igual al original, con tu producto</span><span class="choice__why"><span data-i="alert" data-c="sm"></span>Esta parte dura 3 s y para conservar el original necesita al menos 4. Júntala con la siguiente o hazla nueva.</span></button>
+                  <button class="choice" role="radio" aria-checked="true" type="button"><span class="choice__dot"></span><span class="choice__title">Nueva, inspirada en el original</span><span class="choice__help">Creamos una parte nueva con tu producto. La persona será otra.</span></button>
+                  <button class="choice" role="radio" aria-checked="false" type="button"><span class="choice__dot"></span><span class="choice__title">Sigue a la anterior</span><span class="choice__help">Empieza donde termina la parte anterior.</span></button>
+                </div>
+              </div>
+              <div class="span2 stack">
+                <hr class="hr">
+                <div class="row">
+                  <button class="btn soft off" aria-disabled="true" aria-describedby="w2b" type="button"><span data-i="sparkles"></span>Probar esta parte</button>
+                  <button class="btn soft off" aria-disabled="true" aria-describedby="m2b" type="button"><span data-i="merge"></span>Juntar con la siguiente</button>
+                </div>
+                <p class="cost" id="w2b"><span data-i="info" data-c="sm"></span><span>Cuéntanos qué pasa en esta parte para probarla.</span></p>
+                <p class="cost" id="m2b"><span data-i="info" data-c="sm"></span><span>La siguiente es una foto tuya: solo se juntan dos partes con IA seguidas.</span></p>
+                <div class="q-tl-panel__done"><button class="btn solid sm" type="button" style="min-height:44px">Listo</button></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <footer class="step-foot">
+        <p class="step-foot__why">Falta contar qué pasa en la parte con IA 2.</p>
+        <div class="step-foot__row"><button class="btn solid off" aria-disabled="true" type="button">Siguiente</button></div>
+        <button class="btn ghost sm step-foot__later" type="button">Seguir después</button>
+      </footer>
+    </template>
+    <div class="mk-row" data-pair="s2b"
+      data-note-phone="«Lo cambiaste tú.» reemplaza el motivo de la regla en la misma línea, con un ícono de lápiz y la salida «Volver a lo que te propusimos» (hipótesis: el dueño que cambió por error quiere volver sin recordar cuál era). El motivo de «Siguiente» va junto al botón (§4.5)."
+      data-note-desk="Una parte con menos de 4 s se crea de 4 y usa 4 s de tu mes (regla de hoy). Aquí se explica el recorte sin palabras técnicas: después eliges qué pedazo usar con las barras, gratis."></div>
+  </section>
+  </div>
+</div>
+</body>
+</html>

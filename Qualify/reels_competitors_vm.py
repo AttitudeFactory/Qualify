@@ -32,6 +32,9 @@ from .reels_filters_vm import account_key, parse_account_key
 #: replaces the ticket's «Elige cuáles 6 competidores leemos cada lunes».
 PICKER_TITLE = "Tus competidores"
 READ_NOW = rivals.READ_NOW_BUTTON
+#: The bar's button on a phone (option A, Deivid 2026-11-26: short only if needed so
+#: nothing is alone on a line); its accessible name still starts «Tus competidores».
+PICKER_SHORT = "Competidores"
 #: What the panel says under its title (Deivid, option A).
 PICKER_BODY = (
     "Marca hasta 6: cada lunes te traemos sus reels nuevos. Para ver ya los de otro, "
@@ -43,7 +46,8 @@ PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY) + " marcados"
 BUTTON_LABEL = "Tus competidores: {n} de " + str(rivals.MAX_WEEKLY) + " los revisamos cada lunes"
 BUTTON_LABEL_READING = "Tus competidores: estamos leyendo sus reels"
 #: A manual read ended while the drawer was closed (a toast; open, the row says it).
-TOAST_DONE = "Listo: los reels de {account} ya están en «Más reels revisados»."
+#: RF-13 (m-25120327): the list has no «Más reels revisados» heading any more.
+TOAST_DONE = "Listo: los reels de {account} ya están en tus ideas."
 TOAST_FAILED = "No pudimos leer los reels de {account}. Inténtalo de nuevo en unos minutos."
 #: More than 6 ticked (exact, `competitors.TOO_MANY_TEXT`).
 TOO_MANY = rivals.TOO_MANY_TEXT
@@ -195,6 +199,7 @@ __all__ = [
     "KEEP_ONE",
     "PICKED_COUNT",
     "PICKER_BODY",
+    "PICKER_SHORT",
     "PICKER_TITLE",
     "READ_FAILED",
     "READ_NOW",

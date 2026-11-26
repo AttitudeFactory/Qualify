@@ -49,6 +49,17 @@
   --q-dur-fast: 140ms;
   --q-dur: 240ms;
   --q-dur-slow: 380ms;
+
+  /* Role «hecho con IA» (m-25026602, docs/design-system.md §5.10.1): what the AI makes
+     on the timeline wears Radix's iris scale, already loaded for the «Publica» zone wash
+     (§3.1). A role, not a new colour: these six tokens are the only steps it uses, and it
+     never goes alone — always the ✦ icon and a word with it. */
+  --q-ai-fill: var(--iris-a4);       /* the AI block's background */
+  --q-ai-edge: var(--iris-a7);       /* its border */
+  --q-ai-ring: var(--iris-a9);       /* the ring of its mode badge and of the preview's mark */
+  --q-ai-edge-plan: var(--iris-a8);  /* its dashed border while it is not created yet */
+  --q-ai-ink: var(--iris-12);        /* text on the iris fill (≥ 4.5:1 on iris-a4) */
+  --q-ai-icon: var(--iris-11);       /* the «i» of the mode's reason, in the panel */
 }
 
 @media (max-width: 900px) {

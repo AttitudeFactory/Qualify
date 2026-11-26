@@ -94,6 +94,9 @@ OLD_BODY = "Pueden haber salido reels nuevos desde entonces."
 #: so the weekly run comes) — left out when a notice above already names that Monday
 #: (UX re-check 3: «el lunes 9» said twice).
 NEXT_ONES = "Las próximas llegan el lunes {d}."
+#: RF-13 (ux-designer, approved by Deivid 2026-11-26): under the one list, once nothing
+#: is left to page — the list has no heading, so the next Monday is said here.
+END_OF_LIST = "Eso es todo por ahora. Las próximas ideas llegan el lunes {d}."
 
 NO_ACCOUNTS_TITLE = "Aún no hay cuentas que te inspiren"
 NO_ACCOUNTS_BODY = (
@@ -215,8 +218,8 @@ class StoredIdeas:
     account_reels: Sequence[PublicReel] = ()
     #: RF-02 (m-25119460): the filtered read of RF-01 (`reviewed_reels.reviewed_reels`) —
     #: the ideas to show (`reviewed.ideas`, filtered, never a detractor's) and one page of
-    #: «Más reels revisados». None only for a caller that does not filter (the ideas are
-    #: then `view.ideas`, as before RF-02).
+    #: the reviewed reels after the ideas (RF-13). None only for a caller that does not
+    #: filter (the ideas are then `view.ideas`, as before RF-02).
     reviewed: ReviewedReels | None = None
 
 
@@ -243,7 +246,10 @@ class IdeasScreen:
     #: worker to try it again (`RunView.next_retry_at`, for up to `PREPARING_LIMIT` past
     #: that moment).
     waiting: bool = False
-    #: RF-02: one page of «Más reels revisados» in the card shape, and whether a next
+    #: RF-13: `END_OF_LIST` with the next Monday in the business's zone, for the end of
+    #: the list ("" when there is no date to give).
+    end_note: str = ""
+    #: RF-02: one page of the reviewed reels after the ideas in the card shape, and whether a next
     #: page exists (`ReviewedReels.has_more`).
     more_cards: list[dict[str, str]] = field(default_factory=list)
     has_more: bool = False
@@ -446,7 +452,7 @@ def idea_cards(stored: StoredIdeas, *, now: datetime) -> list[dict[str, str]]:
 
 
 def more_card(item: ReviewedReel, *, now: datetime) -> dict[str, str]:
-    """One reel of «Más reels revisados» (RF-02) in the ideas' card shape: its cover only
+    """One reviewed reel after the ideas (RF-02/RF-13) in the ideas' card shape: its cover only
     while the CDN link is fresh (`cover_path`: no copy in R2 — the placeholder otherwise),
     no lift (measured for the ideas only) and never «Hacer uno parecido» (its video was
     not kept)."""
@@ -561,6 +567,8 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
             data_iso=run_moment(shown).astimezone(UTC).isoformat(),
             more_cards=more,
             has_more=bool(reviewed and reviewed.has_more),
+            # never «el lunes N» twice (UX re-check 3): a notice above already names a day
+            end_note="" if notice_title else END_OF_LIST.format(d=next_monday(now, zone).day),
             accounts=reels_filters_vm.accounts_by_key(reviewed.accounts) if reviewed else {},
         )
     if stored.accounts == 0:
@@ -633,6 +641,7 @@ __all__ = [
     "SIMILAR_HELP",
     "SIMILAR_LABEL",
     "NEXT_ONES",
+    "END_OF_LIST",
     "CHECK_FAILED_BODY",
     "CHECK_FAILED_TITLE",
     "IN_FLIGHT",

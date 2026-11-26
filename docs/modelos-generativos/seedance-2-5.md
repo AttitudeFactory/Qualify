@@ -492,3 +492,148 @@ visual; 3 tienen una duda de pronunciación que solo se resuelve oyendo. Riesgos
 9. **Saturación al masticar** (Deivid): «la saturación se exagera en el momento de masticar» (e2).
 10. **La mano y el producto** (Deivid): «en el animado la mano no gira con la hamburguesa, solo
     gira la hamburguesa».
+
+## Prueba AVFOTO-001 — personaje dibujado por Seedream desde la foto de una persona real — 2026-11-26 (m-25129385, ADR 50 §12.12) · Seedance rechazó los 3 dibujos
+
+- **Qué mide.** La opción de ADR 50 §12.12: el dueño sube la foto de una persona real que dio
+  su permiso por escrito, Seedream 5.0 pro dibuja el personaje a partir de esa foto (imagen a
+  imagen) y **solo ese dibujo** va a Seedance 2.5 como personaje. Tres preguntas: si Seedream
+  acepta la foto, si Seedance acepta el dibujo (la clave: `docs/byteplus-datos-de-clientes.md`
+  §1.4 nombra salidas de Seedream de **texto a imagen**) y cuánto se parece a la persona.
+- **Montaje.** `qualify_api/evals/avatar_photo_bench.py` y
+  `packages/api/evals/avatar_escena/personaje_foto.py` (`just eval-avatar-foto`), sobre las
+  salvaguardas de AVESC-001. El material lista cada persona con `permiso_escrito: true`; sin
+  él no se manda nada. Las fotos, los dibujos y la planilla están en
+  `%TEMP%/avatar-foto-real/`, nunca en el repositorio.
+- **Corrida:** `20261126-161128`, con el OK de Deivid escrito en la sesión coordinadora
+  («OK US$3, ahora»), tope US$3. 3 personas (`p1`, `p2`, `p3`) con permiso escrito.
+- **Modelos y ajustes:**
+  - dibujos con `dola-seedream-5-0-pro-260628`, 1080×1920, la foto como única referencia,
+    prompt `personaje-desde-foto-v1`, 2 opciones por foto;
+  - escenas con `dreamina-seedance-2-5-260628`, la escena e1 de AVESC-001 (5 s, borrador 480p,
+    9:16, con audio, prompt `avatar-escena-v1`), con la opción 1 de cada persona como
+    «Image 1», la foto del producto y el fondo dibujado de AVESC-001;
+  - tabla de precios `v10`.
+
+**Resultado**
+
+| Paso | Pedidos | Aceptados | Error | Costo (US$) | Tiempo |
+|---|---|---|---|---|---|
+| Seedream 5.0 pro, dibujo desde la foto | 6 (3 fotos × 2) | **6** | — | **0,27** (0,045 c/u) | 26 a 38 s |
+| Seedance 2.5, escena con el dibujo | 3 | **0** | `HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation: The request failed because the input image 'content[1]' may contain real person` | **0** (rechazo al crear la tarea, no se cobra) | ≈ 5 s |
+| **Total** | | | | **0,27** | |
+
+- `content[1]` es la primera imagen de referencia del cuerpo que arma `SeedanceVideoAdapter`
+  (`content[0]` es el texto): **el dibujo del personaje**, no el producto ni el fondo.
+- Request ids de los tres rechazos (no identifican a nadie):
+  `02179572409229945c07e4ff35b1f55227084b3d76e9a8042e77d` (p1),
+  `0217957240976109ded32e803badef81244c2c5f5c7f1be339226` (p2),
+  `02179572410267116e812ea4822a09eb3d0e01cc9319ecd7bbb9e` (p3).
+- Los dibujos viajaron byte a byte (sin recortar ni recomprimir), igual que en AVESC-001, y
+  tenían minutos de hechos en la misma cuenta.
+
+**Conclusión.** El camino «foto real → dibujo de Seedream (imagen a imagen) → Seedance» **no
+funciona tal como se planteó**: Seedance no trata ese dibujo como «salida propia de
+Seedream» y lo rechaza como persona real. En AVESC-001, un rostro igual de realista dibujado
+por Seedream **desde texto** sí pasó. Que la diferencia sea el origen imagen a imagen (o el
+parecido con una persona real de la foto) es **[inferencia]**: BytePlus no publica cómo lo
+detecta.
+
+**Qué lo reabriría** (nada de esto está medido):
+
+1. **La verificación de identidad de BytePlus** para personas reales: la persona verifica su
+   identidad con su propia cuenta y sube sus activos de retrato
+   (`docs/byteplus-datos-de-clientes.md` §1.4, `upload-real-person-portrait-assets`). Cambia
+   el flujo: la persona, no el dueño, tiene que hacer el trámite. Antes de construir hay que
+   leer qué pide y si sirve para una cuenta como la nuestra (ver «Platform Customer», §1.5).
+2. **Hipótesis: un dibujo estilizado o animado desde la foto** (por ejemplo, el estilo del
+   personaje animado de AVESC-001, que pasó desde texto) podría no leerse como persona real.
+   No estaba medido al escribir esto; cuanto menos se parezca, menos sirve la opción, así que
+   la medición tendría que juzgar el parecido junto con la aceptación. **Medido después en
+   AVFOTO-002: pasa 3 de 3.**
+
+**Pendiente:** Deivid califica el parecido de los 6 dibujos (1 a 3) en
+`%TEMP%/avatar-foto-real/corridas/20261126-161128/juicio-deivid.csv`; las columnas del video
+quedan vacías. Observación sin juicio de parecido: en las 2 opciones de `p3`, Seedream
+inventó letras rojas en el delantal pese a «No text» en el prompt; las otras 4 salieron sin
+letras.
+
+## Prueba AVFOTO-002 — personaje ANIMADO dibujado por Seedream desde la foto de una persona real — 2026-11-26 (m-25129385, ADR 50 §12.12) · Seedance aceptó los 3 dibujos
+
+- **Qué mide.** La hipótesis que dejó AVFOTO-001: un personaje **3D animado** dibujado desde la
+  misma foto real no se lee como persona real y Seedance lo acepta como «Image 1».
+- **Corrida:** `20261126-162258`, con el OK de Deivid escrito en la sesión coordinadora («OK
+  US$2, ahora»), tope US$2. Las mismas 3 personas con permiso escrito (`p1`, `p2`, `p3`) y el
+  mismo `material.json` que AVFOTO-001. Material, videos y revisión solo en
+  `%TEMP%/avatar-foto-real/` (corrida y `revision-20261126-162258/`); nada se copia al
+  repositorio.
+- **Modelos y ajustes:**
+  - dibujos con `dola-seedream-5-0-pro-260628`, imagen a imagen, la foto como única
+    referencia, 1080×1920, prompt `personaje-desde-foto-animado-v1`, **1 opción por foto**
+    (`--estilo animado`);
+  - escenas con `dreamina-seedance-2-5-260628`, la escena e1 de AVESC-001 (5 s, borrador 480p,
+    9:16, con audio, prompt `avatar-escena-v1`), con el dibujo, la foto del producto y el fondo
+    dibujado de AVESC-001;
+  - tabla de precios `v10`, una tarea a la vez.
+
+**Costo y tiempo reales**
+
+| Llamada | Cotizado (US$) | Tokens cobrados | Cobrado (US$) | Tiempo (s) | Tarea |
+|---|---|---|---|---|---|
+| 3 dibujos Seedream 5.0 pro | 0,135 | — | **0,135** (0,045 c/u) | 33 a 34 | — |
+| p1 e1 | 0,514 | 48.437 | **0,518** | 66,5 | `cgt-20261127042453-ct8kh` |
+| p2 e1 | 0,514 | 48.437 | **0,518** | 61,4 | `cgt-20261127042559-278u7` |
+| p3 e1 | 0,514 | 48.437 | **0,518** | 66,8 | `cgt-20261127042701-xbecn` |
+| **Total** | 1,677 | | **1,690** | | |
+
+La cotización quedó corta en un 0,8 % por escena, igual que en AVESC-001, dentro del margen del
+10 %. El tope de US$2 no se tocó.
+
+**Aceptación.** Las 3 tareas terminaron bien con las tres imágenes. **Ningún rechazo** del
+filtro de persona real, cuando en AVFOTO-001 los 3 dibujos realistas de las mismas fotos se
+rechazaron al crear la tarea.
+
+**Video y audio.** Los 3 videos son 480×854 a 24 cps, 5,0 s (121 cuadros), con una pista AAC
+estéreo de 32 kHz de 4,96 s. Transcripción local con faster-whisper en CPU, idioma `es`, con
+`small` y `large-v3-turbo` (audio decodificado con PyAV):
+
+| Video | Línea esperada | `small` | `large-v3-turbo` | Habla entre |
+|---|---|---|---|---|
+| p1 e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién **hacha**!» | «Mira esta Super Smash recién **hacha**.» | 2,0 y 4,8 s |
+| p2 e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién **hacha**!» | «Mira esta Super Smash recién **hacha**.» | 1,9 y 4,6 s |
+| p3 e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash, recién **a techa**!» | «Mira esta Super Smash, recién **atecha**.» | 1,5 y 4,7 s |
+
+Las tres dicen la frase completa en español. «hecha» se oye como «hacha» en los dos modelos, como
+en el animado e1 de AVESC-001; puede ser pronunciación o error de la transcripción. **Para juicio
+humano.** Volumen (RMS): p1 0,050, p2 0,083, p3 0,052.
+
+**Juicio preliminar por cuadros** (6 cuadros por video y 9 recortes de la cara durante el habla,
+sin oír). **Es preliminar: lo reemplaza la planilla de Deivid.** El parecido con la persona **no
+se juzga aquí**: es de Deivid. Labios: en los tres la boca está cerrada o sonriendo antes de la
+voz y cambia de forma mientras habla; la sincronía fina queda para juicio humano.
+
+| Video | Personaje igual al dibujo | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
+|---|---|---|---|---|---|---|
+| p1 e1 | sí (camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador con las dos manos y la acerca a cámara | ninguno inventado; el menú del fondo trae las seudoletras borrosas del dibujo del fondo | queda una gota de salsa en el mostrador (verosímil) | 3 |
+| p2 e1 | sí (camiseta crema, delantal verde) | sí; el queso gotea al acercarla | sí | igual que p1 | ninguno visto | 3 |
+| p3 e1 | sí (camiseta crema, delantal verde) | sí | sí | **mancha roja en el delantal** (una forma, sin letras), que ya traía el dibujo de Seedream pese a «no letters, no logos» | la mancha del delantal | 2 |
+
+En los tres, la hamburguesa llena el cuadro al final: es la cámara que se acerca, no un problema
+de escala como el del animado e1 de AVESC-001.
+
+**Conclusión.** **El personaje animado hecho desde la foto de una persona real, con su permiso,
+sí pasa en Seedance 2.5** (3 de 3; muestra de 3, una escena de 5 s), mientras que el realista
+desde las mismas fotos no pasa (AVFOTO-001, 0 de 3). La opción de ADR 50 §12.12 en su versión
+animada queda **en pausa por decisión de Deivid (2026-11-26)**, sin enmienda al §12: los avatares
+y personajes no se encienden para los usuarios hasta que cada empresa tenga su propio avatar
+funcionando junto con su sistema visual (design system); mientras tanto, en la app quedan como
+«Próximamente» y solo se encienden en los servidores de prueba. El juicio de parecido de Deivid
+sigue pendiente (si no se reconoce a la persona, la opción pierde su razón de ser). Siguen
+abiertos: muestra de 3 con
+una sola escena de 5 s; no se midió la permanencia en escenas más largas ni en varias partes; el
+dibujo intermedio debe tener menos de 30 días (R7); y lo que dice §12.12 sobre el permiso
+escrito, el envío de la foto a BytePlus y la casilla de consentimiento sigue igual.
+
+**Pendiente:** Deivid califica el parecido (1 a 3) del dibujo y del video en
+`%TEMP%/avatar-foto-real/corridas/20261126-162258/juicio-deivid.csv`, más labios y voz en la
+nota.

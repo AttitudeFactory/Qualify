@@ -1031,6 +1031,37 @@ async def test_filtering_reads_what_is_stored_and_never_pays(world: _World) -> N
     assert world.reads[0] is True and set(world.reads[1:]) == {False}  # never queues
 
 
+async def test_no_empty_state_flashes_while_a_filter_is_applied(world: _World) -> None:
+    """Deivid, 2026-11-26: a Duración filter that left nothing, then «Todas» — for a moment
+    «Elegir cuentas» flashed: the bar's new values reached the screen before the read
+    began, and were judged against the old (empty) lists. Now the change itself marks the
+    read in flight, and no empty state nor note shows until the new lists land."""
+    world.ok_run()
+    _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    await _filter(proxy, state.set_filter("duration", "gte60"))
+    assert state.reels == [] and state.more_reels == []
+    assert state.empty_kind == reels_filters_vm.EMPTY_FILTERS and not state.filtering
+    # «Todas»: the handler's own state change, before the read runs
+    asked = state.set_filter("duration", "")
+    assert state.filtering  # same delta as the new value
+    assert state.empty_kind == "" and not state.no_ideas_left and not state.no_ideas_filtered
+    for handler in (lambda: state.toggle_account("tiktok:vecino"), state.reset_filters):
+        state.filtering = False
+        if handler() is not None:
+            assert state.filtering
+    state.filtering = True
+    await _filter(proxy, asked)  # the new lists land
+    assert not state.filtering and [c["key"] for c in state.more_reels] == ["tiktok:T1"]
+    assert state.empty_kind == ""
+    # a newer full read supersedes a filtered one: the screen never stays busy
+    state.filtering = True
+    await _open(proxy)
+    assert not state.filtering
+
+
 async def test_reset_brings_everything_back_to_all(world: _World) -> None:
     world.ok_run()
     _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
@@ -1091,24 +1122,29 @@ async def test_competitors_before_rf05_say_they_are_coming(world: _World) -> Non
     assert world.paid == []
 
 
-async def test_more_reviewed_reels_come_in_pages(world: _World) -> None:
-    """«Más reels revisados»: 12 per page, «Ver más reels» while `has_more`; free."""
+async def test_one_list_of_16_ideas_first_then_ver_mas(world: _World) -> None:
+    """RF-13 (Deivid, 2026-11-25): one list — the 2 ideas first, then 14 reviewed reels,
+    16 in all — and «Ver más» brings the next 16 while more exist; free."""
     from .discover_reels import DiscoverReelsState
 
     world.ok_run()
-    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(15)])
+    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(31)])
     state, proxy = _screen_state()
     await _open(proxy)
-    assert len(state.more_reels) == 12 and state.has_more
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert len(state.reels) + len(state.more_reels) == reels_filters_vm.LIST_PAGE == 16
+    assert state.more_reels[0]["id"] == "M00" and state.has_more
     # while a filtered read is in flight (Enter on the focused button) nothing is paged:
     # that read restarts the list and its offset
     state.filtering = True
     await DiscoverReelsState.load_more.fn(proxy)
-    assert len(state.more_reels) == 12 and world.reads == [True]
+    assert len(state.more_reels) == 14 and world.reads == [True]
     state.filtering = False
+    await DiscoverReelsState.load_more.fn(proxy)  # the next 16: from the 15th reviewed
+    assert len(state.more_reels) == 30 and state.has_more
     await DiscoverReelsState.load_more.fn(proxy)
-    assert len(state.more_reels) == 15 and not state.has_more
-    assert len({c["key"] for c in state.more_reels}) == 15
+    assert len(state.more_reels) == 31 and not state.has_more
+    assert [c["id"] for c in state.more_reels] == [f"M{n:02d}" for n in range(31)]  # none twice
     # a reel of the second list never offers «Hacer uno parecido» (its video was not kept)
     assert {c["can_replicate"] for c in state.more_reels} == {""}
     assert world.paid == [] and world.first_runs == []
@@ -1166,9 +1202,8 @@ async def test_a_business_never_sees_another_ones_reels_or_accounts(
     assert state.screen != rd.reels_ideas_vm.SCREEN_IDEAS
 
 
-def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
+def test_the_bar_has_every_filter_in_plain_spanish() -> None:
     import json
-    from pathlib import Path
 
     from .discover_reels import discover_view
 
@@ -1194,7 +1229,7 @@ def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
         "De 30 a 60 segundos",
         "Más de 60 segundos",
         "No hay reels con estos filtros. Prueba quitando alguno.",
-        "Más reels revisados",
+        "Ver más",
         "La imagen ya no está disponible",
     ):
         assert shown(text), text
@@ -1202,9 +1237,329 @@ def test_the_bar_has_every_filter_in_plain_spanish_and_44px_targets() -> None:
     assert "q-drawer--bottom" in rendered  # the phone's sheet from the bottom
     for gone in ("Ordenar", "Región", "Nicho", "Detractor", "Últimos"):
         assert not shown(gone), gone  # out of RF-02 (decision 2 and 3; RF-02b)
-    css = Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css"
-    rules = css.read_text(encoding="utf-8")
-    for selector in (".q-rf-chip {", ".q-rf-option {"):
-        block = rules[rules.index(selector) :]
-        assert "min-height: 44px" in block[: block.index("}")], selector
-    assert ".q-rf-desktop { display: none; }" in rules
+    # RF-13: no heading over the list, no line under it (Deivid, 2026-11-25)
+    for gone in (
+        "Más reels revisados",
+        "Pueden haber salido reels nuevos",
+        "Estos son solo para mirar",
+        "Ninguna idea coincide",
+    ):
+        assert not shown(gone), gone
+
+
+def test_the_bar_is_drawn_with_the_system_only() -> None:
+    """RF-13 (m-25120327): no `.q-rf-*` rule or class left — the bar, its dropdowns, the
+    chips, the sheet and the option rows are Radix pieces under the Liquid Glass skin
+    and the `drawer` primitive; no box behind the bar; 44 px targets; the unchecked boxes
+    and rings are drawn; the focus goes back to the chip that opened the sheet."""
+    import inspect
+    from pathlib import Path
+
+    from . import discover_reels
+
+    rendered = str(discover_reels.discover_view().render())
+    assets = Path(__file__).resolve().parent.parent / "assets"
+    for sheet in assets.glob("*.css"):
+        assert ".q-rf-" not in sheet.read_text(encoding="utf-8"), sheet.name
+    assert "q-rf-" not in rendered and "q-rf-" not in inspect.getsource(discover_reels)
+    bar = inspect.getsource(discover_reels._filter_bar)
+    import re
+
+    for gone in ("position", "sticky", "rx.el.button", "rx.color("):
+        assert gone not in bar, gone  # nothing of its own
+    assert not re.search(r"#[0-9a-fA-F]{3,8}", bar)  # no colour written by hand
+    # Deivid 2026-11-26: a soft panel of the system behind the filters — never the dark
+    # box he took away (`--q-dialog-fill`)
+    assert "background=T.CARD_BG" in bar and "border_radius=T.RADIUS_CARD" in bar
+    assert "q-dialog-fill" not in bar
+    row = inspect.getsource(discover_reels._option_row)
+    assert 'variant="ghost"' in row and "min_height=_TARGET" in row and "role=role" in row
+    assert discover_reels._MARKS == {
+        "radio": ("circle-dot", "circle"),
+        "checkbox": ("square-check", "square"),  # an empty box when not chosen
+    }
+    assert discover_reels._TARGET == "44px"
+    button = inspect.getsource(discover_reels._filter_button)
+    assert "rx.button(" in button and "min_height=_TARGET" in button
+    # never cut off, never broken letter by letter: a real ellipsis (Radix's `truncate`
+    # reaches Reflex 0.10 as an invalid CSS rule — the bug seen live at 375 px)
+    assert "**_ELLIPSIS" in inspect.getsource(discover_reels._chip_face)
+    assert 'flex="1 1 auto"' in button and 'overflow="hidden"' in button  # never past its share
+    assert "**_ELLIPSIS" in inspect.getsource(discover_reels._filters_button)
+    assert "truncate=" not in inspect.getsource(discover_reels)
+    assert '"truncate"' not in rendered
+    assert discover_reels._ELLIPSIS == {
+        "white_space": "nowrap",
+        "overflow": "hidden",
+        "text_overflow": "ellipsis",
+    }
+    assert "white-space" in rendered or "whiteSpace" in rendered
+    # the sheet gives the focus back to «Filtros», however it closes
+    assert discover_reels.FILTERS_BUTTON_ID in rendered
+    assert discover_reels.FILTERS_BUTTON_ID in discover_reels.SHEET_FOCUS_SCRIPT
+    assert "SHEET_FOCUS_SCRIPT" in inspect.getsource(discover_reels._sheet)
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "S.title" not in ideas and "S.body" not in ideas  # «Ideas de hace N días» gone
+    assert "section(" not in ideas and "_pager()" in ideas
+
+
+async def test_no_idea_left_but_reviewed_reels_says_so_never_a_dead_end(world: _World) -> None:
+    """RF-13 review: no idea left with no filter on, reviewed reels shown — the list says
+    why none offers «Hacer uno parecido» and how to get ideas («Elegir cuentas»)."""
+    import inspect
+
+    from . import discover_reels
+
+    world.ok_run(ideas=0)
+    _reviewed(world, [("instagram", "foodie", "M1", 12.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.reels == [] and len(state.more_reels) == 1 and state.empty_kind == ""
+    assert state.no_ideas_left
+    await _filter(proxy, state.set_filter("network", "instagram"))
+    assert not state.no_ideas_left  # a filter left the ideas out: nothing to explain
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "S.no_ideas_left" in ideas and "_no_ideas_left()" in ideas
+    shown = inspect.getsource(discover_reels._no_ideas_left)
+    assert "NO_IDEAS_LEFT_ACTION" in shown and "ACCOUNTS_HREF" in shown
+
+
+def test_a_reviewed_reel_says_it_is_only_to_look_at() -> None:
+    """ux-designer on RF-13 (Deivid, 2026-11-26): where an idea has «Hacer uno parecido»,
+    a reviewed reel has a grey line — styled as `CANNOT_REPLICATE` — saying why not."""
+    import inspect
+
+    from . import discover_reels
+
+    assert reels_filters_vm.MORE_ONLY_LOOK == (
+        "Este es solo para inspirarte: no se puede hacer uno parecido."
+    )
+    tile = inspect.getsource(discover_reels._reel_tile)
+    more = tile[tile.index("if more:") : tile.index("else:")]
+    assert "MORE_ONLY_LOOK" in more and "q-dr-replicate-help" in more
+    assert "T.TEXT_MUTED" in more and 'size="2"' in more
+    rendered = str(discover_reels.discover_view().render())
+    assert "solo para inspirarte" in rendered
+
+
+async def test_filters_that_leave_no_idea_to_make_again_say_so(world: _World) -> None:
+    """ux-designer on RF-13: a filter on and no idea that can be made again — the place of
+    «Ya no quedan ideas…» says it, with no new button (the bar has «Restablecer
+    filtros»); with no filter on, that note is not shown."""
+    import inspect
+
+    from . import discover_reels
+
+    world.ok_run()
+    _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert not state.no_ideas_filtered and not state.no_ideas_left  # ideas, no filter
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    assert state.reels == [] and state.more_reels and state.empty_kind == ""
+    assert state.no_ideas_filtered and not state.no_ideas_left
+    await _filter(proxy, state.reset_filters())
+    assert not state.no_ideas_filtered
+    # a filter that keeps ideas, even ones whose video was not kept (their own card says
+    # `CANNOT_REPLICATE`): nothing to ask — never «Quita alguno» over visible ideas
+    await _filter(proxy, state.set_filter("network", "instagram"))
+    assert state.reels
+    state._cards = [{**c, "can_replicate": ""} for c in state._cards]
+    assert not state.no_ideas_filtered
+    assert reels_filters_vm.NO_IDEAS_FILTERED == (
+        "Con estos filtros no queda ninguna idea para hacer uno parecido. Quita alguno para verlas."
+    )
+    ideas = inspect.getsource(discover_reels._ideas)
+    note = ideas[ideas.index("S.no_ideas_filtered") : ideas.index("grid,")]
+    assert "NO_IDEAS_FILTERED" in note and "rx.button" not in note
+
+
+async def test_the_list_ends_with_the_next_monday(world: _World) -> None:
+    """ux-designer on RF-13: once nothing is left to page, a grey centred line under the
+    list says when the next ideas come; while «Ver más» has more, it is not shown."""
+    import inspect
+    import re
+
+    from . import discover_reels
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(20)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert re.fullmatch(
+        r"Eso es todo por ahora\. Las próximas ideas llegan el lunes \d{1,2}\.", state.end_note
+    )
+    assert state.has_more  # the line waits under «Ver más»
+    await DiscoverReelsState.load_more.fn(proxy)
+    assert not state.has_more and state.end_note
+    pager = inspect.getsource(discover_reels._pager)
+    end = pager[pager.index("S.has_more,") :]
+    assert end.index("rx.button(") < end.index("S.end_note")  # the else of has_more
+    assert 'S.end_note != ""' in pager and 'text_align="center"' in pager
+    # no date, no line: a screen without ideas leaves it empty
+    assert rd.reels_ideas_vm.IdeasScreen(rd.reels_ideas_vm.SCREEN_NO_IDEAS).end_note == ""
+
+
+async def test_ideas_hide_the_no_ideas_note(world: _World) -> None:
+    world.ok_run()
+    _reviewed(world, [("instagram", "foodie", "M1", 12.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.reels and not state.no_ideas_left
+
+
+def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
+    """RF-13 (Deivid 2026-11-26): a desktop chip shows its short name with no filter
+    («Tipo», not «Tipo de cuenta») and only its value with one; a screen reader and
+    `title` get the full «Tipo de cuenta: Todos». The popovers keep the long words."""
+    import inspect
+
+    from . import discover_reels
+
+    assert reels_filters_vm.CHIP_LABELS == {
+        "network": "Canal",
+        "kind": "Tipo",
+        "account": "Cuenta",
+        "duration": "Duración",
+    }
+    face = inspect.getsource(discover_reels._chip_face)
+    # the face is the state's `chip_texts` (`reels_filters_vm.phone_chip`, tested there)
+    assert "_chip_text(axis)" in face
+    assert "AXIS_LABELS" not in face  # never «Tipo de cuenta» on a chip's face
+    button = inspect.getsource(discover_reels._filter_button)
+    assert "*_chip_face(axis)" in button
+    assert "aria_label=_chip_text(axis, name=True)" in button
+    assert "title=_chip_text(axis, name=True)" in button
+    assert 'variant=rx.cond(on, "soft", "surface")' in button
+    # like a select (Deivid, 2026-11-26): the filters share the width in equal parts,
+    # the word on the left and the chevron on the right
+    for needed in ('flex="1 1 auto"', 'justify_content="space-between"', "min_width=_CHIP_MIN"):
+        assert needed in button, needed
+    # the popovers' options keep the long words («Menos de 15 segundos»)
+    assert "_single_options(axis, close=True)" in inspect.getsource(discover_reels._dropdown)
+
+
+async def test_the_chip_texts_follow_the_filters(world: _World) -> None:
+    """`chip_texts`: what the chips say and are named, from the bar's values."""
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.chip_texts["kind"] == "Tipo"
+    assert state.chip_texts["kind_name"] == "Tipo de cuenta: Todos"
+    await _filter(proxy, state.set_filter("kind", "competencia"))
+    await _filter(proxy, state.set_filter("duration", "gte60"))
+    assert state.chip_texts["kind"] == "Compiten contigo"
+    assert state.chip_texts["duration"] == "> 60 s"
+    assert state.chip_texts["duration_name"] == "Duración: > 60 s (más de 60 segundos)"
+    assert state.filter_values["duration"] == "Más de 60 segundos"  # the sheet's words
+
+
+def test_the_wide_bar_is_one_line_that_fills_the_bar() -> None:
+    """Deivid, 2026-11-26: a filter on sent chips to a second row at ~1180 px, and then
+    the five chips looked crammed in the middle of a wide bar. Now ONE line that never
+    wraps (so no chip is ever alone) and fills the bar: the four filters in equal parts,
+    then «Competidores» and «Quitar filtros» at their natural width."""
+    import inspect
+
+    from . import discover_reels
+    from . import reels_competitors_vm as rc
+
+    bar = inspect.getsource(discover_reels._filter_bar)
+    wide = bar[: bar.index("class_name=_WIDE_CLASS")]
+    order = [
+        wide.index("*(_dropdown(axis) for axis in reels_filters_vm.AXES)"),
+        wide.index("_rivals_button(chip=False)"),
+        wide.index("_reset_button()"),
+    ]
+    assert order == sorted(order)
+    row = bar[bar.index("class_name=_WIDE_CLASS") : bar.index("class_name=_NARROW_CLASS")]
+    assert 'wrap="nowrap"' in row and 'width="100%"' in row and 'justify="center"' not in row
+    assert "_chip_group" not in inspect.getsource(discover_reels)
+    assert discover_reels._CHIP_MIN == "5.5rem"
+    # the short words, the long ones in the accessible names (WCAG 2.5.3)
+    assert reels_filters_vm.RESET_SHORT == "Quitar filtros" and rc.PICKER_SHORT == "Competidores"
+    assert "reels_filters_vm.RESET_SHORT" in inspect.getsource(discover_reels._reset_button)
+    rivals = inspect.getsource(discover_reels._rivals_button)
+    assert "reels_competitors_vm.PICKER_SHORT" in rivals
+    assert "aria_label=S.competitors_label" in rivals  # «Tus competidores: …»
+    for name in (rc.BUTTON_LABEL, rc.BUTTON_LABEL_READING):
+        assert rc.PICKER_SHORT.lower() in name.lower()
+
+
+def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
+    """Deivid, 2026-11-26: on a phone ONE line of equal buttons — «Filtros» (with « · N»)
+    and «Competidores»; «Filtros» opens one sheet with every axis under its name, «Quitar
+    filtros» and «Listo» in its foot; the focus goes back to «Filtros»."""
+    import inspect
+
+    from . import discover_reels
+
+    bar = inspect.getsource(discover_reels._filter_bar)
+    phone = bar.split("class_name=_WIDE_CLASS")[1]
+    assert "_filters_button()" in phone and "_rivals_button(chip=True)" in phone
+    for gone in ("_chip(", "_reset_button(", "_chip_pair"):
+        assert gone not in phone, gone  # no chips, no «Quitar filtros» in the phone's bar
+    assert 'wrap="nowrap"' in phone
+    # equal parts of the line (room for RF-14's third button)
+    assert discover_reels._PHONE_SLOT["flex"] == "1 1 0"
+    # which row shows is a container query on the BAR's width, not the window's (Deivid's
+    # live tests: at 768 and 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px
+    # and «Competidores» dropped alone): the two buttons below 700 px of bar, chips above
+    import re
+    from pathlib import Path
+
+    assert "breakpoints" not in inspect.getsource(discover_reels._filter_bar)
+    assert "class_name=BAR_CLASS" in bar and "class_name=_NARROW_CLASS" in bar
+    css = (Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css").read_text(
+        encoding="utf-8"
+    )
+    assert ".q-reels-bar { container-type: inline-size; }" in css
+    assert ".q-reels-bar .q-reels-bar__wide { display: none; }" in css
+    assert ".q-reels-bar .q-reels-bar__narrow { display: flex; }" in css
+    query = re.search(r"@container \(min-width: (\d+)px\) \{(.*?)\n\}", css, re.S)
+    assert query and int(query.group(1)) == 760
+    assert ".q-reels-bar .q-reels-bar__wide { display: flex; }" in query.group(2)
+    assert ".q-reels-bar .q-reels-bar__narrow { display: none; }" in query.group(2)
+    rule_block = css[css.index(".q-reels-bar {") : css.index("@container")]
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgb|hsl", rule_block)  # no colour by hand
+    button = inspect.getsource(discover_reels._filters_button)
+    for needed in ('"sliders-horizontal"', "**_PHONE_SLOT", "min_height=_TARGET", "**_ELLIPSIS"):
+        assert needed in button, needed
+    assert "aria_label=S.filters_texts" in button and "id=FILTERS_BUTTON_ID" in button
+    assert "**(\n                _PHONE_SLOT\n                if chip" in inspect.getsource(
+        discover_reels._rivals_button
+    )
+    sheet = inspect.getsource(discover_reels._sheet)
+    assert "_sheet_group(axis) for axis in reels_filters_vm.AXES" in sheet
+    assert "S.filters_on" in sheet and "RESET_SHORT" in sheet and "DONE_LABEL" in sheet
+    assert "title=reels_filters_vm.FILTERS_LABEL" in sheet
+    group = inspect.getsource(discover_reels._sheet_group)
+    assert "AXIS_LABELS[axis]" in group and "close=False" in group  # long words, stays open
+    rendered = str(discover_reels._filter_bar().render())
+    for axis_name in ("Canal", "Tipo de cuenta", "Cuenta"):
+        assert axis_name in rendered
+
+
+async def test_the_filtros_sheet_stays_open_while_choosing(world: _World) -> None:
+    """Every choice applies at once and the sheet stays open; Escape or «Listo» close it;
+    «Quitar filtros» resets everything. The button says how many filters are on."""
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.filters_texts == {"face": "Filtros", "name": "Filtros: ninguno activo"}
+    state.open_filters()
+    assert state.sheet == "all"
+    await _filter(proxy, state.set_filter("network", "instagram"))
+    assert state.sheet == "all" and state.filter_network == "instagram"
+    assert state.filters_texts == {"face": "Filtros · 1", "name": "Filtros: 1 activo"}
+    await _filter(proxy, state.set_filter("duration", "lt15"))
+    assert state.filters_texts == {"face": "Filtros · 2", "name": "Filtros: 2 activos"}
+    state.sheet_changed(False)  # Escape
+    assert state.sheet == ""
+    state.open_filters()
+    await _filter(proxy, state.reset_filters())
+    assert not state.filters_on and state.sheet == ""
+    state.open_filters()
+    state._claim_cards("another-tenant")  # another business: the sheet closes
+    assert state.sheet == ""

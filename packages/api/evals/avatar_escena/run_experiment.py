@@ -462,51 +462,87 @@ def _ledger(max_usd: Decimal, run: Path) -> Any:
     return SpendLedger(ceiling_usd=max(room, NO_ROOM_USD))
 
 
-def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
-    from qualify_creative.adapters.byteplus_ark import ArkAPIError, SeedreamImageAdapter
-    from qualify_creative.enums import GenerationTask
-    from qualify_creative.pricing import seedream_image_cost
-    from qualify_creative.providers import GenerationRequest, RenderedPrompt
+def _cut_drawings(done: dict[str, Any]) -> None:
+    for label, row in done.items():
+        if row.get("status") == SENT:
+            # Seedream answers in one call (no task id to recover): its reservation stays
+            # counted and it is not drawn again; check the console if it billed
+            print(f"  {label}: se cortó durante la llamada; cuenta como gastado, no se repite")
 
+
+def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
     from qualify_api.evals.avatar_scene_bench import (
-        IMAGE_SIZE,
         PROMPT_VERSION,
-        SEEDREAM_MODEL,
         background,
         background_image_prompt,
         character,
         character_image_prompt,
         image_params,
     )
-    from qualify_api.evals.spend_control import CeilingExceededError
 
     pricing = _pricing()
     run = _run_dir(args, create=True)
     done = _read_json(run / DRAWINGS_FILE, {})
-    for label, row in done.items():
-        if row.get("status") == SENT:
-            # Seedream answers in one call (no task id to recover): its reservation stays
-            # counted and it is not drawn again; check the console if it billed
-            print(f"  {label}: se cortó durante la llamada; cuenta como gastado, no se repite")
+    _cut_drawings(done)
     # only what is still to pay is quoted: `gasto.json` already counts the rest
     items = [i for i in _items(args, material, pricing) if not _finished(done.get(i.label, {}))]
     key, max_usd = _paid_gate(args, run, items, video=False)
-    ledger = _ledger(max_usd, run)
-    adapter = SeedreamImageAdapter(model=SEEDREAM_MODEL)
-    (run / "dibujos").mkdir(exist_ok=True)
-    for item in items:
+
+    def request_for(item: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         kind, ident, _ = item.label.split("/")
         prompt = (
             character_image_prompt(character(ident))
             if kind == "personaje"
             else background_image_prompt(background(ident))
         )
+        return image_params(prompt), {"prompt_version": PROMPT_VERSION, "prompt": prompt}
+
+    _draw_all(
+        run,
+        items,
+        done,
+        key=key,
+        ledger=_ledger(max_usd, run),
+        pricing=pricing,
+        request_for=request_for,
+    )
+    print(f"Corrida: {run} · gastado en esta fase US${_phase_spent(run, 'dibujar')}")
+    print(f"Elige las opciones en {run / CHOICE_FILE} antes de «escenas» (por omisión, la 1).")
+    return 0
+
+
+def _draw_all(
+    run: Path,
+    items: list[Any],
+    done: dict[str, Any],
+    *,
+    key: Any,
+    ledger: Any,
+    pricing: Any,
+    request_for: Any,
+    references: int = 0,
+) -> None:
+    """Seedream, one call per item, each reserved on disk before it is sent (`_Charge`).
+    `request_for(item)` gives `(params, row_extra)`: the adapter's params, and what the row
+    records besides the common provenance (prompt, prompt version, inputs). `references`
+    is how many input images every call sends (the actual cost counts them)."""
+    from qualify_creative.adapters.byteplus_ark import ArkAPIError, SeedreamImageAdapter
+    from qualify_creative.enums import GenerationTask
+    from qualify_creative.pricing import seedream_image_cost
+    from qualify_creative.providers import GenerationRequest, RenderedPrompt
+
+    from qualify_api.evals.avatar_scene_bench import IMAGE_SIZE, SEEDREAM_MODEL, refusal_kind
+    from qualify_api.evals.spend_control import CeilingExceededError
+
+    adapter = SeedreamImageAdapter(model=SEEDREAM_MODEL)
+    (run / "dibujos").mkdir(exist_ok=True)
+    for item in items:
+        params, extra = request_for(item)
         row: dict[str, Any] = {
             "label": item.label,
             "provider": "byteplus-modelark",
             "model": SEEDREAM_MODEL,
-            "prompt_version": PROMPT_VERSION,
-            "prompt": prompt,
+            **extra,
             "size": IMAGE_SIZE,
             "pricing_version": pricing.version,
             "quote_usd": str(item.quote_usd),
@@ -530,12 +566,12 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
                 GenerationRequest(
                     task=GenerationTask.PRODUCT_IMAGE,
                     rendered_prompt=RenderedPrompt("", "", ""),
-                    params=image_params(prompt),
+                    params=params,
                 ),
                 api_key=key.value,
             )
         except ArkAPIError as exc:  # refused before generating: not billed
-            row["error"] = str(exc)[:400]
+            row.update(error=str(exc)[:400], refusal=refusal_kind(str(exc)))
             charge.release()
         except Exception as exc:  # unknown: count the reservation as spent
             row["error"] = f"{type(exc).__name__}: {exc}"[:400]
@@ -546,7 +582,7 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
                     pricing,
                     model_id=SEEDREAM_MODEL,
                     size=IMAGE_SIZE,
-                    references=0,
+                    references=references,
                     pieces=result.usage.pieces,
                 )
             except Exception:  # never lose a charge: the reservation stands for it
@@ -566,9 +602,6 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
         done[item.label] = row
         _write_json(run / DRAWINGS_FILE, done)
         print(f"  {item.label}: {row.get('file') or row.get('error')} · US${row['cost_usd']}")
-    print(f"Corrida: {run} · gastado en esta fase US${_phase_spent(run, 'dibujar')}")
-    print(f"Elige las opciones en {run / CHOICE_FILE} antes de «escenas» (por omisión, la 1).")
-    return 0
 
 
 def _raw_data_url(path: Path) -> str:
@@ -586,23 +619,8 @@ def _chosen_drawing(run: Path, kind: str, ident: str) -> Path:
 
 
 def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
-    from qualify_creative.adapters.byteplus_ark import (
-        ArkAPIError,
-        ArkTaskFailed,
-        SeedanceVideoAdapter,
-        video_cost_usd,
-    )
-    from qualify_creative.enums import GenerationTask
-    from qualify_creative.providers import GenerationRequest, RenderedPrompt
-
-    from qualify_api.evals.avatar_scene_bench import (
-        PROMPT_VERSION,
-        SEEDANCE_MODEL,
-        refusal_kind,
-        scene_params,
-        scene_resolution,
-    )
-    from qualify_api.evals.spend_control import CeilingExceededError, reference_data_url
+    from qualify_api.evals.avatar_scene_bench import scene_params
+    from qualify_api.evals.spend_control import reference_data_url
 
     if material["sample"]:
         raise SystemExit("«escenas» pagada necesita --material (foto del producto fuera del repo)")
@@ -613,11 +631,8 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
     # only what is still to pay is quoted: `gasto.json` already counts the rest
     pending = [i for c, i in pairs if not _finished(done.get(c.label, {}))]
     key, max_usd = _paid_gate(args, run, pending, video=True)
-    ledger = _ledger(max_usd, run)
-    adapter = SeedanceVideoAdapter(model=SEEDANCE_MODEL)
     product_url = reference_data_url(material["product"].read_bytes())
     local_url = reference_data_url(material["local"].read_bytes()) if material["local"] else None
-    (run / "videos").mkdir(exist_ok=True)
 
     def scene_request(case: Any, **extra: Any) -> tuple[Path, dict[str, Any]]:
         char_path = _chosen_drawing(run, "personaje", case.character.id)
@@ -634,6 +649,66 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             resolution_mode=args.resolucion,
         )
         return char_path, {**params, **extra}
+
+    def row_for(case: Any, char_path: Path, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "character": case.character.id,
+            "background": case.background.id,
+            "product_sha256": hashlib.sha256(material["product"].read_bytes()).hexdigest(),
+        }
+
+    _scenes_loop(
+        run,
+        pairs,
+        done,
+        key=key,
+        max_usd=max_usd,
+        pricing=pricing,
+        resolution_mode=args.resolucion,
+        scene_request=scene_request,
+        row_for=row_for,
+    )
+    print(f"Corrida: {run} · gastado en esta fase US${_phase_spent(run, 'escenas')}")
+    return 0
+
+
+def _scenes_loop(
+    run: Path,
+    pairs: list[tuple[Any, Any]],
+    done: dict[str, Any],
+    *,
+    key: Any,
+    max_usd: Decimal,
+    pricing: Any,
+    resolution_mode: str,
+    scene_request: Any,
+    row_for: Any,
+) -> None:
+    """Seedance, one omni-reference task per (case, plan item), one at a time; each task
+    reserved on disk before it is sent, its id kept as soon as it exists, recovered by id
+    after a cut, never paid twice. `scene_request(case, **extra)` gives `(character
+    drawing, params)`; `row_for(case, drawing, params)` what the row records besides the
+    common provenance."""
+    from qualify_creative.adapters.byteplus_ark import (
+        ArkAPIError,
+        ArkTaskFailed,
+        SeedanceVideoAdapter,
+        video_cost_usd,
+    )
+    from qualify_creative.enums import GenerationTask
+    from qualify_creative.providers import GenerationRequest, RenderedPrompt
+
+    from qualify_api.evals.avatar_scene_bench import (
+        PROMPT_VERSION,
+        SEEDANCE_MODEL,
+        refusal_kind,
+        scene_resolution,
+    )
+    from qualify_api.evals.spend_control import CeilingExceededError
+
+    ledger = _ledger(max_usd, run)
+    adapter = SeedanceVideoAdapter(model=SEEDANCE_MODEL)
+    (run / "videos").mkdir(exist_ok=True)
 
     def finish(row: dict[str, Any], result: Any) -> Decimal | None:
         """The billed cost of a succeeded task (None: unknown, the reservation stands)."""
@@ -708,8 +783,7 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
         char_path, params = scene_request(case)
         row: dict[str, Any] = {
             "label": case.label,
-            "character": case.character.id,
-            "background": case.background.id,
+            **row_for(case, char_path, params),
             "scene": case.scene.id,
             "seconds_asked": case.scene.seconds,
             "line": case.scene.line,
@@ -717,10 +791,9 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             "model": SEEDANCE_MODEL,
             "prompt_version": PROMPT_VERSION,
             "prompt": params["prompt"],
-            "resolution": scene_resolution(args.resolucion),
+            "resolution": scene_resolution(resolution_mode),
             "draft": bool(params.get("draft")),
             "character_sha256": hashlib.sha256(char_path.read_bytes()).hexdigest(),
-            "product_sha256": hashlib.sha256(material["product"].read_bytes()).hexdigest(),
             "pricing_version": pricing.version,
             "quote_usd": str(item.quote_usd),
         }
@@ -786,8 +859,6 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             f"  {case.label}: {row.get('video') or row.get('error')} · "
             f"{row['seconds_taken']} s · US${row['cost_usd']}"
         )
-    print(f"Corrida: {run} · gastado en esta fase US${_phase_spent(run, 'escenas')}")
-    return 0
 
 
 def cmd_planilla(args: argparse.Namespace) -> int:

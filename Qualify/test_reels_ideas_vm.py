@@ -401,6 +401,19 @@ def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_calm_notice() -> Non
         ideas=[_idea(1, _reel("A"))],
     )
     assert vm.ideas_screen(same_day, now=NOW).notice_body.endswith("tienes las de hoy.")
+    # RF-13: the notice names the day already — the end of the list does not say it again
+    assert screen.end_note == ""
+
+
+def test_the_end_of_the_list_names_the_next_monday() -> None:
+    """RF-13 (ux-designer, Deivid 2026-11-26): with no notice above, «Eso es todo por
+    ahora. Las próximas ideas llegan el lunes {d}.», in the business's zone."""
+    shown = _run(datetime(2026, 10, 26, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
+    screen = vm.ideas_screen(_stored(shown=shown, ideas=[_idea(1, _reel("A"))]), now=NOW)
+    assert screen.notice_title == ""
+    # NOW is Wednesday 4 Nov 2026 in Bogotá: the next weekly run is Monday the 9th
+    assert screen.end_note == "Eso es todo por ahora. Las próximas ideas llegan el lunes 9."
+    assert vm.END_OF_LIST == "Eso es todo por ahora. Las próximas ideas llegan el lunes {d}."
 
 
 @pytest.mark.parametrize("status", [STATUS_BUDGET_STOPPED, STATUS_ERROR])
