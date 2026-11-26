@@ -1292,8 +1292,15 @@ _WIDE = rx.breakpoints(initial="none", xs="flex")
 #: The marks of an option (lucide, painted with the system's tokens): a radio is a ring
 #: that fills, a checkbox an empty square that gets its check — never an empty gap.
 _MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "square")}
+#: One line that ends in «…» when it has no room (Radix's `truncate` prop reaches Reflex
+#: 0.10 as an invalid `truncate: true` CSS rule, so the three properties are written out).
+_ELLIPSIS = {"white_space": "nowrap", "overflow": "hidden", "text_overflow": "ellipsis"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
+#: In the «Duración» + «Tus competidores» pair (`_with_rivals`), «Duración» gives way
+#: this many times faster than the button, so the button's label ends in «…» only when
+#: nothing else is left to give (a 320 px phone) — never a sideways scroll.
+_SHRINK_FIRST = "8"
 
 
 def _option_row(
@@ -1431,15 +1438,23 @@ def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Compo
     on = _axis_on(axis)
     value = _axis_value(axis)
     return rx.button(
-        rx.text(AXIS_LABELS[axis], size="2", weight="regular", color=T.TEXT_MUTED, as_="span"),
+        rx.text(
+            AXIS_LABELS[axis],
+            size="2",
+            weight="regular",
+            color=T.TEXT_MUTED,
+            as_="span",
+            white_space="nowrap",
+            flex_shrink="0",
+        ),
         rx.text(
             value,
             size="2",
             weight="medium",
             as_="span",
-            truncate=True,
             min_width="0",
             color=rx.cond(on, T.tone_color("accent", 11), T.TEXT_STRONG),
+            **_ELLIPSIS,
         ),
         rx.icon("chevron-down", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
         type="button",
@@ -1447,7 +1462,7 @@ def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Compo
         size="2",
         min_height=_TARGET,
         max_width="100%",
-        **({"flex_shrink": "1", "min_width": "0"} if shrink else {}),
+        **({"flex_shrink": _SHRINK_FIRST, "min_width": "0"} if shrink else {}),
         aria_label=AXIS_LABELS[axis] + ": " + value,
         title=AXIS_LABELS[axis] + ": " + value,
         **props,
@@ -1557,14 +1572,19 @@ def _sheet() -> rx.Component:
     )
 
 
+#: The phone's sliding row of chips shows no scrollbar (it is swiped, and every chip is
+#: reachable with Tab: the browser brings the focused one into view).
+_NO_SCROLLBAR = {"scrollbar_width": "none", "&::-webkit-scrollbar": {"display": "none"}}
+
+
 def _with_rivals(last: rx.Component, *, chip: bool) -> rx.Component:
     """The last filter and «Tus competidores» as one pair that never wraps (RF-13, Deivid
     2026-11-26): the button always shares its row with a filter, at any width. When the
-    pair is wider than the row, the filter gives way (its value ends in «…»), never the
-    button."""
+    pair is wider than the row, the filter gives way first (its value ends in «…»); the
+    button's label only on a very narrow phone. Never wider than the row."""
     return rx.flex(
         last,
-        _rivals_button(chip=chip),
+        _rivals_button(chip=chip, shrink=True),
         wrap="nowrap",
         align="center",
         spacing="2",
@@ -1581,9 +1601,11 @@ def _filter_bar() -> rx.Component:
 
     RF-13: only the system's pieces (Radix buttons, popovers, `drawer`) on a soft panel
     of the system (`T.CARD_BG`, the card radius; Deivid 2026-11-26 — never the dark box
-    he took away). «Tus competidores» flows with the filters, paired with «Duración» so
-    it is never alone on a row; «Restablecer filtros» comes last, so it is the one that
-    drops to the next row."""
+    he took away). From 480 px up, «Tus competidores» flows with the filters, paired with
+    «Duración» so it is never alone on a row, and «Restablecer filtros» comes last, so it
+    is the one that drops. On a phone, one row of chips that slides sideways inside the
+    panel — «Tus competidores» first, «Restablecer filtros» last — so no chip is ever
+    alone on a row and no text breaks."""
     first = (*_SINGLE_AXES, AXIS_ACCOUNT)
     return rx.box(
         rx.flex(
@@ -1596,15 +1618,23 @@ def _filter_bar() -> rx.Component:
             spacing="2",
             width="100%",
         ),
+        # the phone (under 480 px): ONE row of chips that slides sideways inside the panel,
+        # as Instagram's and TikTok's — no chip alone on a row, no text broken, the page
+        # itself never scrolls sideways (coordinator's live test, 2026-11-26)
         rx.flex(
-            *(_chip(axis) for axis in first),
-            _with_rivals(_chip(AXIS_DURATION, shrink=True), chip=True),
+            _rivals_button(chip=True),
+            *(_chip(axis) for axis in (*first, AXIS_DURATION)),
             _reset_button(),
             display=_PHONE,
-            wrap="wrap",
+            wrap="nowrap",
             align="center",
             spacing="2",
             width="100%",
+            min_width="0",
+            overflow_x="auto",
+            overflow_y="hidden",
+            scroll_snap_type="x proximity",
+            style=_NO_SCROLLBAR,
         ),
         _sheet(),
         _competitors_drawer(bottom=False),
@@ -1862,7 +1892,7 @@ RIVALS_FOCUS_SCRIPT = (
 )
 
 
-def _rivals_button(*, chip: bool) -> rx.Component:
+def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
     """«Tus competidores» at the end of the bar (option A, Deivid 2026-11-25): opens the
     drawer — from the right on a desktop, from the bottom on a phone. While a manual read
     is in flight it shows the spinner instead of its icon. Not drawn for a brand that
@@ -1877,14 +1907,21 @@ def _rivals_button(*, chip: bool) -> rx.Component:
                 loading_spinner("sm"),
                 rx.icon("users", size=T.ICON_SM, aria_hidden="true"),
             ),
-            reels_competitors_vm.PICKER_TITLE,
+            # the label may end in «…» only on a very narrow phone (320 px), once
+            # «Duración» beside it has given way all it can: never a sideways scroll
+            rx.text(reels_competitors_vm.PICKER_TITLE, as_="span", min_width="0", **_ELLIPSIS),
             type="button",
             id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
             on_click=S.open_competitors(chip),
             variant="surface",
             size="2",
             min_height=_TARGET,
-            flex_shrink="0",
+            max_width="100%",
+            # in the desktop pair it gives way last («Duración» shrinks `_SHRINK_FIRST`
+            # times faster); in the phone's sliding row it never shrinks
+            flex_shrink="1" if shrink else "0",
+            min_width="0" if shrink else "auto",
+            title=reels_competitors_vm.PICKER_TITLE,
             aria_label=S.competitors_label,
             aria_haspopup="dialog",
             aria_expanded=rx.cond(S.competitors_open, "true", "false"),

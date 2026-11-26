@@ -315,16 +315,30 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
 
     bar = inspect.getsource(discover_reels._filter_bar)
     desktop, phone = bar.split("display=_WIDE")
-    # Deivid 2026-11-26: «Tus competidores» flows with the filters, paired with
+    # Deivid 2026-11-26, desktop: «Tus competidores» flows with the filters, paired with
     # «Duración» so it is never alone on a row; «Restablecer filtros» comes last
     assert "_with_rivals(_dropdown(AXIS_DURATION, shrink=True), chip=False)" in desktop
-    assert "_with_rivals(_chip(AXIS_DURATION, shrink=True), chip=True)" in phone
-    for group in (desktop, phone):
-        assert group.index("_with_rivals(") < group.index("_reset_button()")
+    assert desktop.index("_with_rivals(") < desktop.index("_reset_button()")
     assert "rx.separator" not in bar
     pair = inspect.getsource(discover_reels._with_rivals)
-    assert 'wrap="nowrap"' in pair and "_rivals_button(chip=chip)" in pair
-    assert 'flex_shrink="0"' in inspect.getsource(discover_reels._rivals_button)
+    assert 'wrap="nowrap"' in pair and "_rivals_button(chip=chip, shrink=True)" in pair
+    # in the pair, «Duración» gives way first, the button's label last
+    rivals = inspect.getsource(discover_reels._rivals_button)
+    assert 'flex_shrink="1" if shrink else "0"' in rivals and "**_ELLIPSIS" in rivals
+    assert int(discover_reels._SHRINK_FIRST) > 1
+    # the phone (live test at 375 px): one row of chips that slides sideways inside the
+    # panel — «Tus competidores» first, «Restablecer filtros» last — never a chip alone
+    # on a row, never a text broken, never the page scrolling sideways
+    assert "_with_rivals" not in phone
+    order = [
+        phone.index("_rivals_button(chip=True)"),
+        phone.index("_chip(axis) for axis in (*first, AXIS_DURATION)"),
+        phone.index("_reset_button()"),
+    ]
+    assert order == sorted(order)
+    for needed in ('wrap="nowrap"', 'overflow_x="auto"', 'min_width="0"', "_NO_SCROLLBAR"):
+        assert needed in phone, needed
+    assert discover_reels._NO_SCROLLBAR["scrollbar_width"] == "none"
     assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
     button = inspect.getsource(discover_reels._rivals_button)
     # RF-13: a Radix button of the skin, like the filters beside it — no class of its own

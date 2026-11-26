@@ -1232,8 +1232,11 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
         assert ".q-rf-" not in sheet.read_text(encoding="utf-8"), sheet.name
     assert "q-rf-" not in rendered and "q-rf-" not in inspect.getsource(discover_reels)
     bar = inspect.getsource(discover_reels._filter_bar)
-    for gone in ("position", "sticky", "class_name", "rx.el.button", "#", "rx.color("):
-        assert gone not in bar, gone  # nothing of its own, no colour written by hand
+    import re
+
+    for gone in ("position", "sticky", "class_name", "rx.el.button", "rx.color("):
+        assert gone not in bar, gone  # nothing of its own
+    assert not re.search(r"#[0-9a-fA-F]{3,8}", bar)  # no colour written by hand
     # Deivid 2026-11-26: a soft panel of the system behind the filters — never the dark
     # box he took away (`--q-dialog-fill`)
     assert "background=T.CARD_BG" in bar and "border_radius=T.RADIUS_CARD" in bar
@@ -1247,7 +1250,19 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     assert discover_reels._TARGET == "44px"
     button = inspect.getsource(discover_reels._filter_button)
     assert "rx.button(" in button and "min_height=_TARGET" in button
-    assert "truncate=True" in button and 'max_width="100%"' in button  # never cut off
+    # never cut off, never broken letter by letter: a real ellipsis (Radix's `truncate`
+    # reaches Reflex 0.10 as an invalid CSS rule — the bug seen live at 375 px)
+    assert "**_ELLIPSIS" in button and 'max_width="100%"' in button
+    label = button[button.index("AXIS_LABELS[axis],") : button.index("value,")]
+    assert 'white_space="nowrap"' in label  # «Tipo de cuenta» never splits either
+    assert "truncate=" not in inspect.getsource(discover_reels)
+    assert '"truncate"' not in rendered
+    assert discover_reels._ELLIPSIS == {
+        "white_space": "nowrap",
+        "overflow": "hidden",
+        "text_overflow": "ellipsis",
+    }
+    assert "white-space" in rendered or "whiteSpace" in rendered
     assert "data-sheet-chip" in rendered and "SHEET_FOCUS_SCRIPT" in inspect.getsource(
         discover_reels._sheet
     )
