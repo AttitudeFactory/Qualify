@@ -1449,6 +1449,11 @@ _NARROW_CLASS = "q-reels-bar__narrow"
 #: four chips, «Competidores» and «Quitar filtros» leave no room for them, and the line
 #: must never wrap — the button keeps its icon, its accessible name and its `title`.
 _SEARCH_WORDS_CLASS = "q-reels-bar__search-words"
+#: An option row of the «Filtros» sheet, the desktop dropdowns and the competitors drawer:
+#: `.q-reels-option.rt-Button` (assets/qualify-creative.css) puts its mark and words on the
+#: left edge — Radix's `.rt-BaseButton` centres a button's content and beats an inline
+#: `justify-content`.
+_OPTION_CLASS = "q-reels-option"
 SEARCH_BUTTON_ID = "reels-search"
 SEARCH_CHIP_ID = "reels-search-chip"
 #: The marks of an option (lucide, painted with the system's tokens): a radio is a ring
@@ -1479,7 +1484,9 @@ def _option_row(
     """One option of a filter (and one competitor of RF-05's drawer): a 44 px `ghost`
     Radix button (the skin's row button, §5.5) — a radio for the single-choice axes, a
     checkbox for «Cuenta» and the competitors, read as such by a screen reader — with
-    its mark always drawn: the empty ring or square when it is not chosen (RF-13)."""
+    its mark always drawn: the empty ring or square when it is not chosen (RF-13). Its
+    mark and words sit on the left edge, under the group's name, with the second line too
+    (`_OPTION_CLASS`; Deivid, 2026-11-26: Radix's base button centred them)."""
     on, off = _MARKS[role]
     return rx.button(
         # two static icons, not one named at run time: the mark paints with the row
@@ -1519,7 +1526,7 @@ def _option_row(
         margin="0",
         padding="0.35rem 0.75rem",
         box_sizing="border-box",
-        justify_content="flex-start",
+        class_name=_OPTION_CLASS,
         text_align="start",
         gap="0.6rem",
     )

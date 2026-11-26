@@ -703,6 +703,11 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 /* RF-14 (m-25129383): «Buscar reels nuevos» is the last button of the line. Its words
    show from 1000 px of bar; between 760 and 1000 px it is its icon only (44 px, its words
    in `aria-label` and `title`), so each filter keeps ~93 px and the line never wraps. */
+/* The option rows of the «Filtros» sheet, the dropdowns and «Tus competidores» (Deivid,
+   2026-11-26): mark, name and second line («Instagram · Te inspira») on the left edge, at
+   the group name's indent (both 0.75rem), not centred as Radix's base button does. */
+.q-reels-option.rt-Button { justify-content: flex-start; text-align: start; }
+.q-reels-option.rt-Button > .rt-Flex { align-items: flex-start; text-align: start; }
 .q-reels-bar .q-reels-bar__search-words { display: none; }
 @container (min-width: 1000px) {
   .q-reels-bar .q-reels-bar__search-words { display: inline; }
