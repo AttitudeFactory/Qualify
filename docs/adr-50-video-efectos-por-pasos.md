@@ -431,12 +431,13 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
   - el largo: **5 a 10 s enteros** por escena, en vez de hasta 30 s;
   - la escena **no alarga** el Clip: ocupa una ventana del tiempo y **reemplaza** lo que el dueño tenía en esos segundos;
   - el borrador es de 480p y el final de 1080p se hace al aprobar (§12.4);
+  - el borrador de una escena descuenta 1 vista previa (P2); el §9 no descontaba nada al crear;
   - las uniones junto a la escena: la entrada admite cualquier transición y la salida, solo «Corte» (§12.6).
 
 ### 12.2 La receta en el Clip
 
 - **Una pista nueva, «Personajes»**, en el brief del Clip (`media.character_scenes`, en el JSON del brief). Cada aparición es un ítem: `character_id`, `product`, `background`, `line`, `start` y `duration`. Esta pista la escribe el editor; el servidor la valida entera antes de escribir una fila o de pagar.
-- **Cada aparición es una escena propia:** un borrador hijo del Clip, de un tipo nuevo `CHARACTER_SCENE` (`character_scene`). Se descarta reusar `AVATAR_VIDEO` o `ANIMATED_AVATAR_VIDEO`: esos tipos llevan al productor por el camino del presentador. El tipo nuevo amplía `ck_content_briefs_kind` en una migración reversible, con el siguiente número libre (hoy `0187`; m-25129385 también pide una: se numera la que llegue primero a `main`).
+- **Cada aparición es una escena propia:** un borrador hijo del Clip, de un tipo nuevo `CHARACTER_SCENE` (`character_scene`). Se descarta reusar `AVATAR_VIDEO` o `ANIMATED_AVATAR_VIDEO`: esos tipos llevan al productor por el camino del presentador. El tipo nuevo amplía `ck_content_briefs_kind` en una migración reversible. Números fijados: **`0187` para la tabla de personajes (m-25129385)** y **`0188` para el tipo `character_scene` (m-25128784)**, con `0188` encima de `0187` (`qualify-migration`).
 - **El tramo:** la escena ocupa `[start, start + duration)` del Clip. En esos segundos se ve la escena y suena **su** audio: lo del dueño que caía ahí no se muestra y su sonido se calla. La línea de tiempo no se corre: el Clip dura lo mismo que sin la escena. Si el video real de la escena sale unos cuadros más corto que lo pedido (AVESC-001: 4,96 s de 5), el último cuadro se sostiene; no falla.
 - **Validaciones, todas antes de escribir nada y de pagar:**
   - `duration` entera de 5 a 10 s;
@@ -477,7 +478,7 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 - **Con el cupo del plan Básico** (40 s al mes): los finales cuestan como mucho 40 × 0,569 = **US$22,7** al mes, dentro del techo de §13.5 de `docs/diseno-video-por-planos.md`.
 - **Peor caso de borradores sin aprobar** (calculado). Sin descontar vista previa, el tope de 3 al día permitía 90 borradores de 10 s al mes: **US$92,7 por negocio y mes**, por encima del techo de ≈ US$61 del Básico. Con la vista previa (P2), los borradores quedan bajo las vistas previas del plan, que se comparten con los demás videos de Seedance: Básico 20 × US$1,03 = **US$20,6**, Plus 40 → **US$41,2** y Pro 80 → **US$82,4** al mes. Esto cabe en los techos del §13.5 de `docs/diseno-video-por-planos.md`, que ya cuentan esas vistas previas.
 - **Tiempo:** 67 a 78 s por borrador (AVESC-001); el final, 38 s medidos y 60 s para planificar (SD25-002, n = 1, sin referencias). Un Clip con 3 escenas espera unos 4 min antes de armarse.
-- **Filas:** como mucho 3 hijos por Clip y 3 al día por negocio; ≤ 1.100 borradores de escena por negocio y año. Ninguna tabla nueva aparte de la de personajes (m-25129385).
+- **Filas:** como mucho 3 hijos por Clip y 3 al día por negocio; ≤ 1.100 borradores de escena por negocio y año. Ninguna tabla nueva aparte de la de personajes (m-25129385, migración `0187`).
 
 ### 12.5 Interruptores y tipos actuales
 
@@ -494,7 +495,7 @@ El §11 dejó «solo Corte» junto a un avatar (`avatar_join_cut_only`) porque u
 - **Entrada:** en las 6 escenas el personaje empezó a hablar en el segundo 2,0 o después. Un fundido o un barrido de hasta 0,8 s no toca la voz.
 - **Salida:** en las escenas de 5 s la línea terminó en el segundo 4,7. Un fundido de 0,8 s se come la última palabra.
 
-**Decisión de Deivid (2026-11-26, P1):** la **entrada** de la escena admite **cualquier transición** y la **salida**, **solo «Corte»**. `avatar_join_cut_only` se reemplaza por esta regla, que se lee de `SourceSegment.transition_in` del tramo que sigue a la escena. La regla vale con `QUALIFY_CLIP_BLOCK_TRANSITIONS` apagado o encendido.
+**Decisión de Deivid (2026-11-26, P1):** la **entrada** de la escena admite **cualquier transición** y la **salida**, **solo «Corte»**. `avatar_join_cut_only` se reemplaza por esta regla, que se lee de `SourceSegment.transition_in` del tramo que sigue a la escena. La regla vale con `QUALIFY_CLIP_BLOCK_TRANSITIONS` apagado o encendido. La condición del §10 para encender `QUALIFY_CLIP_BLOCK_TRANSITIONS` pasa a ser esta regla de entrada y salida.
 
 ### 12.7 Procedencia
 
