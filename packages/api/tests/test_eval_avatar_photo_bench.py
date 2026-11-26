@@ -421,3 +421,102 @@ def test_summary_counts_answers_and_likeness() -> None:
     assert summary["parecido_opcion_1"]["media"] == "2.00"
     assert summary["parecido_video"]["juzgados"] == 1
     assert summary["invalidos"] == ["p2/parecido_video=5"]
+
+
+# -- AVFOTO-002: the cartoon drawn from the photo --------------------------------------
+
+
+def test_cartoon_style_has_its_own_prompt_version_options_and_ceiling() -> None:
+    cartoon = bench.style("animado")
+    assert cartoon.bench_id == "AVFOTO-002"
+    assert cartoon.prompt_version == "personaje-desde-foto-animado-v1"
+    assert cartoon.default_options == 1 and cartoon.proposed_max_usd == Decimal("2")
+    assert bench.style("realista").prompt_version == bench.PROMPT_VERSION
+    prompt = bench.drawing_prompt(style_id="animado")
+    assert "3D animated cartoon" in prompt and "not photorealistic" in prompt
+    assert "resembles this person" in prompt and "no letters" in prompt
+    for color in scene_bench.NIBBLES.palette:
+        assert color in prompt
+    assert bench.drawing_prompt() == bench.realistic_drawing_prompt()
+    case = bench.case_for(bench.Person("p1", True), "animado")
+    assert case.character.style == "animado" and case.label == "foto-p1/dibujado/e1"
+    with pytest.raises(ValueError):
+        bench.style("acuarela")
+
+
+def test_cartoon_plan_is_one_drawing_and_one_scene_per_photo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = _runner()
+    out = tmp_path / "out"
+    material = str(_material(tmp_path))
+    args = ["plan", "--estilo", "animado", "--material", material, "--out", str(out)]
+    assert runner.main(args) == 0
+    assert "personaje-desde-foto-animado-v1" in capsys.readouterr().out
+    quote = json.loads(next(out.glob("cotizacion-plan-*.json")).read_text(encoding="utf-8"))
+    assert quote["bench"] == "AVFOTO-002" and quote["style"] == "animado"
+    assert Decimal(quote["totals"]["dibujar"]["quote_usd"]) == Decimal("0.135")
+    assert quote["totals"]["escenas"]["items"] == 3
+    reserved = Decimal(quote["totals"]["total_reserved_usd"])
+    assert reserved < bench.style("animado").proposed_max_usd
+
+
+def test_only_the_named_people_are_kept(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = _runner()
+    out = tmp_path / "out"
+    material = str(_material(tmp_path))
+    args = ["plan", "--estilo", "animado", "--material", material, "--out", str(out)]
+    assert runner.main([*args, "--persona", "p1"]) == 0
+    quote = json.loads(next(out.glob("cotizacion-plan-*.json")).read_text(encoding="utf-8"))
+    assert quote["people"] == ["p1"] and len(quote["items"]) == 2
+    assert runner.main([*args, "--persona", "p9"]) == 2
+    assert "p9" in capsys.readouterr().err
+
+
+def test_cartoon_run_records_its_style_and_scenes_keep_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.adapters import byteplus_ark
+
+    runner = _runner()
+    monkeypatch.setenv("QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY", "fake-key")
+    monkeypatch.delenv("QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT", raising=False)
+    monkeypatch.setattr(byteplus_ark, "SeedreamImageAdapter", FakeSeedream)
+    monkeypatch.setattr(byteplus_ark, "SeedanceVideoAdapter", FakeSeedance)
+    monkeypatch.setattr(byteplus_eval_guard, "in_off_hours", lambda now: True)
+    monkeypatch.setattr(
+        runner.base, "_download_video", lambda url, target: target.write_bytes(b"mp4") and None
+    )
+    FakeSeedream.sent, FakeSeedance.sent, FakeSeedance.refuse = [], [], ""
+    material = str(_material(tmp_path))
+    out = tmp_path / "out"
+    paid = ["--i-have-spend-authorization", "--material", material]
+    assert runner.main(["dibujar", "--estilo", "animado", *paid, "--out", str(out)]) == 0
+    run = next(p for p in out.iterdir() if p.is_dir())
+    meta = json.loads((run / "personas.json").read_text(encoding="utf-8"))
+    assert meta == {"personas": ["p1", "p2", "p3"], "estilo": "animado", "banco": "AVFOTO-002"}
+    assert len(FakeSeedream.sent) == 3  # one option per photo
+    assert all("3D animated cartoon" in p["prompt"] for p in FakeSeedream.sent)
+    drawings = json.loads((run / "dibujos.json").read_text(encoding="utf-8"))
+    versions = {d["prompt_version"] for d in drawings.values()}
+    assert versions == {"personaje-desde-foto-animado-v1"}
+
+    # a run keeps its style: asking for the realistic one on it is refused before anything
+    with pytest.raises(SystemExit, match="animado"):
+        runner.main(["escenas", "--estilo", "realista", *paid, "--run", str(run)])
+    with pytest.raises(SystemExit, match="su corrida"):
+        runner.main(["dibujar", "--estilo", "realista", *paid, "--run", str(run)])
+    assert runner.main(["escenas", *paid, "--run", str(run)]) == 0
+    results = json.loads((run / "resultados.json").read_text(encoding="utf-8"))
+    made = results["foto-p1/dibujado/e1"]
+    assert made["style"] == "animado"
+    assert made["character_prompt_version"] == "personaje-desde-foto-animado-v1"
+    spend = json.loads((run / "gasto.json").read_text(encoding="utf-8"))
+    assert Decimal(spend["spent_usd"]) < Decimal("2")
+
+
+def test_an_avfoto_001_run_reads_as_realistic(tmp_path: Path) -> None:
+    runner = _runner()
+    (tmp_path / "personas.json").write_text('["p1", "p2"]', encoding="utf-8")
+    assert runner.run_style(tmp_path) == "realista"
+    assert runner.run_people(tmp_path) == ["p1", "p2"]

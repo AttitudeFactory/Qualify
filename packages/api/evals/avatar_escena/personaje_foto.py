@@ -40,6 +40,16 @@ of `escenas`.
     just eval-avatar-foto escenas --env-file <checkout>/.env --run <run folder> \\
         --material <...> --i-have-spend-authorization --max-usd 3
     just eval-avatar-foto planilla --run <run folder>
+
+Two styles (`--estilo`), each in its own run folder (`personas.json` records it, and
+`escenas` always uses its run's):
+
+    realista  AVFOTO-001, prompt `personaje-desde-foto-v1`, 2 options, ceiling US$3.
+              Measured 2026-11-26: Seedance refused the 3 drawings as a real person.
+    animado   AVFOTO-002, prompt `personaje-desde-foto-animado-v1`: a 3D cartoon that looks
+              like the person (hypothesis: not read as a real person), 1 option, US$2.
+
+`--persona p1` (repeatable) keeps only those people of the material, e.g. one scene first.
 """
 
 from __future__ import annotations
@@ -133,7 +143,19 @@ def _items(args: argparse.Namespace, material: dict[str, Any], pricing: Any) -> 
     return items
 
 
-def _validate_drawing_requests(pricing: Any) -> str:
+def run_style(run: Path) -> str:
+    """The style a run drew with (`personas.json`); an AVFOTO-001 run, which stored only
+    the list of people, is «realista»."""
+    meta = base._read_json(run / PEOPLE_FILE, [])
+    return "realista" if isinstance(meta, list) else str(meta.get("estilo") or "realista")
+
+
+def run_people(run: Path) -> list[str]:
+    meta = base._read_json(run / PEOPLE_FILE, [])
+    return list(meta if isinstance(meta, list) else meta.get("personas") or [])
+
+
+def _validate_drawing_requests(pricing: Any, style_id: str) -> str:
     """A drawing request through the REAL Seedream adapter's checks and estimate, with a
     placeholder photo (nothing sent)."""
     from qualify_creative.adapters.byteplus_ark import SeedreamImageAdapter
@@ -146,7 +168,7 @@ def _validate_drawing_requests(pricing: Any) -> str:
     request = GenerationRequest(
         task=GenerationTask.PRODUCT_IMAGE,
         rendered_prompt=RenderedPrompt("", "", ""),
-        params=drawing_params(base._DRY_IMAGE),
+        params=drawing_params(base._DRY_IMAGE, style_id=style_id),
     )
     estimate = SeedreamImageAdapter(model=SEEDREAM_MODEL).estimate_cost_usd(request, pricing)
     mine = drawing_quote(pricing)
@@ -157,12 +179,11 @@ def _validate_drawing_requests(pricing: Any) -> str:
 
 def _print_plan(args: argparse.Namespace, material: dict[str, Any], items: list[Any]) -> dict:
     from qualify_api.evals.avatar_photo_bench import (
-        BENCH_ID,
-        PROMPT_VERSION,
         RESOLUTION_MODE,
         SCENE_PROMPT_VERSION,
         case_for,
         drawing_prompt,
+        style,
     )
     from qualify_api.evals.avatar_scene_bench import (
         SEEDANCE_MODEL,
@@ -172,9 +193,10 @@ def _print_plan(args: argparse.Namespace, material: dict[str, Any], items: list[
     )
 
     pricing = base._pricing()
-    cases = [case_for(p) for p in material["people"]]
-    print(f"{BENCH_ID} · tabla de precios {pricing.version}")
-    print(f"Prompts: dibujo {PROMPT_VERSION} · escena {SCENE_PROMPT_VERSION}")
+    st = style(args.estilo)
+    cases = [case_for(p, st.id) for p in material["people"]]
+    print(f"{st.bench_id} · estilo {st.id} · tabla de precios {pricing.version}")
+    print(f"Prompts: dibujo {st.prompt_version} · escena {SCENE_PROMPT_VERSION}")
     print(f"Producto: {material['product_name']} · foto {material['product']}")
     print(f"Fondo dibujado: {material['background'] or 'falta (va en --material)'}")
     people = ", ".join(p.id for p in material["people"])
@@ -185,9 +207,9 @@ def _print_plan(args: argparse.Namespace, material: dict[str, Any], items: list[
         print("  todas con «permiso_escrito»: true")
     if args.command in ("plan", "dibujar"):
         print(f"\nDibujos ({SEEDREAM_MODEL}, {args.opciones} opciones por foto):")
-        print(drawing_prompt())
+        print(drawing_prompt(style_id=st.id))
         print("\nRevisado por el adaptador real (sin enviar):")
-        print(f"  {_validate_drawing_requests(pricing)}")
+        print(f"  {_validate_drawing_requests(pricing, st.id)}")
     if args.command in ("plan", "escenas"):
         print(f"\nEscenas ({SEEDANCE_MODEL}, {RESOLUTION_MODE}, con audio):")
         for case in cases:
@@ -206,10 +228,12 @@ def _print_plan(args: argparse.Namespace, material: dict[str, Any], items: list[
         f"US${totals['escenas']['quote_usd']} · total US${totals['total_quote_usd']}"
         f" · con 10 % de margen US${totals['total_reserved_usd']}"
     )
+    print(f"  Tope propuesto: US${st.proposed_max_usd} (--max-usd; hoy: {args.max_usd})")
     return {
-        "bench": BENCH_ID,
+        "bench": st.bench_id,
+        "style": st.id,
         "pricing_version": pricing.version,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": st.prompt_version,
         "scene_prompt_version": SCENE_PROMPT_VERSION,
         "people": [p.id for p in material["people"]],
         "cases": [c.label for c in cases],
@@ -239,17 +263,23 @@ def _dry(args: argparse.Namespace, material: dict[str, Any]) -> int:
 
 def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
     from qualify_api.evals.avatar_photo_bench import (
-        PROMPT_VERSION,
         REFERENCES_PER_DRAWING,
         drawing_params,
+        style,
     )
     from qualify_api.evals.spend_control import reference_data_url
 
     if material["sample"]:
         raise SystemExit("«dibujar» pagado necesita --material con las fotos y sus permisos")
+    st = style(args.estilo)
     pricing = base._pricing()
     run = base._run_dir(args, create=True)
-    base._write_json(run / PEOPLE_FILE, [p.id for p in material["people"]])
+    if (run / PEOPLE_FILE).is_file() and run_style(run) != st.id:
+        raise SystemExit(
+            f"esta corrida es de estilo «{run_style(run)}»: cada estilo va en su corrida"
+        )
+    people = sorted({*run_people(run), *(p.id for p in material["people"])})
+    base._write_json(run / PEOPLE_FILE, {"personas": people, "estilo": st.id, "banco": st.bench_id})
     done = base._read_json(run / base.DRAWINGS_FILE, {})
     base._cut_drawings(done)
     # only what is still to pay is quoted: `gasto.json` already counts the rest
@@ -261,13 +291,14 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
     def request_for(item: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         _, pid, option = item.label.split("/")
         photo = material["photos"][pid].read_bytes()
-        params = drawing_params(reference_data_url(photo))
+        params = drawing_params(reference_data_url(photo), style_id=st.id)
         return params, {
             "person": pid,
             "option": int(option.removeprefix("opcion-")),
+            "style": st.id,
             "permiso_escrito": True,
             "photo_sha256": hashlib.sha256(photo).hexdigest(),
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": st.prompt_version,
             "prompt": params["prompt"],
             "references": REFERENCES_PER_DRAWING,
         }
@@ -297,11 +328,11 @@ def chosen_drawing(run: Path, person_id: str) -> tuple[int, Path]:
 
 def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
     from qualify_api.evals.avatar_photo_bench import (
-        PROMPT_VERSION,
         RESOLUTION_MODE,
         case_for,
         person_of,
         scene_items,
+        style,
     )
     from qualify_api.evals.avatar_scene_bench import scene_params
     from qualify_api.evals.spend_control import reference_data_url
@@ -310,6 +341,9 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
         raise SystemExit("«escenas» pagada necesita --material (producto y fondo fuera del repo)")
     pricing = base._pricing()
     run = base._run_dir(args, create=False)
+    st = style(run_style(run))  # the scene always uses the style its run drew with
+    if args.estilo_pedido and args.estilo_pedido != st.id:
+        raise SystemExit(f"esta corrida dibujó en estilo «{st.id}», no «{args.estilo_pedido}»")
     done = base._read_json(run / base.RESULTS_FILE, {})
     people = []
     for person in material["people"]:
@@ -318,7 +352,8 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             people.append(person)
         else:
             print(f"  {person.id}: no hay dibujo en la opción {option}; queda fuera de las escenas")
-    pairs = list(zip([case_for(p) for p in people], scene_items(pricing, people), strict=True))
+    cases = [case_for(p, st.id) for p in people]
+    pairs = list(zip(cases, scene_items(pricing, people), strict=True))
     pending = [i for c, i in pairs if not base._finished(done.get(c.label, {}))]
     key, max_usd = base._paid_gate(args, run, pending, video=True)
     product_url = reference_data_url(material["product"].read_bytes())
@@ -345,7 +380,8 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             "background": case.background.id,
             "drawing_option": option,
             "drawing_file": f"dibujos/{char_path.name}",
-            "character_prompt_version": PROMPT_VERSION,
+            "style": st.id,
+            "character_prompt_version": st.prompt_version,
             "product_sha256": hashlib.sha256(material["product"].read_bytes()).hexdigest(),
             "background_sha256": hashlib.sha256(material["background"].read_bytes()).hexdigest(),
         }
@@ -378,7 +414,7 @@ def cmd_planilla(args: argparse.Namespace) -> int:
         print(json.dumps(summarize_sheet(text), indent=2, ensure_ascii=False))
         return 0
     run = base._run_dir(args, create=False)
-    people = base._read_json(run / PEOPLE_FILE, [])
+    people = run_people(run)
     if not people:
         raise SystemExit(f"no hay {PEOPLE_FILE} en {run}: corre «dibujar» primero")
     rows = sheet_rows(
@@ -397,7 +433,7 @@ def cmd_planilla(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from qualify_api.evals.avatar_photo_bench import DEFAULT_OPTIONS, PROPOSED_MAX_USD
+    from qualify_api.evals.avatar_photo_bench import STYLES
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("command", choices=("plan", "dibujar", "escenas", "planilla"))
@@ -407,11 +443,40 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", help="el .env del checkout principal (llave)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--i-have-spend-authorization", action="store_true")
-    parser.add_argument("--max-usd", default=str(PROPOSED_MAX_USD))
+    parser.add_argument("--max-usd", help="tope de la corrida (por omisión, el del estilo)")
     parser.add_argument("--allow-daytime", action="store_true")
-    parser.add_argument("--opciones", type=int, default=DEFAULT_OPTIONS)
+    parser.add_argument(
+        "--estilo",
+        choices=sorted(STYLES),
+        help="realista (AVFOTO-001, por omisión) o animado (AVFOTO-002); «escenas» usa el "
+        "de su corrida",
+    )
+    parser.add_argument("--opciones", type=int, help="dibujos por foto (por omisión, del estilo)")
+    parser.add_argument(
+        "--persona", action="append", help="solo estas personas del material (se repite)"
+    )
     parser.add_argument("--resumen", help="planilla llena a resumir (con «planilla»)")
     return parser
+
+
+def resolve_args(args: argparse.Namespace, material: dict[str, Any]) -> None:
+    """Fills the style's defaults (options, ceiling) and keeps only `--persona`."""
+    from qualify_api.evals.avatar_photo_bench import DEFAULT_STYLE, style
+
+    args.estilo_pedido = args.estilo
+    if args.command == "escenas" and args.run and not args.estilo:
+        run = Path(args.run)
+        args.estilo = run_style(run) if run.is_dir() else DEFAULT_STYLE
+    st = style(args.estilo or DEFAULT_STYLE)
+    args.estilo = st.id
+    args.opciones = args.opciones or st.default_options
+    args.max_usd = args.max_usd or str(st.proposed_max_usd)
+    if args.persona:
+        known = {p.id for p in material["people"]}
+        unknown = sorted(set(args.persona) - known)
+        if unknown:
+            raise MaterialError(f"--persona: no están en el material: {', '.join(unknown)}")
+        material["people"] = [p for p in material["people"] if p.id in args.persona]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -432,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         material = load_material(args.material)
+        resolve_args(args, material)
     except (MaterialError, PermissionRefused) as exc:
         print(exc, file=sys.stderr)
         return 2

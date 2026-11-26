@@ -54,8 +54,9 @@ from qualify_api.evals.avatar_scene_bench import (
 
 BENCH_TICKET = "m-25129385"
 BENCH_ID = "AVFOTO-001"
-BENCH_VERSION = 1
-#: The drawing prompt's version; the scene keeps AVESC-001's (`SCENE_PROMPT_VERSION`).
+BENCH_VERSION = 2
+#: The realistic drawing prompt's version; the scene keeps AVESC-001's
+#: (`SCENE_PROMPT_VERSION`). Every style has its own (`STYLES`).
 PROMPT_VERSION = "personaje-desde-foto-v1"
 SCENE_PROMPT_VERSION = scene_bench.PROMPT_VERSION
 PRICING_VERSION = scene_bench.PRICING_VERSION
@@ -75,6 +76,33 @@ MAX_PEOPLE = 5
 PROPOSED_MAX_USD = Decimal("3")
 JUDGE = "deivid"
 _PERSON_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
+
+
+@dataclass(frozen=True)
+class Style:
+    """How the character is drawn from the photo. AVFOTO-001 measured the realistic one:
+    Seedance refused all 3 drawings as a real person. AVFOTO-002 asks the hypothesis that
+    a 3D cartoon drawn from the same photo is not read as a real person."""
+
+    id: str
+    bench_id: str
+    prompt_version: str
+    default_options: int
+    proposed_max_usd: Decimal
+
+
+STYLES: dict[str, Style] = {
+    "realista": Style("realista", "AVFOTO-001", PROMPT_VERSION, 2, Decimal("3")),
+    #: 1 option per photo (spend less); the plan reserves about US$1.85 with its margin.
+    "animado": Style("animado", "AVFOTO-002", "personaje-desde-foto-animado-v1", 1, Decimal("2")),
+}
+DEFAULT_STYLE = "realista"
+
+
+def style(sid: str) -> Style:
+    if sid not in STYLES:
+        raise ValueError(f"style must be one of {sorted(STYLES)}")
+    return STYLES[sid]
 
 
 # -- the people and their permission ---------------------------------------------------
@@ -127,7 +155,14 @@ def check_people(raw: object) -> list[Person]:
 # -- prompts ---------------------------------------------------------------------------
 
 
-def drawing_prompt(brand: Brand = NIBBLES) -> str:
+def drawing_prompt(brand: Brand = NIBBLES, *, style_id: str = DEFAULT_STYLE) -> str:
+    """The drawing prompt of `style_id` (its version is `STYLES[style_id].prompt_version`)."""
+    if style(style_id).id == "animado":
+        return cartoon_drawing_prompt(brand)
+    return realistic_drawing_prompt(brand)
+
+
+def realistic_drawing_prompt(brand: Brand = NIBBLES) -> str:
     """`personaje-desde-foto-v1`: a realistic character that looks like the person of the
     reference photo, dressed and lit for the brand, posed like AVESC-001's characters so
     the same scene prompt works with it."""
@@ -147,31 +182,56 @@ def drawing_prompt(brand: Brand = NIBBLES) -> str:
     )
 
 
-def drawing_params(photo_url: str, brand: Brand = NIBBLES) -> dict[str, Any]:
+def cartoon_drawing_prompt(brand: Brand = NIBBLES) -> str:
+    """`personaje-desde-foto-animado-v1`: a stylized 3D cartoon of the person of the
+    reference photo, in the look of AVESC-001's animated character (which Seedance
+    accepted), dressed in the brand's colors. Clearly NOT a photo: the hypothesis is that
+    Seedance does not read it as a real person. No cap, so the hair stays visible (it is
+    part of the likeness); no letters on the apron (AVFOTO-001 drew some on one person)."""
+    green, _, cream, _ = brand.palette
+    return (
+        "Image 1 is a reference photo of a person. Create a stylized 3D animated cartoon "
+        "character, original design, that clearly resembles this person: keep the face "
+        "shape, skin tone, hair color and hairstyle, apparent age and build, and any "
+        "glasses or beard, so people who know this person recognize them as a cartoon. "
+        "Big expressive eyes, friendly smile, simplified features, clean animated film "
+        "look. It must look like an animated movie character, not a photo, not "
+        f"photorealistic. The character works at {brand.name}, a neighborhood burger "
+        f"restaurant: wearing a dark green ({green}) apron over a cream ({cream}) t-shirt, "
+        "plain apron with no letters. Full body from the knees up, standing and facing the "
+        "camera, hands empty and visible. Plain light background, soft studio light, "
+        "vertical 9:16. No text, no letters, no logos, no watermark. "
+        f"{brand_line(brand)}"
+    )
+
+
+def drawing_params(
+    photo_url: str, brand: Brand = NIBBLES, *, style_id: str = DEFAULT_STYLE
+) -> dict[str, Any]:
     """`request.params` for `SeedreamImageAdapter`: image to image, the photo as the
     only reference, the same size as AVESC-001's characters (1K tier, 9:16)."""
     return {
         "model": SEEDREAM_MODEL,
-        "prompt": drawing_prompt(brand),
+        "prompt": drawing_prompt(brand, style_id=style_id),
         "size": IMAGE_SIZE,
         "images": [photo_url],
     }
 
 
-def character_for(person: Person) -> Character:
+def character_for(person: Person, style_id: str = DEFAULT_STYLE) -> Character:
     """The person's drawing as AVESC-001's `Character`, so its scene prompt and params
     apply unchanged (the drawing is «Image 1», the character)."""
     return Character(
         id=f"foto-{person.id}",
         label=f"Personaje desde la foto {person.id}",
-        style="realista",
-        prompt=drawing_prompt(),
+        style=style(style_id).id,
+        prompt=drawing_prompt(style_id=style_id),
     )
 
 
-def case_for(person: Person) -> Case:
+def case_for(person: Person, style_id: str = DEFAULT_STYLE) -> Case:
     return Case(
-        character_for(person),
+        character_for(person, style_id),
         scene_bench.background(BACKGROUND_ID),
         scene_bench.scene(SCENE_ID),
     )
@@ -199,6 +259,7 @@ def drawing_quote(pricing: JsonPricingTable) -> Decimal:
 def drawing_items(
     pricing: JsonPricingTable, people: Iterable[Person], *, options: int = DEFAULT_OPTIONS
 ) -> list[PlanItem]:
+    """The same labels for every style: a style runs in its own run folder."""
     if not 1 <= options <= 3:
         raise ValueError("the owner picks among 1 to 3 options")
     each = drawing_quote(pricing)
@@ -353,6 +414,8 @@ __all__ = [
     "PROMPT_VERSION",
     "PROPOSED_MAX_USD",
     "PermissionRefused",
+    "STYLES",
+    "Style",
     "Person",
     "case_for",
     "check_people",

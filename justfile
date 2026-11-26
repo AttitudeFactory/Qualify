@@ -624,6 +624,7 @@ eval-avatar-escena *args:
 
 # m-25129385 (ADR 50 §12.12): the realistic character drawn from a real person's photo
 # (written permission required, photos never in the repo). Same guards as eval-avatar-escena.
+# --estilo realista (AVFOTO-001, default) | animado (AVFOTO-002).
 eval-avatar-foto *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/personaje_foto.py {{args}}
 
