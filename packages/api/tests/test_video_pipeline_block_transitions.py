@@ -204,8 +204,8 @@ def test_blocks_shorter_than_their_transitions_are_refused_with_the_block_text()
         validate_recipe((part,), video_by_parts=False)
     )
     assert transitions_longer_than_block_text(2) == (
-        "La foto o video 2 es muy corto para sus uniones. Alárgalo, acorta las uniones "
-        "o deja una con «Corte»."
+        "El bloque 2 es muy corto para sus transiciones. Alárgalo, acorta sus "
+        "transiciones o deja una de sus uniones con «Corte»."
     )
 
 
@@ -320,18 +320,15 @@ def test_the_block_codes_are_appended() -> None:
 
 
 def test_the_texts_are_plain_spanish_about_blocks() -> None:
-    # m-25129405 (D1 of the editor's mockups): «bloque» never reaches the screen, nor
-    # «parte» (it clashes with «parte con IA») nor «línea de tiempo» (UX review); `{block}`
-    # is the place the track shows («Foto 3», «Video 3»)
-    assert TRANSITIONS_LONGER_THAN_BLOCK_TEXT.startswith("La foto o video {block} ")
+    assert TRANSITIONS_LONGER_THAN_BLOCK_TEXT.startswith("El bloque {block} ")
     assert TRANSITION_ON_FIRST_BLOCK_TEXT == (
-        "Antes de lo primero de tu video no hay nada que unir. Déjalo con «Corte»."
+        "Antes del primer bloque no hay nada que unir. Déjalo con «Corte»."
     )
     assert BLOCK_TRANSITION_UNAVAILABLE_TEXT == (
         "Por ahora las transiciones solo funcionan en videos armados con tus fotos y videos. "
         "Deja esa unión con «Corte»."
     )
-    assert "entre dos fotos o videos de tu video" in TRANSITION_ON_CLIP_TEXT
+    assert "unión entre dos bloques" in TRANSITION_ON_CLIP_TEXT
     assert "«Corte»" in BLOCK_TRANSITION_UNAVAILABLE_TEXT
     for text in (
         TRANSITIONS_LONGER_THAN_BLOCK_TEXT,
@@ -339,8 +336,7 @@ def test_the_texts_are_plain_spanish_about_blocks() -> None:
         TRANSITION_ON_CLIP_TEXT,
         BLOCK_TRANSITION_UNAVAILABLE_TEXT,
     ):
-        assert "bloque" not in text and "clip" not in text.lower()
-        assert "parte" not in text and "línea de tiempo" not in text
+        assert "parte" not in text and "clip" not in text.lower()
 
 
 def test_another_business_stretch_is_still_foreign_with_a_transition() -> None:

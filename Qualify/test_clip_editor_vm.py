@@ -108,7 +108,7 @@ def test_fixed_words() -> None:
     assert vm.ROTATE == "Girar"
     assert vm.ROTATE_LABEL == "Girar el video un cuarto de vuelta"
     assert vm.WHOLE_VIDEO == "Usar el video entero"
-    assert vm.TOO_SHORT == "Cada foto o video tiene que durar al menos 1 s."
+    assert vm.TOO_SHORT == "El bloque tiene que durar al menos 1 s."
     assert not hasattr(vm, "UNDO")  # Deivid 2026-11-19: no «Deshacer»
 
 
@@ -125,7 +125,7 @@ def test_numbered_words() -> None:
 
 
 def test_refusals_and_low_resolution() -> None:
-    assert vm.refusal_text("too_short") == "Cada foto o video tiene que durar al menos 1 s."
+    assert vm.refusal_text("too_short") == "El bloque tiene que durar al menos 1 s."
     assert vm.refusal_text("outside_video") == (
         "No pudimos usar ese pedazo de tu video. Prueba con otro."
     )
@@ -717,7 +717,7 @@ def test_trim_bounds_inside_the_material_the_least_and_a9s_minute() -> None:
     assert vm.trim_value(3.204, (0.0, 14.0)) == 3.2
     assert vm.trim_value(-1, (0.0, 14.0)) == 0.0 and vm.trim_value(99, (0.0, 14.0)) == 14.0
     assert vm.too_short_text(1) == vm.TOO_SHORT
-    assert vm.too_short_text(10) == "Cada foto o video tiene que durar al menos ½ s."
+    assert vm.too_short_text(10) == "El bloque tiene que durar al menos ½ s."
 
 
 def test_a9_before_crear_and_as_a_refusal() -> None:

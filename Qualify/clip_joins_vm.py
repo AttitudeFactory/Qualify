@@ -75,15 +75,14 @@ _FPS_FALLBACK = 30
 
 LABELS = {CUT: "Corte", FADE: "Fundido", WIPE: "Barrido"}
 #: Deivid 2026-11-26 (option A): a sentence about ONE block names it as the timeline
-#: does («Video 1», «Foto 2»: `ui.timeline_vm.media_label`); where no block in particular
-#: is meant they are «fotos o videos» («Estas fotos o videos…», «Toca el punto entre dos
-#: fotos o videos…») — never «bloque» (m-25129405, D1 of the editor's mockups).
+#: does («Video 1», «Foto 2»: `ui.timeline_vm.media_label`); «bloque» stays where no
+#: block in particular is meant («Estos bloques…», «Toca el punto entre dos bloques…»).
 #: The join's button: «Unión entre Video 1 y Foto 2: Corte».
 _NAME = "Unión entre {a} y {b}: {kind}"
 _TITLE = "Unión entre {a} y {b}"
-HELP = "Elige cómo pasa tu video de una foto o video al siguiente."
+HELP = "Elige cómo pasa tu video de un bloque al otro."
 #: ux review (2026-11-26): how to find the joins, under the timeline, until the first one.
-FIND_HINT = "Toca el punto entre dos fotos o videos para elegir cómo pasa tu video de uno al otro."
+FIND_HINT = "Toca el punto entre dos bloques para elegir cómo pasa tu video de uno al otro."
 
 
 #: Server PR #804 (m-25114465, measured at 768 MiB and 1 CPU, noisy): a Clip with at
@@ -117,8 +116,7 @@ def slower_line(kinds: Sequence[str]) -> str:
 
 #: No room for any transition between these two blocks (`block_transition_room_s`).
 NO_ROOM = (
-    "Estas fotos o videos son muy cortos para unirlos con fundido o barrido. "
-    "Alárgalos para elegirlos."
+    "Estos bloques son muy cortos para unirlos con fundido o barrido. Alárgalos para elegirlos."
 )
 #: A block of avatar on either side.
 WITH_AVATAR = "Con un bloque de avatar, la unión solo puede ser un corte."

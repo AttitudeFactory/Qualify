@@ -2025,7 +2025,7 @@ class CreativeState(rx.State):
     #: The dead path each of those had, by key: a renewal that gives it back (its token
     #: was still alive: the file itself does not play here) leaves the video broken.
     _clip_media_dead: dict[str, str] = {}
-    #: Why a trim handle stopped short («Cada foto o video tiene que durar al menos 1 s.»), "" =
+    #: Why a trim handle stopped short («El bloque tiene que durar al menos 1 s.»), "" =
     #: nothing to say.
     clip_cut_error: str = ""
     #: ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): the owner already

@@ -1510,7 +1510,7 @@ def test_a_handle_stays_inside_the_video_and_its_minute(editor_on: None) -> None
     CreativeState.set_clip_block_speed.fn(small, _KEY, "5")
     CreativeState.drop_clip_block.fn(small, _KEY, "start", 19.0)
     assert small.clip_cut_start == 17.5
-    assert small.clip_cut_error == "Cada foto o video tiene que durar al menos ½ s."
+    assert small.clip_cut_error == "El bloque tiene que durar al menos ½ s."
 
 
 def test_a_shorter_video_cuts_a_text_past_its_end_and_says_so(editor_on: None) -> None:

@@ -398,13 +398,6 @@ async def test_a9s_refusal_is_said_in_a9s_words(
 def test_the_editors_a9_words_and_minute_are_the_backends() -> None:
     assert clip_editor_vm.SOURCE_TOO_LONG_REFUSED == LOCAL_SOURCE_TOO_LONG_TEXT
     assert clip_editor_vm.SOURCE_MAX_SECONDS == SEGMENT_SOURCE_MAX_S
-    # m-25129405 (D1 of the editor's mockups): the same words before «Crear», without its
-    # last step, and never «bloque»
-    assert LOCAL_SOURCE_TOO_LONG_TEXT == (
-        clip_editor_vm.SOURCE_TOO_LONG[:-1] + ", y vuelve a crear el video."
-    )
-    assert "bloque" not in LOCAL_SOURCE_TOO_LONG_TEXT
-    assert "bloque" not in clip_editor_vm.SOURCE_TOO_LONG
 
 
 async def test_the_daily_cap_is_said_on_the_editors_crear(

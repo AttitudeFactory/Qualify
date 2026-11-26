@@ -142,46 +142,14 @@ Por eso, en la v1, una entrada `extend` vale solo si:
 - El PR 2 (m-25129406) construye «Sigue a la anterior» después de un video propio, tras una medición pagada que Deivid aprueba aparte, y levanta este código.
 - Mientras tanto, la pantalla no ofrece «Sigue a la anterior» después de una foto o un video del dueño. Con `QUALIFY_PARTS_EXTEND` apagado, «Sigue a la anterior» sigue sin ofrecerse, como hoy (`EXTEND_REASON`).
 
-### 3.3 La palabra «bloque» no sale en pantalla
+### 3.3 La palabra «bloque» se queda en pantalla
 
-Deivid decidió en la D1 de las maquetas del editor que la palabra «bloque» no aparece en pantalla. Este documento la usa como nombre técnico, pero ningún texto de `AI_PART_TEXTS` la lleva (lo fija `test_every_code_has_its_spanish_words`).
+**Deivid decidió (2026-11-26, en la sesión del coordinador) que «bloque» se queda en pantalla**, como había dicho el 2026-11-24. La regla D1 de las maquetas, que la prohibía, queda retirada. Por eso este PR no cambia ningún texto que ya existía solo para quitar «bloque»: los avisos de las uniones (`recipe.py`), el de «Cada bloque puede tomar hasta 1 minuto…» (`local.py` y su copia en `Qualify/clip_editor_vm.py`), `TOO_SHORT`, `FIND_HINT`, `HELP` y `NO_ROOM` quedan con las palabras de `main`. Este PR no toca `Qualify/`.
 
-**Textos que ya existían y que este PR cambia** (sugerencias de ux-designer):
-
-| Constante | Texto nuevo |
-|---|---|
-| `recipe.TRANSITIONS_LONGER_THAN_BLOCK_TEXT` | La foto o video {block} es muy corto para sus uniones. Alárgalo, acorta las uniones o deja una con «Corte». |
-| `recipe.TRANSITION_ON_FIRST_BLOCK_TEXT` | Antes de lo primero de tu video no hay nada que unir. Déjalo con «Corte». |
-| `recipe.TRANSITION_ON_CLIP_TEXT` | Las uniones van entre dos fotos o videos de tu video, no en todo el video. Toca la unión entre dos y elige «Fundido» o «Barrido». |
-| `local.LOCAL_TRANSITION_FAILED_TEXT` | «…las transiciones de tu video…» pasa a «…las uniones de tu video…». |
-
-- `{block}` es la posición del elemento en la pista, desde 1 (sale de `segments[i]`). Es el mismo número que muestra la pista («Foto 3», «Video 3»: `Qualify/ui/timeline_vm.media_label`), por eso dice «La foto o video {block}». Por la revisión de UX no dice «parte», que choca con «parte con IA», ni «línea de tiempo».
-- La pantalla toma este texto del servidor con `transitions_longer_than_block_text` (`Qualify/clip_joins_vm.py`), así que cambia sola. `Qualify/test_clip_joins.py` compara contra esa misma función, así que no se rompe.
-- `TRANSITION_ON_FIRST_BLOCK_TEXT`, `TRANSITION_ON_CLIP_TEXT` y `LOCAL_TRANSITION_FAILED_TEXT` no tienen copia en `Qualify/`.
-
-**Textos que se cambian en este mismo PR, a la vez en el servidor y en la pantalla.** El carril B, dueño de `Qualify/`, aceptó hacerlo aquí, para que la paridad no quede rota en `main`. Solo se tocaron constantes de texto y sus pruebas.
-
-| Dónde | Constante | Texto nuevo |
-|---|---|---|
-| `local.py` | `LOCAL_SOURCE_TOO_LONG_TEXT` | Cada video puede tomar hasta 1 minuto de lo que grabaste, aunque lo aceleres. Acorta el más largo o pártelo en dos con «Cortar», y vuelve a crear el video. |
-| `local.py` | `LOCAL_PART_SOURCE_TOO_LONG_TEXT` | El mismo texto, pero terminado en «…y vuelve a crear esta parte.» |
-| `Qualify/clip_editor_vm.py` | `SOURCE_TOO_LONG_REFUSED` | Igual a `LOCAL_SOURCE_TOO_LONG_TEXT` |
-| `Qualify/clip_editor_vm.py` | `SOURCE_TOO_LONG` (el aviso de «Cortar» antes de crear) | El mismo texto, sin «, y vuelve a crear el video» |
-| `Qualify/clip_editor_vm.py` | `TOO_SHORT` / `too_short_text(speed)` | Cada foto o video tiene que durar al menos 1 s. (o «…al menos ½ s.» con cámara rápida; la duración sigue siendo variable). También se ve en `creative_state.clip_cut_error` |
-| `Qualify/clip_joins_vm.py` | `FIND_HINT` | Toca el punto entre dos fotos o videos para elegir cómo pasa tu video de uno al otro. |
-| `Qualify/clip_joins_vm.py` | `HELP` | Elige cómo pasa tu video de una foto o video al siguiente. |
-| `Qualify/clip_joins_vm.py` | `NO_ROOM` | Estas fotos o videos son muy cortos para unirlos con fundido o barrido. Alárgalos para elegirlos. |
-
-Pruebas ajustadas:
-
-- `Qualify/test_clip_editor_vm.py`, líneas 111, 128 y 720;
-- `Qualify/test_clip_editor_state.py:1513`;
-- `Qualify/test_clip_joins.py::test_the_names_follow_the_blocks_when_they_move`, que exigía «bloques» en `FIND_HINT` y `NO_ROOM`. Ahora fija los textos nuevos de `HELP` y `NO_ROOM`, exige «entre dos fotos o videos» en `FIND_HINT` y que ninguno de los tres diga «bloque»;
-- la de paridad `Qualify/test_clip_editor_recipe_b6.py::test_the_editors_a9_words_and_minute_are_the_backends`, que además ahora fija que `SOURCE_TOO_LONG` es el mismo texto sin el último paso y que ninguno dice «bloque».
-
-**Textos que todavía dicen «bloque» y quedan fuera de este cambio:**
-
-- `image_pipeline/layer.py:400`: «Esta pieza no lleva bloques de datos: lista vacía.» Es otro sentido de «bloque»; falta confirmar si llega a la pantalla.
+- Los textos nuevos de `AI_PART_TEXTS` no necesitan «bloque» y no lo usan.
+- Tampoco dicen «línea de tiempo» (revisión de UX); lo fija `test_every_code_has_its_spanish_words`.
+- El único texto que ya existía y que cambia es `local.LOCAL_TRANSITION_FAILED_TEXT`: «…las transiciones de tu video…» pasa a «…las uniones de tu video…», por la revisión de UX y no por «bloque».
+- `{block}`, en `transitions_longer_than_block_text`, es la posición del elemento en la pista desde 1, la misma que muestra la pantalla. Ahora cuenta también las partes con IA.
 
 **Reglas que ya existían y ahora también cuentan los bloques con IA** (mismos códigos y textos de siempre):
 
