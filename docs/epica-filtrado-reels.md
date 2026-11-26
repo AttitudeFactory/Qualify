@@ -116,10 +116,11 @@ en la enmienda RF-05 de `docs/adr-42-ideas-reels-costo.md`. **La pantalla espera
 Pedido de Deivid tras la prueba en vivo. La barra, los desplegables, los chips, la hoja desde
 abajo y el cajón «Tus competidores» usan solo botones, popovers y el `drawer` del sistema, con
 el skin de Radix. Ya no hay reglas `.q-rf-*` ni el recuadro oscuro detrás de la barra. Desde
-el 2026-11-26 hay un panel suave del sistema (`T.CARD_BG`), y «Tus competidores» va en pareja
-con «Duración», así que nunca queda solo en una fila. En el teléfono, los chips pasan de
-línea y cada línea va centrada, sin desplazamiento lateral, con «Restablecer filtros» al
-principio cuando hay un filtro activo (`docs/design-system.md` §5.8). Debajo hay **una sola lista sin encabezados**: primero
+el 2026-11-26 hay un panel suave del sistema (`T.CARD_BG`) y cada filtro es un chip de una
+palabra. En escritorio, todo va en una fila centrada: los filtros, «Competidores» y «Quitar
+filtros». En el teléfono, «Filtros · N» y «Competidores» van lado a lado, y «Filtros» abre una
+sola hoja con todos los filtros (`docs/design-system.md` §5.8). Debajo hay **una sola lista
+sin encabezados**: primero
 las ideas, con «Hacer uno parecido», y después los otros reels revisados, sin ese botón. Se
 muestran 16 (`LIST_PAGE`) y «Ver más» trae los 16 siguientes. Se quitaron «Ideas de hace N
 días», «Más reels revisados» y sus textos. Los textos de RF-05 que nombraban esa sección ahora

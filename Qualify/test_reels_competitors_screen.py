@@ -315,41 +315,23 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
 
     bar = inspect.getsource(discover_reels._filter_bar)
     desktop, phone = bar.split("display=_WIDE")
-    # Deivid 2026-11-26, desktop: «Tus competidores» flows with the filters, paired with
-    # «Duración» so it is never alone on a row; «Restablecer filtros» comes last
-    assert "_with_rivals(_dropdown(AXIS_DURATION, shrink=True), chip=False)" in desktop
-    assert desktop.index("_with_rivals(") < desktop.index("_reset_button()")
+    # desktop (Deivid 2026-11-26): «Competidores» + «Quitar filtros» are one group of the
+    # single line, after the filters — never alone, no separator
+    assert "_chip_group(_rivals_button(chip=False), _reset_button())" in desktop
     assert "rx.separator" not in bar
-    pair = inspect.getsource(discover_reels._with_rivals)
-    assert 'wrap="nowrap"' in pair and "_rivals_button(chip=chip, shrink=True)" in pair
-    # in the pair, «Duración» gives way first, the button's label last
-    rivals = inspect.getsource(discover_reels._rivals_button)
-    assert 'flex_shrink="1" if shrink else "0"' in rivals and "**_ELLIPSIS" in rivals
-    assert int(discover_reels._SHRINK_FIRST) > 1
-    # the phone (Deivid 2026-11-26): the chips wrap onto CENTRED lines — no sideways
-    # scroll, no chip seen cut off; with a filter on, «Restablecer filtros» goes FIRST
-    assert "_with_rivals" not in phone
-    order = [
-        phone.index("_reset_button(chip=True)"),
-        phone.index("_rivals_button(chip=True)"),
-        phone.index("_chip_pair(AXIS_NETWORK, AXIS_KIND)"),
-        phone.index("_chip_pair(AXIS_ACCOUNT, AXIS_DURATION)"),
-    ]
-    assert order == sorted(order)
-    assert phone.count("_reset_button(") == 1
-    for needed in ('wrap="wrap"', 'justify="center"', 'min_width="0"'):
-        assert needed in phone, needed
-    for gone in ("overflow_x", "scroll_snap", "nowrap"):
-        assert gone not in phone, gone
+    # phone: «Filtros» and «Competidores» share one line in equal parts
+    assert phone.index("_filters_button()") < phone.index("_rivals_button(chip=True)")
     source = inspect.getsource(discover_reels)
-    assert "scroll_snap" not in source and "_NO_SCROLLBAR" not in source
+    for gone in ("scroll_snap", "_NO_SCROLLBAR", "_with_rivals", "_chip_pair", "sheet_chip"):
+        assert gone not in source, gone
     reset = inspect.getsource(discover_reels._reset_button)
-    assert "S.filters_on" in reset  # without a filter it is not drawn
+    assert "DiscoverReelsState.filters_on" in reset  # without a filter it is not drawn
     # never wider than the panel: every chip may sit below its content and ellipsize
+    rivals = inspect.getsource(discover_reels._rivals_button)
     button = inspect.getsource(discover_reels._filter_button)
     assert 'max_width="100%"' in button and 'min_width="0"' in button
-    assert 'min_width="0"' in rivals and 'overflow="hidden"' in rivals
-    assert '"overflow": "hidden"' in button  # the shrinking «Duración» of the pair
+    assert 'overflow="hidden"' in rivals and "**_ELLIPSIS" in rivals
+    assert '"overflow": "hidden"' in button  # a shrinking filtered chip clips its word
     assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
     button = inspect.getsource(discover_reels._rivals_button)
     # RF-13: a Radix button of the skin, like the filters beside it — no class of its own

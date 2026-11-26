@@ -117,6 +117,9 @@ ACCOUNTS_HREF = brand_referentes_href(IDEAS_RETURN_PATH)
 #: never leaves it spinning.
 POLL_SECONDS = 12.0
 
+#: The phone's one «Filtros» sheet is open (`DiscoverReelsState.sheet`).
+SHEET_ALL = "all"
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,11 +161,9 @@ class DiscoverReelsState(rx.State):
     #: The accounts «Cuenta» offers (`reels_filters_vm.account_options`) and their kinds.
     account_options: list[dict[str, str]] = []
     _accounts: dict[str, str] = {}
-    #: Which axis' sheet is open on a phone ("" none).
+    #: The phone's «Filtros» sheet: `SHEET_ALL` while open, "" closed (RF-13, Deivid
+    #: 2026-11-26: one sheet with every axis).
     sheet: str = ""
-    #: The axis whose chip opened the last sheet — kept after it closes, so the focus
-    #: goes back to that chip (Escape, the backdrop, «Cerrar» or «Listo»; RF-13).
-    sheet_chip: str = ""
     #: A filtered read is in flight (the lists dim until it lands).
     filtering: bool = False
     #: The reviewed reels after the ideas (RF-01's second list, RF-13's one list): the
@@ -220,7 +221,6 @@ class DiscoverReelsState(rx.State):
             self.has_more = False
             self._more_next = 0
             self.sheet = ""
-            self.sheet_chip = ""
             self.competitor_rows = []
             self.competitor_busy = ""
             self.competitor_error = ""
@@ -286,8 +286,18 @@ class DiscoverReelsState(rx.State):
         return out
 
     @rx.var
-    def sheet_title(self) -> str:
-        return AXIS_LABELS.get(self.sheet, "")
+    def filters_texts(self) -> dict[str, str]:
+        """The phone's «Filtros» button (`reels_filters_vm.filters_button`): `face` —
+        «Filtros» or «Filtros · 2» — and `name`, «Filtros: 2 activos»."""
+        face, name = reels_filters_vm.filters_button(
+            FilterChoice.of(
+                network=self.filter_network,
+                kind=self.filter_kind,
+                duration=self.filter_duration,
+                accounts=self.filter_accounts,
+            )
+        )
+        return {"face": face, "name": name}
 
     @rx.var
     def empty_kind(self) -> str:
@@ -322,7 +332,7 @@ class DiscoverReelsState(rx.State):
     def no_ideas_filtered(self) -> bool:
         """RF-13 (ux-designer, Deivid 2026-11-26): with a filter on, no idea left (so none
         to make again with «Hacer uno parecido»): the list says so over what it shows
-        (`NO_IDEAS_FILTERED`); «Restablecer filtros» is already in the bar."""
+        (`NO_IDEAS_FILTERED`); «Quitar filtros» is in the bar or the sheet's foot."""
         if self.screen != SCREEN_IDEAS:
             return False
         filtered = bool(
@@ -335,11 +345,9 @@ class DiscoverReelsState(rx.State):
         return not any(c.get("affinity") in reels_ai.FITS for c in self._cards)
 
     @rx.event
-    def open_sheet(self, axis: str) -> None:
-        """A phone chip: open its axis' sheet (and remember the chip, for the focus)."""
-        self.sheet = axis if axis in reels_filters_vm.AXES else ""
-        if self.sheet:
-            self.sheet_chip = self.sheet
+    def open_filters(self) -> None:
+        """The phone's «Filtros»: open the sheet with every axis."""
+        self.sheet = SHEET_ALL
 
     @rx.event
     def sheet_changed(self, is_open: bool) -> None:
@@ -353,9 +361,9 @@ class DiscoverReelsState(rx.State):
 
     @rx.event
     def set_filter(self, axis: str, value: str) -> Any:
-        """One single-choice axis to `value` ("" = «Todos»); its sheet closes and the
-        lists are read again — what is stored, free."""
-        self.sheet = ""
+        """One single-choice axis to `value` ("" = «Todos»): the lists are read again —
+        what is stored, free. The phone's sheet stays open (every axis is in it, RF-13);
+        a desktop dropdown closes by itself."""
         before = self._choice()
         choice = reels_filters_vm.set_axis(before, axis, value)
         if choice == before:
@@ -1297,7 +1305,6 @@ def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
 # --------------------------------------------------------------------------------------
 
 #: The single-choice axes, in the bar's order around «Cuenta».
-_SINGLE_AXES = (AXIS_NETWORK, AXIS_KIND)
 _STATE_VALUE = {
     AXIS_NETWORK: lambda: DiscoverReelsState.filter_network,
     AXIS_KIND: lambda: DiscoverReelsState.filter_kind,
@@ -1318,10 +1325,9 @@ _ELLIPSIS = {"white_space": "nowrap", "overflow": "hidden", "text_overflow": "el
 _CHIP_PAD = {"padding_left": "0.625rem", "padding_right": "0.625rem"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
-#: In the «Duración» + «Tus competidores» pair (`_with_rivals`), the `flex-shrink` weight
-#: of «Duración» against the button's 1. Flexbox shares the missing width by weight ×
-#: width, so «Duración» takes almost all of it: the button's label ends in «…» only when
-#: the row is very narrow — never a sideways scroll.
+#: In a group of chips that never wraps (`_chip_group`), the `flex-shrink` of the
+#: FILTERED chip (its neighbours have 0): when the group is wider than its line, only
+#: that chip's word ends in «…» — never a sideways scroll.
 _SHRINK_FIRST = "8"
 
 
@@ -1449,42 +1455,18 @@ def _axis_on(axis: str) -> rx.Var[bool]:
     return _STATE_VALUE[axis]() != ""
 
 
-def _filter_face(axis: str) -> list[rx.Component]:
-    """A desktop dropdown's face: «Canal» · «Todos» ▾ — the axis' name, then its value."""
-    on = _axis_on(axis)
-    return [
-        rx.text(
-            AXIS_LABELS[axis],
-            size="2",
-            weight="regular",
-            color=T.TEXT_MUTED,
-            as_="span",
-            white_space="nowrap",
-            flex_shrink="0",
-        ),
-        rx.text(
-            _axis_value(axis),
-            size="2",
-            weight="medium",
-            as_="span",
-            min_width="0",
-            color=rx.cond(on, T.tone_color("accent", 11), T.TEXT_STRONG),
-            **_ELLIPSIS,
-        ),
-    ]
-
-
 def _chip_text(axis: str, *, name: bool = False) -> rx.Var[str]:
-    """A phone chip's face, or (`name`) its accessible name (`DiscoverReelsState.chip_texts`)."""
+    """A filter chip's face, or (`name`) its accessible name (`DiscoverReelsState.chip_texts`)."""
     key = f"{axis}_name" if name else axis
     return DiscoverReelsState.chip_texts[key].to(str)
 
 
 def _chip_face(axis: str) -> list[rx.Component]:
-    """A phone chip's face (RF-13, option A, Deivid 2026-11-26): ONE word — the short name
-    («Canal», «Tipo», «Cuenta», «Duración») while the axis narrows nothing, its value
-    («Instagram», «2 cuentas», and the shorter «Te inspiran», «< 15 s» of
-    `reels_filters_vm.CHIP_VALUES`) once it does — so 2 or 3 chips share a line. The full
+    """A filter chip's face, on a phone and on a desktop alike (RF-13, option A, Deivid
+    2026-11-26): ONE word — the short name («Canal», «Tipo», «Cuenta», «Duración») while
+    the axis narrows nothing, its value («Instagram», «2 cuentas», and the shorter «Te
+    inspiran», «< 15 s» of `reels_filters_vm.CHIP_VALUES`) once it does — so the bar
+    holds on one line on a desktop and 2 or 3 chips share a line on a phone. The full
     name, which contains that word, is the button's `aria_label` and `title`."""
     on = _axis_on(axis)
     return [
@@ -1500,51 +1482,40 @@ def _chip_face(axis: str) -> list[rx.Component]:
     ]
 
 
-def _filter_button(
-    axis: str, *, shrink: bool = False, compact: bool = False, **props: Any
-) -> rx.Component:
-    """What a dropdown or a chip reads — «Canal» · «Todos» ▾ — as a Radix button with
+def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Component:
+    """A filter's chip — «Canal ▾», «Instagram ▾» (`_chip_face`) — as a Radix button with
     the skin: `soft` (the accent wash) while the axis narrows the list, `surface`
-    otherwise. It never overflows its row (RF-13: «Tipo de cuenta: Competidores» was cut
-    in a ~730 px panel): it may shrink to the row, and only the value then ends in «…»,
-    with the whole value in `title`. `size="2"` keeps the bar on fewer rows; the target
-    stays 44 px. `shrink`: the button may give way to its neighbour in a pair that never
-    wraps (`_with_rivals`). `compact`: the phone chip's one-word face (`_chip_face`); the
-    accessible name stays the full one either way."""
+    otherwise; `size="2"`, the target stays 44 px. It never overflows its row: it may
+    shrink to it, and only its word then ends in «…», the whole name in `title`.
+    `shrink`: in a group that never wraps (`_chip_group`), only the FILTERED chip gives
+    way (a long @handle), never its neighbour that still reads «Duración»."""
     on = _axis_on(axis)
-    value = _axis_value(axis)
     return rx.button(
-        *(_chip_face(axis) if compact else _filter_face(axis)),
+        *_chip_face(axis),
         rx.icon("chevron-down", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
         type="button",
         variant=rx.cond(on, "soft", "surface"),
         size="2",
         min_height=_TARGET,
         max_width="100%",
-        # never wider than its row: below its content, only the value ends in «…»
+        # never wider than its row: below its content, only the word ends in «…»
         min_width="0",
-        # in a phone pair only the filtered chip gives way (a long @handle), never its
-        # neighbour that still reads «Duración»
         **(
-            {
-                "flex_shrink": rx.cond(on, _SHRINK_FIRST, "0") if compact else _SHRINK_FIRST,
-                "overflow": "hidden",
-            }
-            if shrink
-            else {}
+            {"flex_shrink": rx.cond(on, _SHRINK_FIRST, "0"), "overflow": "hidden"} if shrink else {}
         ),
-        aria_label=_chip_text(axis, name=True) if compact else AXIS_LABELS[axis] + ": " + value,
-        title=_chip_text(axis, name=True) if compact else AXIS_LABELS[axis] + ": " + value,
+        aria_label=_chip_text(axis, name=True),
+        title=_chip_text(axis, name=True),
+        **_CHIP_PAD,
         **props,
     )
 
 
-def _dropdown(axis: str, *, shrink: bool = False) -> rx.Component:
-    """A desktop filter: a button that opens its options under it (Radix popover, the
-    skin's glass; Escape gives the focus back to the button)."""
+def _dropdown(axis: str) -> rx.Component:
+    """A desktop filter: its chip opens the options under it (Radix popover, the skin's
+    glass; Escape gives the focus back to the chip). The options keep the long words."""
     options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=True)
     return rx.popover.root(
-        rx.popover.trigger(_filter_button(axis, shrink=shrink)),
+        rx.popover.trigger(_filter_button(axis, shrink=True)),
         rx.popover.content(
             options,
             side="bottom",
@@ -1557,72 +1528,97 @@ def _dropdown(axis: str, *, shrink: bool = False) -> rx.Component:
     )
 
 
-#: The phone's chips carry `data-sheet-chip="1"` on the one that opened the last sheet;
-#: closing the sheet (Escape, the backdrop, «Cerrar», «Listo» or a choice) gives the
-#: focus back to it (RF-13, UX of #810).
+#: The phone's «Filtros» button: the sheet gives the focus back to it however it closes
+#: (Escape, the backdrop, «Cerrar», «Listo»).
+FILTERS_BUTTON_ID = "reels-filters"
 SHEET_FOCUS_SCRIPT = (
     "window.setTimeout(function () {"
-    "  var b = document.querySelector('[data-sheet-chip=\"1\"]');"
+    f"  var b = document.getElementById('{FILTERS_BUTTON_ID}');"
     "  if (b && b.offsetParent !== null) { b.focus(); }"
     "}, 0);"
 )
+#: The phone's line: its buttons share it in equal parts (`flex: 1 1 0`) — «Filtros» and
+#: «Competidores» today, room for a third later (RF-14's «Buscar reels nuevos»).
+_PHONE_SLOT = {"flex": "1 1 0", "min_width": "0", "max_width": "100%"}
 
 
-def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
-    """A phone filter: a chip that opens its sheet from the bottom, with the one-word face
-    of option A (`_chip_face`)."""
+def _filters_button() -> rx.Component:
+    """The phone's «Filtros» (RF-13, Deivid 2026-11-26): one button for every axis, with
+    « · N» while N of them narrow the list (`soft` then, as a filtered chip); it opens
+    the one sheet. Its accessible name says it in words: «Filtros: 2 activos»."""
     S = DiscoverReelsState
-    return _filter_button(
-        axis,
-        shrink=shrink,
-        compact=True,
-        **_CHIP_PAD,
-        on_click=S.open_sheet(axis),
+    return rx.button(
+        rx.icon("sliders-horizontal", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
+        rx.text(S.filters_texts["face"].to(str), as_="span", min_width="0", **_ELLIPSIS),
+        type="button",
+        id=FILTERS_BUTTON_ID,
+        variant=rx.cond(S.filters_on, "soft", "surface"),
+        size="2",
+        min_height=_TARGET,
+        overflow="hidden",
+        on_click=S.open_filters,
+        aria_label=S.filters_texts["name"].to(str),
+        title=S.filters_texts["name"].to(str),
         aria_haspopup="dialog",
-        aria_expanded=rx.cond(S.sheet == axis, "true", "false"),
-        custom_attrs={"data-sheet-chip": rx.cond(S.sheet_chip == axis, "1", "0")},
+        aria_expanded=rx.cond(S.sheet != "", "true", "false"),
+        **_PHONE_SLOT,
     )
 
 
-def _reset_button(*, chip: bool = False) -> rx.Component:
-    """«Restablecer filtros»: shown while some filter narrows the lists — a `ghost`
-    button of the skin; last on a desktop, FIRST in the phone's centred lines (Deivid,
-    2026-11-26). `chip`: it never shrinks nor wraps its words there — and it is not drawn
-    for a brand with no competitor to show (option A, Deivid 2026-11-26): with no
-    «Competidores» beside it, it would sit alone on its line. Resetting stays two taps away
-    (any chip, then its sheet's foot) and one in «No hay reels con estos filtros»."""
-    S = DiscoverReelsState
-    shown = S.filters_on & (S.competitor_rows.length() > 0) if chip else S.filters_on
+def _reset_button() -> rx.Component:
+    """«Quitar filtros» on a desktop (`RESET_SHORT`): shown while some filter narrows the
+    lists — a `ghost` button of the skin, last on the line, beside «Competidores». On a
+    phone it lives in the «Filtros» sheet's foot (`_sheet`)."""
     return rx.cond(
-        shown,
+        DiscoverReelsState.filters_on,
         rx.button(
             rx.icon("rotate-ccw", size=T.ICON_SM, aria_hidden="true"),
-            reels_filters_vm.RESET_SHORT if chip else reels_filters_vm.RESET_LABEL,
+            reels_filters_vm.RESET_SHORT,
             type="button",
             variant="ghost",
             size="2",
             min_height=_TARGET,
             margin="0",
             on_click=DiscoverReelsState.reset_filters,
-            **({"flex_shrink": "0", "white_space": "nowrap", "max_width": "100%"} if chip else {}),
+            flex_shrink="0",
+            white_space="nowrap",
+            max_width="100%",
         ),
     )
 
 
+def _sheet_group(axis: str) -> rx.Component:
+    """One axis in the «Filtros» sheet: its full name over its options (the same rows as
+    the desktop dropdowns; «Cuenta» picks several)."""
+    options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=False)
+    return rx.vstack(
+        rx.text(AXIS_LABELS[axis], size="2", weight="medium", as_="div", padding_x="0.75rem"),
+        options,
+        spacing="1",
+        width="100%",
+        align_items="stretch",
+    )
+
+
 def _sheet() -> rx.Component:
-    """The phone's sheet of the chip that was tapped: its options, «Restablecer filtros»
-    and «Listo». A single-choice option closes it; «Cuenta» stays open to pick several.
-    However it closes, the focus goes back to the chip that opened it."""
+    """The phone's «Filtros» sheet (RF-13, Deivid 2026-11-26): every axis — Canal, Tipo de
+    cuenta, Cuenta (several) and Duración — each under its name, with the long words;
+    each choice applies at once and the sheet stays open. Its foot: «Quitar filtros»
+    while a filter is on, and «Listo». The body scrolls when it is long. However it
+    closes, the focus goes back to «Filtros»."""
     S = DiscoverReelsState
     foot = rx.hstack(
-        rx.button(
-            reels_filters_vm.RESET_LABEL,
-            variant="ghost",
-            size="3",
-            min_height=_TARGET,
-            margin="0",
-            on_click=S.reset_filters,
-            disabled=~S.filters_on,
+        rx.cond(
+            S.filters_on,
+            rx.button(
+                rx.icon("rotate-ccw", size=T.ICON_SM, aria_hidden="true"),
+                reels_filters_vm.RESET_SHORT,
+                variant="ghost",
+                size="3",
+                min_height=_TARGET,
+                margin="0",
+                on_click=S.reset_filters,
+            ),
         ),
         rx.spacer(),
         rx.button(
@@ -1635,57 +1631,26 @@ def _sheet() -> rx.Component:
         align="center",
     )
     return drawer(
-        rx.match(
-            S.sheet,
-            (AXIS_NETWORK, _single_options(AXIS_NETWORK, close=False)),
-            (AXIS_KIND, _single_options(AXIS_KIND, close=False)),
-            (AXIS_ACCOUNT, _account_options()),
-            (AXIS_DURATION, _single_options(AXIS_DURATION, close=False)),
-            rx.fragment(),
+        rx.vstack(
+            *(_sheet_group(axis) for axis in reels_filters_vm.AXES),
+            spacing="5",
+            width="100%",
+            align_items="stretch",
         ),
         open=S.sheet != "",
         on_open_change=S.sheet_changed,
-        title=S.sheet_title,
+        title=reels_filters_vm.FILTERS_LABEL,
         footer=foot,
         side="bottom",
         on_close_auto_focus=rx.call_script(SHEET_FOCUS_SCRIPT).prevent_default,
     )
 
 
-def _chip_pair(left: str, right: str) -> rx.Component:
-    """Two phone chips (Canal + Tipo, Cuenta + Duración). With no filter on they are plain
-    items of the row (`display: contents`); while a filter is on, «Quitar filtros» +
-    «Competidores» fill the first line, and the four filters move as two pairs that never
-    wrap, so none of them is left alone on a line (Deivid's live test at 375 px,
-    2026-11-26). The pairs hold together too for a brand with no competitor to show (no
-    «Competidores» chip). In a pair only the filtered chip may shrink: only its value
-    ends in «…»."""
+def _chip_group(*children: rx.Component) -> rx.Component:
+    """Desktop chips that move together on a line and never wrap apart, so none is left
+    alone on a line (Deivid, 2026-11-26)."""
     return rx.flex(
-        _chip(left, shrink=True),
-        _chip(right, shrink=True),
-        # also with no competitor to show: then nothing fills the first line with
-        # «Tus competidores» and «Duración» would drop alone (review, 2026-11-26)
-        display=rx.cond(
-            DiscoverReelsState.filters_on | (DiscoverReelsState.competitor_rows.length() == 0),
-            "flex",
-            "contents",
-        ),
-        wrap="nowrap",
-        align="center",
-        spacing="2",
-        min_width="0",
-        max_width="100%",
-    )
-
-
-def _with_rivals(last: rx.Component, *, chip: bool) -> rx.Component:
-    """The last filter and «Tus competidores» as one pair that never wraps (RF-13, Deivid
-    2026-11-26): the button always shares its row with a filter, at any width. When the
-    pair is wider than the row, the filter gives way first (its value ends in «…»); the
-    button's label only on a very narrow phone. Never wider than the row."""
-    return rx.flex(
-        last,
-        _rivals_button(chip=chip, shrink=True),
+        *children,
         wrap="nowrap",
         align="center",
         spacing="2",
@@ -1696,41 +1661,39 @@ def _with_rivals(last: rx.Component, *, chip: bool) -> rx.Component:
 
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
-    «Cuenta», «Duración» and «Restablecer filtros». From 480 px up, dropdowns; on a
-    phone, chips (wrapping onto more rows, none hidden) that open a sheet from the
-    bottom. Every change is one more read of what is stored — never a paid call.
+    «Cuenta», «Duración» and «Quitar filtros». From 480 px up, chips that open a
+    dropdown; on a phone, chips that open a sheet from the bottom. Every change is one
+    more read of what is stored — never a paid call.
 
     RF-13: only the system's pieces (Radix buttons, popovers, `drawer`) on a soft panel
     of the system (`T.CARD_BG`, the card radius; Deivid 2026-11-26 — never the dark box
-    he took away). From 480 px up, «Tus competidores» flows with the filters, paired with
-    «Duración» so it is never alone on a row, and «Restablecer filtros» comes last, so it
-    is the one that drops. On a phone, the chips wrap onto lines that are each centred
-    (Deivid 2026-11-26: never one chip whole and the next cut off) — «Restablecer
-    filtros» first while a filter is on, then «Tus competidores» and the filters; no
-    sideways scroll, no chip wider than the panel, no text broken."""
-    first = (*_SINGLE_AXES, AXIS_ACCOUNT)
+    he took away). Every chip shows one word (`_chip_face`). On a desktop the bar is ONE
+    line — Canal + Tipo, Cuenta + Duración, «Competidores» + «Quitar filtros» as three
+    groups that never wrap apart — and, where a narrow panel cannot hold it, the groups
+    wrap onto centred lines, never one chip alone (Deivid at ~1180 px, 2026-11-26). On a
+    phone, ONE line of equal buttons: «Filtros» (every axis in one sheet) and
+    «Competidores» — «Filtros» takes the whole line for a brand with no competitor to
+    show; no text broken, no sideways scroll (Deivid, 2026-11-26)."""
     return rx.box(
         rx.flex(
-            *(_dropdown(axis) for axis in first),
-            _with_rivals(_dropdown(AXIS_DURATION, shrink=True), chip=False),
-            _reset_button(),
+            _chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND)),
+            _chip_group(_dropdown(AXIS_ACCOUNT), _dropdown(AXIS_DURATION)),
+            _chip_group(_rivals_button(chip=False), _reset_button()),
             display=_WIDE,
             wrap="wrap",
+            justify="center",
             align="center",
             spacing="2",
             width="100%",
+            min_width="0",
         ),
-        # the phone (under 480 px; Deivid 2026-11-26): the chips wrap onto centred lines —
-        # nothing slides sideways, no chip is seen cut off; with a filter on,
-        # «Restablecer filtros» goes FIRST
+        # the phone (under 480 px; Deivid 2026-11-26): one line, equal parts —
+        # «Filtros» and «Competidores» (RF-14 may add a third icon button here)
         rx.flex(
-            _reset_button(chip=True),
+            _filters_button(),
             _rivals_button(chip=True),
-            _chip_pair(AXIS_NETWORK, AXIS_KIND),
-            _chip_pair(AXIS_ACCOUNT, AXIS_DURATION),
             display=_PHONE,
-            wrap="wrap",
-            justify="center",
+            wrap="nowrap",
             align="center",
             spacing="2",
             width="100%",
@@ -1992,12 +1955,14 @@ RIVALS_FOCUS_SCRIPT = (
 )
 
 
-def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
+def _rivals_button(*, chip: bool) -> rx.Component:
     """«Tus competidores» at the end of the bar (option A, Deivid 2026-11-25): opens the
     drawer — from the right on a desktop, from the bottom on a phone. While a manual read
     is in flight it shows the spinner instead of its icon. Not drawn for a brand that
     marked no competitor (RF-02's empty message tells it how). RF-13: a `surface` Radix
-    button of the skin, like the filters beside it."""
+    button of the skin, like the filters beside it, reading «Competidores» on a phone and
+    a desktop alike (Deivid 2026-11-26: the desktop bar on one line); its accessible name
+    is still «Tus competidores: …» and its `title` «Tus competidores»."""
     S = DiscoverReelsState
     return rx.cond(
         S.competitor_rows.length() > 0,
@@ -2007,28 +1972,20 @@ def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
                 loading_spinner("sm"),
                 rx.icon("users", size=T.ICON_SM, aria_hidden="true"),
             ),
-            # the label may end in «…» only on a very narrow phone (320 px), once
-            # «Duración» beside it has given way all it can: never a sideways scroll
-            rx.text(
-                reels_competitors_vm.PICKER_SHORT if chip else reels_competitors_vm.PICKER_TITLE,
-                as_="span",
-                min_width="0",
-                **_ELLIPSIS,
-            ),
+            rx.text(reels_competitors_vm.PICKER_SHORT, as_="span", min_width="0", **_ELLIPSIS),
             type="button",
             id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
             on_click=S.open_competitors(chip),
             variant="surface",
             size="2",
             min_height=_TARGET,
-            max_width="100%",
-            # in the desktop pair it gives way last («Duración» shrinks `_SHRINK_FIRST`
-            # times faster); in the phone's centred lines it never shrinks
-            flex_shrink="1" if shrink else "0",
-            min_width="0",
             overflow="hidden",
             title=reels_competitors_vm.PICKER_TITLE,
-            **(_CHIP_PAD if chip else {}),
+            **(
+                _PHONE_SLOT
+                if chip
+                else {"flex_shrink": "0", "min_width": "0", "max_width": "100%", **_CHIP_PAD}
+            ),
             aria_label=S.competitors_label,
             aria_haspopup="dialog",
             aria_expanded=rx.cond(S.competitors_open, "true", "false"),

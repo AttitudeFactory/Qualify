@@ -345,6 +345,34 @@ def chips(choice: FilterChoice, options: Sequence[dict[str, str]] = ()) -> list[
     ]
 
 
+#: RF-13 (Deivid, 2026-11-26): on a phone the bar is ONE line — «Filtros» (with « · N»
+#: while N axes narrow the list) beside «Competidores»; «Filtros» opens one sheet with
+#: every axis, titled the same.
+FILTERS_LABEL = "Filtros"
+FILTERS_COUNT = "{label} · {n}"
+#: Its accessible name: «Filtros: 2 activos», «Filtros: 1 activo», «Filtros: ninguno activo».
+FILTERS_NAME_SOME = "{label}: {n} activos"
+FILTERS_NAME_ONE = "{label}: 1 activo"
+FILTERS_NAME_NONE = "{label}: ninguno activo"
+
+
+def active_count(choice: FilterChoice) -> int:
+    """How many axes narrow the list (several accounts are one axis)."""
+    return sum(bool(v) for v in (choice.network, choice.kind, choice.accounts, choice.duration))
+
+
+def filters_button(choice: FilterChoice) -> tuple[str, str]:
+    """`(face, name)` of the phone's «Filtros» button: «Filtros» or «Filtros · 2», and
+    an accessible name that contains the visible words (WCAG 2.5.3)."""
+    n = active_count(choice)
+    if n == 0:
+        return FILTERS_LABEL, FILTERS_NAME_NONE.format(label=FILTERS_LABEL)
+    face = FILTERS_COUNT.format(label=FILTERS_LABEL, n=n)
+    if n == 1:
+        return face, FILTERS_NAME_ONE.format(label=FILTERS_LABEL)
+    return face, FILTERS_NAME_SOME.format(label=FILTERS_LABEL, n=n)
+
+
 #: RF-13 (Deivid, 2026-11-26, after measuring at 375 px): on a phone a filtered chip of
 #: these axes shows a shorter value, so no chip is left alone on a line and «Competidores»
 #: is not said twice beside the «Competidores» button. «Tipo» takes the words of the
@@ -519,10 +547,17 @@ __all__ = [
     "EmptyMessage",
     "FirstPage",
     "FilterChoice",
+    "FILTERS_COUNT",
+    "FILTERS_LABEL",
+    "FILTERS_NAME_NONE",
+    "FILTERS_NAME_ONE",
+    "FILTERS_NAME_SOME",
     "account_key",
     "account_options",
     "accounts_by_key",
     "chips",
+    "active_count",
+    "filters_button",
     "phone_chip",
     "clear_accounts",
     "empty_message",

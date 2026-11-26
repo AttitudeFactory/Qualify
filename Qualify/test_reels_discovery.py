@@ -1252,11 +1252,9 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     assert "rx.button(" in button and "min_height=_TARGET" in button
     # never cut off, never broken letter by letter: a real ellipsis (Radix's `truncate`
     # reaches Reflex 0.10 as an invalid CSS rule — the bug seen live at 375 px)
-    face = inspect.getsource(discover_reels._filter_face)
-    assert "**_ELLIPSIS" in face and 'max_width="100%"' in button
     assert "**_ELLIPSIS" in inspect.getsource(discover_reels._chip_face)
-    label = face[face.index("AXIS_LABELS[axis],") : face.index("_axis_value(axis),")]
-    assert 'white_space="nowrap"' in label  # «Tipo de cuenta» never splits either
+    assert 'max_width="100%"' in button
+    assert "**_ELLIPSIS" in inspect.getsource(discover_reels._filters_button)
     assert "truncate=" not in inspect.getsource(discover_reels)
     assert '"truncate"' not in rendered
     assert discover_reels._ELLIPSIS == {
@@ -1265,9 +1263,10 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
         "text_overflow": "ellipsis",
     }
     assert "white-space" in rendered or "whiteSpace" in rendered
-    assert "data-sheet-chip" in rendered and "SHEET_FOCUS_SCRIPT" in inspect.getsource(
-        discover_reels._sheet
-    )
+    # the sheet gives the focus back to «Filtros», however it closes
+    assert discover_reels.FILTERS_BUTTON_ID in rendered
+    assert discover_reels.FILTERS_BUTTON_ID in discover_reels.SHEET_FOCUS_SCRIPT
+    assert "SHEET_FOCUS_SCRIPT" in inspect.getsource(discover_reels._sheet)
     ideas = inspect.getsource(discover_reels._ideas)
     assert "S.title" not in ideas and "S.body" not in ideas  # «Ideas de hace N días» gone
     assert "section(" not in ideas and "_pager()" in ideas
@@ -1379,10 +1378,10 @@ async def test_ideas_hide_the_no_ideas_note(world: _World) -> None:
     assert state.reels and not state.no_ideas_left
 
 
-def test_a_phone_chip_shows_one_word_and_names_itself_in_full() -> None:
-    """RF-13 option A (Deivid 2026-11-26): on a phone a chip shows its short name with no
-    filter («Tipo», not «Tipo de cuenta») and only its value with one; a screen reader
-    and `title` get the full «Tipo de cuenta: Todos». The desktop face is unchanged."""
+def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
+    """RF-13 (Deivid 2026-11-26): a desktop chip shows its short name with no filter
+    («Tipo», not «Tipo de cuenta») and only its value with one; a screen reader and
+    `title` get the full «Tipo de cuenta: Todos». The popovers keep the long words."""
     import inspect
 
     from . import discover_reels
@@ -1396,18 +1395,20 @@ def test_a_phone_chip_shows_one_word_and_names_itself_in_full() -> None:
     face = inspect.getsource(discover_reels._chip_face)
     # the face is the state's `chip_texts` (`reels_filters_vm.phone_chip`, tested there)
     assert "_chip_text(axis)" in face
-    assert "AXIS_LABELS" not in face  # never «Tipo de cuenta» on the phone's face
-    assert "compact=True" in inspect.getsource(discover_reels._chip)
-    assert "compact" not in inspect.getsource(discover_reels._dropdown)  # desktop as it was
+    assert "AXIS_LABELS" not in face  # never «Tipo de cuenta» on a chip's face
     button = inspect.getsource(discover_reels._filter_button)
-    # the phone chip names itself with the long words, the desktop as before
-    assert "aria_label=_chip_text(axis, name=True) if compact else" in button
-    assert "title=_chip_text(axis, name=True) if compact else" in button
+    assert "*_chip_face(axis)" in button
+    assert "aria_label=_chip_text(axis, name=True)" in button
+    assert "title=_chip_text(axis, name=True)" in button
     assert 'variant=rx.cond(on, "soft", "surface")' in button
+    # only the filtered chip of a group gives way (a long @handle)
+    assert '"flex_shrink": rx.cond(on, _SHRINK_FIRST, "0")' in button
+    # the popovers' options keep the long words («Menos de 15 segundos»)
+    assert "_single_options(axis, close=True)" in inspect.getsource(discover_reels._dropdown)
 
 
 async def test_the_chip_texts_follow_the_filters(world: _World) -> None:
-    """`chip_texts`: what the phone's chips say and are named, from the bar's values."""
+    """`chip_texts`: what the chips say and are named, from the bar's values."""
     world.ok_run()
     state, proxy = _screen_state()
     await _open(proxy)
@@ -1421,90 +1422,91 @@ async def test_the_chip_texts_follow_the_filters(world: _World) -> None:
     assert state.filter_values["duration"] == "Más de 60 segundos"  # the sheet's words
 
 
-def test_with_a_filter_on_the_phone_chips_move_in_pairs() -> None:
-    """Deivid's live test at 375 px (2026-11-26): a filter on left «Duración» alone. With a
-    filter on, «Quitar filtros» + «Competidores» fill the first line and the four
-    filters move as two pairs that never wrap; with none, they are plain items of the
-    row (`display: contents`), as measured fine live."""
-    import inspect
-
-    from . import discover_reels
-
-    pair = inspect.getsource(discover_reels._chip_pair)
-    # held together while a filter is on, and for a brand with no competitor to show
-    assert "DiscoverReelsState.filters_on | (DiscoverReelsState.competitor_rows.length() == 0)" in (
-        pair
-    )
-    assert '"flex",' in pair and '"contents",' in pair
-    assert 'wrap="nowrap"' in pair and "shrink=True" in pair
-    # option A (Deivid 2026-11-26): no competitor to show → no «Quitar filtros» on the
-    # phone (it would sit alone); the sheet's foot and the empty message still reset; the
-    # desktop button only needs a filter on
-    reset = inspect.getsource(discover_reels._reset_button)
-    assert "S.filters_on & (S.competitor_rows.length() > 0) if chip else S.filters_on" in reset
-    assert "reset_filters" in inspect.getsource(discover_reels._sheet)
-    assert "reset_filters" in inspect.getsource(discover_reels._empty_lists)
-    # in a pair only the filtered chip gives way (review nit)
-    button = inspect.getsource(discover_reels._filter_button)
-    assert 'rx.cond(on, _SHRINK_FIRST, "0") if compact else _SHRINK_FIRST' in button
-    bar = inspect.getsource(discover_reels._filter_bar)
-    phone = bar.split("display=_WIDE")[1]
-    assert "_chip_pair(AXIS_NETWORK, AXIS_KIND)" in phone
-    assert "_chip_pair(AXIS_ACCOUNT, AXIS_DURATION)" in phone
-
-
-def test_the_phone_row_uses_the_short_words_to_fit() -> None:
-    """Option A, measured by estimate at 375 px (review): with a filter on, «Restablecer
-    filtros» (~180 px) and «Tus competidores» (~166 px) would each sit alone on a line —
-    so on the phone they read «Quitar filtros» and «Competidores» (allowed by Deivid
-    «only if needed»), with a little less side padding; the accessible names stay full
-    and the desktop keeps the long words."""
+def test_the_desktop_bar_is_one_line_of_groups_centred() -> None:
+    """Deivid at ~1180 px (2026-11-26): a filter on sent Duración, «Tus competidores» and
+    «Restablecer filtros» to a second row. Now: short chips, three groups that never
+    wrap apart — Canal + Tipo, Cuenta + Duración, «Competidores» + «Quitar filtros» — on
+    one line, and centred lines where a narrow panel cannot hold it."""
     import inspect
 
     from . import discover_reels
     from . import reels_competitors_vm as rc
 
-    assert reels_filters_vm.RESET_SHORT == "Quitar filtros"
-    assert rc.PICKER_SHORT == "Competidores"
-    reset = inspect.getsource(discover_reels._reset_button)
-    assert "RESET_SHORT if chip else reels_filters_vm.RESET_LABEL" in reset
+    bar = inspect.getsource(discover_reels._filter_bar)
+    desktop = bar.split("display=_WIDE")[0]
+    for needed in (
+        "_chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND))",
+        "_chip_group(_dropdown(AXIS_ACCOUNT), _dropdown(AXIS_DURATION))",
+        "_chip_group(_rivals_button(chip=False), _reset_button())",
+    ):
+        assert needed in desktop, needed
+    wide = bar[bar.index("_chip_group(_dropdown(AXIS_NETWORK)") : bar.index("display=_PHONE")]
+    assert 'justify="center"' in wide and 'wrap="wrap"' in wide
+    group = inspect.getsource(discover_reels._chip_group)
+    assert 'wrap="nowrap"' in group
+    # the short words, the long ones in the accessible names (WCAG 2.5.3)
+    assert reels_filters_vm.RESET_SHORT == "Quitar filtros" and rc.PICKER_SHORT == "Competidores"
+    assert "reels_filters_vm.RESET_SHORT" in inspect.getsource(discover_reels._reset_button)
     rivals = inspect.getsource(discover_reels._rivals_button)
-    assert "PICKER_SHORT if chip else reels_competitors_vm.PICKER_TITLE" in rivals
+    assert "reels_competitors_vm.PICKER_SHORT" in rivals
     assert "aria_label=S.competitors_label" in rivals  # «Tus competidores: …»
-    # WCAG 2.5.3 (label in name, case-insensitive): the visible word is in the name
     for name in (rc.BUTTON_LABEL, rc.BUTTON_LABEL_READING):
         assert rc.PICKER_SHORT.lower() in name.lower()
-    assert "**_CHIP_PAD" in inspect.getsource(discover_reels._chip)
-    assert discover_reels._CHIP_PAD == {"padding_left": "0.625rem", "padding_right": "0.625rem"}
+
+
+def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
+    """Deivid, 2026-11-26: on a phone ONE line of equal buttons — «Filtros» (with « · N»)
+    and «Competidores»; «Filtros» opens one sheet with every axis under its name, «Quitar
+    filtros» and «Listo» in its foot; the focus goes back to «Filtros»."""
+    import inspect
+
+    from . import discover_reels
+
+    bar = inspect.getsource(discover_reels._filter_bar)
+    phone = bar.split("display=_WIDE")[1]
+    assert "_filters_button()" in phone and "_rivals_button(chip=True)" in phone
+    for gone in ("_chip(", "_reset_button(", "_chip_pair"):
+        assert gone not in phone, gone  # no chips, no «Quitar filtros» in the phone's bar
+    assert 'wrap="nowrap"' in phone
+    # equal parts of the line (room for RF-14's third button)
+    assert discover_reels._PHONE_SLOT["flex"] == "1 1 0"
+    button = inspect.getsource(discover_reels._filters_button)
+    for needed in ('"sliders-horizontal"', "**_PHONE_SLOT", "min_height=_TARGET", "**_ELLIPSIS"):
+        assert needed in button, needed
+    assert "aria_label=S.filters_texts" in button and "id=FILTERS_BUTTON_ID" in button
+    assert "**(\n                _PHONE_SLOT\n                if chip" in inspect.getsource(
+        discover_reels._rivals_button
+    )
     sheet = inspect.getsource(discover_reels._sheet)
-    assert "RESET_LABEL" in sheet and "RESET_SHORT" not in sheet  # the sheet keeps it whole
+    assert "_sheet_group(axis) for axis in reels_filters_vm.AXES" in sheet
+    assert "S.filters_on" in sheet and "RESET_SHORT" in sheet and "DONE_LABEL" in sheet
+    assert "title=reels_filters_vm.FILTERS_LABEL" in sheet
+    group = inspect.getsource(discover_reels._sheet_group)
+    assert "AXIS_LABELS[axis]" in group and "close=False" in group  # long words, stays open
+    rendered = str(discover_reels._filter_bar().render())
+    for axis_name in ("Canal", "Tipo de cuenta", "Cuenta"):
+        assert axis_name in rendered
 
 
-async def test_the_values_a_filtered_chip_shows(world: _World) -> None:
-    """The words a filtered phone chip shows are the bar's own (`filter_values`); the chip
-    face picks them over its short name (`test_a_phone_chip_shows_one_word…`)."""
+async def test_the_filtros_sheet_stays_open_while_choosing(world: _World) -> None:
+    """Every choice applies at once and the sheet stays open; Escape or «Listo» close it;
+    «Quitar filtros» resets everything. The button says how many filters are on."""
     world.ok_run()
     state, proxy = _screen_state()
     await _open(proxy)
-    assert state.filter_values["network"] == "Todos"  # no filter: the chip says «Canal»
+    assert state.filters_texts == {"face": "Filtros", "name": "Filtros: ninguno activo"}
+    state.open_filters()
+    assert state.sheet == "all"
     await _filter(proxy, state.set_filter("network", "instagram"))
-    await _filter(proxy, state.set_filter("kind", "competencia"))
-    assert state.filter_values["network"] == "Instagram"
-    assert state.filter_values["kind"] == "Competidores"
-
-
-async def test_the_sheet_remembers_its_chip_for_the_focus(world: _World) -> None:
-    """Escape (or the backdrop, «Cerrar», «Listo») closes the sheet; the chip that
-    opened it stays marked so the focus goes back to it — and another business starts
-    with none marked."""
-    world.ok_run()
-    state, proxy = _screen_state()
-    await _open(proxy)
-    state.open_sheet("kind")
-    assert (state.sheet, state.sheet_chip) == ("kind", "kind")
+    assert state.sheet == "all" and state.filter_network == "instagram"
+    assert state.filters_texts == {"face": "Filtros · 1", "name": "Filtros: 1 activo"}
+    await _filter(proxy, state.set_filter("duration", "lt15"))
+    assert state.filters_texts == {"face": "Filtros · 2", "name": "Filtros: 2 activos"}
     state.sheet_changed(False)  # Escape
-    assert (state.sheet, state.sheet_chip) == ("", "kind")
-    state.open_sheet("nope")  # not an axis: nothing opens, the mark stays
-    assert (state.sheet, state.sheet_chip) == ("", "kind")
-    state._claim_cards("another-tenant")
-    assert state.sheet_chip == ""
+    assert state.sheet == ""
+    state.open_filters()
+    await _filter(proxy, state.reset_filters())
+    assert not state.filters_on and state.sheet == ""
+    state.open_filters()
+    state._claim_cards("another-tenant")  # another business: the sheet closes
+    assert state.sheet == ""
