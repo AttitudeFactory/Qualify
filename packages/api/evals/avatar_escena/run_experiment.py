@@ -148,6 +148,24 @@ def _spent_before(run: Path | None) -> Decimal:
     return Decimal(str(_read_json(run / SPEND_FILE, {}).get("spent_usd", "0")))
 
 
+def _phase_spent(run: Path, phase: str) -> Decimal:
+    """Everything `gasto.json` records for `phase`: every reservation, adjustment and
+    release of every command of the run (and the totals of the older per-phase format)."""
+    data = _read_json(run / SPEND_FILE, {})
+    total = sum(
+        (Decimal(str(c["cost_usd"])) for c in data.get("calls", ()) if c.get("phase") == phase),
+        Decimal(0),
+    )
+    return total + sum(
+        (
+            Decimal(str(p.get("spent_usd", "0")))
+            for p in data.get("phases", ())
+            if p.get("phase") == phase
+        ),
+        Decimal(0),
+    )
+
+
 def _add_spend(
     run: Path, phase: str, label: str, cost_usd: Decimal | str, *, kind: str = "cobro"
 ) -> None:
@@ -548,7 +566,7 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
         done[item.label] = row
         _write_json(run / DRAWINGS_FILE, done)
         print(f"  {item.label}: {row.get('file') or row.get('error')} · US${row['cost_usd']}")
-    print(f"Corrida: {run} · gastado en esta fase US${ledger.snapshot()['spent_usd']}")
+    print(f"Corrida: {run} · gastado en esta fase US${_phase_spent(run, 'dibujar')}")
     print(f"Elige las opciones en {run / CHOICE_FILE} antes de «escenas» (por omisión, la 1).")
     return 0
 
@@ -706,6 +724,12 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             "pricing_version": pricing.version,
             "quote_usd": str(item.quote_usd),
         }
+        if previous.get("status") == RELEASED:
+            # asked again after a failed task: the earlier try stays on record
+            row["intento_previo"] = {
+                "task_id": previous.get("task_id"),
+                "error": previous.get("error"),
+            }
         try:
             charge = _Charge(
                 run=run,
@@ -762,7 +786,7 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
             f"  {case.label}: {row.get('video') or row.get('error')} · "
             f"{row['seconds_taken']} s · US${row['cost_usd']}"
         )
-    print(f"Corrida: {run} · gastado en esta fase US${ledger.snapshot()['spent_usd']}")
+    print(f"Corrida: {run} · gastado en esta fase US${_phase_spent(run, 'escenas')}")
     return 0
 
 

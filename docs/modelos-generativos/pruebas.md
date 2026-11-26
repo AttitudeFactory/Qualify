@@ -24,7 +24,7 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 <a id="avesc-001"></a>
 
-## AVESC-001 — Avatar como personaje en su escena, camino A: Seedance 2.5 omni en borrador (m-25112921) — 2026-11-26 · 6 de 6 referencias aceptadas; labios validados por Deivid, 2 defectos; falta el juicio de Herwin; US$5,02
+## AVESC-001 — Avatar como personaje en su escena, camino A: Seedance 2.5 omni en borrador (m-25112921) — 2026-11-26 · 6 de 6 referencias aceptadas; labios bien en las escenas (Deivid), 2 defectos; falta el juicio de Herwin; US$5,02
 
 - **Qué:** 2 personajes dibujados por `dola-seedream-5-0-pro-260628` (realista y animado) × 3 escenas (5, 8 y 10 s) sobre un fondo dibujado, con una foto del catálogo de nibbles usada como super smash por decisión de Deivid (no se confirmó que sea el producto real; la fidelidad se mide contra esa foto), en `dreamina-seedance-2-5-260628`, borrador 480p 9:16 con audio, prompt `avatar-escena-v1`, tabla `v10`. Corrida `20261126-125745`, banco `packages/api/evals/avatar_escena/`.
 - **Costo real:** US$5,02 (dibujos 0,27; escenas 4,75: 0,518 / 0,827 / 1,032 por personaje). La cotización quedó 0,4 a 0,8 % corta. Tiempo por escena: 67 a 78 s.

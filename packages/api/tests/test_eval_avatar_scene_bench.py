@@ -832,8 +832,32 @@ def test_a_failed_task_is_released_and_asked_again(
     assert runner.main(_scenes_args(tmp_path, run)) == 0
     assert len(FakeSeedanceScripted.created) == 4  # e2 asked again: it was not billed
     assert FakeSeedanceScripted.resumed == []
-    assert _results(run)["animado/dibujado/e2"]["status"] == "pagada"
+    retried = _results(run)["animado/dibujado/e2"]
+    assert retried["status"] == "pagada"
+    assert retried["intento_previo"]["task_id"] == e2["task_id"]
+    assert "InternalError" in retried["intento_previo"]["error"]
     assert _all_counted_once(run)
+
+
+def test_the_phase_total_sums_every_command_of_the_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner, run = _scripted_run(tmp_path, monkeypatch, {"8": "timeout"})
+    assert runner.main(_scenes_args(tmp_path, run)) == 0
+    capsys.readouterr()
+    assert runner.main(_scenes_args(tmp_path, run)) == 0  # only recovers e2
+    scenes_total = sum((Decimal(r["cost_usd"]) for r in _results(run).values()), Decimal(0))
+    assert runner._phase_spent(run, "escenas") == scenes_total
+    assert runner._phase_spent(run, "dibujar") == Decimal("0.180")
+    assert f"gastado en esta fase US${scenes_total}" in capsys.readouterr().out
+    # the older per-phase format still adds up
+    old = tmp_path / "vieja"
+    old.mkdir()
+    (old / "gasto.json").write_text(
+        json.dumps({"spent_usd": "5.02", "phases": [{"phase": "escenas", "spent_usd": "4.75"}]}),
+        "utf-8",
+    )
+    assert runner._phase_spent(old, "escenas") == Decimal("4.75")
 
 
 def test_an_old_run_without_states_is_resumed_without_resending(
