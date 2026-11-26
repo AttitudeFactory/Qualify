@@ -599,3 +599,172 @@ Las cinco llegaron por «creacion de tickets» el 2026-11-26. Cada una dice cóm
 - **Condiciones:** las mismas de §12.9 (C1 a C3), más la medición de arriba y el texto del permiso revisado.
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), crear y guardar personajes (m-25129385), «Sugerir con IA» (m-25129386), la captura de la consola y la respuesta escrita de BytePlus (m-25129387), construir el personaje desde una foto real (§12.12, pendiente de medición), elegir la voz y encender cualquier interruptor.
+
+## 13. Enmienda `[PROPUESTO]`: un solo editor — «Video por partes» dentro de la línea de tiempo del Clip
+
+**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 a partir de la decisión de Deivid del mismo día y del plan `docs/plan-editor-unico-clip-partes.md` (copiado sin cambios en este PR). Deivid respondió las 5 preguntas del plan el 2026-11-26 por medio de «creacion de tickets» (§13.10); la segunda mitad de la respuesta 5 queda **por confirmar con Deivid**. Solo la firma Deivid (P5 del §6.3).
+
+**Firma de Deivid:** `[ ]` «Firmo el §13» · fecha: ____. Firmar no enciende nada: el interruptor sigue apagado hasta cumplir §13.8.
+
+**Ticket:** por crear con `meegle-ticket` en la épica m-25026566 (este cambio es el PR 0 del §13.7).
+
+**Evidencia:** `main` en `f14f65e0` (2026-11-26, cabeza de migraciones `0186_clip_avatar_failure_mails`) y la rama del §12 (`docs/m-25128784-adr50-personaje`). Se comprobaron en `main`: `check_part_link` (`creative/service.py:917`), `create_clip_with_blocks` (`creative/clip_avatar.py:1917`), `clip_block_charges` (`clip_avatar.py:2867`), `create_parts` (`creative/parts.py:1499`), `regenerate_part` (`parts.py:1700`), `make_part_new` (`creative/part_actions.py:359`), `join_preview` (`creative/part_join.py:676`), `merged_recipe` (`creative/parts_plan.py:319`), `charge_many` y `charge_videos_many` (`creative/creations.py:362` y `:386`), `PARTS_MAX = 6` y `SEGMENTS_MAX = 8` (`qualify_creative/schemas.py:127` y `:751`) y el tope diario de `creative/local_cap.py`. Las medidas de tiempo del armado salen del §10.4.
+
+### 13.1 Decisión de Deivid y qué cambia
+
+**Decisión (Deivid, 2026-11-26):** «Video por partes» (ADR 44, épica m-24921048) y el editor del Clip «Arma tu video» (§1.7) pasan a ser **un solo editor con línea de tiempo**. En sus palabras: «que sea una combinación de las dos; ese es el objetivo desde el día cero». **No se pierde nada de ninguno de los dos:** cada parte hecha con IA es un bloque más de la línea de tiempo del Clip. Va en la misma dirección que la escena del personaje (§12).
+
+**Respecto al ADR 44 (lo que enmienda).** El ADR 44 dice que cada parte es una pieza hija de un padre `SHOT_VIDEO` y que las partes se unen localmente con PyAV en una unión propia (`join_preview`). Para las **piezas nuevas**, el padre de una parte con IA pasa a ser **el Clip** y la unión es el armado del Clip (`block_join`). Siguen sin cambio del ADR 44: el análisis del reel (F3–F5, F9), el plan de la IA (P2), la regla de modo (F6), el productor de Seedance por parte (`reference`/`edit`/`extend`), el cupo en segundos al mes (F1) y la aprobación única del video entero (F8), que ahora es la del Clip. Las piezas `SHOT_VIDEO` que ya existen no cambian (§13.10, respuesta 1).
+
+**Respecto al §1 de este ADR (lo que completa).** El §1.1 ya pedía «una sola pantalla […] que reemplaza las pantallas del Clip y de la hoja de parte», y el §4 descartó «el Clip como `SHOT_VIDEO` de una sola parte». Por eso el contenedor es el Clip y no el padre `SHOT_VIDEO`. No se reabre nada firmado.
+
+**Respecto al §11.** Sigue igual: el Clip que nace con sus hijos (`create_clip_with_blocks`), la espera en `drafting` (`ClipBlocksWait`), las 72 h para elegir si un hijo falla y el correo de falla. **Cambia una regla:** «3 s o más de material propio» (P5 del §11) aplica **solo cuando el Clip lleva escenas o avatares**. Un Clip hecho solo de partes con IA es válido (§13.10, respuesta 3).
+
+**Respecto al §12.** Sigue igual todo el §12. Las escenas y las partes con IA **comparten los lugares de hijo** (`part_index` de 1 a 6) y **un solo camino de aprobación** (§12.4 y §13.4). Se mantiene «textos sí, efectos no» sobre una escena, también cuando la escena cae junto a una parte con IA.
+
+### 13.2 El modelo
+
+```
+Clip (CLIP, sin padre) ── media.segments: [propio | ai_part | propio | ai_part …]   ≤ 8 bloques, 3–60 s
+   │                       media.ai_parts: [VideoPartPlan …]  ← el plan de cada bloque ai_part
+   │                       text_layers / effects ─ sobre el video entero (segundos del final)
+   │                       character_scenes ────── ventanas que reemplazan segundos (§12)
+   ├── hijo CLIP «parte con IA» (media.part, modo reference | edit | extend, part_index = lugar)
+   └── hijo CHARACTER_SCENE (§12)
+```
+
+- **El bloque `ai_part`.** Un `SourceSegment` de `kind="ai_part"` en `media.segments` que apunta a una entrada de `media.ai_parts`. Cada entrada es un `VideoPartPlan` **sin cambios**: modo, segundos (1 a 10), recorte, descripción, fotos, análisis del reel y `mode_reason`. La unión de entrada del bloque es su `SourceSegment.transition_in` (§10). Un bloque `ai_part` va siempre a ×1; la velocidad solo aplica a los bloques propios.
+- **El hijo.** Es el mismo hijo `CLIP` de hoy, con `parent_draft_id`, `part_index` (su lugar) y `media.part` (`PartRef`). El productor de Seedance (`reference`/`edit`/`extend`, ventanas del reel, `extend` desde la parte anterior) se reusa **sin tocarlo**. Lo único que cambia en ese punto es que `check_part_link` acepta un padre `CLIP` además de `SHOT_VIDEO`.
+- **El armado.** `produce_local` busca el video que guardó cada hijo (como hoy con el avatar, `generated_sources`), lo pone a ×1 y con su recorte en el lugar del bloque, y lo une con los bloques propios usando el `block_join` de siempre. Para los Clips no hay unión de partes aparte (`join_preview`).
+- **Una parte `local` deja de ser hija.** Pasa a ser directamente bloques propios en `media.segments`.
+- **Textos y efectos del Clip entero.** Lo que antes era la receta de cada parte (`text_layers`, `effects`) pasa a las pistas del Clip, en segundos del video final, con la misma lógica de `merged_recipe`. Se compone una sola vez sobre el video armado. Así se levanta la restricción de hoy («solo en partes `local` o `reference` 9:16», m-25103284) y se permiten textos y efectos sobre **cualquier** parte con IA (§13.10, respuesta 2), salvo los efectos que se crucen con una escena (§12.1).
+- **Del plan a los bloques.** Una función pura nueva, `blocks_from_plan(plan, analysis)`, convierte lo que devuelven `plan_from_analysis` y `propose_parts` en bloques: las partes `local` en bloques propios, las demás en bloques `ai_part`, y las transiciones del plan (EF-16) en el `transition_in` de cada bloque. El editor lo muestra en la línea de tiempo **antes de «Crear»**, sin costo.
+- **Sin migración.** Todo lo nuevo vive en el JSON del brief y el tipo del hijo sigue siendo `CLIP`. No hay tablas nuevas ni más filas por año que las que ya hacen las partes de hoy (un hijo por parte). Los números `0187` y `0188` son de m-25129385 y m-25128784; el **`0189` queda reservado** solo por si hacen falta más de 6 hijos por Clip (ampliar `ck_content_drafts_part_index` es reversible).
+
+**Validaciones** (en `validate_recipe` y `unbuilt_recipe_problems`, todas antes de escribir una fila o de pagar):
+
+- ≤ **8 bloques** en total (`SEGMENTS_MAX`), propios y `ai_part` juntos;
+- el Clip dura de 3 a **60 s** (`LOCAL_TOTAL_MIN_S`, `LOCAL_TOTAL_MAX_S`);
+- ≤ **6 hijos de IA** en total, sumando partes con IA y escenas (`part_index` 1 a 6; §13.10, respuesta 4). Con 3 escenas quedan 3 lugares para partes;
+- un bloque `extend` necesita un bloque antes (una parte con IA o un video propio);
+- un bloque `edit` necesita una ventana del reel;
+- la regla de «3 s propios» solo si hay escenas o avatares (§13.1);
+- con `QUALIFY_CLIP_AI_PARTS` apagado, cualquier `ai_part` se rechaza con `switched_off` antes de leer nada.
+
+### 13.3 Qué puede hacer el dueño con cada bloque
+
+| Bloque | Antes de «Crear» (gratis) | Después de crear |
+|---|---|---|
+| Propio | Todo lo del Clip de hoy | Lo mismo. Cada cambio vuelve a armar el Clip sin costo y cuenta en el tope de 10 armados al día |
+| Parte con IA | Modo, descripción, fotos, segundos, recorte, orden, quitar, juntar y la unión | «Rehacer esta parte» (descripción y fotos: 1 vista previa, `regenerate_part`). Cambiar el modo crea una versión nueva del bloque (1 vista previa, como `make_part_new`). Orden, quitar, recorte y unión: se vuelve a armar gratis, reusando el video del hijo |
+| Escena del personaje | Lo que define el §12.2 | Lo que define el §12. Una escena sin cambios no se vuelve a pedir |
+| Textos, capas y uniones | Todo | Todo, gratis: son del Clip, no de la parte. Hoy no hay forma de cambiar el texto, el efecto o la unión de una parte ya creada; esto cierra ese hueco |
+
+**Lo que no cambió no se paga de nuevo.** Como en el §12.2, un hijo con las mismas entradas se reusa: su clave de pedido es el resumen de lo que se le pidió (modo, segundos, recorte, descripción, fotos y ventana del reel).
+
+### 13.4 El cobro: una sola regla para escenas y partes
+
+Se construye **una sola vez** para todos los hijos de IA del Clip (escenas del §12 y partes con IA):
+
+1. **Al crear:** cada hijo de IA descuenta **1 vista previa** del mes, todo o nada (`charge_many`, D7 de `docs/diseno-video-por-planos.md`). Si BytePlus no entrega nada, se devuelve. Si no alcanzan las vistas previas para todos, se rechaza antes de pagar nada.
+2. **Al aprobar el Clip:** se descuentan, todo o nada, **los segundos pedidos** de cada hijo de IA que aún no se cobró, en la fila de ese hijo (se juntan `clip_block_charges` y `charge_videos_many`). Así, aprobar otra versión del Clip no cobra dos veces.
+3. **Los finales a 1080p:** después de cobrar se pide el final de cada hijo (`part_final` para las partes; el final del §12.4 para las escenas), y el Clip se vuelve a armar con ellos. Si falla un final, vuelven sus segundos, sale el correo de falla y el Clip queda aprobado esperando ese final, con «Intentar de nuevo» (D9 de `docs/diseno-video-por-planos.md`).
+4. **El Clip queda «listo»** con los finales y el dueño lo ve antes de programarlo. Nada se publica solo.
+
+- **Bloques propios:** US$0 (armado local, §1.5).
+- **Costo de proveedor por parte con IA:** el mismo de hoy en «Video por partes» (vista previa de Seedance al crear, final 1080p al aprobar, tabla de precios `v10`). Juntar los dos editores **no agrega ninguna llamada pagada**: cambia el contenedor, no el proveedor. Las cifras por escena siguen en la tabla del §12.4.
+- **Guarda de precio e idempotencia:** cada tarea de Seedance (vista previa y final) pasa por la guarda de precio con la tabla vigente y deja su evento en `creative_usage_events`. El final lleva la clave `(hijo, revisión)`, así que aprobar dos veces o reintentar no genera ni cobra dos veces.
+- **Fuera del pedido web:** los hijos, el armado y los finales corren en el `creative-worker` (ADR 41).
+- **Procedencia:** cada parte con IA queda en `params.local.ai_parts` del asset del Clip (borrador, revisión y asset del hijo; proveedor, modelo y versión del prompt; modo y `mode_reason`; reel de origen y su ventana; segundos pedidos y reales; ids de las tareas y su costo), y `ai_sources` la anota como `ai_part`. El Clip que lleva una parte con IA queda con `ai_generated=True`, con la regla del §9.
+
+### 13.5 El tope de 10 armados al día
+
+- **Cuentan** (decidido, §13.10, respuesta 5): «Crear», «Rehacer esta parte» y **todo cambio del dueño después de crear** que vuelva a armar el Clip (texto, efecto, transición, orden, recorte o quitar un bloque).
+- **No cuentan** (recomendación del arquitecto, **por confirmar con Deivid**): los armados automáticos, es decir, el que se hace cuando terminan los hijos y el que se hace con los finales al aprobar. Si contaran, un Clip con 6 partes y un reintento podría gastar el tope sin que el dueño pidiera nada.
+
+### 13.6 Interruptor
+
+- **Nuevo:** `QUALIFY_CLIP_AI_PARTS`, **apagado** en todos los entornos (`.env.example` y `deploy/.env.prod.example`). Apagado, el servidor rechaza `ai_part` con `switched_off` y el texto de «todavía no está disponible», antes de leer nada.
+- Necesita además `QUALIFY_CLIP_EDITOR` encendido (la pantalla del Clip). No depende de `QUALIFY_CLIP_CHARACTER_SCENE`.
+- Mientras esté apagado, «Video por partes» sigue entrando por sus pantallas de hoy (`SHOT_VIDEO`).
+
+### 13.7 Plan de entrega: PR 0 a PR 9
+
+Primero el servidor, en PR chicos, cada uno con su ticket en la épica m-25026566.
+
+| PR | Qué | Reusa | Depende de |
+|---|---|---|---|
+| 0 · docs | Este §13, la nota en la fila 44 de `docs/arquitectura.md` §6 y el plan en `docs/plan-editor-unico-clip-partes.md` | — | §12 en `main` |
+| 1 · contrato | `SourceSegment.kind="ai_part"`, `media.ai_parts`, las validaciones del §13.2 en `validate_recipe` y `unbuilt_recipe_problems`, y el interruptor. Funciones puras, sin escrituras | `VideoPartPlan`, `transition_room_problems` | 0 |
+| 2 · crear | `create_clip_with_ai_parts`: el Clip y sus hijos en una transacción, 1 vista previa por hijo, `check_part_link` con padre `CLIP`, el armado resuelve cada bloque a su video, `ai_generated` | `create_clip_with_blocks`, `ClipBlocksWait`, `create_parts`, `produce_local` | 1 |
+| 3 · después de crear | «Rehacer esta parte», intentar de nuevo, hacerla nueva, quitar y cambiar el modo con padre `CLIP`. Volver a armar al cambiar textos, uniones u orden, reusando los hijos | `regenerate_part`, `part_actions` | 2 |
+| 4 · aprobar y finales | El cobro único de los segundos de los hijos, los finales de 1080p y volver a armar con ellos. **Se hace junto con el §12.4** (m-25128784): un solo camino para escenas y partes | `charge_videos_many`, `clip_block_charges`, `part_final`, `recompose` | 2 y §12 |
+| 5 · del plan a los bloques | `blocks_from_plan` para el análisis y para `propose_parts`; los textos y efectos de cada parte pasan al Clip | `plan_from_analysis`, `merged_recipe` | 1 |
+| 6 · pantalla: bloque IA | El bloque IA en la pista (aspecto propio, insignia del modo con su motivo), su panel y «Agregar → Parte con IA» | `part_editor_vm` (palabras), `timeline_vm` | 1, 2 y el diseño firmado (m-25026602) |
+| 7 · pantalla: entradas | «Hacer uno parecido» y «Pedir una idea» abren el editor con los bloques puestos | `reel_parts_vm` (palabras), `parts_start_vm` | 5 y 6 |
+| 8 · pantalla: resultado | Progreso por bloque, «Rehacer esta parte», aprobar y espera de los finales | `part_progress_vm`, `part_review_vm` | 3, 4 y 6 |
+| 9 · limpieza | Ya no se crean padres `SHOT_VIDEO` nuevos. Se retiran, para piezas nuevas, la lista de partes, la hoja de la parte, la tarjeta sin reel y `join_preview` | — | `QUALIFY_CLIP_AI_PARTS` encendido con el OK de Deivid |
+
+**Lo que se retira, y cuándo.**
+
+- **El PR 9** se hace cuando `QUALIFY_CLIP_AI_PARTS` esté encendido en producción con el OK de Deivid (§13.8). Desde ahí no se crean padres `SHOT_VIDEO` nuevos.
+- **Las piezas `SHOT_VIDEO` ya creadas** se siguen abriendo con sus pantallas de hoy (progreso, revisar, aprobar) hasta que la retención (ADR 39) las purgue. **No se convierten** (§13.10, respuesta 1). Cuando no quede ninguna viva, se borra su código (`join_preview`, `part_join`, las pantallas `reel_parts_*`, `part_editor_*` y `parts_start_*`) en un ticket de limpieza aparte, y el tipo `SHOT_VIDEO` queda solo para leer lo guardado.
+- Hasta entonces conviven dos caminos (R3).
+
+**Tickets abiertos que cambian** (a revisar en Meegle al crear los de los PR 0 a 5 y 9):
+
+- m-25026638 (ED-07, «El editor en Video por partes»): se reescribe como el PR 6. Se conserva el id.
+- m-25026640 (ED-08, «Cambiar esta»): se reescribe como el PR 3 más el PR 8.
+- m-25026636 (ED-06, «Idea» y 3 pasos): se mantiene; «Idea» propone bloques (PR 5 y 7).
+- m-25026602 (firma del diseño): se amplía con el bloque IA, su panel y el resultado. Es condición del PR 6.
+- m-25112921 (pantalla de la escena del personaje): sin cambio de alcance; comparte los lugares de hijo y el PR 4.
+- Épica m-24921048: las pantallas UI-* que reemplacen los PR 6 a 8 se cierran; VE-17 (presentador por parte) se cierra, reemplazado por la escena; VE-13, VE-15, VE-18 y VE-19 siguen y ahora aplican a los bloques. **Meegle no se leyó al redactar este §13.**
+
+### 13.8 Condiciones antes de encender `QUALIFY_CLIP_AI_PARTS`
+
+- **C1 · Armado medido con bloques IA** (R2): un Clip de 60 s con 8 bloques, de ellos 6 partes con IA, medido con `deploy/measure/local-video-memory.sh` en las condiciones del §10.4, y el número de armados por Clip contado en una prueba real. Se anota en `docs/armado-local-medicion.md`.
+- **C2 · Latido en el paso `speed`** (§10.4): sin él, un armado largo puede pasar los 20 min del reaper sin señal de vida.
+- **C3 · Prueba de punta a punta con Deivid**, su OK y `env-push`, como el resto de los interruptores de este ADR.
+- **C4 · Respuesta 5 confirmada** (§13.5): qué armados automáticos cuentan en el tope.
+
+### 13.9 Riesgos
+
+| # | Riesgo | Qué se hace | Estado |
+|---|---|---|---|
+| R1 | **Dos series de PR tocan el mismo código** (`clip_avatar.py` y el cobro al aprobar): el §12 y este §13. | El PR 4 se hace junto con el §12.4: un solo camino de aprobación y de finales para escenas y partes. | Mitigado por el orden |
+| R2 | **El armado tarda y se repite más.** Un Clip de 60 s con 8 bloques y 7 uniones tarda **~29 min con 1 CPU** (§10.4), y el paso `speed` pasa **14,5 min sin latido** frente a los 20 min del reaper. Con bloques IA, cada Clip aprobado se arma **al menos dos veces** (el borrador cuando terminan los hijos y otra vez con los finales), más cada cambio del dueño y cada reintento de un hijo. Peor caso calculado `[H]` por negocio y día: 10 armados del dueño + ~10 automáticos ≈ 20 × 29 min ≈ **9,7 h de CPU**, en un `creative-worker` de 1 CPU que comparten todos los negocios. Los bloques IA van a ×1 y no pasan por `speed`, así que el tiempo real debería ser menor, pero no está medido. | Medir antes de encender (C1) y poner el latido en `speed` (C2). Si el p95 de espera pasa de 5 min una semana, se reabre (§13.11). | Abierto; condición C1 |
+| R3 | **Conviven dos caminos** mientras dure la transición (`SHOT_VIDEO` viejo y el Clip). | El PR 9 tiene fecha al encender el interruptor; las piezas viejas solo se abren hasta que las purgue la retención. | Aceptado, con fecha |
+| R4 | **6 hijos pueden quedarse cortos** para un reel con muchas partes más escenas. | Versión 1 con 6; el `0189` queda reservado para ampliar `ck_content_drafts_part_index` (reversible). | Decidido (respuesta 4) |
+| R5 | **Armados automáticos sin tope** (si se confirma que no cuentan): un Clip con hijos que fallan y se reintentan genera armados que el dueño no pidió. | Cada reintento de un hijo ya descuenta su vista previa o cuenta en su propio tope; un armado automático solo sigue a un hijo terminado o a una aprobación. | Por confirmar con Deivid |
+
+### 13.10 Respuestas de Deivid a las 5 preguntas del plan (2026-11-26, por «creacion de tickets»)
+
+1. **Videos por partes ya creados → decidida.** Se quedan como están y no se convierten. Se siguen abriendo con sus pantallas de hoy hasta que la retención los purgue (§13.7).
+2. **Textos y efectos sobre partes con IA → decidida: sí, sobre cualquier parte con IA**, también «Igual al original» y «Sigue a la anterior». Se mantiene la excepción del §12: sobre una escena del personaje, «textos sí, efectos no» (§13.2).
+3. **Clip hecho solo de partes con IA → decidida: sí.** La regla de «3 s propios» aplica solo cuando hay escenas o avatares (§13.1).
+4. **Hijos por Clip → decidida: hasta 6 hijos de IA en total**, sumando partes y escenas, sin migración. El `0189` queda reservado por si después hacen falta más (§13.2).
+5. **Tope de 10 armados al día → decidida en parte.** Los rearmados que provoca un cambio del dueño después de crear (texto, efecto o transición) **sí cuentan**. Para los automáticos (cuando terminan los hijos, o los finales al aprobar), la recomendación del arquitecto es que **no cuenten**: **por confirmar con Deivid** (§13.5, C4).
+
+### 13.11 Alternativas descartadas y qué lo reabriría
+
+| Alternativa | Por qué no |
+|---|---|
+| Mantener dos editores (el Clip y «Video por partes») | Deivid lo descartó el 2026-11-26: el objetivo desde el día cero era uno solo. Además, hoy no se pueden cambiar el texto, el efecto ni la unión de una parte ya creada. |
+| El padre `SHOT_VIDEO` como contenedor único (el Clip como video de una sola parte) | Ya descartado en el §4: obligaría a pasar cada Clip por el plan de partes y por `join_preview`, y perdería las pistas del Clip. |
+| Convertir los `SHOT_VIDEO` que ya existen al editor nuevo | Una migración de datos para piezas que la retención va a borrar igual (respuesta 1). |
+| Ampliar ya a más de 6 hijos | Nadie lo pidió todavía; el `0189` queda reservado (respuesta 4). |
+| Copiar el editor dentro de «Video por partes» (ED-07 como estaba) | Duplica la pantalla y el armado: dos códigos que mantener. |
+
+**Lo reabre:**
+
+- que el armado medido (C1) pase de 20 min para un Clip de 60 s con bloques IA, o que el p95 de espera del `creative-worker` pase de 5 min una semana: entonces se revisa la cola o se suma CPU, con su tabla de opciones;
+- que más del 10 % de los Clips con IA choquen con el tope de 6 hijos en un mes (→ `0189`);
+- que el tope de 10 armados al día frene a más del 10 % de los negocios activos en un mes (umbral del §8);
+- que Deivid decida que los armados automáticos sí cuentan (respuesta 5).
+
+**Fuera de esta enmienda:** el diseño de la pantalla (m-25026602), la voz y los subtítulos (VE-15, fase 2), la prueba de unir con `edit` de Seedance (VE-18 y VE-19) y encender cualquier interruptor.
+
+**Documentación por actualizar cuando se firme** (no se edita en este cambio):
+
+- `.claude/skills/qualify-context/SKILL.md` §2, fila «Crear pieza / generador»: decir que «Arma tu video» es el único editor de video con línea de tiempo, que admite partes con IA detrás de `QUALIFY_CLIP_AI_PARTS` (apagado) y que «Video por partes» (`SHOT_VIDEO`) queda solo para las piezas ya creadas desde el PR 9. Hoy el skill no nombra «Video por partes» ni el §12; conviene sumar también la escena del personaje (`QUALIFY_CLIP_CHARACTER_SCENE`, apagado).
+- `docs/diseno-video-por-planos.md` y `docs/epica-video-por-partes.md`: una nota arriba que apunte a este §13.
