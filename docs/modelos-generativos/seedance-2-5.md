@@ -339,3 +339,156 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 - Corrida sin repetición: con la misma entrada Seedance puede dar otro resultado.
 - El material real se descargó a `%TEMP%` y se borró al terminar, con todas las salidas. No
   quedó nada en el repositorio.
+
+## Avatar como personaje en su escena, camino A: banco y corrida AVESC-001 (2026-11-26, m-25112921)
+
+- **Qué mide.** Decisión de Deivid del 2026-11-26: el avatar del Clip es un **personaje** que
+  actúa y habla dentro de la escena (toma el producto, lo muestra, lo come y dice su línea).
+  Camino A: una sola tarea omni de Seedance 2.5 con tres imágenes de referencia (personaje
+  dibujado por Seedream 5.0 pro, foto del producto, fondo) y la línea entre comillas
+  (`dialogue`, que el adaptador agrega como `Dice a cámara: "…"`). El camino B (OmniHuman +
+  Seed Speech) no se puede medir: no hay llaves.
+- **Montaje.** `qualify_api/evals/avatar_scene_bench.py` (matriz, prompts `avatar-escena-v1`,
+  costo, guardias, planilla) y `packages/api/evals/avatar_escena/run_experiment.py`
+  (`just eval-avatar-escena plan | dibujar | escenas | planilla`). Usa los adaptadores reales
+  (`SeedreamImageAdapter`, `SeedanceVideoAdapter`) y la tabla `v10`. Salidas y material en
+  `%TEMP%/avatar-escena-seedance/`, nunca en el repositorio.
+- **Matriz.** 2 personajes (realista y animado: 2.x suele rechazar caras que parecen reales;
+  la doc admite salidas propias de Seedream de menos de 30 días sin modificar, por eso el
+  dibujo viaja byte a byte) × 3 escenas (5, 8 y 10 s) sobre el fondo dibujado = 6 tareas;
+  más la escena 1 sobre la foto real del local por personaje (2 tareas) **cuando exista esa
+  foto**. Hoy no hay foto del local de nibbles: esa rama queda fuera.
+- **Costo estimado (tabla `v10`, sin llamadas).** Dibujos: 2 opciones × (2 personajes + 1
+  fondo) × US$0,045 = **US$0,27**. Escenas en borrador 480p 9:16: 5 s US$0,514, 8 s US$0,822,
+  10 s US$1,028; 2 personajes = **US$4,73**. Total **US$5,00** (con 10 % de margen US$5,50).
+  Con la foto del local, +US$1,03 (total US$6,03; con margen US$6,63). **Tope propuesto:
+  US$8** (el código no acepta más de US$10).
+- **Guardias.** `--dry-run` o `--i-have-spend-authorization` (uno de los dos, obligatorio);
+  `--max-usd`, con la fase entera cotizada con margen antes de la primera llamada y cada
+  llamada reservada antes de enviarse (`SpendLedger`), acumulado entre fases en `gasto.json`;
+  escenas solo de 23:00 a 05:00 en Bogotá salvo `--allow-daytime`; una tarea a la vez; la
+  prueba en seco corre con la red bloqueada (`network_guard`).
+- **Métricas.** Automáticas por escena: acepta o rechaza la referencia (y el error),
+  segundos reales y costo real (tokens × tabla). Juicio de Deivid y Herwin en
+  `juicio-<juez>.csv`: personaje igual, producto reconocible, acción cumplida, voz en español
+  bien, labios sincronizados, sin letras, creíble 1-3.
+- **Activación de Seedance 2.5, verificada sin generar (2026-11-26).** Con la llave de API,
+  ModelArk no tiene endpoint de saldo (el de facturación pide AK/SK, que no están en el
+  `.env`). Se leyó la lista de tareas (`GET /contents/generations/tasks`: solo lectura, no
+  crea ni cobra): 21 tareas de `dreamina-seedance-2-5-260628` en la ventana de la lista
+  (19 `succeeded`, 2 `failed`), la última del 2026-11-21. El modelo está activado: la
+  exigencia de más de US$30 de saldo era del 2026-10-07 y quedó atrás el 2026-10-23. El
+  saldo actual no se pudo leer.
+- **Resultados:** corrida `20261126-125745`, en la sección siguiente.
+
+### Prueba AVESC-001 — camino A en vivo: 2 personajes × 3 escenas en borrador — 2026-11-26 (m-25112921)
+
+- **Corrida:** `20261126-125745`, con el OK de Deivid escrito en la sesión. Material en
+  `%TEMP%/avatar-escena-seedance/corridas/20261126-125745/` (`videos/`, `dibujos/`,
+  `resultados.json`, `gasto.json`, `dibujos.json`, `juicio-deivid.csv`, `juicio-herwin.csv`).
+  Producto: `%TEMP%/avatar-escena-seedance/material/producto-super-smash.jpg`, una foto del
+  catálogo de nibbles (producto `fde5a706`, idéntica byte a byte a una de las fotos de la «smash
+  doble») que se usó como super smash por decisión de Deivid; no se confirmó que muestre el
+  producto real. La fidelidad al producto se mide contra esa foto. La revisión de cuadros y las transcripciones quedaron en
+  `%TEMP%/avatar-escena-revision/` (con una hoja de contacto de los 6 videos). Nada de eso se
+  copia al repositorio.
+- **Modelos y ajustes:** dibujos con `dola-seedream-5-0-pro-260628` (1080×1920; se usó la opción 1
+  del personaje realista, del animado y del fondo dibujado; las opciones 2 se pagaron y no se
+  usaron). Escenas con `dreamina-seedance-2-5-260628`, borrador 480p (480×854, 24 cps), 9:16, con
+  audio, prompt `avatar-escena-v1`, tabla de precios `v10`, una tarea a la vez.
+
+**Costo y tiempo reales**
+
+| Llamada | Segundos pedidos | Cotizado (US$) | Tokens cobrados | Cobrado (US$) | Tiempo (s) |
+|---|---|---|---|---|---|
+| 6 dibujos Seedream 5.0 pro | — | 0,27 | — | **0,27** (0,045 c/u) | 27,5 a 58,4 |
+| realista e1 | 5 | 0,514 | 48.437 | **0,518** | 68,5 |
+| realista e2 | 8 | 0,822 | 77.260 | **0,827** | 67,6 |
+| realista e3 | 10 | 1,028 | 96.475 | **1,032** | 74,4 |
+| animado e1 | 5 | 0,514 | 48.437 | **0,518** | 67,4 |
+| animado e2 | 8 | 0,822 | 77.260 | **0,827** | 78,4 |
+| animado e3 | 10 | 1,028 | 96.475 | **1,032** | 74,6 |
+| **Total** | | 5,00 | | **5,02** (escenas 4,75) | |
+
+- Cobrado = tokens × US$10,70/M (480p sin video de entrada). La cotización de `v10` se quedó
+  corta en un 0,4 a 0,8 % por escena (≈ 9.650 a 9.690 tokens por segundo cobrados frente a
+  ≈ 9.610 cotizados), como en SD25-001/002: dentro del margen del 10 % del libro de gasto. El tope
+  de US$8 no se tocó. Una escena cuesta ≈ US$0,10 por segundo en borrador; el final a 1080p de
+  esas mismas escenas costaría aparte ≈ US$0,57 por segundo (SD25-002), no medido aquí.
+- Una escena tarda de 67 a 78 s, sin relación clara con su largo (la de 5 s tardó lo mismo que la
+  de 8 s).
+
+**Aceptación de las referencias.** Las 6 tareas terminaron bien con las tres imágenes (personaje,
+producto, fondo); ninguna rechazó una referencia. **La cara realista dibujada por Seedream 5.0 pro
+pasó** (el dibujo viajó byte a byte). Eso no prueba que pase una foto real de una persona: esa
+rama no se midió.
+
+**Audio.** Los 6 videos traen una pista AAC estéreo de 32 kHz que dura lo mismo que el video
+(4,96 / 7,97 / 9,95 s). Transcripción local con faster-whisper en CPU, idioma `es`, con dos
+modelos (`small` y `large-v3-turbo`); donde no coinciden se dice. La voz del personaje animado
+sale más baja (RMS ≈ 0,045 frente a ≈ 0,08 del realista, unos 5 dB menos).
+
+| Video | Línea esperada | Transcripción | Habla entre |
+|---|---|---|---|
+| realista e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién hecha!» (los dos) | 2,0 y 4,7 s |
+| realista e2 | Mmm, crujiente por fuera y jugosa por dentro. | «Mmm, crujiente por fuera y jugosa por dentro.» (`small`; turbo omite el «Mmm») | 4,6 y 7,8 s |
+| realista e3 | Esta es la super smash de Nibbles. Ven hoy por la tuya. | «Esta es la Super **Splash** de **Nibles**. Ven hoy por la tuya.» (los dos) | 5,9 y 9,7 s |
+| animado e1 | ¡Mira esta super smash, recién hecha! | «Mira esta Super Smash recién **hacha**.» (los dos) | 2,2 y 4,7 s |
+| animado e2 | Mmm, crujiente por fuera y jugosa por dentro. | «Mmm, **cruyente** por fuera y jugosa por dentro.» (`small`; turbo «cruguiente») | 4,1 y 7,8 s |
+| animado e3 | Esta es la super smash de Nibbles. Ven hoy por la tuya. | «Esta es la Super Smash de Nibbles. Ven hoy por la tuya.» (los dos) | 4,9 y 9,1 s |
+
+Las seis dicen la frase completa, en español y dentro del video. Lo que va en negrita es donde los
+dos modelos oyen lo mismo, distinto de la línea: puede ser pronunciación (la marca en inglés,
+«hecha», la «j») o error de la transcripción. **Para juicio humano.**
+
+**Juicio preliminar por cuadros** (6 cuadros por video más 9 recortes de la cara durante el habla;
+sin oír). **Es preliminar: lo reemplaza la planilla de Deivid y Herwin** (la de Deivid, abajo).
+Labios: en los seis la
+boca cambia de forma mientras hay voz y está quieta o sonriendo antes; la sincronía fina, el acento
+y la calidad de la voz quedan **para juicio humano**. La columna «Producto» compara con la foto
+de catálogo usada como super smash, no con el producto real.
+
+| Video | Personaje igual | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
+|---|---|---|---|---|---|---|
+| realista e1 | sí (rizos, camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador y la acerca a cámara | ninguno inventado; el menú del fondo trae seudoletras borrosas que ya estaban en el dibujo del fondo | mancha de grasa en el mostrador donde estaba (verosímil) | 3 |
+| realista e2 | sí | sí; mordida visible en el pan | sí: muerde, mastica con los ojos cerrados, baja un poco y habla | igual que e1 | la mordida solo marca el pan de arriba | 3 |
+| realista e3 | sí | sí | sí: la muestra en una mano, señala con la otra e invita | igual que e1 | ninguno visto; habla recién desde el segundo 5,9 | 3 (voz pendiente: «Splash», «Nibles») |
+| animado e1 | sí (gorra roja, coleta, delantal) | sí, pero **enorme**: tan ancha como su torso, ya sobre el mostrador | sí | igual que e1 | escala del producto | 2 |
+| animado e2 | sí | sí; mordida visible | sí | igual que e1 | ninguno visto | 3 (voz pendiente: «cruyente») |
+| animado e3 | sí | sí, salvo una grieta en el pan hacia el segundo 2 | sí: la sostiene en la palma y la señala | igual que e1 | grieta del pan; la hamburguesa se sostiene en una palma abierta | 3 |
+
+**Juicio humano de Deivid (2026-11-26).** Labios bien en las escenas (Deivid): «los labios van
+bien con las escenas». Dos defectos, en sus palabras:
+
+- La saturación se exagera en el momento de masticar (e2).
+- En el animado la mano no gira con la hamburguesa, solo gira la hamburguesa. No dijo en qué
+  escena lo vio.
+
+Lo demás (personaje igual, producto, acción, voz en español, letras, creíble) no lo juzgó: queda
+vacío en `juicio-deivid.csv`. **El juicio de Herwin sigue pendiente.**
+
+**Conclusión provisional (falta el juicio de Herwin).** El camino A sirve para un borrador: una
+sola tarea de 5 a 10 s pone al personaje dentro del local, con el producto reconocible, cumpliendo
+la acción (también comer) y diciendo la línea entera en español, con labios bien en las escenas
+(Deivid), por ≈ US$0,10 el segundo y en poco más de un minuto. Las 6 se aceptan en lo
+visual; 3 tienen una duda de pronunciación que solo se resuelve oyendo. Riesgos:
+
+1. **La voz no se controla:** cada tarea inventa la suya. El mismo personaje puede sonar distinto
+   de una parte a otra del Clip, y el dueño no puede elegirla ni clonarla (eso era el camino B,
+   Seed Speech). Hay que oír e1, e2 y e3 seguidas.
+2. **Pronunciación de nombres propios y palabras en inglés** («super smash», «Nibbles») y de algún
+   fonema («hecha», «crujiente»): 3 de 6 con dudas según la transcripción.
+3. **Escala y forma del producto** cambian (animado e1, grieta en animado e3): la fidelidad al
+   producto necesita una revisión humana por escena.
+4. **El momento de la línea no se controla:** en las de 10 s el personaje habla en la segunda
+   mitad (desde 4,9 y 5,9 s); en las de 5 s la línea entra justa (termina a 4,7 s).
+5. **Seudoletras del fondo:** vienen del dibujo del fondo; un fondo sin cartel las evita.
+6. **Una muestra por casilla:** no se sabe cuánto varía si se repite.
+7. **Sin probar:** una foto real de una persona (cara real), la foto real del local y el final a
+   1080p (≈ US$0,57 por segundo más, según SD25-002).
+8. **Datos del cliente:** la foto del producto viajó al id del modelo; antes de llevarlo a clientes
+   hay que confirmar que esa vía no es una de las que ceden datos a BytePlus (regla del
+   generador).
+9. **Saturación al masticar** (Deivid): «la saturación se exagera en el momento de masticar» (e2).
+10. **La mano y el producto** (Deivid): «en el animado la mano no gira con la hamburguesa, solo
+    gira la hamburguesa».

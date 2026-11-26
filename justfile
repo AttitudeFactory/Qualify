@@ -616,6 +616,12 @@ eval-documentos *args:
 eval-escenas *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/run_experiment.py {{args}}
 
+# m-25112921: the avatar as a character in its scene, path A (Seedance 2.5 omni). `plan` and
+# `--dry-run` quote it and send nothing; a paid run needs --i-have-spend-authorization and
+# --max-usd (Deivid's written OK), and scenes run 23:00-05:00 Bogotá unless --allow-daytime.
+eval-avatar-escena *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/run_experiment.py {{args}}
+
 # m-24849234: Seedream 5.0 pro color/texture matrix. `--dry-run` quotes it and sends nothing;
 # a paid run needs --i-have-spend-authorization (the founder authorizes each one).
 eval-plantillas *args:
