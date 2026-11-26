@@ -314,6 +314,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .inbox_state import InboxState
     from .investment_profile_state import InvestmentProfileState
     from .leads_state import LeadsState
+    from .monthly_post_state import MonthlyPostState
     from .offer_mark_state import OfferMarkState
     from .part_progress_state import PartProgressState
     from .parts_start_state import PartsStartState
@@ -358,6 +359,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         InvestmentProfileState,
         # m-25091392: the month plan card on Anuncios
         AdMonthPlanState,
+        # m-25120704: «Publicación del mes» on the Planificador
+        MonthlyPostState,
         PromotionState,
         AdResultsState,
         ConnectionsState,

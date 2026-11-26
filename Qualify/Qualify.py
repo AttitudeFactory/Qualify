@@ -61,6 +61,7 @@ from .home_page import home_index
 from .home_state import HomeState
 from .investment_profile_page import investment_profile_index
 from .investment_profile_state import InvestmentProfileState
+from .monthly_post_state import MonthlyPostState
 from .not_found_page import not_found_index
 from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
@@ -689,6 +690,7 @@ app.add_page(
         WeekBackState.read,  # m-24986801: «‹ Aprobados» when opened from there
         PlannerState.load_current_week,
         FinalReviewState.from_route,
+        MonthlyPostState.load,  # m-25120704
     ],
     title="Qualify · Tu semana",
 )
