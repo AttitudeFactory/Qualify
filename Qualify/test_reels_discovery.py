@@ -1431,8 +1431,15 @@ def test_with_a_filter_on_the_phone_chips_move_in_pairs() -> None:
     from . import discover_reels
 
     pair = inspect.getsource(discover_reels._chip_pair)
-    assert 'display=rx.cond(DiscoverReelsState.filters_on, "flex", "contents")' in pair
+    # held together while a filter is on, and for a brand with no competitor to show
+    assert "DiscoverReelsState.filters_on | (DiscoverReelsState.competitor_rows.length() == 0)" in (
+        pair
+    )
+    assert '"flex",' in pair and '"contents",' in pair
     assert 'wrap="nowrap"' in pair and "shrink=True" in pair
+    # in a pair only the filtered chip gives way (review nit)
+    button = inspect.getsource(discover_reels._filter_button)
+    assert 'rx.cond(on, _SHRINK_FIRST, "0") if compact else _SHRINK_FIRST' in button
     bar = inspect.getsource(discover_reels._filter_bar)
     phone = bar.split("display=_WIDE")[1]
     assert "_chip_pair(AXIS_NETWORK, AXIS_KIND)" in phone

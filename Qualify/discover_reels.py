@@ -1523,7 +1523,16 @@ def _filter_button(
         max_width="100%",
         # never wider than its row: below its content, only the value ends in «…»
         min_width="0",
-        **({"flex_shrink": _SHRINK_FIRST, "overflow": "hidden"} if shrink else {}),
+        # in a phone pair only the filtered chip gives way (a long @handle), never its
+        # neighbour that still reads «Duración»
+        **(
+            {
+                "flex_shrink": rx.cond(on, _SHRINK_FIRST, "0") if compact else _SHRINK_FIRST,
+                "overflow": "hidden",
+            }
+            if shrink
+            else {}
+        ),
         aria_label=_chip_text(axis, name=True) if compact else AXIS_LABELS[axis] + ": " + value,
         title=_chip_text(axis, name=True) if compact else AXIS_LABELS[axis] + ": " + value,
         **props,
@@ -1643,11 +1652,19 @@ def _chip_pair(left: str, right: str) -> rx.Component:
     items of the row (`display: contents`); while a filter is on, «Quitar filtros» +
     «Competidores» fill the first line, and the four filters move as two pairs that never
     wrap, so none of them is left alone on a line (Deivid's live test at 375 px,
-    2026-11-26). In a pair the chips may shrink: only their value ends in «…»."""
+    2026-11-26). The pairs hold together too for a brand with no competitor to show (no
+    «Competidores» chip). In a pair only the filtered chip may shrink: only its value
+    ends in «…»."""
     return rx.flex(
         _chip(left, shrink=True),
         _chip(right, shrink=True),
-        display=rx.cond(DiscoverReelsState.filters_on, "flex", "contents"),
+        # also with no competitor to show: then nothing fills the first line with
+        # «Tus competidores» and «Duración» would drop alone (review, 2026-11-26)
+        display=rx.cond(
+            DiscoverReelsState.filters_on | (DiscoverReelsState.competitor_rows.length() == 0),
+            "flex",
+            "contents",
+        ),
         wrap="nowrap",
         align="center",
         spacing="2",
