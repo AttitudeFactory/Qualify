@@ -1403,6 +1403,9 @@ class PlanRefused:
     brief: ContentBrief
     slot: int
     code: str
+    #: With `failure_seen`: the failed blocks stamped on this pass (their entries carry
+    #: the new `failed_at`) — what m-25120319 stages one email for, in the same write.
+    seen: tuple[PlannedBlock, ...] = ()
 
     @property
     def reason(self) -> str:
@@ -1475,7 +1478,10 @@ def plan_gate(
             entry.model_copy(update={"failed_at": now}) if entry.slot in slots else entry
             for entry in brief.media.clip_avatar_plan
         )
-        return PlanRefused(_with_plan(brief, plan), min(slots), "failure_seen")
+        stamped = tuple(
+            replace(s, entry=s.entry.model_copy(update={"failed_at": now})) for s in unseen
+        )
+        return PlanRefused(_with_plan(brief, plan), min(slots), "failure_seen", seen=stamped)
     if failed:
         deadline = owner_deadline(failed)
         assert deadline is not None

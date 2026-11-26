@@ -214,6 +214,11 @@ def main(
     from qualify_api.mail.final_summary import morning_chore
 
     morning = morning_chore(scope_ids) if store is None and executors is None else None
+    if morning is not None:
+        # m-25120319: the email of a failed avatar rides the same background mail pass
+        from qualify_api.creative.clip_avatar_mail import failure_mail_chore  # noqa: PLC0415
+
+        morning = _chain(morning, failure_mail_chore(scope_ids))
     mail_runner: BackgroundChore | None = None
 
     def maintenance() -> None:
@@ -293,6 +298,21 @@ def main(
             shutdown(None if args.once else join_grace)
     logger.info("creative.worker.stopped downloads_peak=%s", gate.peak)
     return code
+
+
+def _chain(*chores: Callable[[], int]) -> Callable[[], int]:
+    """One mail pass running each chore in turn; one that raises never stops the next."""
+
+    def run() -> int:
+        count = 0
+        for chore in chores:
+            try:
+                count += chore()
+            except Exception:
+                logger.exception("creative.worker.mail_chore_failed")
+        return count
+
+    return run
 
 
 def _stop_on_signals(stop: threading.Event) -> None:

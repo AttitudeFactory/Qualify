@@ -259,7 +259,14 @@ Después de «Crear», el dueño va a «Por aprobar». La tarjeta del Clip muest
   - botón: «Ver mi video», que lleva directo al video (textos revisados por ux-designer).
   - El correo va en un ticket aparte que crea el coordinador; no se construye en estos PR.
 - **PR 2 (solo en este contrato):** cuando un avatar no se pudo crear, la tarjeta del Clip en «Por aprobar» y la cuenta de Inicio lo marcan como «necesita tu atención».
-- **También pendiente:** un aviso por correo cuando un avatar no se pudo crear, en el mismo ticket aparte.
+- **Correo cuando un avatar no se pudo crear (m-25120319, construido):**
+  - Lo dispara la primera pasada que ve el bloque fallido: en la misma transacción que escribe `failed_at` en el plan se guarda una fila en `clip_avatar_failure_mails` (migración 0186). El sello y el correo se guardan juntos o no se guarda ninguno.
+  - **Uno por falla:** la identidad es `(clip_id, slot, failed_at)` (`UNIQUE`) y la clave de Resend (`Idempotency-Key`) sale de ella. Leer el estado otra vez o reiniciar el worker no crea otra fila. El correo se congela antes del primer intento y se reenvía igual; a las 23 h de intentos inciertos se cierra sin enviar.
+  - **Reintento que vuelve a fallar:** «Intentar de nuevo» borra `failed_at`; la falla nueva tiene otro sello, así que sale otro correo, uno solo. Si el dueño reintenta o quita el avatar antes de que salga el correo, o el Clip ya se armó o falló, la fila se cierra sin enviar (`resolved`).
+  - **Para quién:** quien creó el Clip, si sigue siendo miembro del negocio y su correo está confirmado.
+  - **Interruptores:** con `QUALIFY_CLIP_AVATAR_PRESENTER` y `QUALIFY_CLIP_AVATAR_ANIMATED` apagados no se guarda ni se envía nada (el envío ni siquiera lee la tabla).
+  - **Textos (pendientes de ux-designer):** asunto «{negocio}: uno de tus avatares no se pudo crear»; cuerpo «Uno de tus avatares no se pudo crear. Entra para intentarlo de nuevo o quitarlo.» y «Tu video de {negocio} te espera en Por aprobar hasta el {fecha} (hora de tu negocio). Si quitas el avatar, armamos tu video con lo demás.»; botón «Ver mi video» (`/drafts/{clip_id}`). Código: `qualify_api.mail.clip_avatar` y `qualify_api.creative.clip_avatar_mail`.
+  - Los logs llevan solo ids y códigos (prueba `test_clip_avatar_mail.py`).
 
 ### 1.7 Uniones junto a un avatar: solo «Corte» (decidido por Deivid, PR 1)
 
