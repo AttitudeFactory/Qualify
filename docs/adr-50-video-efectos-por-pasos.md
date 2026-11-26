@@ -403,7 +403,7 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 
 ## 12. Enmienda `[PROPUESTO]`: el personaje en su escena reemplaza al bloque de presentador (m-25128784)
 
-**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26) la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`) y la investigación de m-25129387 sobre los datos de clientes en BytePlus (`docs/byteplus-datos-de-clientes.md`, 2026-11-26). Solo la firma Deivid (P5 del §6.3).
+**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26), la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`) y la investigación de m-25129387 sobre los datos de clientes en BytePlus (`docs/byteplus-datos-de-clientes.md`, 2026-11-26). Solo la firma Deivid (P5 del §6.3).
 
 **Firma de Deivid:** `[ ]` «Firmo el §12» · fecha: ____
 
@@ -567,4 +567,4 @@ Mientras falte la captura de la consola, el interruptor solo se enciende en loca
 - **P4 · ¿Qué hacemos con el camino de OmniHuman dentro del Clip?** **Recomiendo retirarlo en un ticket de limpieza cuando la escena esté en `main`**: `place_block`, `clip_avatar_block` y la ruta del presentador en el Clip, no los borradores sueltos. Si llegan las llaves y se quiere la voz propia (R1), se vuelve a abrir con su propia enmienda.
 - **P5 · ¿Qué pasa con un personaje guardado de más de 30 días?** BytePlus solo acepta el personaje si Seedream 5.0 lo generó en nuestra cuenta, sin editar y hace menos de 30 días (R7). Propuesta: **se vuelve a dibujar desde su descripción** guardada. El dibujo nuevo no sale idéntico. Por eso **recomiendo que el dueño elija entre 2 o 3 dibujos nuevos** la primera vez que use ese personaje después de los 30 días, en vez de cambiárselo sin avisar. Cuesta ≈ US$0,14 y no descuenta cupo. Con esa regla, el personaje realista se puede ofrecer desde el primer día.
 
-**Fuera de esta enmienda.** La pantalla (m-25112921), crear y guardar personajes (m-25129385), «Sugerir con IA» (m-25129386), la ruta de datos de BytePlus (m-25129387), elegir la voz y encender cualquier interruptor.
+**Fuera de esta enmienda.** La pantalla (m-25112921), crear y guardar personajes (m-25129385), «Sugerir con IA» (m-25129386), la captura de la consola y la respuesta escrita de BytePlus (m-25129387), elegir la voz y encender cualquier interruptor.
