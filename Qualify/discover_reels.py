@@ -1730,18 +1730,22 @@ def _reset_button() -> rx.Component:
 
 
 def _search_button(*, icon_only: bool) -> rx.Component:
-    """RF-14's «Buscar reels nuevos», last on the bar's line: on the wide bar with its words
-    (only its icon while the bar is under `SEARCH_WORDS_FROM`, so the line never wraps);
-    on the narrow bar a third button of only its icon, the 44 px square, with the words as
-    its accessible name and `title`. While the search runs it is busy — the spinner in
-    place of its icon, a press ignored — and never dead otherwise: once the day's search was
-    made, a press reads the list again and says so (`reels_search_vm`)."""
+    """RF-14's «Buscar reels nuevos», right after «Competidores» on the bar's line (before
+    «Quitar filtros», so it never moves when that one shows): on the wide bar with its
+    words (only its icon while the bar is under 1000 px, so the line never wraps); on the
+    narrow bar a third button of only its icon, the 44 px square, with the words as its
+    accessible name and `title`. The icon is `search` (ux-designer: `refresh-cw` read as
+    «Intentar de nuevo»). While the search runs it is busy — the spinner in place of its
+    icon, hidden from screen readers (the screen's one `role="status"` says it), «Buscando…»
+    as its words and its name, a press ignored — and never dead otherwise: once the day's
+    search was made, a press reads the list again and says so (`reels_search_vm`)."""
     S = DiscoverReelsState
     busy = S.searching | S.search_pressing
     icon = rx.cond(
         busy,
-        loading_spinner("sm"),
-        rx.icon("refresh-cw", size=T.ICON_SM, aria_hidden="true"),
+        # the spinner's own `role="status"` hidden: one live region on screen, not two
+        rx.box(loading_spinner("sm"), aria_hidden="true", display="inline-flex"),
+        rx.icon("search", size=T.ICON_SM, aria_hidden="true"),
     )
     common: dict[str, Any] = {
         "type": "button",
@@ -1761,7 +1765,7 @@ def _search_button(*, icon_only: bool) -> rx.Component:
     return rx.button(
         icon,
         rx.text(
-            reels_search_vm.BUTTON_LABEL,
+            S.search_label,
             as_="span",
             class_name=_SEARCH_WORDS_CLASS,
             min_width="0",
@@ -1860,8 +1864,8 @@ def _filter_bar() -> rx.Component:
         rx.flex(
             *(_dropdown(axis) for axis in reels_filters_vm.AXES),
             _rivals_button(chip=False),
-            _reset_button(),
             _search_button(icon_only=False),
+            _reset_button(),
             class_name=_WIDE_CLASS,
             wrap="nowrap",
             align="center",
@@ -2053,22 +2057,19 @@ def _ideas() -> rx.Component:
         # RF-05: the competitors' clock, outside their drawer — it keeps following a
         # manual read with the drawer closed (and says how it ended in a toast)
         rx.cond(S.competitors_reading, _ticker(S.refresh_competitors)),
-        # RF-14: while the owner's search runs, the «preparando» line over the list and
-        # the clock that reads the list again when it ends (free)
-        rx.cond(
-            S.searching,
-            rx.fragment(
-                rx.hstack(
-                    loading_spinner("sm"),
-                    rx.text(reels_search_vm.SEARCHING_NOTICE, size="2", color=T.TEXT_MUTED),
-                    spacing="2",
-                    align="center",
-                    width="100%",
-                    role="status",
-                ),
-                _ticker(S.refresh_search),
+        # RF-14: the screen's one live region for the owner's search — always mounted,
+        # only its notice comes and goes (ux-designer) — and, while it runs, the clock that
+        # reads the list again when it ends (free)
+        rx.box(
+            rx.cond(
+                S.searching,
+                callout(reels_search_vm.SEARCHING_NOTICE, "info", live=False),
             ),
+            role="status",
+            aria_live="polite",
+            width="100%",
         ),
+        rx.cond(S.searching, _ticker(S.refresh_search)),
         rx.box(
             lists,
             # a filtered read in flight: the list dims and takes no clicks until it lands

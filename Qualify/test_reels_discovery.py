@@ -1569,3 +1569,22 @@ async def test_the_filtros_sheet_stays_open_while_choosing(world: _World) -> Non
     state.open_filters()
     state._claim_cards("another-tenant")  # another business: the sheet closes
     assert state.sheet == ""
+
+
+def test_the_search_button_sits_after_competitors_with_one_live_region() -> None:
+    """RF-14, ux-designer (Deivid, 2026-11-26): `search` icon, before «Quitar filtros» so it
+    never moves, «Buscando…» as words and name, one `role="status"` always mounted."""
+    import inspect
+
+    from . import discover_reels
+
+    button = inspect.getsource(discover_reels._search_button)
+    assert 'rx.icon("search"' in button and 'rx.icon("refresh-cw"' not in button
+    assert 'aria_hidden="true", display="inline-flex"' in button  # the spinner's role hidden
+    assert "S.search_label" in button
+    bar = inspect.getsource(discover_reels._filter_bar)
+    assert bar.index("_rivals_button(chip=False)") < bar.index("_search_button(icon_only=False)")
+    assert bar.index("_search_button(icon_only=False)") < bar.index("_reset_button()")
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert ideas.count('role="status"') == 1
+    assert 'callout(reels_search_vm.SEARCHING_NOTICE, "info", live=False)' in ideas

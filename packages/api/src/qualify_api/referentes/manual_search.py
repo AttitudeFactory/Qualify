@@ -59,7 +59,10 @@ USED_TODAY_TEXT = "Ya buscaste reels nuevos hoy. Vuelve a intentarlo mañana."
 #: While the search runs, over the list.
 SEARCHING_TEXT = "Estamos buscando reels nuevos. La lista se actualiza sola en unos minutos."
 #: The search has been in line longer than `WAIT_LIMIT` (the worker is late or down).
-SLOW_TEXT = "La búsqueda está tardando más de lo normal. Vuelve a mirar en un rato."
+SLOW_TEXT = (
+    "La búsqueda está tardando más de lo normal. "
+    "En un rato toca «Buscar reels nuevos» para ver si ya llegaron."
+)
 #: The gate stopped the search before the business's cap: it did not happen.
 STOPPED_TEXT = "No pudimos buscar reels nuevos ahora. Inténtalo de nuevo más tarde."
 #: How long a search may wait before the screen stops showing it as running (the button

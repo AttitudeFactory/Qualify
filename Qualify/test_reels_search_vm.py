@@ -39,9 +39,24 @@ def test_the_cap_reloads_for_free_and_says_the_cap() -> None:
     assert (out.notice, out.tone) == (ms.DAILY_LIMIT_TEXT, vm.TONE_WARN)
 
 
-def test_a_brand_that_cannot_search_just_reloads() -> None:
+def test_a_brand_that_cannot_search_is_told_what_to_do() -> None:
     out = vm.after_press(ms.SearchNow(ms.STATE_NOT_READY, ""))
-    assert out == vm.Outcome(searching=False, reload=True)
+    assert out == vm.Outcome(
+        searching=False, reload=True, notice=vm.NOT_READY_NOTICE, tone=vm.TONE_INFO
+    )
+    assert vm.NOT_READY_NOTICE == (
+        "Para buscar reels nuevos, primero elige al menos una cuenta en «Competidores»."
+    )
+
+
+def test_the_busy_words_are_the_busy_name_and_the_slow_notice_says_what_to_do() -> None:
+    """ux-designer (Deivid, 2026-11-26): the visible words and the accessible name match;
+    the delay's notice says the next step."""
+    assert vm.BUSY_LABEL == "Buscando…"
+    assert ms.SLOW_TEXT == (
+        "La búsqueda está tardando más de lo normal. "
+        "En un rato toca «Buscar reels nuevos» para ver si ya llegaron."
+    )
 
 
 def test_a_press_that_could_not_be_asked_says_what_to_do() -> None:

@@ -141,7 +141,9 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   piso del proveedor), esa búsqueda no ocurrió y el siguiente toque la vuelve a encolar en la
   misma fila. Si falla la revisión y el worker la va a reintentar solo, sigue «buscando». Si
   lleva más de 15 min en cola, el botón se libera y avisa una vez: «La búsqueda está tardando
-  más de lo normal. Vuelve a mirar en un rato.»
+  más de lo normal. En un rato toca «Buscar reels nuevos» para ver si ya llegaron.» Sin
+  brief o sin cuentas, avisa: «Para buscar reels nuevos, primero elige al menos una cuenta en
+  «Competidores».»
 - **Tope del negocio:** si ya se gastó (150 al día, 600 al mes), no se encola nada y aparece
   «Hoy ya se alcanzó el límite de lecturas de tu negocio. Inténtalo mañana.» (en el mensual, el
   texto mensual de RF-05). Si se alcanza a mitad de la corrida, la compuerta la para
@@ -154,8 +156,12 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   mañana.») o el del tope. Es un aviso con id fijo: el siguiente reemplaza al anterior.
   Una búsqueda `manual` que termina mal no pone «No pudimos traer ideas nuevas» sobre las
   ideas guardadas.
-- **Barra:** en la versión ancha, el botón va al final de la fila. Desde 1000 px de barra lleva
-  texto; entre 760 y 1000 px solo el ícono, para que la fila no se parta. En la versión angosta
+- **Barra:** en la versión ancha, el botón va después de «Competidores» y antes de «Quitar
+  filtros», para que no cambie de lugar cuando aparece ese botón. El ícono es `search`;
+  mientras busca, el texto y el nombre accesible dicen «Buscando…», y el aviso «Estamos
+  buscando…» es un `callout` informativo dentro de la única región `role="status"`. Desde
+  1000 px de barra lleva texto; entre 760 y 1000 px solo el ícono, para que la fila no se
+  parta (la palabra corta «Buscar» no se probó: medirla a 760 px necesita el navegador). En la versión angosta
   es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
   con su nombre en `aria-label` y `title`.
 - Sin migración y sin llamadas pagadas en las pruebas (fakes detrás de la compuerta real).

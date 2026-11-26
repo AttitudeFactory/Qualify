@@ -21,6 +21,7 @@ from qualify_api.referentes.manual_search import (
     SEARCH_BUTTON,
     SEARCHING_TEXT,
     STATE_LIMIT,
+    STATE_NOT_READY,
     STATE_SEARCHING,
     STATE_SLOW,
     STATE_STOPPED,
@@ -32,9 +33,11 @@ from qualify_api.referentes.manual_search import (
 #: The button's words (wide bar) and its accessible name (the phone's icon-only button).
 BUTTON_LABEL = SEARCH_BUTTON
 #: Its accessible name while the search runs.
-BUSY_LABEL = "Buscando reels nuevos"
+BUSY_LABEL = "Buscando…"
 #: Over the list while the search runs (the «preparando» state).
 SEARCHING_NOTICE = SEARCHING_TEXT
+#: The brand has nothing to search with yet (ux-designer, approved by Deivid 2026-11-26).
+NOT_READY_NOTICE = "Para buscar reels nuevos, primero elige al menos una cuenta en «Competidores»."
 #: The press could not even be queued (the database did not answer).
 START_FAILED = "No pudimos empezar la búsqueda. Inténtalo de nuevo en unos minutos."
 #: The one toast id: a second notice replaces the first instead of stacking under it.
@@ -72,6 +75,8 @@ def after_press(answer: SearchNow | None) -> Outcome:
         return Outcome(searching=False, reload=True, notice=answer.message, tone=TONE_WARN)
     if answer.state == STATE_SLOW:
         return Outcome(searching=False, reload=True, notice=answer.message, tone=TONE_INFO)
+    if answer.state == STATE_NOT_READY:
+        return Outcome(searching=False, reload=True, notice=NOT_READY_NOTICE, tone=TONE_INFO)
     return Outcome(searching=False, reload=True)
 
 
@@ -101,6 +106,7 @@ def is_searching(answer: SearchNow | None) -> bool:
 __all__ = [
     "BUSY_LABEL",
     "BUTTON_LABEL",
+    "NOT_READY_NOTICE",
     "Outcome",
     "SEARCHING_NOTICE",
     "START_FAILED",
