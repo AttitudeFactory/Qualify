@@ -345,6 +345,47 @@ def chips(choice: FilterChoice, options: Sequence[dict[str, str]] = ()) -> list[
     ]
 
 
+#: RF-13 (Deivid, 2026-11-26, after measuring at 375 px): on a phone a filtered chip of
+#: these axes shows a shorter value, so no chip is left alone on a line and «Competidores»
+#: is not said twice beside the «Competidores» button. «Tipo» takes the words of the
+#: competitors' panel. The sheet and the desktop keep the long words.
+CHIP_VALUES: dict[str, dict[str, str]] = {
+    AXIS_KIND: {KIND_REFERENTE: "Te inspiran", KIND_COMPETENCIA: "Compiten contigo"},
+    AXIS_DURATION: {
+        DURATION_UNDER_15: "< 15 s",
+        DURATION_15_30: "15–30 s",
+        DURATION_30_60: "30–60 s",
+        DURATION_OVER_60: "> 60 s",
+    },
+}
+
+
+def _raw(axis: str, choice: FilterChoice) -> str:
+    return {
+        AXIS_NETWORK: choice.network,
+        AXIS_KIND: choice.kind,
+        AXIS_DURATION: choice.duration,
+    }.get(axis, "")
+
+
+def phone_chip(
+    axis: str, choice: FilterChoice, options: Sequence[dict[str, str]] = ()
+) -> tuple[str, str]:
+    """`(face, name)` of a phone chip (RF-13, option A). With no filter the face is the
+    short name («Tipo»); with one, its value — shorter for «Tipo» and «Duración»
+    (`CHIP_VALUES`). `name` is the accessible name and `title`: the axis' full name and
+    the long value, and it always CONTAINS the visible face (WCAG 2.5.3, label in name):
+    «Duración: < 15 s (menos de 15 segundos)»."""
+    full = AXIS_LABELS[axis]
+    long = value_label(axis, choice, options)
+    if not chips(choice, options)[AXES.index(axis)]["on"]:
+        return CHIP_LABELS[axis], f"{full}: {long}"
+    short = CHIP_VALUES.get(axis, {}).get(_raw(axis, choice), long)
+    if short == long:
+        return long, f"{full}: {long}"
+    return short, f"{full}: {short} ({long[:1].lower()}{long[1:]})"
+
+
 # --------------------------------------------------------------------------------------
 # the lists under the bar
 # --------------------------------------------------------------------------------------
@@ -439,6 +480,7 @@ __all__ = [
     "AXIS_KIND",
     "AXIS_LABELS",
     "CHIP_LABELS",
+    "CHIP_VALUES",
     "AXIS_NETWORK",
     "BAR_LABEL",
     "COMPETITORS_EMPTY_ACTION",
@@ -481,6 +523,7 @@ __all__ = [
     "account_options",
     "accounts_by_key",
     "chips",
+    "phone_chip",
     "clear_accounts",
     "empty_message",
     "first_page",

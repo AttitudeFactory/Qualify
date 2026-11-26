@@ -332,7 +332,8 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
     order = [
         phone.index("_reset_button(chip=True)"),
         phone.index("_rivals_button(chip=True)"),
-        phone.index("_chip(axis) for axis in (*first, AXIS_DURATION)"),
+        phone.index("_chip_pair(AXIS_NETWORK, AXIS_KIND)"),
+        phone.index("_chip_pair(AXIS_ACCOUNT, AXIS_DURATION)"),
     ]
     assert order == sorted(order)
     assert phone.count("_reset_button(") == 1

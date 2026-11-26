@@ -67,6 +67,43 @@ def test_inspiradores_and_competidores_are_the_labelled_kinds() -> None:
     assert "detractor" not in str(vm.single_options(vm.AXIS_KIND))
 
 
+def test_a_phone_chip_says_one_short_word_inside_its_full_name() -> None:
+    """RF-13 (Deivid, 2026-11-26, measured at 375 px): no filter → the short name; a
+    filter → its value, shorter for «Tipo» and «Duración»; the accessible name keeps the
+    long words and always contains the visible one (WCAG 2.5.3)."""
+    none = vm.NO_CHOICE
+    assert vm.phone_chip(vm.AXIS_KIND, none) == ("Tipo", "Tipo de cuenta: Todos")
+    assert vm.phone_chip(vm.AXIS_NETWORK, none) == ("Canal", "Canal: Todos")
+    insta = vm.FilterChoice.of(network="instagram")
+    assert vm.phone_chip(vm.AXIS_NETWORK, insta) == ("Instagram", "Canal: Instagram")
+    rivals = vm.FilterChoice.of(kind="competencia")
+    assert vm.phone_chip(vm.AXIS_KIND, rivals) == (
+        "Compiten contigo",
+        "Tipo de cuenta: Compiten contigo (competidores)",
+    )
+    assert vm.phone_chip(vm.AXIS_KIND, vm.FilterChoice.of(kind="referente"))[0] == "Te inspiran"
+    short = vm.FilterChoice.of(duration="lt15")
+    assert vm.phone_chip(vm.AXIS_DURATION, short) == (
+        "< 15 s",
+        "Duración: < 15 s (menos de 15 segundos)",
+    )
+    assert [vm.CHIP_VALUES[vm.AXIS_DURATION][v] for v, _ in vm.DURATION_OPTIONS] == [
+        "< 15 s",
+        "15–30 s",
+        "30–60 s",
+        "> 60 s",
+    ]
+    # the sheet and the desktop keep the long words
+    assert vm.value_label(vm.AXIS_DURATION, short) == "Menos de 15 segundos"
+    assert vm.value_label(vm.AXIS_KIND, rivals) == "Competidores"
+    # «Competidores» is never a chip's face (the «Competidores» button sits beside it)
+    for axis in vm.AXES:
+        for choice in (none, insta, rivals, short):
+            face, name = vm.phone_chip(axis, choice)
+            assert face.lower() in name.lower(), (axis, face, name)
+            assert face != "Competidores"
+
+
 def test_every_single_choice_axis_starts_with_all() -> None:
     assert vm.single_options(vm.AXIS_NETWORK)[0] == {"value": "", "label": "Todos"}
     assert vm.single_options(vm.AXIS_KIND)[0] == {"value": "", "label": "Todos"}

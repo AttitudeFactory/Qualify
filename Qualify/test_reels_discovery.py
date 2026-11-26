@@ -1394,17 +1394,49 @@ def test_a_phone_chip_shows_one_word_and_names_itself_in_full() -> None:
         "duration": "Duración",
     }
     face = inspect.getsource(discover_reels._chip_face)
-    # no filter → the short name; a filter → its value (styled `soft` by the button)
-    assert "rx.cond(on, _axis_value(axis), reels_filters_vm.CHIP_LABELS[axis])" in face
+    # the face is the state's `chip_texts` (`reels_filters_vm.phone_chip`, tested there)
+    assert "_chip_text(axis)" in face
     assert "AXIS_LABELS" not in face  # never «Tipo de cuenta» on the phone's face
     assert "compact=True" in inspect.getsource(discover_reels._chip)
     assert "compact" not in inspect.getsource(discover_reels._dropdown)  # desktop as it was
     button = inspect.getsource(discover_reels._filter_button)
-    assert 'aria_label=AXIS_LABELS[axis] + ": " + value' in button
-    assert 'title=AXIS_LABELS[axis] + ": " + value' in button
+    # the phone chip names itself with the long words, the desktop as before
+    assert "aria_label=_chip_text(axis, name=True) if compact else" in button
+    assert "title=_chip_text(axis, name=True) if compact else" in button
     assert 'variant=rx.cond(on, "soft", "surface")' in button
-    rendered = str(discover_reels._filter_bar().render())
-    assert '"Tipo"' in rendered  # the short name reaches the phone's chip
+
+
+async def test_the_chip_texts_follow_the_filters(world: _World) -> None:
+    """`chip_texts`: what the phone's chips say and are named, from the bar's values."""
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.chip_texts["kind"] == "Tipo"
+    assert state.chip_texts["kind_name"] == "Tipo de cuenta: Todos"
+    await _filter(proxy, state.set_filter("kind", "competencia"))
+    await _filter(proxy, state.set_filter("duration", "gte60"))
+    assert state.chip_texts["kind"] == "Compiten contigo"
+    assert state.chip_texts["duration"] == "> 60 s"
+    assert state.chip_texts["duration_name"] == "Duración: > 60 s (más de 60 segundos)"
+    assert state.filter_values["duration"] == "Más de 60 segundos"  # the sheet's words
+
+
+def test_with_a_filter_on_the_phone_chips_move_in_pairs() -> None:
+    """Deivid's live test at 375 px (2026-11-26): a filter on left «Duración» alone. With a
+    filter on, «Quitar filtros» + «Competidores» fill the first line and the four
+    filters move as two pairs that never wrap; with none, they are plain items of the
+    row (`display: contents`), as measured fine live."""
+    import inspect
+
+    from . import discover_reels
+
+    pair = inspect.getsource(discover_reels._chip_pair)
+    assert 'display=rx.cond(DiscoverReelsState.filters_on, "flex", "contents")' in pair
+    assert 'wrap="nowrap"' in pair and "shrink=True" in pair
+    bar = inspect.getsource(discover_reels._filter_bar)
+    phone = bar.split("display=_WIDE")[1]
+    assert "_chip_pair(AXIS_NETWORK, AXIS_KIND)" in phone
+    assert "_chip_pair(AXIS_ACCOUNT, AXIS_DURATION)" in phone
 
 
 def test_the_phone_row_uses_the_short_words_to_fit() -> None:

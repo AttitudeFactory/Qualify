@@ -268,6 +268,24 @@ class DiscoverReelsState(rx.State):
         }
 
     @rx.var
+    def chip_texts(self) -> dict[str, str]:
+        """The phone chips' words (`reels_filters_vm.phone_chip`): `axis` → its face
+        («Tipo», «Instagram», «< 15 s»), `axis + "_name"` → its accessible name and
+        `title` («Duración: < 15 s (menos de 15 segundos)»). Vars read here, as above."""
+        choice = FilterChoice.of(
+            network=self.filter_network,
+            kind=self.filter_kind,
+            duration=self.filter_duration,
+            accounts=self.filter_accounts,
+        )
+        out: dict[str, str] = {}
+        for axis in reels_filters_vm.AXES:
+            face, name = reels_filters_vm.phone_chip(axis, choice, self.account_options)
+            out[axis] = face
+            out[f"{axis}_name"] = name
+        return out
+
+    @rx.var
     def sheet_title(self) -> str:
         return AXIS_LABELS.get(self.sheet, "")
 
@@ -1456,15 +1474,22 @@ def _filter_face(axis: str) -> list[rx.Component]:
     ]
 
 
+def _chip_text(axis: str, *, name: bool = False) -> rx.Var[str]:
+    """A phone chip's face, or (`name`) its accessible name (`DiscoverReelsState.chip_texts`)."""
+    key = f"{axis}_name" if name else axis
+    return DiscoverReelsState.chip_texts[key].to(str)
+
+
 def _chip_face(axis: str) -> list[rx.Component]:
     """A phone chip's face (RF-13, option A, Deivid 2026-11-26): ONE word — the short name
     («Canal», «Tipo», «Cuenta», «Duración») while the axis narrows nothing, its value
-    («Instagram», «2 cuentas») once it does — so 2 or 3 chips share a line. The full
-    «Tipo de cuenta: Todos» is the button's `aria_label` and `title`."""
+    («Instagram», «2 cuentas», and the shorter «Te inspiran», «< 15 s» of
+    `reels_filters_vm.CHIP_VALUES`) once it does — so 2 or 3 chips share a line. The full
+    name, which contains that word, is the button's `aria_label` and `title`."""
     on = _axis_on(axis)
     return [
         rx.text(
-            rx.cond(on, _axis_value(axis), reels_filters_vm.CHIP_LABELS[axis]),
+            _chip_text(axis),
             size="2",
             weight=rx.cond(on, "medium", "regular"),
             as_="span",
@@ -1499,8 +1524,8 @@ def _filter_button(
         # never wider than its row: below its content, only the value ends in «…»
         min_width="0",
         **({"flex_shrink": _SHRINK_FIRST, "overflow": "hidden"} if shrink else {}),
-        aria_label=AXIS_LABELS[axis] + ": " + value,
-        title=AXIS_LABELS[axis] + ": " + value,
+        aria_label=_chip_text(axis, name=True) if compact else AXIS_LABELS[axis] + ": " + value,
+        title=_chip_text(axis, name=True) if compact else AXIS_LABELS[axis] + ": " + value,
         **props,
     )
 
@@ -1613,6 +1638,24 @@ def _sheet() -> rx.Component:
     )
 
 
+def _chip_pair(left: str, right: str) -> rx.Component:
+    """Two phone chips (Canal + Tipo, Cuenta + Duración). With no filter on they are plain
+    items of the row (`display: contents`); while a filter is on, «Quitar filtros» +
+    «Competidores» fill the first line, and the four filters move as two pairs that never
+    wrap, so none of them is left alone on a line (Deivid's live test at 375 px,
+    2026-11-26). In a pair the chips may shrink: only their value ends in «…»."""
+    return rx.flex(
+        _chip(left, shrink=True),
+        _chip(right, shrink=True),
+        display=rx.cond(DiscoverReelsState.filters_on, "flex", "contents"),
+        wrap="nowrap",
+        align="center",
+        spacing="2",
+        min_width="0",
+        max_width="100%",
+    )
+
+
 def _with_rivals(last: rx.Component, *, chip: bool) -> rx.Component:
     """The last filter and «Tus competidores» as one pair that never wraps (RF-13, Deivid
     2026-11-26): the button always shares its row with a filter, at any width. When the
@@ -1661,7 +1704,8 @@ def _filter_bar() -> rx.Component:
         rx.flex(
             _reset_button(chip=True),
             _rivals_button(chip=True),
-            *(_chip(axis) for axis in (*first, AXIS_DURATION)),
+            _chip_pair(AXIS_NETWORK, AXIS_KIND),
+            _chip_pair(AXIS_ACCOUNT, AXIS_DURATION),
             display=_PHONE,
             wrap="wrap",
             justify="center",
