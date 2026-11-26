@@ -30,7 +30,34 @@ def test_the_bar_says_exactly_what_the_ticket_says() -> None:
     ]
     assert vm.RESET_LABEL == "Restablecer filtros"
     assert vm.EMPTY_FILTERED == "No hay reels con estos filtros. Prueba quitando alguno."
-    assert vm.MORE_TITLE == "Más reels revisados"
+    # RF-13 (Deivid, 2026-11-25): one list with no heading, 16 at a time, «Ver más»
+    assert vm.MORE_BUTTON == "Ver más" and vm.LIST_PAGE == 16
+    for gone in ("MORE_TITLE", "MORE_BODY", "IDEAS_NONE_FILTERED"):
+        assert not hasattr(vm, gone), gone
+
+
+def _cards(n: int) -> list[dict[str, str]]:
+    return [{"key": f"instagram:M{i}"} for i in range(n)]
+
+
+def test_the_first_page_is_the_ideas_then_the_reviewed_reels_up_to_16() -> None:
+    """RF-13: 6 ideas leave room for 10 reviewed reels; «Ver más» reads from the 11th."""
+    page = vm.first_page(6, _cards(16), has_more=True)
+    assert [c["key"] for c in page.more] == [f"instagram:M{i}" for i in range(10)]
+    assert page.has_more and page.next_offset == 10
+    # fewer reviewed reels than the room: all of them, and nothing more to see
+    short = vm.first_page(6, _cards(4), has_more=False)
+    assert (len(short.more), short.has_more, short.next_offset) == (4, False, 4)
+    # exactly the room: nothing left over unless the read said so
+    exact = vm.first_page(6, _cards(10), has_more=False)
+    assert (len(exact.more), exact.has_more) == (10, False)
+    # no idea left by the filters: 16 reviewed reels
+    none = vm.first_page(0, _cards(16), has_more=True)
+    assert (len(none.more), none.has_more, none.next_offset) == (16, True, 16)
+    # a page full of ideas: the reviewed reels all wait for «Ver más», from the start
+    full = vm.first_page(16, _cards(3), has_more=False)
+    assert (full.more, full.has_more, full.next_offset) == ([], True, 0)
+    assert vm.first_page(16, [], has_more=False).has_more is False
 
 
 def test_inspiradores_and_competidores_are_the_labelled_kinds() -> None:
@@ -38,6 +65,59 @@ def test_inspiradores_and_competidores_are_the_labelled_kinds() -> None:
     detractors anywhere in the bar (decision 3)."""
     assert dict(vm.KIND_OPTIONS) == {"referente": "Inspiradores", "competencia": "Competidores"}
     assert "detractor" not in str(vm.single_options(vm.AXIS_KIND))
+
+
+def test_a_phone_chip_says_one_short_word_inside_its_full_name() -> None:
+    """RF-13 (Deivid, 2026-11-26, measured at 375 px): no filter → the short name; a
+    filter → its value, shorter for «Tipo» and «Duración»; the accessible name keeps the
+    long words and always contains the visible one (WCAG 2.5.3)."""
+    none = vm.NO_CHOICE
+    assert vm.phone_chip(vm.AXIS_KIND, none) == ("Tipo", "Tipo de cuenta: Todos")
+    assert vm.phone_chip(vm.AXIS_NETWORK, none) == ("Canal", "Canal: Todos")
+    insta = vm.FilterChoice.of(network="instagram")
+    assert vm.phone_chip(vm.AXIS_NETWORK, insta) == ("Instagram", "Canal: Instagram")
+    rivals = vm.FilterChoice.of(kind="competencia")
+    assert vm.phone_chip(vm.AXIS_KIND, rivals) == (
+        "Compiten contigo",
+        "Tipo de cuenta: Compiten contigo (competidores)",
+    )
+    assert vm.phone_chip(vm.AXIS_KIND, vm.FilterChoice.of(kind="referente"))[0] == "Te inspiran"
+    short = vm.FilterChoice.of(duration="lt15")
+    assert vm.phone_chip(vm.AXIS_DURATION, short) == (
+        "< 15 s",
+        "Duración: < 15 s (menos de 15 segundos)",
+    )
+    assert [vm.CHIP_VALUES[vm.AXIS_DURATION][v] for v, _ in vm.DURATION_OPTIONS] == [
+        "< 15 s",
+        "15–30 s",
+        "30–60 s",
+        "> 60 s",
+    ]
+    # the sheet and the desktop keep the long words
+    assert vm.value_label(vm.AXIS_DURATION, short) == "Menos de 15 segundos"
+    assert vm.value_label(vm.AXIS_KIND, rivals) == "Competidores"
+    # «Competidores» is never a chip's face (the «Competidores» button sits beside it)
+    for axis in vm.AXES:
+        for choice in (none, insta, rivals, short):
+            face, name = vm.phone_chip(axis, choice)
+            assert face.lower() in name.lower(), (axis, face, name)
+            assert face != "Competidores"
+
+
+def test_the_phone_filters_button_counts_the_axes_on() -> None:
+    """RF-13 (Deivid, 2026-11-26): «Filtros» / «Filtros · N», named in words; several
+    accounts are ONE axis; the visible words are in the name (WCAG 2.5.3, punctuation
+    aside)."""
+    assert vm.filters_button(vm.NO_CHOICE) == ("Filtros", "Filtros: ninguno activo")
+    one = vm.FilterChoice.of(network="tiktok")
+    assert vm.filters_button(one) == ("Filtros · 1", "Filtros: 1 activo")
+    accounts = vm.FilterChoice.of(accounts=["instagram:a", "tiktok:b"])
+    assert vm.active_count(accounts) == 1
+    every = vm.FilterChoice.of(
+        network="instagram", kind="referente", duration="lt15", accounts=["instagram:a"]
+    )
+    assert vm.active_count(every) == 4
+    assert vm.filters_button(every) == ("Filtros · 4", "Filtros: 4 activos")
 
 
 def test_every_single_choice_axis_starts_with_all() -> None:

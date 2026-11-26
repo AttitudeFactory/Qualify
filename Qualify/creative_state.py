@@ -10325,7 +10325,8 @@ class CreativeState(rx.State):
         rows: list[dict[str, str]] = []
         for row in timeline_vm.media_blocks(media):  # type: ignore[arg-type]
             start, end = spans.get(row["id"], (0.0, 0.0))
-            time = f"de {timeline_vm.clock(start)} a {timeline_vm.clock(end)}"
+            # m-25129389: to the tenth — a 4,7 s video ends at 0:04,7, never «0:04,5»
+            time = f"de {timeline_vm.clock_tenth(start)} a {timeline_vm.clock_tenth(end)}"
             rows.append(
                 {
                     "id": row["id"],

@@ -27,12 +27,17 @@
   var STEP = 0.5;
   var roots = []; // the timelines attached, each with its observers (`root.__qTlObs`)
 
+  // The playhead's «0:01,3 de 0:04,7»: to the tenth, a half rounded up, a 60th second
+  // carried into the minute — as Python's `timeline_vm.playhead_text` and
+  // `editor_preview_contract.clock_text` (m-25129389). Only the words: the playhead
+  // still moves on its ½ s `STEP`.
   function clock(s) {
-    s = Math.max(Math.round(s / STEP) * STEP, 0);
-    var whole = Math.floor(s);
-    var m = Math.floor(whole / 60);
-    var sec = whole % 60;
-    return m + ":" + (sec < 10 ? "0" : "") + sec + (s - whole >= STEP ? ",5" : "");
+    var tenths = Math.floor(Number((Math.max(Number(s) || 0, 0) * 10).toFixed(6)) + 0.5);
+    var m = Math.floor(tenths / 600);
+    var rest = tenths % 600;
+    var sec = Math.floor(rest / 10);
+    var tenth = rest % 10;
+    return m + ":" + (sec < 10 ? "0" : "") + sec + (tenth ? "," + tenth : "");
   }
 
   function reduceMotion() {

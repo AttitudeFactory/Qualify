@@ -549,10 +549,10 @@ def prepare_check(
 
 
 def usage_line(seconds: float) -> str:
-    """«Usas {s} s de tu video.» — rounded as the chosen block's heading and the
-    timeline round it (`timeline_vm.amount`, the ½ s magnet): the same stretch never
-    reads «6,5 s» above and «6,6 s» below (Deivid, 2026-11-16)."""
-    return f"Usas {timeline_vm.amount(seconds)} s de tu video."
+    """«Usas {s} s de tu video.» — rounded as the chosen video's heading and the
+    timeline round it (`timeline_vm.amount_tenth`, to the tenth since m-25129389): the
+    same stretch never reads «6,5 s» above and «6,6 s» below (Deivid, 2026-11-16)."""
+    return f"Usas {timeline_vm.amount_tenth(seconds)} s de tu video."
 
 
 def range_line(start: float, end: float) -> str:

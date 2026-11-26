@@ -683,76 +683,22 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-dr-transcript { display: block; max-height: 8rem; overflow-y: auto; line-height: 1.45; }
 /* RF-02 (m-25119460): a reel with no picture left says so under the film glyph. */
 .q-dr-cover-empty { padding: 0.75rem; }
-/* RF-02: the filter bar over the reels, as TikTok's Top Ads — sticky while the lists
-   scroll; desktop dropdowns, and at 640 px or less chips that wrap (none hidden)
-   that open a sheet from the bottom (`drawer(side="bottom")`). Every target ≥ 44 px. */
-.q-rf-bar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  width: 100%;
-  padding: 0.5rem 0;
-  background: var(--q-dialog-fill, var(--color-panel-solid));
-  border-bottom: 1px solid var(--q-control-edge);
-}
-.q-rf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.q-rf-phone { display: none; }
-.q-rf-trigger,
-.q-rf-chip {
-  all: unset;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 44px;
-  padding: 0 0.85rem;
-  border-radius: 999px;
-  background: var(--q-field-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge);
-  color: var(--gray-12);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.q-rf-trigger:hover,
-.q-rf-chip:hover { background: var(--accent-a3); }
-.q-rf-trigger:focus-visible,
-.q-rf-chip:focus-visible,
-.q-rf-option:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
-.q-rf-trigger--on,
-.q-rf-chip--on { background: var(--accent-a3); box-shadow: inset 0 0 0 1px var(--accent-a7); }
-.q-rf-trigger--on .q-rf-value,
-.q-rf-chip--on .q-rf-value { color: var(--accent-11); }
-.q-rf-value { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; }
-.q-rf-reset { background: transparent; box-shadow: none; color: var(--accent-11); }
-.q-rf-pop { min-width: 15rem; max-height: 22rem; overflow-y: auto; padding: 0.35rem !important; }
-.q-rf-options { display: flex; flex-direction: column; gap: 0.1rem; width: 100%; }
-.q-rf-option {
-  all: unset;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  width: 100%;
-  min-height: 44px;
-  padding: 0.35rem 0.75rem;
-  border-radius: var(--q-radius-control);
-  cursor: pointer;
-  color: var(--gray-12);
-}
-.q-rf-option:hover { background: var(--accent-a3); }
-.q-rf-option[aria-checked="true"] { color: var(--accent-11); }
-.q-rf-check { display: inline-flex; width: 16px; flex-shrink: 0; }
-.q-rf-lists { width: 100%; transition: opacity var(--q-dur) var(--q-ease); }
-.q-rf-lists--busy { opacity: 0.55; pointer-events: none; }
-@media (max-width: 640px) {
-  .q-rf-desktop { display: none; }
-  /* the chips wrap onto a second row (UX review 1): none hides off-screen at 375 px */
-  .q-rf-phone { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .q-rf-chip { padding: 0 0.7rem; }
-  .q-rf-value { max-width: 8rem; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .q-rf-lists { transition: none; }
+/* RF-02's filter bar (m-25119460): its buttons, popovers, sheet and option rows are Radix
+   components under the Liquid Glass skin (`assets/qualify.css`) and the `drawer` primitive
+   (RF-13, m-25120327 — see docs/design-system.md §5.8). The one rule of its own: which of
+   its two rows shows depends on the width of the BAR, not of the window (Deivid's live
+   tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
+   The bar is a size container; below 760 px of it, the two buttons («Filtros» +
+   «Competidores»); from 760 px, ONE line that fills the bar — the four filters share it
+   (`flex: 1 1 auto`: the longest value takes more), then «Competidores» and «Quitar
+   filtros»: at 760 px each filter still has ~107 px for its short word and chevron.
+   Two classes, so it beats Radix's `.rt-Flex` display. */
+.q-reels-bar { container-type: inline-size; }
+.q-reels-bar .q-reels-bar__wide { display: none; }
+.q-reels-bar .q-reels-bar__narrow { display: flex; }
+@container (min-width: 760px) {
+  .q-reels-bar .q-reels-bar__wide { display: flex; }
+  .q-reels-bar .q-reels-bar__narrow { display: none; }
 }
 /* Stock on the product screen (plan-integracion-stock R2, 2026-10-16): the bank's name
    over each thumbnail, the author under it (one line, ellipsis) and the credit line the
@@ -2044,3 +1990,158 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   overflow-wrap: anywhere;
 }
 .q-text-fit-note:empty { display: none; }
+
+/* ── The AI part on the timeline (m-25026602, docs/design-system.md §5.10.1) ──────────
+   Signed by Deivid on 2026-11-26 (mockups `docs/mockups/editor-unico/`, notas.md §2).
+   A variant of `.q-tl__block` on «Fotos y videos»: `data-tl-block="ai"` plus its state in
+   `data-ai-state` — `plan` (not created yet) and the `PartState` ones: queued, creating,
+   review, ready, failed, refused, redo, expired. Two lines over its poster: line 1 the ✦
+   and the mode badge (`.q-tl__mode`, a category); line 2 its name and seconds before
+   «Crear» (`.q-tl__ai-name`) or its state after (`.q-tl__state`, a signal: dot + word).
+   Never colour alone (P1). The role «hecho con IA» is the `--q-ai-*` tokens (iris) of
+   `assets/qualify.css`. Over the picture, the words sit on black chips with white letters
+   — the same as ED-11's name chip — so they read in the dark and the light theme. */
+.q-tl__block[data-tl-block="ai"] {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  /* review: `@container q-tl-block` measures the CONTENT box, so a narrow inline padding
+     (4 px, not the 8 px of other blocks) leaves a 1 s part (44 px) room for the ✦ and the
+     mode's icon, and a 2 s part (88 px) room for its name or its state */
+  padding: 4px;
+  border: 1px solid var(--q-ai-edge);
+  background: var(--q-ai-fill);
+  color: var(--q-ai-ink);
+}
+/* not created yet: dashed — what is still free to change */
+.q-tl__block[data-tl-block="ai"][data-ai-state="plan"] {
+  border-style: dashed;
+  border-width: 2px;
+  border-color: var(--q-ai-edge-plan);
+}
+/* plan, in line or being made: still the poster (the reel's cut or the product), dimmed */
+.q-tl__block[data-tl-block="ai"]:is([data-ai-state="plan"], [data-ai-state="queued"], [data-ai-state="creating"]) .q-tl__pic {
+  opacity: 0.45;
+  filter: saturate(0.4);
+}
+/* an iris veil over the picture so the chips read on any frame */
+.q-tl__block[data-tl-block="ai"] .q-tl__pic::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, var(--black-a6), transparent 80%),
+    linear-gradient(var(--q-ai-fill), var(--q-ai-fill));
+}
+/* decisions waiting for the owner: error and warn edges (their word says which) */
+.q-tl__block[data-tl-block="ai"][data-ai-state="failed"] { border: 2px solid var(--tomato-9); }
+.q-tl__block[data-tl-block="ai"]:is([data-ai-state="refused"], [data-ai-state="redo"], [data-ai-state="expired"]) {
+  border: 2px solid var(--amber-9);
+}
+/* chosen, as any block: a 2 px accent edge. Last, and width + colour only, so a block not
+   created yet keeps its dashes (chosen AND still free to change). */
+.q-tl__block[data-tl-block="ai"][aria-pressed="true"] {
+  border-width: 2px;
+  border-color: var(--accent-9);
+}
+/* lifted by the drag (`.q-tl__item--lifted`, 0,2,0, earlier in this file): the same accent
+   edge, restored after the AI block's own border (width + colour: the dashes stay) */
+.q-tl__item--lifted .q-tl__block[data-tl-block="ai"] {
+  border-width: 2px;
+  border-color: var(--accent-9);
+}
+.q-tl__ai-line { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.q-tl__mode,
+.q-tl__state,
+.q-tl__ai-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--black-a10);
+  color: var(--white-a12);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.q-tl__mode { box-shadow: inset 0 0 0 1px var(--q-ai-ring); letter-spacing: 0.02em; }
+.q-tl__mode svg,
+.q-tl__state svg { flex: none; width: 11px; height: 11px; }
+.q-tl__mode-word,
+.q-tl__state-word,
+.q-tl__ai-name .q-tl__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.q-tl__ai-name { border-radius: var(--q-radius-control); }
+/* the name and seconds are ONE chip: undo ED-11's per-word chips if the block has a picture */
+.q-tl__block[data-tl-block="ai"] .q-tl__ai-name :is(.q-tl__label, .q-tl__secs) {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+/* review: the track sets `data-tl-pic="1"` on every block with a picture, and ED-11 hides
+   `[data-tl-pic="1"] .q-tl__label` under 4.5rem — inside the AI chip that would leave an
+   empty black chip. The AI block's name hides only at ITS cut (3.25rem, the whole
+   `.q-tl__ai-name`): 0,5,0 beats ED-11's 0,3,0, container or not. */
+.q-tl__block[data-tl-block="ai"][data-tl-pic="1"] .q-tl__ai-name .q-tl__label { display: revert; }
+/* a block with a transition in: its content starts after the overlap, as any block
+   (`.q-tl__item[data-tl-in="1"] .q-tl__block`, 0,3,0), with the AI block's 4 px */
+.q-tl__item[data-tl-in="1"] .q-tl__block[data-tl-block="ai"] {
+  padding-left: calc(var(--b-in) / var(--b-len) * 100% + 4px);
+}
+/* the state: dot (or clock / loader) in its tone + its word, as `signal_pill` */
+.q-tl__state { gap: 4px; --q-ai-tone: var(--gray-9); }
+.q-tl__state[data-tone="info"] { --q-ai-tone: var(--blue-9); }
+.q-tl__state[data-tone="ok"] { --q-ai-tone: var(--grass-9); }
+.q-tl__state[data-tone="warn"] { --q-ai-tone: var(--amber-9); }
+.q-tl__state[data-tone="error"] { --q-ai-tone: var(--tomato-9); }
+.q-tl__state svg { color: var(--q-ai-tone); }
+.q-tl__state-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--q-ai-tone); }
+/* the system's loader, small enough for a 17 px chip (its own size is inline) */
+.q-tl__state-spin { display: inline-flex; flex: none; }
+.q-tl__state-spin .q-spinner { width: 12px !important; height: 12px !important; }
+/* Widths, measured on the block's CONTENT box (block − 4 px padding − border each side):
+   - up to 7.5rem (a 2 s part on a phone, 88 px → ~78 px of content): the mode's word and
+     the seconds go; the icons stay and the name or the state still shows (with «…»);
+   - up to 3.25rem (~52 px; a 1 s part, 44 px → ~34 px): the state's word and the name go
+     too, and the mode chip drops its inline padding so the ✦ and the mode's icon fit;
+   - up to 1.5rem: only the ✦.
+   The full name is always in the block's `aria-label` and in the panel. */
+@container q-tl-block (max-width: 7.5rem) {
+  .q-tl__block[data-tl-block="ai"] :is(.q-tl__mode-word, .q-tl__secs) { display: none; }
+}
+@container q-tl-block (max-width: 3.25rem) {
+  .q-tl__block[data-tl-block="ai"] :is(.q-tl__state-word, .q-tl__ai-name) { display: none; }
+  .q-tl__block[data-tl-block="ai"] :is(.q-tl__mode, .q-tl__state) { padding-inline: 1px; gap: 2px; }
+}
+@container q-tl-block (max-width: 1.5rem) {
+  .q-tl__block[data-tl-block="ai"] .q-tl__mode svg + svg { display: none; }
+}
+/* the mark on the preview while the playhead is on an AI part not created yet */
+.q-ai-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--black-a10);
+  box-shadow: inset 0 0 0 1px var(--q-ai-ring);
+  color: var(--white-a12);
+  font-size: var(--font-size-1);
+  font-weight: 650;
+}
+.q-ai-mark svg { flex: none; }
+/* the /design sample (m-25026602): each block in a box as wide as its seconds on a phone
+   (1 s = 44 px) and as tall as the media track (56 px) */
+.q-ai-samples { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-5); }
+.q-ai-sample { display: flex; flex-direction: column; gap: var(--space-1); max-width: 15rem; }
+.q-ai-sample__box { height: 56px; width: calc(var(--b-len) * 44px); }
+.q-ai-sample__cap { font-size: var(--font-size-1); color: var(--gray-11); }
+@media (forced-colors: active) {
+  .q-tl__block[data-tl-block="ai"] .q-tl__pic::after { display: none; }
+  .q-tl__state-dot { background: CanvasText; }
+}

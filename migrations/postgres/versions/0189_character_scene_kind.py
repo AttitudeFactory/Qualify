@@ -1,7 +1,7 @@
 """character_scene_kind: a Clip's character scene is a draft kind of its own (m-25128784)
 
-Revision ID: 0188
-Revises: 0187
+Revision ID: 0189
+Revises: 0188
 Create Date: 2026-11-26
 
 Epic m-25026566, ADR 50 §12 (signed by Deivid on 2026-11-26). The brand's saved
@@ -20,8 +20,8 @@ presenter's path.
 Grants and RLS: no new table, no new column. `content_briefs` keeps its `tenant_id`, its
 forced RLS with the NULLIF policy and its grants.
 
-Numbering: 0187 is m-25129385's (the saved characters' table), which lands first; this
-revision sits on it (the coordinator's call, 2026-11-26).
+Numbering: 0187 is subscription_payments (PR #842) and 0188 m-25129385's saved characters,
+which land first; this revision sits on 0188 (the coordinator's call, 2026-11-26).
 
 **Downgrade** restores the CHECK of 0159. A `character_scene` brief cannot be expressed
 below this revision, and its draft carries charges, usage events and vendor tasks of a
@@ -34,8 +34,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0188"
-down_revision = "0187"
+revision = "0189"
+down_revision = "0188"
 branch_labels = None
 depends_on = None
 
@@ -74,7 +74,7 @@ def downgrade() -> None:
             SELECT count(*) INTO n FROM content_briefs WHERE kind = 'character_scene';
             IF n > 0 THEN
                 RAISE EXCEPTION
-                    '0188: % character scene brief(s) exist; they cannot be expressed below '
+                    '0189: % character scene brief(s) exist; they cannot be expressed below '
                     'this revision — remove them by hand (and their drafts) first', n;
             END IF;
         END

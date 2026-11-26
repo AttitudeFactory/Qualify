@@ -28,7 +28,6 @@ from qualify_api.referentes.reviewed_reels import (
     DURATION_UNDER_15,
     KIND_COMPETENCIA,
     KIND_REFERENTE,
-    MORE_REVIEWED_TITLE,
     NETWORKS,
     ReelFilters,
 )
@@ -53,7 +52,20 @@ AXIS_LABELS = {
     AXIS_ACCOUNT: ACCOUNT_LABEL,
     AXIS_DURATION: DURATION_LABEL,
 }
+#: RF-13, option A (Deivid 2026-11-26): on a phone a chip with no filter shows only this
+#: short name («Tipo», not «Tipo de cuenta»), and a chip with a filter only its value —
+#: so 2 or 3 chips fit on a line. The full «Tipo de cuenta: Todos» stays in its
+#: accessible name and its `title`.
+CHIP_LABELS = {
+    AXIS_NETWORK: NETWORK_LABEL,
+    AXIS_KIND: "Tipo",
+    AXIS_ACCOUNT: ACCOUNT_LABEL,
+    AXIS_DURATION: DURATION_LABEL,
+}
 RESET_LABEL = "Restablecer filtros"
+#: The same button on a phone (option A, Deivid 2026-11-26: «Quitar filtros» only if
+#: it is needed to fit): first on its line beside «Competidores», never alone.
+RESET_SHORT = "Quitar filtros"
 
 #: What an axis says when nothing is narrowed on it. «Todos» / «Todas» agree with the
 #: axis' noun («Canal», «Tipo de cuenta» / «Cuenta», «Duración»).
@@ -114,19 +126,19 @@ NO_IDEAS_LEFT = (
     "para tener más ideas."
 )
 NO_IDEAS_LEFT_ACTION = "Elegir cuentas"
-#: The filters leave no idea, but «Más reels revisados» has some (UX review 7).
-IDEAS_NONE_FILTERED = (
-    "Ninguna idea coincide con estos filtros. Mira «Más reels revisados», aquí abajo."
+#: RF-13 (m-25120327, Deivid 2026-11-25): one list under the bar — the ideas first, then
+#: the other reels the check kept, with no heading over either — `LIST_PAGE` at a time;
+#: «Ver más» brings the next `LIST_PAGE`. Only the ideas keep «Hacer uno parecido».
+LIST_PAGE = 16
+MORE_BUTTON = "Ver más"
+#: Where an idea has «Hacer uno parecido», a reviewed reel says why it has not (ux-designer
+#: on RF-13, approved by Deivid 2026-11-26).
+MORE_ONLY_LOOK = "Este es solo para inspirarte: no se puede hacer uno parecido."
+#: Filters on and no idea left that can be made again (same review): over the list; the
+#: way back is «Restablecer filtros», already in the bar.
+NO_IDEAS_FILTERED = (
+    "Con estos filtros no queda ninguna idea para hacer uno parecido. Quita alguno para verlas."
 )
-
-#: The second list (`reviewed_reels.MORE_REVIEWED_TITLE`, exact, ticket m-25119458), its
-#: line (UX review 5: why its cards have no «Hacer uno parecido») and its next-page button.
-MORE_TITLE = MORE_REVIEWED_TITLE
-MORE_BODY = (
-    "Más reels de tu producto o tu categoría para que saques ideas. Estos son solo para "
-    "mirar: no se pueden copiar con «Hacer uno parecido»."
-)
-MORE_BUTTON = "Ver más reels"
 MORE_BUSY = "Cargando…"
 #: A reel of the second list could not be read (Postgres down while paging).
 MORE_ERROR = "No pudimos traer más reels. Inténtalo de nuevo."
@@ -333,9 +345,103 @@ def chips(choice: FilterChoice, options: Sequence[dict[str, str]] = ()) -> list[
     ]
 
 
+#: RF-13 (Deivid, 2026-11-26): on a phone the bar is ONE line — «Filtros» (with « · N»
+#: while N axes narrow the list) beside «Competidores»; «Filtros» opens one sheet with
+#: every axis, titled the same.
+FILTERS_LABEL = "Filtros"
+FILTERS_COUNT = "{label} · {n}"
+#: Its accessible name: «Filtros: 2 activos», «Filtros: 1 activo», «Filtros: ninguno activo».
+FILTERS_NAME_SOME = "{label}: {n} activos"
+FILTERS_NAME_ONE = "{label}: 1 activo"
+FILTERS_NAME_NONE = "{label}: ninguno activo"
+
+
+def active_count(choice: FilterChoice) -> int:
+    """How many axes narrow the list (several accounts are one axis)."""
+    return sum(bool(v) for v in (choice.network, choice.kind, choice.accounts, choice.duration))
+
+
+def filters_button(choice: FilterChoice) -> tuple[str, str]:
+    """`(face, name)` of the phone's «Filtros» button: «Filtros» or «Filtros · 2», and
+    an accessible name that contains the visible words (WCAG 2.5.3)."""
+    n = active_count(choice)
+    if n == 0:
+        return FILTERS_LABEL, FILTERS_NAME_NONE.format(label=FILTERS_LABEL)
+    face = FILTERS_COUNT.format(label=FILTERS_LABEL, n=n)
+    if n == 1:
+        return face, FILTERS_NAME_ONE.format(label=FILTERS_LABEL)
+    return face, FILTERS_NAME_SOME.format(label=FILTERS_LABEL, n=n)
+
+
+#: RF-13 (Deivid, 2026-11-26, after measuring at 375 px): on a phone a filtered chip of
+#: these axes shows a shorter value, so no chip is left alone on a line and «Competidores»
+#: is not said twice beside the «Competidores» button. «Tipo» takes the words of the
+#: competitors' panel. The sheet and the desktop keep the long words.
+CHIP_VALUES: dict[str, dict[str, str]] = {
+    AXIS_KIND: {KIND_REFERENTE: "Te inspiran", KIND_COMPETENCIA: "Compiten contigo"},
+    AXIS_DURATION: {
+        DURATION_UNDER_15: "< 15 s",
+        DURATION_15_30: "15–30 s",
+        DURATION_30_60: "30–60 s",
+        DURATION_OVER_60: "> 60 s",
+    },
+}
+
+
+def _raw(axis: str, choice: FilterChoice) -> str:
+    return {
+        AXIS_NETWORK: choice.network,
+        AXIS_KIND: choice.kind,
+        AXIS_DURATION: choice.duration,
+    }.get(axis, "")
+
+
+def phone_chip(
+    axis: str, choice: FilterChoice, options: Sequence[dict[str, str]] = ()
+) -> tuple[str, str]:
+    """`(face, name)` of a phone chip (RF-13, option A). With no filter the face is the
+    short name («Tipo»); with one, its value — shorter for «Tipo» and «Duración»
+    (`CHIP_VALUES`). `name` is the accessible name and `title`: the axis' full name and
+    the long value, and it always CONTAINS the visible face (WCAG 2.5.3, label in name):
+    «Duración: < 15 s (menos de 15 segundos)»."""
+    full = AXIS_LABELS[axis]
+    long = value_label(axis, choice, options)
+    if not chips(choice, options)[AXES.index(axis)]["on"]:
+        return CHIP_LABELS[axis], f"{full}: {long}"
+    short = CHIP_VALUES.get(axis, {}).get(_raw(axis, choice), long)
+    if short == long:
+        return long, f"{full}: {long}"
+    return short, f"{full}: {short} ({long[:1].lower()}{long[1:]})"
+
+
 # --------------------------------------------------------------------------------------
 # the lists under the bar
 # --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FirstPage:
+    """The reviewed reels that fill the first `LIST_PAGE` after the ideas, whether more
+    exist, and the offset «Ver más» reads from next."""
+
+    more: list[dict[str, str]]
+    has_more: bool
+    next_offset: int
+
+
+def first_page(
+    ideas: int,
+    more: Sequence[dict[str, str]],
+    *,
+    has_more: bool,
+    page: int = LIST_PAGE,
+) -> FirstPage:
+    """RF-13: the first page of the one list is `ideas` ideas and then as many reviewed
+    reels (`more`, read from offset 0, at least `page` of them) as fit in `page`; what
+    is left over waits for «Ver más», which reads `page` more from `next_offset`."""
+    room = max(0, page - max(0, ideas))
+    shown = list(more[:room])
+    return FirstPage(shown, has_more or len(more) > room, len(shown))
 
 
 def only_competitors(choice: FilterChoice, accounts: Mapping[str, str]) -> bool:
@@ -401,6 +507,8 @@ __all__ = [
     "AXIS_DURATION",
     "AXIS_KIND",
     "AXIS_LABELS",
+    "CHIP_LABELS",
+    "CHIP_VALUES",
     "AXIS_NETWORK",
     "BAR_LABEL",
     "COMPETITORS_EMPTY_ACTION",
@@ -416,14 +524,13 @@ __all__ = [
     "EMPTY_NONE",
     "EMPTY_NO_COMPETITORS",
     "EMPTY_NO_IDEAS",
-    "IDEAS_NONE_FILTERED",
     "KIND_LABEL",
     "KIND_OPTIONS",
-    "MORE_BODY",
+    "LIST_PAGE",
     "MORE_BUSY",
     "MORE_BUTTON",
     "MORE_ERROR",
-    "MORE_TITLE",
+    "MORE_ONLY_LOOK",
     "NETWORK_LABEL",
     "NETWORK_OPTIONS",
     "NO_ACCOUNTS_OPTION",
@@ -431,18 +538,30 @@ __all__ = [
     "NO_COMPETITORS_ACTION",
     "NO_COMPETITORS_BODY",
     "NO_COMPETITORS_TITLE",
+    "NO_IDEAS_FILTERED",
     "NO_IDEAS_LEFT",
     "NO_IDEAS_LEFT_ACTION",
     "RESET_LABEL",
+    "RESET_SHORT",
     "SOME_ACCOUNTS",
     "EmptyMessage",
+    "FirstPage",
     "FilterChoice",
+    "FILTERS_COUNT",
+    "FILTERS_LABEL",
+    "FILTERS_NAME_NONE",
+    "FILTERS_NAME_ONE",
+    "FILTERS_NAME_SOME",
     "account_key",
     "account_options",
     "accounts_by_key",
     "chips",
+    "active_count",
+    "filters_button",
+    "phone_chip",
     "clear_accounts",
     "empty_message",
+    "first_page",
     "known_accounts",
     "only_competitors",
     "parse_account_key",

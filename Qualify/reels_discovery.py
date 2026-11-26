@@ -8,10 +8,10 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
 - `stored_ideas` — the latest run and the latest `ok` one with its ideas
   (`reel_runs.view`), how many accounts the brand follows, whether something says what it
   sells, the business's zone and the stored reels each idea's lift is measured against.
-  Postgres only, never a write. RF-02 (m-25119460): the ideas and one page of «Más reels
-  revisados» come narrowed by the owner's filters through RF-01's read
+  Postgres only, never a write. RF-02 (m-25119460): the ideas and the first page of the reviewed
+  reels after them (RF-13) come narrowed by the owner's filters through RF-01's read
   (`reviewed_reels.reviewed_reels`) — filtering reads only what is stored, never pays;
-- `more_reviewed` — the next page of «Más reels revisados», the same read;
+- `more_reviewed` — the next page of the reviewed reels after the ideas (RF-13), the same read;
 - RF-05 (m-25119465): `competitor_rows` (the panel over the filter bar, Postgres only),
   `choose_competitors` (which 6 the Monday run reads, the brand's own labels) and
   `read_competitor_now` («Ver sus reels ahora»: it only QUEUES the read, inside the daily
@@ -136,12 +136,20 @@ def stored_ideas(
     """Everything «Ideas para tus reels» shows, read from Postgres — never the vendor,
     never the model, never a write. `now` is the moment the screen reads at (the run's
     retry and «Replicar» are judged at it); the real clock when not given. `filters`
-    (RF-02) narrow the ideas and «Más reels revisados» (RF-01's read, first page); the
+    (RF-02) narrow the ideas and the reviewed reels (RF-01's read, first page); the
     run's state — which screen, its notice — never depends on them."""
     runs = store or reel_runs.default_store()
     repo = repository or referentes_provider.REPOSITORY
+    # RF-13: one list of `LIST_PAGE` under the bar — the ideas, then as many reviewed
+    # reels as fit — so the first read brings a whole page of them (the view trims it)
     reviewed = reviewed_reels.reviewed_reels(
-        tenant_id, brand_id, filters=filters, store=runs, library=library, now=now
+        tenant_id,
+        brand_id,
+        filters=filters,
+        limit=reels_filters_vm.LIST_PAGE,
+        store=runs,
+        library=library,
+        now=now,
     )
     seen = reviewed.view
     account_reels: Sequence[Any] = ()
@@ -223,11 +231,12 @@ def more_reviewed(
     *,
     filters: ReelFilters | None = None,
     offset: int,
+    limit: int = reels_filters_vm.LIST_PAGE,
     now: datetime | None = None,
     store: ReelRunStore | None = None,
     library: ReviewedReelsStore | None = None,
 ) -> tuple[list[dict[str, str]], bool]:
-    """One more page of «Más reels revisados» (RF-02), from `offset`, narrowed by
+    """One more page of the reviewed reels («Ver más», RF-02/RF-13), from `offset`, narrowed by
     `filters`: its cards and whether a next page exists. RF-01's read — Postgres only,
     never the vendor, the model or a write."""
     moment = now or datetime.now(UTC)
@@ -236,6 +245,7 @@ def more_reviewed(
         brand_id,
         filters=filters,
         offset=offset,
+        limit=limit,
         store=store or reel_runs.default_store(),
         library=library,
         now=moment,

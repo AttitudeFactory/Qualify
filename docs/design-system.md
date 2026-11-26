@@ -101,6 +101,11 @@ Regla de degradación: un tono no mapeado cae en `neutral`, nunca en `accent` ni
 
 **Identidad de plataforma** (`T.PLATFORM_SCALE`, siempre badge `outline`): Instagram `pink` · TikTok `purple` · Facebook `blue` · WhatsApp `green`. Son identidades, no estados: por eso nunca `soft` y nunca sin la palabra.
 
+**Rol «hecho con IA»** (`T.AI_SCALE`, tokens `--q-ai-*`; m-25026602): lo que hace la IA en la
+línea de tiempo usa la escala **iris**, la misma del lavado de la zona «Publica». Es un rol, no
+un estado (el estado conserva su tono) y nunca va solo: siempre con el ✦ y una palabra. Detalle
+en §5.10.1.
+
 **Contraste:** texto solo en pasos 11-12 sobre fondos 1-3 (Radix garantiza ≥ 4.5:1). `TEXT_FAINT` (gray-8) es para iconos decorativos y placeholders, **no** para texto que deba leerse. Sobre vidrio claro el ratio no lo garantiza Radix sino el relleno del material — ver §8.
 
 ### 3.2 Tipografía
@@ -650,8 +655,20 @@ Todo lo que flota sobre la página es material **island** (§3.4) y lleva el ski
 
 | Primitiva | Cuándo | Notas |
 |---|---|---|
-| `drawer(*children, open=, on_open_change=, title=, description=None, footer=None, width="32rem", icon=None)` | un flujo más largo que un diálogo, que el operador recorre sin perder la pantalla de fondo: la asignación del Planificador | **la misma lámina `lq-dialog`** pegada al **borde derecho** (`.q-drawer`: `--q-dialog-fill`, hairline a la izquierda, `ELEV_OVERLAY`), ancho fijo en escritorio y **pantalla completa en móvil**; construido sobre `rx.dialog`, así Esc, el clic en el fondo, el focus trap y el ARIA vienen de Radix; el cuerpo se desplaza, título y pie quedan fijos (el pie es transparente: la lámina ya es el fondo). Uno a la vez, nunca anidado. Con `icon`, la cabecera lleva un glifo de acento antes del título |
+| `drawer(*children, open=, on_open_change=, title=, description=None, footer=None, width="32rem", icon=None, side="right")` | un flujo más largo que un diálogo, que el operador recorre sin perder la pantalla de fondo: la asignación del Planificador | **la misma lámina `lq-dialog`** pegada al **borde derecho** (`.q-drawer`: `--q-dialog-fill`, hairline a la izquierda, `ELEV_OVERLAY`), ancho fijo en escritorio y **pantalla completa en móvil**; construido sobre `rx.dialog`, así Esc, el clic en el fondo, el focus trap y el ARIA vienen de Radix; el cuerpo se desplaza, título y pie quedan fijos (el pie es transparente: la lámina ya es el fondo). Uno a la vez, nunca anidado. Con `icon`, la cabecera lleva un glifo de acento antes del título. `side="bottom"`: la hoja desde abajo (variante descrita bajo esta tabla) |
 | `stepper(labels, current=, completed=, on_select=None, icons=None)` | la cabecera de ese flujo: los pasos en orden | check lleno = completado (clicable con `on_select`, para volver a corregir); anillo = actual; número = aún no alcanzado (nunca clicable, así nada se confirma con un paso incompleto). El check y el paso actual con glifo llevan el degradado del acento. Etiquetas estáticas, estado dinámico. En móvil (y dentro del drawer) solo se lee la etiqueta del paso actual. Con `icons` (un glifo por paso) el paso no alcanzado muestra su glifo en lugar del número — el Planificador lo usa así |
+
+**Variante `drawer(..., side="bottom")` — la hoja desde abajo (RF-02 m-25119460, RF-13 m-25120327).** La misma lámina `lq-dialog` del `drawer`, que sube desde el borde inferior: ancho completo, tan alta como su contenido (85 % de la pantalla como máximo), redondeada arriba (`.q-drawer--bottom`). Es una **variante**, no un componente nuevo: el comportamiento (Esc, fondo, focus trap, ARIA) es el del `drawer`; solo cambia el borde. Se justifica por la regla §9.1-8: el kit no trae una hoja, pero sí el diálogo que la hace, y la usan dos piezas de «Ideas para tus reels» (la hoja «Filtros» del teléfono y «Tus competidores» en el teléfono). Uso: una elección corta que se abre desde un chip en el teléfono. Al cerrarse (Esc, fondo, «Cerrar», «Listo» o una elección), el foco vuelve al botón que la abrió (`on_close_auto_focus` con un script que lo enfoca). Demo: `/design` → «Hoja desde abajo».
+
+**La barra de filtros de «Ideas para tus reels» (RF-13).** Una sola regla propia, de layout: la *container query* de abajo. Se retiraron los `.q-rf-*`, y el precedente de un contenedor con modo angosto es `.q-cr-product-chip` (§5.6): todo es Radix con el skin y las primitivas de arriba.
+
+- **Cada filtro es un chip de una palabra** (`rx.button` del skin, `size="2"`, 44 px de alto; `surface` sin filtrar y `soft`, con lavado de acento, cuando filtra). Sin filtro muestra el nombre corto (`CHIP_LABELS`: «Canal», «Tipo», «Cuenta», «Duración»). Con filtro muestra su valor: «Instagram», «2 cuentas», y los valores cortos de `CHIP_VALUES`: «Te inspiran» o «Compiten contigo» para Tipo, y «< 15 s», «15–30 s», «30–60 s» o «> 60 s» para Duración. El nombre accesible y `title` llevan las palabras largas y **siempre contienen la palabra visible** (WCAG 2.5.3, `phone_chip`): «Duración: < 15 s (menos de 15 segundos)». Los popovers y la hoja conservan los textos largos.
+- **Qué fila se ve depende del ancho de la BARRA, no de la ventana** (una *container query*): `.q-reels-bar` (`container-type: inline-size`, en `assets/qualify-creative.css`) muestra la fila de chips (`.q-reels-bar__wide`) desde 760 px de barra, y por debajo la barra de dos botones (`.q-reels-bar__narrow`). Es la única regla propia de la barra, sin colores. Hizo falta porque a 768 y a 1024 px la barra lateral y la columna «¿Qué creamos?» dejan la barra en unos 376 px, y con un corte por ventana «Competidores» quedaba solo (Deivid, 2026-11-26).
+- **Barra ancha (760 px o más): una sola línea que ocupa todo el ancho de la barra** y nunca pasa de línea, así que ningún chip queda solo. Los cuatro filtros se reparten el ancho que sobra (`flex: 1 1 auto`, mínimo 5,5 rem): el que tiene el valor más largo recibe más, así un valor elegido no se corta si hay lugar y, como un select, llevan la palabra a la izquierda y la flecha a la derecha (`justify-content: space-between`). Después van «Competidores» y «Quitar filtros» (este, con un filtro activo) con su ancho natural. El gap es `spacing="3"` (12 px). Deivid, 2026-11-26: los cinco chips quedaban apiñados en el centro. A 760 px cada filtro todavía tiene unos 107 px para su palabra corta. Cada chip abre un `rx.popover` (vidrio `lq-glass`; Esc devuelve el foco al chip).
+- **Barra angosta (menos de 760 px: teléfonos, tablets y paneles angostos): una sola línea con dos botones del mismo ancho** (`flex: 1 1 0`). «Filtros» (`sliders-horizontal`) muestra « · N» con N filtros activos y su nombre accesible lo dice («Filtros: 2 activos»). «Competidores» abre su panel. Si la marca no tiene competidores, «Filtros» ocupa toda la línea. Queda lugar para un tercer botón con ícono (RF-14). «Filtros» abre **una sola hoja desde abajo** con los cuatro grupos (Canal, Tipo de cuenta, Cuenta —varias— y Duración), cada uno con su título y con las mismas filas de opción. Cada elección aplica al momento y la hoja sigue abierta; si es larga, se desplaza por dentro. En el pie van «Quitar filtros» (solo con algún filtro activo) y «Listo». Al cerrarse, el foco vuelve a «Filtros». Ningún texto se parte y no hay desplazamiento lateral (Deivid, 2026-11-26; reemplaza a los chips en varias líneas).
+- **Fila de opción:** un `rx.button` `ghost` gris de 44 px con `role="radio"` o `role="checkbox"` y `aria-checked`. Su marca siempre se dibuja con un ícono lucide y los tokens: anillo vacío (`circle`) o lleno (`circle-dot`) en las opciones de una sola elección, y casilla vacía (`square`) o marcada (`square-check`) en las de varias («Cuenta», «Tus competidores»). Elegida, la marca va en `accent-11` y el texto en `medium`; sin elegir, la marca va en `TEXT_MUTED`. Es la receta `lq-check` / `lq-radio` del kit, sin `<input>` nativo, para no anidar un control dentro de otro. No es una primitiva: la usa una sola pantalla.
+- Detrás de los filtros, un panel suave del sistema: `T.CARD_BG` (gris 2, funciona en claro y en oscuro), con el radio de tarjeta y 0,5 rem de padding. Nunca el recuadro oscuro que se quitó, y sin posición fija.
+- Los textos que no caben terminan en «…» con `white-space: nowrap`, `overflow: hidden` y `text-overflow: ellipsis` escritos uno por uno: el prop `truncate` de Radix llega a Reflex 0.10 como CSS inválido y dejaba el valor partido letra por letra.
 
 Reglas del flujo (Planificador, referencia): un paso solo se abandona cuando es válido y el motivo se lee junto a «Siguiente»; el paso de confirmación es donde aterriza la respuesta del servicio (`callout("error")` encima del botón); un rechazo no deja nada a medias. Demo en vivo: `/design` → «Flujo por pasos».
 
@@ -812,6 +829,21 @@ todo lo que está en la pista se ve gratis en la vista previa antes de crear; lo
 al tocar «Crear». En la pantalla nunca se escriben «timeline», «track», «clip», «capa», «frame»,
 «render», «split» ni «trim»; «Cortar» es la palabra del dueño.
 
+**Reglas del editor** (m-25026602). Son las reglas E1–E6 que ux-designer propuso el 2026-11-13
+en el ticket ED-00 (m-25026602), a pedido de Deivid. No son las decisiones D-E1…D-E6 del ADR 50
+§2.2, aunque nacieron el mismo día. La línea de tiempo editable que Deivid firmó el 2026-11-14
+(D-T1…D-T6, «Escritorio y celular adaptado») cambió algunas. Deivid firmó esta versión el
+2026-11-26. Así quedan:
+
+| Regla | Qué dice hoy | Firmada |
+|---|---|---|
+| E1 | El editor es **un paso, no el flujo**: vive dentro del marco de pasos de §4.5 («‹ destino · Paso N de M», pie «Atrás · Siguiente»). | Propuesta el 2026-11-13; sigue el 2026-11-14 |
+| E2 | **Un bloque elegido a la vez:** el panel trabaja siempre sobre una sola cosa. Antes era «una herramienta abierta a la vez». Absorbe la antigua E4: las fichas «Todo · 1 · 2…» ya no hacen falta. | Forma nueva, 2026-11-14 |
+| E3 | **Todo viene armado:** lo que eligió el dueño llega en su orden y «Siguiente» funciona sin tocar nada. Lo único obligatorio es tener algo que mostrar. | Propuesta el 2026-11-13; sigue el 2026-11-14 |
+| ~~E4~~ | *Absorbida por E2:* «se elige qué editar antes de editarlo» («Todo el video» o «Parte 2»). | 2026-11-14 |
+| E5 | **Lo que se ve es lo que sale.** Cuando no es así, la pantalla lo dice. | Propuesta el 2026-11-13; sigue el 2026-11-14 |
+| ~~E6~~ | *Retirada:* «nada de precisión de mouse: sin arrastrar bordes en la línea, sin zoom». Ahora los bordes se arrastran con tiradores de 44 px (D-T1…D-T6). El zoom sigue fuera (ver «Lo que NO hace»). | Retirada el 2026-11-14 |
+
 **Decisiones de Deivid (2026-11-14), textuales, y cómo quedaron.**
 
 | Decisión | Respuesta de Deivid | Qué fija hoy |
@@ -843,6 +875,244 @@ al tocar «Crear». En la pantalla nunca se escriben «timeline», «track», «
 | Arrastre | `assets/timeline-drag-core.js` (la cuenta, probada con node) y `assets/timeline-drag.js` (el DOM) |
 
 Demo en `/design`: sección "Línea de tiempo".
+
+### 5.10.1 Parte con IA en la línea de tiempo (m-25026602, patrón firmado)
+
+> **Estado:** **firmado.** Deivid firmó los mockups el 2026-11-26 y respondió las 9 preguntas
+> el mismo día (abajo). Lo propuso ux-designer el 2026-11-26 a partir del plan
+> `docs/plan-editor-unico-clip-partes.md` y del ADR 50 §13 (el editor único). Mockups:
+> `docs/mockups/editor-unico/` (copia fiel de los firmados; se abren con doble clic) —
+> `index.html`, `01-pista.html` (la pista y el muestrario de
+> estados), `02-panel-bloque-ia.html` (el panel), `03-agregar.html` («Agregar» y los topes),
+> `04-crear.html` («Revisa y crea» y «Probar esta parte»), `05-resultado.html` (progreso,
+> aprobar y finales) y `06-hacer-uno-parecido.html`; notas y decisiones D1–D22 en `notas.md`.
+> Código del patrón: los tokens `--q-ai-*` en `assets/qualify.css`, las clases en
+> `assets/qualify-creative.css` («The AI part on the timeline»), `T.AI_SCALE` / `T.AI_ICON`
+> en `Qualify/ui/tokens.py` y `ui.ai_mode_tag` en `Qualify/ui/primitives.py`. La pantalla
+> que lo monta llega con ED-07 (m-25026638, PR 6 del ADR 50 §13.7), detrás de
+> `QUALIFY_CLIP_AI_PARTS`.
+
+**Para qué.** En el editor único (ADR 50 §13), una parte que hace la IA es **un bloque más de
+«Fotos y videos»**, junto a las fotos y los videos del dueño. El dueño tiene que ver de un
+vistazo **qué hace la IA, qué falta crear y qué ya se pagó**, sin un cartel encima de cada
+parte. No es un componente nuevo: es una variante de `.q-tl__block` (§5.10).
+
+**Rol de color «hecho con IA».** Ningún color nuevo en el sentido de §9.2: se usa la escala
+**iris** de Radix, que el sistema ya carga para el lavado de la zona «Publica» del sidebar
+(§3.1, `iris-a3`). Lo nuevo es el **rol** (Deivid, respuesta 4), como una zona y no como un
+estado: el estado de la parte conserva su tono de siempre.
+
+| Token | Paso iris | Para qué |
+|---|---|---|
+| `--q-ai-fill` | `iris-a4` | fondo del bloque y velo sobre su póster |
+| `--q-ai-edge` | `iris-a7` | borde del bloque creado |
+| `--q-ai-edge-plan` | `iris-a8` | borde punteado del bloque sin crear |
+| `--q-ai-ring` | `iris-a9` | anillo de la insignia del modo y de la marca de la vista previa |
+| `--q-ai-ink` | `iris-12` | color de texto del bloque mismo (≥ 4.5:1 sobre `iris-a4`): lo heredan los íconos que no van en una cápsula, como el «Aa» o el ícono de respaldo cuando no hay póster |
+| `--q-ai-icon` | `iris-11` | el ícono «i» del motivo del modo, en el panel. Lo usa ED-07: hoy ninguna clase lo lee |
+
+En Python: `T.AI_SCALE = "iris"` (para `color_scheme` de una insignia) y `T.AI_ICON =
+"sparkles"` (el ✦). **Nunca solo el color** (P1): el bloque IA siempre lleva el ✦, la palabra de
+su modo y, después de crear, la palabra de su estado. No hay un color por modo: el ícono y la
+palabra bastan.
+
+**Anatomía** (56 px de alto, la altura de la pista de medios; `01-pista.html`):
+
+```
+┌──────────────────────────────┐   borde: punteado 2 px (sin crear) · lleno 1 px (creada)
+│ (✦ ↳ Sigue a la anterior)    │   línea 1: ✦ + insignia corta del modo (.q-tl__mode, una categoría)
+│ [Parte con IA 2 · 3 s]       │   línea 2: nombre y segundos (sin crear) · o su estado (creada)
+└──────────────────────────────┘   fondo: póster (corte del reel o foto del producto) atenuado · o su propio cuadro
+```
+
+- **Nombre:** «Parte con IA n», con su propia cuenta, como «Foto n» y «Video n» (D1). La
+  palabra «bloque» no aparece en ningún texto de pantalla.
+- **Póster** (`.q-tl__pic`, sin cambio): antes de crear, el corte del reel o la foto del
+  producto, atenuado (`opacity .45`, `saturate(.4)`); después, el cuadro de su propio video (la
+  tira de cuadros de ED-11b cuando exista). Encima va un velo iris para que se lean las letras.
+- **Insignia corta del modo** (`.q-tl__mode`, respuesta 8): ✦ + ícono del modo + palabra
+  (`.q-tl__mode-word`). Es una **categoría** (como `tag`, §5.3), no un estado.
+
+  | Modo | Ícono (lucide) | En la pista | Nombre completo, en el panel |
+  |---|---|---|---|
+  | `reference` | `wand-sparkles` | «Nueva» | «Nueva, inspirada en el original» · «Nueva, con tu producto» · «Nueva, con tu marca» |
+  | `edit` | `copy` | «Igual al original» | «Igual al original, con tu producto» |
+  | `extend` | `corner-down-right` | «Sigue a la anterior» | «Sigue a la anterior» |
+
+  La insignia de `extend` usa `FORM_EXTEND` («Sigue a la anterior») y **no** `FORM_EXTEND_OF`
+  («↳ Sigue a la anterior»): la flecha ya la dibuja el ícono `corner-down-right` y no se repite.
+- **Estado** (`.q-tl__state`, después de crear): una marca en su tono + la palabra
+  (`.q-tl__state-word`), como `signal_pill` (§5.2). La marca es el punto, salvo donde la columna
+  «Marca» de la tabla dice otra cosa: los errores y avisos llevan un ícono con forma para que una
+  parte de 1–2 s, que esconde la palabra, no lo diga solo con el color. Las palabras y los tonos
+  son los de `part_progress_vm.STATE_WORDS` y `STATE_TONES`, sin reescribirlos.
+- **Letras sobre la imagen:** las tres cápsulas (modo, nombre, estado) son negras
+  (`black-a10`) con letra blanca (`white-a12`), como el nombre de un bloque con cuadro (ED-11),
+  para que se lean en el tema oscuro y en el claro. El iris queda en el fondo, el borde y el
+  anillo de la insignia (`--q-ai-ring`). El velo sobre el póster va de `black-a6` a
+  transparente encima del iris, para que el iris se siga viendo también en el tema claro.
+  *Ajuste al pasar los mockups al repo:* los mockups (solo tema oscuro) usaban letra `iris-12`
+  y la palabra del estado en su tono-11; en el tema claro esas letras quedaban oscuras sobre
+  negro.
+- **Marcado:** `<button class="q-tl__block" data-tl-block="ai" data-ai-state="…">`, con
+  `aria-pressed` cuando está elegido y su nombre completo en `aria-label`.
+
+**Estados** (`data-ai-state`: los de `PartState` más `plan`):
+
+| `data-ai-state` | Palabra | Marca | Tono | Borde | Fondo | Tiradores |
+|---|---|---|---|---|---|---|
+| `plan` (sin crear) | (nombre y segundos: «Parte con IA n · 5 s») | — | — | punteado 2 px `--q-ai-edge-plan` | póster atenuado | segundos, de 1 en 1 s (1–10) |
+| `queued` | «En fila» | reloj (`clock`) | `neutral` | 1 px `--q-ai-edge` | póster atenuado | no (se está haciendo) |
+| `creating` | «Creando» | cargador del sistema, chico | `info` | 1 px `--q-ai-edge` | póster atenuado | no |
+| `review` | «Para revisar» | punto | `warn` | 1 px `--q-ai-edge` | su cuadro | recorte dentro del video hecho, ½ s, gratis |
+| `ready` | «Lista» | ✓ (`check`) | `ok` | 1 px `--q-ai-edge` | su cuadro | recorte dentro del video hecho, ½ s, gratis |
+| `failed` | «No salió» | cruz (`circle-x`) | `error` | 2 px `tomato-9` | póster | no |
+| `refused` | «No se pudo con el original» | aviso (`triangle-alert`) | `warn` | 2 px `amber-9` | póster | no |
+| `redo` | «Hay que rehacerla» | aviso (`triangle-alert`) | `warn` | 2 px `amber-9` | su cuadro | no |
+| `expired` | «Venció» | aviso (`triangle-alert`) | `warn` | 2 px `amber-9` | póster | no |
+
+La parte **elegida** lleva, como cualquier bloque, borde de 2 px `accent-9`; si está sin crear,
+el borde sigue punteado (elegida y todavía libre de cambiar). **También si está en error o en
+aviso:** el borde pasa a `accent-9` y se pierde el rojo o el ámbar mientras esté elegida, pero
+la palabra y la marca del estado siguen ahí y el panel dice el motivo. Al **levantarla** para
+arrastrarla (`.q-tl__item--lifted`) toma el mismo borde de acento y conserva el punteado. Lo que necesita una decisión («No
+salió», «No se pudo con el original», «Hay que rehacerla», «Venció») baja a una tarjeta a lo
+ancho debajo de la pista, con el motivo y los botones («Intentar de nuevo», «Hacerla nueva»,
+«Quitar parte»): en una parte de 4 s no caben un motivo ni dos botones de 44 px (D15).
+
+**Anchos angostos.** `@container q-tl-block` mide la **caja de contenido** del bloque, no el
+bloque: el ancho menos el relleno y el borde. Por eso el bloque IA lleva un relleno de 4 px (los
+otros bloques, 8 px). 1 s = 44 px en el celular:
+
+- **5 s (220 px):** todo: ✦, ícono, palabra del modo, nombre y segundos o estado.
+- **Contenido de hasta 7.5rem (120 px):** se ocultan la palabra del modo y los segundos. Quedan
+  los íconos y sigue visible el nombre o el estado, con «…» si no cabe. Esto alcanza a las
+  partes de 2 s (88 px, ~78 px de contenido) y también a una de 3 s sin crear (132 px; con su
+  borde punteado de 2 px le quedan 120 px). Una de 3 s ya creada muestra la palabra del modo,
+  cortada con «…», **solo mientras su borde es de 1 px** (`queued`, `creating`, `review`,
+  `ready`). En `failed`, `refused`, `redo` y `expired`, y al elegirla o levantarla, el borde es
+  de 2 px y la palabra se oculta.
+- **Contenido de hasta 3.25rem (~52 px; un bloque de unos 64 px o menos, como una parte de
+  1 s):** se ocultan también la palabra del estado y el nombre, y la cápsula pierde su relleno
+  para que quepan el ✦ y el ícono del modo. Queda la marca del estado: el punto o, en un error o
+  un aviso, su ícono con forma. *Cambio sobre la nota firmada (D4, «con 70 px o menos se oculta
+  la palabra del estado»):* a 1 s también se esconde el nombre, porque «Parte con IA 1» no cabe
+  ni cortado.
+- **Contenido de hasta 1.5rem:** solo el ✦.
+- **Con cuadro (`data-tl-pic="1"`):** la pista pone ese atributo en todo bloque con imagen, y la
+  regla de ED-11 que esconde el nombre bajo 4.5rem **no** aplica dentro de la cápsula de la parte
+  con IA: su nombre solo se esconde en el corte de 3.25rem, nunca deja una cápsula vacía.
+- **Con transición de entrada (`data-tl-in="1"`):** como cualquier bloque, su contenido empieza
+  después de la franja de la unión, con los 4 px del bloque IA.
+- El nombre completo siempre está en `aria-label` y en el panel: «Parte con IA 1, Nueva, de
+  0:06 a 0:11, sin crear».
+
+**Reglas.**
+
+1. **Una parte con IA va siempre a ×1:** en su panel no hay «Velocidad», «Girar» ni «Cortar»
+   (ADR 50 §13.2). La velocidad solo aplica a los bloques propios.
+2. Las uniones, los textos y los efectos funcionan igual a su lado y encima (ADR 50 §13.10,
+   respuesta 2).
+3. Nunca se dibuja solo el color: siempre ✦ + insignia + palabra.
+4. En el celular la insignia se acorta a íconos; el nombre completo siempre está en
+   `aria-label` y en el panel.
+5. La insignia del modo es una categoría; el estado es una señal (§5.3, «¿qué badge?»).
+6. **Excepción al imán de ½ s** (respuesta 5): antes de crear, los segundos de una parte con IA
+   son **enteros, de 1 a 10** («− 1 s / + 1 s» y tiradores con imán de 1 s), porque
+   `VideoPartPlan.seconds` es entero. Después de crear, los tiradores recortan dentro del video
+   hecho con el imán de ½ s de siempre, gratis.
+7. No hay botones sobre la parte en la pista: las acciones van en el panel o en la tarjeta de
+   decisiones.
+8. **«Sigue a la anterior» solo continúa una parte con IA que esté justo antes** (versión 1),
+   nunca un video propio ni una foto. Si el bloque de antes no es una parte con IA, la opción
+   queda no disponible en «¿Cómo la hacemos?», con su razón (D8).
+
+**Insignia completa en el panel** (respuesta 8, `02-panel-bloque-ia.html`): en el panel de la
+parte, el modo se muestra con su nombre completo en `ui.ai_mode_tag(label, icon)` (`rx.badge`
+`surface` en `T.AI_SCALE`, con ✦ + ícono del modo). Debajo de «¿Cómo la hacemos?» va el motivo
+(`MODE_REASON_TEXTS`) con el ícono «i» en `--q-ai-icon`; si el dueño cambió el modo, la misma
+línea dice «Lo cambiaste tú.» (ícono lápiz) con «Volver a lo que te propusimos» al lado (D7).
+Las opciones de «¿Cómo la hacemos?» son `choice_card` con `role="radio"`; la que no se puede
+elegir queda enfocable (`aria-disabled`) con su razón en ámbar, como `q-button-off` (D8).
+
+**Marca en la vista previa** (`.q-ai-mark`): mientras el cabezal está sobre una parte con IA sin
+crear, la vista previa muestra su póster con «✦ Parte con IA 1 · se crea al tocar «Crear»».
+
+**«Revisa y crea» con dos gastos** (D12, `04-crear.html`). El paso 3 separa **cuándo** se gasta
+cada cosa, porque la confusión más probable es entre vistas previas y segundos (las cifras son
+las del ejemplo del mockup: 2 partes con IA, una de 3 s):
+
+- **«Ahora, al crear»:** «2 vistas previas, una por cada parte con IA. Te quedan 12. Tus fotos
+  y tu video no gastan nada.»
+- **«Después, al aprobar»:** «9 s de video, solo los de las partes con IA (la de 3 s cuenta como
+  4). Este mes te quedan 40 s.»
+- Debajo: «Si una parte no sale, no se descuenta su vista previa.»
+- La línea corta se repite junto a «Crear» (§4.5): «Usa 2 vistas previas. Te quedan 12.»
+- **Sin vistas previas** (D13): «Crear» queda apagado con su motivo, y se dice la salida gratis:
+  «Si lo quieres hoy, quita las 2 partes con IA: con tus fotos y tu video se crea gratis.»
+- **«Probar esta parte»** (respuesta 7) va en el panel de la parte, sin diálogo, con su línea
+  de costo pegada: «Usa 1 vista previa. Te quedan {n}. Las demás las creas con «Crear».».
+- **Aprobar** es un diálogo (`rx.alert_dialog`, §5.4): «¿Aprobamos tu video?», con «Aprobar y
+  usar {n} s» / «Todavía no»; solo cuentan los segundos de las partes con IA (D18).
+
+**Textos firmados nuevos** (todo lo demás sale de `part_editor_vm`, `reel_parts_vm`,
+`mode_choice.MODE_REASON_TEXTS`, `parts.NOTICE_TEXTS`, `part_progress_vm`, `part_review_vm`,
+`parts_start_vm`, `clip_editor_vm` y `clip_joins_vm`; en las palabras que se reusan, «la parte
+n» pasa a «la parte con IA n», D16):
+
+- «Parte con IA n»
+- «Nueva» · «Igual al original» · «Sigue a la anterior» (insignia corta)
+- «Sin crear · gratis hasta «Crear»»
+- «Cuánto dura en tu video»
+- «Se crea de 4 s y usa 4 s de tu mes. Cuando esté lista, eliges qué {n} s usar arrastrando sus
+  barras.»
+- «Lo cambiaste tú.» / «Volver a lo que te propusimos»
+- «Probar esta parte»
+- «Esto guía el texto y el tono de todo el video. Lo que escribas abajo dice qué se ve en esta
+  parte.» (la caja «Todo el video»)
+- «Tu video ya tiene 6 partes con IA, el máximo. Quita una para agregar otra.» (con escenas: «Las
+  escenas con personaje también cuentan.»)
+- «Tu video ya dura 60 s, el máximo. Acorta o quita una parte para agregar otra.» · «Solo
+  quedaban 3 s: la parte nueva dura 3 s.» · «Tu video pasaría de 60 s.»
+- «La siguiente es una foto tuya: solo se juntan dos partes con IA seguidas.»
+- «Ahora, al crear» / «Después, al aprobar»
+- «✦ Parte con IA 1 · se crea al tocar «Crear»»
+- «¿Aprobamos tu video?» / «Aprobar y usar {n} s» / «Todavía no»
+- «Pidiendo tus partes en alta calidad: van {k} de {n}» / «Preparando tu video final»
+- «Mientras se prepara, tu video no se puede cambiar.»
+- «Te armamos tu video como el reel…» (`06-hacer-uno-parecido.html`)
+
+**Las 9 decisiones de Deivid (2026-11-26), y cómo quedaron.**
+
+| # | Pregunta | Respuesta de Deivid | Qué fija |
+|---|---|---|---|
+| 1 | «Agregar → Parte con IA»: ¿la pone ya o abre el panel lateral? | La pone ya en la pista y abre su panel. | Entra en el cabezal con 5 s (o lo que quepa hasta 60 s), la foto del producto y el modo de la regla; el foco va a «¿Qué pasa en esta parte?» (D10). Excepción firmada a «nunca agrega sola» (§5.10, punto 8). |
+| 2 | «Pedir una idea» con la pista ya armada | Agrega al final sin borrar nada. | Las partes propuestas van al final hasta los topes; la línea viva dice cuántas cupieron. |
+| 3 | ¿Dónde vive el resultado? | En «Por aprobar», con el mismo editor. | La página del video (`/drafts/<id>`), cabeza «‹ Por aprobar», h1 «Tu video», sin «Paso N de M» (D14). |
+| 4 | Color del bloque IA | La escala iris del sistema, con el rol nuevo «hecho con IA». | Tokens `--q-ai-*` y `T.AI_SCALE` (arriba). |
+| 5 | Segundos antes de crear | Enteros, de 1 a 10. | Regla 6: única excepción al imán de ½ s. |
+| 6 | ¿Se puede cambiar el video mientras se hacen los finales? | No: el video queda quieto. | «Mientras se prepara, tu video no se puede cambiar.», con `progress_panel` (§5.4) y la lista de partes (D19). |
+| 7 | ¿«Probar esta parte» o «Probar este bloque»? | «Probar esta parte». | El botón del panel, con su línea de costo y sin diálogo (D11). |
+| 8 | Insignia del modo | Corta en la pista, completa en el panel. | `.q-tl__mode` en la pista y `ui.ai_mode_tag` en el panel. |
+| 9 | «Video o audio tuyo» de la hoja de la parte | En «Más opciones» del panel. | **Confirmado con el servidor (2026-11-26):** va en «Más opciones» del panel y **solo aparece en «Nueva»** (`reference`). El contrato lo acepta solo en ese modo, con un video mp4/mov o un audio mp3/wav del negocio. En «Igual al original» y «Sigue a la anterior» no se dibuja. |
+
+**Lo que queda para ED-07.** El arrastre (`assets/timeline-drag.js`) todavía no trata un bloque
+`ai` como una foto o un video: hoy solo cambia de lugar los bloques `video` y `photo`, y un `ai`
+caería en el modo de un texto o un efecto (correrlo en el tiempo). ED-07 lo
+suma al montar el bloque en la pista, junto con el ícono «i» del motivo (`--q-ai-icon`).
+
+**Lo que NO hace.** No muestra el modo con colores distintos por modo. No pone botones sobre la
+parte en la pista. No crea nada al agregarla: todo es gratis hasta «Crear» o «Probar esta
+parte». No le da «Velocidad», «Girar» ni «Cortar» a una parte con IA.
+
+**Accesibilidad.** Lo de §5.10 más: el nombre accesible del bloque dice todo («Parte con IA 1,
+Nueva, de 0:06 a 0:11, sin crear»); las cápsulas son `aria-hidden` porque ese nombre ya las
+lee; en alto contraste (`forced-colors`) se ocultan el póster y su velo y el punto del estado
+toma el color del texto.
+
+Demo en `/design`: sección «Parte con IA en la línea de tiempo» (`#parte-con-ia`), estática:
+todos los estados, los anchos de 3, 2 y 1 s, un video y una foto propios para comparar, la
+insignia completa del panel y la marca de la vista previa.
 
 ---
 

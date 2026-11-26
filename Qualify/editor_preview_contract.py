@@ -1106,27 +1106,27 @@ def _layer_of(raw: object) -> VideoTextLayer:
 # -- words the screen shows (numbers only; the sentences are `clip_editor_vm`'s) ------------
 
 
+def tenths(seconds: float) -> int:
+    """Seconds as whole tenths, a half rounded UP (1,25 → 13, never Python's half to
+    even). The product is first trimmed to 6 decimals, so float noise never flips a
+    half (1,15 × 10 = 11,4999… still reads 12; 4,7 still reads 47)."""
+    return math.floor(round(max(float(seconds), 0.0) * 10, 6) + 0.5)
+
+
 def seconds_text(seconds: float) -> str:
-    """«8», «8,5»: whole seconds without decimals, else one decimal with a comma."""
-    value = round(max(float(seconds), 0.0), 1)
-    if abs(value - round(value)) < 0.05:
-        return str(int(round(value)))
-    return f"{value:.1f}".replace(".", ",")
+    """«8», «8,5»: whole seconds without decimals, else one decimal with a comma (a
+    half tenth rounds up: 1,25 → «1,3»)."""
+    whole, tenth = divmod(tenths(seconds), 10)
+    return str(whole) if not tenth else f"{whole},{tenth}"
 
 
 def clock_text(seconds: float) -> str:
-    """«0:04», «1:02», «0:04,5» (a half second shows)."""
-    value = max(float(seconds), 0.0)
-    minutes = int(value // 60)
-    rest = value - minutes * 60
-    whole = int(rest)
-    tenth = round(rest - whole, 1)
-    if tenth >= 0.95:
-        whole, tenth = whole + 1, 0.0
+    """«0:04», «1:02», «0:04,5» to the tenth (a half tenth rounds up); 59,96 s reads
+    «1:00», never «0:60»."""
+    minutes, rest = divmod(tenths(seconds), 600)
+    whole, tenth = divmod(rest, 10)
     text = f"{minutes}:{whole:02d}"
-    if tenth >= 0.05:
-        text += f",{int(round(tenth * 10))}"
-    return text
+    return f"{text},{tenth}" if tenth else text
 
 
 def _opt_layout_id(value: object) -> str | None:

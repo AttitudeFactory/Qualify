@@ -139,6 +139,20 @@ revoke-pack *args:
 plan-report *args:
     uv run --no-sync python -m qualify_api.plans.report {{args}}
 
+# m-25129422: the month's charge per subscription — lines, total, paid, pending and a
+# Spanish message to paste into WhatsApp/email. PRINTS ONLY, sends nothing (D19):
+#   just plan-invoice [--month 2026-11] [--tenant <uuid>]
+[positional-arguments]
+plan-invoice *args:
+    uv run --no-sync python -m qualify_api.plans.payments invoice "$@"
+
+# m-25129422: record ONE monthly-fee payment received by hand. Idempotent on the payment
+# reference (the same receipt twice = one row). Team only (admin_session):
+#   just plan-payment --tenant <uuid> --month 2026-11 --usd 149 --method zelle --payment-ref "Zelle 4471" --by herwin@attitudefactory.co [--local 470000 --currency COP] [--paid-on 2026-11-03]
+[positional-arguments]
+plan-payment *args:
+    uv run --no-sync python -m qualify_api.plans.payments payment "$@"
+
 # m-24852145 (D18): the plan's USD cap alert, once per subscription and month, to Lark
 # (QUALIFY_SUPPORT_WEBHOOK_URL). Never pauses anything. The calendar worker runs it daily.
 plan-cost-alerts *args:
@@ -622,6 +636,12 @@ eval-escenas *args:
 eval-avatar-escena *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/run_experiment.py {{args}}
 
+# m-25129385 (ADR 50 §12.12): the realistic character drawn from a real person's photo
+# (written permission required, photos never in the repo). Same guards as eval-avatar-escena.
+# --estilo realista (AVFOTO-001, default) | animado (AVFOTO-002).
+eval-avatar-foto *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/personaje_foto.py {{args}}
+
 # m-24849234: Seedream 5.0 pro color/texture matrix. `--dry-run` quotes it and sends nothing;
 # a paid run needs --i-have-spend-authorization (the founder authorizes each one).
 eval-plantillas *args:
@@ -890,7 +910,7 @@ protect-main:
 
 # Sync now, in the foreground: link this worktree, download the latest graph if it changed.
 graph-sync:
-    python3 dev/code-graph-sync.py --now
+    p=python3; "$p" -c '' 2>/dev/null || p=python; "$p" dev/code-graph-sync.py --now
 
 #   just graph-build          # skips if the published graph is already main's tip
 #   just graph-build true     # rebuild anyway

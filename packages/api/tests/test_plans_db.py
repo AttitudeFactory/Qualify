@@ -25,6 +25,7 @@ from qualify_api.plans.cost_alerts import run_cost_alerts
 from qualify_api.plans.models import BusinessPlan
 from qualify_api.plans.notify import RecordingTeamNotifier
 from qualify_api.plans.pack_service import PackRefused, add_pack
+from qualify_api.plans.payments import PaymentRefused, record_payment
 from qualify_api.plans.read import business_plan
 from qualify_api.plans.schedule import PlanChangeRefused
 from qualify_api.plans.service import plan_history, set_plan
@@ -195,7 +196,13 @@ def test_set_plan_aligns_the_engine_brake_with_the_plan_and_never_hard_stops() -
 
 
 @pytest.mark.parametrize(
-    "table", ["subscriptions", "subscription_plan_assignments", "subscription_cost_alerts"]
+    "table",
+    [
+        "subscriptions",
+        "subscription_plan_assignments",
+        "subscription_cost_alerts",
+        "subscription_payments",
+    ],
 )
 def test_the_request_path_cannot_read_the_subscription_tables(table: str) -> None:
     tenant, _ = _tenant()
@@ -326,6 +333,56 @@ def test_the_report_charges_plus_75_then_149_against_the_real_cost() -> None:
     assert october.prices_versions == "precios-planes-v1"
     (november,) = report.fetch(NOV, tenant)
     assert november.charged_usd == Decimal(149) and november.cost_usd == Decimal(0)
+
+
+def _pay(tenant: UUID, usd: str, ref: str, month: date = NOV):  # noqa: ANN202
+    return record_payment(
+        tenant_id=tenant,
+        period=month,
+        usd_paid=Decimal(usd),
+        method="zelle",
+        payment_ref=ref,
+        recorded_by="equipo@attitudefactory.co",
+        paid_at=_now(3, 11),
+    )
+
+
+def test_the_same_payment_twice_is_one_row_and_the_report_reconciles() -> None:
+    """m-25129422: missing → partial → full, and a repeated receipt writes nothing."""
+    tenant, _ = _tenant()
+    _set(tenant, "plus", _now(3))
+    (november,) = report.fetch(NOV, tenant)
+    assert (november.pending_usd, november.payment_status) == (Decimal(149), "sin pago")
+    ref = f"Zelle {uuid4().hex[:8]}"
+    first = _pay(tenant, "100", ref)
+    again = _pay(tenant, "100", f"  {ref.upper()} ")
+    assert first.changed and not again.changed and again.payment_id == first.payment_id
+    with admin_session() as session:
+        rows = session.execute(
+            text("SELECT reference, provider FROM subscription_payments WHERE id = :id"),
+            {"id": first.payment_id},
+        ).all()
+    assert rows == [(f"{first.subscription_id}:2026-11", "manual")]
+    (november,) = report.fetch(NOV, tenant)
+    assert (november.pending_usd, november.payment_status) == (Decimal(49), "pago parcial")
+    _pay(tenant, "49", f"Zelle {uuid4().hex[:8]}")
+    (november,) = report.fetch(NOV, tenant)
+    assert (november.paid_usd, november.payment_status) == (Decimal(149), "pagado")
+
+
+def test_a_reused_payment_reference_for_another_month_is_refused() -> None:
+    tenant, _ = _tenant()
+    _set(tenant, "plus", _now(3))
+    ref = f"Zelle {uuid4().hex[:8]}"
+    _pay(tenant, "149", ref)
+    with pytest.raises(PaymentRefused, match="ya está registrada"):
+        _pay(tenant, "149", ref, month=OCT)
+
+
+def test_a_payment_for_a_business_without_subscription_is_refused() -> None:
+    tenant, _ = _tenant()
+    with pytest.raises(PaymentRefused, match="no tiene suscripción"):
+        _pay(tenant, "149", f"Zelle {uuid4().hex[:8]}")
 
 
 def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:

@@ -1,5 +1,5 @@
 """m-25128784 against Postgres: a character scene is a child draft of its Clip of kind
-`character_scene` (migration 0188 widens `ck_content_briefs_kind`), it counts in the
+`character_scene` (migration 0189 widens `ck_content_briefs_kind`), it counts in the
 business's daily cap with the avatar blocks, and the store finds the Clip's scenes and
 the seconds still owed — never another business's (RLS). No vendor is called."""
 

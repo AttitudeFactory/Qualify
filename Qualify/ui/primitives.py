@@ -177,6 +177,23 @@ def tag(label: str | rx.Var, size: str = "1") -> rx.Component:
     return rx.badge(label, variant="surface", color_scheme="gray", size=size)
 
 
+def ai_mode_tag(label: str | rx.Var, icon: str, size: str = "1") -> rx.Component:
+    """The full mode badge of an AI part (m-25026602, docs/design-system.md §5.10.1):
+    ✦ + the mode's icon + its full name («Nueva, inspirada en el original»). A category,
+    so ``surface`` like `tag`, in the role «hecho con IA» (`T.AI_SCALE`) rather than gray.
+    It goes in the part's panel; on the timeline the short word rides on the block
+    (`.q-tl__mode`)."""
+    return rx.badge(
+        rx.icon(T.AI_ICON, size=12, aria_hidden="true"),
+        rx.icon(icon, size=12, aria_hidden="true"),
+        label,
+        variant="surface",
+        color_scheme=T.AI_SCALE,
+        radius="full",
+        size=size,
+    )
+
+
 def removable_pill(
     label: str | rx.Var | rx.Component,
     on_remove: Any,

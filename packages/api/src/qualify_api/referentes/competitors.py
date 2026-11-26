@@ -71,10 +71,11 @@ MONTHLY_LIMIT_TEXT = (
     "Este mes ya se alcanzó el límite de lecturas de tu negocio. "
     "Podrás intentarlo de nuevo desde el {renewal}."
 )
-#: The read is queued or running.
-READING_TEXT = "Estamos leyendo sus reels. En unos minutos los verás en «Más reels revisados»."
-#: The read ended: its reels that fit the business are in «Más reels revisados».
-DONE_TEXT = "Listo. Sus reels ya están en «Más reels revisados»."
+#: The read is queued or running. RF-13 (m-25120327): the screen shows one list with no
+#: «Más reels revisados» heading, so the sentences name «tus ideas», the screen's list.
+READING_TEXT = "Estamos leyendo sus reels. En unos minutos los verás en tus ideas."
+#: The read ended: its reels that fit the business are in the screen's one list.
+DONE_TEXT = "Listo. Sus reels ya están en tus ideas."
 #: The read could not be done (no way to review them now, or the reads are paused).
 FAILED_TEXT = "No pudimos leer sus reels ahora. Inténtalo de nuevo en unos minutos."
 #: More than 6 ticked.

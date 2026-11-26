@@ -165,6 +165,25 @@ def seasonal_media_key(
     return f"{prefix}{season_key}/{media_id}-{attempt}.{extension}"
 
 
+#: m-25129385: the business's characters (drawn by Seedream, reused in the Clip's scenes)
+#: live in their own folder of the business's seasonal library — outside `t/` (the owner
+#: really deletes them, which the bucket lock would refuse) and outside the 90-day purge
+#: (a character is reused for months). A distinct folder from the product stickers'
+#: `personajes/`, and a distinct file shape: `{uuid}.jpg`, no attempt number — the image is
+#: kept EXACTLY as Seedream returned it (Seedance 2.x takes a face only from its own
+#: account's Seedream output, unmodified), and Seedream answers JPEG.
+BUSINESS_CHARACTER_FOLDER = "personajes-negocio"
+BUSINESS_CHARACTER_EXTENSION = "jpg"
+
+
+def business_character_key(tenant_id: UUID, brand_id: UUID, character_id: UUID) -> str:
+    """`seasonal/{tenant}/{brand}/personajes-negocio/{character_id}.jpg` — UUIDs only."""
+    if not isinstance(character_id, UUID):
+        raise TenantPrefixViolation("a business character is named by its UUID")
+    prefix = seasonal_brand_prefix(tenant_id, brand_id)
+    return f"{prefix}{BUSINESS_CHARACTER_FOLDER}/{character_id}.{BUSINESS_CHARACTER_EXTENSION}"
+
+
 def tenant_roots(tenant_id: UUID) -> tuple[str, ...]:
     """Every prefix this tenant's objects may live under: `t/{tenant}/`, the Galería's
     `gallery/{tenant}/`, the reel cuts' `reel-windows/{tenant}/` and the seasonal
