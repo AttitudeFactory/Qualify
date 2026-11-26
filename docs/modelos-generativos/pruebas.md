@@ -22,6 +22,19 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="avfoto-002"></a>
+
+## AVFOTO-002 — Personaje ANIMADO dibujado por Seedream desde la foto de una persona real, como referencia de Seedance 2.5 (m-25129385, ADR 50 §12.12) — 2026-11-26 · Seedance 3 de 3 ACEPTADAS; falta el juicio de parecido de Deivid; US$1,69
+
+- **Qué:** las mismas 3 personas con permiso escrito y el mismo material que AVFOTO-001. Por foto, 1 dibujo 3D animado de `dola-seedream-5-0-pro-260628` (imagen a imagen, la foto como única referencia, 1080×1920, prompt `personaje-desde-foto-animado-v1`, `--estilo animado`) y 1 escena e1 de AVESC-001 en `dreamina-seedance-2-5-260628` (5 s, borrador 480p, 9:16, con audio, prompt `avatar-escena-v1`). Tabla `v10`. Corrida `20261126-162258`, con el OK de Deivid («OK US$2, ahora»), tope US$2. Material, videos y revisión solo en `%TEMP%/avatar-foto-real/`.
+- **Resultado:** Seedream dibujó los 3 personajes (US$0,045 c/u, 33 a 34 s). Seedance **aceptó las 3 escenas** (61 a 67 s, 48.437 tokens, US$0,518 c/u), sin el rechazo de persona real de AVFOTO-001. Las tres dicen la frase completa en español; los dos modelos de transcripción oyen «recién hacha» (o «a techa» en p3) en lugar de «recién hecha».
+- **Costo real:** US$1,69 (dibujos 0,135; escenas 1,555).
+- **Juicio preliminar por cuadros** (sin parecido, que es de Deivid): personaje igual al dibujo, producto reconocible y acción cumplida en los 3; labios que se mueven con la voz; en p3, una mancha roja en el delantal que ya venía en el dibujo pese a «no letters, no logos». Creíble 3 / 3 / 2.
+- **Conclusión:** **el personaje animado desde una foto real con permiso sí pasa en Seedance**, mientras que el realista no (AVFOTO-001). Abre la opción de ADR 50 §12.12 en su versión animada: hallazgo para una enmienda futura, **pendiente del juicio de parecido de Deivid**. Detalle en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVFOTO-002»).
+- **Pendiente:** Deivid califica el parecido del dibujo y del video (1 a 3) en `juicio-deivid.csv` de la corrida.
+
+---
+
 <a id="avfoto-001"></a>
 
 ## AVFOTO-001 — Personaje realista dibujado por Seedream desde la foto de una persona real, como referencia de Seedance 2.5 (m-25129385, ADR 50 §12.12) — 2026-11-26 · MEDIDO: NO VIABLE · Seedream 6 de 6, Seedance 0 de 3; US$0,27
@@ -30,7 +43,7 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 - **Resultado:** Seedream aceptó las 3 fotos y dibujó los 6 personajes (US$0,045 cada uno, 26 a 38 s). Seedance **rechazó las 3 escenas** al crear la tarea, en ≈ 5 s y sin cobro: `HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation: The request failed because the input image 'content[1]' may contain real person`. `content[1]` es el dibujo del personaje. Request ids: `02179572409229945c07e4ff35b1f55227084b3d76e9a8042e77d`, `0217957240976109ded32e803badef81244c2c5f5c7f1be339226`, `02179572410267116e812ea4822a09eb3d0e01cc9319ecd7bbb9e`.
 - **Costo real:** US$0,27 (dibujos); escenas US$0.
 - **Conclusión:** el camino «foto real → dibujo de Seedream → Seedance» **no funciona tal como se planteó**. Un dibujo hecho desde una foto no pasa como «salida propia de Seedream»; en AVESC-001 un rostro igual de realista hecho desde texto sí pasó. Por qué lo detecta (el origen imagen a imagen o el parecido con la persona) es **[inferencia]**.
-- **Lo reabriría (sin medir):** la verificación de identidad propia de BytePlus para personas reales (`docs/byteplus-datos-de-clientes.md` §1.4); o, como **hipótesis**, un dibujo estilizado o animado desde la foto (AVFOTO-002, planificada).
+- **Lo reabriría (sin medir):** la verificación de identidad propia de BytePlus para personas reales (`docs/byteplus-datos-de-clientes.md` §1.4); o, como **hipótesis**, un dibujo estilizado o animado desde la foto. Medido el mismo día en [AVFOTO-002](#avfoto-002): el animado sí pasa (3 de 3).
 - **Pendiente:** el parecido de los 6 dibujos, de 1 a 3, a juicio de Deivid (`juicio-deivid.csv` de la corrida). En las 2 opciones de `p3` Seedream inventó letras en el delantal pese a «No text». Detalle en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVFOTO-001»).
 
 ---
