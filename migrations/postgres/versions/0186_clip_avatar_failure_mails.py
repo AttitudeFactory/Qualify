@@ -1,4 +1,4 @@
-"""clip_avatar_failure_mails: one email per Clip and pass when its avatars need the owner (m-25120319)
+"""clip_avatar_failure_mails: one email per Clip and pass when avatars need the owner (m-25120319)
 
 Revision ID: 0186
 Revises: 0185

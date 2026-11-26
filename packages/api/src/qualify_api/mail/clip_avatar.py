@@ -105,6 +105,7 @@ def words_for(kind: str, count: int = 1) -> Words:
         return Words(SUBJECT_MANY, HEADING_MANY, PREHEADER, LEAD, WAIT)
     return Words(SUBJECT, HEADING, PREHEADER, LEAD, WAIT)
 
+
 #: Spanish names from a table — never `strftime` or the process locale.
 _WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 _MONTHS = (
