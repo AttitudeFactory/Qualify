@@ -134,7 +134,7 @@ def character_reference(tenant_id, brand_id, character_id) -> CharacterReference
 | `not_ready` | «Ese dibujo todavía se está haciendo. Espera un momento y elígelo de nuevo.» |
 | `description_short` | «Cuéntanos un poco más cómo es tu personaje.» |
 | `description_long` | «Tu descripción es muy larga. Déjala en 300 letras o menos.» (300 se acepta; 301 no) |
-| `name_invalid` | «Ponle a tu personaje un nombre de hasta 40 letras.» |
+| `name_invalid` | «Ponle un nombre a tu personaje, de 1 a 40 letras.» |
 | `name_taken` | «Ya tienes un personaje con ese nombre. Elige otro.» |
 | `not_found` | «No encontramos ese personaje. Puede que ya lo hayas borrado.» |
 | `in_use` | «Este personaje está en un video que todavía no apruebas. Quítalo de ese video para poder borrarlo.» |
@@ -146,7 +146,7 @@ def character_reference(tenant_id, brand_id, character_id) -> CharacterReference
   - `budget_cap`: «Ahora no pudimos dibujarlo. Inténtalo más tarde.»
 - **Fallo de la ronda completa** (`DrawingRound.failure_text`, vacío si salió alguna):
   - «Ningún dibujo salió. Puedes volver a pedirlos.»
-  - Si la ronda pagó algo y por eso cuenta para el tope (`DrawingRound.counts_for_the_day`), se agrega: «Esta vez cuenta como uno de tus 2 pedidos del día.»
+  - Si la ronda pagó algo y por eso cuenta para el tope (`DrawingRound.counts_for_the_day`), se agrega: «Esta vez cuenta como uno de tus 2 pedidos de hoy.»
 - **¿Una ronda que falló a medias deja elegibles los dibujos que salieron?** **Sí.** La ronda queda `ready` mientras haya al menos una opción lista. Las opciones que fallaron muestran «Este dibujo no salió. Elige uno de los otros, o pide dibujos nuevos.», y el dueño elige entre las que salieron. Lo cubre la prueba `test_a_half_failed_round_keeps_the_drawings_that_came_out_eligible`.
 
 #### Notas para la pantalla (m-25112921)
