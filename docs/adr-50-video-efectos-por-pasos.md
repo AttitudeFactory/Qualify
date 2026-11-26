@@ -602,11 +602,11 @@ Las cinco llegaron por «creacion de tickets» el 2026-11-26. Cada una dice cóm
 
 ## 13. Enmienda `[PROPUESTO]`: un solo editor — «Video por partes» dentro de la línea de tiempo del Clip
 
-**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 a partir de la decisión de Deivid del mismo día y del plan `docs/plan-editor-unico-clip-partes.md` (copiado sin cambios en este PR). Deivid respondió las 5 preguntas del plan el 2026-11-26 por medio de «creacion de tickets» (§13.10); la segunda mitad de la respuesta 5 queda **por confirmar con Deivid**. Solo la firma Deivid (P5 del §6.3).
+**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 a partir de la decisión de Deivid del mismo día y del plan `docs/plan-editor-unico-clip-partes.md` (copiado sin cambios en este PR). Deivid respondió las 5 preguntas del plan el 2026-11-26 por medio de «creacion de tickets» (§13.10), todas decididas. Solo la firma Deivid (P5 del §6.3).
 
 **Firma de Deivid:** `[ ]` «Firmo el §13» · fecha: ____. Firmar no enciende nada: el interruptor sigue apagado hasta cumplir §13.8.
 
-**Ticket:** por crear con `meegle-ticket` en la épica m-25026566 (este cambio es el PR 0 del §13.7).
+**Ticket:** m-25129404 (PR 0 del §13.7), en la épica m-25026566.
 
 **Evidencia:** `main` en `f14f65e0` (2026-11-26, cabeza de migraciones `0186_clip_avatar_failure_mails`) y la rama del §12 (`docs/m-25128784-adr50-personaje`). Se comprobaron en `main`: `check_part_link` (`creative/service.py:917`), `create_clip_with_blocks` (`creative/clip_avatar.py:1917`), `clip_block_charges` (`clip_avatar.py:2867`), `create_parts` (`creative/parts.py:1499`), `regenerate_part` (`parts.py:1700`), `make_part_new` (`creative/part_actions.py:359`), `join_preview` (`creative/part_join.py:676`), `merged_recipe` (`creative/parts_plan.py:319`), `charge_many` y `charge_videos_many` (`creative/creations.py:362` y `:386`), `PARTS_MAX = 6` y `SEGMENTS_MAX = 8` (`qualify_creative/schemas.py:127` y `:751`) y el tope diario de `creative/local_cap.py`. Las medidas de tiempo del armado salen del §10.4.
 
@@ -680,7 +680,7 @@ Se construye **una sola vez** para todos los hijos de IA del Clip (escenas del �
 ### 13.5 El tope de 10 armados al día
 
 - **Cuentan** (decidido, §13.10, respuesta 5): «Crear», «Rehacer esta parte» y **todo cambio del dueño después de crear** que vuelva a armar el Clip (texto, efecto, transición, orden, recorte o quitar un bloque).
-- **No cuentan** (recomendación del arquitecto, **por confirmar con Deivid**): los armados automáticos, es decir, el que se hace cuando terminan los hijos y el que se hace con los finales al aprobar. Si contaran, un Clip con 6 partes y un reintento podría gastar el tope sin que el dueño pidiera nada.
+- **No cuentan** (decidido por Deivid, §13.10, respuesta 5): los armados que hace el sistema solo, es decir, el que se hace cuando termina un hijo de IA y el que se hace con los finales al aprobar. Si contaran, un Clip con 6 partes y un reintento podría gastar el tope sin que el dueño pidiera nada.
 
 ### 13.6 Interruptor
 
@@ -692,18 +692,18 @@ Se construye **una sola vez** para todos los hijos de IA del Clip (escenas del �
 
 Primero el servidor, en PR chicos, cada uno con su ticket en la épica m-25026566.
 
-| PR | Qué | Reusa | Depende de |
+| PR (ticket) | Qué | Reusa | Depende de |
 |---|---|---|---|
-| 0 · docs | Este §13, la nota en la fila 44 de `docs/arquitectura.md` §6 y el plan en `docs/plan-editor-unico-clip-partes.md` | — | §12 en `main` |
-| 1 · contrato | `SourceSegment.kind="ai_part"`, `media.ai_parts`, las validaciones del §13.2 en `validate_recipe` y `unbuilt_recipe_problems`, y el interruptor. Funciones puras, sin escrituras | `VideoPartPlan`, `transition_room_problems` | 0 |
-| 2 · crear | `create_clip_with_ai_parts`: el Clip y sus hijos en una transacción, 1 vista previa por hijo, `check_part_link` con padre `CLIP`, el armado resuelve cada bloque a su video, `ai_generated` | `create_clip_with_blocks`, `ClipBlocksWait`, `create_parts`, `produce_local` | 1 |
-| 3 · después de crear | «Rehacer esta parte», intentar de nuevo, hacerla nueva, quitar y cambiar el modo con padre `CLIP`. Volver a armar al cambiar textos, uniones u orden, reusando los hijos | `regenerate_part`, `part_actions` | 2 |
-| 4 · aprobar y finales | El cobro único de los segundos de los hijos, los finales de 1080p y volver a armar con ellos. **Se hace junto con el §12.4** (m-25128784): un solo camino para escenas y partes | `charge_videos_many`, `clip_block_charges`, `part_final`, `recompose` | 2 y §12 |
-| 5 · del plan a los bloques | `blocks_from_plan` para el análisis y para `propose_parts`; los textos y efectos de cada parte pasan al Clip | `plan_from_analysis`, `merged_recipe` | 1 |
+| 0 · docs (m-25129404) | Este §13, la nota en la fila 44 de `docs/arquitectura.md` §6 y el plan en `docs/plan-editor-unico-clip-partes.md` | — | §12 en `main` |
+| 1 · contrato (m-25129405) | `SourceSegment.kind="ai_part"`, `media.ai_parts`, las validaciones del §13.2 en `validate_recipe` y `unbuilt_recipe_problems`, y el interruptor. Funciones puras, sin escrituras | `VideoPartPlan`, `transition_room_problems` | 0 |
+| 2 · crear (m-25129406) | `create_clip_with_ai_parts`: el Clip y sus hijos en una transacción, 1 vista previa por hijo, `check_part_link` con padre `CLIP`, el armado resuelve cada bloque a su video, `ai_generated` | `create_clip_with_blocks`, `ClipBlocksWait`, `create_parts`, `produce_local` | 1 |
+| 3 · después de crear (m-25129407) | «Rehacer esta parte», intentar de nuevo, hacerla nueva, quitar y cambiar el modo con padre `CLIP`. Volver a armar al cambiar textos, uniones u orden, reusando los hijos | `regenerate_part`, `part_actions` | 2 |
+| 4 · aprobar y finales (m-25129408) | El cobro único de los segundos de los hijos, los finales de 1080p y volver a armar con ellos. **Se hace junto con el §12.4** (m-25128784): un solo camino para escenas y partes | `charge_videos_many`, `clip_block_charges`, `part_final`, `recompose` | 2 y §12 |
+| 5 · del plan a los bloques (m-25129409) | `blocks_from_plan` para el análisis y para `propose_parts`; los textos y efectos de cada parte pasan al Clip | `plan_from_analysis`, `merged_recipe` | 1 |
 | 6 · pantalla: bloque IA | El bloque IA en la pista (aspecto propio, insignia del modo con su motivo), su panel y «Agregar → Parte con IA» | `part_editor_vm` (palabras), `timeline_vm` | 1, 2 y el diseño firmado (m-25026602) |
 | 7 · pantalla: entradas | «Hacer uno parecido» y «Pedir una idea» abren el editor con los bloques puestos | `reel_parts_vm` (palabras), `parts_start_vm` | 5 y 6 |
 | 8 · pantalla: resultado | Progreso por bloque, «Rehacer esta parte», aprobar y espera de los finales | `part_progress_vm`, `part_review_vm` | 3, 4 y 6 |
-| 9 · limpieza | Ya no se crean padres `SHOT_VIDEO` nuevos. Se retiran, para piezas nuevas, la lista de partes, la hoja de la parte, la tarjeta sin reel y `join_preview` | — | `QUALIFY_CLIP_AI_PARTS` encendido con el OK de Deivid |
+| 9 · limpieza (m-25129410) | Ya no se crean padres `SHOT_VIDEO` nuevos. Se retiran, para piezas nuevas, la lista de partes, la hoja de la parte, la tarjeta sin reel y `join_preview` | — | `QUALIFY_CLIP_AI_PARTS` encendido con el OK de Deivid |
 
 **Lo que se retira, y cuándo.**
 
@@ -725,7 +725,6 @@ Primero el servidor, en PR chicos, cada uno con su ticket en la épica m-2502656
 - **C1 · Armado medido con bloques IA** (R2): un Clip de 60 s con 8 bloques, de ellos 6 partes con IA, medido con `deploy/measure/local-video-memory.sh` en las condiciones del §10.4, y el número de armados por Clip contado en una prueba real. Se anota en `docs/armado-local-medicion.md`.
 - **C2 · Latido en el paso `speed`** (§10.4): sin él, un armado largo puede pasar los 20 min del reaper sin señal de vida.
 - **C3 · Prueba de punta a punta con Deivid**, su OK y `env-push`, como el resto de los interruptores de este ADR.
-- **C4 · Respuesta 5 confirmada** (§13.5): qué armados automáticos cuentan en el tope.
 
 ### 13.9 Riesgos
 
@@ -735,7 +734,7 @@ Primero el servidor, en PR chicos, cada uno con su ticket en la épica m-2502656
 | R2 | **El armado tarda y se repite más.** Un Clip de 60 s con 8 bloques y 7 uniones tarda **~29 min con 1 CPU** (§10.4), y el paso `speed` pasa **14,5 min sin latido** frente a los 20 min del reaper. Con bloques IA, cada Clip aprobado se arma **al menos dos veces** (el borrador cuando terminan los hijos y otra vez con los finales), más cada cambio del dueño y cada reintento de un hijo. Peor caso calculado `[H]` por negocio y día: 10 armados del dueño + ~10 automáticos ≈ 20 × 29 min ≈ **9,7 h de CPU**, en un `creative-worker` de 1 CPU que comparten todos los negocios. Los bloques IA van a ×1 y no pasan por `speed`, así que el tiempo real debería ser menor, pero no está medido. | Medir antes de encender (C1) y poner el latido en `speed` (C2). Si el p95 de espera pasa de 5 min una semana, se reabre (§13.11). | Abierto; condición C1 |
 | R3 | **Conviven dos caminos** mientras dure la transición (`SHOT_VIDEO` viejo y el Clip). | El PR 9 tiene fecha al encender el interruptor; las piezas viejas solo se abren hasta que las purgue la retención. | Aceptado, con fecha |
 | R4 | **6 hijos pueden quedarse cortos** para un reel con muchas partes más escenas. | Versión 1 con 6; el `0189` queda reservado para ampliar `ck_content_drafts_part_index` (reversible). | Decidido (respuesta 4) |
-| R5 | **Armados automáticos sin tope** (si se confirma que no cuentan): un Clip con hijos que fallan y se reintentan genera armados que el dueño no pidió. | Cada reintento de un hijo ya descuenta su vista previa o cuenta en su propio tope; un armado automático solo sigue a un hijo terminado o a una aprobación. | Por confirmar con Deivid |
+| R5 | **Armados automáticos sin tope** (no cuentan, respuesta 5): un Clip con hijos que fallan y se reintentan genera armados que el dueño no pidió. | Cada reintento de un hijo ya descuenta su vista previa o cuenta en su propio tope; un armado automático solo sigue a un hijo terminado o a una aprobación. | Decidido (respuesta 5) |
 
 ### 13.10 Respuestas de Deivid a las 5 preguntas del plan (2026-11-26, por «creacion de tickets»)
 
@@ -743,7 +742,7 @@ Primero el servidor, en PR chicos, cada uno con su ticket en la épica m-2502656
 2. **Textos y efectos sobre partes con IA → decidida: sí, sobre cualquier parte con IA**, también «Igual al original» y «Sigue a la anterior». Se mantiene la excepción del §12: sobre una escena del personaje, «textos sí, efectos no» (§13.2).
 3. **Clip hecho solo de partes con IA → decidida: sí.** La regla de «3 s propios» aplica solo cuando hay escenas o avatares (§13.1).
 4. **Hijos por Clip → decidida: hasta 6 hijos de IA en total**, sumando partes y escenas, sin migración. El `0189` queda reservado por si después hacen falta más (§13.2).
-5. **Tope de 10 armados al día → decidida en parte.** Los rearmados que provoca un cambio del dueño después de crear (texto, efecto o transición) **sí cuentan**. Para los automáticos (cuando terminan los hijos, o los finales al aprobar), la recomendación del arquitecto es que **no cuenten**: **por confirmar con Deivid** (§13.5, C4).
+5. **Tope de 10 armados al día → decidida.** Los rearmados que provoca un cambio del dueño después de crear (texto, efecto o unión) **sí cuentan**. Los que hace el sistema solo (cuando termina un hijo de IA, o el final al aprobar) **no cuentan** (§13.5).
 
 ### 13.11 Alternativas descartadas y qué lo reabriría
 
@@ -760,7 +759,7 @@ Primero el servidor, en PR chicos, cada uno con su ticket en la épica m-2502656
 - que el armado medido (C1) pase de 20 min para un Clip de 60 s con bloques IA, o que el p95 de espera del `creative-worker` pase de 5 min una semana: entonces se revisa la cola o se suma CPU, con su tabla de opciones;
 - que más del 10 % de los Clips con IA choquen con el tope de 6 hijos en un mes (→ `0189`);
 - que el tope de 10 armados al día frene a más del 10 % de los negocios activos en un mes (umbral del §8);
-- que Deivid decida que los armados automáticos sí cuentan (respuesta 5).
+- que los armados automáticos, que no cuentan en el tope (respuesta 5), pasen de 5 por Clip en promedio en un mes.
 
 **Fuera de esta enmienda:** el diseño de la pantalla (m-25026602), la voz y los subtítulos (VE-15, fase 2), la prueba de unir con `edit` de Seedance (VE-18 y VE-19) y encender cualquier interruptor.
 
