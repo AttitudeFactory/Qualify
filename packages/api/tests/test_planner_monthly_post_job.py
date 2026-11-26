@@ -28,11 +28,21 @@ class FakeStore:
     def enabled_brands(self, tenant_id: UUID) -> list[EnabledBrand]:
         return self.brands.get(tenant_id, [])
 
-    def claim(self, *, tenant_id, brand_id, period, event, kind) -> bool:
-        if (brand_id, period) in self.rows:
-            return False
-        self.rows[(brand_id, period)] = {"status": "pending", "event": event and event.id}
-        return True
+    def claim(self, *, tenant_id, brand_id, period, event, kind) -> int | None:
+        """`_CLAIM`'s rule: new → 0; skipped for lack of creations → attempt + 1."""
+        row = self.rows.get((brand_id, period))
+        if row is None:
+            attempt = 0
+        elif row["status"] == "skipped" and row["reason"] == "not_enough_creations":
+            attempt = row["attempt"] + 1
+        else:
+            return None
+        self.rows[(brand_id, period)] = {
+            "status": "pending",
+            "event": event and event.id,
+            "attempt": attempt,
+        }
+        return attempt
 
     def settle(self, *, tenant_id, brand_id, period, status, skip_reason=None, draft_id=None):
         row = self.rows[(brand_id, period)]
@@ -115,8 +125,65 @@ def test_not_enough_creations_is_skipped_without_draft(monkeypatch) -> None:
     _job(store, drafts, monkeypatch).run([T], date(2026, 5, 1))
     row = store.rows[(brand.brand_id, date(2026, 5, 1))]
     assert row == {"status": "skipped", "event": "dia_madre", "reason": "not_enough_creations",
-                   "draft": None}  # fmt: skip
+                   "draft": None, "attempt": 0}  # fmt: skip
     assert drafts.by_key == {}
+
+
+def test_quota_short_then_bought_retries_with_one_charge(monkeypatch) -> None:
+    brand = _brand()
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts(balance=0)
+    job = _job(store, drafts, monkeypatch)
+    job.run([T], date(2026, 5, 1))
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["reason"] == "not_enough_creations"
+    drafts.balance = 5  # the owner got more creations
+    job.run([T], date(2026, 5, 2))
+    job.run([T], date(2026, 5, 3))
+    row = store.rows[(brand.brand_id, date(2026, 5, 1))]
+    assert row["status"] == "created" and row["attempt"] == 1
+    assert drafts.charges == 1
+
+
+def test_quota_short_stops_retrying_once_the_date_is_close(monkeypatch) -> None:
+    brand = _brand()
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts(balance=0)
+    job = _job(store, drafts, monkeypatch)
+    job.run([T], date(2026, 5, 1))
+    drafts.balance = 5
+    job.run([T], date(2026, 5, 8))  # 2 days before Mother's Day
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["status"] == "skipped"
+    assert drafts.charges == 0
+
+
+def test_other_skip_reasons_are_final(monkeypatch) -> None:
+    brand = _brand()
+    store = FakeStore({T: [brand]})
+    drafts = FakeDrafts(raise_=BrandNotReady(missing=("voice_profile",)))
+    job = _job(store, drafts, monkeypatch)
+    job.run([T], date(2026, 5, 1))
+    drafts.raise_ = None
+    job.run([T], date(2026, 5, 2))
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["reason"] == "brand_not_ready"
+    assert drafts.charges == 0
+
+
+def test_from_day_25_next_months_early_date_is_prepared(monkeypatch) -> None:
+    new_year = PlanDate("ano_nuevo", "Año Nuevo", date(2027, 1, 1), date(2027, 1, 1),
+                        "grande", "verified")  # fmt: skip
+    monkeypatch.setattr(
+        job_mod, "event_of_month", lambda c, s, y, m, *a: new_year if m == 1 else None
+    )
+    brand = _brand()
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts()
+    job = MonthlyPostJob(
+        store=store, drafts=lambda: drafts, country_of=lambda t: "CO", owner_of=lambda t: OWNER
+    )
+    job.run([T], date(2026, 12, 24))  # before day 25: only December (no event)
+    assert (brand.brand_id, date(2027, 1, 1)) not in store.rows
+    job.run([T], date(2026, 12, 25))
+    job.run([T], date(2026, 12, 26))
+    assert store.rows[(brand.brand_id, date(2027, 1, 1))]["status"] == "created"
+    assert store.rows[(brand.brand_id, date(2026, 12, 1))]["reason"] == "no_event"
+    assert drafts.charges == 1
 
 
 def test_brand_not_ready_is_skipped(monkeypatch) -> None:

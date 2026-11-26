@@ -36,12 +36,12 @@ def test_claim_once_settle_once_and_isolated() -> None:
     tenant, brand = _tenant_with_brand()
     other, _ = _tenant_with_brand()
     claim = dict(tenant_id=tenant, brand_id=brand, period=MAY, event=EVENT, kind="static_flyer")
-    assert store.claim(**claim) is True
-    assert store.claim(**claim) is False  # a fresh pending claim is not taken twice
+    assert store.claim(**claim) == 0
+    assert store.claim(**claim) is None  # a fresh pending claim is not taken twice
     store.settle(tenant_id=tenant, brand_id=brand, period=MAY, status="skipped",
                  skip_reason="no_event")  # fmt: skip
     store.settle(tenant_id=tenant, brand_id=brand, period=MAY, status="created")  # no-op
-    assert store.claim(**claim) is False  # a settled month is never claimed again
+    assert store.claim(**claim) is None  # a settled month is never claimed again
     with tenant_session(tenant) as s:
         row = s.execute(
             text("SELECT status, skip_reason, event_id, calendar_version FROM monthly_posts")
@@ -55,11 +55,11 @@ def test_stale_pending_claim_is_taken_again() -> None:
     store = PostgresMonthlyPostStore()
     tenant, brand = _tenant_with_brand()
     claim = dict(tenant_id=tenant, brand_id=brand, period=MAY, event=EVENT, kind="clip")
-    assert store.claim(**claim) is True
+    assert store.claim(**claim) == 0
     with tenant_session(tenant) as s:
         s.execute(text("UPDATE monthly_posts SET claimed_at = now() - interval '2 hours'"))
-    assert store.claim(**claim) is True
-    assert store.claim(**claim) is False
+    assert store.claim(**claim) == 0
+    assert store.claim(**claim) is None
 
 
 def test_enabled_brands_reads_only_the_opted_in() -> None:
@@ -77,9 +77,20 @@ def test_enabled_brands_reads_only_the_opted_in() -> None:
                 "on": on,
                 "off": off,
                 "t": tenant,
-                "a": '{"sector": "comida", "monthly_post": {"enabled": true, "kind": "clip"}}',
+                "a": '{"sector": "comida", "monthly_post": {"enabled": true, "kind": "carousel"}}',
                 "b": '{"monthly_post": {"enabled": false, "kind": "clip"}}',
             },
         )
     [brand] = PostgresMonthlyPostStore().enabled_brands(tenant)
-    assert (brand.brand_id, brand.kind.value, brand.sector) == (on, "clip", "comida")
+    assert (brand.brand_id, brand.kind.value, brand.sector) == (on, "static_flyer", "comida")
+
+
+def test_a_month_short_of_creations_is_claimed_again_with_the_next_attempt() -> None:
+    store = PostgresMonthlyPostStore()
+    tenant, brand = _tenant_with_brand()
+    claim = dict(tenant_id=tenant, brand_id=brand, period=MAY, event=EVENT, kind="clip")
+    assert store.claim(**claim) == 0
+    store.settle(tenant_id=tenant, brand_id=brand, period=MAY, status="skipped",
+                 skip_reason="not_enough_creations")  # fmt: skip
+    assert store.claim(**claim) == 1
+    assert store.claim(**claim) is None  # pending again: one winner

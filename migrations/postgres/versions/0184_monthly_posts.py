@@ -16,6 +16,10 @@ lock against a double charge.
 - `status`: `pending` (claimed, generator not settled yet; a stale claim is taken again by
   a later run, see `planner.monthly_post_job`), `created` (`draft_id` set) or `skipped`
   (`skip_reason`: no event, not enough creations, Brand Kit not ready… — nothing charged).
+  Only `not_enough_creations` is not final (founder, 2026-11-25): the next daily run claims
+  the row again while the date is still ahead, with `attempt + 1` — the attempt is part of
+  the generator's request key, so a draft failed uncharged for lack of creations never
+  blocks the retry, while a crashed `pending` run keeps its attempt (and its key).
 - Provenance (house rule): `event_id` + `event_date` + `calendar_version` (the calendar
   table, `calendario-v1`) and `pipeline_version` (the chore's).
 - `draft_id` → `content_drafts` `ON DELETE SET NULL (draft_id)`: an owner deleting the
@@ -54,6 +58,7 @@ def upgrade() -> None:
             CHECK(status IN ('pending','created','skipped')),
         skip_reason text,
         draft_id uuid,
+        attempt integer NOT NULL DEFAULT 0 CHECK(attempt >= 0),
         pipeline_version text NOT NULL CHECK(pipeline_version <> ''),
         claimed_at timestamptz NOT NULL DEFAULT now(),
         created_at timestamptz NOT NULL DEFAULT now(),
