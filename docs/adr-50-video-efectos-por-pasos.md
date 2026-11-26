@@ -403,7 +403,7 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 
 ## 12. Enmienda `[PROPUESTO]`: el personaje en su escena reemplaza al bloque de presentador (m-25128784)
 
-**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26) y la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`). Solo la firma Deivid (P5 del §6.3).
+**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26) la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`) y la investigación de m-25129387 sobre los datos de clientes en BytePlus (`docs/byteplus-datos-de-clientes.md`, 2026-11-26). Solo la firma Deivid (P5 del §6.3).
 
 **Firma de Deivid:** `[ ]` «Firmo el §12» · fecha: ____
 
@@ -451,7 +451,7 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 
 | Entrada | De dónde sale | Regla |
 |---|---|---|
-| Personaje (`character_id`) | Un personaje guardado del negocio (m-25129385). El dueño lo describe, Seedream dibuja 2 o 3 opciones y él elige una. Máximo 5 por negocio, con `tenant_id` y RLS. | El dibujo viaja **byte a byte**, sin recortar ni recomprimir: Seedance acepta caras realistas solo si son salidas propias de Seedream, sin modificar y de menos de 30 días (riesgo R7). No se acepta una foto de una persona real. |
+| Personaje (`character_id`) | Un personaje guardado del negocio (m-25129385). El dueño lo describe, Seedream dibuja 2 o 3 opciones y él elige una. Máximo 5 por negocio, con `tenant_id` y RLS. | El personaje solo vale si lo generó **Seedream 5.0 en nuestra cuenta, sin editar y hace menos de 30 días** (`docs/byteplus-datos-de-clientes.md` §1.4). Por eso el dibujo viaja **byte a byte**, sin recortar ni recomprimir. Un personaje guardado de más de 30 días se vuelve a dibujar desde su descripción (R7, P5). No se acepta una foto de una persona real ni un personaje hecho con otra herramienta. |
 | Producto (`product`) | Un producto del Catálogo y una de sus fotos. | Va como referencia; no se dibuja de nuevo. |
 | Fondo (`background`) | Una foto del local que subió el dueño, o un fondo que el dueño describe y Seedream dibuja. | Al dibujar un fondo, el prompt pide «sin carteles ni letras» (R6). |
 | Línea (`line`) | La escribe el dueño, o la sugiere Claude Haiku con «Sugerir con IA» (m-25129386, gratis, hasta 10 por escena y por día). | Los nombres en inglés se escriben como se pronuncian (R2). La aprueba el dueño: nunca se usa una línea que no vio. |
@@ -519,20 +519,26 @@ Además, `ai_sources` anota la escena como `character_scene`. El personaje guard
 | R4 | **Escala y forma del producto** cambian (producto enorme, grieta en el pan). | El prompt pide el tamaño real en la mano. El dueño revisa cada escena en el borrador y puede repetirla (cuenta para el tope). | Aceptado, con revisión humana |
 | R5 | **Saturación al masticar** y **la mano que no gira con el producto** en el animado (Deivid). | Se aceptan en el borrador. Un prompt `personaje-escena-v2` se mide con `qualify-measure` antes de cambiarlo. | Aceptado |
 | R6 | **Letras falsas** en el fondo dibujado. | El fondo dibujado se pide sin carteles ni letras. | Mitigado |
-| R7 | **Cara realista y 30 días:** Seedance acepta la cara de un personaje realista porque es una salida de Seedream de menos de 30 días sin modificar. No se sabe qué pasa con un personaje guardado de más de 30 días. | El dibujo se guarda intacto. Si BytePlus rechaza la referencia, el dueño lee que su personaje necesita dibujarse de nuevo, sin cobro de cupo. Se mide con el primer personaje que cumpla 30 días. | Abierto (P5) |
+| R7 | **Personaje de más de 30 días:** Seedance 2.x rechaza caras humanas reales. Solo acepta como personaje una salida de Seedream 5.0 de nuestra cuenta, sin editar y de menos de 30 días. Un personaje de otra herramienta, editado o más viejo puede ser bloqueado (`docs/byteplus-datos-de-clientes.md` §1.4). | El dibujo se guarda intacto y con su fecha. Pasados 30 días, el personaje se vuelve a dibujar desde su descripción guardada antes de usarlo en una escena. El dibujo nuevo no sale idéntico. | Abierto (P5) |
 | R8 | **Sin probar:** el final 1080p desde un borrador omni con referencias y audio, la foto real del local y la repetición (una muestra por casilla). | Una medición pagada de un final, con el OK de Deivid (≈ US$2,84 a 5 s), antes de encender. | Condición C2 |
 | R9 | **El momento de la línea** no se controla (en 10 s habla en la segunda mitad). | Tope de caracteres por largo (§12.2). | Mitigado en parte |
-| R10 | **Ruta de datos de BytePlus para las fotos del cliente** (producto, local): no se sabe si las guarda, por cuánto tiempo, si entrenan con ellas ni en qué región. | Lo responde m-25129387. **Es condición antes de encender** (C1). | Abierto |
+| R10 | **Ruta de datos de BytePlus para las fotos del cliente** (producto, local), según `docs/byteplus-datos-de-clientes.md` §1.1 a §1.3. El endpoint está en **Johor (Malasia)** y el procesamiento puede pasar a **Indonesia o a la UE**. Las entradas y salidas que **marca el filtro** de contenido se guardan **180 días**. BytePlus **entrena** con los datos solo si el modelo está inscrito en la **«Colaboración de datos»**, que es una **cesión perpetua** e irreversible. No hay plazo publicado para las entradas de una tarea normal. | Ningún modelo que reciba datos de clientes puede estar inscrito en la «Colaboración de datos». Lo prueba una captura de la consola (C1). | Condición C1 |
+| R11 | **Condiciones de video para plataformas** (Service Specific Terms › Model Services §4.2): prohíben ofrecer el video en «herramientas de creación de contenido con IA», con una penalidad del 10 al 20 %. No se sabe si Qualify entra en esa categoría (`docs/byteplus-datos-de-clientes.md` §1.5). Es una puerta de una vía: el riesgo es perder la cuenta y pagar la penalidad. | Respuesta escrita de BytePlus antes de ofrecerlo a clientes externos (C1). Ya se le pasó a Deivid. | Abierto; puede cambiar la decisión |
+| R12 | **Venezuela no está** entre los países del servicio, y esa lista también vale para nuestros usuarios finales (`docs/byteplus-datos-de-clientes.md` §1.5). | No se generan escenas para negocios de Venezuela hasta que BytePlus responda por escrito (C1). Ya se le pasó a Deivid. | Abierto; puede cambiar la decisión |
 
 ### 12.9 Condiciones antes de encender `QUALIFY_CLIP_CHARACTER_SCENE`
 
 Firmar el §12 no enciende nada. Para encenderlo con clientes hace falta:
 
-- **C1 · Ruta de datos de BytePlus** (m-25129387): está escrito qué hace BytePlus con las fotos de productos y del local (si las guarda y cuánto tiempo, si entrena con ellas y si se puede apagar, y la región), y Deivid revisó la conclusión. El generador solo manda datos de clientes por endpoints propios que no ceden datos (`qualify-context` §2). **Conclusión de m-25129387:** _(pendiente; se copia aquí cuando Deivid la revise)_ · **Fecha:** ____ · **¿Se puede usar con clientes?** sí / con aviso / no.
+- **C1 · Ruta de datos de BytePlus** (m-25129387, `docs/byteplus-datos-de-clientes.md`, 2026-11-26). Lo que se sabe está en R10, R11 y R12. La recomendación sale del §5 de ese documento:
+  - Encender **solo para los negocios del fundador en Colombia y Uruguay**, y solo **después de una captura de la consola** que muestre que ningún modelo que recibe datos de clientes (Seedance, Seedream, OmniHuman, Seed Speech) está inscrito en la «Colaboración de datos». La captura se guarda junto a ese documento, con su fecha.
+  - Los **clientes externos** y **Venezuela** esperan una **respuesta escrita de BytePlus** a las preguntas 1 (§4.2, «herramientas de creación de contenido con IA») y 2 (Venezuela) del §4 de ese documento.
+  - Dos reglas del mismo documento: nunca se pide el diagnóstico de BytePlus sobre una tarea con datos de clientes, porque esos datos pueden ir a China; y el aviso de privacidad y los términos nombran a BytePlus como subencargado.
+  - **Deivid revisó la conclusión:** `[ ]` · fecha: ____
 - **C2 · Final 1080p medido** (R8): un final desde un borrador omni con referencias y audio, pagado con el OK escrito de Deivid y anotado en `docs/modelos-generativos/seedance-2-5.md`. Confirma que los labios y la voz se mantienen y que el costo es el calculado.
 - **C3 · Prueba de punta a punta con Deivid**, su OK y `env-push`, como el resto de los interruptores de este ADR.
 
-Mientras C1 no esté, el interruptor solo puede encenderse en local o con negocios del fundador, con sus propias fotos.
+Mientras falte la captura de la consola, el interruptor solo se enciende en local. Con la captura, se enciende para los negocios del fundador en Colombia y Uruguay. Con la respuesta escrita de BytePlus, se enciende para clientes externos y, si la respuesta lo permite, para Venezuela.
 
 ### 12.10 Alternativas descartadas y qué lo reabriría
 
@@ -549,6 +555,7 @@ Mientras C1 no esté, el interruptor solo puede encenderse en local o con negoci
 - quejas repetidas de clientes por la voz distinta entre escenas;
 - que más de 1 de cada 4 finales salga distinto de su borrador, a juicio del dueño o de Deivid;
 - que BytePlus rechace más de 1 de cada 10 referencias de personaje (R7);
+- la respuesta escrita de BytePlus sobre §4.2 y Venezuela (R11, R12): si dice que no, la escena no se ofrece a clientes externos o en Venezuela;
 - que el tope de 3 al día frene a más del 10 % de los negocios activos en un mes (umbral del §8);
 - que la conclusión de m-25129387 sea «no se puede»: entonces la escena solo usa fondos y productos dibujados, o se cambia de proveedor (fuera de esta enmienda).
 
@@ -558,6 +565,6 @@ Mientras C1 no esté, el interruptor solo puede encenderse en local o con negoci
 - **P2 · ¿El borrador de una escena descuenta una vista previa (D7)?** Hoy no descuenta nada, y el peor caso es de US$92,7 por negocio al mes en borradores que nunca se aprueban. **Recomiendo que descuente 1 vista previa**, como cualquier video de Seedance, y que se devuelva si BytePlus no entrega nada. Con eso el Básico queda en ≤ 20 borradores al mes (≤ US$20,6) sin cobrarle segundos al dueño.
 - **P3 · ¿Interruptor nuevo o los dos del avatar?** **Recomiendo uno nuevo, `QUALIFY_CLIP_CHARACTER_SCENE`.** Los dos actuales nombran el camino de OmniHuman (presentador y animado), que esta enmienda deja sin uso. Mezclarlos haría que encender uno prenda algo distinto de lo que dice.
 - **P4 · ¿Qué hacemos con el camino de OmniHuman dentro del Clip?** **Recomiendo retirarlo en un ticket de limpieza cuando la escena esté en `main`**: `place_block`, `clip_avatar_block` y la ruta del presentador en el Clip, no los borradores sueltos. Si llegan las llaves y se quiere la voz propia (R1), se vuelve a abrir con su propia enmienda.
-- **P5 · ¿Se ofrece el personaje realista desde el primer día?** El riesgo es que Seedance rechace su cara pasados 30 días (R7). **Recomiendo ofrecerlo**, con el aviso de redibujarlo si BytePlus rechaza la referencia, y medirlo con el primer personaje que cumpla 30 días. Si el rechazo pasa de 1 de cada 10, se ofrece solo el animado.
+- **P5 · ¿Qué pasa con un personaje guardado de más de 30 días?** BytePlus solo acepta el personaje si Seedream 5.0 lo generó en nuestra cuenta, sin editar y hace menos de 30 días (R7). Propuesta: **se vuelve a dibujar desde su descripción** guardada. El dibujo nuevo no sale idéntico. Por eso **recomiendo que el dueño elija entre 2 o 3 dibujos nuevos** la primera vez que use ese personaje después de los 30 días, en vez de cambiárselo sin avisar. Cuesta ≈ US$0,14 y no descuenta cupo. Con esa regla, el personaje realista se puede ofrecer desde el primer día.
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), crear y guardar personajes (m-25129385), «Sugerir con IA» (m-25129386), la ruta de datos de BytePlus (m-25129387), elegir la voz y encender cualquier interruptor.
