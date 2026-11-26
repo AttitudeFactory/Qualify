@@ -342,11 +342,15 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 
 <a id="ef12-001"></a>
 
-## Prueba EF12-001 — banco pagado de los efectos «Con IA» («objeto en una zona del cuadro») — PREPARADA, SIN CORRER (m-25026587)
+## Prueba EF12-001 — banco pagado de los efectos «Con IA» («objeto en una zona del cuadro») — BORRADORES HECHOS, FALTA JUICIO (m-25026587)
 
-> **Estado: preparada, sin gasto.** Solo se corrió la prueba en seco (2026-11-25). La corrida
-> pagada necesita el **OK escrito de Deivid en el ticket** antes del primer gasto (D6), y la
-> lanza la sesión coordinadora, no el agente que preparó el arnés.
+> **Estado: borradores hechos, falta el juicio.** La versión chica se corrió el 2026-11-26
+> de día, con el OK de Deivid en la sesión coordinadora (tope US$10, `--allow-daytime`).
+> - Corrida `20261126-182059`, de 22:20:59 a 22:34:11 UTC (17:20 a 17:34 en Bogotá).
+> - **14 de 14 borradores** hechos, sin ningún rechazo.
+> - Cobrado **US$7,255864**, contra US$7,196098 cotizados.
+> - El kit de juicio a ciegas ya está armado. Faltan los juicios de Deivid y Herwin y la
+>   puntuación (`score`).
 
 > **Versión chica (Deivid, 2026-11-26, opción A).** Se corre **1 tirada por efecto y por
 > foto**: 7 brazos × 2 fotos (nibbles y Bianki) = **14 borradores** de 480p y 5 s, **sin
@@ -572,21 +576,46 @@ just eval-efectos library --run <corrida>            # plan, sin subir
 just eval-efectos library --run <corrida> --env-file <checkout>/.env --upload  # R2 + v6
 ```
 
-### Resultados — PENDIENTES
+### Resultados — borradores hechos (2026-11-26), juicio PENDIENTE
 
-| Efecto | Zona | Éxitos / n | Wilson 95 % | ¿Pasa D5? | Ids de tarea | US$ |
+**Corrida `20261126-182059`, versión chica**
+
+- **Modelo y ajustes:** `dreamina-seedance-2-5-260628`, borrador 480p, 9:16, 5 s, sin audio.
+  Parte `reference` con la foto del producto.
+- **Versiones:** biblioteca `v5`, tabla de precios `v10`.
+- **Fotos:**
+  - nibbles burger, «Smash doble»: material propio (`own`), sha256
+    `9947a09d…8ab2f3`, con su Brand Kit.
+  - Bianki: material de cliente (`client`), 1080×810, sha256 `1419487a…9e48016`, con el
+    Brand Kit vacío (los valores de muestra del arnés).
+- **Videos:** 14 de 14. Ningún rechazo `InputImageSensitiveContentDetected` ni de otro tipo.
+- **Tokens y costo:** 48.437 tokens por tarea, contra 48.038 cotizados (+0,83 %).
+  US$0,518276 por tarea; cobrado en total **US$7,255864**, contra US$7,196098 cotizados.
+  Lo que el `DollarMeter` retuvo con margen fue US$7,917, por debajo del tope de US$10.
+- **Tiempo:** de 46 a 63 s por tarea, una a la vez.
+- **Llave:** `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` no estaba puesta, así que se usó la llave
+  de la app (huella `sha256:3c54154d`). Tampoco estaba
+  `QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT`, así que **no se comprobó que no fuera la de
+  producción**. Antes de la medición completa (m-25129421) hay que poner las dos.
+- **Kit de juicio:** `%TEMP%\m-25026587\20261126-182059\juicio\`, con `juicio.html`,
+  `juicio-deivid.csv`, `juicio-herwin.csv` y `clave.json`, que no se abre hasta puntuar.
+- Los videos y las fotos se quedan fuera del repositorio.
+
+| Efecto | Zona | Éxitos / n | Wilson 95 % | ¿Pasa D5? | Ids de tarea (nibbles · Bianki) | US$ |
 |---|---|---|---|---|---|---|
-| `fuego_lena_base` | abajo | PENDIENTE | | | | |
-| `quemadores_brillan` | abajo | PENDIENTE | | | | |
-| `vapor_sobre_comida` | en el medio | PENDIENTE | | | | |
-| `vapor_atmosferico` (control) | toda la escena | PENDIENTE | | — | | |
-| `humo_denso` | arriba | PENDIENTE | | | | |
-| `humo_atmosferico` (control) | toda la escena | PENDIENTE | | — | | |
-| `brasas` | abajo | PENDIENTE | | | | |
+| `fuego_lena_base` | abajo | PENDIENTE / 2 | | no (n < 4) | `cgt-20261127062103-uf6ab` · `cgt-20261127062158-s5g7b` | 1,036552 |
+| `quemadores_brillan` | abajo | PENDIENTE / 2 | | no (n < 4) | `cgt-20261127062254-bv1pl` · `cgt-20261127062348-j62qf` | 1,036552 |
+| `vapor_sobre_comida` | en el medio | PENDIENTE / 2 | | no (n < 4) | `cgt-20261127062442-janco` · `cgt-20261127062548-pdheh` | 1,036552 |
+| `vapor_atmosferico` (control) | toda la escena | PENDIENTE / 2 | | — | `cgt-20261127062642-d963y` · `cgt-20261127062731-vxsnl` | 1,036552 |
+| `humo_denso` | arriba | PENDIENTE / 2 | | no (n < 4) | `cgt-20261127062832-kggjq` · `cgt-20261127062926-c2osq` | 1,036552 |
+| `humo_atmosferico` (control) | toda la escena | PENDIENTE / 2 | | — | `cgt-20261127063021-cndhf` · `cgt-20261127063117-hsjz2` | 1,036552 |
+| `brasas` | abajo | PENDIENTE / 2 | | no (n < 4) | `cgt-20261127063218-0x97j` · `cgt-20261127063318-ify1f` | 1,036552 |
 
 - κ entre Deivid y Herwin: PENDIENTE.
 - Objeto contra atmósfera en humo y vapor: PENDIENTE.
-- Gasto real, con `pricing_version`: PENDIENTE (tope US$10, versión chica).
+- Gasto real: **US$7,255864** con la tabla `v10` (tope US$10, versión chica).
+- **Biblioteca:** con n = 2 ningún efecto puede pasar D5, así que `library` se niega (código
+  7). No hay v6 y no se subió nada a `platform/`.
 
 ## Avatar como personaje en su escena, camino A: banco y corrida AVESC-001 (2026-11-26, m-25112921)
 

@@ -24,7 +24,7 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 <a id="ef12-001"></a>
 
-## EF12-001 — Banco pagado de los efectos «Con IA» de Seedance (m-25026587) — 2026-11-25 · PREPARADO, SIN GASTO
+## EF12-001 — Banco pagado de los efectos «Con IA» de Seedance (m-25026587) — 2026-11-25/26 · BORRADORES HECHOS, FALTA JUICIO; US$7,26
 
 - **Qué hay:** el arnés `packages/api/evals/banco_efectos/run_experiment.py`
   (`just eval-efectos`), que pide al productor real cada plantilla de Seedance de la
@@ -56,9 +56,20 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   2026-11-26), así que cumple el criterio del ticket («negocios administrados por el
   fundador; ningún cliente externo»). Su foto sigue marcada `material_origin: "client"`: se
   mide y se juzga, pero nunca se sube a `platform/`. nibbles es `own`.
-- **Pendiente:** la foto de Bianki y la corrida de 23:00 a 05:00 (hora de Bogotá), salvo OK
-  de Herwin para el día o de Deivid en la sesión (`--allow-daytime`).
-  Método, cotización, rúbrica y resultados «PENDIENTES»: [`seedance-2-5.md`](seedance-2-5.md#ef12-001).
+- **Corrida (2026-11-26):** de día, con el OK de Deivid en la sesión (tope US$10,
+  `--allow-daytime`). Corrida `20261126-182059`, en `dreamina-seedance-2-5-260628` con la
+  tabla `v10`.
+  - **14 de 14 borradores** hechos, sin rechazos.
+  - 48.437 tokens por tarea (+0,83 % sobre la cotización), de 46 a 63 s cada una.
+  - Cobrado **US$7,255864**, contra US$7,196098 cotizados.
+  - Se usó la llave de la app (huella `sha256:3c54154d`), porque no estaba
+    `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY`. Tampoco se comprobó que no fuera la de producción.
+    Para m-25129421 hay que poner las dos variables.
+  - El kit de juicio está armado. **Faltan** los juicios de Deivid y Herwin, la puntuación,
+    κ y la comparación objeto contra atmósfera.
+  - Con n = 2, ningún efecto pasa D5: no hay biblioteca v6 ni nada subido a `platform/`.
+
+  Detalle, ids de tarea y método: [`seedance-2-5.md`](seedance-2-5.md#ef12-001).
 
 ---
 
