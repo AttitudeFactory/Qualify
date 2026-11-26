@@ -1297,9 +1297,10 @@ _MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "squar
 _ELLIPSIS = {"white_space": "nowrap", "overflow": "hidden", "text_overflow": "ellipsis"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
-#: In the «Duración» + «Tus competidores» pair (`_with_rivals`), «Duración» gives way
-#: this many times faster than the button, so the button's label ends in «…» only when
-#: nothing else is left to give (a 320 px phone) — never a sideways scroll.
+#: In the «Duración» + «Tus competidores» pair (`_with_rivals`), the `flex-shrink` weight
+#: of «Duración» against the button's 1. Flexbox shares the missing width by weight ×
+#: width, so «Duración» takes almost all of it: the button's label ends in «…» only when
+#: the row is very narrow — never a sideways scroll.
 _SHRINK_FIRST = "8"
 
 
@@ -1462,7 +1463,9 @@ def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Compo
         size="2",
         min_height=_TARGET,
         max_width="100%",
-        **({"flex_shrink": _SHRINK_FIRST, "min_width": "0"} if shrink else {}),
+        # never wider than its row: below its content, only the value ends in «…»
+        min_width="0",
+        **({"flex_shrink": _SHRINK_FIRST, "overflow": "hidden"} if shrink else {}),
         aria_label=AXIS_LABELS[axis] + ": " + value,
         title=AXIS_LABELS[axis] + ": " + value,
         **props,
@@ -1511,9 +1514,10 @@ def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
     )
 
 
-def _reset_button() -> rx.Component:
+def _reset_button(*, chip: bool = False) -> rx.Component:
     """«Restablecer filtros»: shown while some filter narrows the lists — a `ghost`
-    button of the skin, at the end of the filters."""
+    button of the skin; last on a desktop, FIRST in the phone's sliding row (Deivid,
+    2026-11-26). `chip`: it never shrinks nor wraps its words there."""
     return rx.cond(
         DiscoverReelsState.filters_on,
         rx.button(
@@ -1525,6 +1529,7 @@ def _reset_button() -> rx.Component:
             min_height=_TARGET,
             margin="0",
             on_click=DiscoverReelsState.reset_filters,
+            **({"flex_shrink": "0", "white_space": "nowrap", "max_width": "100%"} if chip else {}),
         ),
     )
 
@@ -1572,11 +1577,6 @@ def _sheet() -> rx.Component:
     )
 
 
-#: The phone's sliding row of chips shows no scrollbar (it is swiped, and every chip is
-#: reachable with Tab: the browser brings the focused one into view).
-_NO_SCROLLBAR = {"scrollbar_width": "none", "&::-webkit-scrollbar": {"display": "none"}}
-
-
 def _with_rivals(last: rx.Component, *, chip: bool) -> rx.Component:
     """The last filter and «Tus competidores» as one pair that never wraps (RF-13, Deivid
     2026-11-26): the button always shares its row with a filter, at any width. When the
@@ -1603,9 +1603,10 @@ def _filter_bar() -> rx.Component:
     of the system (`T.CARD_BG`, the card radius; Deivid 2026-11-26 — never the dark box
     he took away). From 480 px up, «Tus competidores» flows with the filters, paired with
     «Duración» so it is never alone on a row, and «Restablecer filtros» comes last, so it
-    is the one that drops. On a phone, one row of chips that slides sideways inside the
-    panel — «Tus competidores» first, «Restablecer filtros» last — so no chip is ever
-    alone on a row and no text breaks."""
+    is the one that drops. On a phone, the chips wrap onto lines that are each centred
+    (Deivid 2026-11-26: never one chip whole and the next cut off) — «Restablecer
+    filtros» first while a filter is on, then «Tus competidores» and the filters; no
+    sideways scroll, no chip wider than the panel, no text broken."""
     first = (*_SINGLE_AXES, AXIS_ACCOUNT)
     return rx.box(
         rx.flex(
@@ -1618,23 +1619,20 @@ def _filter_bar() -> rx.Component:
             spacing="2",
             width="100%",
         ),
-        # the phone (under 480 px): ONE row of chips that slides sideways inside the panel,
-        # as Instagram's and TikTok's — no chip alone on a row, no text broken, the page
-        # itself never scrolls sideways (coordinator's live test, 2026-11-26)
+        # the phone (under 480 px; Deivid 2026-11-26): the chips wrap onto centred lines —
+        # nothing slides sideways, no chip is seen cut off; with a filter on,
+        # «Restablecer filtros» goes FIRST
         rx.flex(
+            _reset_button(chip=True),
             _rivals_button(chip=True),
             *(_chip(axis) for axis in (*first, AXIS_DURATION)),
-            _reset_button(),
             display=_PHONE,
-            wrap="nowrap",
+            wrap="wrap",
+            justify="center",
             align="center",
             spacing="2",
             width="100%",
             min_width="0",
-            overflow_x="auto",
-            overflow_y="hidden",
-            scroll_snap_type="x proximity",
-            style=_NO_SCROLLBAR,
         ),
         _sheet(),
         _competitors_drawer(bottom=False),
@@ -1920,7 +1918,8 @@ def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
             # in the desktop pair it gives way last («Duración» shrinks `_SHRINK_FIRST`
             # times faster); in the phone's sliding row it never shrinks
             flex_shrink="1" if shrink else "0",
-            min_width="0" if shrink else "auto",
+            min_width="0",
+            overflow="hidden",
             title=reels_competitors_vm.PICKER_TITLE,
             aria_label=S.competitors_label,
             aria_haspopup="dialog",

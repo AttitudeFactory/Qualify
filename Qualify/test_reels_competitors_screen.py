@@ -326,19 +326,29 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
     rivals = inspect.getsource(discover_reels._rivals_button)
     assert 'flex_shrink="1" if shrink else "0"' in rivals and "**_ELLIPSIS" in rivals
     assert int(discover_reels._SHRINK_FIRST) > 1
-    # the phone (live test at 375 px): one row of chips that slides sideways inside the
-    # panel — «Tus competidores» first, «Restablecer filtros» last — never a chip alone
-    # on a row, never a text broken, never the page scrolling sideways
+    # the phone (Deivid 2026-11-26): the chips wrap onto CENTRED lines — no sideways
+    # scroll, no chip seen cut off; with a filter on, «Restablecer filtros» goes FIRST
     assert "_with_rivals" not in phone
     order = [
+        phone.index("_reset_button(chip=True)"),
         phone.index("_rivals_button(chip=True)"),
         phone.index("_chip(axis) for axis in (*first, AXIS_DURATION)"),
-        phone.index("_reset_button()"),
     ]
     assert order == sorted(order)
-    for needed in ('wrap="nowrap"', 'overflow_x="auto"', 'min_width="0"', "_NO_SCROLLBAR"):
+    assert phone.count("_reset_button(") == 1
+    for needed in ('wrap="wrap"', 'justify="center"', 'min_width="0"'):
         assert needed in phone, needed
-    assert discover_reels._NO_SCROLLBAR["scrollbar_width"] == "none"
+    for gone in ("overflow_x", "scroll_snap", "nowrap"):
+        assert gone not in phone, gone
+    source = inspect.getsource(discover_reels)
+    assert "scroll_snap" not in source and "_NO_SCROLLBAR" not in source
+    reset = inspect.getsource(discover_reels._reset_button)
+    assert "DiscoverReelsState.filters_on" in reset  # without a filter it is not drawn
+    # never wider than the panel: every chip may sit below its content and ellipsize
+    button = inspect.getsource(discover_reels._filter_button)
+    assert 'max_width="100%"' in button and 'min_width="0"' in button
+    assert 'min_width="0"' in rivals and 'overflow="hidden"' in rivals
+    assert '"overflow": "hidden"' in button  # the shrinking «Duración» of the pair
     assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
     button = inspect.getsource(discover_reels._rivals_button)
     # RF-13: a Radix button of the skin, like the filters beside it — no class of its own

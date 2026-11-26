@@ -117,8 +117,10 @@ Pedido de Deivid tras la prueba en vivo. La barra, los desplegables, los chips, 
 abajo y el cajón «Tus competidores» usan solo botones, popovers y el `drawer` del sistema, con
 el skin de Radix. Ya no hay reglas `.q-rf-*` ni el recuadro oscuro detrás de la barra. Desde
 el 2026-11-26 hay un panel suave del sistema (`T.CARD_BG`), y «Tus competidores» va en pareja
-con «Duración», así que nunca queda solo en una fila (`docs/design-system.md` §5.8). Debajo hay **una sola lista sin encabezados**: primero las
-ideas, con «Hacer uno parecido», y después los otros reels revisados, sin ese botón. Se
+con «Duración», así que nunca queda solo en una fila. En el teléfono, los chips pasan de
+línea y cada línea va centrada, sin desplazamiento lateral, con «Restablecer filtros» al
+principio cuando hay un filtro activo (`docs/design-system.md` §5.8). Debajo hay **una sola lista sin encabezados**: primero
+las ideas, con «Hacer uno parecido», y después los otros reels revisados, sin ese botón. Se
 muestran 16 (`LIST_PAGE`) y «Ver más» trae los 16 siguientes. Se quitaron «Ideas de hace N
 días», «Más reels revisados» y sus textos. Los textos de RF-05 que nombraban esa sección ahora
 dicen «tus ideas». Sigue sin haber llamadas pagadas: es la misma lectura de RF-01, con
