@@ -1426,7 +1426,9 @@ def test_the_names_follow_the_blocks_when_they_move() -> None:
         ("p1", "Foto 2", "Foto 3"),
     ]
     # «bloque» stays where no block in particular is meant, and the server's words
-    assert "bloques" in joins.NO_ROOM and "bloques" in joins.FIND_HINT
+    assert "bloques" in joins.NO_ROOM
+    # m-25129405 (D1 of the editor's mockups): the hint names what the owner sees
+    assert "entre dos fotos o videos" in joins.FIND_HINT and "bloque" not in joins.FIND_HINT
     assert "Hacia dónde se mueve Foto 3" == joins.direction_title("Foto 3")
 
 

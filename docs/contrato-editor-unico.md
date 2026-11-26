@@ -155,22 +155,28 @@ Deivid decidió en la D1 de las maquetas del editor que la palabra «bloque» no
 - La pantalla toma este texto del servidor con `transitions_longer_than_block_text` (`Qualify/clip_joins_vm.py`), así que cambia sola. `Qualify/test_clip_joins.py` compara contra esa misma función, así que no se rompe.
 - `TRANSITION_ON_FIRST_BLOCK_TEXT`, `TRANSITION_ON_CLIP_TEXT` y `LOCAL_TRANSITION_FAILED_TEXT` no tienen copia en `Qualify/`.
 
-**Textos que todavía dicen «bloque» y no se cambian aún:**
+**Textos que se cambian en este mismo PR, a la vez en el servidor y en la pantalla.** El carril B, dueño de `Qualify/`, aceptó hacerlo aquí, para que la paridad no quede rota en `main`. Solo se tocaron constantes de texto y sus pruebas.
 
-- **`local.LOCAL_SOURCE_TOO_LONG_TEXT` y `LOCAL_PART_SOURCE_TOO_LONG_TEXT`** (`segment_source_too_long`). La pantalla tiene copia literal: `Qualify/clip_editor_vm.py` `SOURCE_TOO_LONG_REFUSED`. Además, `Qualify/test_clip_editor_recipe_b6.py::test_the_editors_a9_words_and_minute_are_the_backends` exige que sea igual a `LOCAL_SOURCE_TOO_LONG_TEXT`. Si el servidor cambia solo, esa prueba se rompe y no se puede arreglar sin tocar `Qualify/`, así que **queda para hacerlo junto con el carril B**. Los textos acordados:
-  - **Clip:** «Cada video puede tomar hasta 1 minuto de lo que grabaste, aunque lo aceleres. Acorta el más largo o pártelo en dos con «Cortar», y vuelve a crear el video.»
-  - **Parte:** el mismo texto, pero terminado en «…y vuelve a crear esta parte.»
+| Dónde | Constante | Texto nuevo |
+|---|---|---|
+| `local.py` | `LOCAL_SOURCE_TOO_LONG_TEXT` | Cada video puede tomar hasta 1 minuto de lo que grabaste, aunque lo aceleres. Acorta el más largo o pártelo en dos con «Cortar», y vuelve a crear el video. |
+| `local.py` | `LOCAL_PART_SOURCE_TOO_LONG_TEXT` | El mismo texto, pero terminado en «…y vuelve a crear esta parte.» |
+| `Qualify/clip_editor_vm.py` | `SOURCE_TOO_LONG_REFUSED` | Igual a `LOCAL_SOURCE_TOO_LONG_TEXT` |
+| `Qualify/clip_editor_vm.py` | `SOURCE_TOO_LONG` (el aviso de «Cortar» antes de crear) | El mismo texto, sin «, y vuelve a crear el video» |
+| `Qualify/clip_editor_vm.py` | `TOO_SHORT` / `too_short_text(speed)` | Cada foto o video tiene que durar al menos 1 s. (o «…al menos ½ s.» con cámara rápida; la duración sigue siendo variable). También se ve en `creative_state.clip_cut_error` |
+| `Qualify/clip_joins_vm.py` | `FIND_HINT` | Toca el punto entre dos fotos o videos para elegir cómo pasa tu video de uno al otro. |
 
-  En ese cambio conjunto, el carril B actualiza en `Qualify/clip_editor_vm.py`:
-  - `SOURCE_TOO_LONG_REFUSED`, igual al nuevo `LOCAL_SOURCE_TOO_LONG_TEXT`;
-  - `SOURCE_TOO_LONG`, el aviso de «Cortar» antes de crear, que también dice «Cada bloque… el bloque más largo…»: el mismo texto sin «, y vuelve a crear el video».
+Pruebas ajustadas:
 
-  `Qualify/test_clip_editor_vm.py:698` (`endswith("y vuelve a crear el video.")`) sigue pasando.
-- **Textos propios de la pantalla** (son del carril B, no del servidor):
-  - `Qualify/clip_editor_vm.py`: `TOO_SHORT` y `too_short_text`, «El bloque tiene que durar al menos 1 s.», que también se ve en `creative_state.clip_cut_error`;
-  - `Qualify/clip_joins_vm.py`: `FIND_HINT`, «Toca el punto entre dos bloques…».
+- `Qualify/test_clip_editor_vm.py`, líneas 111, 128 y 720;
+- `Qualify/test_clip_editor_state.py:1513`;
+- `Qualify/test_clip_joins.py::test_the_names_follow_the_blocks_when_they_move`, que exigía «bloques» en `FIND_HINT` y ahora exige «entre dos fotos o videos»;
+- la de paridad `Qualify/test_clip_editor_recipe_b6.py::test_the_editors_a9_words_and_minute_are_the_backends`, que además ahora fija que `SOURCE_TOO_LONG` es el mismo texto sin el último paso y que ninguno dice «bloque».
 
-  Las pruebas que fijan esos textos son `Qualify/test_clip_editor_vm.py` (líneas 111, 128 y 720) y `Qualify/test_clip_editor_state.py:1513`.
+**Textos que todavía dicen «bloque» y quedan fuera de este cambio:**
+
+- `Qualify/clip_joins_vm.py:83`, `HELP`: «Elige cómo pasa tu video de un bloque al otro.» Es del carril B y no estaba en la lista autorizada.
+- `Qualify/clip_joins_vm.py`, `NO_ROOM`: «Estos bloques son muy cortos para unirlos con fundido o barrido. Alárgalos para elegirlos.» Es del carril B y no estaba en la lista. `Qualify/test_clip_joins.py::test_the_names_follow_the_blocks_when_they_move` todavía exige «bloques» en ese texto.
 - `image_pipeline/layer.py:400`: «Esta pieza no lleva bloques de datos: lista vacía.» Es otro sentido de «bloque»; falta confirmar si llega a la pantalla.
 
 **Reglas que ya existían y ahora también cuentan los bloques con IA** (mismos códigos y textos de siempre):

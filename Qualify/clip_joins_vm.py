@@ -82,7 +82,7 @@ _NAME = "Unión entre {a} y {b}: {kind}"
 _TITLE = "Unión entre {a} y {b}"
 HELP = "Elige cómo pasa tu video de un bloque al otro."
 #: ux review (2026-11-26): how to find the joins, under the timeline, until the first one.
-FIND_HINT = "Toca el punto entre dos bloques para elegir cómo pasa tu video de uno al otro."
+FIND_HINT = "Toca el punto entre dos fotos o videos para elegir cómo pasa tu video de uno al otro."
 
 
 #: Server PR #804 (m-25114465, measured at 768 MiB and 1 CPU, noisy): a Clip with at

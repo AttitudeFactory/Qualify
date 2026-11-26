@@ -413,14 +413,14 @@ SOURCE_SLACK_SECONDS = 0.03
 #: In the video's panel, where a handle stops and before «Crear» (UX review ED-03: the
 #: way out is right there, nothing to create again yet).
 SOURCE_TOO_LONG = (
-    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "bloque más largo o pártelo en dos con «Cortar»."
+    "Cada video puede tomar hasta 1 minuto de lo que grabaste, aunque lo aceleres. Acorta "
+    "el más largo o pártelo en dos con «Cortar»."
 )
 #: A9's own words (`LOCAL_SOURCE_TOO_LONG_TEXT` of `video_pipeline.local`; a test pins
 #: they agree), for the backend's refusal after «Crear».
 SOURCE_TOO_LONG_REFUSED = (
-    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
-    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+    "Cada video puede tomar hasta 1 minuto de lo que grabaste, aunque lo aceleres. Acorta "
+    "el más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
 )
 
 
@@ -463,19 +463,19 @@ def trim_value(value: float, bounds: tuple[float, float]) -> float:
 
 
 def too_short_text(speed: float) -> str:
-    """Why a handle stops before the piece gets too short: «El bloque tiene que durar al
-    menos 1 segundo.», or — sped up — «…al menos ½ s.» (of the final video)."""
+    """Why a handle stops before the piece gets too short: «Cada foto o video tiene que
+    durar al menos 1 s.», or — sped up — «…al menos ½ s.» (of the final video)."""
     shown = trim_min_source(speed) / (float(speed) if float(speed or 0) > 0 else 1.0)
     if shown >= 1.0 - 1e-6:
         return TOO_SHORT
     text = "½" if abs(shown - 0.5) < 1e-6 else f"{shown:.1f}".replace(".", ",")
-    return f"El bloque tiene que durar al menos {text} s."
+    return f"Cada foto o video tiene que durar al menos {text} s."
 
 
 #: How close to a block's edge the marker may be and still cut it (seconds of the final
 #: video); a piece also keeps at least `contract.SEGMENT_MIN_SECONDS` of the source.
 CUT_EDGE_SECONDS = 0.5
-TOO_SHORT = "El bloque tiene que durar al menos 1 s."
+TOO_SHORT = "Cada foto o video tiene que durar al menos 1 s."
 CUT_WAITING = "Espera unos segundos: estamos leyendo cuánto dura tu video."
 #: Any refusal code (EF-03 «Preparar», PR #679) with no words of its own.
 REFUSAL_GENERIC = "No pudimos usar ese pedazo de tu video. Prueba con otro."
