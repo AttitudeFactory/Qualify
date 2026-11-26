@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from qualify_api.planner.monthly_post import MonthlyPostSetting
+from qualify_api.planner.monthly_post import MONTHLY_POST_KINDS, MonthlyPostSetting
 from qualify_creative.enums import ContentKind
 
 from . import monthly_post_provider as provider
@@ -28,8 +28,8 @@ from .monthly_post_vm import (
 def test_choices_are_ready_to_publish_kinds_with_their_spanish_names() -> None:
     options = kind_options()
     values = [o["value"] for o in options]
-    # founder, 2026-11-25: only what the monthly chore can make without the owner's inputs
-    assert values == ["static_flyer", "clip"]
+    # founder, 2026-11-26 (m-25121346): every ready-to-publish kind
+    assert values == [k.value for k in MONTHLY_POST_KINDS] and len(values) == 6
     assert {"value": "static_flyer", "label": "Imagen publicitaria"} in options
     assert "Por aprobar" in EXPLAIN
 

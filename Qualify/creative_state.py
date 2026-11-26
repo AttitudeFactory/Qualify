@@ -94,6 +94,7 @@ from qualify_creative.schemas import (
     HIGHLIGHTS_MAX,
     MAX_BRAND_ELEMENTS,
     MAX_PRODUCT_IMAGES,
+    PRESENTER_DESCRIPTIONS,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -774,10 +775,7 @@ _GALLERY_MAX_VIDEOS = 1
 _GALLERY_ONE_VIDEO = "Un carrusel lleva como máximo 1 video: cambia la otra diapositiva primero."
 #: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
 #: «Hombre» are a described synthetic person like «Personalizado», with this description.
-_PRESENTERS = {
-    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
-    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
-}
+_PRESENTERS = PRESENTER_DESCRIPTIONS
 #: The formats each template use renders — ONE output, the one of this format.
 _TEMPLATE_FORMATS = {
     # «Video publicitario» (§ 2026-10-13): the template's video in every placement — a

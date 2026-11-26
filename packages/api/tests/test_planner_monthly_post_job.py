@@ -6,13 +6,22 @@ from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID, uuid4
 
-from qualify_creative.enums import ContentKind
+import pytest
+from qualify_creative.creations import weight_for
+from qualify_creative.enums import ContentKind, SlideSource
+from qualify_creative.schemas import PRESENTER_DESCRIPTIONS
 
 from qualify_api.ads.month_plan import PlanDate
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.service import BrandNotReady
+from qualify_api.creative.voice_access import default_public_voice
 from qualify_api.planner import monthly_post_job as job_mod
-from qualify_api.planner.monthly_post_job import EnabledBrand, MonthlyPostJob, request_key
+from qualify_api.planner.monthly_post_job import (
+    EnabledBrand,
+    MonthlyPostJob,
+    TemplateProduct,
+    request_key,
+)
 
 T = uuid4()
 OWNER = uuid4()
@@ -250,14 +259,6 @@ def test_two_brands_of_one_tenant_are_independent(monkeypatch) -> None:
     assert request_key(a.brand_id, date(2026, 5, 1)) != request_key(b.brand_id, date(2026, 5, 1))
 
 
-def test_a_kind_needing_owner_inputs_is_skipped_uncharged(monkeypatch) -> None:
-    brand = _brand(ContentKind.CAROUSEL)  # needs slides the owner chooses
-    store, drafts = FakeStore({T: [brand]}), FakeDrafts()
-    _job(store, drafts, monkeypatch).run([T], date(2026, 5, 1))
-    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["reason"] == "brief_refused"
-    assert drafts.charges == 0
-
-
 def test_unexpected_error_without_draft_stays_pending(monkeypatch) -> None:
     brand = _brand()
     store, drafts = FakeStore({T: [brand]}), FakeDrafts(raise_=ConnectionError("db down"))
@@ -269,3 +270,132 @@ def test_request_key_is_stable_per_brand_and_month() -> None:
     brand = uuid4()
     assert request_key(brand, date(2026, 5, 1)) == request_key(brand, date(2026, 5, 1))
     assert request_key(brand, date(2026, 5, 1)) != request_key(brand, date(2026, 6, 1))
+
+
+# -- m-25121346: carousel, template and the avatars ---------------------------------------
+
+
+@dataclass
+class FakeInputs:
+    engine: str = "seedance"
+    character_: dict = field(default_factory=lambda: {"source": "ai", "prompt": "Mascota"})
+    clone_ready: bool = False
+    products: dict = field(default_factory=dict)
+
+    def video_engine(self) -> str:
+        return self.engine
+
+    def character(self, tenant_id, brand_id) -> dict:
+        return self.character_
+
+    def voice(self, tenant_id, brand_id) -> str:
+        return "brand" if self.clone_ready else default_public_voice()
+
+    def product(self, tenant_id, brand_id, product_id):
+        return self.products.get(product_id)
+
+
+SHAWARMA = TemplateProduct("Shawarma", ("t/x/catalog/p1.jpg", "t/x/catalog/p2.jpg"), "$ 18.000")
+
+
+def _run_kind(monkeypatch, kind, inputs, product_id=None):
+    brand = EnabledBrand(uuid4(), kind, "comida", product_id)
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts()
+    job = _job(store, drafts, monkeypatch)
+    job.inputs = inputs
+    job.run([T], date(2026, 5, 1))
+    return store.rows[(brand.brand_id, date(2026, 5, 1))], drafts
+
+
+# (kind, engine, (creations, video seconds, presenter seconds)) on the live table: a clip
+# and a Seedance avatar are one of the month's videos at their length, charged on approval
+_PRICES = [
+    (ContentKind.CLIP, "seedance", (0, 5, 0)),
+    (ContentKind.CAROUSEL, "seedance", (1, 0, 0)),
+    (ContentKind.CAROUSEL, "omnihuman", (1, 0, 0)),
+    (ContentKind.TEMPLATE, "omnihuman", (1, 0, 0)),
+    (ContentKind.AVATAR_VIDEO, "seedance", (0, 10, 0)),
+    (ContentKind.AVATAR_VIDEO, "omnihuman", (9, 0, 10)),
+    (ContentKind.ANIMATED_AVATAR_VIDEO, "seedance", (0, 10, 0)),
+    (ContentKind.ANIMATED_AVATAR_VIDEO, "omnihuman", (9, 0, 10)),
+]
+
+
+@pytest.mark.parametrize(("kind", "engine", "price"), _PRICES)
+def test_each_kind_builds_a_brief_the_generator_takes_and_prices(
+    monkeypatch, kind, engine, price
+) -> None:
+    product = uuid4()
+    inputs = FakeInputs(engine=engine, products={product: SHAWARMA})
+    row, drafts = _run_kind(monkeypatch, kind, inputs, product)
+    assert row["status"] == "created"
+    brief = drafts.briefs[0]  # a `ContentBrief`: `_kind_has_its_inputs` passed
+    assert brief.kind is kind and brief.topic == "Día de la Madre"
+    cost = weight_for(brief)
+    assert (cost.weight, cost.video_seconds or 0, cost.presenter_seconds or 0) == price
+
+
+def test_the_carousel_is_three_generated_scenes_and_the_closing_slide(monkeypatch) -> None:
+    _, drafts = _run_kind(monkeypatch, ContentKind.CAROUSEL, FakeInputs())
+    media = drafts.briefs[0].media
+    assert [s.source for s in media.slides] == [SlideSource.GENERATED] * 3
+    assert all(not s.scene_prompt and s.product_index is None for s in media.slides)
+    assert media.closing_slide and not media.product_keys
+
+
+def test_the_presenter_reads_with_the_brand_voice_only_when_ready(monkeypatch) -> None:
+    _, drafts = _run_kind(monkeypatch, ContentKind.AVATAR_VIDEO, FakeInputs("omnihuman"))
+    media = drafts.briefs[0].media
+    assert media.voice_id == default_public_voice() and media.video_engine.value == "omnihuman"
+    assert media.avatar_prompt == PRESENTER_DESCRIPTIONS["female"]
+    assert media.duration_seconds == 10
+    ready = FakeInputs("omnihuman", clone_ready=True)
+    _, drafts = _run_kind(monkeypatch, ContentKind.AVATAR_VIDEO, ready)
+    assert drafts.briefs[0].media.voice_id == "brand"
+
+
+def test_the_animated_avatar_is_the_brands_own_image_when_ready(monkeypatch) -> None:
+    drawn = FakeInputs(character_={"source": "image", "key": "t/x/brand/avatar.png"})
+    _, drafts = _run_kind(monkeypatch, ContentKind.ANIMATED_AVATAR_VIDEO, drawn)
+    media = drafts.briefs[0].media
+    assert media.avatar_image_key == "t/x/brand/avatar.png" and media.avatar_rights_confirmed
+
+
+def test_no_brand_character_is_retried_uncharged(monkeypatch) -> None:
+    row, drafts = _run_kind(
+        monkeypatch, ContentKind.ANIMATED_AVATAR_VIDEO, FakeInputs(character_={})
+    )
+    assert row["status"] == "skipped" and row["reason"] == "no_brand_character"
+    assert drafts.charges == 0 and "no_brand_character" in job_mod.RETRYABLE_SKIPS
+
+
+def test_the_template_carries_the_products_photos_and_price(monkeypatch) -> None:
+    product = uuid4()
+    inputs = FakeInputs(products={product: SHAWARMA})
+    _, drafts = _run_kind(monkeypatch, ContentKind.TEMPLATE, inputs, product)
+    brief = drafts.briefs[0]
+    assert brief.media.product_keys == SHAWARMA.photo_keys and brief.product_ref == "Shawarma"
+    assert brief.media.price_line == "$ 18.000" and brief.media.template_id is None
+    assert brief.constraints.highlights == (("precio", "$ 18.000"),)
+
+
+@pytest.mark.parametrize("chosen", [False, True])
+def test_a_template_without_its_product_is_retried_uncharged(monkeypatch, chosen) -> None:
+    # chosen but gone, inactive or without photos: the lookup gives None
+    product_id = uuid4() if chosen else None
+    row, drafts = _run_kind(monkeypatch, ContentKind.TEMPLATE, FakeInputs(), product_id)
+    assert row["status"] == "skipped" and row["reason"] == "product_missing"
+    assert drafts.charges == 0 and drafts.by_key == {}
+
+
+def test_the_product_back_is_made_the_next_day(monkeypatch) -> None:
+    product = uuid4()
+    brand = EnabledBrand(uuid4(), ContentKind.TEMPLATE, "comida", product)
+    store, drafts = FakeStore({T: [brand]}), FakeDrafts()
+    job = _job(store, drafts, monkeypatch)
+    job.inputs = inputs = FakeInputs()
+    job.run([T], date(2026, 5, 1))
+    inputs.products[product] = SHAWARMA  # the owner added a photo again
+    job.run([T], date(2026, 5, 2))
+    assert store.rows[(brand.brand_id, date(2026, 5, 1))]["status"] == "created"
+    assert drafts.charges == 1
