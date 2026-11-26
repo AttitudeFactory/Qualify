@@ -683,76 +683,22 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-dr-transcript { display: block; max-height: 8rem; overflow-y: auto; line-height: 1.45; }
 /* RF-02 (m-25119460): a reel with no picture left says so under the film glyph. */
 .q-dr-cover-empty { padding: 0.75rem; }
-/* RF-02: the filter bar over the reels, as TikTok's Top Ads — sticky while the lists
-   scroll; desktop dropdowns, and at 640 px or less chips that wrap (none hidden)
-   that open a sheet from the bottom (`drawer(side="bottom")`). Every target ≥ 44 px. */
-.q-rf-bar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  width: 100%;
-  padding: 0.5rem 0;
-  background: var(--q-dialog-fill, var(--color-panel-solid));
-  border-bottom: 1px solid var(--q-control-edge);
-}
-.q-rf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.q-rf-phone { display: none; }
-.q-rf-trigger,
-.q-rf-chip {
-  all: unset;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 44px;
-  padding: 0 0.85rem;
-  border-radius: 999px;
-  background: var(--q-field-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge);
-  color: var(--gray-12);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.q-rf-trigger:hover,
-.q-rf-chip:hover { background: var(--accent-a3); }
-.q-rf-trigger:focus-visible,
-.q-rf-chip:focus-visible,
-.q-rf-option:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
-.q-rf-trigger--on,
-.q-rf-chip--on { background: var(--accent-a3); box-shadow: inset 0 0 0 1px var(--accent-a7); }
-.q-rf-trigger--on .q-rf-value,
-.q-rf-chip--on .q-rf-value { color: var(--accent-11); }
-.q-rf-value { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; }
-.q-rf-reset { background: transparent; box-shadow: none; color: var(--accent-11); }
-.q-rf-pop { min-width: 15rem; max-height: 22rem; overflow-y: auto; padding: 0.35rem !important; }
-.q-rf-options { display: flex; flex-direction: column; gap: 0.1rem; width: 100%; }
-.q-rf-option {
-  all: unset;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  width: 100%;
-  min-height: 44px;
-  padding: 0.35rem 0.75rem;
-  border-radius: var(--q-radius-control);
-  cursor: pointer;
-  color: var(--gray-12);
-}
-.q-rf-option:hover { background: var(--accent-a3); }
-.q-rf-option[aria-checked="true"] { color: var(--accent-11); }
-.q-rf-check { display: inline-flex; width: 16px; flex-shrink: 0; }
-.q-rf-lists { width: 100%; transition: opacity var(--q-dur) var(--q-ease); }
-.q-rf-lists--busy { opacity: 0.55; pointer-events: none; }
-@media (max-width: 640px) {
-  .q-rf-desktop { display: none; }
-  /* the chips wrap onto a second row (UX review 1): none hides off-screen at 375 px */
-  .q-rf-phone { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .q-rf-chip { padding: 0 0.7rem; }
-  .q-rf-value { max-width: 8rem; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .q-rf-lists { transition: none; }
+/* RF-02's filter bar (m-25119460): its buttons, popovers, sheet and option rows are Radix
+   components under the Liquid Glass skin (`assets/qualify.css`) and the `drawer` primitive
+   (RF-13, m-25120327 — see docs/design-system.md §5.8). The one rule of its own: which of
+   its two rows shows depends on the width of the BAR, not of the window (Deivid's live
+   tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
+   The bar is a size container; below 760 px of it, the two buttons («Filtros» +
+   «Competidores»); from 760 px, ONE line that fills the bar — the four filters share it
+   (`flex: 1 1 auto`: the longest value takes more), then «Competidores» and «Quitar
+   filtros»: at 760 px each filter still has ~107 px for its short word and chevron.
+   Two classes, so it beats Radix's `.rt-Flex` display. */
+.q-reels-bar { container-type: inline-size; }
+.q-reels-bar .q-reels-bar__wide { display: none; }
+.q-reels-bar .q-reels-bar__narrow { display: flex; }
+@container (min-width: 760px) {
+  .q-reels-bar .q-reels-bar__wide { display: flex; }
+  .q-reels-bar .q-reels-bar__narrow { display: none; }
 }
 /* Stock on the product screen (plan-integracion-stock R2, 2026-10-16): the bank's name
    over each thumbnail, the author under it (one line, ellipsis) and the credit line the

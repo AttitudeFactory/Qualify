@@ -91,10 +91,24 @@ class DrawerDemoState(rx.State):
     #: bumped by «Repetir» in «Movimiento»: the samples are keyed by it, so they remount
     #: and play their entrances again
     motion_round: int = 0
+    #: The bottom sheet's sample (`drawer(side="bottom")`, RF-02/RF-13): open or not, and
+    #: the option chosen in it.
+    sheet_open: bool = False
+    sheet_pick: str = "Todos"
 
     @rx.event
     def set_open(self, value: bool) -> None:
         self.open = value
+
+    @rx.event
+    def set_sheet_open(self, value: bool) -> None:
+        self.sheet_open = value
+
+    @rx.event
+    def pick(self, value: str) -> None:
+        """A sample option: chosen, and the sheet closes (as a single-choice filter)."""
+        self.sheet_pick = value
+        self.sheet_open = False
 
     @rx.event
     def replay_motion(self) -> None:
@@ -1531,6 +1545,86 @@ def _flow() -> rx.Component:
     )
 
 
+_SHEET_OPTIONS = ("Todos", "Instagram", "TikTok")
+
+
+def _sheet_option(label: str) -> rx.Component:
+    """One option row of a sheet or a dropdown (the filters of «Ideas para tus reels»):
+    a 44 px `ghost` button with its role and its mark always drawn — the ring (radio) or
+    the square (checkbox) is visible empty when not chosen."""
+    chosen = DrawerDemoState.sheet_pick == label
+    return rx.button(
+        rx.icon(
+            rx.cond(chosen, "circle-dot", "circle"),
+            size=T.ICON_MD,
+            color=rx.cond(chosen, T.tone_color("accent", 11), T.TEXT_MUTED),
+            aria_hidden="true",
+        ),
+        rx.text(label, size="2", weight=rx.cond(chosen, "medium", "regular"), color=T.TEXT_STRONG),
+        variant="ghost",
+        color_scheme="gray",
+        size="2",
+        role="radio",
+        aria_checked=rx.cond(chosen, "true", "false"),
+        on_click=DrawerDemoState.pick(label),
+        width="100%",
+        min_height="44px",
+        height="auto",
+        margin="0",
+        padding="0.35rem 0.75rem",
+        box_sizing="border-box",
+        justify_content="flex-start",
+        gap="0.6rem",
+    )
+
+
+def _bottom_sheet_sample() -> rx.Component:
+    """`drawer(side="bottom")` (RF-02, m-25119460; RF-13, m-25120327): the phone's sheet
+    of a filter chip — the same dialog rising from the bottom edge, as tall as its content
+    (85 % at most) — with option rows and «Listo»; the chip is a Radix button."""
+    return card(
+        rx.vstack(
+            rx.button(
+                rx.text("Canal", size="2", weight="regular", color=T.TEXT_MUTED, as_="span"),
+                rx.text(DrawerDemoState.sheet_pick, size="2", weight="medium", as_="span"),
+                rx.icon("chevron-down", size=T.ICON_SM, aria_hidden="true"),
+                variant="surface",
+                size="3",
+                min_height="44px",
+                aria_haspopup="dialog",
+                on_click=DrawerDemoState.set_sheet_open(True),
+            ),
+            drawer(
+                rx.flex(
+                    *(_sheet_option(label) for label in _SHEET_OPTIONS),
+                    direction="column",
+                    spacing="1",
+                    width="100%",
+                    role="radiogroup",
+                    aria_label="Canal",
+                ),
+                open=DrawerDemoState.sheet_open,
+                on_open_change=DrawerDemoState.set_sheet_open,
+                title="Canal",
+                footer=rx.hstack(
+                    rx.spacer(),
+                    rx.button(
+                        "Listo",
+                        size="3",
+                        min_height="44px",
+                        on_click=DrawerDemoState.set_sheet_open(False),
+                    ),
+                    width="100%",
+                ),
+                side="bottom",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
 def _step_frame_sample() -> rx.Component:
     """The step frame (PASOS-2, §4.5) takes over the whole page — its head replaces the
     page header and, on a phone, its foot replaces the bottom bar — so its live sample
@@ -1812,6 +1906,12 @@ def _components_section() -> rx.Component:
             weight="medium",
         ),
         _flow(),
+        rx.text(
+            "Hoja desde abajo (drawer side=bottom — RF-02/RF-13; filas de opción de 44 px)",
+            size="2",
+            weight="medium",
+        ),
+        _bottom_sheet_sample(),
         rx.text(
             "Pills (removable_pill / pill_editor — listas que el operador arma)",
             size="2",
