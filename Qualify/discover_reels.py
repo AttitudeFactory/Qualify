@@ -1310,10 +1310,13 @@ _STATE_VALUE = {
     AXIS_KIND: lambda: DiscoverReelsState.filter_kind,
     AXIS_DURATION: lambda: DiscoverReelsState.filter_duration,
 }
-#: The phone bar («Filtros» + «Competidores») and the desktop chips swap at Reflex's `sm`
-#: breakpoint (48em, 768 px; Deivid 2026-11-26: narrow panels of 600-760 px get the two buttons).
-_PHONE = rx.breakpoints(initial="flex", sm="none")
-_WIDE = rx.breakpoints(initial="none", sm="flex")
+#: Which row of the bar shows depends on the BAR's width, not the window's (Deivid's live
+#: tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave it ~376 px): the
+#: bar is a CSS size container (`.q-reels-bar`, assets/qualify-creative.css) and from
+#: 700 px of it the chips row (`__wide`) shows, below it the two buttons (`__narrow`).
+BAR_CLASS = "q-reels-bar"
+_WIDE_CLASS = "q-reels-bar__wide"
+_NARROW_CLASS = "q-reels-bar__narrow"
 #: The marks of an option (lucide, painted with the system's tokens): a radio is a ring
 #: that fills, a checkbox an empty square that gets its check — never an empty gap.
 _MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "square")}
@@ -1661,7 +1664,7 @@ def _chip_group(*children: rx.Component) -> rx.Component:
 
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
-    «Cuenta», «Duración» and «Quitar filtros». From 768 px up, chips that open a
+    «Cuenta», «Duración» and «Quitar filtros». On a wide bar, chips that open a
     dropdown; on a phone, chips that open a sheet from the bottom. Every change is one
     more read of what is stored — never a paid call.
 
@@ -1673,16 +1676,24 @@ def _filter_bar() -> rx.Component:
     wrap onto centred lines, never one chip alone (Deivid at ~1180 px, 2026-11-26). On a
     phone, ONE line of equal buttons: «Filtros» (every axis in one sheet) and
     «Competidores» — «Filtros» takes the whole line for a brand with no competitor to
-    show; no text broken, no sideways scroll (Deivid, 2026-11-26)."""
+    show; no text broken, no sideways scroll (Deivid, 2026-11-26). Which row shows is a
+    container query on the bar's own width (`BAR_CLASS`): below 700 px of bar — phones,
+    tablets, narrow panels — the two buttons; from 700 px, the chips."""
+    S = DiscoverReelsState
+    both = S.filters_on & (S.competitor_rows.length() > 0)
     return rx.box(
         rx.flex(
             _chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND)),
-            _chip_group(_dropdown(AXIS_ACCOUNT), _dropdown(AXIS_DURATION)),
-            rx.cond(
-                DiscoverReelsState.filters_on | (DiscoverReelsState.competitor_rows.length() > 0),
-                _chip_group(_rivals_button(chip=False), _reset_button()),
+            # «Competidores» and «Quitar filtros» are a group of their own only when both
+            # show; when just one does, it joins Cuenta + Duración, so it can never be
+            # alone on a line at any width (review, 2026-11-26)
+            _chip_group(
+                _dropdown(AXIS_ACCOUNT),
+                _dropdown(AXIS_DURATION),
+                rx.cond(~both, rx.fragment(_rivals_button(chip=False), _reset_button())),
             ),
-            display=_WIDE,
+            rx.cond(both, _chip_group(_rivals_button(chip=False), _reset_button())),
+            class_name=_WIDE_CLASS,
             wrap="wrap",
             justify="center",
             align="center",
@@ -1690,12 +1701,12 @@ def _filter_bar() -> rx.Component:
             width="100%",
             min_width="0",
         ),
-        # the phone (under 768 px; Deivid 2026-11-26): one line, equal parts —
-        # «Filtros» and «Competidores» (RF-14 may add a third icon button here)
+        # a bar under 700 px wide (phones, tablets, narrow panels; Deivid 2026-11-26): one
+        # line, equal parts — «Filtros» and «Competidores» (RF-14 may add a third button)
         rx.flex(
             _filters_button(),
             _rivals_button(chip=True),
-            display=_PHONE,
+            class_name=_NARROW_CLASS,
             wrap="nowrap",
             align="center",
             spacing="2",
@@ -1707,6 +1718,7 @@ def _filter_bar() -> rx.Component:
         _competitors_drawer(bottom=True),
         role="search",
         aria_label=reels_filters_vm.BAR_LABEL,
+        class_name=BAR_CLASS,
         width="100%",
         background=T.CARD_BG,
         border_radius=T.RADIUS_CARD,

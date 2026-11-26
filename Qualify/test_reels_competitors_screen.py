@@ -314,10 +314,10 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
     from . import discover_reels
 
     bar = inspect.getsource(discover_reels._filter_bar)
-    desktop, phone = bar.split("display=_WIDE")
+    desktop, phone = bar.split("class_name=_WIDE_CLASS")
     # desktop (Deivid 2026-11-26): «Competidores» + «Quitar filtros» are one group of the
     # single line, after the filters — never alone, no separator
-    assert "_chip_group(_rivals_button(chip=False), _reset_button())" in desktop
+    assert "rx.cond(both, _chip_group(_rivals_button(chip=False), _reset_button()))" in desktop
     assert "rx.separator" not in bar
     # phone: «Filtros» and «Competidores» share one line in equal parts
     assert phone.index("_filters_button()") < phone.index("_rivals_button(chip=True)")

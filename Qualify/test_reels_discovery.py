@@ -1234,7 +1234,7 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     bar = inspect.getsource(discover_reels._filter_bar)
     import re
 
-    for gone in ("position", "sticky", "class_name", "rx.el.button", "rx.color("):
+    for gone in ("position", "sticky", "rx.el.button", "rx.color("):
         assert gone not in bar, gone  # nothing of its own
     assert not re.search(r"#[0-9a-fA-F]{3,8}", bar)  # no colour written by hand
     # Deivid 2026-11-26: a soft panel of the system behind the filters — never the dark
@@ -1433,14 +1433,19 @@ def test_the_desktop_bar_is_one_line_of_groups_centred() -> None:
     from . import reels_competitors_vm as rc
 
     bar = inspect.getsource(discover_reels._filter_bar)
-    desktop = bar.split("display=_WIDE")[0]
     for needed in (
         "_chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND))",
-        "_chip_group(_dropdown(AXIS_ACCOUNT), _dropdown(AXIS_DURATION))",
-        "_chip_group(_rivals_button(chip=False), _reset_button())",
+        "_dropdown(AXIS_ACCOUNT),\n                _dropdown(AXIS_DURATION),",
+        # just one of «Competidores» / «Quitar filtros» showing joins Cuenta + Duración:
+        # it can never be alone on a line (review, 2026-11-26)
+        "rx.cond(~both, rx.fragment(_rivals_button(chip=False), _reset_button()))",
+        "rx.cond(both, _chip_group(_rivals_button(chip=False), _reset_button()))",
+        "both = S.filters_on & (S.competitor_rows.length() > 0)",
     ):
-        assert needed in desktop, needed
-    wide = bar[bar.index("_chip_group(_dropdown(AXIS_NETWORK)") : bar.index("display=_PHONE")]
+        assert needed in bar, needed
+    wide = bar[
+        bar.index("_chip_group(_dropdown(AXIS_NETWORK)") : bar.index("class_name=_NARROW_CLASS")
+    ]
     assert 'justify="center"' in wide and 'wrap="wrap"' in wide
     group = inspect.getsource(discover_reels._chip_group)
     assert 'wrap="nowrap"' in group
@@ -1463,17 +1468,33 @@ def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
     from . import discover_reels
 
     bar = inspect.getsource(discover_reels._filter_bar)
-    phone = bar.split("display=_WIDE")[1]
+    phone = bar.split("class_name=_WIDE_CLASS")[1]
     assert "_filters_button()" in phone and "_rivals_button(chip=True)" in phone
     for gone in ("_chip(", "_reset_button(", "_chip_pair"):
         assert gone not in phone, gone  # no chips, no «Quitar filtros» in the phone's bar
     assert 'wrap="nowrap"' in phone
     # equal parts of the line (room for RF-14's third button)
     assert discover_reels._PHONE_SLOT["flex"] == "1 1 0"
-    # the two buttons up to 768 px (Reflex `sm`, 48em): a 594 px panel had «Competidores»
-    # alone on a second line of chips (Deivid, 2026-11-26)
-    assert dict(discover_reels._PHONE) == {"initial": "flex", "sm": "none"}
-    assert dict(discover_reels._WIDE) == {"initial": "none", "sm": "flex"}
+    # which row shows is a container query on the BAR's width, not the window's (Deivid's
+    # live tests: at 768 and 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px
+    # and «Competidores» dropped alone): the two buttons below 700 px of bar, chips above
+    import re
+    from pathlib import Path
+
+    assert "breakpoints" not in inspect.getsource(discover_reels._filter_bar)
+    assert "class_name=BAR_CLASS" in bar and "class_name=_NARROW_CLASS" in bar
+    css = (Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css").read_text(
+        encoding="utf-8"
+    )
+    assert ".q-reels-bar { container-type: inline-size; }" in css
+    assert ".q-reels-bar .q-reels-bar__wide { display: none; }" in css
+    assert ".q-reels-bar .q-reels-bar__narrow { display: flex; }" in css
+    query = re.search(r"@container \(min-width: (\d+)px\) \{(.*?)\n\}", css, re.S)
+    assert query and int(query.group(1)) == 700
+    assert ".q-reels-bar .q-reels-bar__wide { display: flex; }" in query.group(2)
+    assert ".q-reels-bar .q-reels-bar__narrow { display: none; }" in query.group(2)
+    rule_block = css[css.index(".q-reels-bar {") : css.index("@container")]
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgb|hsl", rule_block)  # no colour by hand
     button = inspect.getsource(discover_reels._filters_button)
     for needed in ('"sliders-horizontal"', "**_PHONE_SLOT", "min_height=_TARGET", "**_ELLIPSIS"):
         assert needed in button, needed
