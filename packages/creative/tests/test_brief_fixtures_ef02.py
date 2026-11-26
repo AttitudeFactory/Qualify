@@ -33,6 +33,8 @@ _MEDIA_DEFAULTS = {
     **_RECIPE_DEFAULTS,
     "effects_pipeline_version": 0,
     "video_recipe": None,
+    # m-25129405: a Clip's «partes con IA», empty on every brief stored before them
+    "ai_parts": [],
     # m-25112920: no stored brief is a Clip's avatar block — an `avatar_video` /
     # `animated_avatar_video` of before reads (and is made) exactly as it was
     "clip_avatar_block": False,

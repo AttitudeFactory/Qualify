@@ -216,8 +216,10 @@ def test_the_screens_text_backgrounds_and_motions_are_the_backends(screen: Modul
         "text_too_long_for_large",
     )
     assert get_args(screen.RecipeProblem)[-6:] == codes
-    # m-25114465 appended two block codes after them (the screen has no use for them yet)
-    assert schemas.RECIPE_REFUSALS[-8:-2] == codes
+    # m-25114465 appended two block codes after them (the screen has no use for them yet),
+    # and m-25129405 the «parte con IA» codes after those
+    at = schemas.RECIPE_REFUSALS.index(codes[0])
+    assert schemas.RECIPE_REFUSALS[at : at + 6] == codes
     # the text's new fields close the list, in this order
     assert list(schemas.VideoTextLayer.model_fields)[-6:] == [
         "fade_s",
