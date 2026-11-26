@@ -1304,16 +1304,16 @@ def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
 # RF-02: the filter bar (m-25119460) — RF-13 (m-25120327): the system's pieces only
 # --------------------------------------------------------------------------------------
 
-#: The single-choice axes, in the bar's order around «Cuenta».
+#: Each single-choice axis → its state var.
 _STATE_VALUE = {
     AXIS_NETWORK: lambda: DiscoverReelsState.filter_network,
     AXIS_KIND: lambda: DiscoverReelsState.filter_kind,
     AXIS_DURATION: lambda: DiscoverReelsState.filter_duration,
 }
-#: The phone's chips and the desktop's dropdowns swap at Reflex's `xs` breakpoint
-#: (30em, 480 px): a phone gets the chips and their sheet, anything wider the dropdowns.
-_PHONE = rx.breakpoints(initial="flex", xs="none")
-_WIDE = rx.breakpoints(initial="none", xs="flex")
+#: The phone bar («Filtros» + «Competidores») and the desktop chips swap at Reflex's `sm`
+#: breakpoint (48em, 768 px; Deivid 2026-11-26: narrow panels of 600-760 px get the two buttons).
+_PHONE = rx.breakpoints(initial="flex", sm="none")
+_WIDE = rx.breakpoints(initial="none", sm="flex")
 #: The marks of an option (lucide, painted with the system's tokens): a radio is a ring
 #: that fills, a checkbox an empty square that gets its check — never an empty gap.
 _MARKS = {"radio": ("circle-dot", "circle"), "checkbox": ("square-check", "square")}
@@ -1539,7 +1539,7 @@ SHEET_FOCUS_SCRIPT = (
 )
 #: The phone's line: its buttons share it in equal parts (`flex: 1 1 0`) — «Filtros» and
 #: «Competidores» today, room for a third later (RF-14's «Buscar reels nuevos»).
-_PHONE_SLOT = {"flex": "1 1 0", "min_width": "0", "max_width": "100%"}
+_PHONE_SLOT = {"flex": "1 1 0", "min_width": "0", "max_width": "100%", **_CHIP_PAD}
 
 
 def _filters_button() -> rx.Component:
@@ -1661,7 +1661,7 @@ def _chip_group(*children: rx.Component) -> rx.Component:
 
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
-    «Cuenta», «Duración» and «Quitar filtros». From 480 px up, chips that open a
+    «Cuenta», «Duración» and «Quitar filtros». From 768 px up, chips that open a
     dropdown; on a phone, chips that open a sheet from the bottom. Every change is one
     more read of what is stored — never a paid call.
 
@@ -1678,7 +1678,10 @@ def _filter_bar() -> rx.Component:
         rx.flex(
             _chip_group(_dropdown(AXIS_NETWORK), _dropdown(AXIS_KIND)),
             _chip_group(_dropdown(AXIS_ACCOUNT), _dropdown(AXIS_DURATION)),
-            _chip_group(_rivals_button(chip=False), _reset_button()),
+            rx.cond(
+                DiscoverReelsState.filters_on | (DiscoverReelsState.competitor_rows.length() > 0),
+                _chip_group(_rivals_button(chip=False), _reset_button()),
+            ),
             display=_WIDE,
             wrap="wrap",
             justify="center",
@@ -1687,7 +1690,7 @@ def _filter_bar() -> rx.Component:
             width="100%",
             min_width="0",
         ),
-        # the phone (under 480 px; Deivid 2026-11-26): one line, equal parts —
+        # the phone (under 768 px; Deivid 2026-11-26): one line, equal parts —
         # «Filtros» and «Competidores» (RF-14 may add a third icon button here)
         rx.flex(
             _filters_button(),

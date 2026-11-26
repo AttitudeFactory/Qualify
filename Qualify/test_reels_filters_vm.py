@@ -104,6 +104,22 @@ def test_a_phone_chip_says_one_short_word_inside_its_full_name() -> None:
             assert face != "Competidores"
 
 
+def test_the_phone_filters_button_counts_the_axes_on() -> None:
+    """RF-13 (Deivid, 2026-11-26): «Filtros» / «Filtros · N», named in words; several
+    accounts are ONE axis; the visible words are in the name (WCAG 2.5.3, punctuation
+    aside)."""
+    assert vm.filters_button(vm.NO_CHOICE) == ("Filtros", "Filtros: ninguno activo")
+    one = vm.FilterChoice.of(network="tiktok")
+    assert vm.filters_button(one) == ("Filtros · 1", "Filtros: 1 activo")
+    accounts = vm.FilterChoice.of(accounts=["instagram:a", "tiktok:b"])
+    assert vm.active_count(accounts) == 1
+    every = vm.FilterChoice.of(
+        network="instagram", kind="referente", duration="lt15", accounts=["instagram:a"]
+    )
+    assert vm.active_count(every) == 4
+    assert vm.filters_button(every) == ("Filtros · 4", "Filtros: 4 activos")
+
+
 def test_every_single_choice_axis_starts_with_all() -> None:
     assert vm.single_options(vm.AXIS_NETWORK)[0] == {"value": "", "label": "Todos"}
     assert vm.single_options(vm.AXIS_KIND)[0] == {"value": "", "label": "Todos"}

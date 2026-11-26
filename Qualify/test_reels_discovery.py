@@ -1470,6 +1470,10 @@ def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
     assert 'wrap="nowrap"' in phone
     # equal parts of the line (room for RF-14's third button)
     assert discover_reels._PHONE_SLOT["flex"] == "1 1 0"
+    # the two buttons up to 768 px (Reflex `sm`, 48em): a 594 px panel had «Competidores»
+    # alone on a second line of chips (Deivid, 2026-11-26)
+    assert dict(discover_reels._PHONE) == {"initial": "flex", "sm": "none"}
+    assert dict(discover_reels._WIDE) == {"initial": "none", "sm": "flex"}
     button = inspect.getsource(discover_reels._filters_button)
     for needed in ('"sliders-horizontal"', "**_PHONE_SLOT", "min_height=_TARGET", "**_ELLIPSIS"):
         assert needed in button, needed
