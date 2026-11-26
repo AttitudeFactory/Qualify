@@ -348,6 +348,18 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 > pagada necesita el **OK escrito de Deivid en el ticket** antes del primer gasto (D6), y la
 > lanza la sesión coordinadora, no el agente que preparó el arnés.
 
+> **Versión chica (Deivid, 2026-11-26, opción A).** Se corre **1 tirada por efecto y por
+> foto**: 7 brazos × 2 fotos (nibbles y Bianki) = **14 borradores** de 480p y 5 s, **sin
+> finales en 1080p** y con **tope duro de US$10**. El arnés ya lo trae por omisión
+> (`--reps 1`, `--max-usd 10`, que también es el máximo del registro `gasto.json`;
+> `finals` se niega con `FINALS_IN_PLAN = False`), y cotiza con la tabla `v10`. Esta corrida
+> **solo mide y juzga**: con n = 2 por efecto no se puede cumplir D5 (n ≥ 4 y al menos 2 de
+> 3), así que `library` no escribe la v6, no deja borrador y no sube nada a `platform/`; sale
+> con código 7 y dice por qué (`short_of_d5`). La rúbrica y el juicio a ciegas de Deivid y
+> Herwin no cambian. **La medición completa —n ≥ 4, finales en 1080p y la biblioteca v6— va
+> en m-25129421.** D5 no se cambió. El diseño de 28 borradores y la cotización de abajo
+> quedan como referencia para esa medición.
+
 - **Qué se mide:** cada plantilla de Seedance de la biblioteca de efectos (las cinco
   `seedance_prompt` de la v5: `fuego_lena_base`, `quemadores_brillan`, `vapor_sobre_comida`,
   `humo_denso` y `brasas`), escrita como «objeto en una zona del cuadro» (EF-13, m-25026589).
@@ -395,10 +407,11 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
   sesión**. En ese caso se pasa `--allow-daytime` y queda anotado. El arnés llama a
   `off_hours_refusal` antes de leer la llave.
 - **Tareas a la vez:** una. El máximo permitido para evals es 3 (`cap_video_concurrency`).
-- **Tope duro:** `--max-usd`, 30 por omisión y nunca más de 30 (D6), para **todo el banco**:
-  borradores y finales juntos. `gasto.json`, en la carpeta de la corrida, suma lo cobrado en
-  cada fase.
-  - Cada tarea se cotiza con la fórmula del adaptador y la tabla `v8`, y se carga a un
+- **Tope duro:** `--max-usd`, **10 por omisión y nunca más de 10** en la versión chica
+  (antes 30, D6), para **todo el banco**. `gasto.json`, en la carpeta de la corrida, suma lo
+  cobrado en cada fase, y lo que queda nunca pasa de US$10 menos lo cobrado.
+  - Cada tarea se cotiza con la fórmula del adaptador y la tabla `v10` (antes `v8`; Seedance
+    2.5 tiene la misma tarifa en las dos), y se carga a un
     `DollarMeter` con 10 % de margen **antes** de enviarla. Si no cabe, no se envía
     (`BudgetExhausted`).
   - Antes de la primera tarea, el plan entero con su margen tiene que caber en lo que queda
@@ -427,8 +440,14 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
   - **nibbles burger** (`"material_origin": "own"`): la foto principal de «Smash doble» (1080×1620), copiada en solo
     lectura del volumen local de subidas de la base de desarrollo, como en EF-11, con la
     paleta y las tipografías de su Brand Kit (Baloo 2 y Nunito).
-  - **Bianki** (`"material_origin": "client"`): hueco; la foto la pasa Deivid. Sirve para
-    juzgar, no para el «Así se ve».
+  - **Bianki** (`"material_origin": "client"`): hueco; la foto la pasa Deivid. Es un negocio
+    que **administra el fundador** (confirmado por Deivid el 2026-11-26), así que cumple el
+    criterio del ticket («negocios administrados por el fundador; ningún cliente externo»).
+    Su material sigue marcado `client` a propósito: sirve para medir y juzgar, nunca para el
+    «Así se ve» en `platform/`. La foto va en `%TEMP%\m-25026587\fotos\bianki-shawarma-mixto.jpg`
+    (JPEG, vertical, el producto entero y sin texto encima; el arnés la normaliza a JPEG de
+    ≤ 2048 px), y en `casos.json` el caso `bianki` pasa de `"photo": null` a
+    `"photo": "fotos/bianki-shawarma-mixto.jpg"`.
   - El `casos.json` está en `%TEMP%\m-25026587\casos.json` y la foto en
     `%TEMP%\m-25026587\fotos\`. No entra al repositorio.
 - **Salidas:** todo va a `%TEMP%\m-25026587\<corrida>\`: videos, prompts y `pruebas.json`.
@@ -436,7 +455,24 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
   `effect_id`, versión, `prompt_version`, `fill_version`, biblioteca, tabla de precios, zona,
   sha256 de la foto, id de tarea, `seed` devuelto, tokens, US$ y segundos.
 
-### Cotización (prueba en seco del 2026-11-25, tabla `v8`)
+### Cotización de la versión chica (prueba en seco del 2026-11-26, tabla `v10`)
+
+Sin llave y sin enviar nada. Con el `casos.json` real (solo nibbles, Bianki espera su foto):
+7 borradores, US$3,598049 (US$3,9585 con margen), todos compilados con la paleta y las
+tipografías de nibbles. Con las dos fotos de muestra del repositorio: **14 borradores**,
+todos compilados. El costo no depende de la foto.
+
+| | Tareas | US$ por tarea | Cotizado | Con 10 % de margen |
+|---|---|---|---|---|
+| 5 efectos + 2 controles × nibbles | 7 | 0,514007 | 3,598049 | 3,9585 |
+| 5 efectos + 2 controles × Bianki | 7 | 0,514007 | 3,598049 | 3,9585 |
+| Finales 1080p | 0 | — | 0 | 0 |
+| **Total** | **14** | | **7,196098** | **7,9170** (tope US$10) |
+
+Cada borrador son 48.038 tokens por la fórmula; en vivo se facturaron 49.673 (2026-10-23),
+o sea ≈ US$0,5315 por borrador y ≈ US$7,44 en total, dentro del margen.
+
+### Cotización (prueba en seco del 2026-11-25, tabla `v8`) — referencia para m-25129421
 
 Dos corridas en seco, sin llave y sin enviar nada:
 
@@ -550,7 +586,7 @@ just eval-efectos library --run <corrida> --env-file <checkout>/.env --upload  #
 
 - κ entre Deivid y Herwin: PENDIENTE.
 - Objeto contra atmósfera en humo y vapor: PENDIENTE.
-- Gasto real, con `pricing_version`: PENDIENTE (tope US$30).
+- Gasto real, con `pricing_version`: PENDIENTE (tope US$10, versión chica).
 
 ## Avatar como personaje en su escena, camino A: banco y corrida AVESC-001 (2026-11-26, m-25112921)
 

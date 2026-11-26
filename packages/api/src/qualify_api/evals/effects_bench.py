@@ -40,6 +40,12 @@ Judging may use any case; uploading may not. Each case declares `material_origin
 `upload_previews` refuses to write a preview whose origin is not `own` or `stock`.
 
 The judges (Deivid, 2026-11-25): Deivid and Herwin (`JUDGES`), blind, each on their own.
+
+The small version (Deivid, 2026-11-26, option A): this ticket's run is ONE try per effect
+and photo (7 arms × 2 photos = 14 drafts at 480p, no 1080p finals, hard ceiling US$10). It
+only measures and judges: n = 2 per effect is under D5's minimum, so no library v6 is
+written and nothing reaches `platform/` (`short_of_d5`). The full measurement — n ≥ 4,
+finals and the library v6 — is `FULL_MEASUREMENT_TICKET` (m-25129421). D5 is unchanged.
 """
 
 from __future__ import annotations
@@ -67,6 +73,9 @@ from qualify_creative.schemas import EffectUse
 from qualify_api.evals.comment_replies import cohen_kappa
 
 BENCH_TICKET = "m-25026587"
+#: The full measurement (n ≥ 4 per effect, 1080p finals, the library v6), split off when
+#: Deivid chose the small version on 2026-11-26 (option A).
+FULL_MEASUREMENT_TICKET = "m-25129421"
 #: The version of this bench's method (arms, controls, criteria, consensus rule).
 BENCH_VERSION = 1
 #: The library the bench writes (v5 is never edited).
@@ -554,6 +563,14 @@ def _stored_sha256(store: Any, key: str) -> str | None:
         return hashlib.sha256(handle.read()).hexdigest()
 
 
+def short_of_d5(measured: Mapping[str, Measured]) -> dict[str, int]:
+    """The measured effects whose sample is under D5's minimum (`MEASURED_MIN_N` judged
+    tries), `effect_id → n`. Any one of them means no library v6: `measured` moves once
+    from null, so writing a sample too small for D5 would fix that entry for good with a
+    number that can never offer it. D5 itself is not changed here."""
+    return {arm: m.n for arm, m in measured.items() if m.n < MEASURED_MIN_N}
+
+
 def library_v6(
     base: Mapping[str, Any],
     measured: Mapping[str, Measured],
@@ -592,6 +609,7 @@ __all__ = [
     "CONTROLS",
     "CONTROL_PROMPT_VERSION",
     "CRITERIA",
+    "FULL_MEASUREMENT_TICKET",
     "JUDGMENT_COLUMNS",
     "Judgment",
     "JudgmentError",
@@ -617,5 +635,6 @@ __all__ = [
     "preview_asset_path",
     "read_judgment_csv",
     "score_arms",
+    "short_of_d5",
     "wilson",
 ]

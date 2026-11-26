@@ -27,6 +27,7 @@ from qualify_creative.schemas import EffectUse
 
 from qualify_api.evals.effects_bench import (
     CONTROLS,
+    FULL_MEASUREMENT_TICKET,
     Judgment,
     JudgmentError,
     PreviewUploadError,
@@ -39,6 +40,7 @@ from qualify_api.evals.effects_bench import (
     plan_trials,
     preview_asset_path,
     score_arms,
+    short_of_d5,
     upload_previews,
     wilson,
 )
@@ -405,8 +407,8 @@ def test_paid_run_needs_its_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     out = ["--env-file", none, "--out", str(tmp_path)]
     # no approved material
     assert runner.main(["drafts", *out, "--i-have-spend-authorization"]) == 2
-    # over D6's ceiling
-    assert runner.main(["drafts", *out, "--max-usd", "31"]) == 2
+    # over the small version's ceiling (US$10)
+    assert runner.main(["drafts", *out, "--max-usd", "10.01"]) == 2
     # outputs inside the repository
     assert runner.main(["drafts", "--env-file", none, "--out", str(REPO / "tmp")]) == 2
     # outside the window, with material: refused before any key is read
@@ -551,3 +553,122 @@ def test_judge_then_score_then_library_on_a_fake_run(
     assert smoke["offered"] and smoke["preview_asset"] == key_r2
     assert parse_library(v6).offered(model="dreamina-seedance-2-5-260628")
     assert runner.main(["library", "--run", str(run), "--upload"]) == 2  # never edited
+
+
+# -- the small version (Deivid, 2026-11-26, option A) -----------------------------------
+
+
+def test_small_version_defaults_one_try_ten_dollars_v10_and_no_finals() -> None:
+    runner = _runner()
+    args = runner._parser().parse_args(["drafts"])
+    assert args.reps == 1 and args.max_usd == runner.Decimal("10")
+    assert runner.HARD_CEILING_USD == runner.Decimal("10")
+    assert runner.PRICING_VERSION == "v10" and runner.FINALS_IN_PLAN is False
+
+
+def test_the_ledger_never_allows_more_than_ten_dollars(tmp_path: Path) -> None:
+    runner = _runner()
+    (tmp_path / runner.SPEND_FILE).write_text(json.dumps({"billed_usd": "3.5"}), "utf-8")
+    args = runner._parser().parse_args(["drafts"])
+    assert runner._ceiling(args, tmp_path) == runner.Decimal("6.5")
+    args.max_usd = runner.Decimal("25")  # past main()'s check: the ledger still caps at 10
+    assert runner._ceiling(args, tmp_path) == runner.Decimal("6.5")
+
+
+def test_the_whole_small_plan_is_fourteen_drafts_under_the_ceiling(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("QUALIFY_SEEDANCE_EFFECTS", raising=False)
+    runner = _runner()
+    code = runner.main(["drafts", "--env-file", str(tmp_path / "none.env"), "--out", str(tmp_path)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "14 borradores (7 brazos × 2 casos × 1 tiradas)" in out
+    assert "tabla v10, sin finales en 1080p" in out and "cabe" in out
+    quote = json.loads(next(tmp_path.glob("cotizacion-*.json")).read_text(encoding="utf-8"))
+    assert quote["calls"] == 14 and quote["reps"] == 1 and quote["not_compiled"] == []
+    assert quote["pricing_version"] == "v10" and quote["finals_in_plan"] is False
+    # Seedance 2.5 draft, 480p 9:16, 5 s, no video input: 48,038 tokens × US$10.70/M
+    # (49,673 billed live on 2026-10-23: the 10 % reservation covers the gap)
+    assert quote["per_call_usd"] == ["0.514007"]
+    assert runner.Decimal(quote["reserved_with_margin_usd"]) <= runner.Decimal("10")
+
+
+def test_finals_are_out_of_the_small_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = _runner()
+    run = tmp_path / "run"
+    run.mkdir()
+    code = runner.main(["finals", "--env-file", str(tmp_path / "none.env"), "--run", str(run)])
+    assert code == 2
+    assert FULL_MEASUREMENT_TICKET in capsys.readouterr().err
+
+
+def test_short_of_d5_lists_every_effect_under_four_tries() -> None:
+    def m(successes: int, n: int) -> Measured:
+        low, high = wilson(successes, n)
+        return Measured(
+            successes=successes,
+            n=n,
+            wilson_low=low,
+            wilson_high=high,
+            measured_on=date(2026, 11, 26),
+            model="dreamina-seedance-2-5-260628",
+        )
+
+    assert short_of_d5({"humo_denso": m(2, 2), "brasas": m(4, 4)}) == {"humo_denso": 2}
+    assert short_of_d5({"brasas": m(3, 4)}) == {}
+    assert FULL_MEASUREMENT_TICKET == "m-25129421"
+
+
+def test_a_small_run_is_judged_and_scored_but_writes_no_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = _runner()
+    run = tmp_path / "run"
+    (run / "videos").mkdir(parents=True)
+    trials: dict[str, Any] = {}
+    for arm, kind in (("humo_denso", "objeto"), ("humo_atmosferico", "atmosferico")):
+        for case, origin in (("nibbles", "own"), ("bianki", "client")):
+            label = f"{arm}/{case}/1"
+            name = f"videos/{label.replace('/', '__')}.mp4"
+            (run / name).write_bytes(label.encode())
+            trials[label] = {
+                "label": label,
+                "arm": arm,
+                "kind": kind,
+                "compared_with": "humo_denso" if kind == "atmosferico" else None,
+                "case": case,
+                "material_origin": origin,
+                "asked": "Humo",
+                "video": name,
+                "model_billed": "dreamina-seedance-2-5-260628",
+            }
+    (run / "pruebas.json").write_text(json.dumps({"trials": trials}), encoding="utf-8")
+    assert runner.main(["judge", "--run", str(run)]) == 0
+    key = json.loads((run / "juicio" / "clave.json").read_text(encoding="utf-8"))
+    deivid = _sheet(tmp_path / "d.csv", key, "humo_denso")
+    herwin = _sheet(tmp_path / "h.csv", key, "humo_denso")
+    score = ["score", "--run", str(run), "--juicio", f"deivid={deivid}"]
+    assert runner.main([*score, "--juicio", f"herwin={herwin}"]) == 0
+    assert "Muestra chica" in capsys.readouterr().out
+    results = json.loads((run / "resultados.json").read_text(encoding="utf-8"))
+    assert results["measured"]["humo_denso"]["n"] == 2  # measured and judged...
+    assert results["winners"] == {}  # ...but 2 of 2 is no D5 pass
+
+    creative = tmp_path / "creative"
+    (creative / "effects_data").mkdir(parents=True)
+    v5 = REPO / "packages/creative/src/qualify_creative/effects_data/v5.json"
+    (creative / "effects_data" / "v5.json").write_bytes(v5.read_bytes())
+    monkeypatch.setattr(runner, "_creative_root", lambda: creative)
+    store = _store()
+    monkeypatch.setattr(runner, "_r2_store", lambda: store)
+    for extra in ([], ["--upload"]):
+        assert runner.main(["library", "--run", str(run), *extra]) == 7
+        err = capsys.readouterr().err
+        assert "no alcanza para D5" in err and "humo_denso 2" in err
+        assert FULL_MEASUREMENT_TICKET in err
+    assert not store.objects  # nothing in platform/
+    assert not (creative / "effects_data" / "v6.json").exists()
+    assert not (run / "biblioteca-v6.json").exists()

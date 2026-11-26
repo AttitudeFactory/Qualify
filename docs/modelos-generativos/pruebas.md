@@ -44,8 +44,20 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   de stock (`material_origin` `own` o `stock` en cada caso; si falta, `client`): nada hecho con
   fotos de un cliente (Bianki) se sube a `platform/`, aunque sí sirve para medir. Lo hace
   cumplir `upload_previews`.
-- **Pendiente:** el OK escrito de Deivid en el ticket, la foto de Bianki y la corrida
-  de 23:00 a 05:00 (hora de Bogotá), salvo OK de Herwin para el día o de Deivid en la sesión.
+- **Versión chica (Deivid, 2026-11-26, opción A):** 1 tirada por efecto y por foto,
+  7 brazos × 2 fotos = **14 borradores** de 480p y 5 s, **sin finales en 1080p**, tope duro
+  **US$10** (por defecto y como máximo del registro de gasto). En seco con la tabla `v10`:
+  **US$7,196098** (US$0,514007 cada uno, 48.038 tokens; US$7,917 con el margen del 10 %).
+  Esta corrida **solo mide y juzga**: con n = 2 por efecto no se cumple D5 (n ≥ 4 y al menos
+  2 de 3), así que `library` no escribe la v6 ni sube nada a `platform/` (sale con código 7 y
+  lo explica). La medición completa (n ≥ 4, finales y biblioteca v6) es **m-25129421**. D5 no
+  cambia.
+- **Bianki:** es un negocio que administra el fundador (confirmado por Deivid el
+  2026-11-26), así que cumple el criterio del ticket («negocios administrados por el
+  fundador; ningún cliente externo»). Su foto sigue marcada `material_origin: "client"`: se
+  mide y se juzga, pero nunca se sube a `platform/`. nibbles es `own`.
+- **Pendiente:** la foto de Bianki y la corrida de 23:00 a 05:00 (hora de Bogotá), salvo OK
+  de Herwin para el día o de Deivid en la sesión (`--allow-daytime`).
   Método, cotización, rúbrica y resultados «PENDIENTES»: [`seedance-2-5.md`](seedance-2-5.md#ef12-001).
 
 ---

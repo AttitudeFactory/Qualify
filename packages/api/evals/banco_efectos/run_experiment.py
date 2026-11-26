@@ -15,15 +15,21 @@ What differs from production, and only inside this process:
   added to the library the producer reads, so the ticket's «object vs atmosphere»
   question is answered with the same code path. They are never offered.
 
+The small version (Deivid, 2026-11-26, option A): ONE try per effect and photo (`--reps 1`,
+7 arms × 2 photos = 14 drafts at 480p, 5 s), NO 1080p finals (`finals` refuses:
+`FINALS_IN_PLAN`), hard ceiling US$10 (`--max-usd` default and maximum). It only measures
+and judges: `library` writes no v6 and uploads nothing while an effect has fewer than D5's
+4 judged tries. The full measurement (n ≥ 4, finals, v6) is m-25129421.
+
 Subcommands (all outputs OUTSIDE the repo, `%TEMP%/m-25026587/<run>/` by default):
 
     drafts   the 480p drafts. Without `--i-have-spend-authorization` it only QUOTES: every
              request is compiled through the real producer and priced with the versioned
-             table, nothing is sent. Paid: also `--cases` (founder-run businesses only) and
-             the off-hours window; one task at a time (<= 3 allowed); hard ceiling
-             `--max-usd` (default 30) over the WHOLE bench, drafts and finals together
-             (`gasto.json` in the run folder); the whole plan is quoted with its margin
-             before the first task and refused if it does not fit. Resumable: `--run`
+             table (`PRICING_VERSION`, v10), nothing is sent. Paid: also `--cases`
+             (founder-run businesses only) and the off-hours window; one task at a time
+             (<= 3 allowed); hard ceiling `--max-usd` (default and maximum US$10) over the
+             WHOLE bench (`gasto.json` in the run folder); the whole plan is quoted with its
+             margin before the first task and refused if it does not fit. Resumable: `--run`
              reuses a run folder and skips trials that already have their video.
     judge    the blind judging kit for Deivid and Herwin: the videos renamed v01…vNN in
              random order, an offline form (`juicio.html`, downloads
@@ -31,13 +37,15 @@ Subcommands (all outputs OUTSIDE the repo, `%TEMP%/m-25026587/<run>/` by default
     score    reads `--juicio deivid=<csv> --juicio herwin=<csv>`: success per arm with its
              Wilson interval, Cohen's κ, object vs atmospheric, and each effect's
              `measured` (D5).
-    finals   the 1080p final of the best winning draft of each effect that passes D5 (at
-             most `--max-finals`), from its draft task id as production does. Dry unless
-             authorized; same ceiling and window.
+    finals   OUT OF THE SMALL VERSION: refuses (`FINALS_IN_PLAN = False`). Kept for
+             m-25129421: the 1080p final of the best winning draft of each effect that
+             passes D5 (at most `--max-finals`), from its draft task id as production does.
     library  the library v6 (v5 is never edited): `measured`, `offered` (only over D5) and
              each offered effect's `preview_asset` = its winning video in R2 under the
              platform key `platform/effects/<id>/v<n>/preview.mp4` — never a file in the
-             repository. Plan only (draft in the run folder) unless `--upload`.
+             repository. Plan only (draft in the run folder) unless `--upload`. Refuses,
+             writing and uploading nothing, while any judged effect has n < 4 (D5's
+             minimum; `short_of_d5`) — always the case in the small version.
 
 `casos.json` (outside the repo): `{"kit": {...}, "cases": [{"id", "business", "product",
 "description", "photo", "kit"}]}` — `photo` relative to the file or an absolute local path
@@ -49,9 +57,9 @@ is. Missing = `client`. Only `own` (nibbles) and `stock` cases may become a prev
     # dry run: compiles and quotes every draft, sends nothing (no key needed)
     just eval-efectos drafts
     just eval-efectos drafts --cases <outside>/casos.json
-    # paid (only with Deivid's written OK; 23:00-05:00 Bogotá)
+    # paid (only with Deivid's written OK; 23:00-05:00 Bogotá, or --allow-daytime with OK)
     just eval-efectos drafts --env-file <checkout>/.env --cases <outside>/casos.json \\
-        --i-have-spend-authorization --max-usd 30
+        --i-have-spend-authorization --max-usd 10
 """
 
 from __future__ import annotations
@@ -89,8 +97,17 @@ SECONDS = 5
 #: Billed tokens ran ~1 % over the formula (EF11-001, SD25-002): each task is reserved 10 %
 #: over its quote, and the whole plan must fit with that margin before the first task.
 RESERVE_MARGIN = Decimal("1.10")
-DEFAULT_MAX_USD = Decimal("30")
-HARD_CEILING_USD = Decimal("30")
+#: The small version (Deivid, 2026-11-26): US$10 is both the default and the hard ceiling
+#: of the whole run's ledger (`gasto.json`); ~US$7 expected (14 × ~US$0.52).
+DEFAULT_MAX_USD = Decimal("10")
+HARD_CEILING_USD = Decimal("10")
+#: One try per effect and photo in the small version.
+DEFAULT_REPS = 1
+#: No 1080p finals in the small version; m-25129421 turns them back on.
+FINALS_IN_PLAN = False
+#: The bench prices with v10 explicitly (Seedance 2.5's rates are the same as production's
+#: v8; v10 is the latest table, as AVESC-001 used), never with an edited old table.
+PRICING_VERSION = "v10"
 SPEND_FILE = "gasto.json"
 TRIALS_FILE = "pruebas.json"
 RESULTS_FILE = "resultados.json"
@@ -481,7 +498,6 @@ def _drafts_pass(
     from qualify_creative.enums import FailureReason
     from qualify_creative.router import BudgetContext
 
-    from qualify_api.creative.composition import PRICING_VERSION
     from qualify_api.creative.media import MediaProducer
 
     rows: list[dict[str, Any]] = []
@@ -597,7 +613,6 @@ def cmd_drafts(args: argparse.Namespace) -> int:
     from qualify_creative.router import CreativeRouter
 
     from qualify_api.claude_tools import DollarMeter
-    from qualify_api.creative.composition import PRICING_VERSION
     from qualify_api.evals.byteplus_eval_guard import EvalKeyError
     from qualify_api.evals.effects_bench import bench_arms, bench_library, plan_trials
 
@@ -685,11 +700,16 @@ def cmd_drafts(args: argparse.Namespace) -> int:
         "reserved_with_margin_usd": str(reserved),
         "not_compiled": not_compiled,
         "per_call_usd": sorted({str(q) for q in quotes}),
+        "finals_in_plan": FINALS_IN_PLAN,
+        "ceiling_usd": str(min(Decimal(args.max_usd), HARD_CEILING_USD)),
     }
+    cap = min(Decimal(args.max_usd), HARD_CEILING_USD)
     print(
         f"\nPlan: {len(trials)} borradores ({len(arms)} brazos × {len(cases)} casos × "
-        f"{args.reps} tiradas) en {model}, tabla {PRICING_VERSION}."
-        f"\nCotizado: USD {total} · con margen del 10 %: USD {reserved}."
+        f"{args.reps} tiradas) en {model}, tabla {PRICING_VERSION}"
+        f"{'' if FINALS_IN_PLAN else ', sin finales en 1080p'}."
+        f"\nCotizado: USD {total} · con margen del 10 %: USD {reserved} · "
+        f"tope USD {cap}: {'cabe' if reserved <= cap else 'NO cabe'}."
     )
     if not_compiled:
         print(f"Sin compilar (revisar): {', '.join(not_compiled)}", file=sys.stderr)
@@ -877,8 +897,11 @@ def _measured_on(run: Path) -> date:
 
 
 def cmd_score(args: argparse.Namespace) -> int:
+    from qualify_creative.effects import MEASURED_MIN_N
+
     from qualify_api.evals.effects_bench import (
         BENCH_VERSION,
+        FULL_MEASUREMENT_TICKET,
         JUDGES,
         consensus,
         object_vs_atmospheric,
@@ -948,6 +971,11 @@ def cmd_score(args: argparse.Namespace) -> int:
         )
     for row in results["object_vs_atmospheric"]:
         print(f"  {row['objeto']} vs {row['atmosferico']}: {row['verdict']}")
+    if any(score.n < MEASURED_MIN_N for score in scores.values() if score.kind == "objeto"):
+        print(
+            f"Muestra chica (n < {MEASURED_MIN_N} por efecto): mide y juzga, pero no alcanza "
+            f"para D5; ningún efecto se ofrece con esta corrida ({FULL_MEASUREMENT_TICKET})."
+        )
     print(f"Resultados en {run / RESULTS_FILE}")
     return 0
 
@@ -956,6 +984,16 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_finals(args: argparse.Namespace) -> int:
+    if not FINALS_IN_PLAN:
+        from qualify_api.evals.effects_bench import FULL_MEASUREMENT_TICKET
+
+        print(
+            "Los finales en 1080p están fuera de la versión chica (Deivid, 2026-11-26): esta "
+            "corrida solo mide y juzga borradores en 480p. Los finales van en la medición "
+            f"completa, {FULL_MEASUREMENT_TICKET}. Nada cotizado ni enviado.",
+            file=sys.stderr,
+        )
+        return 2
     import httpx
     from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter
     from qualify_creative.enums import GenerationTask
@@ -963,7 +1001,6 @@ def cmd_finals(args: argparse.Namespace) -> int:
     from qualify_creative.providers import GenerationRequest, RenderedPrompt
 
     from qualify_api.claude_tools import BudgetExhausted, DollarMeter
-    from qualify_api.creative.composition import PRICING_VERSION
     from qualify_api.creative.media import SEEDANCE_RATIOS
     from qualify_api.evals.byteplus_eval_guard import EvalKeyError
 
@@ -1061,15 +1098,21 @@ def cmd_library(args: argparse.Namespace) -> int:
     platform keys and sizes, and the v6 draft in the run folder; nothing written to R2 nor
     to the repository. With `--upload`: each winning video goes to R2 under its platform
     key (retried, read back by sha256), and only then `effects_data/v6.json` is written.
-    No video ever goes into the repository: it shows a business's product."""
-    from qualify_creative.effects import Measured, parse_library
+    No video ever goes into the repository: it shows a business's product.
+
+    While any judged effect has fewer than D5's minimum tries (`short_of_d5`, always so in
+    the small version: n = 2), it refuses with code 7 and writes nothing — no v6, no draft,
+    nothing in R2: this run only measures and judges (m-25129421 is the full one)."""
+    from qualify_creative.effects import MEASURED_MIN_N, Measured, parse_library
 
     from qualify_api.evals.effects_bench import (
+        FULL_MEASUREMENT_TICKET,
         PreviewUploadError,
         library_v6,
         material_origin,
         may_be_platform_preview,
         preview_asset_path,
+        short_of_d5,
         upload_previews,
     )
 
@@ -1083,6 +1126,19 @@ def cmd_library(args: argparse.Namespace) -> int:
     trials = _read_json(run / TRIALS_FILE, {}).get("trials", {})
     finals = _read_json(run / "finales.json", {})
     measured = {arm: Measured.model_validate(m) for arm, m in results.get("measured", {}).items()}
+    short = short_of_d5(measured)
+    if short:
+        detail = ", ".join(f"{arm} {n}" for arm, n in sorted(short.items()))
+        print(
+            "La biblioteca v6 no se escribe y nada se sube a platform/: la muestra no alcanza "
+            f"para D5, que pide al menos {MEASURED_MIN_N} intentos juzgados por efecto "
+            f"(aquí: {detail}). Esta corrida (versión chica, {TICKET}) solo mide y juzga; "
+            f"la medición completa, con n ≥ {MEASURED_MIN_N}, finales en 1080p y la "
+            f"biblioteca v6, es {FULL_MEASUREMENT_TICKET}. Los resultados quedan en "
+            f"{run / RESULTS_FILE}.",
+            file=sys.stderr,
+        )
+        return 7
     base = json.loads((creative / "effects_data" / "v5.json").read_text(encoding="utf-8"))
     versions = {e["id"]: int(e["version"]) for e in base["entries"]}
     videos: dict[str, tuple[int, bytes]] = {}
@@ -1180,7 +1236,7 @@ def _parser() -> argparse.ArgumentParser:
     drafts.add_argument("--case", action="append", help="only these case ids")
     drafts.add_argument("--effect", action="append", help="only these arms (effect or control)")
     drafts.add_argument("--no-controls", action="store_true")
-    drafts.add_argument("--reps", type=int, default=2, help="tries per case and arm")
+    drafts.add_argument("--reps", type=int, default=DEFAULT_REPS, help="tries per case and arm")
     drafts.add_argument(
         "--audio",
         action=argparse.BooleanOptionalAction,
@@ -1197,7 +1253,7 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("--run", required=True)
     score.add_argument("--juicio", action="append", required=True, help="nombre=ruta.csv")
 
-    finals = sub.add_parser("finals", help="1080p finals of the winners (dry unless authorized)")
+    finals = sub.add_parser("finals", help="1080p finals: out of the small version (m-25129421)")
     common(finals, spends=True)
     finals.add_argument("--run", required=True)
     finals.add_argument("--max-finals", type=int, default=3)
@@ -1221,7 +1277,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--{name} tiene que estar fuera del repositorio", file=sys.stderr)
             return 2
     if getattr(args, "max_usd", None) is not None and args.max_usd > HARD_CEILING_USD:
-        print(f"--max-usd no puede pasar de USD {HARD_CEILING_USD} (D6).", file=sys.stderr)
+        print(
+            f"--max-usd no puede pasar de USD {HARD_CEILING_USD} (tope de la versión chica).",
+            file=sys.stderr,
+        )
         return 2
     command = {
         "drafts": cmd_drafts,
