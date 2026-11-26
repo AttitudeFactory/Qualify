@@ -600,11 +600,11 @@ Las cinco llegaron por «creacion de tickets» el 2026-11-26. Cada una dice cóm
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), crear y guardar personajes (m-25129385), «Sugerir con IA» (m-25129386), la captura de la consola y la respuesta escrita de BytePlus (m-25129387), construir el personaje desde una foto real (§12.12, pendiente de medición), elegir la voz y encender cualquier interruptor.
 
-## 13. Enmienda `[PROPUESTO]`: un solo editor — «Video por partes» dentro de la línea de tiempo del Clip
+## 13. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-26]`: un solo editor — «Video por partes» dentro de la línea de tiempo del Clip
 
-**Estado:** `[PROPUESTO]` · redactada por principal-architect el 2026-11-26 a partir de la decisión de Deivid del mismo día y del plan `docs/plan-editor-unico-clip-partes.md` (copiado sin cambios en este PR). Deivid respondió las 5 preguntas del plan el 2026-11-26 por medio de «creacion de tickets» (§13.10), todas decididas. Solo la firma Deivid (P5 del §6.3).
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-26]` · redactada por principal-architect el 2026-11-26 a partir de la decisión de Deivid del mismo día y del plan `docs/plan-editor-unico-clip-partes.md` (copiado sin cambios en este PR). Deivid respondió las 5 preguntas del plan el 2026-11-26 por medio de «creacion de tickets» (§13.10), todas decididas. Solo la firma Deivid (P5 del §6.3).
 
-**Firma de Deivid:** `[ ]` «Firmo el §13» · fecha: ____. Firmar no enciende nada: el interruptor sigue apagado hasta cumplir §13.8.
+**Firma de Deivid:** `[x]` «Firmo el §13», elegido por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-26. Firmar no enciende nada: el interruptor sigue apagado hasta cumplir §13.8.
 
 **Ticket:** m-25129404 (PR 0 del §13.7), en la épica m-25026566.
 
