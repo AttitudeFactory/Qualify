@@ -37,7 +37,8 @@ _FILES = (
 )
 
 _BANNED = re.compile(
-    r"POST|[Cc]aption|\b[Ss]tor(y|ies)\b|\bCold\b|\bHot\b|\bLikes\b|\bAds\b|\bvendor\b"
+    # «Hot Sale» is the proper name of a calendar date (m-25120706), not the lead jargon
+    r"POST|[Cc]aption|\b[Ss]tor(y|ies)\b|\bCold\b|\bHot\b(?! Sale\b)|\bLikes\b|\bAds\b|\bvendor\b"
     r"|\b[Pp]review\b|\b[Tt]enant\b|\bR2\b"
 )
 #: The follow-up of wave 1: the planner's view model never says Feed nor evergreen either.

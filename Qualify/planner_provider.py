@@ -29,6 +29,7 @@ from qualify_api.planner.composition import (
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
 from qualify_api.planner.heartbeat import production_heartbeat_store, worker_covers
+from qualify_api.planner.monthly_post import occasions_of
 from qualify_api.planner.post_reader import PostSummary, UnpublishableReason
 from qualify_api.planner.publishable import (
     REASON_TEXT,
@@ -97,6 +98,7 @@ from .planner_vm import (
     instagram_link,
     is_pending,
     month_label,
+    occasion_label_text,
     output_label,
     post_kind,
     status_label,
@@ -277,6 +279,7 @@ def _post_option(
     final_rendering: bool = False,
     video: VideoDraftVM | None = None,
     recreate_note: str = "",
+    occasion_label: str = "",
 ) -> PostOptionVM:
     """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
     so each chip can say when and where that output goes out. `video_url` is the
@@ -338,6 +341,7 @@ def _post_option(
         expires_at=video.expires_at if video is not None else 0.0,
         approved_at=post.approved_at or "",  # m-24986801: «Aprobados» newest first
         reuse_type=post.reuse_type,  # m-25019220: a view-only upload
+        occasion_label=occasion_label,
     )
     if (
         video is not None
@@ -448,6 +452,7 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
         if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
     }
     states = {p.post_id: _video_state(tenant_id, p) for p in posts}
+    occasions = _occasion_labels(tenant_id, [p.post_id for p in posts])
     options = [
         _post_option(
             p,
@@ -463,10 +468,23 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
                 if video is not None and video.expired
                 else ""
             ),
+            occasion_label=occasions.get(p.post_id, ""),
         )
         for p in posts
     ]
     return GalleryData(posts=options, categories=category_options(options))
+
+
+def _occasion_labels(tenant_id: UUID, post_ids: list[UUID]) -> dict[UUID, str]:
+    """m-25120706: «Te la preparamos para el Día de la Madre (9 de mayo)» for each
+    «Publicación del mes» among the posts — one RLS-scoped read. A failed read costs
+    only the labels."""
+    try:
+        found = occasions_of(tenant_id, post_ids)
+    except Exception:  # noqa: BLE001 — a label is not worth failing the gallery
+        logger.warning("planner occasions not read", exc_info=True)
+        return {}
+    return {pid: occasion_label_text(o.name, o.day) for pid, o in found.items()}
 
 
 _WEEKDAY_SHORT = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")

@@ -15,11 +15,15 @@ rest of the document stays exactly as it is in the database at that moment.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Final
 from uuid import UUID
 
 from qualify_creative.enums import ContentKind
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import bindparam, text
 
 from qualify_api.creative.brand_kit_store import BrandKitStore
 
@@ -89,3 +93,30 @@ def set_monthly_post_setting(
         value={"enabled": setting.enabled, "kind": setting.kind.value},
     )
     return setting
+
+
+@dataclass(frozen=True)
+class Occasion:
+    """Why a monthly post is in «Por aprobar»: the date it was made for (m-25120706)."""
+
+    name: str  # the brief's topic = the calendar's Spanish name for the tenant's country
+    day: date
+
+
+_OCCASIONS_SQL = text(
+    "SELECT mp.draft_id, b.topic, mp.event_date FROM monthly_posts mp "
+    "JOIN content_drafts d ON d.id = mp.draft_id AND d.tenant_id = mp.tenant_id "
+    "JOIN content_briefs b ON b.id = d.brief_id "
+    "WHERE mp.draft_id IN :ids AND mp.event_date IS NOT NULL"
+).bindparams(bindparam("ids", expanding=True))
+
+
+def occasions_of(tenant_id: UUID, draft_ids: Iterable[UUID]) -> dict[UUID, Occasion]:
+    """The drafts among `draft_ids` that are monthly posts, with their date. One RLS-scoped
+    read for the whole batch; a draft that is not a monthly post is left out. Blocking."""
+    ids = list(set(draft_ids))
+    if not ids:
+        return {}
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(_OCCASIONS_SQL, {"ids": ids}).all()
+    return {row.draft_id: Occasion(row.topic, row.event_date) for row in rows}

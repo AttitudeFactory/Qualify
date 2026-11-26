@@ -1138,6 +1138,14 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
         ),
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
+            # m-25120706: why a «Publicación del mes» is here — «Te la preparamos para …»
+            rx.cond(
+                post.occasion_label != "",
+                rx.box(
+                    tone_badge(post.occasion_label, "info", icon="calendar-heart"),
+                    class_name="q-gcard-occasion",
+                ),
+            ),
             # founder 2026-11-16: a historia says so, glyph and word (never colour alone)
             rx.cond(post.is_story, destination_badge("story", STORY_BADGE)),
             rx.cond(

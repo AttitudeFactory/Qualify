@@ -26,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from typing import Final
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, available_timezones
 
@@ -1243,6 +1244,9 @@ class PostOptionVM:
     #: the card already says it in its label («Imagen · 9:16»). Other screens keep
     #: `media_label`, which names the format.
     card_media_label: str = ""
+    #: m-25120706: a «Publicación del mes» says the date it was made for
+    #: (`occasion_label_text`); "" for every other publication.
+    occasion_label: str = ""
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1822,6 +1826,7 @@ def build_post_option(
     content_kind: str = "",
     approved_at: str = "",
     reuse_type: str | None = None,
+    occasion_label: str = "",
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1918,7 +1923,48 @@ def build_post_option(
             video_url=video_url,
             thumbnail_url=thumbnail_url or "",
         ),
+        occasion_label=occasion_label,
     )
+
+
+#: m-25120706: how each calendar name (`ads/data/calendario-v1.json`, every country) reads
+#: after «para». Proper names (Navidad, Halloween, Black Friday…) go bare and as written;
+#: a name missing here also goes bare (the test over the JSON makes a new one a decision).
+OCCASION_PHRASES: Final[dict[str, str]] = {
+    "Día de Reyes": "el Día de Reyes",
+    "Día de la Madre": "el Día de la Madre",
+    "Día de la Niñez": "el Día de la Niñez",
+    "Día de las Madres": "el Día de las Madres",
+    "Día de los Enamorados": "el Día de los Enamorados",
+    "Día de los Hijos": "el Día de los Hijos",
+    "Día del Niño": "el Día del Niño",
+    "Día del Padre": "el Día del Padre",
+    "Regreso a clases": "el regreso a clases",
+    # paydays: common nouns, lowercase with their article
+    "Quincena": "la quincena",
+    "Prima de servicios": "la prima de servicios",
+    "Aguinaldo": "el aguinaldo",
+    "Cobro del sueldo": "el cobro del sueldo",
+    "Utilidades y aguinaldos": "las utilidades y aguinaldos",
+    # proper names, no article
+    "Navidad": "Navidad",
+    "Carnaval": "Carnaval",
+    "Halloween": "Halloween",
+    "San Valentín": "San Valentín",
+    "Amor y Amistad": "Amor y Amistad",
+    "Black Friday": "Black Friday",
+    "Black Week": "Black Week",
+    "Cyber Monday": "Cyber Monday",
+    "CyberLunes": "CyberLunes",
+    "Hot Sale": "Hot Sale",
+}
+
+
+def occasion_label_text(name: str, day: date) -> str:
+    """m-25120706: why a «Publicación del mes» is in the gallery — «Te la preparamos para
+    el Día de la Madre (9 de mayo)», «… para Navidad (25 de diciembre)»."""
+    phrase = OCCASION_PHRASES.get(name, name)
+    return f"Te la preparamos para {phrase} ({day.day} de {_MONTHS_LONG[day.month - 1]})"
 
 
 # -- Historias (founder 2026-11-16): a label, a filter and «Abrir en Instagram» ----------
