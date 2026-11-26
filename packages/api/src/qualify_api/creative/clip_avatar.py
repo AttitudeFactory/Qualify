@@ -1403,6 +1403,10 @@ class PlanRefused:
     brief: ContentBrief
     slot: int
     code: str
+    #: With `failure_seen` the failed blocks stamped on this pass, with `clip_too_long`
+    #: the refused one (their entries carry the new `failed_at`): what m-25120319 stages
+    #: ONE email for, in the same write.
+    seen: tuple[PlannedBlock, ...] = ()
 
     @property
     def reason(self) -> str:
@@ -1475,7 +1479,10 @@ def plan_gate(
             entry.model_copy(update={"failed_at": now}) if entry.slot in slots else entry
             for entry in brief.media.clip_avatar_plan
         )
-        return PlanRefused(_with_plan(brief, plan), min(slots), "failure_seen")
+        stamped = tuple(
+            replace(s, entry=s.entry.model_copy(update={"failed_at": now})) for s in unseen
+        )
+        return PlanRefused(_with_plan(brief, plan), min(slots), "failure_seen", seen=stamped)
     if failed:
         deadline = owner_deadline(failed)
         assert deadline is not None
@@ -1496,9 +1503,12 @@ def plan_gate(
     fit = fit_plan(brief, made, keep=[s.entry for s in live])
     if fit.brief is None:
         assert fit.too_long is not None
-        return PlanRefused(
-            _refused(brief, fit.too_long, "clip_too_long", now), fit.too_long, "clip_too_long"
-        )
+        refused = _refused(brief, fit.too_long, "clip_too_long", now)
+        # m-25120319: the refused block as the new brief stamps it — one email for it
+        entry = next(e for e in refused.media.clip_avatar_plan if e.slot == fit.too_long)
+        planned = next(s for s in live if s.entry.slot == fit.too_long)
+        seen = (replace(planned, entry=entry, state="failed", code="clip_too_long"),)
+        return PlanRefused(refused, fit.too_long, "clip_too_long", seen=seen)
     return PlanReady(fit.brief, moved=fit.moved, dropped=fit.dropped)
 
 

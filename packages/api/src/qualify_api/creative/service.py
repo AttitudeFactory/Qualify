@@ -2442,8 +2442,13 @@ class ContentService:
         clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
         clip_avatar_store: Any = None,
         clip_avatar_clock: Callable[[], datetime] | None = None,
+        clip_failure_outbox: Any = None,
     ) -> None:
         self._media = media
+        #: m-25120319: where the email of a failed avatar is staged, in the same write as
+        #: its `failed_at` (`clip_avatar_mail.AvatarFailureOutbox`; Postgres when None on a
+        #: Postgres repository; none at all on an in-memory one unless injected).
+        self._clip_failure_outbox = clip_failure_outbox
         #: m-25119867 PR 2: the clock the owner's 72 h are measured with (tests inject it).
         self._clip_avatar_clock = clip_avatar_clock or (lambda: datetime.now(UTC))
         #: m-25119867: the avatar blocks a Clip waits for (`clip_avatar.ClipAvatarStore`;
@@ -3145,8 +3150,17 @@ class ContentService:
         if isinstance(verdict, PlanRefused):
             # a made block the Clip cannot take (over 60 s), or a failure seen for the
             # first time: kept on the plan, so the screen shows it and the owner's 72 h
-            # run from it; the Clip waits for the owner
-            self._replace_clip_brief(tenant_id, draft, verdict.brief)
+            # run from it; the Clip waits for the owner. m-25120319: failures seen for
+            # the first time, or a block refused as too long, stage ONE email in that
+            # same write (one per Clip and pass: per `failed_at`)
+            failures: tuple[Any, ...] = ()
+            if verdict.code in ("failure_seen", "clip_too_long"):
+                from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
+                    mailable_failures,
+                )
+
+                failures = mailable_failures(verdict.seen)
+            self._replace_clip_brief(tenant_id, draft, verdict.brief, failures=failures)
         beat = self._heartbeat(tenant_id, draft.id)
         if beat is not None:
             beat()
@@ -3213,13 +3227,27 @@ class ContentService:
             drafts[draft.id] = _replace(drafts[draft.id], failure_detail=detail)
 
     def _replace_clip_brief(
-        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+        self,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        brief: ContentBrief,
+        *,
+        failures: Sequence[Any] = (),
     ) -> tuple[DraftRecord, ContentBrief]:
         """The Clip's new brief, in a transaction fenced by the worker's lease and the
         Clip's row (still `drafting`, same revision) — never a second writer. The brief
         the owner sent stays as the record of what he asked for, and the new one points
         to it (`media.derived_from_brief_id`, provenance). The Clip as it reads now, and
-        the brief as written."""
+        the brief as written. m-25120319: `failures` (avatars whose `failed_at` this
+        brief stamps) stage their emails in the SAME transaction — the stamp and the
+        email commit together, or neither does."""
+        outbox = self._clip_failure_outbox
+        if failures and outbox is None and isinstance(self._repo, PostgresContentRepository):
+            from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
+                PostgresAvatarFailureOutbox,
+            )
+
+            outbox = PostgresAvatarFailureOutbox()
         origin = brief.media.derived_from_brief_id or draft.brief_id
         brief = brief.model_copy(
             update={"media": brief.media.model_copy(update={"derived_from_brief_id": origin})}
@@ -3254,10 +3282,26 @@ class ContentService:
                 repo.replace_brief(
                     tenant_id=tenant_id, draft_id=draft.id, user_id=row.created_by, brief=brief
                 )
+                if failures and outbox is not None:
+                    outbox.stage(
+                        session,
+                        tenant_id=tenant_id,
+                        clip_id=draft.id,
+                        user_id=row.created_by,
+                        failures=failures,
+                    )
         else:
             repo.replace_brief(  # type: ignore[attr-defined]
                 tenant_id=tenant_id, draft_id=draft.id, user_id=UUID(int=0), brief=brief
             )
+            if failures and outbox is not None:
+                outbox.stage(
+                    None,
+                    tenant_id=tenant_id,
+                    clip_id=draft.id,
+                    user_id=UUID(int=0),
+                    failures=failures,
+                )
         fresh = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
         if fresh is None:
             raise UnknownDraft(str(draft.id))
