@@ -1516,7 +1516,7 @@ def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
 
 def _reset_button(*, chip: bool = False) -> rx.Component:
     """«Restablecer filtros»: shown while some filter narrows the lists — a `ghost`
-    button of the skin; last on a desktop, FIRST in the phone's sliding row (Deivid,
+    button of the skin; last on a desktop, FIRST in the phone's centred lines (Deivid,
     2026-11-26). `chip`: it never shrinks nor wraps its words there."""
     return rx.cond(
         DiscoverReelsState.filters_on,
@@ -1916,7 +1916,7 @@ def _rivals_button(*, chip: bool, shrink: bool = False) -> rx.Component:
             min_height=_TARGET,
             max_width="100%",
             # in the desktop pair it gives way last («Duración» shrinks `_SHRINK_FIRST`
-            # times faster); in the phone's sliding row it never shrinks
+            # times faster); in the phone's centred lines it never shrinks
             flex_shrink="1" if shrink else "0",
             min_width="0",
             overflow="hidden",
