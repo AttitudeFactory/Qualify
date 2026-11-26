@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1 · La pista con bloques mezclados — Editor único</title>
+<link rel="stylesheet" href="editor-unico.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <b>1 · Pista</b> · <a href="02-panel-bloque-ia.html">2 · Panel del bloque IA</a> · <a href="03-agregar.html">3 · Agregar</a> · <a href="04-crear.html">4 · Crear</a> · <a href="05-resultado.html">5 · Resultado</a> · <a href="06-hacer-uno-parecido.html">6 · Hacer uno parecido</a></nav>
+  <h1 class="mk-title">1 · La pista con bloques mezclados</h1>
+  <p class="mk-sub">«Arma tu video» (paso 1 de 3) con una foto, un video propio y dos partes con IA todavía sin crear. La parte con IA 1 entra con <b>Fundido</b> desde el video propio, y encima lleva el texto «2×1 hoy» y la capa <b>Humo</b>. El cabezal está sobre la parte con IA 1: la vista previa muestra su póster con la marca «Parte con IA · se crea al tocar Crear».</p>
+
+  <template id="s1">
+    <header class="step-head">
+      <div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div>
+      <div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div>
+      <h1 class="step-h1">Arma tu video</h1>
+    </header>
+    <div class="step-body">
+      <div class="ed">
+        <div class="ed__top">
+          <div class="preview">
+            <div class="preview__frame pic-reel" role="region" aria-label="Vista previa de tu video">
+              <span class="preview__ai"><span class="ai-mark poster"><span data-i="sparkles" data-c="sm"></span>Parte con IA 1 · se crea al tocar «Crear»</span></span>
+              <div class="preview__smoke"></div>
+              <div class="preview__text">2×1 hoy</div>
+              <span class="preview__play"><span data-i="play"></span></span>
+            </div>
+          </div>
+          <div class="ed__side">
+            <div class="ctx"><span class="ctx__t"><span class="muted">Tu video trata de:</span> «Promoción de 2×1 los martes»</span><button class="btn ghost sm" type="button">Cambiar</button></div>
+          </div>
+        </div>
+        <script type="application/json" data-tl>
+        {"total":16.5,"t":8,"chosen":"",
+         "media":[
+          {"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},
+          {"id":"v1","kind":"video","name":"Video 1","start":2,"len":5,"pic":"pic-b"},
+          {"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":6.5,"len":5,"in":0.5,"pic":"pic-reel"},
+          {"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"follow","start":11.5,"len":3,"pic":"pic-reel"},
+          {"id":"f2","kind":"photo","name":"Foto 2","start":14.5,"len":2,"pic":"pic-c"}],
+         "joins":[
+          {"at":2,"kind":"corte","label":"Unión entre Foto 1 y Video 1: Corte"},
+          {"at":6.75,"kind":"fundido","label":"Unión entre Video 1 y Parte con IA 1: Fundido"},
+          {"at":11.5,"kind":"corte","label":"Unión entre Parte con IA 1 y Parte con IA 2: Corte"},
+          {"at":14.5,"kind":"corte","label":"Unión entre Parte con IA 2 y Foto 2: Corte"}],
+         "texts":[{"id":"t1","name":"«2×1 hoy»","start":6.5,"len":5}],
+         "effects":[{"id":"e1","name":"Humo","start":7,"len":5}],
+         "status":"Las partes con IA se crean al tocar «Crear». Hasta entonces, todo es gratis."}
+        </script>
+        <div class="q-island q-tl-actions" style="grid-template-columns:1fr">
+          <div class="row"><button class="orbit__plus" type="button" aria-label="Agregar" aria-expanded="false"><span data-i="plus"></span></button><span style="font-weight:700">Agregar</span></div>
+        </div>
+      </div>
+    </div>
+    <footer class="step-foot">
+      <div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div>
+      <button class="btn ghost sm step-foot__later" type="button">Seguir después</button>
+    </footer>
+  </template>
+  <div class="mk-row" data-pair="s1"
+    data-note-phone="El cabezal queda fijo al centro y la pista se desliza debajo, dentro de su caja: la página nunca se desplaza de lado. A 375 px la insignia de una parte de 3 s («Sigue a la anterior») cabe entera; en una de 1–2 s quedan solo los íconos (ver el muestrario)."
+    data-note-desk="En escritorio la pista se ajusta al largo del video y los nombres de pista se ven a la izquierda, como hoy. La línea viva debajo dice una sola vez que las partes con IA se crean al tocar «Crear»."></div>
+
+  <h2 style="margin:36px 0 8px;font-size:18px">Muestrario del bloque IA (lo que se firma)</h2>
+  <p class="mk-sub">Mismo alto que la pista «Fotos y videos» (56 px). Primera línea: ✦ + la insignia del modo (una <i>etiqueta</i>, porque es una categoría y no un estado). Segunda línea: el nombre y los segundos antes de crear; el estado con su palabra después. Sin crear = borde punteado y póster atenuado; creada = borde lleno y su propio cuadro. Los anchos son los del celular (1 s = 44 px).</p>
+  <div class="mk-samples">
+    <script type="application/json" data-sample>{"w":220,"id":"a","kind":"ai","name":"Parte con IA 1","mode":"new","start":0,"len":5,"pic":"pic-reel","cap":"Sin crear · Nueva · 5 s (póster del reel o de tu producto)"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"b","kind":"ai","name":"Parte con IA 2","mode":"same","start":0,"len":5,"pic":"pic-reel","cap":"Sin crear · Igual al original"}</script>
+    <script type="application/json" data-sample>{"w":132,"id":"c","kind":"ai","name":"Parte con IA 3","mode":"follow","start":0,"len":3,"pic":"pic-reel","cap":"Sin crear · Sigue a la anterior · 3 s"}</script>
+    <script type="application/json" data-sample>{"w":88,"id":"d","kind":"ai","name":"Parte con IA 4","mode":"follow","start":0,"len":2,"pic":"pic-reel","cap":"2 s: solo íconos; el nombre completo va en aria-label y en el panel"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"e","kind":"ai","name":"Parte con IA 1","mode":"new","start":0,"len":5,"pic":"pic-reel","chosen":true,"cap":"Elegida: borde de acento y tiradores (antes de crear cambian los segundos, de 1 en 1 s)"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"f","kind":"ai","name":"Parte con IA 1","mode":"new","state":"queued","start":0,"len":5,"pic":"pic-reel","cap":"En fila"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"g","kind":"ai","name":"Parte con IA 1","mode":"new","state":"creating","start":0,"len":5,"pic":"pic-reel","cap":"Creando (el cargador del sistema, chico)"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"h","kind":"ai","name":"Parte con IA 1","mode":"new","state":"review","start":0,"len":5,"pic":"pic-d","cap":"Para revisar: ya tiene su video"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"i","kind":"ai","name":"Parte con IA 1","mode":"new","state":"liked","start":0,"len":5,"pic":"pic-d","cap":"Lista (tocaste «Me gusta así»)"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"j","kind":"ai","name":"Parte con IA 2","mode":"same","state":"failed","start":0,"len":5,"pic":"pic-reel","cap":"No salió: borde de error; el motivo y las salidas, en el panel"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"k","kind":"ai","name":"Parte con IA 2","mode":"same","state":"refused","start":0,"len":5,"pic":"pic-reel","cap":"No se pudo con el original (aviso)"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"l","kind":"ai","name":"Parte con IA 3","mode":"follow","state":"redo","start":0,"len":5,"pic":"pic-d","cap":"Hay que rehacerla (cambió la anterior)"}</script>
+    <script type="application/json" data-sample>{"w":220,"id":"m","kind":"video","name":"Video 1","start":0,"len":5,"pic":"pic-b","cap":"Comparación: tu video (lavado del acento, sin ✦)"}</script>
+    <script type="application/json" data-sample>{"w":88,"id":"n","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a","cap":"Comparación: tu foto (gris)"}</script>
+  </div>
+</div>
+</body>
+</html>
