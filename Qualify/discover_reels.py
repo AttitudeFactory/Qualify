@@ -1565,11 +1565,7 @@ def _reset_button(*, chip: bool = False) -> rx.Component:
             min_height=_TARGET,
             margin="0",
             on_click=DiscoverReelsState.reset_filters,
-            **(
-                {"flex_shrink": "0", "white_space": "nowrap", "max_width": "100%", **_CHIP_PAD}
-                if chip
-                else {}
-            ),
+            **({"flex_shrink": "0", "white_space": "nowrap", "max_width": "100%"} if chip else {}),
         ),
     )
 
