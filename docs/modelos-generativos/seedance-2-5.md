@@ -548,8 +548,9 @@ detecta.
    leer qué pide y si sirve para una cuenta como la nuestra (ver «Platform Customer», §1.5).
 2. **Hipótesis: un dibujo estilizado o animado desde la foto** (por ejemplo, el estilo del
    personaje animado de AVESC-001, que pasó desde texto) podría no leerse como persona real.
-   No está medido; cuanto menos se parezca, menos sirve la opción, así que la medición tendría
-   que juzgar el parecido junto con la aceptación.
+   No estaba medido al escribir esto; cuanto menos se parezca, menos sirve la opción, así que
+   la medición tendría que juzgar el parecido junto con la aceptación. **Medido después en
+   AVFOTO-002: pasa 3 de 3.**
 
 **Pendiente:** Deivid califica el parecido de los 6 dibujos (1 a 3) en
 `%TEMP%/avatar-foto-real/corridas/20261126-161128/juicio-deivid.csv`; las columnas del video
@@ -613,18 +614,22 @@ voz y cambia de forma mientras habla; la sincronía fina queda para juicio human
 
 | Video | Personaje igual al dibujo | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
 |---|---|---|---|---|---|---|
-| p1 e1 | sí (lentes, pelo, camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador con las dos manos y la acerca a cámara | ninguno inventado; el menú del fondo trae las seudoletras borrosas del dibujo del fondo | queda una gota de salsa en el mostrador (verosímil) | 3 |
-| p2 e1 | sí (calvo, barba) | sí; el queso gotea al acercarla | sí | igual que p1 | ninguno visto | 3 |
-| p3 e1 | sí (rizos) | sí | sí | **mancha roja en el delantal** (una forma, sin letras), que ya traía el dibujo de Seedream pese a «no letters, no logos» | la mancha del delantal | 2 |
+| p1 e1 | sí (camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador con las dos manos y la acerca a cámara | ninguno inventado; el menú del fondo trae las seudoletras borrosas del dibujo del fondo | queda una gota de salsa en el mostrador (verosímil) | 3 |
+| p2 e1 | sí (camiseta crema, delantal verde) | sí; el queso gotea al acercarla | sí | igual que p1 | ninguno visto | 3 |
+| p3 e1 | sí (camiseta crema, delantal verde) | sí | sí | **mancha roja en el delantal** (una forma, sin letras), que ya traía el dibujo de Seedream pese a «no letters, no logos» | la mancha del delantal | 2 |
 
 En los tres, la hamburguesa llena el cuadro al final: es la cámara que se acerca, no un problema
 de escala como el del animado e1 de AVESC-001.
 
 **Conclusión.** **El personaje animado hecho desde la foto de una persona real, con su permiso,
-sí pasa en Seedance 2.5** (3 de 3), mientras que el realista desde las mismas fotos no pasa
-(AVFOTO-001, 0 de 3). Esto abre la opción de ADR 50 §12.12 **en su versión animada**: es un
-hallazgo para una enmienda futura del §12, **pendiente del juicio de parecido de Deivid** (si no
-se reconoce a la persona, la opción pierde su razón de ser). Siguen abiertos: muestra de 3 con
+sí pasa en Seedance 2.5** (3 de 3; muestra de 3, una escena de 5 s), mientras que el realista
+desde las mismas fotos no pasa (AVFOTO-001, 0 de 3). La opción de ADR 50 §12.12 en su versión
+animada queda **en pausa por decisión de Deivid (2026-11-26)**, sin enmienda al §12: los avatares
+y personajes no se encienden para los usuarios hasta que cada empresa tenga su propio avatar
+funcionando junto con su sistema visual (design system); mientras tanto, en la app quedan como
+«Próximamente» y solo se encienden en los servidores de prueba. El juicio de parecido de Deivid
+sigue pendiente (si no se reconoce a la persona, la opción pierde su razón de ser). Siguen
+abiertos: muestra de 3 con
 una sola escena de 5 s; no se midió la permanencia en escenas más largas ni en varias partes; el
 dibujo intermedio debe tener menos de 30 días (R7); y lo que dice §12.12 sobre el permiso
 escrito, el envío de la foto a BytePlus y la casilla de consentimiento sigue igual.

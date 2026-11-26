@@ -1,6 +1,6 @@
-"""AVFOTO-001: the Clip's realistic character drawn from a real person's photo (ADR 50
-§12.12, m-25129385). Seedream 5.0 pro draws it from the photo; only that drawing goes to
-Seedance 2.5 as the character of AVESC-001's scene 1.
+"""AVFOTO-001 (realistic) and AVFOTO-002 (3D cartoon): the Clip's character drawn from a
+real person's photo (ADR 50 §12.12, m-25129385). Seedream 5.0 pro draws it from the photo;
+only that drawing goes to Seedance 2.5 as the character of AVESC-001's scene 1.
 
 The bench's method, prompts and sheet are in `qualify_api.evals.avatar_photo_bench`; the
 paid loops, the spend ledger and the resume logic are AVESC-001's (`run_experiment.py`),
