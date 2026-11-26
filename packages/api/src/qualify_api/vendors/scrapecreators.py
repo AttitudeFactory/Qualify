@@ -194,7 +194,7 @@ FEATURE_COMPETITOR_REELS_LIST = "competitor_reels_list"
 FEATURE_COMPETITOR_REELS_TRANSCRIPT = "competitor_reels_transcript"
 #: «Buscar más cuentas en TikTok» of «Descubrir cuentas nuevas» (RF-07b, m-25119482): its
 #: own budget (50/day, 200/month, `creators.discover_paid`) is summed over this feature
-#: alone, inside the business's R5 cap (migration 0184 widens the CHECK to thirteen).
+#: alone, inside the business's R5 cap (migration 0185 widens the CHECK to thirteen).
 FEATURE_DISCOVER_SEARCH = "discover_accounts_search"
 FEATURES = frozenset(
     {

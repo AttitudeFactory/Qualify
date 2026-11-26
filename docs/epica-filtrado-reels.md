@@ -162,7 +162,7 @@ y Langfuse.
 Decisión de Deivid (2026-11-25, opción 1): el presupuesto propio de la búsqueda (50 créditos
 al día y 200 al mes por negocio, en su zona horaria) cuenta **dentro** del tope general del
 negocio (150/600). La puerta medida reserva cada crédito en ese tope antes de llamar. Se mide
-con su propia feature, `discover_accounts_search` (migración 0184), para leerla aparte de
+con su propia feature, `discover_accounts_search` (migración 0185), para leerla aparte de
 las demás. Por eso un día de muchas búsquedas puede dejar menos cupo para la corrida
 semanal de ideas de los lunes. Es una puerta de dos vías: sacar la feature del tope general
 es un cambio de código, sin migración. Cada búsqueda cuesta 1 crédito (≈ USD 0,0019), 2 como

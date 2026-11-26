@@ -2,8 +2,8 @@
 under its own feature (RF-07b, m-25119482, epic m-24872324, `docs/epica-filtrado-reels.md`
 cost option B)
 
-Revision ID: 0184
-Revises: 0183
+Revision ID: 0185
+Revises: 0184
 Create Date: 2026-11-25
 
 When the free list of RF-07a (`qualify_api.creators.discover_accounts`) has fewer than
@@ -38,8 +38,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0184"
-down_revision = "0183"
+revision = "0185"
+down_revision = "0184"
 branch_labels = None
 depends_on = None
 

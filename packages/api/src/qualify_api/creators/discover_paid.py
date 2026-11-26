@@ -25,7 +25,7 @@ button and this module searches TikTok — paying — for more.
   text: «comida Cúcuta», «gimnasio Montevideo».
 - **Its own budget per business: `SEARCH_DAY_CAP` (50) credits a local day,
   `SEARCH_MONTH_CAP` (200) a local month**, summed over its own feature
-  (`scrapecreators.FEATURE_DISCOVER_SEARCH`, migration 0184) in `vendor_usage_events` —
+  (`scrapecreators.FEATURE_DISCOVER_SEARCH`, migration 0185) in `vendor_usage_events` —
   apart from the Creators module's 50/300 and from the reels runs' features. Every credit
   is booked by the metered gate (`vendors.scrapecreators.metered_get`) BEFORE the request
   leaves, charged to this business and brand, inside the business's 150/600 cap (ADR 42

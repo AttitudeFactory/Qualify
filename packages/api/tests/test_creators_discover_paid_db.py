@@ -5,7 +5,7 @@ real `vendor_usage_events` (`PostgresUsageStore`), the answers go to the real
 `vendor_payloads`, the accounts to `creators` / `creator_sightings`, and the list is
 RF-07a's SQL read. Pins:
 
-- migration 0184's CHECK admits `discover_accounts_search`;
+- migration 0185's CHECK admits `discover_accounts_search`;
 - a search books one credit for its business and brand under that feature, keeps its
   answer, and its accounts appear in RF-07a's list with the country TikTok gave and that
   answer as the provenance; a repeat is served from the kept answer for 0 credits;
