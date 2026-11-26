@@ -321,7 +321,9 @@ def test_extend_never_opens_the_video() -> None:
 @pytest.mark.usefixtures("ai_parts_on")
 @pytest.mark.parametrize("before", [_video(), _photo()], ids=["video", "photo"])
 def test_extend_never_continues_the_owners_own_video_or_photo(before: SourceSegment) -> None:
-    """Not built: Seedance continues only its own unedited output (pending, PR 2)."""
+    """Not built: Seedance continues only its own unedited output. Temporary: Deivid chose
+    «Construirlo ya en el PR2» — PR 2 (m-25129406) builds it after a paid measurement he
+    approves, and lifts `extend_after_own_media` (this test then changes with it)."""
     assert _check((before, _ai(0)), (SPLIT_EXTEND,)) == [
         ("extend_after_own_media", "ai_parts[0].mode")
     ]

@@ -71,7 +71,7 @@ Todas viven en `validate_recipe` y en `validate_brief_recipe` (la que llama el s
 | Código | Cuándo | `field` | Texto para el dueño |
 |---|---|---|---|
 | `switched_off` | Hay un bloque con IA o una entrada en `ai_parts` y el interruptor está apagado. Sale solo, antes de leer nada | `segments[i]` (o `ai_parts`) | Las partes con IA todavía no están disponibles. Quítalas para crear tu video. |
-| `too_many_blocks` | Más de 8 bloques entre propios y con IA (`SEGMENTS_MAX`) | `segments` | Tu video puede tener hasta 8 fotos, videos o partes con IA. Quita una para seguir. |
+| `too_many_blocks` | Más de 8 bloques entre propios y con IA (`SEGMENTS_MAX`). **Es defensa:** con 9 bloques el tipo (`MediaInputs.segments`, `max_length=8`) responde antes con `ValidationError`; solo llega aquí una receta armada sin validar. La pantalla nunca debe mandar más de 8 | `segments` | Tu video puede tener hasta 8 fotos, videos o partes con IA. Quita una para seguir. |
 | `too_many_ai_children` | Más de 6 hijos de IA: partes con IA + escenas del personaje (+ avatares que el Clip espera). Comparten `part_index` 1 a 6 | `ai_parts` | Entre partes con IA y escenas del personaje puedes tener hasta 6 en un video. Quita una para seguir. |
 | `extend_needs_block_before` | Una parte «Sigue a la anterior» al principio del video, sin nada antes (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» necesita una parte con IA justo antes. Pon esta parte después de una, o elige «Nueva». |
 | `extend_after_own_media` | Una parte «Sigue a la anterior» justo después de una foto o un video del dueño: hoy no se puede continuar material propio (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» solo continúa una parte con IA, no una foto o un video tuyo. Pon una parte con IA justo antes o elige «Nueva». |
@@ -136,7 +136,11 @@ Por eso, en la v1, una entrada `extend` vale solo si:
 
 «Nueva» siempre se puede.
 
-**Pendiente de medir para el PR 2:** continuar con `extend` un video propio cualquiera. Si se mide y funciona, se levanta `extend_after_own_media`. Mientras tanto, la pantalla no ofrece «Sigue a la anterior» después de una foto o un video del dueño. Con `QUALIFY_PARTS_EXTEND` apagado, «Sigue a la anterior» sigue sin ofrecerse, como hoy (`EXTEND_REASON`).
+**`extend_after_own_media` es temporal.** Deivid eligió «Construirlo ya en el PR2» (2026-11-26, en la sesión del coordinador):
+
+- En la v1 (este PR) se mantiene el rechazo, porque hoy el productor no sabe continuar un video propio.
+- El PR 2 (m-25129406) construye «Sigue a la anterior» después de un video propio, tras una medición pagada que Deivid aprueba aparte, y levanta este código.
+- Mientras tanto, la pantalla no ofrece «Sigue a la anterior» después de una foto o un video del dueño. Con `QUALIFY_PARTS_EXTEND` apagado, «Sigue a la anterior» sigue sin ofrecerse, como hoy (`EXTEND_REASON`).
 
 ### 3.3 La palabra «bloque» no sale en pantalla
 
@@ -207,6 +211,9 @@ Los códigos se agregaron al final de `RecipeRefusal` (`qualify_creative.schemas
 
 - `create_clip_with_ai_parts(...)`: crea el Clip y un hijo `CLIP` por cada bloque con IA en una transacción. Descuenta 1 vista previa por hijo, todo o nada. Desde ahí, `refuse_unbuilt_recipe` deja de devolver `recipe_unavailable` para los bloques con IA de ese camino.
 - `produce_local` resuelve cada bloque con IA al video que guardó su hijo, a ×1 y con su recorte.
+- Los dos llamados de hoy a `validate_recipe` deben pasar `ai_parts=media.ai_parts` y `other_ai_children=ai_children_of(media)` (hallazgo del review-agent): `clip_avatar.py:2764` (`ClipAvatarService`) y `video_pipeline/local.py:930` (`produce_local`). Sin eso, un Clip con partes con IA sale `ai_parts_mismatch` en el armado (falla cerrado, nunca se arma en silencio).
+- `media._key_problems` debe recorrer también `media.ai_parts` del Clip (§3.1).
+- **«Sigue a la anterior» después de un video propio** (decisión de Deivid: «Construirlo ya en el PR2»): se construye tras una medición pagada que Deivid aprueba aparte, y se levanta `extend_after_own_media` (§3.2).
 - Firmas exactas: las fija el PR 2. Este contrato no las adelanta.
 
 ### PR 3 (m-25129407) · después de crear
