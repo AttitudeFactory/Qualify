@@ -46,6 +46,8 @@ ADD_NOTE_ID = "q-tl-add-note"
 
 Rows = rx.Var[list[dict[str, str]]]
 Row = rx.Var[dict[str, str]]
+#: ED-11b: each video block's strip cells, by the block's id.
+Frames = rx.Var[dict[str, list[dict[str, str]]]]
 
 
 def timeline_script() -> rx.Component:
@@ -161,6 +163,39 @@ def _picture(src: rx.Var[str]) -> rx.Component:
     )
 
 
+def _strip(row: Any, cells: Any, thumb_base: rx.Var[str] | str) -> rx.Component:
+    """ED-11b (m-25029110): a video block's frame strip — the server's ONE JPEG of a tile
+    per second, cut into cells by CSS (`.q-tl__strip`), each placed in SECONDS from the
+    block's start (``--c-at`` / ``--c-len`` over the block's ``--b-len``, as the blocks
+    themselves are placed), so it holds on a phone and a desktop and at any scale. Each
+    cell crops its tile out of the image with ``background-position`` (percentages:
+    ``strip_size`` makes one tile the cell's picture) and centres it. Decorative: the
+    block's name says what it is. Drawn under the whole block — also under the veil of a
+    transition in, so every frame stays on its second of the ruler."""
+    image = rx.Var.create('url("') + thumb_base + row["strip"] + '")'
+    return rx.el.span(
+        rx.foreach(
+            cells,
+            lambda cell: rx.el.span(
+                rx.el.span(
+                    class_name="q-tl__frame-pic",
+                    style={"backgroundPosition": cell["pos"]},
+                ),
+                class_name="q-tl__frame-cell",
+                style={"--c-at": cell["at"], "--c-len": cell["len"]},
+            ),
+        ),
+        class_name="q-tl__strip",
+        aria_hidden="true",
+        style={
+            "--s-img": image,
+            "--s-size": row["strip_size"],
+            "--s-ratio": row["strip_ratio"],
+            "--s-w": row["strip_w"],
+        },
+    )
+
+
 def _block(
     row: Any,
     *,
@@ -168,12 +203,17 @@ def _block(
     on_select: Callable[[str], Any],
     thumb_base: rx.Var[str] | str = "",
     overlap: bool = False,
+    frames: Frames | None = None,
 ) -> rx.Component:
     chosen = row["id"] == selected
     # ED-11: a video or a photo with a picture shows it under its name and seconds
     # (`_picture`); without one, the frame with the film / photo icon and its name — never
-    # an empty box. A text «Aa», an effect ✦.
+    # an empty box. A text «Aa», an effect ✦. ED-11b: a video whose file has the server's
+    # frame strip shows it instead (`_strip`, only on «Fotos y videos»).
+    strip = (row["strip"] != "") if frames is not None else None
     pic = row["thumb"] != ""
+    if strip is not None:
+        pic = pic | strip
     thumb = {"size": "40px", "icon_size": T.ICON_MD}
     icon = rx.match(
         row["kind"],
@@ -194,10 +234,18 @@ def _block(
         class_name="q-tl__pic-fallback",
         aria_hidden="true",
     )
+    picture: rx.Component = _picture(thumb_base + row["thumb"])
+    if strip is not None and frames is not None:
+        # UX review: the strip goes OVER the picture of before (transparent), which shows
+        # until its frames load and whenever they do not
+        picture = rx.fragment(
+            rx.cond(row["thumb"] != "", picture),
+            rx.cond(strip, _strip(row, frames[row["id"]], thumb_base)),  # type: ignore[index]
+        )
     button = rx.el.button(
         rx.cond(
             pic,
-            rx.fragment(under, _picture(thumb_base + row["thumb"])),
+            rx.fragment(under, picture),
             rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
         ),
         rx.el.span(row["label"], class_name="q-tl__label", aria_hidden="true"),
@@ -224,6 +272,8 @@ def _block(
             "data-tl-len": row["length"],
             # ED-11: it shows its picture (the name and seconds go over it)
             "data-tl-pic": rx.cond(pic, "1", "0"),
+            # ED-11b: its picture is the server's frame strip
+            **({"data-tl-strip": rx.cond(strip, "1", "0")} if strip is not None else {}),
             # ED-13: in a clash (two texts in one place at once) — the warning tone
             "data-tl-warn": rx.cond(row["warn"] == "1", "1", "0"),
         },
@@ -542,6 +592,7 @@ def timeline(
     thumb_base: rx.Var[str] | str = "",
     joins: Rows | None = None,
     on_join: Callable[[str], Any] | None = None,
+    frames: Frames | None = None,
 ) -> rx.Component:
     """The timeline of one video.
 
@@ -569,7 +620,12 @@ def timeline(
     row (`assets/timeline-drag.js`).
 
     ED-11 (m-25026650): ``thumb_base`` goes before each media row's ``thumb`` path (the
-    browser's backend origin; "" when the rows carry whole addresses)."""
+    browser's backend origin; "" when the rows carry whole addresses).
+
+    ED-11b (m-25029110): ``frames`` — each video block's strip cells by the block's id
+    (`timeline_vm.strip_cells`) — draws the server's frame strip under a video block whose
+    row has a ``strip`` path (also after ``thumb_base``); a block without one keeps its
+    picture."""
     block_props = {"selected": selected, "on_select": on_select, "thumb_base": thumb_base}
     lanes = effect_lanes is not None and effect_lane_names is not None
     effect_names: list[rx.Component] = [
@@ -623,7 +679,7 @@ def timeline(
         class_name="q-tl__scrub",
         aria_label=vm.PLAYHEAD_LABEL,
     )
-    media_lane = _lane(vm.TRACK_MEDIA, media, **block_props)
+    media_lane = _lane(vm.TRACK_MEDIA, media, frames=frames, **block_props)
     if joins is not None and on_join is not None:
         # m-25114465: the joins lie over the media track — its box is the track's own
         # height (`.q-tl__media`), so nothing below it moves
