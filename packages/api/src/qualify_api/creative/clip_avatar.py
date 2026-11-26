@@ -1291,12 +1291,17 @@ def fit_plan(
     plan entries still in it): each block a stretch of its whole video at ×1, in its
     place; every text and effect timed on the estimated timeline moved to the real one
     (a time inside a block keeps its place in it), cut at the new end, and dropped when it
-    would start at or after it. Over `LOCAL_TOTAL_MAX_S`: the slot of the first block
-    that passes it, nothing else. Pure."""
+    would start at or after it. Over `LOCAL_TOTAL_MAX_S` (the WHOLE real length, the
+    owner's stretches after the blocks included — m-25129382): the slot of the first
+    block whose own end passes it, or, when only a later stretch of the owner's does, of
+    the block that grew most over its estimate (a tie: the later one); nothing else.
+    Pure."""
     media = brief.media
     order = _ordered(media.segments, keep)
     points: list[tuple[float, float]] = [(0.0, 0.0)]
     segments: list[SourceSegment] = []
+    passing: int | None = None
+    grown: tuple[float, int] | None = None
     for segment, entry in order:
         e, r = points[-1]
         if segment is not None:
@@ -1308,9 +1313,14 @@ def fit_plan(
         stretch = block_segment(made[entry.slot])
         segments.append(stretch)
         points.append((e + entry.seconds_estimate, r + stretch.output_seconds))
-        if r + stretch.output_seconds > LOCAL_TOTAL_MAX_S + 1e-6:
-            return PlanFit(brief=None, too_long=entry.slot)
+        growth = stretch.output_seconds - entry.seconds_estimate
+        if grown is None or growth >= grown[0]:
+            grown = (growth, entry.slot)
+        if passing is None and r + stretch.output_seconds > LOCAL_TOTAL_MAX_S + 1e-6:
+            passing = entry.slot
     total = points[-1][1]
+    if total > LOCAL_TOTAL_MAX_S + 1e-6 and grown is not None:
+        return PlanFit(brief=None, too_long=passing if passing is not None else grown[1])
     move = _mapper(points)
     moved = dropped = 0
     texts = []
