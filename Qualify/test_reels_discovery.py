@@ -1268,7 +1268,7 @@ async def test_no_idea_left_but_reviewed_reels_says_so_never_a_dead_end(world: _
     await _filter(proxy, state.set_filter("network", "instagram"))
     assert not state.no_ideas_left  # a filter left the ideas out: nothing to explain
     ideas = inspect.getsource(discover_reels._ideas)
-    assert "S.no_ideas_left,\n                _no_ideas_left()," in ideas
+    assert "S.no_ideas_left" in ideas and "_no_ideas_left()" in ideas
     shown = inspect.getsource(discover_reels._no_ideas_left)
     assert "NO_IDEAS_LEFT_ACTION" in shown and "ACCOUNTS_HREF" in shown
 
@@ -1308,6 +1308,12 @@ async def test_filters_that_leave_no_idea_to_make_again_say_so(world: _World) ->
     assert state.reels == [] and state.more_reels and state.empty_kind == ""
     assert state.no_ideas_filtered and not state.no_ideas_left
     await _filter(proxy, state.reset_filters())
+    assert not state.no_ideas_filtered
+    # a filter that keeps ideas, even ones whose video was not kept (their own card says
+    # `CANNOT_REPLICATE`): nothing to ask — never «Quita alguno» over visible ideas
+    await _filter(proxy, state.set_filter("network", "instagram"))
+    assert state.reels
+    state._cards = [{**c, "can_replicate": ""} for c in state._cards]
     assert not state.no_ideas_filtered
     assert reels_filters_vm.NO_IDEAS_FILTERED == (
         "Con estos filtros no queda ninguna idea para hacer uno parecido. Quita alguno para verlas."

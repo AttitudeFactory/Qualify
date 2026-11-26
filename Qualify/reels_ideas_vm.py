@@ -567,7 +567,8 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
             data_iso=run_moment(shown).astimezone(UTC).isoformat(),
             more_cards=more,
             has_more=bool(reviewed and reviewed.has_more),
-            end_note=END_OF_LIST.format(d=next_monday(now, zone).day),
+            # never «el lunes N» twice (UX re-check 3): a notice above already names a day
+            end_note="" if notice_title else END_OF_LIST.format(d=next_monday(now, zone).day),
             accounts=reels_filters_vm.accounts_by_key(reviewed.accounts) if reviewed else {},
         )
     if stored.accounts == 0:

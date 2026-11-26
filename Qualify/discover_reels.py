@@ -302,8 +302,8 @@ class DiscoverReelsState(rx.State):
 
     @rx.var
     def no_ideas_filtered(self) -> bool:
-        """RF-13 (ux-designer, Deivid 2026-11-26): with a filter on, no idea left that can
-        be made again («Hacer uno parecido»): the list says so over what it shows
+        """RF-13 (ux-designer, Deivid 2026-11-26): with a filter on, no idea left (so none
+        to make again with «Hacer uno parecido»): the list says so over what it shows
         (`NO_IDEAS_FILTERED`); «Restablecer filtros» is already in the bar."""
         if self.screen != SCREEN_IDEAS:
             return False
@@ -312,10 +312,9 @@ class DiscoverReelsState(rx.State):
         )
         if not filtered:
             return False
-        return not any(
-            c.get("affinity") in reels_ai.FITS and c.get("can_replicate") == "1"
-            for c in self._cards
-        )
+        # the same count as `no_ideas_left`: an idea whose video was not kept says so on
+        # its own card (`CANNOT_REPLICATE`), so it is no reason to ask to drop a filter
+        return not any(c.get("affinity") in reels_ai.FITS for c in self._cards)
 
     @rx.event
     def open_sheet(self, axis: str) -> None:
