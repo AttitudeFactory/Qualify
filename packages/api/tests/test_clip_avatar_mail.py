@@ -125,12 +125,13 @@ def test_a_failure_seen_stages_one_email_in_the_same_write_and_sends_it() -> Non
     (mail,) = m.mailer.sent
     assert mail.to == EMAIL
     assert mail.subject == f"{BUSINESS}: uno de tus avatares no se pudo crear"
-    assert template.LEAD in mail.text and BUSINESS in mail.text
+    assert template.LEAD.format(business=BUSINESS) in mail.text
+    assert template.HEADING in mail.text
     url = f"{BASE}/drafts/{m.made.clip_id}"
     assert url in mail.text and f'href="{url}"' in mail.html
     assert template.BUTTON in mail.html
     # the 72 h in the business's hour: 15:00 UTC + 72 h = 10:00 in Bogotá three days on
-    assert "29/11/2026 a las 10:00" in mail.text
+    assert "domingo 29 de noviembre, 10 a. m." in mail.text
     assert mail.idempotency_key == cm.failure_key(TENANT_ID, m.made.clip_id, 1, T0)
     assert row.sent_at is not None and row.provider_id == "resend-1"
 
@@ -180,7 +181,7 @@ def test_a_retry_that_fails_again_is_a_new_failure_and_one_more_email() -> None:
     first, second = m.mailer.sent
     assert first.idempotency_key != second.idempotency_key
     # its own 72 h, from the new failure
-    assert "29/11/2026 a las 15:00" in second.text
+    assert "domingo 29 de noviembre, 3 p. m." in second.text
 
 
 def test_a_retry_before_the_email_left_closes_it_unsent() -> None:
@@ -291,7 +292,7 @@ def test_an_uncertain_send_is_retried_verbatim_with_the_same_key() -> None:
     later = T0 + cm.LEASE + timedelta(seconds=1)
     assert m.send(now=later) == 1
     assert m.mailer.sent[0] == OutgoingMail(**frozen["mail"])
-    assert m.verified == [AUTH_USER]  # verified once, before the first attempt
+    assert m.verified == [AUTH_USER, AUTH_USER]  # checked again before the retry
 
 
 def test_an_uncertain_send_stops_before_resend_forgets_its_key() -> None:
@@ -372,16 +373,29 @@ def test_every_log_call_of_the_outbox_passes_ids_and_codes_only() -> None:
     import ast
     import inspect
 
-    allowed = {"tenant_id", "mail.id", "mail.clip_id", "reason", "exc", "type(exc).__name__"}
-    calls = [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(cm)))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "logger"
-    ]
-    assert len(calls) >= 8
+    allowed = {
+        "tenant_id",
+        "mail.tenant_id",
+        "mail.id",
+        "mail.clip_id",
+        "reason",
+        "type(exc).__name__",
+    }
+
+    def is_logger(func: ast.expr) -> bool:
+        if isinstance(func, ast.IfExp):  # `(logger.error if … else logger.info)(…)`
+            return is_logger(func.body) and is_logger(func.orelse)
+        return (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "logger"
+            and func.attr != "exception"  # never: it would print the exception's text
+        )
+
+    tree = ast.parse(inspect.getsource(cm))
+    assert "logger.exception" not in inspect.getsource(cm)
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and is_logger(n.func)]
+    assert len(calls) >= 7  # every log call of the module is checked
     for call in calls:
         assert isinstance(call.args[0], ast.Constant)  # a fixed message, never data
         for arg in call.args[1:]:
@@ -406,7 +420,7 @@ def test_the_mail_escapes_the_business_and_has_a_plain_text_twin() -> None:
     assert "Pan &amp; &lt;Queso&gt;" in mail.html and "<Queso>" not in mail.html
     assert mail.subject == "Pan & <Queso>: uno de tus avatares no se pudo crear"
     assert f"{BASE}/drafts/{UUID(int=7)}" in mail.text
-    assert "26/11/2026 a las 12:00" in mail.text  # Montevideo, UTC-3
+    assert "jueves 26 de noviembre, 12 p. m." in mail.text  # Montevideo, UTC-3
     assert template.TEMPLATE_VERSION == "clip-avatar-failed-v1"
 
 
@@ -432,3 +446,131 @@ def test_the_worker_mail_pass_runs_both_chores_even_when_one_raises() -> None:
         return 2
 
     assert _chain(broken, avatar)() == 2 and ran == ["morning", "avatar"]
+
+
+# ---------------------------------------------------------------------------
+# review fixes (2026-11-26)
+
+
+def test_a_database_error_carrying_client_data_never_reaches_the_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """SQLAlchemy puts its `[parameters: …]` — here the frozen mail — in the exception's
+    text: the pass logs the ids and the error type only."""
+    caplog.set_level(logging.DEBUG)
+    m = Mailing()
+    m.fail_and_see()
+
+    class Leaky(RuntimeError):
+        pass
+
+    def freeze(mail: cm.PendingMail, payload: Any, *, now: datetime) -> bool:
+        raise Leaky(f"[parameters: {payload!r}] {EMAIL} {BUSINESS} {SCRIPT}")
+
+    m.outbox.freeze = freeze  # type: ignore[method-assign]
+    chore = cm.failure_mail_chore(
+        [TENANT_ID], outbox=m.outbox, mailer=lambda: m.mailer, verify=m.verify,
+        clock=lambda: T0,
+    )  # fmt: skip
+    assert chore() == 0 and m.mailer.sent == []
+    assert any("error_type=Leaky" in r.getMessage() for r in caplog.records)
+    for record in caplog.records:
+        assert record.exc_info is None
+        text = record.getMessage().casefold()
+        for secret in (EMAIL, BUSINESS, SCRIPT, "parameters"):
+            assert secret.casefold() not in text, record.getMessage()
+
+
+def test_a_frozen_mail_is_not_resent_once_the_owner_retried_or_removed_it() -> None:
+    m = Mailing()
+    m.fail_and_see()
+    m.mailer.fail_with = MailError("timeout")
+    m.send()  # frozen, uncertain
+    m.mailer.fail_with = None
+    m.retry()
+    assert m.send(now=T0 + cm.LEASE) == 0 and m.reasons() == ["resolved"]
+    removed = Mailing()
+    removed.fail_and_see()
+    removed.mailer.fail_with = MailError("timeout")
+    removed.send()
+    removed.mailer.fail_with = None
+    removed.world.remove(removed.made)
+    assert removed.send(now=T0 + cm.LEASE) == 0 and removed.reasons() == ["resolved"]
+    assert m.mailer.sent == [] and removed.mailer.sent == []
+
+
+def test_a_frozen_mail_is_not_resent_to_someone_who_left_or_changed_address() -> None:
+    m = Mailing()
+    m.fail_and_see()
+    m.mailer.fail_with = MailError("timeout")
+    m.send()
+    m.mailer.fail_with = None
+    m.outbox.recipients.clear()  # no longer a member
+    assert m.send(now=T0 + cm.LEASE) == 0 and m.reasons() == ["no_recipient"]
+    moved = Mailing()
+    moved.fail_and_see()
+    moved.mailer.fail_with = MailError("timeout")
+    moved.send()
+    moved.mailer.fail_with = None
+    moved.outbox.recipients[(TENANT_ID, UUID(int=0))] = cm.Recipient("otra@example.org", AUTH_USER)
+    assert moved.send(now=T0 + cm.LEASE) == 0 and moved.reasons() == ["no_recipient"]
+
+
+def test_the_time_is_read_again_before_each_claim() -> None:
+    m = Mailing()
+    m.fail_and_see()
+    m.mailer.fail_with = MailError("timeout")
+    m.send()  # frozen at T0
+    m.mailer.fail_with = None
+    times = iter([T0 + cm.RETRY_WINDOW, T0 + cm.RETRY_WINDOW, T0 + cm.RETRY_WINDOW])
+    sent = cm.send_pending(
+        m.outbox, TENANT_ID, mailer=m.mailer, base_url=BASE, verify=m.verify,
+        clock=lambda: next(times),
+    )  # fmt: skip
+    assert sent == 0 and m.reasons() == ["uncertain"]
+    with pytest.raises(ValueError):
+        cm.send_pending(m.outbox, TENANT_ID, mailer=m.mailer, base_url=BASE, verify=m.verify)
+
+
+def test_an_invalid_business_timezone_falls_back_to_utc() -> None:
+    for zone in ("Mars/Olympus", "", "../etc"):
+        mail = template.failure_mail(
+            to=EMAIL, business=BUSINESS, clip_id=UUID(int=7), wait_until=T0, timezone=zone,
+            base_url=BASE, idempotency_key="k",
+        )  # fmt: skip
+        assert "jueves 26 de noviembre, 3 p. m." in mail.text
+
+
+def test_the_deadline_reads_in_spanish_from_a_table() -> None:
+    utc = template.business_zone("UTC")
+    at = datetime(2026, 11, 12, 18, 30, tzinfo=utc)
+    assert template.spanish_deadline(at, utc) == "jueves 12 de noviembre, 6:30 p. m."
+    assert template.spanish_deadline(at.replace(minute=0), utc) == "jueves 12 de noviembre, 6 p. m."
+    assert template.spanish_deadline(at.replace(hour=0, minute=5), utc).endswith("12:05 a. m.")
+    assert template.spanish_deadline(at.replace(hour=12, minute=0), utc).endswith("12 p. m.")
+    sunday = datetime(2026, 3, 1, 9, 0, tzinfo=utc)
+    assert template.spanish_deadline(sunday, utc) == "domingo 1 de marzo, 9 a. m."
+
+
+def test_the_preview_line_and_the_body_say_what_ux_reviewed() -> None:
+    m = Mailing()
+    m.fail_and_see()
+    m.send()
+    (mail,) = m.mailer.sent
+    deadline = "domingo 29 de noviembre, 10 a. m."
+    preview = mail.html.split('overflow:hidden">', 1)[1].split("</div>", 1)[0]
+    assert preview == f"Elige antes del {deadline} o tu video se descarta."
+    assert template.WAIT.format(business=BUSINESS, deadline=deadline) in mail.text
+    assert template.BUTTON == "Revisar mi video" and "Revisar mi video" in mail.html
+    assert template.FOOTER.format(business=BUSINESS) in mail.text
+
+
+def test_removing_the_avatar_leaves_the_video_to_approve_never_published() -> None:
+    """The email promises «armamos tu video sin él y tú lo apruebas antes de publicar»."""
+    from qualify_api.creative.fsm import GENERATED
+
+    m = Mailing()
+    m.fail_and_see()
+    m.world.remove(m.made)
+    m.world.run(m.made.clip_id)
+    assert m.world.repo.drafts[m.made.clip_id].status == GENERATED  # «Por aprobar»

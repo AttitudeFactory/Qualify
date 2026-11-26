@@ -308,8 +308,9 @@ def _chain(*chores: Callable[[], int]) -> Callable[[], int]:
         for chore in chores:
             try:
                 count += chore()
-            except Exception:
-                logger.exception("creative.worker.mail_chore_failed")
+            except Exception as exc:
+                # the type only: a mail error's text may carry an address or a body
+                logger.error("creative.worker.mail_chore_failed error_type=%s", type(exc).__name__)
         return count
 
     return run

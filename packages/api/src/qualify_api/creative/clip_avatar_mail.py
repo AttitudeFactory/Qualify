@@ -20,7 +20,7 @@ of risking a double (Resend keeps keys 24 h).
 `failed_at`; when the new attempt fails, the next pass stamps a new `failed_at` — a new
 identity, one more email, once. A row not sent yet when the owner retried or removed the
 avatar (or the Clip moved on: made, failed at 72 h) is closed `resolved`, never sent: the
-sender re-reads the Clip before its first attempt.
+sender re-reads the Clip and the recipient before every attempt, a frozen retry included.
 
 **Switches.** Nothing is staged for a kind whose switch (`QUALIFY_CLIP_AVATAR_PRESENTER`
 / `QUALIFY_CLIP_AVATAR_ANIMATED`) is off, nor for a `switched_off` «failure»; the sender
@@ -204,67 +204,58 @@ def send_pending(
     outbox: AvatarFailureOutbox,
     tenant_id: UUID,
     *,
-    now: datetime,
     mailer: Mailer,
     base_url: str | None,
     verify: Verifier,
+    now: datetime | None = None,
+    clock: Callable[[], datetime] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> int:
-    """Send this business's staged failure emails; how many were sent. Without a
-    `base_url` (mail links not configured) only already-frozen emails go out."""
+    """Send this business's staged failure emails; how many were sent. The time is read
+    again before each claim (`clock`, or the fixed `now`). Without a `base_url` (mail
+    links not configured) only already-frozen emails go out. Every attempt — the first
+    and each retry of a frozen mail — checks first that the avatar still waits for the
+    owner (`_due`) and that the recipient is still a confirmed member; otherwise the row
+    is closed unsent."""
+    if clock is None:
+        if now is None:
+            raise ValueError("send_pending needs `now` or `clock`")
+        fixed = now
+
+        def clock() -> datetime:
+            return fixed
+
     sent = 0
     while True:
-        mail = outbox.claim(tenant_id, now=now, include_new=base_url is not None)
+        moment = clock()
+        mail = outbox.claim(tenant_id, now=moment, include_new=base_url is not None)
         if mail is None:
             return sent
-        if mail.first_attempt_at is not None:
-            if now - mail.first_attempt_at >= RETRY_WINDOW:
-                outbox.close(mail, "uncertain", now=now)
-                logger.error(
-                    "clip_avatar.failure_mail uncertain tenant=%s mail=%s", tenant_id, mail.id
-                )
-                continue
+        frozen = mail.first_attempt_at is not None
+        if frozen and moment - mail.first_attempt_at >= RETRY_WINDOW:  # type: ignore[operator]
+            _close(outbox, mail, "uncertain", moment, error=True)
+            continue
+        clip = outbox.clip_view(tenant_id, mail.clip_id)
+        reason, wait_until = _due(mail, clip, env)
+        if reason is not None:
+            _close(outbox, mail, reason, moment)
+            continue
+        confirmed = _confirmed(outbox, mail, verify)
+        if confirmed is _DEFER:
+            continue  # the lease lapses and a later pass tries again
+        if frozen:
             assert mail.payload is not None
             outgoing = OutgoingMail(**mail.payload["mail"])
+            if not confirmed or outgoing.to.casefold() != str(confirmed).casefold():
+                _close(outbox, mail, "no_recipient", moment)
+                continue
         else:
-            assert base_url is not None
-            clip = outbox.clip_view(tenant_id, mail.clip_id)
-            reason, wait_until = _due(mail, clip, env)
-            if reason is not None:
-                outbox.close(mail, reason, now=now)
-                logger.info(
-                    "clip_avatar.failure_mail closed tenant=%s mail=%s reason=%s",
-                    tenant_id,
-                    mail.id,
-                    reason,
-                )
-                continue
-            recipient = outbox.recipient(tenant_id, mail.user_id)
-            confirmed: str | None = None
-            if recipient is not None:
-                try:
-                    confirmed = verify(recipient.auth_user_id, recipient.email)
-                except Exception as exc:
-                    # transient: the lease lapses and a later pass tries again
-                    logger.warning(
-                        "clip_avatar.failure_mail recipient unverified tenant=%s mail=%s "
-                        "error_type=%s",
-                        tenant_id,
-                        mail.id,
-                        type(exc).__name__,
-                    )
-                    continue
             if not confirmed:
-                outbox.close(mail, "no_recipient", now=now)
-                logger.info(
-                    "clip_avatar.failure_mail closed tenant=%s mail=%s reason=no_recipient",
-                    tenant_id,
-                    mail.id,
-                )
+                _close(outbox, mail, "no_recipient", moment)
                 continue
-            assert clip is not None and wait_until is not None
+            assert base_url is not None and clip is not None and wait_until is not None
             outgoing = failure_mail(
-                to=confirmed,
+                to=str(confirmed),
                 business=clip.business,
                 clip_id=mail.clip_id,
                 wait_until=wait_until,
@@ -272,13 +263,12 @@ def send_pending(
                 base_url=base_url,
                 idempotency_key=mail.idempotency_key,
             )
-            if not outbox.freeze(mail, {"mail": asdict(outgoing)}, now=now):
+            if not outbox.freeze(mail, {"mail": asdict(outgoing)}, now=moment):
                 continue
         try:
             provider_id = mailer.send(outgoing)
         except MailRejected:
-            outbox.close(mail, "rejected", now=now)
-            logger.error("clip_avatar.failure_mail rejected tenant=%s mail=%s", tenant_id, mail.id)
+            _close(outbox, mail, "rejected", moment, error=True)
             continue
         except Exception as exc:
             # keep the frozen mail and its key: the next pass resends it verbatim
@@ -289,14 +279,53 @@ def send_pending(
                 type(exc).__name__,
             )
             return sent
-        if outbox.mark_sent(mail, provider_id, now=now):
+        if outbox.mark_sent(mail, provider_id, now=clock()):
             sent += 1
             logger.info(
                 "clip_avatar.failure_mail sent tenant=%s mail=%s clip=%s",
-                tenant_id,
+                mail.tenant_id,
                 mail.id,
                 mail.clip_id,
             )
+
+
+#: `_confirmed` could not tell (the identity provider failed): try again later.
+_DEFER = object()
+
+
+def _confirmed(outbox: AvatarFailureOutbox, mail: PendingMail, verify: Verifier) -> object:
+    """The recipient's confirmed address, None when there is none, `_DEFER` on a
+    transient failure of the check (logged with ids and the error type only)."""
+    recipient = outbox.recipient(mail.tenant_id, mail.user_id)
+    if recipient is None:
+        return None
+    try:
+        return verify(recipient.auth_user_id, recipient.email)
+    except Exception as exc:
+        logger.warning(
+            "clip_avatar.failure_mail recipient unverified tenant=%s mail=%s error_type=%s",
+            mail.tenant_id,
+            mail.id,
+            type(exc).__name__,
+        )
+        return _DEFER
+
+
+def _close(
+    outbox: AvatarFailureOutbox,
+    mail: PendingMail,
+    reason: str,
+    now: datetime,
+    *,
+    error: bool = False,
+) -> None:
+    outbox.close(mail, reason, now=now)
+    (logger.error if error else logger.info)(
+        "clip_avatar.failure_mail closed tenant=%s mail=%s reason=%s",
+        mail.tenant_id,
+        mail.id,
+        reason,
+    )
 
 
 def failure_mail_chore(
@@ -318,11 +347,15 @@ def failure_mail_chore(
             # both switches off (every environment today): no email, not even a read
             return 0
         box = outbox or PostgresAvatarFailureOutbox()
-        now = (clock or (lambda: datetime.now(UTC)))()
+        tick = clock or (lambda: datetime.now(UTC))
+        # Never log the traceback nor the exception text here: a database error carries
+        # its SQL parameters (the frozen mail: address, business, body). Ids and the type.
         try:
             ids = list(tenant_ids) if tenant_ids is not None else box.pending_tenants()
-        except Exception:
-            logger.exception("clip_avatar.failure_mail discovery failed")
+        except Exception as exc:
+            logger.error(
+                "clip_avatar.failure_mail discovery failed error_type=%s", type(exc).__name__
+            )
             return 0
         if not ids:
             return 0
@@ -330,7 +363,9 @@ def failure_mail_chore(
         try:
             base_url = public_app_url()
         except MailNotConfigured as exc:
-            logger.warning("clip_avatar.failure_mail new mails not built — %s", exc)
+            logger.warning(
+                "clip_avatar.failure_mail new mails not built error_type=%s", type(exc).__name__
+            )
             base_url = None
         if verify is None:
             from qualify_api.auth.confirmed_email import confirmed_email  # noqa: PLC0415
@@ -344,13 +379,17 @@ def failure_mail_chore(
                 count += send_pending(
                     box,
                     tenant_id,
-                    now=now,
+                    clock=tick,
                     mailer=(mailer or default_mailer)(),
                     base_url=base_url,
                     verify=check,
                 )
-            except Exception:
-                logger.exception("clip_avatar.failure_mail pass failed tenant=%s", tenant_id)
+            except Exception as exc:
+                logger.error(
+                    "clip_avatar.failure_mail pass failed tenant=%s error_type=%s",
+                    tenant_id,
+                    type(exc).__name__,
+                )
         return count
 
     return run
