@@ -1050,6 +1050,8 @@ def is_view_only_upload(kind: str | None, reuse_type: str | None) -> bool:
 _UNLISTED_KIND_LABELS: dict[str, str] = {
     "shot_video": "Video por partes",
     "own_media": "Subida por ti",
+    # m-25128784: a character's scene lives under its Clip, never offered on its own
+    "character_scene": "Escena con personaje",
 }
 KIND_LABELS: dict[str, str] = {
     **{key: title for key, title, _, _ in KIND_OPTIONS},
