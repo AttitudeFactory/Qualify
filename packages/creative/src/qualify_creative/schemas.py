@@ -82,6 +82,13 @@ MAX_PRODUCT_IMAGES = 10
 #: Brand Kit elements (not the logo) one piece may draw on (§ request 2026-10-06).
 MAX_BRAND_ELEMENTS = 6
 AVATAR_PROMPT_MAX = 600
+#: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
+#: «Hombre» are a described synthetic person, with this description — what «Crear pieza»
+#: and «Publicación del mes» (m-25121346) send as `avatar_prompt`.
+PRESENTER_DESCRIPTIONS: dict[str, str] = {
+    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
+    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
+}
 #: The scene an advertising image asks the image model for ("a hand holding the glass,
 #: the bar blurred behind").
 SCENE_PROMPT_MAX = 600
