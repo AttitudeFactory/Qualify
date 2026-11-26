@@ -344,7 +344,7 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
     source = inspect.getsource(discover_reels)
     assert "scroll_snap" not in source and "_NO_SCROLLBAR" not in source
     reset = inspect.getsource(discover_reels._reset_button)
-    assert "DiscoverReelsState.filters_on" in reset  # without a filter it is not drawn
+    assert "S.filters_on" in reset  # without a filter it is not drawn
     # never wider than the panel: every chip may sit below its content and ellipsize
     button = inspect.getsource(discover_reels._filter_button)
     assert 'max_width="100%"' in button and 'min_width="0"' in button

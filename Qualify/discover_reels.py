@@ -1587,9 +1587,14 @@ def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
 def _reset_button(*, chip: bool = False) -> rx.Component:
     """«Restablecer filtros»: shown while some filter narrows the lists — a `ghost`
     button of the skin; last on a desktop, FIRST in the phone's centred lines (Deivid,
-    2026-11-26). `chip`: it never shrinks nor wraps its words there."""
+    2026-11-26). `chip`: it never shrinks nor wraps its words there — and it is not drawn
+    for a brand with no competitor to show (option A, Deivid 2026-11-26): with no
+    «Competidores» beside it, it would sit alone on its line. Resetting stays one tap away
+    in each sheet's foot and in «No hay reels con estos filtros»."""
+    S = DiscoverReelsState
+    shown = S.filters_on & (S.competitor_rows.length() > 0) if chip else S.filters_on
     return rx.cond(
-        DiscoverReelsState.filters_on,
+        shown,
         rx.button(
             rx.icon("rotate-ccw", size=T.ICON_SM, aria_hidden="true"),
             reels_filters_vm.RESET_SHORT if chip else reels_filters_vm.RESET_LABEL,

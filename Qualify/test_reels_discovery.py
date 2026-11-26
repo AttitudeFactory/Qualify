@@ -1437,6 +1437,13 @@ def test_with_a_filter_on_the_phone_chips_move_in_pairs() -> None:
     )
     assert '"flex",' in pair and '"contents",' in pair
     assert 'wrap="nowrap"' in pair and "shrink=True" in pair
+    # option A (Deivid 2026-11-26): no competitor to show → no «Quitar filtros» on the
+    # phone (it would sit alone); the sheet's foot and the empty message still reset; the
+    # desktop button only needs a filter on
+    reset = inspect.getsource(discover_reels._reset_button)
+    assert "S.filters_on & (S.competitor_rows.length() > 0) if chip else S.filters_on" in reset
+    assert "reset_filters" in inspect.getsource(discover_reels._sheet)
+    assert "reset_filters" in inspect.getsource(discover_reels._empty_lists)
     # in a pair only the filtered chip gives way (review nit)
     button = inspect.getsource(discover_reels._filter_button)
     assert 'rx.cond(on, _SHRINK_FIRST, "0") if compact else _SHRINK_FIRST' in button
