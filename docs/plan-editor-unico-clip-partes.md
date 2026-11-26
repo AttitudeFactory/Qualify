@@ -1,5 +1,7 @@
 # Plan — Un solo editor: «Video por partes» dentro de la línea de tiempo del Clip
 
+> **Nota:** este es el texto original del plan del 2026-11-26. Solo se corrigieron después los números de línea de `schemas.py`. Lo que manda es el §13 **firmado** del ADR 50 (`docs/adr-50-video-efectos-por-pasos.md`), que recoge las respuestas de Deivid a las 5 preguntas del final.
+
 `[PROPUESTO]` · principal-architect, 2026-11-26 · leído contra `origin/main` en `f9e784b7` (cabeza de migraciones `0186`) y la rama `docs/m-25128784-adr50-personaje` (§12 del ADR 50, sin firmar).
 
 **Decisión de Deivid (2026-11-26):** «Video por partes» (ADR 44, épica m-24921048) y el editor del Clip «Arma tu video» (ADR 50, épica m-25026566) pasan a ser **un solo editor con línea de tiempo**. Aclaración del mismo día: «que sea una combinación de las dos; ese es el objetivo desde el día cero». **No se pierde nada de ninguno de los dos.** Cada parte hecha con IA es un bloque más de la línea de tiempo del Clip. Va en la misma dirección que la escena del personaje (§12 del ADR 50, m-25128784).
@@ -27,8 +29,8 @@
 
 | Aspecto | Cómo es | Dónde |
 |---|---|---|
-| Contenedor | Un borrador `CLIP` sin padre. Su receta `local` vive en el brief: `media.segments` (hasta 8 bloques de foto o video propio, en orden), `text_layers` (hasta 3), `effects` (hasta 8) y `SourceSegment.transition_in` para cada unión (§10) | `schemas.py:1054`, `:1734`; `SEGMENTS_MAX` `:744`; `TEXT_LAYERS_MAX` `:748` |
-| Largo | De 3 a 60 s (`LOCAL_TOTAL_MIN_S` y `LOCAL_TOTAL_MAX_S`) | `schemas.py:838–839` |
+| Contenedor | Un borrador `CLIP` sin padre. Su receta `local` vive en el brief: `media.segments` (hasta 8 bloques de foto o video propio, en orden), `text_layers` (hasta 3), `effects` (hasta 8) y `SourceSegment.transition_in` para cada unión (§10) | `schemas.py:1061` (`SourceSegment`), `:1734`; `SEGMENTS_MAX` `:751`; `TEXT_LAYERS_MAX` `:755` |
+| Largo | De 3 a 60 s (`LOCAL_TOTAL_MIN_S` y `LOCAL_TOTAL_MAX_S`) | `schemas.py:845–846` |
 | Armado | Local en el `creative-worker` (`produce_local`): prepara, aplica la velocidad, une los bloques con sus transiciones (`block_join`) y compone las capas y los textos. Cuesta US$0 y lo limita un tope de 10 armados al día | `video_pipeline/local.py:887`; `block_join.py:137`; `local_cap.py` |
 | Hijos con IA | El bloque de avatar (§9 y §11) es un borrador hijo del Clip (`clip_avatar_block`, `part_index` como lugar, sin `media.part`). El Clip y sus hijos se crean juntos (`create_clip_with_blocks`); el Clip espera en `drafting` (`ClipBlocksWait`) y el armado mete cada hijo como `SourceSegment` de video a ×1 | `clip_avatar.py:1109`, `:1358`, `:1917`, `:2697`; `service.py:917` (`check_part_link`) |
 | Cobro | El armado local va en cero. Los segundos de los hijos se cobran **al aprobar el Clip**, en la fila de cada hijo (`clip_block_charges`) | `clip_avatar.py:2867`; `service.py:~4815–4840` |
