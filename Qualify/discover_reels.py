@@ -1665,7 +1665,8 @@ def _chip_group(*children: rx.Component) -> rx.Component:
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
     «Cuenta», «Duración» and «Quitar filtros». On a wide bar, chips that open a
-    dropdown; on a phone, chips that open a sheet from the bottom. Every change is one
+    dropdown; on a narrow bar (under 700 px), «Filtros» + «Competidores», «Filtros»
+    opening one sheet from the bottom with every axis. Every change is one
     more read of what is stored — never a paid call.
 
     RF-13: only the system's pieces (Radix buttons, popovers, `drawer`) on a soft panel
