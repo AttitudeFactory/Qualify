@@ -236,7 +236,10 @@ def test_switched_off_every_public_method_refuses_before_reading() -> None:
         with pytest.raises(bc.CharacterRefused) as refused:
             call()
         assert refused.value.code == bc.SWITCHED_OFF
-        assert refused.value.text == "Los personajes todavía no están disponibles."
+        assert refused.value.text == (
+            "Los personajes todavía no están listos en tu cuenta. "
+            "Mientras tanto, puedes crear tus videos sin ellos."
+        )
     assert repo.rows == {}
 
 
@@ -294,7 +297,11 @@ def test_the_same_request_key_returns_the_same_round() -> None:
     ("description", "code", "text"),
     [
         ("corta", bc.DESCRIPTION_SHORT, "Cuéntanos un poco más cómo es tu personaje."),
-        ("x" * 301, bc.DESCRIPTION_LONG, "La descripción es muy larga. Usa menos de 300 letras."),
+        (
+            "x" * 301,
+            bc.DESCRIPTION_LONG,
+            "Tu descripción es muy larga. Déjala en 300 letras o menos.",
+        ),
     ],
 )
 def test_the_description_is_checked(description: str, code: str, text: str) -> None:
@@ -323,7 +330,7 @@ def test_one_open_round_at_a_time() -> None:
         _round(service, "b")
     assert refused.value.code == bc.ROUND_OPEN
     assert refused.value.text == (
-        "Elige una de las opciones que ya dibujamos, o descártalas, antes de pedir otras."
+        "Ya te dibujamos 3 opciones. Elige una, o descártalas para pedir otras nuevas."
     )
 
 
@@ -337,7 +344,7 @@ def test_two_rounds_a_day_and_the_third_is_refused() -> None:
         _round(service, "c")
     assert refused.value.code == bc.DAILY_CAP
     assert refused.value.text == (
-        "Hoy ya pediste 2 dibujos de personajes. Mañana puedes pedir más."
+        "Hoy ya pediste dibujos 2 veces, que es lo máximo por día. Mañana puedes pedir otra vez."
     )
 
 
@@ -476,13 +483,14 @@ def test_deleting_marks_the_row_and_deletes_the_image() -> None:
 def test_a_character_in_a_video_not_approved_yet_cannot_be_deleted() -> None:
     executor, service, repo, _ledger, objects, _ = _executor()
     (character,) = _saved(executor, service, 1)
-    service._usage.in_use.add(character.id)  # type: ignore[attr-defined]
+    video = uuid4()
+    service._usage.in_use[character.id] = video  # type: ignore[attr-defined]
     objects.deleted.clear()
     with pytest.raises(bc.CharacterRefused) as refused:
         service.delete_character(TENANT, BRAND, character.id)
-    assert refused.value.code == bc.IN_USE
+    assert refused.value.code == bc.IN_USE and refused.value.draft_id == video
     assert refused.value.text == (
-        "Este personaje está en un video que aún no apruebas. "
+        "Este personaje está en un video que todavía no apruebas. "
         "Quítalo de ese video para poder borrarlo."
     )
     assert repo.rows[character.id].status == bc.STATUS_SAVED and objects.deleted == []
@@ -549,9 +557,7 @@ def test_the_price_guard_refuses_over_the_hard_cap_before_any_call() -> None:
         executor.submit(_job(option.id))
     assert adapter.calls == [] and ledger.events == {}
     assert repo.rows[option.id].fail_reason == bc.REASON_BUDGET_CAP
-    assert repo.rows[option.id].failure_text == (
-        "Ahora no pudimos dibujarlo. No se te cobró. Escríbenos y lo revisamos contigo."
-    )
+    assert repo.rows[option.id].failure_text == ("Ahora no pudimos dibujarlo. Inténtalo más tarde.")
 
 
 def test_a_soft_cap_never_refuses() -> None:
@@ -676,3 +682,137 @@ def test_the_worker_routes_the_kind_on_the_seedream_pool() -> None:
     source = inspect.getsource(worker_main.production_executors)
     assert "q.KIND_BUSINESS_CHARACTER: production_business_character_executor" in source
     assert q.KIND_BUSINESS_CHARACTER == "business_character"
+
+
+# --- review of m-25129385 ----------------------------------------------------------------
+
+
+def test_a_round_whose_three_options_dropped_the_connection_counts_for_the_day() -> None:
+    executor, service, repo, ledger, *_ = _executor(
+        adapter=FakeSeedream(error=SeedreamDisconnected("ReadTimeout"))
+    )
+    round_ = _round(service)
+    for option in round_.options:
+        with pytest.raises(SeedreamDisconnected):
+            executor.submit(_job(option.id))
+    assert all(repo.rows[o.id].cost_usd == Decimal("0.045") for o in round_.options)
+    assert ledger.spent == Decimal("0.135")
+    assert repo.rounds_today(tenant_id=TENANT, brand_id=BRAND) == 1
+    failed = service.drawing_round(TENANT, BRAND, round_.round_id)
+    assert failed.status == bc.ROUND_FAILED and failed.counts_for_the_day
+    assert failed.failure_text == (
+        "Ningún dibujo salió. Puedes volver a pedirlos. "
+        "Esta vez cuenta como uno de tus 2 pedidos del día."
+    )
+    assert service.list_characters(TENANT, BRAND).rounds_left_today == 1
+
+
+def test_a_dead_claim_s_quote_is_noted_on_the_row_too() -> None:
+    executor, service, repo, ledger, *_ = _executor()
+    option = _round(service).options[0]
+    repo.start_request(tenant_id=TENANT, character_id=option.id, at=NOW)
+    with pytest.raises(SubmissionAborted):
+        executor.submit(_job(option.id))
+    assert repo.rows[option.id].cost_usd == Decimal("0.045")
+    assert repo.rounds_today(tenant_id=TENANT, brand_id=BRAND) == 1
+
+
+def test_a_round_that_paid_nothing_says_so_without_counting() -> None:
+    executor, service, *_ = _executor(adapter=FakeSeedream(error=RuntimeError("x")))
+    round_ = _round(service)
+    for option in round_.options:
+        with pytest.raises(RuntimeError):
+            executor.submit(_job(option.id))
+    failed = service.drawing_round(TENANT, BRAND, round_.round_id)
+    assert not failed.counts_for_the_day
+    assert failed.failure_text == "Ningún dibujo salió. Puedes volver a pedirlos."
+
+
+def test_a_half_failed_round_keeps_the_drawings_that_came_out_eligible() -> None:
+    executor, service, repo, *_ = _executor()
+    round_ = _round(service)
+    first, second, third = round_.options
+    executor.submit(_job(first.id))
+    executor._adapter = FakeSeedream(error=RuntimeError("x"))  # type: ignore[attr-defined]
+    for option in (second, third):
+        with pytest.raises(RuntimeError):
+            executor.submit(_job(option.id))
+    half = service.drawing_round(TENANT, BRAND, round_.round_id)
+    assert half.status == bc.ROUND_READY and half.failure_text == ""
+    assert repo.rows[second.id].failure_text == (
+        "Este dibujo no salió. Elige uno de los otros, o pide dibujos nuevos."
+    )
+    saved = service.choose_option(TENANT, BRAND, round_.round_id, first.id, name="Nina")
+    assert saved.status == bc.STATUS_SAVED
+
+
+def test_an_option_drawn_after_the_owner_chose_another_leaves_no_image_behind() -> None:
+    executor, service, repo, _ledger, objects, _ = _executor()
+    round_ = _round(service)
+    first, second, third = round_.options
+    executor.submit(_job(first.id))
+    service.choose_option(TENANT, BRAND, round_.round_id, first.id, name="Nina")
+    assert {repo.rows[second.id].status, repo.rows[third.id].status} == {bc.STATUS_DISCARDED}
+    # second's job was already claimed and posting: it pays, writes, then finds it discarded
+    executor._reads = Reads(repo)  # type: ignore[attr-defined]
+    repo.rows[second.id] = replace(repo.rows[second.id], status=bc.STATUS_PENDING)
+    original_mark = service.mark_ready
+
+    def discard_then_mark(**kw: Any) -> Any:
+        repo.rows[second.id] = replace(repo.rows[second.id], status=bc.STATUS_DISCARDED)
+        return original_mark(**kw)
+
+    service.mark_ready = discard_then_mark  # type: ignore[method-assign]
+    executor.submit(_job(second.id))
+    key = f"seasonal/{TENANT}/{BRAND}/personajes-negocio/{second.id}.jpg"
+    assert key in objects.deleted
+    with pytest.raises(Exception):  # noqa: B017 — gone from the store
+        objects.store.open(key)
+    assert repo.rows[second.id].status == bc.STATUS_DISCARDED
+
+
+def test_an_option_discarded_with_its_round_leaves_no_image_behind() -> None:
+    executor, service, repo, _ledger, objects, _ = _executor()
+    round_ = _round(service)
+    option = round_.options[0]
+    original_mark = service.mark_ready
+
+    def discard_round_then_mark(**kw: Any) -> Any:
+        service.discard_round(TENANT, BRAND, round_.round_id)
+        return original_mark(**kw)
+
+    service.mark_ready = discard_round_then_mark  # type: ignore[method-assign]
+    executor.submit(_job(option.id))
+    key = f"seasonal/{TENANT}/{BRAND}/personajes-negocio/{option.id}.jpg"
+    assert repo.rows[option.id].status == bc.STATUS_DISCARDED and key in objects.deleted
+
+
+def test_a_refused_stamp_on_an_option_no_longer_pending_books_nothing() -> None:
+    executor, service, repo, ledger, _o, adapter = _executor()
+    option = _round(service).options[0]
+
+    class DiscardingRequests:
+        def start_request(self, *, tenant_id: UUID, character_id: UUID, at: datetime) -> bool:
+            repo.rows[character_id] = replace(repo.rows[character_id], status=bc.STATUS_DISCARDED)
+            return False
+
+        def clear_request(self, **_kw: Any) -> None:
+            return None
+
+    executor._requests = DiscardingRequests()  # type: ignore[attr-defined]
+    with pytest.raises(SubmissionAborted):
+        executor.submit(_job(option.id))
+    assert adapter.calls == [] and ledger.events == {}
+    assert repo.rows[option.id].cost_usd == 0
+
+
+def test_a_description_of_exactly_300_letters_is_accepted() -> None:
+    service, *_ = _service()
+    round_ = service.request_drawings(
+        TENANT, BRAND, USER, description="a" * 300, style="realista", request_key="k300"
+    )
+    assert len(round_.description) == 300
+
+
+def test_videos_failed_or_rejected_still_hold_their_characters() -> None:
+    assert set(bc.UNAPPROVED_DRAFT_STATUSES) == {"drafting", "generated", "failed", "rejected"}

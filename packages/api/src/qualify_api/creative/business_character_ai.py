@@ -7,11 +7,16 @@ the switch off (`business_characters.characters_unavailable_reason`) the option 
 (`switched_off`) before any spend. Price guard: the option's quote from the versioned table
 (`v10`, one 1080x1920 image, US$0.045) against the brand's remaining monthly dollar cap —
 only a configured cap with `hard_stop_on_cap` refuses: the option fails (`budget_cap`),
-`PriceGuardRefused` is raised and nothing reaches BytePlus. Drawing charges no creaciones
-(Deivid, P2). BEFORE the POST `start_request` stamps the row once: a later claim that finds
-it stamped never posts again — if the image already reached R2 it finishes, else it books
-the quote as spent and fails the option (`uncertain`). A 429 clears the stamp and is
-re-raised (the runner defers). A dropped connection or a 5xx books the quote. Moderation
+`PriceGuardRefused` is raised and nothing reaches BytePlus. Accepted overshoot: the 3
+options of a round are checked in parallel against the same remaining dollars, so a round
+can pass the cap by up to two options (US$0.09) — the same pattern as the sticker
+characters (review of m-25129385). Drawing charges no creaciones (Deivid, P2). BEFORE the
+POST `start_request` stamps the row once: a later claim that finds it stamped never posts
+again — an option no longer pending is left alone (nothing booked); if the image already
+reached R2 it finishes; else it books the quote as spent and fails the option
+(`uncertain`). A 429 clears the stamp and is re-raised (the runner defers). A dropped
+connection or a 5xx books the quote. Every booked quote is also noted on the row
+(`cost_usd`), so a round whose options all failed that way counts for the day. Moderation
 fails the option as `moderated` (not billed). On success: the REAL cost
 (`usage.generated_images` x the table's 1K price) is booked once in `creative_usage_events`
 + the brand's monthly spend, noted on the row, and the image is written to R2 EXACTLY as
@@ -19,7 +24,8 @@ received (`seasonal/{tenant}/{brand}/personajes-negocio/{id}.jpg`, 3 attempts) �
 2.x takes a face only from its own account's Seedream output, unmodified. An R2 write that
 keeps failing after the paid call fails the option (`lost_result`; the cost stays booked);
 nothing the business already saved is touched. Then the option is `ready`, with its size,
-sha256, model revision and `drawn_at`.
+sha256, model revision and `drawn_at` — unless the owner chose another option or discarded
+the round meanwhile: then the image just written is deleted (never an orphan in R2).
 
 **poll** — the task ended with the POST: `succeeded` at once. **finish** — idempotent: a
 `pending` option whose image is in R2 (a claim that died after the write) is marked ready;
@@ -53,6 +59,8 @@ from qualify_api.creative.business_characters import (
     REASON_UNCERTAIN,
     REASON_VENDOR_FAILED,
     STATUS_PENDING,
+    STATUS_READY,
+    STATUS_SAVED,
     BusinessCharacter,
     CharacterChanged,
     characters_unavailable_reason,
@@ -149,6 +157,10 @@ class OptionObjects(Protocol):
     ) -> str: ...
 
     def open_business_character(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> Any: ...
+
+    def delete_business_characters(
+        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
+    ) -> None: ...
 
 
 class UsageLedger(Protocol):
@@ -275,11 +287,16 @@ class BusinessCharacterExecutor:
         if not self._requests.start_request(
             tenant_id=option.tenant_id, character_id=option.id, at=self._clock()
         ):
-            # an earlier claim started the paid POST and died: if its image reached R2 it
-            # was paid and booked — finish marks it ready; else book the quote, never repost
+            # the stamp was refused: either the option is no longer pending (chosen, discarded
+            # or settled meanwhile) — nothing to do, nothing to book — or an earlier claim
+            # started the paid POST and died: if its image reached R2 it was paid and booked
+            # (finish marks it ready); else book the quote, never repost
+            current = self._reads.character(option.tenant_id, option.id)
+            if current is None or current.status != STATUS_PENDING:
+                raise SubmissionAborted(str(option.id))
             if self._stored(option) is not None:
                 return task_id_of(option.id)
-            self._book(option, 0, quote)
+            self._book_quote(option, quote)
             self._fail(option, REASON_UNCERTAIN)
             raise SubmissionAborted(str(option.id))
         key = self._api_key(option.tenant_id, option.brand_id)
@@ -290,7 +307,7 @@ class BusinessCharacterExecutor:
                 self._requests.clear_request(tenant_id=option.tenant_id, character_id=option.id)
                 raise
             if _maybe_billed(exc):
-                self._book(option, 0, quote)
+                self._book_quote(option, quote)
             self._fail(option, REASON_MODERATED if _is_moderated(exc) else REASON_VENDOR_FAILED)
             logger.warning(
                 "business_character_ai.vendor_failed option=%s error=%s",
@@ -417,7 +434,33 @@ class BusinessCharacterExecutor:
                 drawn_at=self._clock(),
             )
         except CharacterChanged:
+            # the owner chose another option or discarded the round while this one was
+            # being drawn: its image would stay in R2 for ever — delete it (best effort)
+            current = self._reads.character(option.tenant_id, option.id)
             logger.info("business_character_ai.settled_meanwhile option=%s", option.id)
+            if current is None or current.status not in (STATUS_READY, STATUS_SAVED):
+                try:
+                    self._objects.delete_business_characters(
+                        option.tenant_id, option.brand_id, [object_key]
+                    )
+                except Exception as exc:  # noqa: BLE001 — the row is already settled
+                    logger.warning(
+                        "business_character_ai.orphan_not_deleted option=%s error=%s",
+                        option.id,
+                        type(exc).__name__,
+                    )
+
+    def _book_quote(self, option: BusinessCharacter, quote: Decimal) -> None:
+        """A call that MAY have been billed (dropped connection, 5xx, a dead claim): the
+        quote is booked AND noted on the row, so a round whose options all failed this way
+        still counts for the day (`rounds_today` skips only rounds that paid nothing)."""
+        self._book(option, 0, quote)
+        self._marks.note_paid(
+            tenant_id=option.tenant_id,
+            character_id=option.id,
+            cost_usd=quote,
+            vendor_request_id=task_id_of(option.id),
+        )
 
     def _book(self, option: BusinessCharacter, pieces: int, cost: Decimal) -> None:
         self._ledger.record(

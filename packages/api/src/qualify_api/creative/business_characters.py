@@ -74,8 +74,9 @@ REQUEST_KEY_MAX: Final = 200
 #: Where the scene's brief (m-25128784) lists its characters: `media.character_scenes`,
 #: each item with a `character_id`. The `in_use` check reads exactly this path.
 SCENE_MEDIA_KEY: Final = "character_scenes"
-#: Draft statuses of a video «not approved yet».
-UNAPPROVED_DRAFT_STATUSES: Final = ("drafting", "generated")
+#: Draft statuses of a video «not approved yet»: being made, made, and also failed or
+#: rejected — both can be tried again, and that retry needs the character's image.
+UNAPPROVED_DRAFT_STATUSES: Final = ("drafting", "generated", "failed", "rejected")
 
 # --- the drawing (provenance) -------------------------------------------------------------
 
@@ -146,21 +147,29 @@ NOT_READY: Final = "not_ready"
 IN_USE: Final = "in_use"
 
 REFUSAL_TEXT: Final[dict[str, str]] = {
-    SWITCHED_OFF: "Los personajes todavía no están disponibles.",
-    LIMIT_REACHED: f"Ya tienes {MAX_SAVED} personajes guardados. Borra uno para crear otro.",
-    DAILY_CAP: (f"Hoy ya pediste {DAILY_ROUNDS} dibujos de personajes. Mañana puedes pedir más."),
-    ROUND_OPEN: (
-        "Elige una de las opciones que ya dibujamos, o descártalas, antes de pedir otras."
+    SWITCHED_OFF: (
+        "Los personajes todavía no están listos en tu cuenta. "
+        "Mientras tanto, puedes crear tus videos sin ellos."
     ),
-    STYLE_UNKNOWN: "Elige si tu personaje es animado o realista.",
+    LIMIT_REACHED: f"Ya tienes {MAX_SAVED} personajes guardados. Borra uno para crear otro.",
+    # the day is the business's own (`tenants.timezone`): it resets at its midnight
+    DAILY_CAP: (
+        f"Hoy ya pediste dibujos {DAILY_ROUNDS} veces, que es lo máximo por día. "
+        "Mañana puedes pedir otra vez."
+    ),
+    ROUND_OPEN: (
+        f"Ya te dibujamos {OPTIONS_PER_ROUND} opciones. "
+        "Elige una, o descártalas para pedir otras nuevas."
+    ),
+    STYLE_UNKNOWN: "Elige cómo quieres a tu personaje: dibujo animado o realista.",
     DESCRIPTION_SHORT: "Cuéntanos un poco más cómo es tu personaje.",
-    DESCRIPTION_LONG: f"La descripción es muy larga. Usa menos de {DESCRIPTION_MAX} letras.",
+    DESCRIPTION_LONG: (f"Tu descripción es muy larga. Déjala en {DESCRIPTION_MAX} letras o menos."),
     NAME_INVALID: f"Ponle a tu personaje un nombre de hasta {NAME_MAX} letras.",
     NAME_TAKEN: "Ya tienes un personaje con ese nombre. Elige otro.",
-    NOT_FOUND: "Ese personaje ya no existe.",
-    NOT_READY: "Esa opción todavía no está lista. Espera un momento.",
+    NOT_FOUND: "No encontramos ese personaje. Puede que ya lo hayas borrado.",
+    NOT_READY: "Ese dibujo todavía se está haciendo. Espera un momento y elígelo de nuevo.",
     IN_USE: (
-        "Este personaje está en un video que aún no apruebas. "
+        "Este personaje está en un video que todavía no apruebas. "
         "Quítalo de ese video para poder borrarlo."
     ),
 }
@@ -172,32 +181,39 @@ REASON_BUDGET_CAP: Final = "budget_cap"
 REASON_UNCERTAIN: Final = "uncertain"
 REASON_LOST_RESULT: Final = "lost_result"
 REASON_SWITCHED_OFF: Final = "switched_off"
-_NOT_CHARGED: Final = "Este dibujo no salió y no se te cobró. Puedes pedir otro."
+#: One option that did not come out (the round's other options may still be chosen).
+_OPTION_FAILED: Final = "Este dibujo no salió. Elige uno de los otros, o pide dibujos nuevos."
 FAILURE_TEXT: Final[dict[str, str]] = {
-    REASON_VENDOR_FAILED: _NOT_CHARGED,
-    REASON_UNCERTAIN: _NOT_CHARGED,
-    REASON_LOST_RESULT: _NOT_CHARGED,
-    REASON_SWITCHED_OFF: _NOT_CHARGED,
+    REASON_VENDOR_FAILED: _OPTION_FAILED,
+    REASON_UNCERTAIN: _OPTION_FAILED,
+    REASON_LOST_RESULT: _OPTION_FAILED,
+    REASON_SWITCHED_OFF: _OPTION_FAILED,
     REASON_MODERATED: (
         "No pudimos dibujar ese personaje. Cambia un poco la descripción y vuelve a intentarlo."
     ),
-    REASON_BUDGET_CAP: (
-        "Ahora no pudimos dibujarlo. No se te cobró. Escríbenos y lo revisamos contigo."
-    ),
+    REASON_BUDGET_CAP: "Ahora no pudimos dibujarlo. Inténtalo más tarde.",
 }
+#: The whole round failed (`DrawingRound.failure_text`); a round that paid something counts
+#: for the day (`rounds_today`), and then the owner is told.
+ROUND_FAILED_TEXT: Final = "Ningún dibujo salió. Puedes volver a pedirlos."
+ROUND_FAILED_COUNTED_TEXT: Final = (
+    f"Esta vez cuenta como uno de tus {DAILY_ROUNDS} pedidos del día."
+)
 
 
 def failure_text(reason: str | None) -> str:
-    return FAILURE_TEXT.get(reason or "", _NOT_CHARGED)
+    return FAILURE_TEXT.get(reason or "", _OPTION_FAILED)
 
 
 class CharacterRefused(ValueError):
     """A refusal the owner reads: `code` is stable (screens branch on it), `text` is the
     sentence to show."""
 
-    def __init__(self, code: str, text: str | None = None) -> None:
+    def __init__(self, code: str, text: str | None = None, *, draft_id: UUID | None = None) -> None:
         self.code = code
         self.text = text or REFUSAL_TEXT.get(code, REFUSAL_TEXT[NOT_FOUND])
+        #: `in_use`: the video that holds the character (the screen's «Ver ese video»)
+        self.draft_id = draft_id
         super().__init__(self.text)
 
 
@@ -333,6 +349,22 @@ class DrawingRound:
     options: tuple[BusinessCharacter, ...]
     created_at: datetime | None = None
 
+    @property
+    def counts_for_the_day(self) -> bool:
+        """Whether this round takes one of the day's rounds: every round does, except one
+        whose options all failed without paying anything."""
+        return not all(o.status == STATUS_FAILED and o.cost_usd == 0 for o in self.options)
+
+    @property
+    def failure_text(self) -> str:
+        """What the owner reads when NO option came out (empty otherwise). The options that
+        did come out of a half-failed round stay eligible (`status` is then `ready`)."""
+        if self.status != ROUND_FAILED:
+            return ""
+        if self.counts_for_the_day:
+            return f"{ROUND_FAILED_TEXT} {ROUND_FAILED_COUNTED_TEXT}"
+        return ROUND_FAILED_TEXT
+
 
 @dataclass(frozen=True)
 class CharactersView:
@@ -448,8 +480,16 @@ class CharacterRepository(Protocol):
         check: Callable[[ChoiceState], None],
     ) -> tuple[BusinessCharacter, list[BusinessCharacter]]:
         """Under the business's lock: `check` refuses or passes; the option becomes `saved`
-        and its round's other ready/pending options `discarded`. Returns (saved,
+        (only if it is still `ready`, else `CharacterRefused`) and its round's other
+        ready/pending options `discarded` (`discard`'s conditional write). Returns (saved,
         discarded)."""
+        ...
+
+    def discard(
+        self, *, tenant_id: UUID, character_ids: Sequence[UUID], at: datetime
+    ) -> list[BusinessCharacter]:
+        """`discarded` for those still `pending` or `ready` — a conditional write that never
+        touches the cost columns the worker may be writing; returns the rows it changed."""
         ...
 
     def start_request(self, *, tenant_id: UUID, character_id: UUID, at: datetime) -> bool: ...
@@ -458,8 +498,11 @@ class CharacterRepository(Protocol):
 
 
 class CharacterUsage(Protocol):
-    def in_unapproved_video(self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> bool:
-        """Whether a video not approved yet uses this character (`SCENE_MEDIA_KEY`)."""
+    def unapproved_video(
+        self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID
+    ) -> UUID | None:
+        """The draft of a video not approved yet that uses this character
+        (`SCENE_MEDIA_KEY`), or None."""
         ...
 
 
@@ -699,10 +742,12 @@ class BusinessCharacterService:
             return  # idempotent
         if found.status != STATUS_SAVED:
             raise CharacterRefused(NOT_FOUND)
-        if self._usage.in_unapproved_video(
+        video = self._usage.unapproved_video(
             tenant_id=tenant_id, brand_id=brand_id, character_id=character_id
-        ):
-            raise CharacterRefused(IN_USE)
+        )
+        if video is not None:
+            # `draft_id` lets the screen offer «Ver ese video»
+            raise CharacterRefused(IN_USE, draft_id=video)
         try:
             deleted = self._repo.save(
                 replace(found, status=STATUS_DELETED, deleted_at=self._clock()),
@@ -832,19 +877,12 @@ class BusinessCharacterService:
     def _discard(
         self, tenant_id: UUID, brand_id: UUID, options: Sequence[BusinessCharacter]
     ) -> list[BusinessCharacter]:
-        done: list[BusinessCharacter] = []
-        for option in options:
-            if option.status not in (STATUS_READY, STATUS_PENDING):
-                continue
-            try:
-                done.append(
-                    self._repo.save(
-                        replace(option, status=STATUS_DISCARDED, finished_at=self._clock()),
-                        expected_status=option.status,
-                    )
-                )
-            except CharacterChanged:
-                continue
+        ids = [o.id for o in options if o.status in (STATUS_READY, STATUS_PENDING)]
+        if not ids:
+            return []
+        done = self._repo.discard(tenant_id=tenant_id, character_ids=ids, at=self._clock())
+        # a `pending` option has no file yet: its late image is removed by the worker
+        # (`business_character_ai._ready`) when it finds the option discarded
         self._delete_files(tenant_id, brand_id, done)
         return done
 
@@ -999,18 +1037,31 @@ class MemoryCharacterRepository:
         assert option is not None
         if option.status == STATUS_SAVED:
             return option, []
+        current = self.rows.get(option.id)
+        if current is None or current.status != STATUS_READY:
+            raise CharacterRefused(NOT_FOUND)
         saved = self.save(
-            replace(option, status=STATUS_SAVED, name=name, saved_at=now, finished_at=now),
+            replace(current, status=STATUS_SAVED, name=name, saved_at=now, finished_at=now),
             expected_status=STATUS_READY,
         )
-        discarded = [
-            self.save(
-                replace(o, status=STATUS_DISCARDED, finished_at=now), expected_status=o.status
-            )
-            for o in state.round_options
-            if o.id != option.id and o.status in (STATUS_READY, STATUS_PENDING)
-        ]
+        discarded = self.discard(
+            tenant_id=tenant_id,
+            character_ids=[o.id for o in state.round_options if o.id != option.id],
+            at=now,
+        )
         return saved, discarded
+
+    def discard(
+        self, *, tenant_id: UUID, character_ids: Sequence[UUID], at: datetime
+    ) -> list[BusinessCharacter]:
+        done: list[BusinessCharacter] = []
+        for character_id in character_ids:
+            current = self.get(tenant_id=tenant_id, character_id=character_id)
+            if current is None or current.status not in (STATUS_PENDING, STATUS_READY):
+                continue
+            self.rows[character_id] = replace(current, status=STATUS_DISCARDED, finished_at=at)
+            done.append(self.rows[character_id])
+        return done
 
     def start_request(self, *, tenant_id: UUID, character_id: UUID, at: datetime) -> bool:
         found = self.get(tenant_id=tenant_id, character_id=character_id)
@@ -1029,10 +1080,13 @@ class MemoryCharacterRepository:
 
 @dataclass
 class MemoryCharacterUsage:
-    in_use: set[UUID] = field(default_factory=set)
+    #: character → the draft (video not approved yet) that uses it
+    in_use: dict[UUID, UUID] = field(default_factory=dict)
 
-    def in_unapproved_video(self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> bool:
-        return character_id in self.in_use
+    def unapproved_video(
+        self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID
+    ) -> UUID | None:
+        return self.in_use.get(character_id)
 
 
 # ======================================================================================
@@ -1354,21 +1408,52 @@ class PostgresCharacterRepository:
             assert option is not None
             if option.status == STATUS_SAVED:
                 return option, []
-            saved = self._save(
-                session,
-                replace(option, status=STATUS_SAVED, name=name, saved_at=now, finished_at=now),
-                expected_status=STATUS_READY,
+            from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
+            try:
+                with session.begin_nested():
+                    row = session.execute(
+                        text(
+                            f"UPDATE {_TABLE} SET status = 'saved', name = :name, "
+                            "saved_at = :now, finished_at = :now "
+                            f"WHERE id = :id AND status = 'ready' RETURNING {_COLUMNS}"
+                        ),
+                        {"id": option.id, "name": name, "now": now},
+                    ).one_or_none()
+            except IntegrityError as exc:
+                if "uq_business_characters_saved_name" in str(exc.orig):
+                    raise CharacterRefused(NAME_TAKEN) from exc
+                raise
+            if row is None:  # changed meanwhile (discarded by another device)
+                raise CharacterRefused(NOT_FOUND)
+            discarded = self._discard(
+                session, [o.id for o in round_options if o.id != option.id], now
             )
-            discarded = [
-                self._save(
-                    session,
-                    replace(o, status=STATUS_DISCARDED, finished_at=now),
-                    expected_status=o.status,
-                )
-                for o in round_options
-                if o.id != option.id and o.status in (STATUS_READY, STATUS_PENDING)
-            ]
-            return saved, discarded
+            return _from_row(row), discarded
+
+    def discard(
+        self, *, tenant_id: UUID, character_ids: Sequence[UUID], at: datetime
+    ) -> list[BusinessCharacter]:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            return self._discard(session, character_ids, at)
+
+    @staticmethod
+    def _discard(session: Any, character_ids: Sequence[UUID], at: datetime) -> list[Any]:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        if not character_ids:
+            return []
+        rows = session.execute(
+            text(
+                f"UPDATE {_TABLE} SET status = 'discarded', finished_at = :at "
+                "WHERE id = ANY(:ids) AND status IN ('pending', 'ready') "
+                f"RETURNING {_COLUMNS}"
+            ),
+            {"ids": list(character_ids), "at": at},
+        ).all()
+        return [_from_row(r) for r in rows]
 
     def start_request(self, *, tenant_id: UUID, character_id: UUID, at: datetime) -> bool:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
@@ -1403,31 +1488,36 @@ class PostgresCharacterUsage:
     """A character is in use while a draft not approved yet names it in its brief's
     `media.character_scenes[*].character_id` (the scene's contract, m-25128784)."""
 
-    def in_unapproved_video(self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> bool:
+    def unapproved_video(
+        self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID
+    ) -> UUID | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
-            return bool(
-                session.execute(
-                    text(
-                        f"""
-                        SELECT EXISTS (
-                          SELECT 1 FROM content_drafts d
-                          JOIN content_briefs b ON b.id = d.brief_id
-                          WHERE d.brand_id = :brand
-                            AND d.status IN {UNAPPROVED_DRAFT_STATUSES!r}
-                            AND jsonb_path_exists(
-                              b.media,
-                              '$.{SCENE_MEDIA_KEY}[*] ? (@.character_id == $id)',
-                              jsonb_build_object('id', CAST(:character AS text))
-                            )
-                        )
-                        """
-                    ),
-                    {"brand": brand_id, "character": str(character_id)},
-                ).scalar_one()
-            )
+            return session.execute(
+                text(
+                    f"""
+                    SELECT d.id FROM content_drafts d
+                    JOIN content_briefs b ON b.id = d.brief_id
+                    WHERE d.brand_id = :brand
+                      AND d.status IN {UNAPPROVED_DRAFT_STATUSES!r}
+                      AND jsonb_path_exists(
+                        b.media,
+                        '$.{SCENE_MEDIA_KEY}[*] ? (@.character_id == $id)',
+                        jsonb_build_object('id', CAST(:character AS text))
+                      )
+                    ORDER BY d.created_at DESC LIMIT 1
+                    """
+                ),
+                {"brand": brand_id, "character": str(character_id)},
+            ).scalar_one_or_none()
+
+    def in_unapproved_video(self, *, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> bool:
+        return (
+            self.unapproved_video(tenant_id=tenant_id, brand_id=brand_id, character_id=character_id)
+            is not None
+        )
 
 
 def brand_palette(tenant_id: UUID, brand_id: UUID) -> Sequence[str]:

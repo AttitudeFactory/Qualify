@@ -272,15 +272,58 @@ def test_a_character_in_a_scene_of_a_video_not_approved_yet_is_in_use() -> None:
             {"t": TENANT, "b": brand, "brief": brief},
         ).scalar_one()
     assert usage.in_unapproved_video(tenant_id=TENANT, brand_id=brand, character_id=character_id)
+    assert (
+        usage.unapproved_video(tenant_id=TENANT, brand_id=brand, character_id=character_id) == draft
+    )
     assert not usage.in_unapproved_video(tenant_id=TENANT, brand_id=brand, character_id=uuid4())
     assert not usage.in_unapproved_video(tenant_id=OTHER, brand_id=brand, character_id=character_id)
+    # failed and rejected videos can be tried again: they still hold the character
+    for status in ("failed", "rejected"):
+        with tenant_session(TENANT) as session:
+            session.execute(
+                text("UPDATE content_drafts SET status = :s WHERE id = :d"),
+                {"s": status, "d": draft},
+            )
+        assert usage.in_unapproved_video(
+            tenant_id=TENANT, brand_id=brand, character_id=character_id
+        )
     with tenant_session(TENANT) as session:
         session.execute(
-            text("UPDATE content_drafts SET status = 'rejected' WHERE id = :d"), {"d": draft}
+            text(
+                "UPDATE content_drafts SET status = 'approved', approved_at = now(), "
+                "approved_by = :u WHERE id = :d"
+            ),
+            {"d": draft, "u": user},
         )
     assert not usage.in_unapproved_video(
         tenant_id=TENANT, brand_id=brand, character_id=character_id
     )
+
+
+def test_discarding_is_conditional_and_keeps_the_cost_the_worker_noted() -> None:
+    service, brand, user = _service()
+    round_ = _round(service, brand, user)
+    first, second, third = round_.options
+    service.note_paid(
+        tenant_id=TENANT,
+        character_id=second.id,
+        cost_usd=Decimal("0.045"),
+        vendor_request_id="seedream-sync:x",
+    )
+    _ready(service, first)
+    service.choose_option(TENANT, brand, round_.round_id, first.id, name="Nina")
+    repo = bc.PostgresCharacterRepository()
+    stored = repo.get(tenant_id=TENANT, character_id=second.id)
+    assert stored is not None and stored.status == bc.STATUS_DISCARDED
+    assert stored.cost_usd == Decimal("0.045")
+    assert (
+        repo.discard(tenant_id=TENANT, character_ids=[second.id, third.id], at=datetime.now(UTC))
+        == []
+    )
+    # an option discarded meanwhile cannot be chosen: a clear refusal, never a raw error
+    with pytest.raises(bc.CharacterRefused) as refused:
+        service.choose_option(TENANT, brand, round_.round_id, third.id, name="Otro")
+    assert refused.value.code == bc.NOT_FOUND
 
 
 def test_the_usd_cost_is_booked_once_per_option() -> None:

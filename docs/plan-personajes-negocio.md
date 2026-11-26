@@ -82,9 +82,10 @@ Una fila por **opción dibujada**. La ronda es el conjunto de filas con el mismo
 ### Topes por negocio
 
 - **5 personajes guardados** (`saved`), como dice el ticket. El sexto se rechaza.
-- **2 rondas de dibujo por día** (decidido), contadas en el día del negocio. Cuenta toda ronda iniciada, salvo la que falló completa sin pagar nada, igual que el tope del avatar.
+- **2 rondas de dibujo por día** (decidido). Se cuentan en el día del negocio: el tope **se reinicia a la medianoche en la hora del negocio** (`tenants.timezone`, o UTC si está vacía). Cuenta toda ronda iniciada, salvo la que falló completa sin pagar nada, igual que el tope del avatar. Una opción que quizá se pagó (conexión caída, error 5xx o un intento anterior que murió) anota su cotización en `cost_usd`, así que una ronda que falló así cuenta (revisión de m-25129385).
 - **Una ronda abierta a la vez**: el negocio no puede pedir otra hasta elegir o descartar la que tiene abierta. Las rondas sin elegir se descartan solas a los 7 días.
-- La **guarda de precio** compara la cotización de la ronda con lo que queda del tope mensual en dólares (`creative_engine_config`, solo si `hard_stop_on_cap`). Pasarse lo rechaza antes de llamar a BytePlus.
+- La **guarda de precio** compara la cotización de cada opción con lo que queda del tope mensual en dólares (`creative_engine_config`, solo si `hard_stop_on_cap`). Pasarse lo rechaza antes de llamar a BytePlus. **Exceso aceptado:** las 3 opciones se revisan en paralelo contra el mismo saldo, así que una ronda puede pasarse del tope hasta en dos opciones (US$0,09). Es el mismo patrón de los stickers.
+- **Sin imágenes huérfanas:** si el dueño elige una opción, o descarta la ronda, mientras otra se sigue dibujando, el worker borra de R2 la imagen que acaba de escribir al ver la opción descartada.
 
 ### Qué cobra contra el cupo
 
@@ -125,24 +126,36 @@ def character_reference(tenant_id, brand_id, character_id) -> CharacterReference
 
 | Código | Texto |
 |---|---|
-| `switched_off` | «Los personajes todavía no están disponibles.» |
+| `switched_off` | «Los personajes todavía no están listos en tu cuenta. Mientras tanto, puedes crear tus videos sin ellos.» |
 | `limit_reached` | «Ya tienes 5 personajes guardados. Borra uno para crear otro.» |
-| `daily_cap` | «Hoy ya pediste 2 dibujos de personajes. Mañana puedes pedir más.» |
-| `round_open` | «Elige una de las opciones que ya dibujamos, o descártalas, antes de pedir otras.» |
-| `style_unknown` | «Elige si tu personaje es animado o realista.» |
-| `not_ready` | «Esa opción todavía no está lista. Espera un momento.» |
+| `daily_cap` | «Hoy ya pediste dibujos 2 veces, que es lo máximo por día. Mañana puedes pedir otra vez.» (se reinicia a la medianoche del negocio) |
+| `round_open` | «Ya te dibujamos 3 opciones. Elige una, o descártalas para pedir otras nuevas.» |
+| `style_unknown` | «Elige cómo quieres a tu personaje: dibujo animado o realista.» |
+| `not_ready` | «Ese dibujo todavía se está haciendo. Espera un momento y elígelo de nuevo.» |
 | `description_short` | «Cuéntanos un poco más cómo es tu personaje.» |
-| `description_long` | «La descripción es muy larga. Usa menos de 300 letras.» |
+| `description_long` | «Tu descripción es muy larga. Déjala en 300 letras o menos.» (300 se acepta; 301 no) |
 | `name_invalid` | «Ponle a tu personaje un nombre de hasta 40 letras.» |
 | `name_taken` | «Ya tienes un personaje con ese nombre. Elige otro.» |
-| `not_found` | «Ese personaje ya no existe.» |
-| `in_use` (pregunta 4) | «Este personaje está en un video que aún no apruebas. Quítalo de ese video para poder borrarlo.» |
+| `not_found` | «No encontramos ese personaje. Puede que ya lo hayas borrado.» |
+| `in_use` | «Este personaje está en un video que todavía no apruebas. Quítalo de ese video para poder borrarlo.» |
 
-- **Motivos de fallo por opción**, con el mismo tono que los stickers:
-  - `vendor_failed` / `uncertain` / `lost_result`: «Este dibujo no salió y no se te cobró. Puedes pedir otro.»
+- **`in_use`** cuenta los videos en `drafting`, `generated`, `failed` y `rejected`: los dos últimos se pueden reintentar y el reintento necesita la imagen.
+- **Fallo de una opción** (`BusinessCharacter.failure_text`), sin hablar de cobro:
+  - `vendor_failed` / `uncertain` / `lost_result`: «Este dibujo no salió. Elige uno de los otros, o pide dibujos nuevos.»
   - `moderated`: «No pudimos dibujar ese personaje. Cambia un poco la descripción y vuelve a intentarlo.»
-  - `budget_cap`: «Ahora no pudimos dibujarlo. No se te cobró. Escríbenos y lo revisamos contigo.»
-  - Si la ronda falla completa, no cuenta para el tope del día.
+  - `budget_cap`: «Ahora no pudimos dibujarlo. Inténtalo más tarde.»
+- **Fallo de la ronda completa** (`DrawingRound.failure_text`, vacío si salió alguna):
+  - «Ningún dibujo salió. Puedes volver a pedirlos.»
+  - Si la ronda pagó algo y por eso cuenta para el tope (`DrawingRound.counts_for_the_day`), se agrega: «Esta vez cuenta como uno de tus 2 pedidos del día.»
+- **¿Una ronda que falló a medias deja elegibles los dibujos que salieron?** **Sí.** La ronda queda `ready` mientras haya al menos una opción lista. Las opciones que fallaron muestran «Este dibujo no salió. Elige uno de los otros, o pide dibujos nuevos.», y el dueño elige entre las que salieron. Lo cubre la prueba `test_a_half_failed_round_keeps_the_drawings_that_came_out_eligible`.
+
+#### Notas para la pantalla (m-25112921)
+
+- Una línea fija bajo el botón de dibujar: «Hoy puedes pedir dibujos 2 veces (cada vez te mostramos 3 opciones). Dibujar no gasta tus creaciones.»
+- En la descripción, un contador «0/300» y el ejemplo «Por ejemplo: una chef joven con delantal rojo, sonriendo.»
+- Botones de salida:
+  - «Ver mis personajes», junto a `limit_reached`;
+  - «Ver ese video», junto a `in_use`: el video es `CharacterRefused.draft_id`.
 
 ### Prompt `business-character-v1`
 
