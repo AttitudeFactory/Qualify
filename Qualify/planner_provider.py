@@ -476,12 +476,13 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
 
 
 def _occasion_labels(tenant_id: UUID, post_ids: list[UUID]) -> dict[UUID, str]:
-    """m-25120706: «Para el Día de la Madre (9 de mayo)» for each «Publicación del mes»
-    among the posts — one RLS-scoped read. A failed read costs only the labels."""
+    """m-25120706: «Te la preparamos para el Día de la Madre (9 de mayo)» for each
+    «Publicación del mes» among the posts — one RLS-scoped read. A failed read costs
+    only the labels."""
     try:
         found = occasions_of(tenant_id, post_ids)
-    except Exception as exc:  # noqa: BLE001 — a label is not worth failing the gallery
-        logger.warning("planner occasions not read: %s", type(exc).__name__)
+    except Exception:  # noqa: BLE001 — a label is not worth failing the gallery
+        logger.warning("planner occasions not read", exc_info=True)
         return {}
     return {pid: occasion_label_text(o.name, o.day) for pid, o in found.items()}
 

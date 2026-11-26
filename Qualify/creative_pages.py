@@ -1138,7 +1138,7 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
         ),
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
-            # m-25120706: why a «Publicación del mes» is here — «Para el Día de la Madre …»
+            # m-25120706: why a «Publicación del mes» is here — «Te la preparamos para …»
             rx.cond(
                 post.occasion_label != "",
                 rx.box(

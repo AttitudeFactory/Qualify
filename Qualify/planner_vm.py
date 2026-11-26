@@ -26,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from typing import Final
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, available_timezones
 
@@ -1926,12 +1927,44 @@ def build_post_option(
     )
 
 
+#: m-25120706: how each calendar name (`ads/data/calendario-v1.json`, every country) reads
+#: after «para». Proper names (Navidad, Halloween, Black Friday…) go bare and as written;
+#: a name missing here also goes bare (the test over the JSON makes a new one a decision).
+OCCASION_PHRASES: Final[dict[str, str]] = {
+    "Día de Reyes": "el Día de Reyes",
+    "Día de la Madre": "el Día de la Madre",
+    "Día de la Niñez": "el Día de la Niñez",
+    "Día de las Madres": "el Día de las Madres",
+    "Día de los Enamorados": "el Día de los Enamorados",
+    "Día de los Hijos": "el Día de los Hijos",
+    "Día del Niño": "el Día del Niño",
+    "Día del Padre": "el Día del Padre",
+    "Regreso a clases": "el regreso a clases",
+    # paydays: common nouns, lowercase with their article
+    "Quincena": "la quincena",
+    "Prima de servicios": "la prima de servicios",
+    "Aguinaldo": "el aguinaldo",
+    "Cobro del sueldo": "el cobro del sueldo",
+    "Utilidades y aguinaldos": "las utilidades y aguinaldos",
+    # proper names, no article
+    "Navidad": "Navidad",
+    "Carnaval": "Carnaval",
+    "Halloween": "Halloween",
+    "San Valentín": "San Valentín",
+    "Amor y Amistad": "Amor y Amistad",
+    "Black Friday": "Black Friday",
+    "Black Week": "Black Week",
+    "Cyber Monday": "Cyber Monday",
+    "CyberLunes": "CyberLunes",
+    "Hot Sale": "Hot Sale",
+}
+
+
 def occasion_label_text(name: str, day: date) -> str:
-    """m-25120706: why a «Publicación del mes» is in «Por aprobar» — «Para el Día de la
-    Madre (9 de mayo)». «el» only before «Día …»: «Para Navidad», «Para Black Friday»
-    (calendar names in English stay as they are, proper names)."""
-    article = "el " if name.startswith("Día ") else ""
-    return f"Para {article}{name} ({day.day} de {_MONTHS_LONG[day.month - 1]})"
+    """m-25120706: why a «Publicación del mes» is in the gallery — «Te la preparamos para
+    el Día de la Madre (9 de mayo)», «… para Navidad (25 de diciembre)»."""
+    phrase = OCCASION_PHRASES.get(name, name)
+    return f"Te la preparamos para {phrase} ({day.day} de {_MONTHS_LONG[day.month - 1]})"
 
 
 # -- Historias (founder 2026-11-16): a label, a filter and «Abrir en Instagram» ----------
