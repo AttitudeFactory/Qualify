@@ -11,6 +11,7 @@ from qualify_api.planner.monthly_post import DEFAULT_KIND, MonthlyPostSetting
 from qualify_api.tenancy.acting import acting_login
 
 from .auth_state import AuthState
+from .creative_provider import configured_video_engine
 from .creative_state import CreativeState
 from .monthly_post_provider import read_setting, save_setting
 from .monthly_post_vm import LOAD_FAILED, SAVE_FAILED, SESSION_ENDED, monthly_cost_text
@@ -31,7 +32,7 @@ class MonthlyPostState(rx.State):
 
     @rx.var
     def cost_text(self) -> str:
-        return monthly_cost_text(self.kind)
+        return monthly_cost_text(self.kind, configured_video_engine())
 
     async def _session(self) -> tuple[str, str, str]:
         auth = await self.get_state(AuthState)

@@ -34,22 +34,30 @@ def test_choices_are_ready_to_publish_kinds_with_their_spanish_names() -> None:
     assert "Por aprobar" in EXPLAIN
 
 
+_PRESENTER = "Este video con presentador usa 25 de tus creaciones cada mes."
+_VIDEO = "Este video usa 5 segundos de tus videos del mes cuando lo apruebas."
+
+
 @pytest.mark.parametrize(
-    ("kind", "text"),
+    ("kind", "engine", "text"),
     [
-        ("static_flyer", "Usa 1 de tus creaciones cada mes."),
-        ("template", "Usa 1 de tus creaciones cada mes."),
-        ("avatar_video", "Este video con presentador usa 25 de tus creaciones cada mes."),
-        ("clip", "Este video usa 5 segundos de tus videos del mes cuando lo apruebas."),
-        ("nope", ""),
+        ("static_flyer", "seedance", "Usa 1 de tus creaciones cada mes."),
+        ("template", "omnihuman", "Usa 1 de tus creaciones cada mes."),
+        ("carousel", "seedance", "Usa desde 1 de tus creaciones cada mes."),
+        ("avatar_video", "omnihuman", _PRESENTER),
+        ("avatar_video", "seedance", _VIDEO),
+        ("animated_avatar_video", "seedance", _VIDEO),
+        ("clip", "omnihuman", _VIDEO),
+        ("nope", "seedance", ""),
     ],
 )
-def test_cost_is_the_generators_price_for_the_kind(kind: str, text: str) -> None:
-    assert monthly_cost_text(kind) == text
+def test_cost_is_the_generators_price_for_the_kind(kind: str, engine: str, text: str) -> None:
+    assert monthly_cost_text(kind, engine) == text
 
 
-def test_every_choice_says_what_it_costs() -> None:
-    assert all(monthly_cost_text(o["value"]) for o in kind_options())
+@pytest.mark.parametrize("engine", ["seedance", "omnihuman"])
+def test_every_choice_says_what_it_costs(engine: str) -> None:
+    assert all(monthly_cost_text(o["value"], engine) for o in kind_options())
 
 
 def test_provider_uses_the_default_brand_and_refuses_without_one(

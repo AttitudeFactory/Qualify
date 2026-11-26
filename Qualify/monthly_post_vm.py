@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from qualify_api.planner.monthly_post import MONTHLY_POST_KINDS
-from qualify_creative.creations import CreationNotOffered, weight_for_request
+from qualify_creative.creations import (
+    CreationNotOffered,
+    is_presenter_request,
+    weight_for_request,
+)
 
 from .creative_vm import KIND_LABELS, seconds_label
 
@@ -17,9 +21,10 @@ KIND_LABEL = "¿Qué quieres que te preparemos?"
 LOAD_FAILED = "No pudimos leer tu publicación del mes. Vuelve a entrar en un momento."
 SAVE_FAILED = "No pudimos guardar tu cambio. Inténtalo de nuevo."
 SESSION_ENDED = "Tu sesión terminó. Vuelve a entrar para cambiarlo."
-#: The generator's own starting length for a clip (`CreativeState.clip_duration`); every
-#: other kind is priced at `weight_for_request`'s defaults (a 30 s presenter).
-_CLIP_SECONDS = 5
+#: The generator's starting lengths: a generated video (a clip, an avatar on Seedance) at
+#: `CreativeState.clip_duration`, a talking presenter at `media_duration`.
+_VIDEO_SECONDS = 5
+_PRESENTER_SECONDS = 30
 
 
 def kind_options() -> list[dict[str, str]]:
@@ -27,16 +32,26 @@ def kind_options() -> list[dict[str, str]]:
     return [{"value": k.value, "label": KIND_LABELS[k.value]} for k in MONTHLY_POST_KINDS]
 
 
-def monthly_cost_text(kind: str) -> str:
-    """What the chosen kind uses each month — the generator's base price for it
-    (`weight_for_request`, the rule the service charges with). The real post may differ
-    a little once its brief exists (a presenter's length, a carousel's slides)."""
+def monthly_cost_text(kind: str, video_engine: str) -> str:
+    """What the chosen kind uses each month — the generator's base price for it on the
+    configured engine (`weight_for_request`, the rule the service charges with). The real
+    post may cost more once its brief exists (a presenter's length, a carousel's slides)."""
+    presenter = is_presenter_request(kind, video_engine)
     try:
-        price = weight_for_request(kind, duration_seconds=_CLIP_SECONDS if kind == "clip" else 30)
+        price = weight_for_request(
+            kind,
+            duration_seconds=_PRESENTER_SECONDS if presenter else _VIDEO_SECONDS,
+            video_engine=video_engine,
+        )
     except (CreationNotOffered, ValueError):
         return ""
     if price.weight > 0:
-        what = "Este video con presentador usa" if price.is_presenter else "Usa"
+        if price.is_presenter:
+            what = "Este video con presentador usa"
+        elif kind == "carousel":
+            what = "Usa desde"  # priced with no generated slide: each one adds
+        else:
+            what = "Usa"
         return f"{what} {price.weight} de tus creaciones cada mes."  # «1 de tus creaciones»
     if price.video_seconds > 0:
         return (
