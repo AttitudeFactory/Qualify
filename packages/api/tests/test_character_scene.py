@@ -157,6 +157,7 @@ def _world(
     quota: bool = True,
     previews_used: int = 0,
     videos_used: int = 0,
+    media: Any = None,
 ) -> World:
     repo, dispatcher = BlockRepo(), RecordingDispatcher()
     store = SceneStore(repo)
@@ -174,6 +175,7 @@ def _world(
         repository=repo,
         dispatcher=dispatcher,
         creations=ledger,
+        media=media,
     )
     characters = Characters()
     service = cs.CharacterSceneService(
@@ -409,7 +411,7 @@ def test_a_scene_past_the_end_of_the_video_is_refused_before_anything_is_written
     world = _world()
     with pytest.raises(ClipAvatarRefused) as refused:
         _create(world, _clip(_item(start=18.0)))
-    assert refused.value.code == cs.PAST_END and refused.value.owner_message == cs.PAST_END_TEXT
+    assert refused.value.code == cs.PAST_END and refused.value.owner_message == cs.past_end_text(1)
     _nothing_written(world)
 
 
@@ -690,10 +692,11 @@ def test_the_scene_texts_are_plain_spanish() -> None:
         cs.DURATION_TEXT,
         cs.TOO_MANY_TEXT,
         cs.OVERLAP_TEXT,
-        cs.PAST_END_TEXT,
+        cs.past_end_text(1),
         cs.NEEDS_OWN_MEDIA_TEXT,
-        cs.EFFECT_TEXT,
-        cs.EXIT_CUT_TEXT,
+        cs.effect_text(1),
+        cs.exit_cut_text(2),
+        cs.transition_unavailable_text(1),
         cs.NEEDS_REDRAW_TEXT,
         cs.CHARACTER_MISSING_TEXT,
         cs.FILE_NOT_OWNED_TEXT,
@@ -789,3 +792,49 @@ def test_the_brief_names_the_character_where_the_in_use_check_reads_it() -> None
     assert stored["media"]["character_scenes"][0]["character_id"] == str(CHARACTER_ID)
     scene = cs.scene_brief(_clip(_item()), _item()).model_dump(mode="json")
     assert scene["media"]["character_scenes"][0]["character_id"] == str(CHARACTER_ID)
+
+
+# ---------------------------------------------------------------------------
+# review of cbbfbe77
+
+
+def test_a_scene_way_in_other_than_a_cut_is_refused_until_the_assembly_draws_it() -> None:
+    world = _world()
+    fade = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
+    brief = _clip(_item(start=0.0), _item(start=10.0, transition_in=fade))
+    with pytest.raises(cs.CharacterSceneRefused) as refused:
+        _create(world, brief)
+    assert refused.value.code == cs.TRANSITION_UNAVAILABLE and refused.value.block == 1
+    assert refused.value.owner_message == cs.transition_unavailable_text(2)
+    assert "bloque" not in refused.value.owner_message
+    _nothing_written(world)
+
+
+def test_the_cut_only_refusal_numbers_the_scene_and_offers_to_change_it() -> None:
+    blend_at = cs.Join(index=1, start=9.5, end=10.0)
+    (problem,) = cs.scene_problems(
+        [_item(start=0.0), _item(start=4.5)], clip_seconds=20.0, joins=[blend_at]
+    )
+    assert problem.scene == 1 and problem.action == cs.CUT_ACTION
+    assert problem.text.startswith("Al terminar la escena 2")
+    assert "«Cambiar a Corte»" in problem.text
+    with pytest.raises(cs.CharacterSceneRefused) as refused:
+        cs.refuse_scene_problems([problem])
+    assert refused.value.action == cs.CUT_ACTION
+
+
+def test_a_failed_scene_gives_its_vista_previa_back() -> None:
+    from qualify_api.creative.fsm import FAILED
+    from qualify_api.creative.media import MediaOutcome
+
+    from .test_content_service import FakeMedia
+
+    media = FakeMedia(MediaOutcome(failure="provider_error", detail="No salió."))
+    world = _world(media=media)
+    made = _create(world)
+    (scene_id,) = made.scene_ids
+    assert world.ledger is not None
+    assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 1
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=scene_id)
+    assert world.repo.drafts[scene_id].status == FAILED
+    assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 0

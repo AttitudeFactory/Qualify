@@ -134,24 +134,51 @@ TOO_MANY_TEXT = (
     f"Un video puede tener hasta {CHARACTER_SCENES_MAX} escenas con tu personaje. Quita las "
     "que sobren."
 )
-OVERLAP_TEXT = "Dos escenas no pueden salir al mismo tiempo. Mueve una para que no se crucen."
-PAST_END_TEXT = "Una escena termina después del final de tu video. Muévela o acórtala."
+OVERLAP_TEXT = "Dos escenas no pueden aparecer al mismo tiempo. Mueve una para que no se crucen."
 NEEDS_OWN_MEDIA_TEXT = (
-    "Deja al menos 3 segundos de tus fotos o videos fuera de las escenas con tu personaje."
-)
-EFFECT_TEXT = (
-    "Los efectos de humo, brasas y vapor no se pueden poner mientras sale tu personaje. "
-    "Muévelos a otra parte de tu video o quítalos."
-)
-EXIT_CUT_TEXT = (
-    "Al terminar una escena, la unión tiene que ser «Corte», para que se escuche todo lo "
-    "que dice tu personaje. Cambia esa unión a «Corte» y vuelve a crear tu video."
+    "Tu video necesita al menos 3 segundos con tus propias fotos o videos, sin una escena "
+    "encima. Acorta una escena o agrega más fotos o videos."
 )
 #: R7 / P5: the words the ADR fixes, plus what to do now.
 NEEDS_REDRAW_TEXT = (
-    "Tu personaje necesita un dibujo nuevo. Elige uno de los dibujos nuevos y vuelve a "
-    "crear tu video."
+    "Tu personaje necesita un dibujo nuevo. Ve a tus personajes, elige uno de los dibujos "
+    "nuevos que te preparamos y vuelve a crear tu video."
 )
+#: The one-touch fix the screen offers on `character_scene_exit_cut_only` («Cambiar a
+#: Corte»: the join after the scene becomes a cut).
+CUT_ACTION = "cut_after_scene"
+TRANSITION_UNAVAILABLE = "character_scene_transition_unavailable"
+
+
+def past_end_text(number: int) -> str:
+    return (
+        f"La escena {number} termina después del final de tu video. Muévela más temprano "
+        "o hazla más corta."
+    )
+
+
+def effect_text(number: int) -> str:
+    return (
+        "Los efectos de humo, brasas y vapor no pueden aparecer durante la escena "
+        f"{number}. Muévelos a otra parte de tu video o quítalos."
+    )
+
+
+def exit_cut_text(number: int) -> str:
+    return (
+        f"Al terminar la escena {number}, el paso a lo que sigue tiene que ser «Corte», "
+        "para que se escuche completo lo que dice tu personaje. Toca «Cambiar a Corte» y "
+        "vuelve a crear tu video."
+    )
+
+
+def transition_unavailable_text(number: int) -> str:
+    return (
+        f"Por ahora la escena {number} solo puede aparecer con «Corte». Cámbiala a "
+        "«Corte» y vuelve a crear tu video."
+    )
+
+
 CHARACTER_MISSING_TEXT = "No encontramos tu personaje. Elígelo de nuevo y vuelve a crear tu video."
 FILE_NOT_OWNED_TEXT = "No pudimos usar una de las fotos de la escena. Súbela de nuevo."
 NOT_LOCAL_TEXT = (
@@ -172,8 +199,9 @@ WAITING_TEXT = (
 def line_too_long_text(duration: int) -> str:
     """The line does not fit in its scene: how many characters it takes."""
     return (
-        f"Lo que dice tu personaje no cabe en {duration} segundos. Déjalo en "
-        f"{character_line_max_chars(duration)} letras o menos, o alarga la escena."
+        f"Lo que dice tu personaje es muy largo para una escena de {duration} segundos. "
+        f"Escríbelo en {character_line_max_chars(duration)} letras o menos, o haz la "
+        "escena más larga."
     )
 
 
@@ -379,6 +407,26 @@ class SceneProblem:
     code: str
     text: str
     scene: int | None = None
+    #: What the screen may offer to fix it in one touch (`CUT_ACTION`), or None.
+    action: str | None = None
+
+
+class CharacterSceneRefused(ClipAvatarRefused):
+    """A scene refused before anything was written or paid: `ClipAvatarRefused` (its
+    `code`, `owner_message` and `block` — the scene's place, from 0) plus the one-touch
+    fix the screen may offer (`action`)."""
+
+    def __init__(
+        self,
+        code: str,
+        owner_message: str,
+        raw: str = "",
+        *,
+        block: int | None = None,
+        action: str | None = None,
+    ) -> None:
+        super().__init__(code, owner_message, raw, block=block)
+        self.action = action
 
 
 _EPSILON = 1e-6
@@ -400,34 +448,54 @@ def scene_problems(
     wholly under it, is fine. Pure."""
     found: list[SceneProblem] = []
     for number, scene in enumerate(scenes):
+        if scene.transition_in is not None:
+            # until the assembly (PR 2 of m-25128784) draws a scene's way in, only a cut
+            found.append(
+                SceneProblem(
+                    TRANSITION_UNAVAILABLE, transition_unavailable_text(number + 1), number
+                )
+            )
+    for number, scene in enumerate(scenes):
         if scene.end > clip_seconds + _EPSILON:
-            found.append(SceneProblem(PAST_END, PAST_END_TEXT, number))
+            found.append(SceneProblem(PAST_END, past_end_text(number + 1), number))
     covered = sum(scene.duration for scene in scenes)
     if clip_seconds - covered < LOCAL_TOTAL_MIN_S - _EPSILON:
         found.append(SceneProblem(NEEDS_OWN_MEDIA, NEEDS_OWN_MEDIA_TEXT))
-    windows = [(scene.start, scene.end) for scene in scenes]
     for effect in effects:
-        if effect.effect_id not in AVATAR_FORBIDDEN_EFFECTS or not windows:
+        if effect.effect_id not in AVATAR_FORBIDDEN_EFFECTS:
             continue
         whole = effect.start_s is None or effect.end_s is None
-        if whole or any(effect.start_s < end and effect.end_s > start for start, end in windows):
-            found.append(SceneProblem(SCENE_EFFECT, EFFECT_TEXT))
+        crossed = next(
+            (
+                number
+                for number, scene in enumerate(scenes)
+                if whole or (effect.start_s < scene.end and effect.end_s > scene.start)
+            ),
+            None,
+        )
+        if crossed is not None:
+            found.append(SceneProblem(SCENE_EFFECT, effect_text(crossed + 1), crossed))
             break
     for number, scene in enumerate(scenes):
         exit_at = scene.end
+        # Deliberately strict (review of cbbfbe77): ANY blend whose window starts at or
+        # before the scene's end and runs past it is refused, even where the overlay may
+        # end up hiding part of it — until PR 2's assembly decides exactly what plays at
+        # a scene's exit, the voice's last word is never put at risk.
         if any(j.start <= exit_at + _EPSILON and j.end > exit_at + _EPSILON for j in joins):
-            found.append(SceneProblem(EXIT_CUT_ONLY, EXIT_CUT_TEXT, number))
+            found.append(SceneProblem(EXIT_CUT_ONLY, exit_cut_text(number + 1), number, CUT_ACTION))
     return tuple(found)
 
 
 def refuse_scene_problems(problems: Sequence[SceneProblem]) -> None:
     if problems:
         first = problems[0]
-        raise ClipAvatarRefused(
+        raise CharacterSceneRefused(
             first.code,
             first.text,
             raw="; ".join(p.code for p in problems),
             block=first.scene,
+            action=first.action,
         )
 
 
@@ -439,6 +507,8 @@ def scene_brief(clip: ContentBrief, item: CharacterSceneItem) -> ContentBrief:
     scene in `character_scenes`. No recipe, no text of its own (the Clip carries it)."""
     media = MediaInputs.model_validate(
         {
+            # the nearest bucket the brief allows — a label, never read for the scene's
+            # real length: `character_scenes[0].duration` and the task's params carry it
             "duration_seconds": item.duration if item.duration in (5, 10) else 10,
             "character_scenes": (item.model_dump(mode="json"),),
         }

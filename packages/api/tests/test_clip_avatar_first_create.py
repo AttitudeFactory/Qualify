@@ -788,11 +788,11 @@ def test_a_failed_clips_blocks_owe_nothing() -> None:
 
 
 # ---------------------------------------------------------------------------
-# m-25128784 (ADR 50 §12.6, Deivid 2026-11-26): m-25119867's «solo Corte junto a un
-# avatar» rule is gone — a join next to an avatar block takes any transition
+# a join next to an avatar is only «Corte» (Deivid, 2026-11-25)
 
 
 FADE = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
+CUT = EffectUse(effect_id="corte", version=1)
 OTHER = f"uploads/{TENANT_ID}/b.mp4"
 
 
@@ -801,29 +801,128 @@ def _joined(seconds: float, join: EffectUse | None, key: str = OWN_VIDEO) -> Sou
     return SourceSegment(key=key, start_s=0, end_s=seconds, speed=1, transition_in=join)
 
 
-def test_the_avatar_join_rule_no_longer_exists() -> None:
-    assert not hasattr(ca, "avatar_join_problems")
-    assert not hasattr(ca, "refuse_avatar_joins")
-    assert not hasattr(ca, "AVATAR_JOIN_CODE")
+def test_a_blending_join_next_to_a_block_is_found() -> None:
+    stretches = [
+        _joined(3, None),
+        _joined(3, None, OTHER),
+        _joined(3, FADE),
+        _joined(3, FADE, OTHER),
+        _joined(3, FADE),
+    ]
+    # a block at 1: its own join (a cut) and the next one's (a fade)
+    assert ca.avatar_join_problems(stretches, [1]) == (2,)
+    # a block at 3: its own fade and the next one's
+    assert ca.avatar_join_problems(stretches, [3]) == (3, 4)
+    # «Corte» named explicitly is no blend; a block not made yet (None) always cuts
+    assert ca.avatar_join_problems([_joined(3, None), _joined(3, CUT, OTHER)], [0]) == ()
+    assert ca.avatar_join_problems([None, _joined(3, None)], [0]) == ()
+    assert ca.avatar_join_problems(stretches, []) == ()
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        ca.refuse_avatar_joins(stretches, [3])
+    assert refused.value.code == ca.AVATAR_JOIN_CODE == "avatar_join_cut_only"
+    assert refused.value.owner_message == ca.AVATAR_JOIN_TEXT
+
+
+@pytest.fixture(params=["off", "on"], ids=["transitions_off", "transitions_on"])
+def block_transitions(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The rule holds with ADR 50 §10's switch off AND on: it is the condition to turn it
+    on, so it never depends on it (and it answers before the switch's own refusal)."""
+    from qualify_api.creative.video_pipeline.recipe import CLIP_BLOCK_TRANSITIONS_SWITCH
+
+    monkeypatch.setenv(CLIP_BLOCK_TRANSITIONS_SWITCH, request.param)
+    return str(request.param)
 
 
 @pytest.mark.parametrize(
     ("stretches", "at"),
     [
+        # the owner's stretch right after the avatar blends into it
         ((_joined(4.0, None), _joined(3.0, FADE, OTHER)), 1),
+        # the avatar first: the stretch after it is the first, blending into the avatar
         ((_joined(4.0, FADE), _joined(3.0, None, OTHER)), 0),
     ],
     ids=["after_the_avatar", "avatar_first"],
 )
-def test_the_first_create_takes_a_blend_next_to_an_avatar(
-    monkeypatch: pytest.MonkeyPatch, stretches: tuple[SourceSegment, ...], at: int
+def test_the_first_create_refuses_a_blend_next_to_an_avatar(
+    block_transitions: str, stretches: tuple[SourceSegment, ...], at: int
 ) -> None:
+    world = _world()
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        _create(world, _at(_presenter(), at), brief=_clip(*stretches))
+    assert refused.value.code == ca.AVATAR_JOIN_CODE
+    _nothing_written(world)
+
+
+def test_the_first_create_takes_a_cut_next_to_an_avatar(block_transitions: str) -> None:
+    world = _world()
+    stretches = (_joined(4.0, None), _joined(3.0, CUT, OTHER))
+    made = _create(world, _at(_presenter(), 1), brief=_clip(*stretches))
+    assert made.clip_id in world.repo.drafts
+
+
+def test_place_block_refuses_a_blend_into_an_avatar(block_transitions: str) -> None:
+    from .test_clip_avatar import _wired
+
+    stretches = (_joined(4.0, None), _joined(3.0, FADE, OTHER))
+    service, _, repo, store, _, clip_id = _wired(env=PRESENTER_ON, clip=_clip(*stretches))
+    block = service.create_block(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, request=_presenter()
+    )
+    repo.drafts[block] = replace(repo.drafts[block], status=GENERATED)
+    store.videos[block] = ca.BlockVideo(
+        asset_id=uuid4(), object_key=f"t/{TENANT_ID}/generated/{block}/r1/v.mp4", seconds=4.0
+    )
+    briefs = len(repo.briefs)
+    with pytest.raises(ca.ClipAvatarRefused) as refused:
+        service.place_block(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=clip_id, block_id=block, at=1
+        )
+    assert refused.value.code == ca.AVATAR_JOIN_CODE
+    assert len(repo.briefs) == briefs  # nothing written
+
+
+def test_the_assembly_refuses_a_blend_next_to_an_avatar_whatever_path_put_it_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local assembly's own check (`produce_local`): a recipe that reached it with a
+    fade next to a block is failed before anything is read — with the switch ON, where
+    the recipe's own rules let the fade through (off, they refuse it first)."""
+    from qualify_api.creative.video_pipeline import local
     from qualify_api.creative.video_pipeline.recipe import CLIP_BLOCK_TRANSITIONS_SWITCH
 
     monkeypatch.setenv(CLIP_BLOCK_TRANSITIONS_SWITCH, "on")
-    world = _world()
-    made = _create(world, _at(_presenter(), at), brief=_clip(*stretches))
-    assert made.clip_id in world.repo.drafts
+
+    clip_id = uuid4()
+    key = f"t/{TENANT_ID}/generated/{uuid4()}/r1/video.mp4"
+    block = ca.GeneratedSource(
+        object_key=key,
+        block_id=uuid4(),
+        clip_id=clip_id,
+        kind="presenter",
+        revision=1,
+        asset_id=uuid4(),
+        provider="omnihuman",
+        model_id="omnihuman-1.5",
+        model_revision=None,
+        seconds=4.0,
+        pipeline_version="creative-v1",
+    )
+    brief = _clip(
+        _joined(4.0, None),
+        SourceSegment(key=key, start_s=0, end_s=4.0, speed=1),
+        _joined(3.0, FADE, OTHER),
+    )
+    outcome = local.produce_local(
+        tenant_id=TENANT_ID,
+        draft_id=clip_id,
+        brief=brief,
+        store=None,
+        save=None,
+        beat=None,
+        allowed=True,
+        generated_sources={key: block},
+    )
+    assert outcome.detail == ca.AVATAR_JOIN_TEXT
 
 
 # ---------------------------------------------------------------------------

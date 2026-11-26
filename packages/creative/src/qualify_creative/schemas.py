@@ -1654,7 +1654,8 @@ class CharacterSceneItem(BaseModel):
     the owner had there (the Clip does not get longer). `line` is what the character
     says — written by the owner or suggested and approved by them (`line_suggested`,
     with the suggestion's prompt version, m-25129386). `transition_in` is how the scene
-    comes in (any library transition, §12.6); it always leaves with «Corte». Written by
+    comes in (any library transition, §12.6 — refused by the server until the assembly
+    draws it, m-25128784 PR 2); it always leaves with «Corte». Written by
     the editor; the server checks the whole track before writing or paying."""
 
     model_config = ConfigDict(frozen=True)
