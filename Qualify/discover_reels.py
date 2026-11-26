@@ -1329,8 +1329,8 @@ _CHIP_PAD = {"padding_left": "0.625rem", "padding_right": "0.625rem"}
 #: The bar's buttons and the sheet's rows: the 44 px target (docs/design-system.md §8).
 _TARGET = "44px"
 #: The least width of a filter chip on the wide bar: it holds a short name with no filter
-#: («Duración ▾»). A chosen value («Instagram», «Compiten contigo») may still end in «…»
-#: on a bar of 760-900 px, where the four share the width equally; whole in `title`.
+#: («Duración ▾»). The four grow from their content (`flex: 1 1 auto`), so a chosen value
+#: takes more of the bar and only ends in «…» when there is no room; whole in `title`.
 _CHIP_MIN = "5.5rem"
 
 
@@ -1489,9 +1489,10 @@ def _filter_button(axis: str) -> rx.Component:
     """A filter's chip on the wide bar — «Canal ▾», «Instagram ▾» (`_chip_face`) — as a
     Radix button with the skin: `soft` (the accent wash) while the axis narrows the list,
     `surface` otherwise; `size="2"`, the target stays 44 px. Like a select (Deivid,
-    2026-11-26: the chips looked crammed in the middle): the four filters share the
-    bar's width in equal parts (`flex: 1 1 0`), the word on the left and the chevron on
-    the right. Below its content only the word ends in «…», the whole name in `title`."""
+    2026-11-26: the chips looked crammed in the middle): the four filters fill the
+    bar, growing from their content (`flex: 1 1 auto`: a long value takes more), the
+    word on the left and the chevron on the right. Below its content only the word ends
+    in «…», the whole name in `title`."""
     on = _axis_on(axis)
     return rx.button(
         *_chip_face(axis),
@@ -1500,7 +1501,7 @@ def _filter_button(axis: str) -> rx.Component:
         variant=rx.cond(on, "soft", "surface"),
         size="2",
         min_height=_TARGET,
-        flex="1 1 0",
+        flex="1 1 auto",
         min_width=_CHIP_MIN,
         justify_content="space-between",
         overflow="hidden",
@@ -1665,7 +1666,7 @@ def _filter_bar() -> rx.Component:
     container query on the bar's own width (`BAR_CLASS`): below 760 px of bar — phones,
     tablets, narrow panels — the two buttons; from 760 px, the chips."""
     return rx.box(
-        # the wide bar: ONE line that fills the bar — the four filters in equal parts,
+        # the wide bar: ONE line that fills the bar — the four filters share what is left,
         # then «Competidores» and «Quitar filtros» at their natural width; it never
         # wraps, so no chip is ever alone on a line (Deivid, 2026-11-26)
         rx.flex(

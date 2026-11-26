@@ -686,10 +686,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    its two rows shows depends on the width of the BAR, not of the window (Deivid's live
    tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
    The bar is a size container; below 760 px of it, the two buttons («Filtros» +
-   «Competidores»); from 760 px, ONE line that fills the bar — the four filters in equal
-   parts (`flex: 1 1 0`), then «Competidores» and «Quitar filtros»: at 760 px each filter
-   still has ~107 px for its short word and chevron. Two classes, so it beats Radix's
-   `.rt-Flex` display. */
+   «Competidores»); from 760 px, ONE line that fills the bar — the four filters share it
+   (`flex: 1 1 auto`: the longest value takes more), then «Competidores» and «Quitar
+   filtros»: at 760 px each filter still has ~107 px for its short word and chevron.
+   Two classes, so it beats Radix's `.rt-Flex` display. */
 .q-reels-bar { container-type: inline-size; }
 .q-reels-bar .q-reels-bar__wide { display: none; }
 .q-reels-bar .q-reels-bar__narrow { display: flex; }

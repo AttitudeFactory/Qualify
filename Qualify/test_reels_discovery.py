@@ -1253,7 +1253,7 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     # never cut off, never broken letter by letter: a real ellipsis (Radix's `truncate`
     # reaches Reflex 0.10 as an invalid CSS rule — the bug seen live at 375 px)
     assert "**_ELLIPSIS" in inspect.getsource(discover_reels._chip_face)
-    assert 'flex="1 1 0"' in button and 'overflow="hidden"' in button  # never past its share
+    assert 'flex="1 1 auto"' in button and 'overflow="hidden"' in button  # never past its share
     assert "**_ELLIPSIS" in inspect.getsource(discover_reels._filters_button)
     assert "truncate=" not in inspect.getsource(discover_reels)
     assert '"truncate"' not in rendered
@@ -1403,7 +1403,7 @@ def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
     assert 'variant=rx.cond(on, "soft", "surface")' in button
     # like a select (Deivid, 2026-11-26): the filters share the width in equal parts,
     # the word on the left and the chevron on the right
-    for needed in ('flex="1 1 0"', 'justify_content="space-between"', "min_width=_CHIP_MIN"):
+    for needed in ('flex="1 1 auto"', 'justify_content="space-between"', "min_width=_CHIP_MIN"):
         assert needed in button, needed
     # the popovers' options keep the long words («Menos de 15 segundos»)
     assert "_single_options(axis, close=True)" in inspect.getsource(discover_reels._dropdown)
