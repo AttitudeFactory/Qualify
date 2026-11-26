@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -1253,7 +1254,6 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     and the `drawer` primitive; no box behind the bar; 44 px targets; the unchecked boxes
     and rings are drawn; the focus goes back to the chip that opened the sheet."""
     import inspect
-    from pathlib import Path
 
     from . import discover_reels
 
@@ -1274,6 +1274,13 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     assert "q-dialog-fill" not in bar
     row = inspect.getsource(discover_reels._option_row)
     assert 'variant="ghost"' in row and "min_height=_TARGET" in row and "role=role" in row
+    # Deivid 2026-11-26: mark and words on the left edge, under the group's name — the
+    # system's class, since Radix's base button centres a button's content
+    assert "class_name=_OPTION_CLASS" in row and 'padding="0.35rem 0.75rem"' in row
+    css = (Path(__file__).resolve().parent.parent / "assets" / "qualify-creative.css").read_text(
+        encoding="utf-8"
+    )
+    assert f".{discover_reels._OPTION_CLASS}.rt-Button {{ justify-content: flex-start;" in css
     assert discover_reels._MARKS == {
         "radio": ("circle-dot", "circle"),
         "checkbox": ("square-check", "square"),  # an empty box when not chosen
@@ -1507,7 +1514,6 @@ def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
     # live tests: at 768 and 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px
     # and «Competidores» dropped alone): the two buttons below 700 px of bar, chips above
     import re
-    from pathlib import Path
 
     assert "breakpoints" not in inspect.getsource(discover_reels._filter_bar)
     assert "class_name=BAR_CLASS" in bar and "class_name=_NARROW_CLASS" in bar
@@ -1563,3 +1569,22 @@ async def test_the_filtros_sheet_stays_open_while_choosing(world: _World) -> Non
     state.open_filters()
     state._claim_cards("another-tenant")  # another business: the sheet closes
     assert state.sheet == ""
+
+
+def test_the_search_button_sits_after_competitors_with_one_live_region() -> None:
+    """RF-14, ux-designer (Deivid, 2026-11-26): `search` icon, before «Quitar filtros» so it
+    never moves, «Buscando…» as words and name, one `role="status"` always mounted."""
+    import inspect
+
+    from . import discover_reels
+
+    button = inspect.getsource(discover_reels._search_button)
+    assert 'rx.icon("search"' in button and 'rx.icon("refresh-cw"' not in button
+    assert 'aria_hidden="true", display="inline-flex"' in button  # the spinner's role hidden
+    assert "S.search_label" in button
+    bar = inspect.getsource(discover_reels._filter_bar)
+    assert bar.index("_rivals_button(chip=False)") < bar.index("_search_button(icon_only=False)")
+    assert bar.index("_search_button(icon_only=False)") < bar.index("_reset_button()")
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert ideas.count('role="status"') == 1
+    assert 'callout(reels_search_vm.SEARCHING_NOTICE, "info", live=False)' in ideas

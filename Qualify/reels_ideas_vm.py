@@ -33,6 +33,7 @@ from qualify_api.referentes.reel_store import (
     STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
+    TRIGGER_MANUAL,
     TRIGGER_WEEKLY,
     Idea,
     PublicReel,
@@ -518,6 +519,11 @@ def _notice(stored: StoredIdeas, now: datetime, zone: tzinfo) -> tuple[str, str]
     view = stored.view
     shown, latest = view.shown, view.latest
     if shown is None or latest is None or latest.id == shown.id:
+        return "", ""
+    if latest.trigger == TRIGGER_MANUAL:
+        # RF-14 (Deivid, 2026-11-26): an owner's search that found nothing new, or that the
+        # cap stopped, is no error — the list keeps what is stored, and the button's own
+        # notice (once) says the day's or the cap's sentence
         return "", ""
     retry = retry_sentence(view, now, zone)
     if latest.status == STATUS_CHECK_FAILED and stored.has_brief:

@@ -55,6 +55,10 @@ never stops the referentes' ideas, which stay the referentes' only. A `competito
 run (the owner's «Ver sus reels ahora», `competitors.read_now`) reads its one account the
 same way (`_read_competitor_now`) and keeps no idea.
 
+RF-14 (m-25129383): the owner's «Buscar reels nuevos» (`manual_search.search_now`) is a
+`manual` run — at most one per brand and local day — that reads the same accounts as the
+Monday run, the 6 competitors included, and leaves its ideas like it.
+
 A gate refusal (ADR 42 R2: switch off, floor, 402) ends the run `budget_stopped`, with
 what was read kept. Anything unexpected ends it `error` (logged), never stuck `running`.
 
@@ -105,6 +109,7 @@ from qualify_api.referentes.reel_store import (
     TRANSCRIPT_TIKTOK,
     TRANSCRIPT_VENDOR,
     TRIGGER_COMPETITOR_NOW,
+    TRIGGER_MANUAL,
     TRIGGER_OPERATOR_90D,
     TRIGGER_WEEKLY,
     TRIGGERS,
@@ -1254,11 +1259,12 @@ def _run_claimed(
         )
 
     # 3. the accounts, each refreshed at most once across every business — the referentes
-    # first, then (RF-05, the Monday run only) the competitors the owner picked
+    # first, then (RF-05) the competitors the owner picked — on the Monday run and on the
+    # owner's «Buscar reels nuevos» (RF-14), which reads the same accounts
     referentes = reels.brand_referentes(ctx.tenant_id, ctx.brand_id, repository=repository)
     competitors = (
         reels.brand_competitors(ctx.tenant_id, ctx.brand_id, repository=repository)
-        if ctx.trigger == TRIGGER_WEEKLY
+        if ctx.trigger in (TRIGGER_WEEKLY, TRIGGER_MANUAL)
         else []
     )
     total = len(referentes) + len(competitors)
