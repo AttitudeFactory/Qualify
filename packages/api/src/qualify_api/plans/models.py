@@ -2,9 +2,10 @@
 
 Alembic owns the DDL, including RLS and grants. In short (ADR 43 §2.8):
 
-- `subscriptions`, `subscription_plan_assignments`, `subscription_cost_alerts`: above the
-  tenants, NO `tenant_id`, `ENABLE` + `FORCE ROW LEVEL SECURITY` with NO policy and grants
-  only to `qualify_admin` — the request path cannot read a single row.
+- `subscriptions`, `subscription_plan_assignments`, `subscription_cost_alerts` and
+  `subscription_payments` (0187, m-25129422): above the tenants, NO `tenant_id`, `ENABLE`
+  + `FORCE ROW LEVEL SECURITY` with NO policy and grants only to `qualify_admin` — the
+  request path cannot read a single row.
 - `business_plans`: one row per business, standard tenant RLS, `qualify_app` SELECT only.
   The business-side projection of its subscription's plan (in force now + a pending
   downgrade), written by the team's service in the same transaction as the assignment.
@@ -26,6 +27,7 @@ from sqlalchemy import (
     Text,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -217,6 +219,40 @@ class CreationPayment(Base):
     payment_ref: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     recorded_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+# --- monthly-fee payments (migration 0187, m-25129422) ------------------------------------
+
+
+class SubscriptionPayment(Base):
+    """One payment received for a subscription's month: never edited, never deleted.
+    Isolated by GRANT like `subscriptions` (ADR 43 §2.8). `(provider, provider_payment_id)`
+    is UNIQUE so the team's command — or, later, a provider webhook — writes it once."""
+
+    __tablename__ = "subscription_payments"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    subscription_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("subscriptions.id"), nullable=False
+    )
+    period_month: Mapped[date] = mapped_column(Date, nullable=False)
+    reference: Mapped[str] = mapped_column(Text, nullable=False)
+    usd_paid: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    local_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    local_currency: Mapped[str | None] = mapped_column(Text, nullable=True)
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    payment_ref: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="manual")
+    provider_payment_id: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_by: Mapped[str] = mapped_column(Text, nullable=False)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
