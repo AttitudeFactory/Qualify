@@ -12,6 +12,7 @@ from .monthly_post_vm import (
     NO_PRODUCTS,
     NO_PRODUCTS_HREF,
     NO_PRODUCTS_LINK,
+    NOT_SAVED,
     PICK_PRODUCT,
     PRODUCT_LABEL,
     PRODUCT_MISSING,
@@ -81,6 +82,7 @@ def _product_picker() -> rx.Component:
         rx.cond(
             S.products.length() > 0,
             rx.vstack(
+                rx.cond(S.product_id == "", callout(PICK_PRODUCT, "warn")),
                 rx.grid(
                     rx.foreach(S.products, _product_tile),
                     role="radiogroup",
@@ -89,14 +91,11 @@ def _product_picker() -> rx.Component:
                     spacing="2",
                     width="100%",
                 ),
-                rx.cond(
-                    S.product_id == "",
-                    rx.text(PICK_PRODUCT, size="2", color=T.TEXT_MUTED),
-                ),
                 spacing="2",
                 width="100%",
             ),
             rx.vstack(
+                callout(NOT_SAVED, "warn"),
                 callout(NO_PRODUCTS, "info"),
                 rx.link(
                     rx.button(
@@ -141,7 +140,14 @@ def monthly_post_card() -> rx.Component:
                     rx.cond(S.enabled, _kind_select()),
                     rx.cond(S.enabled & (S.kind == TEMPLATE_KIND), _product_picker()),
                     # what it costs, before turning it on too (the default kind's price)
-                    rx.cond(S.cost_text != "", rx.text(S.cost_text, size="2", weight="medium")),
+                    rx.cond(
+                        S.cost_text != "",
+                        rx.cond(
+                            S.cost_warns,
+                            callout(S.cost_text, "warn"),
+                            rx.text(S.cost_text, size="2", weight="medium"),
+                        ),
+                    ),
                     rx.cond(S.error != "", callout(S.error, "error")),
                     spacing="2",
                     width="100%",

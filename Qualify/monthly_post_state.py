@@ -13,12 +13,18 @@ from qualify_api.tenancy.acting import acting_login
 from .auth_state import AuthState
 from .creative_provider import configured_video_engine
 from .creative_state import CreativeState
-from .monthly_post_provider import read_setting, save_setting, template_products
+from .monthly_post_provider import (
+    monthly_creations,
+    read_setting,
+    save_setting,
+    template_products,
+)
 from .monthly_post_vm import (
     LOAD_FAILED,
     SAVE_FAILED,
     SESSION_ENDED,
     TEMPLATE_KIND,
+    cost_warns,
     monthly_cost_text,
 )
 from .tenant import tenant_uuid
@@ -36,6 +42,7 @@ class MonthlyPostState(rx.State):
     product_id: str = ""  # the template's catalog product ("" for any other kind)
     product_missing: bool = False  # that product can no longer make a template
     products: list[dict[str, str]] = []  # «Con plantilla»'s choices: `{id, name, photo_key}`
+    creations: int = 0  # the plan's monthly creations; 0 = unknown or no limit
     #: The kind the backend holds: «Con plantilla» is shown before it can be saved (it
     #: needs its product), and turning the switch meanwhile saves this one.
     _saved_kind: str = DEFAULT_KIND.value
@@ -44,7 +51,13 @@ class MonthlyPostState(rx.State):
 
     @rx.var
     def cost_text(self) -> str:
-        return monthly_cost_text(self.kind, configured_video_engine())
+        if self.kind == TEMPLATE_KIND and not self.product_id:
+            return ""  # nothing saved yet: no price for it
+        return monthly_cost_text(self.kind, configured_video_engine(), self.creations)
+
+    @rx.var
+    def cost_warns(self) -> bool:
+        return cost_warns(self.kind, configured_video_engine())
 
     async def _session(self) -> tuple[str, str, str]:
         auth = await self.get_state(AuthState)
@@ -57,6 +70,7 @@ class MonthlyPostState(rx.State):
             if context != self._context:  # another login or business: forget the last one
                 self.enabled, self.kind, self._context = False, DEFAULT_KIND.value, context
                 self.product_id, self.product_missing, self.products = "", False, []
+                self.creations = 0
                 self._saved_kind = DEFAULT_KIND.value
             cached = (await self.get_state(CreativeState))._brand_id
             self._operation = operation = str(uuid4())
@@ -72,9 +86,16 @@ class MonthlyPostState(rx.State):
             except Exception as exc:
                 logger.warning("monthly post load failed: %s", type(exc).__name__)
                 error = LOAD_FAILED
+        creations = 0
+        if not error:
+            try:  # the price line names the month's total; without it, it still reads
+                with acting_login(UUID(context[1])):
+                    creations = await asyncio.to_thread(monthly_creations, UUID(context[0]), cached)
+            except Exception as exc:
+                logger.warning("monthly post quota failed: %s", type(exc).__name__)
         async with self:
             if context == await self._session():
-                self.products = products
+                self.products, self.creations = products, creations
                 if self._operation == operation:  # else a save landed after this read
                     self._show(setting)
                     self.load_error = error

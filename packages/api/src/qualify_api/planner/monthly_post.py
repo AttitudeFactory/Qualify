@@ -8,7 +8,7 @@ ready-to-publish piece; founder, 2026-11-25), the advertising image by default.
 
 Stored without a table, like the seasons' «Ahora no» (`whatsapp.seasons`): ONE reserved key
 of the brand's `connect` details document, `brand_kit_details.connect.monthly_post =
-{"enabled": bool, "kind": str, "product_id"?: str}` (RLS of `brand_kit_details`; carried
+{"v": 2, "enabled": bool, "kind": str, "product_id"?: str}` (RLS of `brand_kit_details`; carried
 across the wizards' saves by `RESERVED_DETAIL_KEYS`). Written through
 `BrandKitStore.set_document_key`, so the rest of the document stays exactly as it is in the
 database at that moment. `product_id` is the catalog product a template is made from
@@ -48,6 +48,11 @@ MONTHLY_POST_KINDS: Final[tuple[ContentKind, ...]] = (
     ContentKind.ANIMATED_AVATAR_VIDEO,
     ContentKind.AVATAR_VIDEO,
 )
+#: Written on every save since m-25121346. A document without it was saved while the
+#: job made only the image and the clip: its other kinds were read as the image in
+#: production, so they keep reading that way (never silently a pricier kind).
+SETTING_VERSION: Final = 2
+_V1_KINDS: Final = frozenset({ContentKind.STATIC_FLYER, ContentKind.CLIP})
 
 
 class ProductLookup(Protocol):
@@ -92,6 +97,8 @@ def _from_document(value: Any) -> MonthlyPostSetting:
     try:
         kind = parse_kind(value.get("kind", DEFAULT_KIND))
     except ValueError:
+        kind = DEFAULT_KIND
+    if value.get("v") != SETTING_VERSION and kind not in _V1_KINDS:
         kind = DEFAULT_KIND
     product_id = _uuid(value.get("product_id")) if kind is ContentKind.TEMPLATE else None
     if kind is ContentKind.TEMPLATE and product_id is None:
@@ -170,7 +177,7 @@ def set_monthly_post_setting(
             raise ValueError("a template needs the catalog product it is made from")
         if usable_product(tenant_id, brand_id, product, catalog=catalog) is None:
             raise ValueError("the product is not an active product of this brand with a photo")
-    value: dict[str, Any] = {"enabled": enabled, "kind": parsed.value}
+    value: dict[str, Any] = {"v": SETTING_VERSION, "enabled": enabled, "kind": parsed.value}
     if product is not None:
         value["product_id"] = str(product)
     (store or BrandKitStore()).set_document_key(

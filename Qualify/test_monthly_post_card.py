@@ -22,6 +22,7 @@ from .monthly_post_vm import (
     NO_PRODUCTS_HREF,
     SAVE_FAILED,
     SESSION_ENDED,
+    cost_warns,
     kind_options,
     monthly_cost_text,
     product_rows,
@@ -59,6 +60,16 @@ _VIDEO = "Este video usa 5 segundos de tus videos del mes cuando lo apruebas."
 )
 def test_cost_is_the_generators_price_for_the_kind(kind: str, engine: str, text: str) -> None:
     assert monthly_cost_text(kind, engine) == text
+
+
+def test_a_presenter_names_the_plans_month_and_warns() -> None:
+    assert monthly_cost_text("avatar_video", "omnihuman", 30) == (
+        "Este video con presentador usa 9 de tus 30 creaciones cada mes."
+    )
+    assert monthly_cost_text("avatar_video", "omnihuman", 0) == _PRESENTER  # unknown
+    assert monthly_cost_text("clip", "omnihuman", 30) == _VIDEO
+    assert cost_warns("animated_avatar_video", "omnihuman")
+    assert not cost_warns("avatar_video", "seedance") and not cost_warns("clip", "omnihuman")
 
 
 @pytest.mark.parametrize("engine", ["seedance", "omnihuman"])
@@ -125,6 +136,7 @@ class Context:
         self._context, self._operation = ("", "", ""), ""
         self.product_id, self.product_missing, self.products = "", False, []
         self._saved_kind = "static_flyer"
+        self.creations = 0
 
     _show = MonthlyPostState._show
 
@@ -141,6 +153,7 @@ class Context:
 @pytest.fixture(autouse=True)
 def _no_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(state_module, "template_products", lambda _t, _b: [])
+    monkeypatch.setattr(state_module, "monthly_creations", lambda _t, _b: 30)
 
 
 def test_load_shows_the_saved_setting(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,7 +241,18 @@ def test_load_brings_the_products_and_a_missing_one(monkeypatch: pytest.MonkeyPa
         _ROW["id"],
         True,
     )
-    assert context.products == [_ROW]
+    assert context.products == [_ROW] and context.creations == 30
+
+
+def test_an_unreadable_quota_still_shows_the_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(_t: object, _b: object) -> int:
+        raise RuntimeError("no plan")
+
+    monkeypatch.setattr(state_module, "read_setting", lambda _t, _b: MonthlyPostSetting())
+    monkeypatch.setattr(state_module, "monthly_creations", broken)
+    context = Context()
+    asyncio.run(MonthlyPostState.load.fn(context))
+    assert context.load_error == "" and context.creations == 0 and not context.loading
 
 
 def test_template_waits_for_its_product_then_saves_it() -> None:

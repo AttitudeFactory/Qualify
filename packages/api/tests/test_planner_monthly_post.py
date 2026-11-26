@@ -12,6 +12,7 @@ from qualify_api.catalog.service import MediaRecord, ProductRecord, UnknownProdu
 from qualify_api.creative.brand_kit_store import BrandKitDetails, carry_reserved
 from qualify_api.planner.monthly_post import (
     MONTHLY_POST_KINDS,
+    SETTING_VERSION,
     MonthlyPostSetting,
     get_monthly_post_setting,
     product_photo_keys,
@@ -90,9 +91,24 @@ def test_the_six_kinds_are_offered() -> None:
 
 
 @pytest.mark.parametrize("kind", ["carousel", "avatar_video", "animated_avatar_video"])
-def test_a_kind_saved_while_825_offered_it_reads_as_saved(kind: str) -> None:
+def test_a_kind_saved_before_the_version_keeps_reading_as_the_image(kind: str) -> None:
+    # the job read these as the image in production: never wake up a pricier kind
     store = FakeStore()
     store.docs[(T, B)] = {"monthly_post": {"enabled": True, "kind": kind}}
+    assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting(
+        True, ContentKind.STATIC_FLYER
+    )
+    store.docs[(T, B)] = {"monthly_post": {"enabled": False, "kind": "clip"}}
+    assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting(
+        False, ContentKind.CLIP
+    )
+
+
+@pytest.mark.parametrize("kind", ["carousel", "avatar_video", "animated_avatar_video"])
+def test_a_kind_saved_with_the_version_reads_as_saved(kind: str) -> None:
+    store = FakeStore()
+    set_monthly_post_setting(T, B, True, kind, store=store)
+    assert store.docs[(T, B)]["monthly_post"]["v"] == SETTING_VERSION
     assert get_monthly_post_setting(T, B, store=store) == MonthlyPostSetting(
         True, ContentKind(kind)
     )
@@ -149,6 +165,7 @@ def test_a_template_saves_and_reads_its_product() -> None:
     )
     assert saved.product_id == product.id
     assert store.docs[(T, B)]["monthly_post"] == {
+        "v": SETTING_VERSION,
         "enabled": True,
         "kind": "template",
         "product_id": str(product.id),
@@ -177,7 +194,11 @@ def test_another_kind_drops_the_product() -> None:
     store = FakeStore()
     saved = set_monthly_post_setting(T, B, True, "clip", uuid4(), store=store)
     assert saved.product_id is None
-    assert store.docs[(T, B)]["monthly_post"] == {"enabled": True, "kind": "clip"}
+    assert store.docs[(T, B)]["monthly_post"] == {
+        "v": SETTING_VERSION,
+        "enabled": True,
+        "kind": "clip",
+    }
 
 
 def test_a_product_gone_since_reads_as_missing() -> None:
