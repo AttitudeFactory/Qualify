@@ -10,7 +10,9 @@ from qualify_api.planner.monthly_post import (
     set_monthly_post_setting,
 )
 
+from .catalog_provider import list_products
 from .investment_profile_provider import brand_for
+from .monthly_post_vm import product_rows
 
 
 def _brand(tenant_id: UUID, cached: str) -> UUID:
@@ -24,7 +26,13 @@ def read_setting(tenant_id: UUID, cached_brand: str) -> MonthlyPostSetting:
     return get_monthly_post_setting(tenant_id, _brand(tenant_id, cached_brand))
 
 
+def template_products(tenant_id: UUID, cached_brand: str) -> list[dict[str, str]]:
+    """The brand's active products with a photo, for «Con plantilla»'s picker."""
+    return product_rows(list_products(tenant_id, _brand(tenant_id, cached_brand)))
+
+
 def save_setting(
-    tenant_id: UUID, cached_brand: str, enabled: bool, kind: str
+    tenant_id: UUID, cached_brand: str, enabled: bool, kind: str, product_id: str = ""
 ) -> MonthlyPostSetting:
-    return set_monthly_post_setting(tenant_id, _brand(tenant_id, cached_brand), enabled, kind)
+    brand = _brand(tenant_id, cached_brand)
+    return set_monthly_post_setting(tenant_id, brand, enabled, kind, product_id or None)
