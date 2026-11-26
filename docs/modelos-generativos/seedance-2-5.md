@@ -379,4 +379,99 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
   (19 `succeeded`, 2 `failed`), la última del 2026-11-21. El modelo está activado: la
   exigencia de más de US$30 de saldo era del 2026-10-07 y quedó atrás el 2026-10-23. El
   saldo actual no se pudo leer.
-- **Resultados:** pendientes de la corrida pagada que apruebe Deivid.
+- **Resultados:** corrida `20261126-125745`, en la sección siguiente.
+
+### Prueba AVESC-001 — camino A en vivo: 2 personajes × 3 escenas en borrador — 2026-11-26 (m-25112921)
+
+- **Corrida:** `20261126-125745`, con el OK de Deivid escrito en la sesión. Material en
+  `%TEMP%/avatar-escena-seedance/corridas/20261126-125745/` (`videos/`, `dibujos/`,
+  `resultados.json`, `gasto.json`, `dibujos.json`, `juicio-deivid.csv`, `juicio-herwin.csv`).
+  Producto: `%TEMP%/avatar-escena-seedance/material/producto-super-smash.jpg` (la super smash de
+  Nibbles' Burgers). La revisión de cuadros y las transcripciones quedaron en
+  `%TEMP%/avatar-escena-revision/` (con una hoja de contacto de los 6 videos). Nada de eso se
+  copia al repositorio.
+- **Modelos y ajustes:** dibujos con `dola-seedream-5-0-pro-260628` (1080×1920; se usó la opción 1
+  del personaje realista, del animado y del fondo dibujado; las opciones 2 se pagaron y no se
+  usaron). Escenas con `dreamina-seedance-2-5-260628`, borrador 480p (480×854, 24 cps), 9:16, con
+  audio, prompt `avatar-escena-v1`, tabla de precios `v10`, una tarea a la vez.
+
+**Costo y tiempo reales**
+
+| Llamada | Segundos pedidos | Cotizado (US$) | Tokens cobrados | Cobrado (US$) | Tiempo (s) |
+|---|---|---|---|---|---|
+| 6 dibujos Seedream 5.0 pro | — | 0,27 | — | **0,27** (0,045 c/u) | 27,5 a 58,4 |
+| realista e1 | 5 | 0,514 | 48.437 | **0,518** | 68,5 |
+| realista e2 | 8 | 0,822 | 77.260 | **0,827** | 67,6 |
+| realista e3 | 10 | 1,028 | 96.475 | **1,032** | 74,4 |
+| animado e1 | 5 | 0,514 | 48.437 | **0,518** | 67,4 |
+| animado e2 | 8 | 0,822 | 77.260 | **0,827** | 78,4 |
+| animado e3 | 10 | 1,028 | 96.475 | **1,032** | 74,6 |
+| **Total** | | 5,00 | | **5,02** (escenas 4,75) | |
+
+- Cobrado = tokens × US$10,70/M (480p sin video de entrada). La cotización de `v10` se quedó
+  corta en un 0,4 a 0,8 % por escena (≈ 9.650 a 9.690 tokens por segundo cobrados frente a
+  ≈ 9.610 cotizados), como en SD25-001/002: dentro del margen del 10 % del libro de gasto. El tope
+  de US$8 no se tocó. Una escena cuesta ≈ US$0,10 por segundo en borrador; el final a 1080p de
+  esas mismas escenas costaría aparte ≈ US$0,57 por segundo (SD25-002), no medido aquí.
+- Una escena tarda de 67 a 78 s, sin relación clara con su largo (la de 5 s tardó lo mismo que la
+  de 8 s).
+
+**Aceptación de las referencias.** Las 6 tareas terminaron bien con las tres imágenes (personaje,
+producto, fondo); ninguna rechazó una referencia. **La cara realista dibujada por Seedream 5.0 pro
+pasó** (el dibujo viajó byte a byte). Eso no prueba que pase una foto real de una persona: esa
+rama no se midió.
+
+**Audio.** Los 6 videos traen una pista AAC estéreo de 32 kHz que dura lo mismo que el video
+(4,96 / 7,97 / 9,95 s). Transcripción local con faster-whisper en CPU, idioma `es`, con dos
+modelos (`small` y `large-v3-turbo`); donde no coinciden se dice. La voz del personaje animado
+sale más baja (RMS ≈ 0,045 frente a ≈ 0,08 del realista, unos 5 dB menos).
+
+| Video | Línea esperada | Transcripción | Habla entre |
+|---|---|---|---|
+| realista e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién hecha!» (los dos) | 2,0 y 4,7 s |
+| realista e2 | Mmm, crujiente por fuera y jugosa por dentro. | «Mmm, crujiente por fuera y jugosa por dentro.» (`small`; turbo omite el «Mmm») | 4,6 y 7,8 s |
+| realista e3 | Esta es la super smash de Nibbles. Ven hoy por la tuya. | «Esta es la Super **Splash** de **Nibles**. Ven hoy por la tuya.» (los dos) | 5,9 y 9,7 s |
+| animado e1 | ¡Mira esta super smash, recién hecha! | «Mira esta Super Smash recién **hacha**.» (los dos) | 2,2 y 4,7 s |
+| animado e2 | Mmm, crujiente por fuera y jugosa por dentro. | «Mmm, **cruyente** por fuera y jugosa por dentro.» (`small`; turbo «cruguiente») | 4,1 y 7,8 s |
+| animado e3 | Esta es la super smash de Nibbles. Ven hoy por la tuya. | «Esta es la Super Smash de Nibbles. Ven hoy por la tuya.» (los dos) | 4,9 y 9,1 s |
+
+Las seis dicen la frase completa, en español y dentro del video. Lo que va en negrita es donde los
+dos modelos oyen lo mismo, distinto de la línea: puede ser pronunciación (la marca en inglés,
+«hecha», la «j») o error de la transcripción. **Para juicio humano.**
+
+**Juicio preliminar por cuadros** (6 cuadros por video más 9 recortes de la cara durante el habla;
+sin oír). **Es preliminar: lo reemplaza la planilla de Deivid y Herwin.** Labios: en los seis la
+boca cambia de forma mientras hay voz y está quieta o sonriendo antes; la sincronía fina, el acento
+y la calidad de la voz quedan **para juicio humano**.
+
+| Video | Personaje igual | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
+|---|---|---|---|---|---|---|
+| realista e1 | sí (rizos, camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador y la acerca a cámara | ninguno inventado; el menú del fondo trae seudoletras borrosas que ya estaban en el dibujo del fondo | mancha de grasa en el mostrador donde estaba (verosímil) | 3 |
+| realista e2 | sí | sí; mordida visible en el pan | sí: muerde, mastica con los ojos cerrados, baja un poco y habla | igual que e1 | la mordida solo marca el pan de arriba | 3 |
+| realista e3 | sí | sí | sí: la muestra en una mano, señala con la otra e invita | igual que e1 | ninguno visto; habla recién desde el segundo 5,9 | 3 (voz pendiente: «Splash», «Nibles») |
+| animado e1 | sí (gorra roja, coleta, delantal) | sí, pero **enorme**: tan ancha como su torso, ya sobre el mostrador | sí | igual que e1 | escala del producto | 2 |
+| animado e2 | sí | sí; mordida visible | sí | igual que e1 | ninguno visto | 3 (voz pendiente: «cruyente») |
+| animado e3 | sí | sí, salvo una grieta en el pan hacia el segundo 2 | sí: la sostiene en la palma y la señala | igual que e1 | grieta del pan; la hamburguesa se sostiene en una palma abierta | 3 |
+
+**Conclusión provisional (pendiente de la planilla).** El camino A sirve para un borrador: una sola
+tarea de 5 a 10 s pone al personaje dentro del local, con el producto reconocible, cumpliendo la
+acción (también comer) y diciendo la línea entera en español, por ≈ US$0,10 el segundo y en poco
+más de un minuto. Las 6 se aceptan en lo visual; 3 tienen una duda de pronunciación que solo se
+resuelve oyendo. Riesgos:
+
+1. **La voz no se controla:** cada tarea inventa la suya. El mismo personaje puede sonar distinto
+   de una parte a otra del Clip, y el dueño no puede elegirla ni clonarla (eso era el camino B,
+   Seed Speech). Hay que oír e1, e2 y e3 seguidas.
+2. **Pronunciación de nombres propios y palabras en inglés** («super smash», «Nibbles») y de algún
+   fonema («hecha», «crujiente»): 3 de 6 con dudas según la transcripción.
+3. **Escala y forma del producto** cambian (animado e1, grieta en animado e3): la fidelidad al
+   producto necesita una revisión humana por escena.
+4. **El momento de la línea no se controla:** en las de 10 s el personaje habla en la segunda
+   mitad (desde 4,9 y 5,9 s); en las de 5 s la línea entra justa (termina a 4,7 s).
+5. **Seudoletras del fondo:** vienen del dibujo del fondo; un fondo sin cartel las evita.
+6. **Una muestra por casilla:** no se sabe cuánto varía si se repite.
+7. **Sin probar:** una foto real de una persona (cara real), la foto real del local y el final a
+   1080p (≈ US$0,57 por segundo más, según SD25-002).
+8. **Datos del cliente:** la foto del producto viajó al id del modelo; antes de llevarlo a clientes
+   hay que confirmar que esa vía no es una de las que ceden datos a BytePlus (regla del
+   generador).
