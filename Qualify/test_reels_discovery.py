@@ -1232,8 +1232,12 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
         assert ".q-rf-" not in sheet.read_text(encoding="utf-8"), sheet.name
     assert "q-rf-" not in rendered and "q-rf-" not in inspect.getsource(discover_reels)
     bar = inspect.getsource(discover_reels._filter_bar)
-    for gone in ("background", "position", "sticky", "class_name", "rx.el.button"):
-        assert gone not in bar, gone  # no box behind it, nothing of its own
+    for gone in ("position", "sticky", "class_name", "rx.el.button", "#", "rx.color("):
+        assert gone not in bar, gone  # nothing of its own, no colour written by hand
+    # Deivid 2026-11-26: a soft panel of the system behind the filters — never the dark
+    # box he took away (`--q-dialog-fill`)
+    assert "background=T.CARD_BG" in bar and "border_radius=T.RADIUS_CARD" in bar
+    assert "q-dialog-fill" not in bar
     row = inspect.getsource(discover_reels._option_row)
     assert 'variant="ghost"' in row and "min_height=_TARGET" in row and "role=role" in row
     assert discover_reels._MARKS == {

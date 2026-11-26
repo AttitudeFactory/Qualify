@@ -315,9 +315,16 @@ def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
 
     bar = inspect.getsource(discover_reels._filter_bar)
     desktop, phone = bar.split("display=_WIDE")
-    assert desktop.index("_reset_button()") < desktop.index("_rivals_button(chip=False)")
-    assert phone.index("_reset_button()") < phone.index("_rivals_button(chip=True)")
-    assert "rx.separator" in bar
+    # Deivid 2026-11-26: «Tus competidores» flows with the filters, paired with
+    # «Duración» so it is never alone on a row; «Restablecer filtros» comes last
+    assert "_with_rivals(_dropdown(AXIS_DURATION, shrink=True), chip=False)" in desktop
+    assert "_with_rivals(_chip(AXIS_DURATION, shrink=True), chip=True)" in phone
+    for group in (desktop, phone):
+        assert group.index("_with_rivals(") < group.index("_reset_button()")
+    assert "rx.separator" not in bar
+    pair = inspect.getsource(discover_reels._with_rivals)
+    assert 'wrap="nowrap"' in pair and "_rivals_button(chip=chip)" in pair
+    assert 'flex_shrink="0"' in inspect.getsource(discover_reels._rivals_button)
     assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
     button = inspect.getsource(discover_reels._rivals_button)
     # RF-13: a Radix button of the skin, like the filters beside it — no class of its own

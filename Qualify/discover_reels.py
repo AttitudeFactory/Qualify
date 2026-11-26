@@ -1420,12 +1420,14 @@ def _axis_on(axis: str) -> rx.Var[bool]:
     return _STATE_VALUE[axis]() != ""
 
 
-def _filter_button(axis: str, **props: Any) -> rx.Component:
+def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Component:
     """What a dropdown or a chip reads — «Canal» · «Todos» ▾ — as a Radix button with
     the skin: `soft` (the accent wash) while the axis narrows the list, `surface`
     otherwise. It never overflows its row (RF-13: «Tipo de cuenta: Competidores» was cut
     in a ~730 px panel): it may shrink to the row, and only the value then ends in «…»,
-    with the whole value in `title`."""
+    with the whole value in `title`. `size="2"` keeps the bar on fewer rows; the target
+    stays 44 px. `shrink`: the button may give way to its neighbour in a pair that never
+    wraps (`_with_rivals`)."""
     on = _axis_on(axis)
     value = _axis_value(axis)
     return rx.button(
@@ -1442,21 +1444,22 @@ def _filter_button(axis: str, **props: Any) -> rx.Component:
         rx.icon("chevron-down", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
         type="button",
         variant=rx.cond(on, "soft", "surface"),
-        size="3",
+        size="2",
         min_height=_TARGET,
         max_width="100%",
+        **({"flex_shrink": "1", "min_width": "0"} if shrink else {}),
         aria_label=AXIS_LABELS[axis] + ": " + value,
         title=AXIS_LABELS[axis] + ": " + value,
         **props,
     )
 
 
-def _dropdown(axis: str) -> rx.Component:
+def _dropdown(axis: str, *, shrink: bool = False) -> rx.Component:
     """A desktop filter: a button that opens its options under it (Radix popover, the
     skin's glass; Escape gives the focus back to the button)."""
     options = _account_options() if axis == AXIS_ACCOUNT else _single_options(axis, close=True)
     return rx.popover.root(
-        rx.popover.trigger(_filter_button(axis)),
+        rx.popover.trigger(_filter_button(axis, shrink=shrink)),
         rx.popover.content(
             options,
             side="bottom",
@@ -1480,11 +1483,12 @@ SHEET_FOCUS_SCRIPT = (
 )
 
 
-def _chip(axis: str) -> rx.Component:
+def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
     """A phone filter: a chip that opens its sheet from the bottom."""
     S = DiscoverReelsState
     return _filter_button(
         axis,
+        shrink=shrink,
         on_click=S.open_sheet(axis),
         aria_haspopup="dialog",
         aria_expanded=rx.cond(S.sheet == axis, "true", "false"),
@@ -1502,7 +1506,7 @@ def _reset_button() -> rx.Component:
             reels_filters_vm.RESET_LABEL,
             type="button",
             variant="ghost",
-            size="3",
+            size="2",
             min_height=_TARGET,
             margin="0",
             on_click=DiscoverReelsState.reset_filters,
@@ -1553,23 +1557,39 @@ def _sheet() -> rx.Component:
     )
 
 
+def _with_rivals(last: rx.Component, *, chip: bool) -> rx.Component:
+    """The last filter and «Tus competidores» as one pair that never wraps (RF-13, Deivid
+    2026-11-26): the button always shares its row with a filter, at any width. When the
+    pair is wider than the row, the filter gives way (its value ends in «…»), never the
+    button."""
+    return rx.flex(
+        last,
+        _rivals_button(chip=chip),
+        wrap="nowrap",
+        align="center",
+        spacing="2",
+        min_width="0",
+        max_width="100%",
+    )
+
+
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
     «Cuenta», «Duración» and «Restablecer filtros». From 480 px up, dropdowns; on a
-    phone, chips (wrapping onto a second row, none hidden) that open a sheet from the
-    bottom. Every change is one more read of what is stored — never a paid call. RF-13:
-    no box behind it, and only the system's pieces (Radix buttons, popovers, `drawer`)."""
-    axes = (*_SINGLE_AXES, AXIS_ACCOUNT, AXIS_DURATION)
+    phone, chips (wrapping onto more rows, none hidden) that open a sheet from the
+    bottom. Every change is one more read of what is stored — never a paid call.
+
+    RF-13: only the system's pieces (Radix buttons, popovers, `drawer`) on a soft panel
+    of the system (`T.CARD_BG`, the card radius; Deivid 2026-11-26 — never the dark box
+    he took away). «Tus competidores» flows with the filters, paired with «Duración» so
+    it is never alone on a row; «Restablecer filtros» comes last, so it is the one that
+    drops to the next row."""
+    first = (*_SINGLE_AXES, AXIS_ACCOUNT)
     return rx.box(
         rx.flex(
-            *(_dropdown(axis) for axis in axes),
+            *(_dropdown(axis) for axis in first),
+            _with_rivals(_dropdown(AXIS_DURATION, shrink=True), chip=False),
             _reset_button(),
-            # RF-05, option A: «Tus competidores» after the filters, set apart
-            rx.cond(
-                DiscoverReelsState.competitor_rows.length() > 0,
-                rx.separator(orientation="vertical", size="1"),
-            ),
-            _rivals_button(chip=False),
             display=_WIDE,
             wrap="wrap",
             align="center",
@@ -1577,9 +1597,9 @@ def _filter_bar() -> rx.Component:
             width="100%",
         ),
         rx.flex(
-            *(_chip(axis) for axis in axes),
+            *(_chip(axis) for axis in first),
+            _with_rivals(_chip(AXIS_DURATION, shrink=True), chip=True),
             _reset_button(),
-            _rivals_button(chip=True),
             display=_PHONE,
             wrap="wrap",
             align="center",
@@ -1592,6 +1612,10 @@ def _filter_bar() -> rx.Component:
         role="search",
         aria_label=reels_filters_vm.BAR_LABEL,
         width="100%",
+        background=T.CARD_BG,
+        border_radius=T.RADIUS_CARD,
+        padding="0.5rem",
+        box_sizing="border-box",
     )
 
 
@@ -1858,8 +1882,9 @@ def _rivals_button(*, chip: bool) -> rx.Component:
             id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
             on_click=S.open_competitors(chip),
             variant="surface",
-            size="3",
+            size="2",
             min_height=_TARGET,
+            flex_shrink="0",
             aria_label=S.competitors_label,
             aria_haspopup="dialog",
             aria_expanded=rx.cond(S.competitors_open, "true", "false"),
