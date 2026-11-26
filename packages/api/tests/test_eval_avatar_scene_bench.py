@@ -408,3 +408,133 @@ def test_the_ceiling_stops_a_paid_run_before_crossing_it(
         runner.main(
             ["dibujar", "--i-have-spend-authorization", "--max-usd", "0.2", "--out", str(out)]
         )
+
+
+class FakeSeedanceWithVideo:
+    """Makes every scene and hands back a 24 h link, like ModelArk."""
+
+    sent: list[str] = []
+
+    def __init__(self, **_: Any) -> None:
+        pass
+
+    def generate(self, request: Any, *, api_key: str) -> GenerationResult:
+        from qualify_creative.adapters.byteplus_ark import estimate_video_tokens
+
+        seconds = int(request.params["duration_seconds"])
+        FakeSeedanceWithVideo.sent.append(str(seconds))
+        return GenerationResult(
+            payload={"task_id": f"cgt-{len(FakeSeedanceWithVideo.sent)}"},
+            model_id=bench.SEEDANCE_MODEL,
+            provider="seedance",
+            usage=Usage(
+                output_tokens=estimate_video_tokens(bench.SEEDANCE_MODEL, "480p", "9:16", seconds)
+            ),
+            media_url=f"https://example.invalid/{seconds}.mp4",
+        )
+
+
+def test_a_phase_cut_after_a_charge_keeps_it_and_never_pays_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.adapters import byteplus_ark
+
+    runner = _runner()
+    monkeypatch.setenv("QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY", "fake-key")
+    monkeypatch.delenv("QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT", raising=False)
+    monkeypatch.setattr(byteplus_ark, "SeedreamImageAdapter", FakeSeedream)
+    monkeypatch.setattr(byteplus_ark, "SeedanceVideoAdapter", FakeSeedanceWithVideo)
+    monkeypatch.setattr(byteplus_eval_guard, "in_off_hours", lambda now: True)
+    material = str(_material(tmp_path))
+    out = tmp_path / "out"
+    common = ["--i-have-spend-authorization", "--max-usd", "8", "--personaje", "animado"]
+    assert runner.main(["dibujar", *common, "--out", str(out)]) == 0
+    run = next(p for p in out.iterdir() if p.is_dir())
+    after_drawings = Decimal(json.loads((run / "gasto.json").read_text("utf-8"))["spent_usd"])
+    assert after_drawings == Decimal("0.180")  # 2 options of the character + 2 of the place
+
+    # the process dies while downloading the SECOND scene, after it was paid
+    downloads: list[str] = []
+
+    def dying_download(url: str, target: Path) -> str | None:
+        downloads.append(url)
+        if len(downloads) == 2:
+            raise KeyboardInterrupt
+        target.write_bytes(b"mp4")
+        return None
+
+    monkeypatch.setattr(runner, "_download_video", dying_download)
+    FakeSeedanceWithVideo.sent = []
+    scenes = ["escenas", *common, "--material", material, "--run", str(run)]
+    with pytest.raises(KeyboardInterrupt):
+        runner.main(scenes)
+    assert FakeSeedanceWithVideo.sent == ["5", "8"]
+    spend = json.loads((run / "gasto.json").read_text("utf-8"))
+    paid = [c for c in spend["calls"] if c["phase"] == "escenas"]
+    assert [c["label"] for c in paid] == ["animado/dibujado/e1", "animado/dibujado/e2"]
+    assert Decimal(spend["spent_usd"]) == after_drawings + sum(
+        (Decimal(c["cost_usd"]) for c in paid), Decimal(0)
+    )
+    results = json.loads((run / "resultados.json").read_text("utf-8"))
+    cut = results["animado/dibujado/e2"]
+    assert cut["task_id"] == "cgt-2" and "video" not in cut
+
+    # resumed: e2 is fetched again, NOT sent again; only e3 is new
+    monkeypatch.setattr(
+        runner, "_download_video", lambda url, target: target.write_bytes(b"mp4") and None
+    )
+    assert runner.main(scenes) == 0
+    assert FakeSeedanceWithVideo.sent == ["5", "8", "10"]
+    results = json.loads((run / "resultados.json").read_text("utf-8"))
+    assert all(r.get("video") for r in results.values())
+    spend = json.loads((run / "gasto.json").read_text("utf-8"))
+    assert [c["label"] for c in spend["calls"] if c["phase"] == "escenas"] == [
+        "animado/dibujado/e1",
+        "animado/dibujado/e2",
+        "animado/dibujado/e3",
+    ]
+
+
+class _Answer:
+    def __init__(self, status: int, kind: str, body: bytes) -> None:
+        self.status_code = status
+        self.headers = {"content-type": kind}
+        self.content = body
+
+    def raise_for_status(self) -> None:
+        import httpx
+
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://example.invalid/v.mp4")
+            raise httpx.HTTPStatusError(
+                "error", request=request, response=httpx.Response(self.status_code)
+            )
+
+
+@pytest.mark.parametrize(
+    ("answer", "saved"),
+    [
+        (_Answer(200, "video/mp4", b"mp4"), True),
+        (_Answer(200, "application/octet-stream", b"mp4"), True),
+        (_Answer(403, "application/xml", b"<Error/>"), False),
+        (_Answer(200, "text/html; charset=utf-8", b"<html>"), False),
+        (_Answer(200, "video/mp4", b""), False),
+    ],
+)
+def test_download_never_saves_an_error_as_a_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: _Answer, saved: bool
+) -> None:
+    import httpx
+
+    runner = _runner()
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: answer)
+    target = tmp_path / "v.mp4"
+    failure = runner._download_video("https://example.invalid/v.mp4", target)
+    assert (failure is None) is saved
+    assert target.exists() is saved
+
+
+def test_the_dry_run_quote_never_lands_in_the_repo(tmp_path: Path) -> None:
+    runner = _runner()
+    with pytest.raises(SystemExit, match="fuera del repositorio"):
+        runner.main(["plan", "--out", str(runner.REPO / "packages" / "api" / "evals")])

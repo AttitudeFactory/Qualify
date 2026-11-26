@@ -24,9 +24,9 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 <a id="avesc-001"></a>
 
-## AVESC-001 — Avatar como personaje en su escena, camino A: Seedance 2.5 omni en borrador (m-25112921) — 2026-11-26 · 6 DE 6 ACEPTADAS EN LO VISUAL, VOZ PENDIENTE DE OÍR; US$5,02
+## AVESC-001 — Avatar como personaje en su escena, camino A: Seedance 2.5 omni en borrador (m-25112921) — 2026-11-26 · 6 de 6 referencias aceptadas; juicio visual preliminar, el humano está pendiente; US$5,02
 
-- **Qué:** 2 personajes dibujados por `dola-seedream-5-0-pro-260628` (realista y animado) × 3 escenas (5, 8 y 10 s) sobre un fondo dibujado, con la super smash de Nibbles' Burgers como producto, en `dreamina-seedance-2-5-260628`, borrador 480p 9:16 con audio, prompt `avatar-escena-v1`, tabla `v10`. Corrida `20261126-125745`, banco `packages/api/evals/avatar_escena/`.
+- **Qué:** 2 personajes dibujados por `dola-seedream-5-0-pro-260628` (realista y animado) × 3 escenas (5, 8 y 10 s) sobre un fondo dibujado, con una foto del catálogo de nibbles usada como super smash por decisión de Deivid (no se confirmó que sea el producto real; la fidelidad se mide contra esa foto), en `dreamina-seedance-2-5-260628`, borrador 480p 9:16 con audio, prompt `avatar-escena-v1`, tabla `v10`. Corrida `20261126-125745`, banco `packages/api/evals/avatar_escena/`.
 - **Costo real:** US$5,02 (dibujos 0,27; escenas 4,75: 0,518 / 0,827 / 1,032 por personaje). La cotización quedó 0,4 a 0,8 % corta. Tiempo por escena: 67 a 78 s.
 - **Resultado:** todas aceptaron las tres referencias, también la cara realista dibujada por Seedream. Las seis dicen la frase completa en español; en 3 la transcripción oye «Splash de Nibles», «hacha» o «cruyente» (para oír). Detalle, juicio preliminar por cuadros y riesgos en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVESC-001»).
 - **Pendiente:** las planillas `juicio-deivid.csv` y `juicio-herwin.csv` de la corrida (en `%TEMP%`).

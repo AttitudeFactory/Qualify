@@ -340,7 +340,7 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 - El material real se descargó a `%TEMP%` y se borró al terminar, con todas las salidas. No
   quedó nada en el repositorio.
 
-## Avatar como personaje en su escena, camino A: banco preparado, sin gasto (2026-11-26, m-25112921)
+## Avatar como personaje en su escena, camino A: banco y corrida AVESC-001 (2026-11-26, m-25112921)
 
 - **Qué mide.** Decisión de Deivid del 2026-11-26: el avatar del Clip es un **personaje** que
   actúa y habla dentro de la escena (toma el producto, lo muestra, lo come y dice su línea).
@@ -386,8 +386,10 @@ vez, y en los dos la línea base es más fiel al producto. El interruptor sigue 
 - **Corrida:** `20261126-125745`, con el OK de Deivid escrito en la sesión. Material en
   `%TEMP%/avatar-escena-seedance/corridas/20261126-125745/` (`videos/`, `dibujos/`,
   `resultados.json`, `gasto.json`, `dibujos.json`, `juicio-deivid.csv`, `juicio-herwin.csv`).
-  Producto: `%TEMP%/avatar-escena-seedance/material/producto-super-smash.jpg` (la super smash de
-  Nibbles' Burgers). La revisión de cuadros y las transcripciones quedaron en
+  Producto: `%TEMP%/avatar-escena-seedance/material/producto-super-smash.jpg`, una foto del
+  catálogo de nibbles (producto `fde5a706`, idéntica byte a byte a una de las fotos de la «smash
+  doble») que se usó como super smash por decisión de Deivid; no se confirmó que muestre el
+  producto real. La fidelidad al producto se mide contra esa foto. La revisión de cuadros y las transcripciones quedaron en
   `%TEMP%/avatar-escena-revision/` (con una hoja de contacto de los 6 videos). Nada de eso se
   copia al repositorio.
 - **Modelos y ajustes:** dibujos con `dola-seedream-5-0-pro-260628` (1080×1920; se usó la opción 1
@@ -442,7 +444,8 @@ dos modelos oyen lo mismo, distinto de la línea: puede ser pronunciación (la m
 **Juicio preliminar por cuadros** (6 cuadros por video más 9 recortes de la cara durante el habla;
 sin oír). **Es preliminar: lo reemplaza la planilla de Deivid y Herwin.** Labios: en los seis la
 boca cambia de forma mientras hay voz y está quieta o sonriendo antes; la sincronía fina, el acento
-y la calidad de la voz quedan **para juicio humano**.
+y la calidad de la voz quedan **para juicio humano**. La columna «Producto» compara con la foto
+de catálogo usada como super smash, no con el producto real.
 
 | Video | Personaje igual | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
 |---|---|---|---|---|---|---|

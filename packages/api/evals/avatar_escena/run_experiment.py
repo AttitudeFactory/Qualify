@@ -146,20 +146,49 @@ def _spent_before(run: Path | None) -> Decimal:
     return Decimal(str(_read_json(run / SPEND_FILE, {}).get("spent_usd", "0")))
 
 
-def _record_spend(run: Path, phase: str, ledger: Any, calls: list[dict[str, Any]]) -> None:
-    data = _read_json(run / SPEND_FILE, {"spent_usd": "0", "phases": []})
-    spent = Decimal(ledger.snapshot()["spent_usd"])
-    data["spent_usd"] = str(Decimal(data["spent_usd"]) + spent)
-    data["phases"].append(
+def _add_spend(run: Path, phase: str, label: str, cost_usd: Decimal | str) -> None:
+    """Add ONE call's cost to the run's `gasto.json` right after it is settled, so a phase
+    cut short keeps every charge and a resumed run never spends past the ceiling."""
+    data = _read_json(run / SPEND_FILE, {"spent_usd": "0"})
+    cost = Decimal(str(cost_usd))
+    data["spent_usd"] = str(Decimal(str(data.get("spent_usd", "0"))) + cost)
+    data.setdefault("calls", []).append(
         {
             "phase": phase,
+            "label": label,
+            "cost_usd": str(cost),
             "at": datetime.now(UTC).isoformat(),
-            "spent_usd": str(spent),
-            "ledger": ledger.snapshot(),
-            "calls": [c["label"] for c in calls],
         }
     )
     _write_json(run / SPEND_FILE, data)
+
+
+def _already_paid(row: dict[str, Any]) -> bool:
+    """A call that may have been billed (a task id, or a cost counted): never sent again."""
+    return bool(row.get("task_id")) or Decimal(str(row.get("cost_usd") or "0")) > 0
+
+
+#: What a downloaded video may be served as (some storage answers octet-stream).
+VIDEO_CONTENT_TYPES = ("video/", "application/octet-stream", "binary/octet-stream")
+
+
+def _download_video(url: str, target: Path) -> str | None:
+    """Copy the 24 h video to `target`. None when done, else why it was not saved: an
+    error answer or a body that is not a video is never written as an `.mp4`."""
+    import httpx
+
+    try:
+        response = httpx.get(url, timeout=120, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        return f"descarga: {type(exc).__name__}: {exc}"[:400]
+    kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    if not kind.startswith(VIDEO_CONTENT_TYPES):
+        return f"descarga: tipo de contenido «{kind or 'vacío'}», no es un video"
+    if not response.content:
+        return "descarga: respuesta vacía"
+    target.write_bytes(response.content)
+    return None
 
 
 def _pricing() -> Any:
@@ -287,6 +316,8 @@ def _dry(args: argparse.Namespace, material: dict[str, Any]) -> int:
         plan = _print_plan(args, material, items)
     print(f"\nLlamadas de red bloqueadas durante la prueba en seco: {stats['blocked']}")
     out = Path(args.out)
+    if out.resolve().is_relative_to(REPO):
+        raise SystemExit("la cotización va fuera del repositorio")
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"cotizacion-{args.command}-{datetime.now():%Y%m%d-%H%M%S}.json"
     _write_json(path, {**plan, "command": args.command, "network_blocked": stats["blocked"]})
@@ -358,11 +389,11 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
     ledger = _ledger(max_usd, run)
     adapter = SeedreamImageAdapter(model=SEEDREAM_MODEL)
     done = _read_json(run / DRAWINGS_FILE, {})
-    calls: list[dict[str, Any]] = []
     (run / "dibujos").mkdir(exist_ok=True)
     for item in items:
-        if done.get(item.label, {}).get("file"):
-            continue  # resumed
+        previous = done.get(item.label, {})
+        if previous.get("file") or _already_paid(previous):
+            continue  # resumed: drawn already, or a charge that may have gone through
         kind, ident, _ = item.label.split("/")
         prompt = (
             character_image_prompt(character(ident))
@@ -402,16 +433,24 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
                 error=f"{type(exc).__name__}: {exc}"[:400],
                 cost_usd=str(ledger.settle(reservation)),
             )
+            _add_spend(run, "dibujar", item.label, row["cost_usd"])
         else:
-            images = list(result.payload["images"])  # type: ignore[index]
-            actual = seedream_image_cost(
-                pricing,
-                model_id=SEEDREAM_MODEL,
-                size=IMAGE_SIZE,
-                references=0,
-                pieces=result.usage.pieces,
-            )
+            try:
+                actual = seedream_image_cost(
+                    pricing,
+                    model_id=SEEDREAM_MODEL,
+                    size=IMAGE_SIZE,
+                    references=0,
+                    pieces=result.usage.pieces,
+                )
+            except Exception:  # never lose a charge: the reservation stands for it
+                actual = None
             row["cost_usd"] = str(ledger.settle(reservation, actual))
+            _add_spend(run, "dibujar", item.label, row["cost_usd"])
+            # the paid row is on disk before anything else can fail
+            done[item.label] = row
+            _write_json(run / DRAWINGS_FILE, done)
+            images = list(result.payload["images"])  # type: ignore[index]
             name = f"{item.label.replace('/', '__')}.jpg"
             # kept byte for byte: Seedance 2.x accepts faces only in its own account's
             # Seedream outputs, unmodified
@@ -422,11 +461,9 @@ def cmd_dibujar(args: argparse.Namespace, material: dict[str, Any]) -> int:
                 model_revision=result.model_revision,
             )
         row["seconds_taken"] = round(time.monotonic() - started, 1)
-        calls.append(row)
         done[item.label] = row
         _write_json(run / DRAWINGS_FILE, done)
         print(f"  {item.label}: {row.get('file') or row.get('error')} · US${row['cost_usd']}")
-    _record_spend(run, "dibujar", ledger, calls)
     print(f"Corrida: {run} · gastado en esta fase US${ledger.snapshot()['spent_usd']}")
     print(f"Elige las opciones en {run / CHOICE_FILE} antes de «escenas» (por omisión, la 1).")
     return 0
@@ -447,7 +484,6 @@ def _chosen_drawing(run: Path, kind: str, ident: str) -> Path:
 
 
 def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
-    import httpx
     from qualify_creative.adapters.byteplus_ark import (
         ArkAPIError,
         ArkTaskFailed,
@@ -478,11 +514,22 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
     product_url = reference_data_url(material["product"].read_bytes())
     local_url = reference_data_url(material["local"].read_bytes()) if material["local"] else None
     done = _read_json(run / RESULTS_FILE, {})
-    calls: list[dict[str, Any]] = []
     (run / "videos").mkdir(exist_ok=True)
     for case, item in zip(cases, items, strict=True):
-        if done.get(case.label, {}).get("video"):
+        previous = done.get(case.label, {})
+        if previous.get("video"):
             continue  # resumed
+        if _already_paid(previous):
+            # paid before: never sent again; only its video is fetched again if it can be
+            if previous.get("media_url"):
+                name = f"{case.file_stem}.mp4"
+                failure = _download_video(previous["media_url"], run / "videos" / name)
+                if failure is None:
+                    previous["video"] = f"videos/{name}"
+                previous["download_error"] = failure
+                _write_json(run / RESULTS_FILE, done)
+            print(f"  {case.label}: ya pagada, no se manda de nuevo")
+            continue
         char_path = _chosen_drawing(run, "personaje", case.character.id)
         bg_url = (
             local_url
@@ -536,35 +583,44 @@ def cmd_escenas(args: argparse.Namespace, material: dict[str, Any]) -> int:
                 task_id=getattr(exc, "task_id", None),
                 cost_usd=str(ledger.settle(reservation)),
             )
+            _add_spend(run, "escenas", case.label, row["cost_usd"])
         else:
             payload = dict(result.payload) if isinstance(result.payload, dict) else {}
             tokens = int(result.usage.output_tokens or 0)
-            actual = (
-                video_cost_usd(pricing, result.model_id, row["resolution"], tokens)
-                if tokens
-                else None
-            )
+            try:
+                actual = (
+                    video_cost_usd(pricing, result.model_id, row["resolution"], tokens)
+                    if tokens
+                    else None
+                )
+            except Exception:  # never lose a charge: the reservation stands for it
+                actual = None
+            row["cost_usd"] = str(ledger.settle(reservation, actual))
+            _add_spend(run, "escenas", case.label, row["cost_usd"])
             row.update(
                 task_id=payload.get("task_id"),
                 billed_tokens=tokens,
-                cost_usd=str(ledger.settle(reservation, actual)),
                 cost_kind="facturado (tokens)" if actual is not None else "reservado",
                 model_revision=result.model_revision,
+                media_url=result.media_url,
             )
+            # the paid row is on disk BEFORE the download: a cut there never pays twice
+            done[case.label] = row
+            _write_json(run / RESULTS_FILE, done)
             if result.media_url:  # valid 24 h: copied at once
                 name = f"{case.file_stem}.mp4"
-                video = httpx.get(result.media_url, timeout=120).content
-                (run / "videos" / name).write_bytes(video)
-                row["video"] = f"videos/{name}"
+                failure = _download_video(result.media_url, run / "videos" / name)
+                if failure is None:
+                    row["video"] = f"videos/{name}"
+                else:
+                    row["download_error"] = failure
         row["seconds_taken"] = round(time.monotonic() - started, 1)
-        calls.append(row)
         done[case.label] = row
         _write_json(run / RESULTS_FILE, done)
         print(
             f"  {case.label}: {row.get('video') or row.get('error')} · "
             f"{row['seconds_taken']} s · US${row['cost_usd']}"
         )
-    _record_spend(run, "escenas", ledger, calls)
     print(f"Corrida: {run} · gastado en esta fase US${ledger.snapshot()['spent_usd']}")
     return 0
 
