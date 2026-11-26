@@ -75,8 +75,9 @@ _FPS_FALLBACK = 30
 
 LABELS = {CUT: "Corte", FADE: "Fundido", WIPE: "Barrido"}
 #: Deivid 2026-11-26 (option A): a sentence about ONE block names it as the timeline
-#: does («Video 1», «Foto 2»: `ui.timeline_vm.media_label`); «bloque» stays where no
-#: block in particular is meant («Estos bloques…», «Toca el punto entre dos bloques…»).
+#: does («Video 1», «Foto 2»: `ui.timeline_vm.media_label`); where no block in particular
+#: is meant they are «fotos o videos» («Estas fotos o videos…», «Toca el punto entre dos
+#: fotos o videos…») — never «bloque» (m-25129405, D1 of the editor's mockups).
 #: The join's button: «Unión entre Video 1 y Foto 2: Corte».
 _NAME = "Unión entre {a} y {b}: {kind}"
 _TITLE = "Unión entre {a} y {b}"

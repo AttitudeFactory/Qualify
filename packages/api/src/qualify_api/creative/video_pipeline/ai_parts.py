@@ -105,11 +105,10 @@ AI_PART_TEXTS: dict[str, str] = {
         "Tuvimos un problema con una de tus partes con IA. Quítala y agrégala de nuevo."
     ),
     "ai_part_length_mismatch": (
-        "Los segundos de una parte con IA no coinciden con la línea de tiempo. "
-        "Vuelve a elegir cuántos segundos dura esa parte."
+        "Una parte con IA no dura lo que marcaste. Cambia sus segundos para que coincidan."
     ),
     "ai_part_outside_clip": (
-        "Las partes con IA solo se pueden usar en un video armado en la línea de tiempo. "
+        "Las partes con IA solo se pueden usar en un video que armas con tus fotos y videos. "
         "Quita esta parte para seguir."
     ),
     "ai_part_local": (
@@ -117,8 +116,8 @@ AI_PART_TEXTS: dict[str, str] = {
         "Agrégalos directo en la línea de tiempo."
     ),
     "ai_part_own_recipe": (
-        "Los textos, los efectos y las uniones se agregan en la línea de tiempo, no dentro de "
-        "una parte con IA. Quítalos de esta parte y agrégalos allí."
+        "Los textos, efectos y uniones van en tu video, no dentro de la parte con IA. "
+        "Quítalos de esta parte y agrégalos al video."
     ),
     "ai_part_guide_type": (
         "No podemos usar ese archivo como guía. Sube un video MP4 o MOV, o un audio MP3 o WAV."

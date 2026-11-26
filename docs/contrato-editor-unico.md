@@ -80,10 +80,10 @@ Todas viven en `validate_recipe` y en `validate_brief_recipe` (la que llama el s
 | `ai_part_with_speed` | Un bloque con IA a otra velocidad que ×1 | `segments[i].speed` | Las partes con IA siempre van a velocidad normal. Quita la cámara rápida de esta parte. |
 | `own_media_too_short` | El Clip lleva partes con IA **y** escenas o avatares, y menos de 3 s de fotos y videos propios. Un Clip hecho solo de partes con IA es válido | `segments` (con `duration_s`) | Con un personaje en tu video necesitas al menos 3 segundos de tus fotos o videos. Agrega más o alarga los que ya tienes. |
 | `ai_parts_mismatch` | Un bloque apunta a una entrada que no existe o que ya usa otro bloque, o una entrada no tiene bloque | `segments[i]` o `ai_parts[n]` | Tuvimos un problema con una de tus partes con IA. Quítala y agrégala de nuevo. |
-| `ai_part_length_mismatch` | El bloque no dura los `seconds` de su entrada | `segments[i].end_s` (con `duration_s`) | Los segundos de una parte con IA no coinciden con la línea de tiempo. Vuelve a elegir cuántos segundos dura esa parte. |
-| `ai_part_outside_clip` | Un bloque con IA o `ai_parts` fuera de un Clip normal armado con bloques (`clip_reference_mode="local"`): en una parte de un video por partes, en un Clip hecho por Seedance o en otro tipo de pieza | `segments[i]` o `ai_parts` | Las partes con IA solo se pueden usar en un video armado en la línea de tiempo. Quita esta parte para seguir. |
+| `ai_part_length_mismatch` | El bloque no dura los `seconds` de su entrada | `segments[i].end_s` (con `duration_s`) | Una parte con IA no dura lo que marcaste. Cambia sus segundos para que coincidan. |
+| `ai_part_outside_clip` | Un bloque con IA o `ai_parts` fuera de un Clip normal armado con bloques (`clip_reference_mode="local"`): en una parte de un video por partes, en un Clip hecho por Seedance o en otro tipo de pieza | `segments[i]` o `ai_parts` | Las partes con IA solo se pueden usar en un video que armas con tus fotos y videos. Quita esta parte para seguir. |
 | `ai_part_local` | Exactamente cuando una entrada de `ai_parts` está en modo `local` (hecha con fotos y videos del dueño); ningún otro caso da este código | `ai_parts[n].mode` | Para usar tus fotos y videos no necesitas una parte con IA. Agrégalos directo en la línea de tiempo. |
-| `ai_part_own_recipe` | Una entrada con efectos, textos, tramos o unión propios | `ai_parts[n]` | Los textos, los efectos y las uniones se agregan en la línea de tiempo, no dentro de una parte con IA. Quítalos de esta parte y agrégalos allí. |
+| `ai_part_own_recipe` | Una entrada con efectos, textos, tramos o unión propios | `ai_parts[n]` | Los textos, efectos y uniones van en tu video, no dentro de la parte con IA. Quítalos de esta parte y agrégalos al video. |
 | `ai_part_guide_type` | «Video o audio tuyo» que no es un video `.mp4`/`.mov` ni un audio `.mp3`/`.wav` (§3.1) | `ai_parts[n].clip_video_keys[i]` o `ai_parts[n].clip_audio_keys[i]` | No podemos usar ese archivo como guía. Sube un video MP4 o MOV, o un audio MP3 o WAV. |
 | `malformed_key` / `foreign_key` (de siempre) | Un archivo de guía o una foto de la entrada que no es una ruta del negocio, o que es de otro negocio (§3.1) | `ai_parts[n].clip_video_keys[i]`, `…clip_audio_keys[i]` o `…clip_image_keys[i]` | Los textos de siempre de esos códigos. |
 
@@ -150,12 +150,12 @@ Deivid decidió en la D1 de las maquetas del editor que la palabra «bloque» no
 
 | Constante | Texto nuevo |
 |---|---|
-| `recipe.TRANSITIONS_LONGER_THAN_BLOCK_TEXT` | La parte {block} es muy corta para sus uniones. Alárgala, acorta las uniones o deja una de ellas con «Corte». |
+| `recipe.TRANSITIONS_LONGER_THAN_BLOCK_TEXT` | La foto o video {block} es muy corto para sus uniones. Alárgalo, acorta las uniones o deja una con «Corte». |
 | `recipe.TRANSITION_ON_FIRST_BLOCK_TEXT` | Antes de lo primero de tu video no hay nada que unir. Déjalo con «Corte». |
-| `recipe.TRANSITION_ON_CLIP_TEXT` | Las uniones van entre dos partes de tu línea de tiempo, no en todo el video. Toca la unión entre dos y elige «Fundido» o «Barrido». |
+| `recipe.TRANSITION_ON_CLIP_TEXT` | Las uniones van entre dos fotos o videos de tu video, no en todo el video. Toca la unión entre dos y elige «Fundido» o «Barrido». |
 | `local.LOCAL_TRANSITION_FAILED_TEXT` | «…las transiciones de tu video…» pasa a «…las uniones de tu video…». |
 
-- `{block}` es la posición del elemento en toda la línea de tiempo, desde 1. Sale de `segments[i]` y cuenta también las partes con IA, por eso dice «La parte {block}».
+- `{block}` es la posición del elemento en la pista, desde 1 (sale de `segments[i]`). Es el mismo número que muestra la pista («Foto 3», «Video 3»: `Qualify/ui/timeline_vm.media_label`), por eso dice «La foto o video {block}». Por la revisión de UX no dice «parte», que choca con «parte con IA», ni «línea de tiempo».
 - La pantalla toma este texto del servidor con `transitions_longer_than_block_text` (`Qualify/clip_joins_vm.py`), así que cambia sola. `Qualify/test_clip_joins.py` compara contra esa misma función, así que no se rompe.
 - `TRANSITION_ON_FIRST_BLOCK_TEXT`, `TRANSITION_ON_CLIP_TEXT` y `LOCAL_TRANSITION_FAILED_TEXT` no tienen copia en `Qualify/`.
 
