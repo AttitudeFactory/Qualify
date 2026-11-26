@@ -1428,17 +1428,10 @@ def _axis_on(axis: str) -> rx.Var[bool]:
     return _STATE_VALUE[axis]() != ""
 
 
-def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Component:
-    """What a dropdown or a chip reads — «Canal» · «Todos» ▾ — as a Radix button with
-    the skin: `soft` (the accent wash) while the axis narrows the list, `surface`
-    otherwise. It never overflows its row (RF-13: «Tipo de cuenta: Competidores» was cut
-    in a ~730 px panel): it may shrink to the row, and only the value then ends in «…»,
-    with the whole value in `title`. `size="2"` keeps the bar on fewer rows; the target
-    stays 44 px. `shrink`: the button may give way to its neighbour in a pair that never
-    wraps (`_with_rivals`)."""
+def _filter_face(axis: str) -> list[rx.Component]:
+    """A desktop dropdown's face: «Canal» · «Todos» ▾ — the axis' name, then its value."""
     on = _axis_on(axis)
-    value = _axis_value(axis)
-    return rx.button(
+    return [
         rx.text(
             AXIS_LABELS[axis],
             size="2",
@@ -1449,7 +1442,7 @@ def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Compo
             flex_shrink="0",
         ),
         rx.text(
-            value,
+            _axis_value(axis),
             size="2",
             weight="medium",
             as_="span",
@@ -1457,6 +1450,43 @@ def _filter_button(axis: str, *, shrink: bool = False, **props: Any) -> rx.Compo
             color=rx.cond(on, T.tone_color("accent", 11), T.TEXT_STRONG),
             **_ELLIPSIS,
         ),
+    ]
+
+
+def _chip_face(axis: str) -> list[rx.Component]:
+    """A phone chip's face (RF-13, option A, Deivid 2026-11-26): ONE word — the short name
+    («Canal», «Tipo», «Cuenta», «Duración») while the axis narrows nothing, its value
+    («Instagram», «2 cuentas») once it does — so 2 or 3 chips share a line. The full
+    «Tipo de cuenta: Todos» is the button's `aria_label` and `title`."""
+    on = _axis_on(axis)
+    return [
+        rx.text(
+            rx.cond(on, _axis_value(axis), reels_filters_vm.CHIP_LABELS[axis]),
+            size="2",
+            weight=rx.cond(on, "medium", "regular"),
+            as_="span",
+            min_width="0",
+            color=rx.cond(on, T.tone_color("accent", 11), T.TEXT_STRONG),
+            **_ELLIPSIS,
+        ),
+    ]
+
+
+def _filter_button(
+    axis: str, *, shrink: bool = False, compact: bool = False, **props: Any
+) -> rx.Component:
+    """What a dropdown or a chip reads — «Canal» · «Todos» ▾ — as a Radix button with
+    the skin: `soft` (the accent wash) while the axis narrows the list, `surface`
+    otherwise. It never overflows its row (RF-13: «Tipo de cuenta: Competidores» was cut
+    in a ~730 px panel): it may shrink to the row, and only the value then ends in «…»,
+    with the whole value in `title`. `size="2"` keeps the bar on fewer rows; the target
+    stays 44 px. `shrink`: the button may give way to its neighbour in a pair that never
+    wraps (`_with_rivals`). `compact`: the phone chip's one-word face (`_chip_face`); the
+    accessible name stays the full one either way."""
+    on = _axis_on(axis)
+    value = _axis_value(axis)
+    return rx.button(
+        *(_chip_face(axis) if compact else _filter_face(axis)),
         rx.icon("chevron-down", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
         type="button",
         variant=rx.cond(on, "soft", "surface"),
@@ -1502,11 +1532,13 @@ SHEET_FOCUS_SCRIPT = (
 
 
 def _chip(axis: str, *, shrink: bool = False) -> rx.Component:
-    """A phone filter: a chip that opens its sheet from the bottom."""
+    """A phone filter: a chip that opens its sheet from the bottom, with the one-word face
+    of option A (`_chip_face`)."""
     S = DiscoverReelsState
     return _filter_button(
         axis,
         shrink=shrink,
+        compact=True,
         on_click=S.open_sheet(axis),
         aria_haspopup="dialog",
         aria_expanded=rx.cond(S.sheet == axis, "true", "false"),

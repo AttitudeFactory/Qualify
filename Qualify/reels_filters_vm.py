@@ -52,6 +52,16 @@ AXIS_LABELS = {
     AXIS_ACCOUNT: ACCOUNT_LABEL,
     AXIS_DURATION: DURATION_LABEL,
 }
+#: RF-13, option A (Deivid 2026-11-26): on a phone a chip with no filter shows only this
+#: short name («Tipo», not «Tipo de cuenta»), and a chip with a filter only its value —
+#: so 2 or 3 chips fit on a line. The full «Tipo de cuenta: Todos» stays in its
+#: accessible name and its `title`.
+CHIP_LABELS = {
+    AXIS_NETWORK: NETWORK_LABEL,
+    AXIS_KIND: "Tipo",
+    AXIS_ACCOUNT: ACCOUNT_LABEL,
+    AXIS_DURATION: DURATION_LABEL,
+}
 RESET_LABEL = "Restablecer filtros"
 
 #: What an axis says when nothing is narrowed on it. «Todos» / «Todas» agree with the
@@ -425,6 +435,7 @@ __all__ = [
     "AXIS_DURATION",
     "AXIS_KIND",
     "AXIS_LABELS",
+    "CHIP_LABELS",
     "AXIS_NETWORK",
     "BAR_LABEL",
     "COMPETITORS_EMPTY_ACTION",

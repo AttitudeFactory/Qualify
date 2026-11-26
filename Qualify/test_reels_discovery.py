@@ -1252,8 +1252,10 @@ def test_the_bar_is_drawn_with_the_system_only() -> None:
     assert "rx.button(" in button and "min_height=_TARGET" in button
     # never cut off, never broken letter by letter: a real ellipsis (Radix's `truncate`
     # reaches Reflex 0.10 as an invalid CSS rule — the bug seen live at 375 px)
-    assert "**_ELLIPSIS" in button and 'max_width="100%"' in button
-    label = button[button.index("AXIS_LABELS[axis],") : button.index("value,")]
+    face = inspect.getsource(discover_reels._filter_face)
+    assert "**_ELLIPSIS" in face and 'max_width="100%"' in button
+    assert "**_ELLIPSIS" in inspect.getsource(discover_reels._chip_face)
+    label = face[face.index("AXIS_LABELS[axis],") : face.index("_axis_value(axis),")]
     assert 'white_space="nowrap"' in label  # «Tipo de cuenta» never splits either
     assert "truncate=" not in inspect.getsource(discover_reels)
     assert '"truncate"' not in rendered
@@ -1375,6 +1377,46 @@ async def test_ideas_hide_the_no_ideas_note(world: _World) -> None:
     state, proxy = _screen_state()
     await _open(proxy)
     assert state.reels and not state.no_ideas_left
+
+
+def test_a_phone_chip_shows_one_word_and_names_itself_in_full() -> None:
+    """RF-13 option A (Deivid 2026-11-26): on a phone a chip shows its short name with no
+    filter («Tipo», not «Tipo de cuenta») and only its value with one; a screen reader
+    and `title` get the full «Tipo de cuenta: Todos». The desktop face is unchanged."""
+    import inspect
+
+    from . import discover_reels
+
+    assert reels_filters_vm.CHIP_LABELS == {
+        "network": "Canal",
+        "kind": "Tipo",
+        "account": "Cuenta",
+        "duration": "Duración",
+    }
+    face = inspect.getsource(discover_reels._chip_face)
+    # no filter → the short name; a filter → its value (styled `soft` by the button)
+    assert "rx.cond(on, _axis_value(axis), reels_filters_vm.CHIP_LABELS[axis])" in face
+    assert "AXIS_LABELS" not in face  # never «Tipo de cuenta» on the phone's face
+    assert "compact=True" in inspect.getsource(discover_reels._chip)
+    assert "compact" not in inspect.getsource(discover_reels._dropdown)  # desktop as it was
+    button = inspect.getsource(discover_reels._filter_button)
+    assert 'aria_label=AXIS_LABELS[axis] + ": " + value' in button
+    assert 'title=AXIS_LABELS[axis] + ": " + value' in button
+    assert 'variant=rx.cond(on, "soft", "surface")' in button
+    rendered = str(discover_reels._filter_bar().render())
+    assert '"Tipo"' in rendered  # the short name reaches the phone's chip
+
+
+async def test_a_phone_chip_with_a_filter_shows_its_value(world: _World) -> None:
+    """The value a chip shows once it filters is the bar's own words (`filter_values`)."""
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.filter_values["network"] == "Todos"  # no filter: the chip says «Canal»
+    await _filter(proxy, state.set_filter("network", "instagram"))
+    await _filter(proxy, state.set_filter("kind", "competencia"))
+    assert state.filter_values["network"] == "Instagram"
+    assert state.filter_values["kind"] == "Competidores"
 
 
 async def test_the_sheet_remembers_its_chip_for_the_focus(world: _World) -> None:
