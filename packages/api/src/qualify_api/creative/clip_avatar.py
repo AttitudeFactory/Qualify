@@ -76,7 +76,6 @@ from qualify_creative.enums import (
     VideoEngine,
 )
 from qualify_creative.schemas import (
-    CUT_EFFECT_ID,
     DURATIONS_SECONDS,
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
@@ -1013,46 +1012,9 @@ def stretch_problem(stretch: BlockStretch, clip_id: UUID) -> tuple[str, str] | N
     return None
 
 
-#: m-25119867 (Deivid, 2026-11-25): a join next to an avatar block is only «Corte» —
-#: a blend would mix up to 0.8 s of the voice's end with the next stretch. The code the
-#: screen reads, and the owner's words.
-AVATAR_JOIN_CODE = "avatar_join_cut_only"
-AVATAR_JOIN_TEXT = (
-    "Al lado de un avatar, la unión tiene que ser «Corte», para que su voz se escuche "
-    "completa. Cambia la unión de esa foto o video a «Corte» y vuelve a crear tu video."
-)
-
-
-def avatar_join_problems(
-    segments: Sequence[SourceSegment | None], blocks: Iterable[int]
-) -> tuple[int, ...]:
-    """The indexes of the stretches whose join touches an avatar block and is not a cut
-    (ADR 50 §10's `SourceSegment.transition_in`): the block's own (its join with the
-    stretch before it) and the one of the stretch right after it. `blocks` are the
-    blocks' indexes in `segments`; None is a block not made yet (its join is always a
-    cut). Holds with `QUALIFY_CLIP_BLOCK_TRANSITIONS` off or on — it is the condition to
-    turn it on — on every path that checks it: the first «Crear», `place_block` and the
-    local assembly. Pure."""
-    found: list[int] = []
-    for index in sorted(set(blocks)):
-        for at in (index, index + 1):
-            if not 0 <= at < len(segments) or at in found:
-                continue
-            segment = segments[at]
-            join = segment.transition_in if segment is not None else None
-            # `corte` is read as None by the type already; kept explicit for clarity
-            if join is not None and join.effect_id != CUT_EFFECT_ID:
-                found.append(at)
-    return tuple(sorted(found))
-
-
-def refuse_avatar_joins(segments: Sequence[SourceSegment | None], blocks: Iterable[int]) -> None:
-    """`ClipAvatarRefused` (`avatar_join_cut_only`) when a join next to a block blends."""
-    bad = avatar_join_problems(segments, blocks)
-    if bad:
-        raise ClipAvatarRefused(
-            AVATAR_JOIN_CODE, AVATAR_JOIN_TEXT, raw=f"blending joins at stretches {list(bad)}"
-        )
+# m-25128784 (ADR 50 §12.6, Deivid 2026-11-26, P1): the «solo Corte junto a un avatar»
+# rule of m-25119867 is gone — a join next to an avatar block takes any transition. The
+# «Corte» rule now holds only at a character scene's EXIT (`character_scene`).
 
 
 def block_windows(lengths: Sequence[float], blocks: Iterable[int]) -> list[tuple[float, float]]:
@@ -2000,12 +1962,7 @@ class ClipAvatarService:
         planned = brief.model_copy(
             update={"media": media.model_copy(update={"clip_avatar_plan": plan})}
         )
-        # a join next to an avatar is only «Corte» (Deivid, 2026-11-25)
         timeline = _ordered(media.segments, plan)
-        refuse_avatar_joins(
-            [segment for segment, _ in timeline],
-            [index for index, (_, entry) in enumerate(timeline) if entry is not None],
-        )
         # «Textos sí, efectos no» (ADR 50 §11): no smoke, embers or steam over an avatar,
         # on the timeline the owner sees (each avatar at its estimate)
         refuse_avatar_effects(
@@ -2566,7 +2523,6 @@ class ClipAvatarService:
 
         timeline = _ordered(brief.media.segments, plan)
         blocks = [index for index, (_, entry) in enumerate(timeline) if entry is not None]
-        refuse_avatar_joins([segment for segment, _ in timeline], blocks)
         refuse_avatar_effects(
             brief.media.effects,
             block_windows(
@@ -2739,9 +2695,6 @@ class ClipAvatarService:
             raise ClipAvatarRefused("already_placed", ALREADY_PLACED_TEXT)
         position = max(0, min(at, len(segments)))
         segments.insert(position, block_segment(video))
-        # m-25119867: a join next to an avatar is only «Corte» — the stretch the block now
-        # goes before keeps no blend into the voice
-        refuse_avatar_joins(segments, [position])
         # «Textos sí, efectos no»: every block of the recipe, this one included
         sources = self._store.generated_sources(
             tenant_id=tenant_id,

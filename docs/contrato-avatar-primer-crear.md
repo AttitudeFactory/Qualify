@@ -272,6 +272,8 @@ Después de «Crear», el dueño va a «Por aprobar». La tarjeta del Clip muest
 
 ### 1.7 Uniones junto a un avatar: solo «Corte» (decidido por Deivid, PR 1)
 
+> **Retirada el 2026-11-26 (m-25128784, ADR 50 §12.6, P1 de Deivid).** Esta regla ya no existe en el código ni en las pruebas: una unión junto a un bloque de avatar acepta cualquier transición. La regla de «Corte» vale ahora solo a la **salida** de una escena con personaje (`character_scene_exit_cut_only`, `qualify_api.creative.character_scene`). Lo que sigue queda como historia.
+
 - **La regla.** La unión de un avatar con el tramo anterior, y la del tramo que sigue al avatar, solo pueden ser «Corte». Si no, el servidor rechaza con `code="avatar_join_cut_only"` y el texto «Al lado de un avatar, la unión tiene que ser «Corte», para que su voz se escuche completa. Cambia la unión de esa foto o video a «Corte» y vuelve a crear tu video.» (**nuevo**, revisar con ux-designer). Un fundido mezclaría hasta 0,8 s del final de la voz con el tramo siguiente.
 - **Dónde se revisa (los tres caminos):**
   - en el primer «Crear» (opción B), antes de escribir nada;
