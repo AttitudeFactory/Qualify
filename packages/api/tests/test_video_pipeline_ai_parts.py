@@ -537,10 +537,15 @@ def test_every_code_has_its_spanish_words() -> None:
         text = ai_part_text(code)
         assert text and text.lstrip("«")[0].isupper() and text.endswith("."), code
         # no English words the owner would read (`qualify-copy-es`)
-        # and never «bloque» (Deivid, D1 of the editor's mockups)
+        # and never «bloque» (Deivid, D1 of the editor's mockups) nor «línea de tiempo»
+        # (UX review)
         for word in ("clip", "post", "block", "bloque", "AI ", "switch", "timeline", "ai_part"):
             assert word not in text, (code, word)
+        assert "línea de tiempo" not in text, code
     assert ai_part_text("foreign_key") is None
+    assert AI_PART_TEXTS["ai_part_local"] == (
+        "Para usar tus fotos y videos no necesitas una parte con IA. Agrégalos directo en tu video."
+    )
     assert AI_PART_TEXTS["switched_off"] == (
         "Las partes con IA todavía no están disponibles. Quítalas para crear tu video."
     )

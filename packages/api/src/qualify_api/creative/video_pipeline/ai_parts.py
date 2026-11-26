@@ -112,8 +112,7 @@ AI_PART_TEXTS: dict[str, str] = {
         "Quita esta parte para seguir."
     ),
     "ai_part_local": (
-        "Para usar tus fotos y videos no necesitas una parte con IA. "
-        "Agrégalos directo en la línea de tiempo."
+        "Para usar tus fotos y videos no necesitas una parte con IA. Agrégalos directo en tu video."
     ),
     "ai_part_own_recipe": (
         "Los textos, efectos y uniones van en tu video, no dentro de la parte con IA. "
