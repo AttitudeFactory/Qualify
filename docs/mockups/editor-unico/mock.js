@@ -33,6 +33,28 @@
     wallet: '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
     eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'
   };
+  // Text read from the page (JSON specs, data-* attributes) is escaped before it is
+  // laid as HTML, so a mockup can never run markup it carries (CodeQL js/xss-through-dom).
+  function esc(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+  function clean(value) {
+    if (typeof value === "string") return esc(value);
+    if (Array.isArray(value)) return value.map(clean);
+    if (value && typeof value === "object") {
+      var out = {};
+      Object.keys(value).forEach(function (k) { out[k] = clean(value[k]); });
+      return out;
+    }
+    return value;
+  }
+  function readSpec(el) { return clean(JSON.parse(el.textContent)); }
+
   function icon(name, cls) {
     return '<svg class="i ' + (cls || "") + '" viewBox="0 0 24 24" aria-hidden="true">' + (P[name] || "") + "</svg>";
   }
@@ -132,15 +154,15 @@
   window.mkTimeline = timeline;
 
   function hydrate(root) {
-    root.querySelectorAll("[data-i]").forEach(function (el) { el.outerHTML = icon(el.getAttribute("data-i"), el.getAttribute("data-c")); });
+    root.querySelectorAll("[data-i]").forEach(function (el) { el.outerHTML = icon(esc(el.getAttribute("data-i") || ""), esc(el.getAttribute("data-c") || "")); });
     root.querySelectorAll("script[type='application/json'][data-tl]").forEach(function (el) {
-      var spec = JSON.parse(el.textContent);
+      var spec = readSpec(el);
       var box = document.createElement("div");
       box.innerHTML = timeline(spec);
       el.replaceWith(box.firstChild);
     });
     root.querySelectorAll("script[type='application/json'][data-sample]").forEach(function (el) {
-      var b = JSON.parse(el.textContent);
+      var b = readSpec(el);
       var box = document.createElement("div");
       box.className = "mk-sample";
       box.innerHTML = '<div class="q-tl__lane q-tl__lane--media" style="width:' + b.w + 'px">' +
@@ -158,7 +180,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll("[data-pair]").forEach(function (pair) {
       var tpl = document.getElementById(pair.getAttribute("data-pair"));
-      var notePhone = pair.getAttribute("data-note-phone"), noteDesk = pair.getAttribute("data-note-desk");
+      var notePhone = esc(pair.getAttribute("data-note-phone") || ""), noteDesk = esc(pair.getAttribute("data-note-desk") || "");
       [["phone", "Celular · 375 px", notePhone], ["desk", "Escritorio", noteDesk]].forEach(function (d) {
         var col = document.createElement("div");
         col.className = "mk-col" + (d[0] === "desk" ? " mk-col--desk" : "");
