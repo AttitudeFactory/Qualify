@@ -1,4 +1,4 @@
-"""Business characters against Postgres (m-25129385, migration 0187): a round and its jobs in
+"""Business characters against Postgres (m-25129385, migration 0188): a round and its jobs in
 one transaction (idempotent by request key), the pre-POST stamp taken once, the key CHECK
 agrees with the gate's key builder, RLS hides another business's rows, the caps (5 saved,
 2 rounds a day) under the business's lock, names unique per business, no DELETE grant, the
@@ -35,7 +35,7 @@ TENANT = UUID("c0000000-0000-4000-8000-0000251293a1")
 OTHER = UUID("c0000000-0000-4000-8000-0000251293a2")
 ON = {bc.CHARACTER_SCENE_SWITCH_ENV: "on", bc.ARK_KEY_ENV: "k"}
 _MIGRATION = (
-    Path(__file__).resolve().parents[3] / "migrations/postgres/versions/0187_business_characters.py"
+    Path(__file__).resolve().parents[3] / "migrations/postgres/versions/0188_business_characters.py"
 )
 
 
@@ -370,7 +370,7 @@ def test_the_downgrade_refuses_while_characters_exist_then_runs_clean_without_th
 
     service, brand, user = _service()
     _round(service, brand, user)
-    migration = _load(_MIGRATION, "migration_0187")
+    migration = _load(_MIGRATION, "migration_0188")
     engine = create_engine(os.environ["QUALIFY_MIGRATION_DSN"])
     try:
         with engine.connect() as conn:
@@ -378,7 +378,7 @@ def test_the_downgrade_refuses_while_characters_exist_then_runs_clean_without_th
             try:
                 with Operations.context(MigrationContext.configure(conn)):
                     savepoint = conn.begin_nested()
-                    with pytest.raises(DBAPIError, match="downgrade 0187 refused"):
+                    with pytest.raises(DBAPIError, match="downgrade 0188 refused"):
                         migration.downgrade()
                     savepoint.rollback()
                     conn.execute(text("SET LOCAL row_security = off"))

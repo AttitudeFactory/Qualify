@@ -63,7 +63,7 @@ SEASONAL_JOB_REVISION = 1
 #: whose subject is `sticker_character_id` (`draft_id` and `seasonal_media_id` NULL).
 #: Enqueued only by `enqueue_character_job`; it rides its own pool (`SEEDREAM_PRO_POOL`).
 KIND_STICKER_CHARACTER = "sticker_character"
-#: m-25129385 (0187): one option of a business character — ONE synchronous Seedream 5.0 pro
+#: m-25129385 (0188): one option of a business character — ONE synchronous Seedream 5.0 pro
 #: call whose subject is `business_character_id`. Enqueued only by
 #: `enqueue_business_character_job`, on the same Seedream pool as the sticker characters.
 KIND_BUSINESS_CHARACTER = "business_character"
@@ -944,7 +944,7 @@ class JobRow:
     submitted_at: datetime | None = None
     #: m-25017372 (0155): a `sticker_character` job's subject.
     sticker_character_id: UUID | None = None
-    #: m-25129385 (0187): a `business_character` job's subject.
+    #: m-25129385 (0188): a `business_character` job's subject.
     business_character_id: UUID | None = None
 
 

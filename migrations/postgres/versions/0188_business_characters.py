@@ -1,7 +1,7 @@
 """business characters: drawn by AI, chosen and kept by the business (m-25129385)
 
-Revision ID: 0187
-Revises: 0186
+Revision ID: 0188
+Revises: 0187
 Create Date: 2026-11-26
 
 Ticket m-25129385 (epic m-25026566; Deivid 2026-11-26): the Clip's avatar is now a CHARACTER
@@ -64,8 +64,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0187"
-down_revision = "0186"
+revision = "0188"
+down_revision = "0187"
 branch_labels = None
 depends_on = None
 
@@ -256,7 +256,7 @@ def downgrade() -> None:
             PERFORM set_config('row_security', 'off', true);
             IF EXISTS (SELECT 1 FROM {_TABLE})
                OR EXISTS (SELECT 1 FROM {_JOBS} WHERE business_character_id IS NOT NULL) THEN
-                RAISE EXCEPTION 'downgrade 0187 refused: business characters exist '
+                RAISE EXCEPTION 'downgrade 0188 refused: business characters exist '
                                 '(paid-call provenance would be lost)'
                     USING ERRCODE = '23514';
             END IF;

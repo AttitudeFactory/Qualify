@@ -1,7 +1,7 @@
 # Plan: personajes del negocio (m-25129385)
 
-Estado: **plan, sin código**. Épica m-25026566. Rama `feat/m-25129385-personajes` desde `origin/main`
-`f9e784b7` (migración en `0186`; ningún PR abierto reclama la `0187`, revisado el 2026-11-26).
+Estado: **construido** (rama sin PR todavía). Épica m-25026566. Rama `feat/m-25129385-personajes` desde `origin/main`
+`f9e784b7` (planeado sobre la migración `0186`). La `0187` la tomó PR #842 (`subscription_payments`), así que esta tabla es la **`0188`**, que baja de la `0187`.
 
 ## Decisiones (2026-11-26, «creacion de tickets» y Deivid)
 
@@ -18,7 +18,7 @@ Estas decisiones mandan sobre el plan de abajo y las preguntas del final.
 
 ## Plan en 5 líneas
 
-1. **Tabla `business_characters` (migración 0187)**: una fila por dibujo pedido. El dueño guarda una de las opciones y las demás se descartan. RLS completo, sin `DELETE`, y `creative_jobs` gana el tipo `business_character`. Baja limpio.
+1. **Tabla `business_characters` (migración 0188)**: una fila por dibujo pedido. El dueño guarda una de las opciones y las demás se descartan. RLS completo, sin `DELETE`, y `creative_jobs` gana el tipo `business_character`. Baja limpio.
 2. **Servicio `qualify_api.creative.business_characters`**: valida el interruptor, la descripción, el tope de 5 y el tope diario bajo el candado del negocio, y abre una ronda de forma idempotente (`request_key`).
 3. **Dibujo**: un trabajo de `creative-worker` por opción en la piscina `byteplus:seedream-5-0-pro`. Seedream 5.0 pro va a 1080×1920 con el prompt `business-character-v1`, que sale de `avatar-escena-v1`. La guarda de precio usa la tabla `v10` y el tope mensual del negocio. El evento de uso queda con el costo real. La imagen se guarda byte a byte en R2, con 3 reintentos.
 4. **Elegir y guardar**: el dueño elige una opción con un nombre y esa queda `saved`. Las demás quedan `discarded` y sus archivos se borran de R2. Se puede renombrar y borrar: borrar es lógico en la fila y real en R2.
@@ -26,7 +26,7 @@ Estas decisiones mandan sobre el plan de abajo y las preguntas del final.
 
 ## Detalle
 
-### Tabla 0187 `business_characters`
+### Tabla 0188 `business_characters`
 
 Una fila por **opción dibujada**. La ronda es el conjunto de filas con el mismo `round_id`. Se sigue el patrón de `0155_product_sticker_characters`.
 
@@ -190,4 +190,4 @@ Cada pregunta va con una recomendación. No están decididas.
 5. **¿Cuántas rondas al día por negocio?** Recomiendo **3**, como el tope diario del avatar: peor caso de unos US$12 al mes por negocio con 3 opciones.
 6. **¿Hay un riesgo de 30 días?** AVESC-001 anota que Seedance admite caras de Seedream «de menos de 30 días sin modificar». Un personaje guardado podría ser rechazado como referencia pasado un mes. Recomiendo **guardar la fecha del dibujo**, no fijar reglas aquí, y medirlo en m-25128784 con un personaje de más de 30 días antes de encender. Si se confirma, se permite volver a dibujarlo desde su descripción y su prompt.
 7. **¿Uso un interruptor propio, `QUALIFY_CLIP_CHARACTERS`, o reuso `QUALIFY_CLIP_AVATAR_ANIMATED`?** Recomiendo **uno propio**. El personaje reemplaza al bloque de presentador que m-25128784 elimina, y así los interruptores viejos pueden irse con él.
-8. **¿Los dibujos corren en `creative-worker` (ADR 41) o al momento en el servidor?** Recomiendo **el worker**, como los stickers: es la regla de nunca pagar dos veces y no deja a la pantalla esperando 30 a 60 s. Esto agrega el tipo nuevo en `creative_jobs` dentro de la misma 0187.
+8. **¿Los dibujos corren en `creative-worker` (ADR 41) o al momento en el servidor?** Recomiendo **el worker**, como los stickers: es la regla de nunca pagar dos veces y no deja a la pantalla esperando 30 a 60 s. Esto agrega el tipo nuevo en `creative_jobs` dentro de la misma 0188.
