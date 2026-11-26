@@ -172,8 +172,14 @@ def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
             if name not in placed:
                 kept.append(name)  # a regular file: this worktree keeps its own graph
                 continue
+            rec = placed[name]  # [own size, own mtime_ns, store size, store mtime_ns]
             try:
-                if placed[name] == _stamp(target):
+                if _stamp(path) != rec[:2]:
+                    # Rewritten in the worktree (in place or as a new file): its own graph now.
+                    del placed[name]
+                    kept.append(name)
+                    continue
+                if _stamp(target) == rec[2:]:
                     continue  # our hardlink/copy of the current build
             except OSError:
                 continue  # store file missing: keep ours until the sync brings it back
@@ -185,7 +191,7 @@ def link(worktree: str, store: str) -> tuple[list[str], list[str]]:
             if stamp is None:
                 placed.pop(name, None)
             else:
-                placed[name] = stamp
+                placed[name] = _stamp(path) + stamp
         except OSError:
             try:
                 os.unlink(tmp)
@@ -313,6 +319,8 @@ def _install(store: str, blob: bytes, seen: dict) -> dict:
             raise GhError()
         installed = inner if isinstance(inner, dict) and _key(inner) else seen
         for name in got:
+            # Windows: a file open elsewhere (a worktree hardlink of it included) can block this
+            # replace; the error ends this run without the marker, so the next run retries.
             os.replace(os.path.join(tmp, name), os.path.join(store, name))
         marker = {"installed": installed, "seen": seen}
         _write(os.path.join(store, INSTALLED), json.dumps(marker, indent=2) + "\n")
@@ -344,12 +352,22 @@ def _try_lock(fh: object) -> bool:
     return True
 
 
-def _detach() -> dict:
-    """Popen kwargs that let the background sync outlive the hook (and its console)."""
-    if sys.platform == "win32":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (literals: the names exist only on Windows)
-        return {"creationflags": 0x00000008 | 0x00000200}
-    return {"start_new_session": True}
+def _spawn(cmd: list[str], popen: object = subprocess.Popen) -> object:
+    """Start cmd detached, so the background sync outlives the hook (and its console)."""
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "env": _env(),
+    }
+    if sys.platform != "win32":
+        return popen(cmd, start_new_session=True, **kwargs)
+    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (literals: the names exist only on Windows)
+    flags = 0x00000008 | 0x00000200
+    try:  # + CREATE_BREAKAWAY_FROM_JOB: survive a job object that kills its members on close
+        return popen(cmd, creationflags=flags | 0x01000000, **kwargs)
+    except PermissionError:  # the job forbids breakaway (access denied)
+        return popen(cmd, creationflags=flags, **kwargs)
 
 
 def sync(store: str) -> str:
@@ -468,14 +486,7 @@ def main(argv: list[str]) -> int:
         if hint:
             print(hint)
         if not _throttled(store):
-            subprocess.Popen(
-                [sys.executable, os.path.abspath(__file__), "--background", store, worktree],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=_env(),
-                **_detach(),
-            )
+            _spawn([sys.executable, os.path.abspath(__file__), "--background", store, worktree])
     except Exception:  # every failure path exits 0
         pass
     return 0

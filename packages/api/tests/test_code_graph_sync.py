@@ -308,14 +308,60 @@ def test_real_lock_is_exclusive_on_this_os(mod, tmp_path):
         assert mod._try_lock(second) is False
 
 
-@pytest.mark.parametrize("platform", ["win32", "darwin"])
-def test_detach_kwargs_per_platform(mod, monkeypatch, platform):
+@pytest.mark.parametrize(
+    ("platform", "breakaway_allowed"), [("win32", True), ("win32", False), ("darwin", True)]
+)
+def test_spawn_detaches_per_platform_and_retries_without_breakaway(
+    mod, monkeypatch, platform, breakaway_allowed
+):
     monkeypatch.setattr(mod.sys, "platform", platform)
-    kwargs = mod._detach()
-    if platform == "win32":
-        assert kwargs == {"creationflags": 0x00000008 | 0x00000200}
+    calls: list[dict] = []
+
+    def popen(cmd, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("creationflags", 0) & 0x01000000 and not breakaway_allowed:
+            raise PermissionError(13, "Access is denied")
+        return "proc"
+
+    assert mod._spawn(["x"], popen=popen) == "proc"
+    assert all(c["stdin"] == c["stdout"] == c["stderr"] == subprocess.DEVNULL for c in calls)
+    if platform != "win32":
+        assert [c["start_new_session"] for c in calls] == [True]
+    elif breakaway_allowed:
+        assert [c["creationflags"] for c in calls] == [0x01000208]
     else:
-        assert kwargs == {"start_new_session": True}
+        assert [c["creationflags"] for c in calls] == [0x01000208, 0x00000208]
+
+
+@pytest.mark.parametrize("hardlinks", [True, False])
+@pytest.mark.parametrize("rewrite", ["in_place", "new_file"])
+def test_link_fallback_keeps_a_placed_file_the_worktree_rewrote(
+    mod, monkeypatch, tmp_path, hardlinks, rewrite
+):
+    _no_symlinks(monkeypatch, mod)
+    if not hardlinks:
+        monkeypatch.setattr(mod.os, "link", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    store, wt = tmp_path / "store", tmp_path / "wt"
+    store.mkdir()
+    out = wt / "graphify-out"
+    (store / "graph.json").write_text("build 1")
+    assert mod.link(str(wt), str(store))[0] == ["graph.json"]
+
+    # A local `graphify update .`: writes through the file, or replaces it with a new one.
+    if rewrite == "in_place":
+        (out / "graph.json").write_text("local graph, rebuilt here")
+    else:
+        os.unlink(out / "graph.json")
+        (out / "graph.json").write_text("local graph, rebuilt here")
+    new = store / "graph.json.new"
+    new.write_text("build 2")
+    os.replace(new, store / "graph.json")
+
+    for _ in range(2):  # dropped from the marker once, then kept as the worktree's own
+        changed, kept = mod.link(str(wt), str(store))
+        assert changed == [] and kept == ["graph.json"]
+        assert (out / "graph.json").read_text() == "local graph, rebuilt here"
+    assert "graph.json" not in json.loads((out / ".code-graph-placed.json").read_text())
 
 
 def _no_symlinks(monkeypatch, mod) -> None:
