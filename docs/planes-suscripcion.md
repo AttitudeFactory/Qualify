@@ -72,7 +72,33 @@ just add-pack --tenant <uuid> --paquete "+2 videos" --reason "Pidió más" --by 
               [--support <id del pedido>] [--usd 29] [--payment-ref "Zelle 1234"]
 just packs --tenant <uuid>      # paquetes del negocio: lo que queda, vencimiento, lo pagado
 just revoke-pack <id> --reason "…" --by …
+just plan-invoice [--month 2026-11] [--tenant <uuid>]  # cobro del mes + mensaje para pegar (no envía nada)
+just plan-payment --tenant <uuid> --month 2026-11 --usd 149 --method zelle \
+                  --payment-ref "Zelle 4471" --by herwin@attitudefactory.co \
+                  [--local 470000 --currency COP] [--paid-on 2026-11-03]
 ```
+
+## Pagos de la mensualidad y conciliación (m-25129422)
+
+- **`subscription_payments`** (migración `0187`): un pago recibido por suscripción y mes —
+  USD, monto y moneda locales opcionales, método (`transfer`, `zelle`, `mobile_payment`,
+  `payment_link`, `cash`, `other`), referencia del comprobante, quién lo registró, cuándo se
+  pagó, y nuestra referencia `<subscription_id>:YYYY-MM`. Como `subscriptions`, no tiene
+  `tenant_id` (ADR 43 §2.8): RLS forzado sin política y permisos solo para `qualify_admin`.
+  Nunca se edita ni se borra.
+- **Idempotencia:** `UNIQUE (provider, provider_payment_id)`. Un pago a mano es
+  `provider = 'manual'` y su id es la referencia del comprobante (obligatoria) sin espacios
+  repetidos y en minúsculas: registrar el mismo comprobante dos veces deja una sola fila. Si
+  esa referencia ya existe para otro mes, otra suscripción u otro monto, se rechaza.
+- **Proveedor de pagos (KunfuPay, dLocal, Mercado Pago):** la tabla ya admite su webhook
+  (`provider` + su id de pago, `raw_payload` crudo para volver a leerlo). No hay cliente,
+  webhook ni verificación de firma todavía; ese rol necesitará su propio permiso.
+- **`just plan-invoice`** imprime por suscripción las líneas de `charges_for_month`, el
+  total, lo pagado y lo pendiente, y un mensaje en español para pegar en WhatsApp o en el
+  correo, sin precios dentro de la app (D19). No envía nada.
+- **`just plan-report`** suma una línea por suscripción: esperado, pagado (mensualidad +
+  paquetes ya cobrados en `creation_payments`), pendiente y estado (`sin pago`,
+  `pago parcial`, `pagado`, `pagó de más`, `sin cobro`).
 
 ## Paquetes de 90 días y «Pedir más a Qualify» (m-24852129)
 

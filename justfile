@@ -139,6 +139,20 @@ revoke-pack *args:
 plan-report *args:
     uv run --no-sync python -m qualify_api.plans.report {{args}}
 
+# m-25129422: the month's charge per subscription — lines, total, paid, pending and a
+# Spanish message to paste into WhatsApp/email. PRINTS ONLY, sends nothing (D19):
+#   just plan-invoice [--month 2026-11] [--tenant <uuid>]
+[positional-arguments]
+plan-invoice *args:
+    uv run --no-sync python -m qualify_api.plans.payments invoice "$@"
+
+# m-25129422: record ONE monthly-fee payment received by hand. Idempotent on the payment
+# reference (the same receipt twice = one row). Team only (admin_session):
+#   just plan-payment --tenant <uuid> --month 2026-11 --usd 149 --method zelle --payment-ref "Zelle 4471" --by herwin@attitudefactory.co [--local 470000 --currency COP] [--paid-on 2026-11-03]
+[positional-arguments]
+plan-payment *args:
+    uv run --no-sync python -m qualify_api.plans.payments payment "$@"
+
 # m-24852145 (D18): the plan's USD cap alert, once per subscription and month, to Lark
 # (QUALIFY_SUPPORT_WEBHOOK_URL). Never pauses anything. The calendar worker runs it daily.
 plan-cost-alerts *args:
