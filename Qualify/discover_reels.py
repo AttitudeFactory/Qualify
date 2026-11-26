@@ -420,6 +420,9 @@ class DiscoverReelsState(rx.State):
         filters would be judged against the old lists and an empty state (e.g. «Elegir
         cuentas» when going back to «Todas») would flash (Deivid, 2026-11-26)."""
         self.filtering = True
+        # and any read already in flight (a tick, a load) can no longer paint the old
+        # filters over the new ones — `refilter` bumps it again, harmlessly (review)
+        self._load_id += 1
         return DiscoverReelsState.refilter
 
     @rx.event(background=True)
@@ -588,6 +591,8 @@ class DiscoverReelsState(rx.State):
                 self._show(shown)
                 if rivals is not None:
                     self.competitor_rows = rivals
+            elif self._load_id == load_id:
+                self.filtering = False  # another business logged in meanwhile
         await _settle(opened)
 
     # -- RF-05: the competitors panel -----------------------------------------------------
