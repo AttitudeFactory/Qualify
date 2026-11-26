@@ -1,14 +1,17 @@
-"""«Uno de tus avatares no se pudo crear» — the email of a failed avatar (m-25120319).
+"""The email of a Clip whose avatars need the owner (m-25120319): one or more avatars
+could not be made (`block_failed`), or one was made but the Clip passes 60 s with it
+(`clip_too_long`).
 
 Pure assembly, no external reads: the outbox (`creative.clip_avatar_mail`) passes in the
 business name, the Clip's link and the date the Clip stops waiting. The words follow
-`docs/contrato-avatar-primer-crear.md` §1.6 (the «video listo» email it sketched),
-adapted to the failure. **Every client-facing string here is pending ux-designer review
-(`qualify-copy-es`)** — see `TEXTS` below, the one place they live.
+`docs/contrato-avatar-primer-crear.md` §1.6. The `block_failed` words were reviewed by
+ux-designer on 2026-11-26 (`qualify-copy-es`); the plural subject/heading and every
+`clip_too_long` word are NEW and marked `UX-REVIEW` below, pending that review.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from html import escape
 from uuid import UUID
@@ -20,7 +23,11 @@ from qualify_api.mail import OutgoingMail
 #: when a word or the layout changes.
 TEMPLATE_VERSION = "clip-avatar-failed-v1"
 
-# UX-REVIEW (m-25120319): reviewed by ux-designer on 2026-11-26 (`qualify-copy-es`).
+#: The two kinds of email (`clip_avatar_failure_mails.kind`).
+BLOCK_FAILED = "block_failed"
+CLIP_TOO_LONG = "clip_too_long"
+
+# -- `block_failed`: reviewed by ux-designer on 2026-11-26 (`qualify-copy-es`) ----------
 SUBJECT = "{business}: uno de tus avatares no se pudo crear"
 HEADING = "Uno de tus avatares no se pudo crear"
 #: The inbox preview line (the hidden div), apart from the body.
@@ -39,7 +46,64 @@ WAIT = (
 )
 BUTTON = "Revisar mi video"
 FOOTER = "Recibes este aviso porque hay un video con avatar de {business} esperando en Qualify."
-TEXTS = (SUBJECT, HEADING, PREHEADER, LEAD, WAIT, BUTTON, FOOTER)
+# UX-REVIEW (m-25120319, new): when one pass sees more than one avatar fail (one email
+# per Clip and pass, Deivid 2026-11-26).
+SUBJECT_MANY = "{business}: algunos de tus avatares no se pudieron crear"
+HEADING_MANY = "Algunos de tus avatares no se pudieron crear"
+
+# -- `clip_too_long`: UX-REVIEW (m-25120319, new; Deivid's idea «Tu video quedó muy largo:
+# acórtalo para poder aprobarlo»). While the Clip waits its photos and videos cannot be
+# edited (`drafting` has no edit edge), so the owner's only ways out are «Intentar de
+# nuevo» with shorter words for the avatar, or «Quitar avatar» (contract §1.4).
+LONG_SUBJECT = "{business}: tu video con avatar quedó muy largo"
+LONG_HEADING = "Tu video quedó muy largo"
+LONG_PREHEADER = "Acórtalo antes del {deadline} o tu video se descarta."
+LONG_LEAD = (
+    "Con tu avatar, el video de {business} pasa de 60 segundos y así no se puede armar. "
+    "Acórtalo para poder aprobarlo."
+)
+LONG_WAIT = (
+    "Toca «Intentar de nuevo» y escribe un texto más corto para tu avatar, o toca "
+    "«Quitar avatar». Tienes hasta el {deadline} (hora de {business}). Si no eliges "
+    "antes, el video se descarta y habría que crearlo de nuevo. Si quitas el avatar, "
+    "armamos tu video sin él y tú lo apruebas antes de publicar."
+)
+TEXTS = (
+    SUBJECT,
+    HEADING,
+    PREHEADER,
+    LEAD,
+    WAIT,
+    BUTTON,
+    FOOTER,
+    SUBJECT_MANY,
+    HEADING_MANY,
+    LONG_SUBJECT,
+    LONG_HEADING,
+    LONG_PREHEADER,
+    LONG_LEAD,
+    LONG_WAIT,
+)
+
+
+@dataclass(frozen=True)
+class Words:
+    subject: str
+    heading: str
+    preheader: str
+    lead: str
+    wait: str
+
+
+def words_for(kind: str, count: int = 1) -> Words:
+    """The words of one email: by its kind, and for `block_failed` how many avatars."""
+    if kind == CLIP_TOO_LONG:
+        return Words(LONG_SUBJECT, LONG_HEADING, LONG_PREHEADER, LONG_LEAD, LONG_WAIT)
+    if kind != BLOCK_FAILED:
+        raise ValueError(kind)
+    if count > 1:
+        return Words(SUBJECT_MANY, HEADING_MANY, PREHEADER, LEAD, WAIT)
+    return Words(SUBJECT, HEADING, PREHEADER, LEAD, WAIT)
 
 #: Spanish names from a table — never `strftime` or the process locale.
 _WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
@@ -63,7 +127,8 @@ def business_zone(timezone: str | None) -> tzinfo:
     """The business's zone; UTC when it is empty or not a valid zone name."""
     try:
         return ZoneInfo(timezone) if timezone else UTC
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: a folder name such as "America" (PermissionError / IsADirectoryError)
         return UTC
 
 
@@ -90,13 +155,17 @@ def failure_mail(
     timezone: str,
     base_url: str,
     idempotency_key: str,
+    kind: str = BLOCK_FAILED,
+    count: int = 1,
 ) -> OutgoingMail:
+    words = words_for(kind, count)
     deadline = spanish_deadline(wait_until, business_zone(timezone))
     url = video_url(base_url, clip_id)
-    subject = SUBJECT.format(business=business)
-    preheader = PREHEADER.format(deadline=deadline)
-    lead = LEAD.format(business=business)
-    wait = WAIT.format(business=business, deadline=deadline)
+    subject = words.subject.format(business=business)
+    heading = words.heading
+    preheader = words.preheader.format(deadline=deadline)
+    lead = words.lead.format(business=business)
+    wait = words.wait.format(business=business, deadline=deadline)
     footer = FOOTER.format(business=business)
     href = escape(url, quote=True)
     logo = escape(base_url.rstrip("/") + "/qualify-icon-email.png", quote=True)
@@ -116,7 +185,7 @@ def failure_mail(
         'style="max-width:560px;background:#fff;border-radius:20px;padding:24px">'
         f'<tr><td><img src="{logo}" width="36" alt="Qualify" '
         'style="vertical-align:middle;border-radius:8px"> <strong>Qualify</strong>'
-        f'<h1 style="font-size:26px">{escape(HEADING)}</h1>'
+        f'<h1 style="font-size:26px">{escape(heading)}</h1>'
         f"<p>{escape(lead)}</p><p>{escape(wait)}</p>"
         '<table role="presentation" width="100%"><tr>'
         '<td align="center" style="background:#008573;border-radius:12px">'
@@ -126,14 +195,16 @@ def failure_mail(
         f'<p style="color:#60646c;font-size:13px">{escape(footer)}</p>'
         "</td></tr></table></td></tr></table></body></html>"
     )
-    text = "\n\n".join([HEADING, lead, wait, f"{BUTTON}: {url}", footer])
+    text = "\n\n".join([heading, lead, wait, f"{BUTTON}: {url}", footer])
     return OutgoingMail(
         to=to, subject=subject, html=html, text=text, idempotency_key=idempotency_key
     )
 
 
 __all__ = [
+    "BLOCK_FAILED",
     "BUTTON",
+    "CLIP_TOO_LONG",
     "FOOTER",
     "HEADING",
     "LEAD",
@@ -142,8 +213,10 @@ __all__ = [
     "TEMPLATE_VERSION",
     "TEXTS",
     "WAIT",
+    "Words",
     "business_zone",
     "failure_mail",
     "spanish_deadline",
     "video_url",
+    "words_for",
 ]

@@ -3150,10 +3150,11 @@ class ContentService:
         if isinstance(verdict, PlanRefused):
             # a made block the Clip cannot take (over 60 s), or a failure seen for the
             # first time: kept on the plan, so the screen shows it and the owner's 72 h
-            # run from it; the Clip waits for the owner. m-25120319: a failure seen for
-            # the first time stages its email in that same write (once per `failed_at`)
+            # run from it; the Clip waits for the owner. m-25120319: failures seen for
+            # the first time, or a block refused as too long, stage ONE email in that
+            # same write (one per Clip and pass: per `failed_at`)
             failures: tuple[Any, ...] = ()
-            if verdict.code == "failure_seen":
+            if verdict.code in ("failure_seen", "clip_too_long"):
                 from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
                     mailable_failures,
                 )

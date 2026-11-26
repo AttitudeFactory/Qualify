@@ -119,8 +119,8 @@ def test_a_failure_seen_stages_one_email_in_the_same_write_and_sends_it() -> Non
     (row,) = m.outbox.rows
     entry = m.plan_entry()
     assert entry.failed_at == T0 and row.failed_at == T0  # the stamp IS the identity
-    assert (row.clip_id, row.block_id, row.slot) == (m.made.clip_id, m.made.block_ids[0], 1)
-    assert row.code == "provider_error"
+    assert (row.clip_id, row.block_ids, row.slots) == (m.made.clip_id, (m.made.block_ids[0],), (1,))
+    assert (row.kind, row.codes) == ("block_failed", ("provider_error",))
     assert m.send() == 1
     (mail,) = m.mailer.sent
     assert mail.to == EMAIL
@@ -132,7 +132,7 @@ def test_a_failure_seen_stages_one_email_in_the_same_write_and_sends_it() -> Non
     assert template.BUTTON in mail.html
     # the 72 h in the business's hour: 15:00 UTC + 72 h = 10:00 in Bogotá three days on
     assert "domingo 29 de noviembre, 10 a. m." in mail.text
-    assert mail.idempotency_key == cm.failure_key(TENANT_ID, m.made.clip_id, 1, T0)
+    assert mail.idempotency_key == cm.failure_key(TENANT_ID, m.made.clip_id, "block_failed", T0)
     assert row.sent_at is not None and row.provider_id == "resend-1"
 
 
@@ -204,15 +204,53 @@ def test_a_removed_avatar_or_a_clip_that_moved_on_is_not_mailed() -> None:
     assert other.send() == 0 and other.reasons() == ["resolved"]
 
 
-def test_two_avatars_failing_in_one_pass_send_one_email_each() -> None:
-    """The rule today: one email per failed avatar (each has its own buttons)."""
+def test_two_avatars_failing_in_one_pass_send_one_email_together() -> None:
+    """Deivid, 2026-11-26: one email per Clip and pass, however many avatars failed."""
     m = Mailing()
     m.made = m.world.create(_at(_presenter(), 0), _at(_presenter(script="Hola."), 1))
     m.world.fail(m.made.block_ids[0])
     m.world.fail(m.made.block_ids[1])
     m.world.run(m.made.clip_id)
-    assert sorted(r.slot for r in m.outbox.rows) == [1, 2]
-    assert m.send() == 2
+    for _ in range(2):  # read again: still one
+        m.world.run(m.made.clip_id)
+    (row,) = m.outbox.rows
+    assert row.slots == (1, 2) and row.block_ids == tuple(m.made.block_ids)
+    assert m.send() == 1 and m.send() == 0
+    (mail,) = m.mailer.sent
+    assert mail.subject == f"{BUSINESS}: algunos de tus avatares no se pudieron crear"
+    assert template.HEADING_MANY in mail.text
+
+
+def test_one_failed_avatar_next_to_a_made_one_gets_the_singular_words() -> None:
+    """A Clip stamps failures only once no avatar is still being made, so the avatars
+    seen failed together are those of one pass; a failure seen on a later pass (after
+    «Intentar de nuevo») sends one more email — see the retry tests."""
+    from .test_clip_avatar_first_create import _made
+
+    m = Mailing()
+    m.made = m.world.create(_at(_presenter(), 0), _at(_presenter(script="Hola."), 1))
+    m.world.fail(m.made.block_ids[0])
+    m.world.run(m.made.clip_id)  # the other one is still being made: nothing yet
+    assert m.outbox.rows == []
+    _made(m.world, m.made.block_ids[1])
+    m.world.run(m.made.clip_id)
+    (row,) = m.outbox.rows
+    assert row.slots == (1,)
+    assert m.send() == 1 and template.HEADING in m.mailer.sent[0].text
+
+
+def test_one_of_two_avatars_retried_before_the_email_left_still_mails_the_other() -> None:
+    m = Mailing()
+    m.made = m.world.create(_at(_presenter(), 0), _at(_presenter(script="Hola."), 1))
+    m.world.fail(m.made.block_ids[0])
+    m.world.fail(m.made.block_ids[1])
+    m.world.run(m.made.clip_id)
+    m.world.store.used_today = 0  # today's cap is not what this test is about
+    m.retry(0)
+    assert m.send() == 1
+    (mail,) = m.mailer.sent
+    assert template.HEADING in mail.text  # only one still waits: singular words
+    assert m.outbox.rows[0].sent_at is not None
 
 
 def test_a_still_creating_block_or_a_made_one_stages_nothing() -> None:
@@ -425,27 +463,37 @@ def test_the_mail_escapes_the_business_and_has_a_plain_text_twin() -> None:
 
 
 def test_the_key_is_derived_from_the_failure_and_carries_no_client_data() -> None:
-    key = cm.failure_key(TENANT_ID, UUID(int=1), 1, T0)
-    assert key == cm.failure_key(TENANT_ID, UUID(int=1), 1, T0.astimezone())
-    assert key != cm.failure_key(TENANT_ID, UUID(int=1), 1, T0 + timedelta(seconds=1))
+    key = cm.failure_key(TENANT_ID, UUID(int=1), "block_failed", T0)
+    assert key == cm.failure_key(TENANT_ID, UUID(int=1), "block_failed", T0.astimezone())
+    later = T0 + timedelta(seconds=1)
+    assert key != cm.failure_key(TENANT_ID, UUID(int=1), "block_failed", later)
+    assert key != cm.failure_key(TENANT_ID, UUID(int=1), "clip_too_long", T0)
     assert key.startswith("clip-avatar-failed/") and len(key) < 256
     assert str(TENANT_ID) not in key
 
 
-def test_the_worker_mail_pass_runs_both_chores_even_when_one_raises() -> None:
+def test_the_worker_mail_pass_runs_both_chores_even_when_one_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     from qualify_api.creative.worker.__main__ import _chain
 
+    caplog.set_level(logging.DEBUG)
     ran: list[str] = []
 
     def broken() -> int:
         ran.append("morning")
-        raise RuntimeError("boom")
+        raise RuntimeError(f"boom {EMAIL} {BUSINESS}")
 
     def avatar() -> int:
         ran.append("avatar")
         return 2
 
     assert _chain(broken, avatar)() == 2 and ran == ["morning", "avatar"]
+    assert any("error_type=RuntimeError" in r.getMessage() for r in caplog.records)
+    for record in caplog.records:
+        assert record.exc_info is None
+        for secret in ("boom", EMAIL, BUSINESS):
+            assert secret not in record.getMessage()
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +581,7 @@ def test_the_time_is_read_again_before_each_claim() -> None:
 
 
 def test_an_invalid_business_timezone_falls_back_to_utc() -> None:
-    for zone in ("Mars/Olympus", "", "../etc"):
+    for zone in ("Mars/Olympus", "", "../etc", "America", "America/"):
         mail = template.failure_mail(
             to=EMAIL, business=BUSINESS, clip_id=UUID(int=7), wait_until=T0, timezone=zone,
             base_url=BASE, idempotency_key="k",
@@ -574,3 +622,87 @@ def test_removing_the_avatar_leaves_the_video_to_approve_never_published() -> No
     m.world.remove(m.made)
     m.world.run(m.made.clip_id)
     assert m.world.repo.drafts[m.made.clip_id].status == GENERATED  # «Por aprobar»
+
+
+# ---------------------------------------------------------------------------
+# `clip_too_long` (Deivid, 2026-11-26): the avatar was made, the Clip passes 60 s
+
+
+def _too_long(m: Mailing) -> None:
+    from .test_clip_avatar_first_create import _clip, _made, _own
+
+    m.made = m.world.create(_at(_presenter(script="a" * 450), 1), brief=_clip(_own(30.0)))
+    _made(m.world, m.made.block_ids[0], seconds=30.9)
+    m.world.run(m.made.clip_id)
+
+
+def test_a_block_refused_as_too_long_mails_once_with_its_own_words() -> None:
+    m = Mailing()
+    _too_long(m)
+    entry = m.plan_entry()
+    assert entry.refused == "clip_too_long" and entry.failed_at == T0
+    for _ in range(2):  # read again: still one
+        m.world.clock.now += timedelta(minutes=1)
+        m.world.run(m.made.clip_id)
+    (row,) = m.outbox.rows
+    assert (row.kind, row.slots, row.codes) == ("clip_too_long", (1,), ("clip_too_long",))
+    assert m.send() == 1 and m.send() == 0
+    (mail,) = m.mailer.sent
+    assert mail.subject == f"{BUSINESS}: tu video con avatar quedó muy largo"
+    assert template.LONG_HEADING in mail.text
+    assert template.LONG_LEAD.format(business=BUSINESS) in mail.text
+    assert "«Intentar de nuevo» y escribe un texto más corto" in mail.text
+    assert "«Quitar avatar»" in mail.text and template.BUTTON in mail.html
+    preview = mail.html.split('overflow:hidden">', 1)[1].split("</div>", 1)[0]
+    assert preview == "Acórtalo antes del domingo 29 de noviembre, 10 a. m. o tu video se descarta."
+    assert mail.idempotency_key == cm.failure_key(TENANT_ID, m.made.clip_id, "clip_too_long", T0)
+
+
+def test_a_retry_that_comes_out_too_long_again_mails_once_more() -> None:
+    from .test_clip_avatar_first_create import _made
+
+    m = Mailing()
+    _too_long(m)
+    assert m.send() == 1
+    m.world.clock.now = T0 + timedelta(hours=1)
+    m.world.retry(m.made, request=_presenter(script="a" * 440))
+    m.world.run(m.made.clip_id)  # being made again: nothing to say
+    assert len(m.outbox.rows) == 1
+    _made(m.world, m.made.block_ids[0], seconds=30.9)
+    m.world.run(m.made.clip_id)
+    assert [r.failed_at for r in m.outbox.rows] == [T0, T0 + timedelta(hours=1)]
+    assert m.send() == 1 and len(m.mailer.sent) == 2
+
+
+def test_a_too_long_avatar_removed_before_the_email_left_is_not_mailed() -> None:
+    m = Mailing()
+    _too_long(m)
+    m.world.remove(m.made)
+    assert m.send() == 0 and m.reasons() == ["resolved"]
+
+
+def test_a_too_long_avatar_with_its_switch_off_is_not_mailed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m = Mailing()
+    _too_long(m)
+    monkeypatch.setenv(ca.PRESENTER_SWITCH, "off")
+    assert m.send() == 0 and m.reasons() == ["switched_off"]
+    staged_off = Mailing()
+    monkeypatch.setenv(ca.PRESENTER_SWITCH, "on")
+    staged_off.made = staged_off.world.create(_at(_presenter(script="a" * 450), 1))
+    monkeypatch.setenv(ca.PRESENTER_SWITCH, "off")
+    assert cm.mailable_failures(
+        [ca.PlannedBlock(m.plan_entry(), m.world.store.blocks_of(
+            tenant_id=TENANT_ID, clip_id=m.made.clip_id)[0], "failed", "clip_too_long")]
+    ) == ()  # fmt: skip
+
+
+def test_the_words_of_each_kind_are_all_marked_and_distinct() -> None:
+    one, many = template.words_for("block_failed"), template.words_for("block_failed", 2)
+    long = template.words_for("clip_too_long", 3)
+    assert one.heading == template.HEADING and many.heading == template.HEADING_MANY
+    assert long.heading == template.LONG_HEADING and long.lead == template.LONG_LEAD
+    with pytest.raises(ValueError):
+        template.words_for("other")
+    assert all(text in template.TEXTS for text in (*one.__dict__.values(), *long.__dict__.values()))

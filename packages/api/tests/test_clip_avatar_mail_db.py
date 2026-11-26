@@ -52,7 +52,8 @@ def _rows(tenant: UUID) -> list[Any]:
         return list(
             session.execute(
                 text("""
-                SELECT slot, failed_at, failure_code, sent_at, closed_reason, provider_id,
+                SELECT kind, slots, block_ids, failed_at, failure_codes, sent_at,
+                       closed_reason, provider_id,
                        source_version, idempotency_key
                 FROM clip_avatar_failure_mails ORDER BY created_at, failed_at
             """)
@@ -72,9 +73,10 @@ def test_one_email_per_failure_on_postgres_and_rls(monkeypatch: pytest.MonkeyPat
     _pass(world, made.clip_id)  # the failure is seen: stamp + row, one transaction
     _pass(world, made.clip_id)  # read again: nothing new
     (row,) = _rows(tenant)
-    assert (row.slot, row.failed_at, row.failure_code) == (1, t0, "provider_error")
+    assert (row.kind, row.slots, row.failed_at) == ("block_failed", [1], t0)
+    assert row.block_ids == [block] and row.failure_codes == ["provider_error"]
     assert row.source_version == "clip-avatar-failed-v1"
-    assert row.idempotency_key == cm.failure_key(tenant, made.clip_id, 1, t0)
+    assert row.idempotency_key == cm.failure_key(tenant, made.clip_id, "block_failed", t0)
 
     outbox, mailer = cm.PostgresAvatarFailureOutbox(), RecordingMailer()
     assert tenant in outbox.pending_tenants()

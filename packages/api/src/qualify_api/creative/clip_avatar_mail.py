@@ -1,37 +1,44 @@
-"""The email of a failed avatar (m-25120319, epic m-25026566): «Uno de tus avatares no
-se pudo crear. Entra para intentarlo de nuevo o quitarlo.»
+"""The email of a Clip whose avatars need the owner (m-25120319, epic m-25026566): one
+or more avatars could not be made («Uno de tus avatares no se pudo crear»), or one was
+made but the Clip passes 60 s with it («Tu video quedó muy largo»). The words live in
+`qualify_api.mail.clip_avatar`.
 
-**When.** The worker's first pass that sees an avatar block of a Clip failed stamps its
-`failed_at` on the Clip's plan (`clip_avatar.plan_gate` → `PlanRefused("failure_seen")`),
-in a new brief written under the run's fence (`ContentService._replace_clip_brief`). In
-THAT same transaction `stage` writes one row per failed avatar in
-`clip_avatar_failure_mails` (migration 0186): the stamp and the email commit together or
-not at all.
+**When.** The worker's pass that sees an avatar block of a Clip failed — or refuses a
+made one as too long — stamps its `failed_at` on the Clip's plan (`clip_avatar.plan_gate`
+→ `PlanRefused("failure_seen" | "clip_too_long")`), in a new brief written under the
+run's fence (`ContentService._replace_clip_brief`). In THAT same transaction `stage`
+writes ONE row in `clip_avatar_failure_mails` (migration 0186) for everything the pass
+stamped: the stamp and the email commit together or not at all.
 
-**Once per failure.** A failure's identity is `(clip_id, slot, failed_at)` — `UNIQUE`,
-staged with `ON CONFLICT DO NOTHING` — and its Resend `Idempotency-Key` is derived from
-it. Re-reading the state, a second pass or a restarted worker never stages a second row
-(the stamp is already on the plan; and if it were written again, the same identity
-conflicts). The sender freezes the mail before its first attempt and resends it verbatim
-with the same key; after `RETRY_WINDOW` of uncertain attempts it closes the row instead
-of risking a double (Resend keeps keys 24 h).
+**One email per Clip and pass** (Deivid, 2026-11-26). Every block a pass stamps carries
+that pass's `failed_at`, so the identity `(clip_id, kind, failed_at)` — `UNIQUE`, staged
+with `ON CONFLICT DO NOTHING` — groups two avatars failing together into one row and one
+email; its Resend `Idempotency-Key` is derived from it. Re-reading the state, a second
+pass or a restarted worker never stages a second row (the stamp is already on the plan;
+and if it were written again, the same identity conflicts). The sender freezes the mail
+before its first attempt and resends it verbatim with the same key; after
+`RETRY_WINDOW` of uncertain attempts it closes the row instead of risking a double
+(Resend keeps keys 24 h).
 
 **A retry that fails again** is a new failure: «Intentar de nuevo» clears the slot's
-`failed_at`; when the new attempt fails, the next pass stamps a new `failed_at` — a new
-identity, one more email, once. A row not sent yet when the owner retried or removed the
-avatar (or the Clip moved on: made, failed at 72 h) is closed `resolved`, never sent: the
-sender re-reads the Clip and the recipient before every attempt, a frozen retry included.
+`failed_at`; when the new attempt fails (or comes out too long again), a later pass
+stamps a new `failed_at` — a new identity, one more email, once. Before EVERY attempt
+(the first and each retry of a frozen mail) the sender re-reads the Clip and the
+recipient: a row whose avatars were all retried or removed, or whose Clip moved on
+(made, failed at 72 h), is closed `resolved`, never sent; one whose recipient left or
+changed address is closed `no_recipient`.
 
 **Switches.** Nothing is staged for a kind whose switch (`QUALIFY_CLIP_AVATAR_PRESENTER`
 / `QUALIFY_CLIP_AVATAR_ANIMATED`) is off, nor for a `switched_off` «failure»; the sender
-checks the switch again before the first attempt (`closed_reason='switched_off'`). With
-both off no block can exist, so nothing is ever staged.
+checks the switches again before every attempt (`closed_reason='switched_off'`), and the
+worker's chore reads nothing while both are off. With both off no block can exist.
 
 **Who.** The Clip's author (`content_briefs.created_by`), while still a member of the
 business with a real seat and a confirmed address (`auth.confirmed_email`, fail closed).
 
-**Privacy.** Logs carry ids and codes only — never an address, a name or a script
-(`test_clip_avatar_mail.py` checks every record of a full run).
+**Privacy.** Logs carry ids, codes and an error's type only — never an address, a name, a
+script, nor an exception's text or traceback (a database error carries its parameters).
+`test_clip_avatar_mail.py` checks every record of a full run and every log call.
 """
 
 from __future__ import annotations
@@ -55,7 +62,12 @@ from qualify_api.creative.clip_avatar import (
     plan_states,
 )
 from qualify_api.mail import Mailer, MailNotConfigured, MailRejected, OutgoingMail
-from qualify_api.mail.clip_avatar import TEMPLATE_VERSION, failure_mail
+from qualify_api.mail.clip_avatar import (
+    BLOCK_FAILED,
+    CLIP_TOO_LONG,
+    TEMPLATE_VERSION,
+    failure_mail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,21 +83,26 @@ Verifier = Callable[[UUID, str], str | None]
 
 @dataclass(frozen=True)
 class AvatarFailure:
-    """One failed avatar, stamped on this pass: what one email is staged for."""
+    """One avatar stamped on this pass (failed, or refused as too long)."""
 
     block_id: UUID
     slot: int
-    kind: str
+    block_kind: str
     code: str
     failed_at: datetime
+
+    @property
+    def mail_kind(self) -> str:
+        return CLIP_TOO_LONG if self.code == CLIP_TOO_LONG else BLOCK_FAILED
 
 
 def mailable_failures(
     seen: Sequence[PlannedBlock], env: Mapping[str, str] | None = None
 ) -> tuple[AvatarFailure, ...]:
-    """The failures stamped on this pass that get an email: a real block that failed,
-    whose kind is switched on — never `switched_off` (nothing failed: the server stopped
-    it) nor an entry without a block (no «Intentar de nuevo» to offer). Pure."""
+    """The avatars stamped on this pass that get an email: a real block that failed or
+    was refused as too long, whose kind is switched on — never `switched_off` (nothing
+    failed: the server stopped it) nor an entry without a block (no «Intentar de nuevo»
+    to offer). Pure."""
     found: list[AvatarFailure] = []
     for planned in seen:
         row = planned.row
@@ -97,7 +114,7 @@ def mailable_failures(
             AvatarFailure(
                 block_id=row.id,
                 slot=planned.entry.slot,
-                kind=row.kind,
+                block_kind=row.kind,
                 code=planned.code or "failed",
                 failed_at=planned.entry.failed_at,
             )
@@ -105,10 +122,38 @@ def mailable_failures(
     return tuple(found)
 
 
-def failure_key(tenant_id: UUID, clip_id: UUID, slot: int, failed_at: datetime) -> str:
-    """Resend's `Idempotency-Key` for one failure: derived from its identity, no PII."""
+@dataclass(frozen=True)
+class MailGroup:
+    """What ONE row is staged for: a Clip's avatars stamped together, of one kind."""
+
+    kind: str
+    failed_at: datetime
+    slots: tuple[int, ...]
+    block_ids: tuple[UUID, ...]
+    codes: tuple[str, ...]
+
+
+def mail_groups(failures: Sequence[AvatarFailure]) -> tuple[MailGroup, ...]:
+    """One group per (kind, failed_at) — one per pass in practice. Pure."""
+    groups: dict[tuple[str, datetime], list[AvatarFailure]] = {}
+    for failure in sorted(failures, key=lambda f: f.slot):
+        groups.setdefault((failure.mail_kind, failure.failed_at), []).append(failure)
+    return tuple(
+        MailGroup(
+            kind=kind,
+            failed_at=failed_at,
+            slots=tuple(f.slot for f in items),
+            block_ids=tuple(f.block_id for f in items),
+            codes=tuple(f.code for f in items),
+        )
+        for (kind, failed_at), items in groups.items()
+    )
+
+
+def failure_key(tenant_id: UUID, clip_id: UUID, kind: str, failed_at: datetime) -> str:
+    """Resend's `Idempotency-Key` for one email: derived from its identity, no PII."""
     stamp = failed_at.astimezone(UTC).isoformat()
-    digest = hashlib.sha256(f"{tenant_id}|{clip_id}|{slot}|{stamp}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{tenant_id}|{clip_id}|{kind}|{stamp}".encode()).hexdigest()
     return f"clip-avatar-failed/{digest}"
 
 
@@ -119,9 +164,10 @@ class PendingMail:
     id: UUID
     tenant_id: UUID
     clip_id: UUID
-    block_id: UUID
-    slot: int
+    kind: str
     failed_at: datetime
+    slots: tuple[int, ...]
+    block_ids: tuple[UUID, ...]
     user_id: UUID
     idempotency_key: str
     lease: UUID
@@ -131,7 +177,7 @@ class PendingMail:
 
 @dataclass(frozen=True)
 class ClipView:
-    """The Clip as the sender re-reads it before the first attempt."""
+    """The Clip as the sender re-reads it before every attempt."""
 
     status: str
     business: str
@@ -147,8 +193,8 @@ class Recipient:
 
 
 class AvatarFailureOutbox(Protocol):
-    """Where failure emails wait. `stage` runs INSIDE the Clip's fenced write (`session`
-    is that transaction; None for the in-memory double); every other call is its own
+    """Where the emails wait. `stage` runs INSIDE the Clip's fenced write (`session` is
+    that transaction; None for the in-memory double); every other call is its own
     transaction, fenced by the claim's `lease`."""
 
     def stage(
@@ -181,23 +227,35 @@ class AvatarFailureOutbox(Protocol):
 
 def _due(
     mail: PendingMail, clip: ClipView | None, env: Mapping[str, str] | None
-) -> tuple[str | None, datetime | None]:
-    """Whether a never-attempted row is still worth sending: (close reason, None), or
-    (None, when the Clip stops waiting). Pure."""
+) -> tuple[str | None, datetime | None, int]:
+    """Whether a row is still worth sending, before every attempt: (close reason, None,
+    0), or (None, when the Clip stops waiting, how many of its avatars still wait). An
+    avatar still waits when its plan entry keeps this row's `failed_at`, it is not
+    removed, it is still failed (or still refused as too long, for that kind) and its
+    kind is switched on. Pure."""
     if clip is None or clip.status != "drafting":
-        return "resolved", None
-    entry = next((e for e in clip.plan if e.slot == mail.slot), None)
-    if entry is None or entry.failed_at is None or entry.failed_at != mail.failed_at:
-        return "resolved", None
-    states = plan_states(clip.plan, clip.blocks, env)
-    planned = next((s for s in states if s.entry.slot == mail.slot), None)
-    if planned is None or planned.state != "failed" or planned.row is None:
-        return "resolved", None
-    if planned.row.id != mail.block_id:
-        return "resolved", None
-    if planned.code == "switched_off" or not block_enabled(planned.row.kind, env):
-        return "switched_off", None
-    return None, owner_deadline(states)
+        return "resolved", None, 0
+    states = {s.entry.slot: s for s in plan_states(clip.plan, clip.blocks, env)}
+    waiting = 0
+    switched = False
+    for slot, block_id in zip(mail.slots, mail.block_ids, strict=True):
+        planned = states.get(slot)
+        if (
+            planned is None
+            or planned.entry.failed_at != mail.failed_at
+            or planned.state != "failed"
+            or planned.row is None
+            or planned.row.id != block_id
+            or (planned.code == CLIP_TOO_LONG) != (mail.kind == CLIP_TOO_LONG)
+        ):
+            continue
+        if planned.code == "switched_off" or not block_enabled(planned.row.kind, env):
+            switched = True
+            continue
+        waiting += 1
+    if not waiting:
+        return ("switched_off" if switched else "resolved"), None, 0
+    return None, owner_deadline(tuple(states.values())), waiting
 
 
 def send_pending(
@@ -236,7 +294,7 @@ def send_pending(
             _close(outbox, mail, "uncertain", moment, error=True)
             continue
         clip = outbox.clip_view(tenant_id, mail.clip_id)
-        reason, wait_until = _due(mail, clip, env)
+        reason, wait_until, waiting = _due(mail, clip, env)
         if reason is not None:
             _close(outbox, mail, reason, moment)
             continue
@@ -262,6 +320,8 @@ def send_pending(
                 timezone=clip.timezone,
                 base_url=base_url,
                 idempotency_key=mail.idempotency_key,
+                kind=mail.kind,
+                count=waiting,
             )
             if not outbox.freeze(mail, {"mail": asdict(outgoing)}, now=moment):
                 continue
@@ -399,7 +459,7 @@ def failure_mail_chore(
 
 
 _COLUMNS = (
-    "id, tenant_id, clip_id, block_id, slot, failed_at, user_id, idempotency_key, "
+    "id, tenant_id, clip_id, kind, failed_at, slots, block_ids, user_id, idempotency_key, "
     "payload, first_attempt_at"
 )
 
@@ -422,25 +482,27 @@ class PostgresAvatarFailureOutbox:
         if session is None:
             raise RuntimeError("a failure email is staged inside the Clip's own write")
         staged = 0
-        for failure in failures:
+        for group in mail_groups(failures):
             staged += session.execute(
                 text("""
                 INSERT INTO clip_avatar_failure_mails
-                    (tenant_id, clip_id, block_id, slot, failed_at, failure_code, user_id,
-                     idempotency_key, source_version)
-                VALUES (:tenant, :clip, :block, :slot, :failed_at, :code, :user, :key,
+                    (tenant_id, clip_id, kind, failed_at, slots, block_ids, failure_codes,
+                     user_id, idempotency_key, source_version)
+                VALUES (:tenant, :clip, :kind, :failed_at, CAST(:slots AS smallint[]),
+                        CAST(:blocks AS uuid[]), CAST(:codes AS text[]), :user, :key,
                         :version)
                 ON CONFLICT DO NOTHING
             """),
                 {
                     "tenant": tenant_id,
                     "clip": clip_id,
-                    "block": failure.block_id,
-                    "slot": failure.slot,
-                    "failed_at": failure.failed_at,
-                    "code": failure.code,
+                    "kind": group.kind,
+                    "failed_at": group.failed_at,
+                    "slots": list(group.slots),
+                    "blocks": [str(b) for b in group.block_ids],
+                    "codes": list(group.codes),
                     "user": user_id,
-                    "key": failure_key(tenant_id, clip_id, failure.slot, failure.failed_at),
+                    "key": failure_key(tenant_id, clip_id, group.kind, group.failed_at),
                     "version": TEMPLATE_VERSION,
                 },
             ).rowcount
@@ -494,9 +556,10 @@ class PostgresAvatarFailureOutbox:
             id=row["id"],
             tenant_id=row["tenant_id"],
             clip_id=row["clip_id"],
-            block_id=row["block_id"],
-            slot=int(row["slot"]),
+            kind=row["kind"],
             failed_at=row["failed_at"],
+            slots=tuple(int(s) for s in row["slots"]),
+            block_ids=tuple(UUID(str(b)) for b in row["block_ids"]),
             user_id=row["user_id"],
             idempotency_key=row["idempotency_key"],
             lease=lease,
@@ -619,10 +682,11 @@ class _MemoryRow:
     id: UUID
     tenant_id: UUID
     clip_id: UUID
-    block_id: UUID
-    slot: int
+    kind: str
     failed_at: datetime
-    code: str
+    slots: tuple[int, ...]
+    block_ids: tuple[UUID, ...]
+    codes: tuple[str, ...]
     user_id: UUID
     key: str
     created_at: int
@@ -637,7 +701,7 @@ class _MemoryRow:
 
 @dataclass
 class MemoryAvatarFailureOutbox:
-    """The same rules as Postgres, in memory: `(clip, slot, failed_at)` and the key are
+    """The same rules as Postgres, in memory: `(clip, kind, failed_at)` and the key are
     unique, claims take a lease. `clips` / `recipients` are what the test says the
     database holds."""
 
@@ -655,10 +719,10 @@ class MemoryAvatarFailureOutbox:
         failures: Sequence[AvatarFailure],
     ) -> int:
         staged = 0
-        for failure in failures:
-            key = failure_key(tenant_id, clip_id, failure.slot, failure.failed_at)
+        for group in mail_groups(failures):
+            key = failure_key(tenant_id, clip_id, group.kind, group.failed_at)
             if any(
-                (r.clip_id, r.slot, r.failed_at) == (clip_id, failure.slot, failure.failed_at)
+                (r.clip_id, r.kind, r.failed_at) == (clip_id, group.kind, group.failed_at)
                 or r.key == key
                 for r in self.rows
             ):
@@ -668,10 +732,11 @@ class MemoryAvatarFailureOutbox:
                     id=uuid4(),
                     tenant_id=tenant_id,
                     clip_id=clip_id,
-                    block_id=failure.block_id,
-                    slot=failure.slot,
-                    failed_at=failure.failed_at,
-                    code=failure.code,
+                    kind=group.kind,
+                    failed_at=group.failed_at,
+                    slots=group.slots,
+                    block_ids=group.block_ids,
+                    codes=group.codes,
                     user_id=user_id,
                     key=key,
                     created_at=len(self.rows),
@@ -702,9 +767,10 @@ class MemoryAvatarFailureOutbox:
                 id=row.id,
                 tenant_id=row.tenant_id,
                 clip_id=row.clip_id,
-                block_id=row.block_id,
-                slot=row.slot,
+                kind=row.kind,
                 failed_at=row.failed_at,
+                slots=row.slots,
+                block_ids=row.block_ids,
                 user_id=row.user_id,
                 idempotency_key=row.key,
                 lease=row.lease,
@@ -749,12 +815,14 @@ __all__ = [
     "AvatarFailure",
     "AvatarFailureOutbox",
     "ClipView",
+    "MailGroup",
     "MemoryAvatarFailureOutbox",
     "PendingMail",
     "PostgresAvatarFailureOutbox",
     "Recipient",
     "failure_key",
     "failure_mail_chore",
+    "mail_groups",
     "mailable_failures",
     "send_pending",
 ]
