@@ -84,6 +84,8 @@ COPY assets ./assets
 COPY migrations ./migrations
 COPY Qualify ./Qualify
 COPY deploy/bootstrap_db_roles.py ./deploy/bootstrap_db_roles.py
+# m-24824122: the off-site backup tool, run in the api container by deploy/backup-offsite.sh.
+COPY deploy/offsite_backup.py ./deploy/offsite_backup.py
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app/packages/models/src" \
@@ -146,17 +148,18 @@ COPY --from=frontend-build /srv /srv
 # app: runtime for api / reflex backend / migrate / webhook-worker / calendar-worker (command per service)
 # --------------------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS app
-# No apt packages: a `--backend-only` prod backend never touches the JS toolchain (bun,
-# curl, unzip), same as Reflex's official production image.
+# No JS toolchain: a `--backend-only` prod backend never touches bun, curl or unzip, same as
+# Reflex's official production image.
 RUN groupadd --system --gid 10001 qualify \
  && useradd --system --uid 10001 --gid qualify --home-dir /app --shell /usr/sbin/nologin qualify \
  && mkdir -p /data/uploaded_files /data/avatars \
  && chown -R qualify:qualify /data
 # DejaVu for the compositor's fallback text: `python:slim` ships no font and PIL's own
 # default has no glyph for ñ or accents (the package also vendors the regular face;
-# the system package adds the bold one the hooks are drawn in).
+# the system package adds the bold one the hooks are drawn in). `age` (m-24824122) encrypts
+# the off-site backup before it leaves the server (deploy/offsite_backup.py).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-dejavu-core \
+ && apt-get install -y --no-install-recommends fonts-dejavu-core age \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # m-24957792: `ffmpeg`/`ffprobe` for the catalog's clip normalization at upload, which runs in
