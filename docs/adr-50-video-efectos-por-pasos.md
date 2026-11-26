@@ -400,3 +400,203 @@ Lectura: la memoria no cambia con 7 uniones (278 MiB en la unión, pico en `prep
 - **No se encienden** `QUALIFY_CLIP_AVATAR_PRESENTER` ni `QUALIFY_CLIP_AVATAR_ANIMATED` antes del PR 2. Hasta entonces, un Clip cuyo avatar falla espera para siempre.
 
 **Fuera de esta enmienda.** La pantalla (m-25112921), la medición pagada (m-25112919) y el correo de aviso, que va en un ticket aparte.
+
+## 12. Enmienda `[APROBADO — firmado por Deivid Vargas el 2026-11-26]`: el personaje en su escena reemplaza al bloque de presentador (m-25128784)
+
+**Estado:** `[APROBADO — firmado por Deivid Vargas el 2026-11-26]` · redactada por principal-architect el 2026-11-26 (m-25128784, épica m-25026566). Recoge las decisiones de Deivid del 2026-11-26 (descripciones de m-25128784, m-25129385, m-25129386 y m-25129387 en Meegle, leídas el 2026-11-26), la medición AVESC-001 (PR #831; `docs/modelos-generativos/seedance-2-5.md`, «Prueba AVESC-001», y `pruebas.md`) y la investigación de m-25129387 sobre los datos de clientes en BytePlus (`docs/byteplus-datos-de-clientes.md`, 2026-11-26). Deivid respondió P1 a P5 el 2026-11-26 (§12.11). Solo la firma Deivid (P5 del §6.3).
+
+**Firma de Deivid:** `[x]` «Firmo el §12», elegido por Deivid en la sesión «quailify-deivid» · fecha: 2026-11-26. Firmar no enciende nada: el interruptor sigue apagado hasta cumplir §12.9.
+
+**Evidencia:** `main` en `f9e784b7` (2026-11-26): `qualify_api/creative/clip_avatar.py` (§9 y §11 construidos: `ClipAvatarPlacement`, `fit_plan`, `avatar_join_cut_only`, tope diario, espera de 72 h), migración `0186_clip_avatar_failure_mails` (correo de falla, m-25120319), tabla de precios `v10` y `pesos-creaciones-v3`. Las cifras marcadas «calculado» salen de la tabla `v10` y son `[V]`; las marcadas `[H]` son estimaciones.
+
+### 12.1 Qué cambia
+
+**Antes (§9 y §11).** El avatar era un **presentador**: un bloque propio dentro del Clip, a pantalla completa, hecho en tres pasos (Seedream dibuja, Seed Speech pone la voz, OmniHuman 1.5 mueve los labios), que se **insertaba entre** dos tramos del dueño y alargaba el video.
+
+**Ahora.** El avatar es un **personaje** que actúa y habla **dentro de una escena** con el fondo y el producto del negocio: toma el producto, lo muestra, lo come y dice su línea con los labios sincronizados. La escena la hace **Seedance 2.5 omni en una sola tarea** con tres imágenes de referencia (personaje, producto, fondo) y la línea entre comillas. No hay paso de voz ni de labios aparte.
+
+- **Se reemplaza del §9:** el camino del bloque (Seedream + Seed Speech + OmniHuman 1.5, `AVATAR_BLOCK_REQ_KEY`), el tope de 30 s por bloque y la idea de un bloque que se **inserta** y alarga el Clip.
+- **Se reemplaza del §11:** la ubicación del bloque entre tramos (`ClipAvatarPlacement(at)`) y su encaje en `fit_plan`, que movía los textos y efectos al alargarse el video.
+- **Sigue valiendo, sin cambios, ahora para las escenas:**
+  - el hijo del Clip (`parent_draft_id`, revisión `0119`), con su lugar en `part_index` y sin `media.part`;
+  - `ai_generated=True` en el Clip que lleva una escena, con la regla del §9 («se lee de lo que se hizo») y su lado seguro;
+  - el cobro al aprobar el Clip, en la fila del propio hijo, para que aprobar otra versión no cobre dos veces;
+  - el rechazo antes de pagar si el mes no alcanza para los segundos de **todas** las escenas sin cobrar de la marca, y el fin de esa cuenta al aprobarse, al fallar (P6 del §11) o con la retención;
+  - el tope de **3 por negocio y por día**, en el día del negocio, con «Intentar de nuevo» contado como una más (P1 del §11);
+  - el Clip que espera en `drafting` a sus hijos (P4 del §14 de `docs/diseno-video-por-planos.md`) y las **72 h** para elegir si uno falla, después `avatar_block_failed` y devolución (P2 del §11);
+  - **3 s o más** de material propio del dueño a la vista (P5 del §11);
+  - «**Textos sí, efectos no**»: se aceptan textos sobre la escena; `humo_capa`, `brasas_capa` y `vapor_capa` se rechazan si se cruzan con ella;
+  - el correo de falla de m-25120319 (PR #828, migración `0186`), que también sale cuando falla una escena.
+- **Cambia:**
+  - el largo: **5 a 10 s enteros** por escena, en vez de hasta 30 s;
+  - la escena **no alarga** el Clip: ocupa una ventana del tiempo y **reemplaza** lo que el dueño tenía en esos segundos;
+  - el borrador es de 480p y el final de 1080p se hace al aprobar (§12.4);
+  - el borrador de una escena descuenta 1 vista previa (P2); el §9 no descontaba nada al crear;
+  - las uniones junto a la escena: la entrada admite cualquier transición y la salida, solo «Corte» (§12.6).
+
+### 12.2 La receta en el Clip
+
+- **Una pista nueva, «Personajes»**, en el brief del Clip (`media.character_scenes`, en el JSON del brief). Cada aparición es un ítem: `character_id`, `product`, `background`, `line`, `start` y `duration`. Esta pista la escribe el editor; el servidor la valida entera antes de escribir una fila o de pagar.
+- **Cada aparición es una escena propia:** un borrador hijo del Clip, de un tipo nuevo `CHARACTER_SCENE` (`character_scene`). Se descarta reusar `AVATAR_VIDEO` o `ANIMATED_AVATAR_VIDEO`: esos tipos llevan al productor por el camino del presentador. El tipo nuevo amplía `ck_content_briefs_kind` en una migración reversible. Números fijados: **`0187` para la tabla de personajes (m-25129385)** y **`0188` para el tipo `character_scene` (m-25128784)**, con `0188` encima de `0187` (`qualify-migration`).
+- **El tramo:** la escena ocupa `[start, start + duration)` del Clip. En esos segundos se ve la escena y suena **su** audio: lo del dueño que caía ahí no se muestra y su sonido se calla. La línea de tiempo no se corre: el Clip dura lo mismo que sin la escena. Si el video real de la escena sale unos cuadros más corto que lo pedido (AVESC-001: 4,96 s de 5), el último cuadro se sostiene; no falla.
+- **Validaciones, todas antes de escribir nada y de pagar:**
+  - `duration` entera de 5 a 10 s;
+  - máximo **3 escenas por video**;
+  - una a la vez: dos escenas no se cruzan en el tiempo;
+  - ninguna pasa del final del video principal;
+  - máximo **3 escenas por negocio y por día** (el tope del §9, que ahora cuenta escenas);
+  - la línea cabe en la escena: como máximo `15 × (duration − 2,5)` caracteres, o sea 37 a 5 s, 82 a 8 s y 112 a 10 s. `[H]`: sale de AVESC-001, donde el personaje empezó a hablar entre el segundo 2,0 y el 5,9 y leyó a unos 14 caracteres por segundo; las líneas de más de 55 caracteres no se midieron.
+- **Lo que no cambió no se paga de nuevo.** Al editar un Clip y volver a «Crear», una escena con las mismas entradas (personaje, producto, fondo, línea y largo) se reusa. Su clave de pedido es el resumen de esas entradas, así que no se pide otra tarea ni se cuenta otra vez en el tope.
+
+### 12.3 Las entradas
+
+| Entrada | De dónde sale | Regla |
+|---|---|---|
+| Personaje (`character_id`) | Un personaje guardado del negocio (m-25129385). El dueño lo describe, Seedream dibuja 2 o 3 opciones y él elige una. Máximo 5 por negocio, con `tenant_id` y RLS. | El personaje solo vale si lo generó **Seedream 5.0 en nuestra cuenta, sin editar y hace menos de 30 días** (`docs/byteplus-datos-de-clientes.md` §1.4). Por eso el dibujo viaja **byte a byte**, sin recortar ni recomprimir. El personaje realista se ofrece desde el primer día y se dibuja desde una descripción. Pasados 30 días, se redibuja como dice P5 (R7). Seedance nunca recibe una foto de una persona real ni un personaje hecho con otra herramienta. Dibujar el personaje a partir de una foto real queda como opción pendiente de medición (§12.12). |
+| Producto (`product`) | Un producto del Catálogo y una de sus fotos. | Va como referencia; no se dibuja de nuevo. |
+| Fondo (`background`) | Una foto del local que subió el dueño, o un fondo que el dueño describe y Seedream dibuja. | Al dibujar un fondo, el prompt pide «sin carteles ni letras» (R6). |
+| Línea (`line`) | La escribe el dueño, o la sugiere Claude Haiku con «Sugerir con IA» (m-25129386, gratis, hasta 10 por escena y por día). | Los nombres en inglés se escriben como se pronuncian (R2). La aprueba el dueño: nunca se usa una línea que no vio. |
+
+### 12.4 Resolución, cobro y cupo
+
+- **Borrador:** al «Crear», cada escena se hace en **480p** (480×854, 24 cuadros por segundo, 9:16), con audio. El Clip borrador se arma a 1080×1920 con la escena agrandada: se ve más suave, y eso es lo esperado en un borrador. **No descuenta segundos de video.** **Descuenta 1 vista previa del mes** por escena, como cualquier video de Seedance (D7 de `docs/diseno-video-por-planos.md`). La vista previa se devuelve si BytePlus no entrega nada (P2). Si al dueño no le quedan vistas previas, la escena se rechaza antes de pagar nada. Una escena que se reusa sin cambios (§12.2) no descuenta otra.
+- **Final:** al aprobar el Clip, cada escena se regenera en **1080p** desde su borrador (`draft_task_id`, como el final de Seedance de hoy) y el Clip se vuelve a armar con los finales. El final puede salir un poco distinto del borrador. El Clip queda «listo» con los finales y el dueño lo ve antes de programarlo: nada se publica solo.
+- **Cupo:** los segundos **pedidos** de cada escena (5 a 10) se descuentan del cupo de segundos de video del mes al aprobar, una sola vez, como una parte de Seedance (§13.5 de `docs/diseno-video-por-planos.md`). Si falla el final de una escena, vuelven sus segundos (D9 de ese documento), sale el correo de falla y el Clip queda aprobado y esperando ese final, con «Intentar de nuevo».
+- **Guarda de precio:** cada tarea de Seedance (borrador y final) y cada dibujo de Seedream pasan por la guarda de precio, con la tabla vigente, y dejan su evento de uso con el costo en `creative_usage_events`.
+- **Idempotencia:** el pedido de la escena lleva su clave (§12.2); el final lleva la clave `(escena, revisión)`, así que aprobar dos veces o reintentar no genera ni cobra dos veces.
+- **Fuera del pedido web:** borradores y finales corren en el `creative-worker` (ADR 41), una tarea a la vez por escena.
+
+**Costo por escena** (tabla `v10`; borrador medido en AVESC-001, final calculado):
+
+| Largo | Borrador 480p (medido) | Final 1080p (calculado, 11,70 US$/M × 48.600 tokens/s) | Escena aprobada |
+|---|---|---|---|
+| 5 s | US$0,52 | US$2,84 | US$3,36 |
+| 8 s | US$0,83 | US$4,55 | US$5,38 |
+| 10 s | US$1,03 | US$5,69 | US$6,72 |
+
+- El personaje se dibuja una vez: 3 opciones × US$0,045 = **US$0,14** (m-25129385).
+- **Con el cupo del plan Básico** (40 s al mes): los finales cuestan como mucho 40 × 0,569 = **US$22,7** al mes, dentro del techo de §13.5 de `docs/diseno-video-por-planos.md`.
+- **Peor caso de borradores sin aprobar** (calculado). Sin descontar vista previa, el tope de 3 al día permitía 90 borradores de 10 s al mes: **US$92,7 por negocio y mes**, por encima del techo de ≈ US$61 del Básico. Con la vista previa (P2), los borradores quedan bajo las vistas previas del plan, que se comparten con los demás videos de Seedance: Básico 20 × US$1,03 = **US$20,6**, Plus 40 → **US$41,2** y Pro 80 → **US$82,4** al mes. Esto cabe en los techos del §13.5 de `docs/diseno-video-por-planos.md`, que ya cuentan esas vistas previas.
+- **Tiempo:** 67 a 78 s por borrador (AVESC-001); el final, 38 s medidos y 60 s para planificar (SD25-002, n = 1, sin referencias). Un Clip con 3 escenas espera unos 4 min antes de armarse.
+- **Filas:** como mucho 3 hijos por Clip y 3 al día por negocio; ≤ 1.100 borradores de escena por negocio y año. Ninguna tabla nueva aparte de la de personajes (m-25129385, migración `0187`).
+
+### 12.5 Interruptores y tipos actuales
+
+- **Interruptor nuevo (P3, decidido):** `QUALIFY_CLIP_CHARACTER_SCENE`, **apagado** en todos los entornos (`.env.example`, `deploy/.env.prod.example`). Cubre **la escena, los personajes guardados (m-25129385) y «Sugerir con IA» (m-25129386)**. Apagado, el servidor rechaza los tres antes de leer nada, con `switched_off` y el texto de «todavía no está disponible».
+- **`QUALIFY_CLIP_AVATAR_PRESENTER` y `QUALIFY_CLIP_AVATAR_ANIMATED`** siguen apagados y no se encienden. El camino del bloque de OmniHuman en el Clip queda sin uso.
+- **Se elimina** `ClipAvatarPlacement(at)` del brief (m-25128784). **Lo demás del camino de OmniHuman en el Clip** (`place_block`, `clip_avatar_block`, `AVATAR_BLOCK_REQ_KEY` y la ruta del presentador en el Clip) **se retira en un ticket de limpieza después de que la escena esté en `main`** (P4, decidido). Los borradores sueltos no entran en esa limpieza.
+- **Lo que se reusa del código del §9 y del §11:** el tope diario, la cuenta de lo que falta cobrar, la espera en `drafting`, las 72 h, `retry_block`, el correo de falla y la regla de efectos sobre el tramo.
+- **Los borradores sueltos** `avatar_video` y `animated_avatar_video` no cambian.
+
+### 12.6 Uniones junto a la escena
+
+El §11 dejó «solo Corte» junto a un avatar (`avatar_join_cut_only`) porque un fundido mezclaba hasta 0,8 s del final de la voz con el tramo siguiente. m-25128784 pedía **eliminar** esa regla y aceptar cualquier transición. La medición muestra que el riesgo **sigue a la salida, no a la entrada**:
+
+- **Entrada:** en las 6 escenas el personaje empezó a hablar en el segundo 2,0 o después. Un fundido o un barrido de hasta 0,8 s no toca la voz.
+- **Salida:** en las escenas de 5 s la línea terminó en el segundo 4,7. Un fundido de 0,8 s se come la última palabra.
+
+**Decisión de Deivid (2026-11-26, P1):** la **entrada** de la escena admite **cualquier transición** y la **salida**, **solo «Corte»**. `avatar_join_cut_only` se reemplaza por esta regla, que se lee de `SourceSegment.transition_in` del tramo que sigue a la escena. La regla vale con `QUALIFY_CLIP_BLOCK_TRANSITIONS` apagado o encendido. La condición del §10 para encender `QUALIFY_CLIP_BLOCK_TRANSITIONS` pasa a ser esta regla de entrada y salida.
+
+### 12.7 Procedencia
+
+Cada escena queda en `params.local.character_scenes` del asset del Clip:
+
+- borrador, revisión y asset de la escena;
+- proveedor `seedance`, modelo `dreamina-seedance-2-5-260628` y versión del prompt (`personaje-escena-v1`, que sale de `avatar-escena-v1` de AVESC-001);
+- `character_id`, más el asset y el modelo de su dibujo (`dola-seedream-5-0-pro-260628`);
+- el producto (id y clave de la foto) y el fondo (clave de la foto o asset del dibujo);
+- la línea, y si la sugirió la IA (con la versión de su prompt, m-25129386);
+- segundos pedidos y reales, ids de las tareas de borrador y de final, y su costo.
+
+Además, `ai_sources` anota la escena como `character_scene`. El personaje guardado lleva su propia procedencia en su fila (m-25129385): la descripción del dueño, el modelo y la versión del prompt.
+
+### 12.8 Riesgos de AVESC-001
+
+| # | Riesgo | Qué se hace | Estado |
+|---|---|---|---|
+| R1 | **La voz no se controla:** cada escena inventa la suya, y el mismo personaje puede sonar distinto en dos escenas del mismo Clip. | Se acepta para empezar. El dueño oye el borrador antes de aprobar. Elegir o clonar la voz queda fuera (m-25128784). | Aceptado; se reabre (§12.10) |
+| R2 | **Pronunciación** de nombres en inglés («Nibbles», «super smash») y de algún fonema: 3 de 6 con dudas. | La línea se escribe como se pronuncia. «Sugerir con IA» lo hace solo (m-25129386) y el editor lo recuerda junto al campo. | Mitigado |
+| R3 | **Volumen:** la voz del personaje animado sale unos 5 dB más baja. | El armado local normaliza el volumen de cada escena (costo 0, en el mismo paso que la une). | A construir en m-25128784 |
+| R4 | **Escala y forma del producto** cambian (producto enorme, grieta en el pan). | El prompt pide el tamaño real en la mano. El dueño revisa cada escena en el borrador y puede repetirla (cuenta para el tope). | Aceptado, con revisión humana |
+| R5 | **Saturación al masticar** y **la mano que no gira con el producto** en el animado (Deivid). | Se aceptan en el borrador. Un prompt `personaje-escena-v2` se mide con `qualify-measure` antes de cambiarlo. | Aceptado |
+| R6 | **Letras falsas** en el fondo dibujado. | El fondo dibujado se pide sin carteles ni letras. | Mitigado |
+| R7 | **Personaje de más de 30 días:** Seedance 2.x rechaza caras humanas reales. Solo acepta como personaje una salida de Seedream 5.0 de nuestra cuenta, sin editar y de menos de 30 días. Un personaje de otra herramienta, editado o más viejo puede ser bloqueado (`docs/byteplus-datos-de-clientes.md` §1.4). | El dibujo se guarda intacto y con su fecha. Pasados 30 días, la primera vez que el dueño usa el personaje ve «Tu personaje necesita un dibujo nuevo» y elige entre 2 o 3 redibujos hechos desde su descripción guardada (≈ US$0,14, sin descontar cupo). El dibujo nuevo no sale idéntico; por eso lo elige el dueño (P5). | Decidido (P5) |
+| R8 | **Sin probar:** el final 1080p desde un borrador omni con referencias y audio, la foto real del local y la repetición (una muestra por casilla). | Una medición pagada de un final, con el OK de Deivid (≈ US$2,84 a 5 s), antes de encender. | Condición C2 |
+| R9 | **El momento de la línea** no se controla (en 10 s habla en la segunda mitad). | Tope de caracteres por largo (§12.2). | Mitigado en parte |
+| R10 | **Ruta de datos de BytePlus para las fotos del cliente** (producto, local), según `docs/byteplus-datos-de-clientes.md` §1.1 a §1.3. El endpoint está en **Johor (Malasia)** y el procesamiento puede pasar a **Indonesia o a la UE**. Las entradas y salidas que **marca el filtro** de contenido se guardan **180 días**. BytePlus **entrena** con los datos solo si el modelo está inscrito en la **«Colaboración de datos»**, que es una **cesión perpetua** e irreversible. No hay plazo publicado para las entradas de una tarea normal. | Ningún modelo que reciba datos de clientes puede estar inscrito en la «Colaboración de datos». Lo prueba una captura de la consola (C1). | Condición C1 |
+| R11 | **Condiciones de video para plataformas** (Service Specific Terms › Model Services §4.2): prohíben ofrecer el video en «herramientas de creación de contenido con IA», con una penalidad del 10 al 20 %. No se sabe si Qualify entra en esa categoría (`docs/byteplus-datos-de-clientes.md` §1.5). Es una puerta de una vía: el riesgo es perder la cuenta y pagar la penalidad. | Respuesta escrita de BytePlus antes de ofrecerlo a clientes externos (C1). Ya se le pasó a Deivid. | Abierto; puede cambiar la decisión |
+| R12 | **Venezuela no está** entre los países del servicio, y esa lista también vale para nuestros usuarios finales (`docs/byteplus-datos-de-clientes.md` §1.5). | No se generan escenas para negocios de Venezuela hasta que BytePlus responda por escrito (C1). Ya se le pasó a Deivid. | Abierto; puede cambiar la decisión |
+
+### 12.9 Condiciones antes de encender `QUALIFY_CLIP_CHARACTER_SCENE`
+
+Firmar el §12 no enciende nada. Para encenderlo con clientes hace falta:
+
+- **C1 · Ruta de datos de BytePlus** (m-25129387, `docs/byteplus-datos-de-clientes.md`, 2026-11-26). Lo que se sabe está en R10, R11 y R12. La recomendación sale del §5 de ese documento:
+  - Encender **solo para los negocios del fundador en Colombia y Uruguay**, y solo **después de una captura de la consola** que muestre que ningún modelo que recibe datos de clientes (Seedance, Seedream, OmniHuman, Seed Speech) está inscrito en la «Colaboración de datos». La captura se guarda junto a ese documento, con su fecha.
+  - Los **clientes externos** y **Venezuela** esperan una **respuesta escrita de BytePlus** a las preguntas 1 (§4.2, «herramientas de creación de contenido con IA») y 2 (Venezuela) del §4 de ese documento.
+  - Dos reglas del mismo documento: nunca se pide el diagnóstico de BytePlus sobre una tarea con datos de clientes, porque esos datos pueden ir a China; y el aviso de privacidad y los términos nombran a BytePlus como subencargado.
+  - **Deivid revisó la conclusión:** `[ ]` · fecha: ____
+- **C2 · Final 1080p medido** (R8): un final desde un borrador omni con referencias y audio, pagado con el OK escrito de Deivid y anotado en `docs/modelos-generativos/seedance-2-5.md`. Confirma que los labios y la voz se mantienen y que el costo es el calculado.
+- **C3 · Prueba de punta a punta con Deivid**, su OK y `env-push`, como el resto de los interruptores de este ADR.
+
+Mientras falte la captura de la consola, el interruptor solo se enciende en local. Con la captura, se enciende para los negocios del fundador en Colombia y Uruguay. Con la respuesta escrita de BytePlus, se enciende para clientes externos y, si la respuesta lo permite, para Venezuela.
+
+### 12.10 Alternativas descartadas y qué lo reabriría
+
+| Alternativa | Por qué no |
+|---|---|
+| Camino B: OmniHuman + Seed Speech, el presentador del §9 | No hay llaves para medirlo, y pone al presentador **fuera** de la escena: no toma ni come el producto. |
+| Dos pasos: Seedream dibuja el cuadro (personaje + producto + fondo) y después Seedance lo anima con la voz | Paga dos llamadas y suma un dibujo intermedio que el dueño no pidió. La tarea omni hizo las 6 escenas en un solo paso. |
+| Mantener el presentador del §9 (pantalla completa o círculo en una esquina) | Deivid lo descartó el 2026-11-26. |
+| Reusar los tipos `AVATAR_VIDEO`/`ANIMATED_AVATAR_VIDEO` con una marca en el brief | Ahorra una migración de una línea, pero arriesga que el productor tome el camino del presentador. |
+
+**Lo reabre:**
+
+- que BytePlus permita fijar o clonar la voz en Seedance, o que lleguen las llaves de OmniHuman y Seed Speech (R1);
+- quejas repetidas de clientes por la voz distinta entre escenas;
+- que más de 1 de cada 4 finales salga distinto de su borrador, a juicio del dueño o de Deivid;
+- que BytePlus rechace más de 1 de cada 10 referencias de personaje (R7);
+- la respuesta escrita de BytePlus sobre §4.2 y Venezuela (R11, R12): si dice que no, la escena no se ofrece a clientes externos o en Venezuela;
+- que el tope de 3 al día frene a más del 10 % de los negocios activos en un mes (umbral del §8);
+- que la conclusión de m-25129387 sea «no se puede»: entonces la escena solo usa fondos y productos dibujados, o se cambia de proveedor (fuera de esta enmienda).
+
+### 12.11 Preguntas para Deivid — decididas por Deivid el 2026-11-26
+
+Las cinco llegaron por «creacion de tickets» el 2026-11-26. Cada una dice cómo quedó y dónde se aplica.
+
+- **P1 · Uniones junto a la escena → decidida.** La entrada de la escena admite cualquier transición; la salida, solo «Corte». Ver §12.6.
+- **P2 · Vista previa → decidida: sí.** El borrador de una escena descuenta 1 vista previa del mes, y se devuelve si BytePlus no entrega nada. Ver §12.4. Con eso, el peor caso en borradores baja de US$92,7 a US$20,6 al mes en el Básico.
+- **P3 · Interruptor → decidida: uno nuevo.** `QUALIFY_CLIP_CHARACTER_SCENE` cubre la escena, los personajes y «Sugerir con IA». Ver §12.5.
+- **P4 · OmniHuman en el Clip → decidida.** Se retira en un ticket de limpieza después de que la escena esté en `main`. Ver §12.5.
+- **P5 · Personaje realista → decidida.** Se ofrece desde el primer día y se dibuja desde una descripción. Pasados 30 días, la primera vez que el dueño usa el personaje ve «Tu personaje necesita un dibujo nuevo» y elige entre 2 o 3 redibujos (≈ US$0,14, sin descontar cupo). Ver R7.
+
+### 12.12 Opción pendiente de medición: el personaje realista dibujado a partir de una foto real
+
+**Estado:** `[PENDIENTE DE MEDICIÓN]`. **No se construye todavía.** La pidió Deivid el 2026-11-26. Si la medición sale bien, entra con su propia enmienda o con una línea firmada en este §12.
+
+**Qué es.** El dueño sube la **foto de una persona real que le dio su permiso por escrito**. Seedream dibuja el personaje a partir de esa foto, y **ese dibujo es lo único que va a Seedance**. Seedance nunca recibe la foto. El dibujo intermedio de Seedream es lo que lo hace posible: Seedance rechaza caras humanas reales y solo acepta salidas propias de Seedream (§12.3, R7).
+
+**Medición** (con `qualify-measure` y el OK escrito de Deivid antes de pagar):
+
+- **Muestra:** unas **3 fotos** de personas que dieron su permiso por escrito.
+- **Costo** `[H]`: unos **US$3**. Por foto: 2 o 3 dibujos de Seedream (≈ US$0,14) y una escena de 5 s en borrador (≈ US$0,52). Son ≈ US$2,0 en total, más margen para repetir.
+- **Qué mide:**
+  1. si Seedream acepta la foto y dibuja el personaje, o si la rechaza (por ejemplo, con el filtro de figuras públicas);
+  2. si Seedance acepta ese dibujo como referencia. Es la pregunta clave: `docs/byteplus-datos-de-clientes.md` §1.4 nombra salidas de Seedream 5.0 **texto a imagen**, y un dibujo hecho desde una foto es **imagen a imagen**;
+  3. **qué tanto se parece** el personaje a la persona, a juicio de Deivid y de la persona de la foto.
+- Se anota en `docs/modelos-generativos/` el mismo día, como AVESC-001.
+
+**Permiso:**
+
+- El permiso escrito de la persona de la foto, como `avatar_rights_confirmed` en el código de hoy (`AvatarBlockRequest`). Queda guardado en la fila del personaje, con la fecha.
+- Para clientes, suma una **casilla de consentimiento** antes de subir la foto: el dueño confirma que tiene el permiso escrito de esa persona. El texto de la casilla pasa por `qualify-copy-es`.
+
+**Riesgo: caras de personas reales en BytePlus.** Hay que cruzarlo con `docs/byteplus-datos-de-clientes.md`:
+
+- **§1.4:** Seedance 2.x rechaza caras reales y solo admite tres caminos: personajes de la biblioteca, salidas propias de Seedream o de Seedance, o una persona real que verificó su identidad con su propia cuenta. Somos responsables de tener los derechos sobre la imagen de la persona (AI Terms §1.2 y §1.8). Si el dibujo se parece a una figura pública, el filtro bloquea la salida.
+- **La foto sí llega a BytePlus**, aunque sea a Seedream y no a Seedance. Le aplican los mismos riesgos de datos de R10: Johor (Malasia), con paso posible a Indonesia o a la UE; 180 días si la marca el filtro; ninguna cesión siempre que el modelo no esté inscrito en la «Colaboración de datos».
+- **§2 de ese documento:** una cara es un dato personal. En Colombia es un dato **biométrico sensible** si se usa para reconocer a alguien. En Uruguay, el consentimiento tiene que ser informado y cubrir el envío al exterior. El permiso escrito tiene que decir que la foto va a BytePlus y para qué se usa.
+- **La regla de §12.3 no cambia:** Seedance no recibe fotos de personas reales. Esta opción solo manda a Seedance el dibujo de Seedream.
+- **Condiciones:** las mismas de §12.9 (C1 a C3), más la medición de arriba y el texto del permiso revisado.
+
+**Fuera de esta enmienda.** La pantalla (m-25112921), crear y guardar personajes (m-25129385), «Sugerir con IA» (m-25129386), la captura de la consola y la respuesta escrita de BytePlus (m-25129387), construir el personaje desde una foto real (§12.12, pendiente de medición), elegir la voz y encender cualquier interruptor.
