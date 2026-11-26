@@ -13,8 +13,8 @@ every linked worktree at it, so nobody ever runs `graphify update` by hand.
   regular file already there (a worktree with its own local graph) is never replaced.
 - Sync step: read the release's `code-graph.json`; when its build (commit + `built_at`)
   differs from the one last installed, download `code-graph.tar.gz` and install it into the
-  store through a temp dir in the store and `os.replace` (atomic per file). REST only (`gh api`): GraphQL is blocked in
-  cloud sessions, and `gh release` uses it.
+  store through a temp dir in the store and `os.replace` (atomic per file). REST only
+  (`gh api`): GraphQL is blocked in cloud sessions, and `gh release` uses it.
 
 Guard rails: a lock (one download per clone at a time), a 30-minute throttle on GitHub calls
 (marker in the store), and every failure path exits 0. When something is missing, ONE line
