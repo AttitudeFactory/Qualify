@@ -8,8 +8,8 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
 - `stored_ideas` — the latest run and the latest `ok` one with its ideas
   (`reel_runs.view`), how many accounts the brand follows, whether something says what it
   sells, the business's zone and the stored reels each idea's lift is measured against.
-  Postgres only, never a write. RF-02 (m-25119460): the ideas and one page of «Más reels
-  revisados» come narrowed by the owner's filters through RF-01's read
+  Postgres only, never a write. RF-02 (m-25119460): the ideas and the first page of the reviewed
+  reels after them (RF-13) come narrowed by the owner's filters through RF-01's read
   (`reviewed_reels.reviewed_reels`) — filtering reads only what is stored, never pays;
 - `more_reviewed` — the next page of the reviewed reels after the ideas (RF-13), the same read;
 - RF-05 (m-25119465): `competitor_rows` (the panel over the filter bar, Postgres only),
