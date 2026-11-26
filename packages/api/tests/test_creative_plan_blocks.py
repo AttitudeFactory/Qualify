@@ -241,6 +241,10 @@ def test_a_text_that_would_not_show_is_refused_never_dropped() -> None:
     with pytest.raises(PlanBlocksRefused) as refused:
         blocks_from_plan(plan)
     assert refused.value.reason == BLOCKS_SPAN_LOST
+    assert PLAN_BLOCKS_TEXTS[BLOCKS_SPAN_LOST] == (
+        "Un texto o un efecto queda justo en el cambio a la parte siguiente y no se vería. "
+        "Muévelo un poco antes o quítalo."
+    )
 
 
 def test_more_texts_than_a_clip_holds_are_refused() -> None:

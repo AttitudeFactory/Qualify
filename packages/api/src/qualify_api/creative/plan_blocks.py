@@ -98,8 +98,8 @@ PLAN_BLOCKS_TEXTS: dict[str, str] = {
         "Quita alguno para seguir."
     ),
     BLOCKS_SPAN_LOST: (
-        "Un texto o un efecto empieza justo cuando su parte se une con la siguiente y no "
-        "se alcanzaría a ver. Muévelo un poco antes o quítalo."
+        "Un texto o un efecto queda justo en el cambio a la parte siguiente y no se vería. "
+        "Muévelo un poco antes o quítalo."
     ),
 }
 

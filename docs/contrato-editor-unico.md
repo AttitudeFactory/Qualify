@@ -217,7 +217,7 @@ Código: `qualify_api.creative.plan_blocks`. Funciones puras: no escriben, no pa
 | `too_many_ai_children` | Más de 6 hijos de IA, contando escenas y avatares (`other_ai_children`) | El de `too_many_ai_children` del §3. |
 | `too_many_texts` | Más de 3 textos en el Clip | Tu video puede tener hasta 3 textos y estas partes traen más. Quita alguno para seguir. |
 | `too_many_effects` | Más de 8 efectos en el Clip | Tu video puede tener hasta 8 efectos y estas partes traen más. Quita alguno para seguir. |
-| `span_lost` | Un texto o un efecto que empieza donde termina la ventana de su parte | Un texto o un efecto empieza justo cuando su parte se une con la siguiente y no se alcanzaría a ver. Muévelo un poco antes o quítalo. |
+| `span_lost` | Un texto o un efecto que empieza donde termina la ventana de su parte | Un texto o un efecto queda justo en el cambio a la parte siguiente y no se vería. Muévelo un poco antes o quítalo. |
 
 - Al agregar, los textos y efectos que ya tenía la pista terminan donde empieza la primera parte nueva: si esa parte entra con una unión, la unión es suya, y «hasta el final» era el final de antes. Una parte agregada no puede ser «Sigue a la anterior» (`extend_order`; `propose_parts` nunca la propone). Queda la procedencia de la última idea pedida (`parts_provenance` guarda una); el costo de cada llamada sigue en su propio registro.
 - Los 60 s y el resto de las reglas del §3 los dice `ClipBlocks.problems`, con sus códigos de siempre.
