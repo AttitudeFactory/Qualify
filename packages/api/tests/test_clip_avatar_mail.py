@@ -219,6 +219,8 @@ def test_two_avatars_failing_in_one_pass_send_one_email_together() -> None:
     (mail,) = m.mailer.sent
     assert mail.subject == f"{BUSINESS}: algunos de tus avatares no se pudieron crear"
     assert template.HEADING_MANY in mail.text
+    assert "Con cada avatar, elige «Intentar de nuevo» o «Quitar avatar»." in mail.text
+    assert "Si quitas un avatar, armamos tu video sin ese avatar" in mail.text
 
 
 def test_one_failed_avatar_next_to_a_made_one_gets_the_singular_words() -> None:
@@ -651,10 +653,15 @@ def test_a_block_refused_as_too_long_mails_once_with_its_own_words() -> None:
     assert mail.subject == f"{BUSINESS}: tu video con avatar quedó muy largo"
     assert template.LONG_HEADING in mail.text
     assert template.LONG_LEAD.format(business=BUSINESS) in mail.text
+    assert "Entra a tu video con el botón de abajo." in mail.text
     assert "«Intentar de nuevo» y escribe un texto más corto" in mail.text
+    assert "dura más de 60 segundos" in mail.text and "Acórtalo" not in mail.text
     assert "«Quitar avatar»" in mail.text and template.BUTTON in mail.html
     preview = mail.html.split('overflow:hidden">', 1)[1].split("</div>", 1)[0]
-    assert preview == "Acórtalo antes del domingo 29 de noviembre, 10 a. m. o tu video se descarta."
+    assert preview == (
+        "Acorta lo que dice tu avatar antes del domingo 29 de noviembre, 10 a. m., "
+        "o tu video se descarta."
+    )
     assert mail.idempotency_key == cm.failure_key(TENANT_ID, m.made.clip_id, "clip_too_long", T0)
 
 
@@ -688,10 +695,6 @@ def test_a_too_long_avatar_with_its_switch_off_is_not_mailed(
     _too_long(m)
     monkeypatch.setenv(ca.PRESENTER_SWITCH, "off")
     assert m.send() == 0 and m.reasons() == ["switched_off"]
-    staged_off = Mailing()
-    monkeypatch.setenv(ca.PRESENTER_SWITCH, "on")
-    staged_off.made = staged_off.world.create(_at(_presenter(script="a" * 450), 1))
-    monkeypatch.setenv(ca.PRESENTER_SWITCH, "off")
     assert cm.mailable_failures(
         [ca.PlannedBlock(m.plan_entry(), m.world.store.blocks_of(
             tenant_id=TENANT_ID, clip_id=m.made.clip_id)[0], "failed", "clip_too_long")]
@@ -702,7 +705,15 @@ def test_the_words_of_each_kind_are_all_marked_and_distinct() -> None:
     one, many = template.words_for("block_failed"), template.words_for("block_failed", 2)
     long = template.words_for("clip_too_long", 3)
     assert one.heading == template.HEADING and many.heading == template.HEADING_MANY
+    assert (many.lead, many.wait) == (template.LEAD_MANY, template.WAIT_MANY)
     assert long.heading == template.LONG_HEADING and long.lead == template.LONG_LEAD
     with pytest.raises(ValueError):
         template.words_for("other")
     assert all(text in template.TEXTS for text in (*one.__dict__.values(), *long.__dict__.values()))
+
+
+def test_a_too_long_avatar_retried_before_the_email_left_is_not_mailed() -> None:
+    m = Mailing()
+    _too_long(m)
+    m.world.retry(m.made, request=_presenter(script="a" * 300))
+    assert m.send() == 0 and m.reasons() == ["resolved"] and m.mailer.sent == []

@@ -119,3 +119,109 @@ def test_one_email_per_failure_on_postgres_and_rls(monkeypatch: pytest.MonkeyPat
     with tenant_session(other) as session:
         count = session.scalar(text("SELECT count(*) FROM clip_avatar_failure_mails"))
     assert count == 0
+
+
+def _send(tenant: UUID, mailer: RecordingMailer, at: datetime) -> int:
+    return cm.send_pending(
+        cm.PostgresAvatarFailureOutbox(),
+        tenant,
+        now=at,
+        mailer=mailer,
+        base_url="https://app.qualify.test",
+        verify=lambda auth, address: address if auth == AUTH_USER else None,
+    )
+
+
+def test_two_avatars_failing_in_one_pass_are_one_row_and_one_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import clip_avatar as ca
+
+    from .test_clip_avatar_db import _clip, _request
+
+    world = _first_create(monkeypatch)
+    tenant, content = world["tenant"], world["content"]
+    _member(tenant, world["user"])
+    t0 = datetime.now(UTC).replace(microsecond=0)
+    content._clip_avatar_clock = lambda: t0
+    made = world["service"].create_clip_with_blocks(
+        tenant_id=tenant,
+        brand_id=world["brand"],
+        user_id=world["user"],
+        brief=_clip(world["brand"], tenant),
+        blocks=[
+            ca.ClipAvatarPlacement(block=_request(), at=0),
+            ca.ClipAvatarPlacement(block=_request(), at=1),
+        ],
+    )
+    for block in made.block_ids:
+        _fail_block(tenant, block)
+    _pass(world, made.clip_id)
+    _pass(world, made.clip_id)
+    (row,) = _rows(tenant)  # the arrays went through their casts
+    assert (row.kind, row.slots, row.failed_at) == ("block_failed", [1, 2], t0)
+    assert row.block_ids == list(made.block_ids)
+    assert row.failure_codes == ["provider_error", "provider_error"]
+    mailer = RecordingMailer()
+    assert _send(tenant, mailer, t0 + timedelta(minutes=1)) == 1
+    assert _send(tenant, mailer, t0 + timedelta(minutes=2)) == 0
+    (mail,) = mailer.sent
+    assert "algunos de tus avatares no se pudieron crear" in mail.subject
+
+
+def test_a_too_long_avatar_is_one_row_and_one_email_on_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_creative.schemas import SourceSegment
+
+    from qualify_api.creative import clip_avatar as ca
+    from qualify_api.creative import models as orm
+
+    from .test_clip_avatar_db import _clip, _request
+
+    world = _first_create(monkeypatch)
+    tenant, content = world["tenant"], world["content"]
+    _member(tenant, world["user"])
+    t0 = datetime.now(UTC).replace(microsecond=0)
+    content._clip_avatar_clock = lambda: t0
+    brief = _clip(world["brand"], tenant)
+    own = SourceSegment(key=f"uploads/{tenant}/a.mp4", start_s=0, end_s=30, speed=1)
+    brief = brief.model_copy(update={"media": brief.media.model_copy(update={"segments": (own,)})})
+    made = world["service"].create_clip_with_blocks(
+        tenant_id=tenant,
+        brand_id=world["brand"],
+        user_id=world["user"],
+        brief=brief,
+        blocks=[ca.ClipAvatarPlacement(block=_request(), at=1)],  # after the 30 s: it passes 60
+    )
+    block = made.block_ids[0]
+    key = f"t/{tenant}/generated/{block}/r1/video.mp4"
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET status = 'generated' WHERE id = :b"), {"b": block}
+        )
+        session.add(
+            orm.ImageAsset(
+                tenant_id=tenant,
+                draft_id=block,
+                media_url=key,
+                object_key=key,
+                media_type="video",
+                provider="omnihuman",
+                model_id="omnihuman-1.5",
+                params={"duration_seconds": 30.9},  # with the 30 s of the Clip: over 60
+            )
+        )
+    _pass(world, made.clip_id)
+    _pass(world, made.clip_id)
+    wait = world["service"].clip_wait(tenant_id=tenant, clip_id=made.clip_id)
+    assert wait is not None, "no wait"
+    assert [b.failure_code for b in wait.blocks] == ["clip_too_long"], (wait.state, wait.blocks)
+    (row,) = _rows(tenant)
+    assert (row.kind, row.slots, row.block_ids) == ("clip_too_long", [1], [block])
+    assert row.failure_codes == ["clip_too_long"]
+    mailer = RecordingMailer()
+    assert _send(tenant, mailer, t0 + timedelta(minutes=1)) == 1
+    assert _send(tenant, mailer, t0 + timedelta(minutes=2)) == 0
+    (mail,) = mailer.sent
+    assert "quedó muy largo" in mail.subject and "dura más de 60 segundos" in mail.text

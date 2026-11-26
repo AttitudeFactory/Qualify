@@ -4,9 +4,9 @@ could not be made (`block_failed`), or one was made but the Clip passes 60 s wit
 
 Pure assembly, no external reads: the outbox (`creative.clip_avatar_mail`) passes in the
 business name, the Clip's link and the date the Clip stops waiting. The words follow
-`docs/contrato-avatar-primer-crear.md` §1.6. The `block_failed` words were reviewed by
-ux-designer on 2026-11-26 (`qualify-copy-es`); the plural subject/heading and every
-`clip_too_long` word are NEW and marked `UX-REVIEW` below, pending that review.
+`docs/contrato-avatar-primer-crear.md` §1.6. Every word here was reviewed by
+ux-designer on 2026-11-26 (`qualify-copy-es`), the plural and `clip_too_long` ones in a
+second round the same day.
 """
 
 from __future__ import annotations
@@ -46,27 +46,38 @@ WAIT = (
 )
 BUTTON = "Revisar mi video"
 FOOTER = "Recibes este aviso porque hay un video con avatar de {business} esperando en Qualify."
-# UX-REVIEW (m-25120319, new): when one pass sees more than one avatar fail (one email
-# per Clip and pass, Deivid 2026-11-26).
+# -- two or more avatars seen failed in one pass (one email per Clip and pass, Deivid
+# 2026-11-26). The owner chooses PER avatar: «Intentar de nuevo» and «Quitar avatar» each
+# act on one block (`ClipAvatarService.retry_block` / `remove_block` take its `block_id`).
 SUBJECT_MANY = "{business}: algunos de tus avatares no se pudieron crear"
 HEADING_MANY = "Algunos de tus avatares no se pudieron crear"
+LEAD_MANY = (
+    "Tu video de {business} está esperando en Por aprobar. "
+    "Con cada avatar, elige «Intentar de nuevo» o «Quitar avatar»."
+)
+WAIT_MANY = (
+    "Tienes hasta el {deadline} (hora de {business}). Si no eliges antes, el video se "
+    "descarta y habría que crearlo de nuevo. Si quitas un avatar, armamos tu video sin "
+    "ese avatar y tú lo apruebas antes de publicar."
+)
 
-# -- `clip_too_long`: UX-REVIEW (m-25120319, new; Deivid's idea «Tu video quedó muy largo:
-# acórtalo para poder aprobarlo»). While the Clip waits its photos and videos cannot be
-# edited (`drafting` has no edit edge), so the owner's only ways out are «Intentar de
-# nuevo» with shorter words for the avatar, or «Quitar avatar» (contract §1.4).
+# -- `clip_too_long` (Deivid's idea, 2026-11-26). While the Clip waits its photos and
+# videos cannot be edited (`drafting` has no edit edge): the owner can only change what
+# the avatar says («Intentar de nuevo» with shorter words) or take it out (contract §1.4).
+# How many seconds it passes by is not kept anywhere the sender reads, so it is not said.
 LONG_SUBJECT = "{business}: tu video con avatar quedó muy largo"
 LONG_HEADING = "Tu video quedó muy largo"
-LONG_PREHEADER = "Acórtalo antes del {deadline} o tu video se descarta."
+LONG_PREHEADER = "Acorta lo que dice tu avatar antes del {deadline}, o tu video se descarta."
 LONG_LEAD = (
-    "Con tu avatar, el video de {business} pasa de 60 segundos y así no se puede armar. "
-    "Acórtalo para poder aprobarlo."
+    "Con tu avatar, el video de {business} dura más de 60 segundos y así no se puede "
+    "armar. Para aprobarlo, tu avatar tiene que decir menos."
 )
 LONG_WAIT = (
-    "Toca «Intentar de nuevo» y escribe un texto más corto para tu avatar, o toca "
-    "«Quitar avatar». Tienes hasta el {deadline} (hora de {business}). Si no eliges "
-    "antes, el video se descarta y habría que crearlo de nuevo. Si quitas el avatar, "
-    "armamos tu video sin él y tú lo apruebas antes de publicar."
+    "Entra a tu video con el botón de abajo. Ahí toca «Intentar de nuevo» y escribe un "
+    "texto más corto para tu avatar, o toca «Quitar avatar». Tienes hasta el {deadline} "
+    "(hora de {business}). Si no eliges antes, el video se descarta y habría que crearlo "
+    "de nuevo. Si quitas el avatar, armamos tu video sin él y tú lo apruebas antes de "
+    "publicar."
 )
 TEXTS = (
     SUBJECT,
@@ -78,6 +89,8 @@ TEXTS = (
     FOOTER,
     SUBJECT_MANY,
     HEADING_MANY,
+    LEAD_MANY,
+    WAIT_MANY,
     LONG_SUBJECT,
     LONG_HEADING,
     LONG_PREHEADER,
@@ -102,7 +115,7 @@ def words_for(kind: str, count: int = 1) -> Words:
     if kind != BLOCK_FAILED:
         raise ValueError(kind)
     if count > 1:
-        return Words(SUBJECT_MANY, HEADING_MANY, PREHEADER, LEAD, WAIT)
+        return Words(SUBJECT_MANY, HEADING_MANY, PREHEADER, LEAD_MANY, WAIT_MANY)
     return Words(SUBJECT, HEADING, PREHEADER, LEAD, WAIT)
 
 

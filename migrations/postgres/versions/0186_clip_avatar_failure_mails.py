@@ -84,7 +84,9 @@ def upgrade() -> None:
             cardinality(slots) BETWEEN 1 AND 6
             AND cardinality(block_ids) = cardinality(slots)
             AND cardinality(failure_codes) = cardinality(slots)
-            AND slots <@ ARRAY[1,2,3,4,5,6]::smallint[]),
+            AND slots <@ ARRAY[1,2,3,4,5,6]::smallint[]
+            AND array_position(block_ids, NULL) IS NULL
+            AND array_position(failure_codes, NULL) IS NULL),
         CONSTRAINT ck_clip_avatar_failure_mail_closed
             CHECK((closed_at IS NULL) = (closed_reason IS NULL)),
         CONSTRAINT ck_clip_avatar_failure_mail_attempt
