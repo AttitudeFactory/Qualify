@@ -1604,6 +1604,127 @@ def _plan_slots_unique(plan: tuple[ClipAvatarSlot, ...]) -> tuple[ClipAvatarSlot
     return plan
 
 
+# -- m-25128784 (ADR 50 §12): the «Personajes» track of a Clip ----------------------------
+
+#: A scene lasts 5 to 10 whole seconds (ADR 50 §12.1).
+CHARACTER_SCENE_MIN_S = 5
+CHARACTER_SCENE_MAX_S = 10
+#: At most 3 scenes in one video (§12.2) — they never overlap.
+CHARACTER_SCENES_MAX = 3
+#: The line fits in its scene: at most `15 × (duration − 2.5)` characters — 37 at 5 s,
+#: 82 at 8 s, 112 at 10 s. `[H]` from AVESC-001: the character started speaking between
+#: second 2.0 and 5.9 and read about 14 characters a second.
+CHARACTER_LINE_CHARS_PER_SECOND = 15
+CHARACTER_LINE_LEAD_S = 2.5
+#: Two scenes touch, never overlap: a tolerance for the editor's float seconds.
+_SCENE_EPSILON_S = 1e-6
+
+
+def character_line_max_chars(duration: int) -> int:
+    """How many characters the line of a `duration`-second scene may have (§12.2)."""
+    import math  # noqa: PLC0415
+
+    return math.floor(CHARACTER_LINE_CHARS_PER_SECOND * (duration - CHARACTER_LINE_LEAD_S))
+
+
+class CharacterSceneProduct(BaseModel):
+    """The product the character shows: a Catálogo product and one of its photos, sent
+    as a reference — never drawn again (ADR 50 §12.3)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    product_id: UUID
+    photo_key: str = Field(min_length=1, max_length=500)
+
+
+class CharacterSceneBackground(BaseModel):
+    """Where the scene happens: a photo of the place the owner uploaded (`photo`) or a
+    background Seedream drew from the owner's description, already kept (`drawn`, its
+    prompt asks for no signs nor letters — R6). Either way a file of this business."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str = Field(min_length=1, max_length=500)
+    source: Literal["photo", "drawn"] = "photo"
+
+
+class CharacterSceneItem(BaseModel):
+    """One appearance of the brand's saved character in a Clip (ADR 50 §12.2): its own
+    scene, `duration` whole seconds from `start` of the Clip's output, that REPLACES what
+    the owner had there (the Clip does not get longer). `line` is what the character
+    says — written by the owner or suggested and approved by them (`line_suggested`,
+    with the suggestion's prompt version, m-25129386). `transition_in` is how the scene
+    comes in (any library transition, §12.6); it always leaves with «Corte». Written by
+    the editor; the server checks the whole track before writing or paying."""
+
+    model_config = ConfigDict(frozen=True)
+
+    character_id: UUID
+    product: CharacterSceneProduct
+    background: CharacterSceneBackground
+    line: str = Field(min_length=1, max_length=500)
+    start: float = Field(ge=0, le=LOCAL_TOTAL_MAX_S)
+    duration: int
+    line_suggested: bool = False
+    line_prompt_version: str | None = Field(default=None, max_length=60)
+    transition_in: EffectUse | None = None
+
+    @field_validator("line")
+    @classmethod
+    def _line_said(cls, value: str) -> str:
+        line = " ".join(value.split())
+        if not line:
+            raise PydanticCustomError("character_line_empty", "the character has to say something")
+        return line
+
+    @field_validator("transition_in")
+    @classmethod
+    def _cut_is_none(cls, value: EffectUse | None) -> EffectUse | None:
+        return None if value is not None and value.effect_id == CUT_EFFECT_ID else value
+
+    @model_validator(mode="after")
+    def _fits(self) -> CharacterSceneItem:
+        if not CHARACTER_SCENE_MIN_S <= self.duration <= CHARACTER_SCENE_MAX_S:
+            raise PydanticCustomError(
+                "character_scene_duration",
+                "a scene lasts {low} to {high} whole seconds, not {duration}",
+                {
+                    "low": CHARACTER_SCENE_MIN_S,
+                    "high": CHARACTER_SCENE_MAX_S,
+                    "duration": self.duration,
+                },
+            )
+        limit = character_line_max_chars(self.duration)
+        if len(self.line) > limit:
+            raise PydanticCustomError(
+                "character_line_too_long",
+                "the line has {chars} characters; a {duration}-second scene takes {limit}",
+                {"chars": len(self.line), "duration": self.duration, "limit": limit},
+            )
+        return self
+
+    @property
+    def end(self) -> float:
+        return self.start + self.duration
+
+
+def _scenes_apart(scenes: tuple[CharacterSceneItem, ...]) -> tuple[CharacterSceneItem, ...]:
+    """ADR 50 §12.2: at most `CHARACTER_SCENES_MAX` scenes, one at a time."""
+    if len(scenes) > CHARACTER_SCENES_MAX:
+        raise PydanticCustomError(
+            "too_many_character_scenes",
+            "a video has at most {cap} scenes, not {count}",
+            {"cap": CHARACTER_SCENES_MAX, "count": len(scenes)},
+        )
+    ordered = sorted(scenes, key=lambda scene: scene.start)
+    for before, after in zip(ordered, ordered[1:], strict=False):
+        if after.start < before.end - _SCENE_EPSILON_S:
+            raise PydanticCustomError(
+                "character_scenes_overlap", "two scenes cannot play at the same time"
+            )
+    return scenes
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -1764,6 +1885,11 @@ class MediaInputs(BaseModel):
     clip_avatar_plan: Annotated[tuple[ClipAvatarSlot, ...], AfterValidator(_plan_slots_unique)] = (
         Field(default=(), max_length=PARTS_MAX)
     )
+    #: m-25128784 (ADR 50 §12): the «Personajes» track of a `local` Clip — each item a
+    #: scene of the brand's saved character that replaces the owner's video in its
+    #: window. On a `CHARACTER_SCENE` child it holds exactly that scene. Empty on every
+    #: brief stored before it, which reads exactly as it did.
+    character_scenes: Annotated[tuple[CharacterSceneItem, ...], AfterValidator(_scenes_apart)] = ()
     #: Server-owned (m-25119867, provenance): the brief the owner sent that the server
     #: derived this one from (`content_briefs.id`) — a Clip's brief with its avatar blocks'
     #: videos put in its recipe (option B, `ContentService._replace_clip_brief`) or with a
@@ -2270,6 +2396,19 @@ class ContentBrief(BaseModel):
         ):
             # m-25119867: only a Clip of the owner's own photos and videos waits for blocks
             raise ValueError("avatar blocks are planned only in a local Clip")
+        if self.kind is ContentKind.CHARACTER_SCENE:
+            # m-25128784: a scene's brief carries exactly its own scene
+            if len(media.character_scenes) != 1:
+                raise ValueError("a character scene's brief holds exactly its scene")
+        elif media.character_scenes and (
+            self.kind is not ContentKind.CLIP
+            or media.part is not None
+            or media.clip_reference_mode != "local"
+        ):
+            # m-25128784: only a Clip of the owner's own photos and videos has scenes
+            raise PydanticCustomError(
+                "character_scene_not_local", "character scenes go only in a local Clip"
+            )
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`
