@@ -118,6 +118,14 @@ NO_IDEAS_LEFT_ACTION = "Elegir cuentas"
 #: «Ver más» brings the next `LIST_PAGE`. Only the ideas keep «Hacer uno parecido».
 LIST_PAGE = 16
 MORE_BUTTON = "Ver más"
+#: Where an idea has «Hacer uno parecido», a reviewed reel says why it has not (ux-designer
+#: on RF-13, approved by Deivid 2026-11-26).
+MORE_ONLY_LOOK = "Este es solo para inspirarte: no se puede hacer uno parecido."
+#: Filters on and no idea left that can be made again (same review): over the list; the
+#: way back is «Restablecer filtros», already in the bar.
+NO_IDEAS_FILTERED = (
+    "Con estos filtros no queda ninguna idea para hacer uno parecido. Quita alguno para verlas."
+)
 MORE_BUSY = "Cargando…"
 #: A reel of the second list could not be read (Postgres down while paging).
 MORE_ERROR = "No pudimos traer más reels. Inténtalo de nuevo."
@@ -438,6 +446,7 @@ __all__ = [
     "MORE_BUSY",
     "MORE_BUTTON",
     "MORE_ERROR",
+    "MORE_ONLY_LOOK",
     "NETWORK_LABEL",
     "NETWORK_OPTIONS",
     "NO_ACCOUNTS_OPTION",
@@ -445,6 +454,7 @@ __all__ = [
     "NO_COMPETITORS_ACTION",
     "NO_COMPETITORS_BODY",
     "NO_COMPETITORS_TITLE",
+    "NO_IDEAS_FILTERED",
     "NO_IDEAS_LEFT",
     "NO_IDEAS_LEFT_ACTION",
     "RESET_LABEL",

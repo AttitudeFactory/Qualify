@@ -1268,9 +1268,80 @@ async def test_no_idea_left_but_reviewed_reels_says_so_never_a_dead_end(world: _
     await _filter(proxy, state.set_filter("network", "instagram"))
     assert not state.no_ideas_left  # a filter left the ideas out: nothing to explain
     ideas = inspect.getsource(discover_reels._ideas)
-    assert "rx.cond(S.no_ideas_left, _no_ideas_left())" in ideas
+    assert "S.no_ideas_left,\n                _no_ideas_left()," in ideas
     shown = inspect.getsource(discover_reels._no_ideas_left)
     assert "NO_IDEAS_LEFT_ACTION" in shown and "ACCOUNTS_HREF" in shown
+
+
+def test_a_reviewed_reel_says_it_is_only_to_look_at() -> None:
+    """ux-designer on RF-13 (Deivid, 2026-11-26): where an idea has «Hacer uno parecido»,
+    a reviewed reel has a grey line — styled as `CANNOT_REPLICATE` — saying why not."""
+    import inspect
+
+    from . import discover_reels
+
+    assert reels_filters_vm.MORE_ONLY_LOOK == (
+        "Este es solo para inspirarte: no se puede hacer uno parecido."
+    )
+    tile = inspect.getsource(discover_reels._reel_tile)
+    more = tile[tile.index("if more:") : tile.index("else:")]
+    assert "MORE_ONLY_LOOK" in more and "q-dr-replicate-help" in more
+    assert "T.TEXT_MUTED" in more and 'size="2"' in more
+    rendered = str(discover_reels.discover_view().render())
+    assert "solo para inspirarte" in rendered
+
+
+async def test_filters_that_leave_no_idea_to_make_again_say_so(world: _World) -> None:
+    """ux-designer on RF-13: a filter on and no idea that can be made again — the place of
+    «Ya no quedan ideas…» says it, with no new button (the bar has «Restablecer
+    filtros»); with no filter on, that note is not shown."""
+    import inspect
+
+    from . import discover_reels
+
+    world.ok_run()
+    _reviewed(world, [("tiktok", "vecino", "T1", 20.0)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert not state.no_ideas_filtered and not state.no_ideas_left  # ideas, no filter
+    await _filter(proxy, state.set_filter("network", "tiktok"))
+    assert state.reels == [] and state.more_reels and state.empty_kind == ""
+    assert state.no_ideas_filtered and not state.no_ideas_left
+    await _filter(proxy, state.reset_filters())
+    assert not state.no_ideas_filtered
+    assert reels_filters_vm.NO_IDEAS_FILTERED == (
+        "Con estos filtros no queda ninguna idea para hacer uno parecido. Quita alguno para verlas."
+    )
+    ideas = inspect.getsource(discover_reels._ideas)
+    note = ideas[ideas.index("S.no_ideas_filtered") : ideas.index("grid,")]
+    assert "NO_IDEAS_FILTERED" in note and "rx.button" not in note
+
+
+async def test_the_list_ends_with_the_next_monday(world: _World) -> None:
+    """ux-designer on RF-13: once nothing is left to page, a grey centred line under the
+    list says when the next ideas come; while «Ver más» has more, it is not shown."""
+    import inspect
+    import re
+
+    from . import discover_reels
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    _reviewed(world, [("instagram", "foodie", f"M{n:02d}", 20.0) for n in range(20)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert re.fullmatch(
+        r"Eso es todo por ahora\. Las próximas ideas llegan el lunes \d{1,2}\.", state.end_note
+    )
+    assert state.has_more  # the line waits under «Ver más»
+    await DiscoverReelsState.load_more.fn(proxy)
+    assert not state.has_more and state.end_note
+    pager = inspect.getsource(discover_reels._pager)
+    end = pager[pager.index("S.has_more,") :]
+    assert end.index("rx.button(") < end.index("S.end_note")  # the else of has_more
+    assert 'S.end_note != ""' in pager and 'text_align="center"' in pager
+    # no date, no line: a screen without ideas leaves it empty
+    assert rd.reels_ideas_vm.IdeasScreen(rd.reels_ideas_vm.SCREEN_NO_IDEAS).end_note == ""
 
 
 async def test_ideas_hide_the_no_ideas_note(world: _World) -> None:

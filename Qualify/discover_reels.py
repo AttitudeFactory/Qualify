@@ -146,6 +146,9 @@ class DiscoverReelsState(rx.State):
     waiting: bool = False
     #: Why the stored ideas could not be read (`reels_ideas_vm.LOAD_ERROR`), "" none.
     load_error: str = ""
+    #: RF-13: «Eso es todo por ahora…» under the list once nothing is left to page
+    #: (`reels_ideas_vm.END_OF_LIST`), "" when there is no Monday to give.
+    end_note: str = ""
     #: RF-02: the bar's values ("" = «Todos»; `accounts` are `account_key`s). Held in
     #: memory only — never in the browser's storage — and cleared with another business.
     filter_network: str = ""
@@ -296,6 +299,23 @@ class DiscoverReelsState(rx.State):
         if self.filter_accounts:
             return False
         return not any(c.get("affinity") in reels_ai.FITS for c in self._cards)
+
+    @rx.var
+    def no_ideas_filtered(self) -> bool:
+        """RF-13 (ux-designer, Deivid 2026-11-26): with a filter on, no idea left that can
+        be made again («Hacer uno parecido»): the list says so over what it shows
+        (`NO_IDEAS_FILTERED`); «Restablecer filtros» is already in the bar."""
+        if self.screen != SCREEN_IDEAS:
+            return False
+        filtered = bool(
+            self.filter_network or self.filter_kind or self.filter_duration or self.filter_accounts
+        )
+        if not filtered:
+            return False
+        return not any(
+            c.get("affinity") in reels_ai.FITS and c.get("can_replicate") == "1"
+            for c in self._cards
+        )
 
     @rx.event
     def open_sheet(self, axis: str) -> None:
@@ -459,6 +479,7 @@ class DiscoverReelsState(rx.State):
         self.notice_title = shown.notice_title
         self.notice_body = shown.notice_body
         self.waiting = shown.waiting
+        self.end_note = shown.end_note
         self._read_at = time.time()
         self._cards = list(shown.cards)
         # RF-13: the one list's first `LIST_PAGE` — the ideas, then the reviewed reels
@@ -1101,9 +1122,15 @@ def _reel_tile(reel: rx.Var[dict[str, str]], *, more: bool = False) -> rx.Compon
     against its own account, who and how many views, what it is (format and hook), the
     rest folded into «Detalles», what its analysis saw, and «Hacer uno parecido».
     `more` (RF-02/RF-13): a reviewed reel after the ideas — the same card without «Hacer uno
-    parecido» (its video was not kept) nor its line."""
+    parecido» (its video was not kept); in its place, a grey line that says why
+    (`MORE_ONLY_LOOK`, styled as `CANNOT_REPLICATE`)."""
     if more:
-        foot: rx.Component = rx.fragment()
+        foot: rx.Component = rx.text(
+            reels_filters_vm.MORE_ONLY_LOOK,
+            size="2",
+            color=T.TEXT_MUTED,
+            class_name="q-dr-replicate-help",
+        )
     else:
         # founder, 2026-11-04: only when the run kept the reel's video (R2) — the
         # reference is prepared from that copy, never from a link the browser holds
@@ -1663,6 +1690,12 @@ def _pager() -> rx.Component:
                 disabled=S.more_loading,
                 aria_busy=rx.cond(S.more_loading, "true", "false"),
             ),
+            # nothing left to page: the list ends saying when the next ideas come (RF-13;
+            # the list has no heading any more) — only when there is a Monday to give
+            rx.cond(
+                S.end_note != "",
+                rx.text(S.end_note, size="2", color=T.TEXT_MUTED, text_align="center"),
+            ),
         ),
         spacing="2",
         width="100%",
@@ -1691,7 +1724,16 @@ def _ideas() -> rx.Component:
         rx.vstack(
             # no idea left, but reviewed reels are: they show, and the owner is told why
             # none offers «Hacer uno parecido» and how to get ideas again
-            rx.cond(S.no_ideas_left, _no_ideas_left()),
+            # with filters on and no idea left that can be made again, the same place
+            # says so; «Restablecer filtros» is in the bar (ux-designer, Deivid 2026-11-26)
+            rx.cond(
+                S.no_ideas_left,
+                _no_ideas_left(),
+                rx.cond(
+                    S.no_ideas_filtered,
+                    rx.text(reels_filters_vm.NO_IDEAS_FILTERED, size="2", color=T.TEXT_MUTED),
+                ),
+            ),
             grid,
             _pager(),
             spacing="4",
