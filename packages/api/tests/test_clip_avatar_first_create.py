@@ -622,11 +622,67 @@ def test_a_text_past_the_new_end_is_cut_or_dropped() -> None:
     assert fit.dropped == 1
 
 
-def test_over_60_seconds_names_the_block_that_passes_them() -> None:
+def test_over_60_seconds_names_the_block_that_grew_most_not_the_one_that_crosses() -> None:
     plan = _plan((1, 0, 20), (2, 1, 20))
     brief = _clip(_own(25.0), clip_avatar_plan=plan)
+    # slot 1 grew 0 s, slot 2 shrank 4.5 s yet is the one whose end crosses 60 s
     fit = ca.fit_plan(brief, {1: _video(20.0), 2: _video(15.5)}, keep=plan)
+    assert fit.brief is None and fit.too_long == 1
+
+
+def test_over_60_seconds_blames_the_block_that_grew_even_when_another_crosses() -> None:
+    """m-25129382 (option A, Deivid): A estimated 10 s came out 25 s; B estimated 40 s
+    came out 38 s and is the one whose end crosses (25 + 2 + 38 = 65 s): A is named."""
+    plan = _plan((1, 0, 10), (2, 1, 40))
+    brief = _clip(_own(2.0), clip_avatar_plan=plan)
+    fit = ca.fit_plan(brief, {1: _video(25.0), 2: _video(38.0)}, keep=plan)
+    assert fit.brief is None and fit.too_long == 1
+
+
+def test_over_60_seconds_counts_the_owners_video_after_the_block() -> None:
+    """m-25129382: an avatar at the start that came out longer pushes the owner's own
+    video past 60 s — no block's own end passes them, the whole Clip does."""
+    plan = _plan((1, 0, 10))
+    brief = _clip(_own(48.0), clip_avatar_plan=plan)
+    fit = ca.fit_plan(brief, {1: _video(14.0)}, keep=plan)  # 14 s + 48 s = 62 s
+    assert fit.brief is None and fit.too_long == 1
+
+
+def test_over_60_seconds_after_every_block_names_the_one_that_grew_most() -> None:
+    plan = _plan((1, 0, 5), (2, 1, 5))
+    brief = _clip(_own(20.0), _own(25.0, f"uploads/{TENANT_ID}/b.mp4"), clip_avatar_plan=plan)
+    # slot 1 grew 1 s, slot 2 grew 5 s: 6 + 20 + 10 + 25 = 61 s, crossed in the last stretch
+    fit = ca.fit_plan(brief, {1: _video(6.0), 2: _video(10.0)}, keep=plan)
     assert fit.brief is None and fit.too_long == 2
+    # the other way round, the first one is named
+    fit = ca.fit_plan(brief, {1: _video(10.0), 2: _video(6.0)}, keep=plan)
+    assert fit.brief is None and fit.too_long == 1
+    # a tie names the later one on the timeline
+    fit = ca.fit_plan(brief, {1: _video(8.0), 2: _video(8.0)}, keep=plan)
+    assert fit.brief is None and fit.too_long == 2
+
+
+def test_exactly_60_seconds_after_the_block_still_fits() -> None:
+    plan = _plan((1, 0, 10))
+    brief = _clip(_own(48.0), clip_avatar_plan=plan)
+    fit = ca.fit_plan(brief, {1: _video(12.0)}, keep=plan)
+    assert fit.brief is not None and fit.too_long is None
+
+
+def test_an_avatar_first_that_pushes_the_clip_past_60_s_waits_for_the_owner() -> None:
+    """m-25129382: refused as `clip_too_long` by the plan gate, never a failed Clip."""
+    world = _world()
+    made = _create(world, _at(_presenter(), 0), brief=_clip(_own(48.0)))
+    _made(world, made.block_ids[0], seconds=14.0)  # 14 s + 48 s > 60 s
+    with pytest.raises(ca.ClipBlocksWait):
+        world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == DRAFTING
+    (entry,) = _clip_brief(world, made.clip_id).media.clip_avatar_plan
+    assert entry.refused == "clip_too_long"
+    wait = world.service.clip_wait(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert wait is not None and wait.state == "block_failed"
+    (block,) = wait.blocks
+    assert block.state == "failed" and block.failure_code == "clip_too_long"
 
 
 # ---------------------------------------------------------------------------
