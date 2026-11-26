@@ -72,19 +72,19 @@ Todas viven en `validate_recipe` y en `validate_brief_recipe` (la que llama el s
 |---|---|---|---|
 | `switched_off` | Hay un bloque con IA o una entrada en `ai_parts` y el interruptor está apagado. Sale solo, antes de leer nada | `segments[i]` (o `ai_parts`) | Las partes con IA todavía no están disponibles. Quítalas para crear tu video. |
 | `too_many_blocks` | Más de 8 bloques entre propios y con IA (`SEGMENTS_MAX`) | `segments` | Tu video puede tener hasta 8 fotos, videos o partes con IA. Quita una para seguir. |
-| `too_many_ai_children` | Más de 6 hijos de IA: partes con IA + escenas del personaje (+ avatares que el Clip espera). Comparten `part_index` 1 a 6 | `ai_parts` | Puedes usar hasta 6 partes con IA y escenas del personaje en un video. Quita una para seguir. |
-| `extend_needs_block_before` | Una parte «Sigue a la anterior» al principio del video, sin nada antes (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» necesita una parte con IA justo antes. Muévela o elige «Nueva». |
-| `extend_after_own_media` | Una parte «Sigue a la anterior» justo después de una foto o un video del dueño: hoy no se puede continuar material propio (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» solo continúa una parte con IA, no tus fotos o videos. Pon una parte con IA justo antes o elige «Nueva». |
-| `extend_not_same_moment` | Una parte «Sigue a la anterior» que el plan no partió del mismo momento del reel que la parte con IA de antes (§3.2) | `ai_parts[n].mode` | Solo se puede cuando esta parte y la anterior eran un mismo momento del video original. Elige otra forma. |
-| `edit_needs_reel_window` | Una parte «Igual al original» sin el análisis del reel y sus cortes (`analysis_id` y `shot_indexes`) | `ai_parts[n].shot_indexes` | «Igual al original» necesita el video de inspiración que copia. Elige «Nueva». |
-| `ai_part_with_speed` | Un bloque con IA a otra velocidad que ×1 | `segments[i].speed` | Las partes con IA van a velocidad normal. Quítale la cámara rápida a esa parte. |
-| `own_media_too_short` | El Clip lleva partes con IA **y** escenas o avatares, y menos de 3 s de fotos y videos propios. Un Clip hecho solo de partes con IA es válido | `segments` (con `duration_s`) | Si tu video lleva un personaje o un avatar, agrega al menos 3 segundos de tus fotos o videos. |
-| `ai_parts_mismatch` | Un bloque apunta a una entrada que no existe o que ya usa otro bloque, o una entrada no tiene bloque | `segments[i]` o `ai_parts[n]` | No pudimos leer una de las partes con IA. Quítala y agrégala de nuevo. |
-| `ai_part_length_mismatch` | El bloque no dura los `seconds` de su entrada | `segments[i].end_s` (con `duration_s`) | Una parte con IA no dura lo que marca la línea de tiempo. Ajusta sus segundos de nuevo. |
-| `ai_part_outside_clip` | Un bloque con IA o `ai_parts` fuera de un Clip normal armado con bloques (`clip_reference_mode="local"`): en una parte de un video por partes, en un Clip hecho por Seedance o en otro tipo de pieza | `segments[i]` o `ai_parts` | Las partes con IA solo van en un video que armas en la línea de tiempo. Quítala para seguir. |
-| `ai_part_local` | Una entrada en modo `local` | `ai_parts[n].mode` | Esa parte se hace con tus fotos y videos: agrégalos directo en la línea de tiempo. |
-| `ai_part_own_recipe` | Una entrada con efectos, textos, tramos o unión propios | `ai_parts[n]` | Los textos, los efectos y las uniones van en la línea de tiempo del video, no dentro de la parte con IA. |
-| `ai_part_guide_type` | «Video o audio tuyo» que no es un video `.mp4`/`.mov` ni un audio `.mp3`/`.wav` (§3.1) | `ai_parts[n].clip_video_keys[i]` o `ai_parts[n].clip_audio_keys[i]` | Ese archivo no sirve como guía. Usa un video MP4 o MOV, o un audio MP3 o WAV. |
+| `too_many_ai_children` | Más de 6 hijos de IA: partes con IA + escenas del personaje (+ avatares que el Clip espera). Comparten `part_index` 1 a 6 | `ai_parts` | Entre partes con IA y escenas del personaje puedes tener hasta 6 en un video. Quita una para seguir. |
+| `extend_needs_block_before` | Una parte «Sigue a la anterior» al principio del video, sin nada antes (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» necesita una parte con IA justo antes. Pon esta parte después de una, o elige «Nueva». |
+| `extend_after_own_media` | Una parte «Sigue a la anterior» justo después de una foto o un video del dueño: hoy no se puede continuar material propio (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» solo continúa una parte con IA, no una foto o un video tuyo. Pon una parte con IA justo antes o elige «Nueva». |
+| `extend_not_same_moment` | Una parte «Sigue a la anterior» que el plan no partió del mismo momento del reel que la parte con IA de antes (§3.2). Solo se ofrece «Nueva»: «Igual al original» no es una salida segura aquí (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento del video de inspiración. Elige «Nueva». |
+| `edit_needs_reel_window` | Una parte «Igual al original» sin el análisis del reel y sus cortes (`analysis_id` y `shot_indexes`) | `ai_parts[n].shot_indexes` | «Igual al original» solo sirve con partes que vienen de un video de inspiración. Elige «Nueva». |
+| `ai_part_with_speed` | Un bloque con IA a otra velocidad que ×1 | `segments[i].speed` | Las partes con IA siempre van a velocidad normal. Quita la cámara rápida de esta parte. |
+| `own_media_too_short` | El Clip lleva partes con IA **y** escenas o avatares, y menos de 3 s de fotos y videos propios. Un Clip hecho solo de partes con IA es válido | `segments` (con `duration_s`) | Con un personaje en tu video necesitas al menos 3 segundos de tus fotos o videos. Agrega más o alarga los que ya tienes. |
+| `ai_parts_mismatch` | Un bloque apunta a una entrada que no existe o que ya usa otro bloque, o una entrada no tiene bloque | `segments[i]` o `ai_parts[n]` | Tuvimos un problema con una de tus partes con IA. Quítala y agrégala de nuevo. |
+| `ai_part_length_mismatch` | El bloque no dura los `seconds` de su entrada | `segments[i].end_s` (con `duration_s`) | Los segundos de una parte con IA no coinciden con la línea de tiempo. Vuelve a elegir cuántos segundos dura esa parte. |
+| `ai_part_outside_clip` | Un bloque con IA o `ai_parts` fuera de un Clip normal armado con bloques (`clip_reference_mode="local"`): en una parte de un video por partes, en un Clip hecho por Seedance o en otro tipo de pieza | `segments[i]` o `ai_parts` | Las partes con IA solo se pueden usar en un video armado en la línea de tiempo. Quita esta parte para seguir. |
+| `ai_part_local` | Exactamente cuando una entrada de `ai_parts` está en modo `local` (hecha con fotos y videos del dueño); ningún otro caso da este código | `ai_parts[n].mode` | Para usar tus fotos y videos no necesitas una parte con IA. Agrégalos directo en la línea de tiempo. |
+| `ai_part_own_recipe` | Una entrada con efectos, textos, tramos o unión propios | `ai_parts[n]` | Los textos, los efectos y las uniones se agregan en la línea de tiempo, no dentro de una parte con IA. Quítalos de esta parte y agrégalos allí. |
+| `ai_part_guide_type` | «Video o audio tuyo» que no es un video `.mp4`/`.mov` ni un audio `.mp3`/`.wav` (§3.1) | `ai_parts[n].clip_video_keys[i]` o `ai_parts[n].clip_audio_keys[i]` | No podemos usar ese archivo como guía. Sube un video MP4 o MOV, o un audio MP3 o WAV. |
 | `malformed_key` / `foreign_key` (de siempre) | Un archivo de guía o una foto de la entrada que no es una ruta del negocio, o que es de otro negocio (§3.1) | `ai_parts[n].clip_video_keys[i]`, `…clip_audio_keys[i]` o `…clip_image_keys[i]` | Los textos de siempre de esos códigos. |
 
 ### 3.1 «Video o audio tuyo»: la guía de cada parte con IA
@@ -128,15 +128,50 @@ Por eso, en la v1, una entrada `extend` vale solo si:
 - lo de antes es **una parte con IA**, no una foto ni un video del dueño (`extend_after_own_media`);
 - nació «Sigue a la anterior» en el plan (`original_mode="extend"`), es del mismo reel que la parte de antes y empieza en su último corte (`extend_not_same_moment`).
 
+**Por qué `extend_not_same_moment` solo ofrece «Nueva».** Se revisó si «Igual al original» sería una salida válida en ese caso, y no lo es:
+
+- Una parte sin reel no puede ser «Igual al original» (`edit_needs_reel_window`).
+- Una parte que el plan partió de una toma (`original_mode="extend"`) y pasa a «Igual al original» necesita una ventana del reel cortada de antemano en `clip_video_keys`. Sin ella, el tipo la rechaza («a converted split part cannot edit the public source without offsets», `_PartSource`).
+- Aunque tenga reel, `parts_plan._can_edit_source` exige además que el reel se pueda editar (vertical, con fuente disponible y cortes aptos).
+
+«Nueva» siempre se puede.
+
 **Pendiente de medir para el PR 2:** continuar con `extend` un video propio cualquiera. Si se mide y funciona, se levanta `extend_after_own_media`. Mientras tanto, la pantalla no ofrece «Sigue a la anterior» después de una foto o un video del dueño. Con `QUALIFY_PARTS_EXTEND` apagado, «Sigue a la anterior» sigue sin ofrecerse, como hoy (`EXTEND_REASON`).
 
 ### 3.3 La palabra «bloque» no sale en pantalla
 
-Deivid decidió en la D1 de las maquetas del editor que la palabra «bloque» no aparece en pantalla. Este documento la usa como nombre técnico, pero ningún texto de `AI_PART_TEXTS` la lleva (lo fija `test_every_code_has_its_spanish_words`). **Textos que ya existían y que el cliente sí puede leer con «bloque»** (este PR no los toca):
+Deivid decidió en la D1 de las maquetas del editor que la palabra «bloque» no aparece en pantalla. Este documento la usa como nombre técnico, pero ningún texto de `AI_PART_TEXTS` la lleva (lo fija `test_every_code_has_its_spanish_words`).
 
-- `video_pipeline/recipe.py`, de m-25114465: `TRANSITIONS_LONGER_THAN_BLOCK_TEXT` («El bloque {block} es muy corto para sus transiciones…»), `TRANSITION_ON_FIRST_BLOCK_TEXT` («Antes del primer bloque no hay nada que unir…») y `TRANSITION_ON_CLIP_TEXT` («…en la unión entre dos bloques…»).
-- `video_pipeline/local.py`, líneas 199 a 204: los dos textos de `segment_source_too_long` («Cada bloque puede tomar hasta 1 minuto de tu video… Acorta el bloque más largo…»).
-- `image_pipeline/layer.py:400`: «Esta pieza no lleva bloques de datos: lista vacía.» (otro sentido de «bloque»; falta confirmar si llega a la pantalla).
+**Textos que ya existían y que este PR cambia** (sugerencias de ux-designer):
+
+| Constante | Texto nuevo |
+|---|---|
+| `recipe.TRANSITIONS_LONGER_THAN_BLOCK_TEXT` | La parte {block} es muy corta para sus uniones. Alárgala, acorta las uniones o deja una de ellas con «Corte». |
+| `recipe.TRANSITION_ON_FIRST_BLOCK_TEXT` | Antes de lo primero de tu video no hay nada que unir. Déjalo con «Corte». |
+| `recipe.TRANSITION_ON_CLIP_TEXT` | Las uniones van entre dos partes de tu línea de tiempo, no en todo el video. Toca la unión entre dos y elige «Fundido» o «Barrido». |
+| `local.LOCAL_TRANSITION_FAILED_TEXT` | «…las transiciones de tu video…» pasa a «…las uniones de tu video…». |
+
+- `{block}` es la posición del elemento en toda la línea de tiempo, desde 1. Sale de `segments[i]` y cuenta también las partes con IA, por eso dice «La parte {block}».
+- La pantalla toma este texto del servidor con `transitions_longer_than_block_text` (`Qualify/clip_joins_vm.py`), así que cambia sola. `Qualify/test_clip_joins.py` compara contra esa misma función, así que no se rompe.
+- `TRANSITION_ON_FIRST_BLOCK_TEXT`, `TRANSITION_ON_CLIP_TEXT` y `LOCAL_TRANSITION_FAILED_TEXT` no tienen copia en `Qualify/`.
+
+**Textos que todavía dicen «bloque» y no se cambian aún:**
+
+- **`local.LOCAL_SOURCE_TOO_LONG_TEXT` y `LOCAL_PART_SOURCE_TOO_LONG_TEXT`** (`segment_source_too_long`). La pantalla tiene copia literal: `Qualify/clip_editor_vm.py` `SOURCE_TOO_LONG_REFUSED`. Además, `Qualify/test_clip_editor_recipe_b6.py::test_the_editors_a9_words_and_minute_are_the_backends` exige que sea igual a `LOCAL_SOURCE_TOO_LONG_TEXT`. Si el servidor cambia solo, esa prueba se rompe y no se puede arreglar sin tocar `Qualify/`, así que **queda para hacerlo junto con el carril B**. Los textos acordados:
+  - **Clip:** «Cada video puede tomar hasta 1 minuto de lo que grabaste, aunque lo aceleres. Acorta el más largo o pártelo en dos con «Cortar», y vuelve a crear el video.»
+  - **Parte:** el mismo texto, pero terminado en «…y vuelve a crear esta parte.»
+
+  En ese cambio conjunto, el carril B actualiza en `Qualify/clip_editor_vm.py`:
+  - `SOURCE_TOO_LONG_REFUSED`, igual al nuevo `LOCAL_SOURCE_TOO_LONG_TEXT`;
+  - `SOURCE_TOO_LONG`, el aviso de «Cortar» antes de crear, que también dice «Cada bloque… el bloque más largo…»: el mismo texto sin «, y vuelve a crear el video».
+
+  `Qualify/test_clip_editor_vm.py:698` (`endswith("y vuelve a crear el video.")`) sigue pasando.
+- **Textos propios de la pantalla** (son del carril B, no del servidor):
+  - `Qualify/clip_editor_vm.py`: `TOO_SHORT` y `too_short_text`, «El bloque tiene que durar al menos 1 s.», que también se ve en `creative_state.clip_cut_error`;
+  - `Qualify/clip_joins_vm.py`: `FIND_HINT`, «Toca el punto entre dos bloques…».
+
+  Las pruebas que fijan esos textos son `Qualify/test_clip_editor_vm.py` (líneas 111, 128 y 720) y `Qualify/test_clip_editor_state.py:1513`.
+- `image_pipeline/layer.py:400`: «Esta pieza no lleva bloques de datos: lista vacía.» Es otro sentido de «bloque»; falta confirmar si llega a la pantalla.
 
 **Reglas que ya existían y ahora también cuentan los bloques con IA** (mismos códigos y textos de siempre):
 

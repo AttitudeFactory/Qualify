@@ -186,7 +186,7 @@ LOCAL_PART_LAYER_FAILED_TEXT = (
 #: m-25114465: the transitions between the blocks could not be made for a reason of ours
 #: (`block_join`, `JoinError`): the way out is a cut at those joins.
 LOCAL_TRANSITION_FAILED_TEXT = (
-    "No pudimos hacer las transiciones de tu video por un problema nuestro. No se descontó "
+    "No pudimos hacer las uniones de tu video por un problema nuestro. No se descontó "
     "de tus creaciones. Inténtalo de nuevo en unos minutos o deja las uniones con «Corte» "
     "para terminarlo ya."
 )

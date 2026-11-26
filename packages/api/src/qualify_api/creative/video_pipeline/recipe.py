@@ -579,16 +579,20 @@ def transition_room_problems(
 #: m-25114465: what the owner reads about a Clip's transitions between its blocks, for
 #: the screen to show (`qualify-copy-es`; the screen calls the blocks «bloques» and the
 #: place where two meet «la unión»). `{block}` is the block as the owner counts it, from 1.
+#: m-25129405 (Deivid, D1 of the editor's mockups: never «bloque» on screen): `{block}`
+#: counts every item of the timeline, «partes con IA» included, so it says «La parte».
 TRANSITIONS_LONGER_THAN_BLOCK_TEXT = (
-    "El bloque {block} es muy corto para sus transiciones. Alárgalo, acorta sus "
-    "transiciones o deja una de sus uniones con «Corte»."
+    "La parte {block} es muy corta para sus uniones. Alárgala, acorta las uniones o deja "
+    "una de ellas con «Corte»."
 )
 #: `transition_on_first_block`: the screen offers no join before the first block.
-TRANSITION_ON_FIRST_BLOCK_TEXT = "Antes del primer bloque no hay nada que unir. Déjalo con «Corte»."
+TRANSITION_ON_FIRST_BLOCK_TEXT = (
+    "Antes de lo primero de tu video no hay nada que unir. Déjalo con «Corte»."
+)
 #: `transition_on_clip`: a transition chosen as an effect of the whole Clip.
 TRANSITION_ON_CLIP_TEXT = (
-    "Las transiciones van en la unión entre dos bloques. "
-    "Toca esa unión y elige «Fundido» o «Barrido»."
+    "Las uniones van entre dos partes de tu línea de tiempo, no en todo el video. "
+    "Toca la unión entre dos y elige «Fundido» o «Barrido»."
 )
 #: `recipe_unavailable` on `segments[i].transition_in`: a join the server does not blend
 #: (a Clip not made from the owner's photos and videos, a part of a video by parts, or

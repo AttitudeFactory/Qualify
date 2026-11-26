@@ -83,47 +83,57 @@ AI_PART_TEXTS: dict[str, str] = {
         "Quita una para seguir."
     ),
     "too_many_ai_children": (
-        f"Puedes usar hasta {AI_CHILDREN_MAX} partes con IA y escenas del personaje en un "
-        "video. Quita una para seguir."
+        f"Entre partes con IA y escenas del personaje puedes tener hasta {AI_CHILDREN_MAX} "
+        "en un video. Quita una para seguir."
     ),
     "extend_needs_block_before": (
-        "«Sigue a la anterior» necesita una parte con IA justo antes. Muévela o elige «Nueva»."
+        "«Sigue a la anterior» necesita una parte con IA justo antes. "
+        "Pon esta parte después de una, o elige «Nueva»."
     ),
     "edit_needs_reel_window": (
-        "«Igual al original» necesita el video de inspiración que copia. Elige «Nueva»."
+        "«Igual al original» solo sirve con partes que vienen de un video de inspiración. "
+        "Elige «Nueva»."
     ),
     "ai_part_with_speed": (
-        "Las partes con IA van a velocidad normal. Quítale la cámara rápida a esa parte."
+        "Las partes con IA siempre van a velocidad normal. Quita la cámara rápida de esta parte."
     ),
     "own_media_too_short": (
-        "Si tu video lleva un personaje o un avatar, agrega al menos 3 segundos de tus fotos "
-        "o videos."
+        "Con un personaje en tu video necesitas al menos 3 segundos de tus fotos o videos. "
+        "Agrega más o alarga los que ya tienes."
     ),
-    "ai_parts_mismatch": "No pudimos leer una de las partes con IA. Quítala y agrégala de nuevo.",
+    "ai_parts_mismatch": (
+        "Tuvimos un problema con una de tus partes con IA. Quítala y agrégala de nuevo."
+    ),
     "ai_part_length_mismatch": (
-        "Una parte con IA no dura lo que marca la línea de tiempo. Ajusta sus segundos de nuevo."
+        "Los segundos de una parte con IA no coinciden con la línea de tiempo. "
+        "Vuelve a elegir cuántos segundos dura esa parte."
     ),
     "ai_part_outside_clip": (
-        "Las partes con IA solo van en un video que armas en la línea de tiempo. "
-        "Quítala para seguir."
+        "Las partes con IA solo se pueden usar en un video armado en la línea de tiempo. "
+        "Quita esta parte para seguir."
     ),
     "ai_part_local": (
-        "Esa parte se hace con tus fotos y videos: agrégalos directo en la línea de tiempo."
+        "Para usar tus fotos y videos no necesitas una parte con IA. "
+        "Agrégalos directo en la línea de tiempo."
     ),
     "ai_part_own_recipe": (
-        "Los textos, los efectos y las uniones van en la línea de tiempo del video, "
-        "no dentro de la parte con IA."
+        "Los textos, los efectos y las uniones se agregan en la línea de tiempo, no dentro de "
+        "una parte con IA. Quítalos de esta parte y agrégalos allí."
     ),
     "ai_part_guide_type": (
-        "Ese archivo no sirve como guía. Usa un video MP4 o MOV, o un audio MP3 o WAV."
+        "No podemos usar ese archivo como guía. Sube un video MP4 o MOV, o un audio MP3 o WAV."
     ),
     "extend_after_own_media": (
-        "«Sigue a la anterior» solo continúa una parte con IA, no tus fotos o videos. "
+        "«Sigue a la anterior» solo continúa una parte con IA, no una foto o un video tuyo. "
         "Pon una parte con IA justo antes o elige «Nueva»."
     ),
+    # «Igual al original» is no way out here: a part split from a take (`original_mode`
+    # `extend`) made `edit` needs a pre-cut window the screen does not have
+    # (`_PartSource`: «a converted split part cannot edit the public source without
+    # offsets»), and a part without a reel cannot be `edit` at all — only «Nueva»
     "extend_not_same_moment": (
-        "Solo se puede cuando esta parte y la anterior eran un mismo momento del video "
-        "original. Elige otra forma."
+        "«Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento "
+        "del video de inspiración. Elige «Nueva»."
     ),
 }
 
