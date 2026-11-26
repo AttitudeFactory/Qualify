@@ -15,7 +15,14 @@ from . import monthly_post_state as state_module
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .monthly_post_state import MonthlyPostState
-from .monthly_post_vm import EXPLAIN, LOAD_FAILED, SAVE_FAILED, SESSION_ENDED, kind_options
+from .monthly_post_vm import (
+    EXPLAIN,
+    LOAD_FAILED,
+    SAVE_FAILED,
+    SESSION_ENDED,
+    kind_options,
+    monthly_cost_text,
+)
 
 
 def test_choices_are_ready_to_publish_kinds_with_their_spanish_names() -> None:
@@ -24,7 +31,25 @@ def test_choices_are_ready_to_publish_kinds_with_their_spanish_names() -> None:
     assert values[0] == "avatar_video" and "static_flyer" in values
     assert "creator_script" not in values and "own_media" not in values
     assert {"value": "static_flyer", "label": "Imagen publicitaria"} in options
-    assert "1 de tus creaciones del mes" in EXPLAIN
+    assert "Por aprobar" in EXPLAIN
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("static_flyer", "Usa 1 de tus creaciones cada mes."),
+        ("template", "Usa 1 de tus creaciones cada mes."),
+        ("avatar_video", "Este video con presentador usa 25 de tus creaciones cada mes."),
+        ("clip", "Este video usa 5 segundos de tus videos del mes cuando lo apruebas."),
+        ("nope", ""),
+    ],
+)
+def test_cost_is_the_generators_price_for_the_kind(kind: str, text: str) -> None:
+    assert monthly_cost_text(kind) == text
+
+
+def test_every_choice_says_what_it_costs() -> None:
+    assert all(monthly_cost_text(o["value"]) for o in kind_options())
 
 
 def test_provider_uses_the_default_brand_and_refuses_without_one(
@@ -117,3 +142,22 @@ def test_save_from_a_stale_session_is_refused(monkeypatch: pytest.MonkeyPatch) -
     context = Context()  # never loaded for this login
     asyncio.run(MonthlyPostState.save.fn(context, True, "clip"))
     assert context.error == SESSION_ENDED
+
+
+def test_a_load_in_flight_never_undoes_a_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    context = Context()
+    context._context = (str(TENANT), str(LOGIN), str(USER))
+
+    def old_value(_t: object, _b: object) -> MonthlyPostSetting:
+        # the owner's save lands while this read is still out
+        monkeypatch.setattr(
+            state_module,
+            "save_setting",
+            lambda _t, _b, enabled, kind: MonthlyPostSetting(enabled, ContentKind(kind)),
+        )
+        asyncio.run(MonthlyPostState.save.fn(context, True, "clip"))
+        return MonthlyPostSetting()
+
+    monkeypatch.setattr(state_module, "read_setting", old_value)
+    asyncio.run(MonthlyPostState.load.fn(context))
+    assert (context.enabled, context.kind, context.loading) == (True, "clip", False)

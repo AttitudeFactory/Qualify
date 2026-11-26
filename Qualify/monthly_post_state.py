@@ -13,7 +13,7 @@ from qualify_api.tenancy.acting import acting_login
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .monthly_post_provider import read_setting, save_setting
-from .monthly_post_vm import LOAD_FAILED, SAVE_FAILED, SESSION_ENDED
+from .monthly_post_vm import LOAD_FAILED, SAVE_FAILED, SESSION_ENDED, monthly_cost_text
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,10 @@ class MonthlyPostState(rx.State):
     error: str = ""  # the last save failed
     _context: tuple[str, str, str] = ("", "", "")
     _operation: str = ""
+
+    @rx.var
+    def cost_text(self) -> str:
+        return monthly_cost_text(self.kind)
 
     async def _session(self) -> tuple[str, str, str]:
         auth = await self.get_state(AuthState)
@@ -53,9 +57,11 @@ class MonthlyPostState(rx.State):
                 logger.warning("monthly post load failed: %s", type(exc).__name__)
                 error = LOAD_FAILED
         async with self:
-            if self._operation == operation and context == await self._session():
-                self.enabled, self.kind = setting.enabled, setting.kind.value
-                self.load_error, self.loading = error, False
+            if context == await self._session():
+                if self._operation == operation:  # else a save landed after this read
+                    self.enabled, self.kind = setting.enabled, setting.kind.value
+                    self.load_error = error
+                self.loading = False
 
     @rx.event
     def set_enabled(self, value: bool):
@@ -73,6 +79,8 @@ class MonthlyPostState(rx.State):
             if context != self._context or not all(tenant_uuid(v) for v in context):
                 self.error = SESSION_ENDED
                 return
+            # a load still in flight read the value from before this save: drop it
+            self._operation = operation = str(uuid4())
             self.saving, self.error = True, ""
         setting, error = None, ""
         try:
@@ -85,6 +93,8 @@ class MonthlyPostState(rx.State):
             error = SAVE_FAILED
         async with self:
             if context == await self._session():
-                if setting is not None:
-                    self.enabled, self.kind = setting.enabled, setting.kind.value
-                self.error, self.saving = error, False
+                if self._operation == operation:  # else a later save or load has the say
+                    if setting is not None:
+                        self.enabled, self.kind = setting.enabled, setting.kind.value
+                    self.error = error
+                self.saving = False

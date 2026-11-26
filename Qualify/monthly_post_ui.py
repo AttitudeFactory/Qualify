@@ -5,8 +5,8 @@ from __future__ import annotations
 import reflex as rx
 
 from .monthly_post_state import MonthlyPostState as S
-from .monthly_post_vm import EXPLAIN, KIND_LABEL, TITLE, kind_options
-from .ui import callout, card, skeleton_card
+from .monthly_post_vm import ENABLED_BADGE, EXPLAIN, KIND_LABEL, TITLE, kind_options
+from .ui import callout, card, skeleton_card, tone_badge
 from .ui import tokens as T
 
 _SWITCH_ID = "monthly-post-switch"
@@ -49,12 +49,16 @@ def monthly_post_card() -> rx.Component:
                             size="3",
                         ),
                         rx.text(TITLE, as_="label", html_for=_SWITCH_ID, weight="medium"),
+                        rx.cond(S.enabled, tone_badge(ENABLED_BADGE, "ok", icon="check")),
                         align="center",
+                        wrap="wrap",
                         spacing="3",
                         min_height="44px",
                     ),
                     rx.text(EXPLAIN, size="2", color=T.TEXT_MUTED),
                     rx.cond(S.enabled, _kind_select()),
+                    # what it costs, before turning it on too (the default kind's price)
+                    rx.cond(S.cost_text != "", rx.text(S.cost_text, size="2", weight="medium")),
                     rx.cond(S.error != "", callout(S.error, "error")),
                     spacing="2",
                     width="100%",
