@@ -177,6 +177,35 @@ def public_media_ready() -> bool:
     return True
 
 
+#: Which vendor renders the two avatar kinds. HeyGen is retired (2026-10-16): the
+#: talking presenter is OmniHuman (photo + Seed Speech voice, lips in sync), the scene
+#: video Seedance. Read per call, like the keys: an env change, nothing else. Moved here
+#: from `Qualify/creative_provider.py` (m-25121346) so the monthly post's job reads the
+#: same engine «Crear pieza» shows.
+VIDEO_ENGINE_ENV = "QUALIFY_VIDEO_ENGINE"
+VIDEO_ENGINES = ("omnihuman", "seedance")
+#: The two keys the talking presenter needs (Seed Speech reads, OmniHuman animates).
+PRESENTER_KEY_ENVS = ("QUALIFY_BYTEPLUS_SPEECH_API_KEY", "QUALIFY_BYTEPLUS_CV_API_KEY")
+
+
+def presenter_keys_ready() -> bool:
+    return all(os.environ.get(name, "").strip() for name in PRESENTER_KEY_ENVS)
+
+
+def configured_video_engine() -> str:
+    """`QUALIFY_VIDEO_ENGINE` when it names a live engine; otherwise OmniHuman once both
+    of its keys are set (§ request 2026-10-16: «dejar todo preparado para cuando tenga
+    las api key»), Seedance until then. A stale `heygen` falls through the same way."""
+    value = (os.environ.get(VIDEO_ENGINE_ENV) or "").strip().lower()
+    if value in VIDEO_ENGINES:
+        return value
+    if not presenter_keys_ready():
+        return "seedance"
+    # OmniHuman downloads the photo and the voice: without a public URL (a local run, no
+    # tunnel) every presenter would fail after its frame and voice were paid for
+    return "omnihuman" if public_media_ready() else "seedance"
+
+
 def _check_reference_url(url: str, *, content_type: str, size: int) -> None:
     """A configured but stopped local tunnel must fail before a paid vendor submission."""
     import httpx

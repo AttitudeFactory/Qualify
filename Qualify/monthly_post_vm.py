@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from qualify_api.planner.monthly_post import MONTHLY_POST_KINDS
+from qualify_api.planner.monthly_post_job import AVATAR_SECONDS, CAROUSEL_SLIDES, VIDEO_SECONDS
 from qualify_creative.creations import (
     CreationNotOffered,
     is_presenter_request,
     weight_for_request,
 )
 
+from .catalog_vm import ProductVM, new_product_href
 from .creative_vm import KIND_LABELS, seconds_label
 
 TITLE = "Publicación del mes"
@@ -21,10 +25,20 @@ KIND_LABEL = "¿Qué quieres que te preparemos?"
 LOAD_FAILED = "No pudimos leer tu publicación del mes. Vuelve a entrar en un momento."
 SAVE_FAILED = "No pudimos guardar tu cambio. Inténtalo de nuevo."
 SESSION_ENDED = "Tu sesión terminó. Vuelve a entrar para cambiarlo."
-#: The generator's starting lengths: a generated video (a clip, an avatar on Seedance) at
-#: `CreativeState.clip_duration`, a talking presenter at `media_duration`.
-_VIDEO_SECONDS = 5
-_PRESENTER_SECONDS = 30
+TEMPLATE_KIND = "template"
+PRODUCT_LABEL = "¿Qué producto mostramos?"
+#: «Con plantilla» with no product that can make one (m-25121346). The screen is named
+#: «Galería» in the menu (`ui/layout.py`), so the sentence names it that way.
+NO_PRODUCTS = "Primero agrega un producto con foto en tu Galería."
+NO_PRODUCTS_LINK = "Agregar producto"
+#: Straight to «Agregar producto»; no way back: «Volver a tu publicación» is not this card.
+NO_PRODUCTS_HREF = new_product_href("")
+PRODUCT_MISSING = (
+    "El producto que elegiste ya no está disponible. "
+    "Elige otro para recibir tu publicación del mes."
+)
+PICK_PRODUCT = "Todavía no guardamos el cambio: elige un producto."
+NOT_SAVED = "Aún no guardamos el cambio."
 
 
 def kind_options() -> list[dict[str, str]]:
@@ -32,27 +46,44 @@ def kind_options() -> list[dict[str, str]]:
     return [{"value": k.value, "label": KIND_LABELS[k.value]} for k in MONTHLY_POST_KINDS]
 
 
-def monthly_cost_text(kind: str, video_engine: str) -> str:
-    """What the chosen kind uses each month — the generator's base price for it on the
-    configured engine (`weight_for_request`, the rule the service charges with). The real
-    post may cost more once its brief exists (a presenter's length, a carousel's slides)."""
-    presenter = is_presenter_request(kind, video_engine)
+def cost_warns(kind: str, video_engine: str) -> bool:
+    """A talking presenter takes a big share of the month: said as a warning."""
+    return is_presenter_request(kind, video_engine)
+
+
+def product_rows(products: Iterable[ProductVM]) -> list[dict[str, str]]:
+    """The products a template can be made from — those with a photo (the backend refuses
+    the rest) — as flat rows for the picker: `{id, name, photo_key}`."""
+    return [
+        {"id": p.product_id, "name": p.name, "photo_key": p.primary_photo_key}
+        for p in products
+        if p.photo_count > 0
+    ]
+
+
+def monthly_cost_text(kind: str, video_engine: str, creations: int = 0) -> str:
+    """What the chosen kind uses each month: the generator's price
+    (`weight_for_request`, the rule the service charges with) for the brief the monthly
+    job makes — a clip of `VIDEO_SECONDS`, the avatars at `AVATAR_SECONDS` on the
+    configured engine, a carousel of `CAROUSEL_SLIDES` generated slides. A presenter
+    names the plan's month (`creations`; 0 = unknown or no limit, left out)."""
+    avatar = kind in ("avatar_video", "animated_avatar_video")
     try:
         price = weight_for_request(
             kind,
-            duration_seconds=_PRESENTER_SECONDS if presenter else _VIDEO_SECONDS,
+            duration_seconds=AVATAR_SECONDS if avatar else VIDEO_SECONDS,
             video_engine=video_engine,
+            generated_slides=CAROUSEL_SLIDES if kind == "carousel" else 0,
         )
     except (CreationNotOffered, ValueError):
         return ""
     if price.weight > 0:
         if price.is_presenter:
-            what = "Este video con presentador usa"
-        elif kind == "carousel":
-            what = "Usa desde"  # priced with no generated slide: each one adds
-        else:
-            what = "Usa"
-        return f"{what} {price.weight} de tus creaciones cada mes."  # «1 de tus creaciones»
+            month = f"{creations} " if creations > 0 else ""
+            return (
+                f"Este video con presentador usa {price.weight} de tus {month}creaciones cada mes."
+            )
+        return f"Usa {price.weight} de tus creaciones cada mes."  # «1 de tus creaciones»
     if price.video_seconds > 0:
         return (
             f"Este video usa {seconds_label(price.video_seconds)} de tus videos del mes "

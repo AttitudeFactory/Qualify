@@ -49,6 +49,9 @@ def test_clock_and_amount_speak_spanish() -> None:
     assert vm.clock(4.3) == "0:04,5"  # the magnet
     assert vm.amount(5) == "5" and vm.amount(4.5) == "4,5"
     assert vm.playhead_text(5, 12) == "0:05 de 0:12"
+    # m-25129389: the playhead's words to the tenth, as the blocks and the total
+    assert vm.playhead_text(0, 4.7) == "0:00 de 0:04,7"
+    assert vm.playhead_text(1.25, 59.96) == "0:01,3 de 1:00"
 
 
 def test_media_track_has_no_gaps_and_full_names() -> None:
@@ -66,6 +69,94 @@ def test_media_track_has_no_gaps_and_full_names() -> None:
     # A photo has only its end handle («Duración», 1–5 s).
     assert rows[2]["has_start"] == "" and rows[2]["end_label"] == "Duración"
     assert rows[2]["end_text"] == "Se ve 2 s"
+
+
+# m-25129389: a video block reads its length and times to the tenth, as the total does.
+
+
+def _video(block_id: str, start: float, end: float, src_len: float, speed: float = 1) -> dict:
+    return {
+        "id": block_id,
+        "kind": "video",
+        "src_start": start,
+        "src_end": end,
+        "src_len": src_len,
+        "speed": speed,
+    }
+
+
+def test_a_video_of_4_7_s_says_4_7_like_the_total() -> None:
+    from Qualify import editor_preview_contract as contract
+
+    media = [_video("v1", 0.0, 4.7, 4.7)]
+    (row,) = vm.media_blocks(media)
+    total = contract.seconds_text(vm.total_seconds(media))
+    assert total == "4,7"
+    assert row["name"] == "Video 1 de 1, usas de 0:00 a 0:04,7, dura 4,7 s"
+    assert row["panel"] == "Video 1 · usas 0:00 a 0:04,7 · 4,7 s"
+    assert row["secs"] == "4,7 s"
+    assert (row["start_text"], row["end_text"]) == ("0:00", "0:04,7")
+    # the handles keep their own exact clock (to the hundredth)
+    assert row["end_value"] == "Hasta 0:04,7"
+
+
+def test_a_cut_at_1_48_s_adds_up_to_the_total() -> None:
+    from Qualify import editor_preview_contract as contract
+
+    media = [_video("v1", 0.0, 1.48, 4.7), _video("v2", 1.48, 4.7, 4.7)]
+    first, second = vm.media_blocks(media)
+    assert first["name"] == "Video 1 de 2, usas de 0:00 a 0:01,5, dura 1,5 s"
+    assert second["name"] == "Video 2 de 2, usas de 0:01,5 a 0:04,7, dura 3,2 s"
+    assert (first["secs"], second["secs"]) == ("1,5 s", "3,2 s")
+    assert second["panel"] == "Video 2 · usas 0:01,5 a 0:04,7 · 3,2 s"
+    shown = [float(r["secs"].removesuffix(" s").replace(",", ".")) for r in (first, second)]
+    total = float(contract.seconds_text(vm.total_seconds(media)).replace(",", "."))
+    assert total == 4.7
+    assert abs(sum(shown) - total) <= 0.1 + 1e-9
+
+
+def test_a_photo_still_reads_its_half_seconds() -> None:
+    (row,) = vm.media_blocks([{"id": "p1", "kind": "photo", "dur": 2.5}])
+    assert row["name"] == "Foto 1 de 1, se ve 2,5 s"
+    assert row["panel"] == "Foto 1 · 2,5 s"
+    assert row["secs"] == "2,5 s"
+    assert row["end_text"] == "Se ve 2,5 s"
+
+
+def test_a_video_at_x2_reads_its_length_to_the_tenth() -> None:
+    from Qualify import editor_preview_contract as contract
+
+    media = [_video("v1", 0.0, 4.7, 4.7, speed=2)]
+    (row,) = vm.media_blocks(media)
+    length = contract.seconds_text(vm.total_seconds(media))  # 2,35 s, as the total rounds
+    assert row["name"] == f"Video 1 de 1, usas de 0:00 a 0:04,7, dura {length} s"
+    assert row["secs"] == f"{length} s"
+    assert row["speed_tag"] == "×2"
+    two = vm.media_blocks([_video("v1", 0.0, 6.6, 10.0, speed=2)])[0]
+    assert two["name"] == "Video 1 de 1, usas de 0:00 a 0:06,6, dura 3,3 s"
+
+
+def test_the_tenth_helpers_match_the_preview_contract() -> None:
+    from Qualify import editor_preview_contract as contract
+
+    values = (0, 0.04, 0.05, 1.15, 1.25, 1.48, 1.75, 2.35, 3.22, 4.7, 9.96, 12.04)
+    for value in (*values, 59.95, 59.96, 61.25, 119.96):
+        assert vm.amount_tenth(value) == contract.seconds_text(value), value
+        assert vm.clock_tenth(value) == contract.clock_text(value), value
+
+
+def test_a_half_tenth_rounds_up_and_a_minute_carries() -> None:
+    from Qualify import editor_preview_contract as contract
+
+    assert vm.amount_tenth(1.25) == "1,3" and vm.amount_tenth(1.75) == "1,8"
+    assert vm.clock_tenth(1.25) == "0:01,3" and vm.clock_tenth(1.75) == "0:01,8"
+    assert vm.amount_tenth(4.7) == "4,7" and vm.amount_tenth(1.15) == "1,2"  # float noise
+    assert vm.amount_tenth(0.04) == "0" and vm.amount_tenth(9.96) == "10"
+    # never «0:60»: the rounded second carries into the minute
+    assert vm.clock_tenth(59.95) == "1:00" and vm.clock_tenth(59.96) == "1:00"
+    assert vm.clock_tenth(119.96) == "2:00"
+    assert contract.clock_text(59.96) == "1:00" and contract.clock_text(119.96) == "2:00"
+    assert contract.seconds_text(1.25) == "1,3" and contract.seconds_text(1.75) == "1,8"
 
 
 def test_overlay_names() -> None:

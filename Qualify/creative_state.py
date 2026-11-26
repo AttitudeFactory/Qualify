@@ -94,6 +94,7 @@ from qualify_creative.schemas import (
     HIGHLIGHTS_MAX,
     MAX_BRAND_ELEMENTS,
     MAX_PRODUCT_IMAGES,
+    PRESENTER_DESCRIPTIONS,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -774,10 +775,7 @@ _GALLERY_MAX_VIDEOS = 1
 _GALLERY_ONE_VIDEO = "Un carrusel lleva como máximo 1 video: cambia la otra diapositiva primero."
 #: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
 #: «Hombre» are a described synthetic person like «Personalizado», with this description.
-_PRESENTERS = {
-    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
-    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
-}
+_PRESENTERS = PRESENTER_DESCRIPTIONS
 #: The formats each template use renders — ONE output, the one of this format.
 _TEMPLATE_FORMATS = {
     # «Video publicitario» (§ 2026-10-13): the template's video in every placement — a
@@ -1745,6 +1743,24 @@ class CreativeState(rx.State):
     #: That `/r2media` token lives 1 h and is NOT renewed: past it, the block stays grey
     #: with its icon and name. The real fix is ED-11b (posters of their own).
     _clip_posters: dict[str, str] = {}
+    #: ED-11b (m-25029110): each uploaded video's frame strip, by its key — its `/r2media`
+    #: path and layout (`upload_preview_state.read_strips`), read for the session's own
+    #: business (`_clip_strip_tenant`). Only to DRAW the timeline: never in the recipe.
+    _clip_frame_strips: dict[str, dict[str, Any]] = {}
+    _clip_strip_tenant: str = ""
+    #: The strips' reader now running, a `uuid4` hex (a newer one makes an older one stop;
+    #: never repeats, not even after the state is reset).
+    _clip_strip_watch: str = ""
+    #: When the running reader last checked in (`time.time()`; 0 = none running) and
+    #: which videos it reads — so a remount or a timeline change arms a reader only when
+    #: none is alive …
+    _clip_strip_beat: float = 0.0
+    _clip_strip_keys: str = ""
+    #: … and not when the last reader of THESE videos (of this business) ended with
+    #: nothing on its way a short while ago (`_clip_strip_done_at`): a video that will
+    #: never have a strip (failed for good, not an upload) costs no query per touch.
+    _clip_strip_done_keys: str = ""
+    _clip_strip_done_at: float = 0.0
     #: What «Elegir de tu Galería» could not add, under the reference grid.
     gallery_pick_note: str = ""
     #: Live-test 2026-11-03: each slot's «Inspiración» box has its own words (the
@@ -6998,6 +7014,11 @@ class CreativeState(rx.State):
         for row, item in zip(rows, media, strict=True):
             # ED-11: the file's picture (every piece of a file shows the same one)
             row["thumb"] = thumbs.get(str(item["key"]), "")
+            # ED-11b: an uploaded video's frame strip, once the server made it (its cells:
+            # `clip_tl_frames`); until then the picture of before
+            drawn = self._clip_strip_draw(item)
+            if drawn is not None:
+                row.update(drawn[1])
             # `mine`: a piece of the editor's own video; `own`: …and it can be cut now
             key, index = clip_editor_vm.piece_of(row["id"])
             row["mine"] = "1" if mine and key == mine else ""
@@ -7016,6 +7037,194 @@ class CreativeState(rx.State):
             *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
             *timeline_vm.overlay_blocks(overlays, "effect", total),  # type: ignore[arg-type]
         ]
+
+    # -- ED-11b m-25029110: the frame strip under each uploaded video's block -------------
+
+    def _clip_strip_of(self, key: str) -> dict[str, Any]:
+        """`key`'s strip as read for the session's business ({} = none yet)."""
+        strip = self._clip_frame_strips.get(key)
+        return strip if isinstance(strip, dict) and strip.get("url") else {}
+
+    def _clip_strip_draw(
+        self, item: Mapping[str, object]
+    ) -> tuple[list[dict[str, str]], dict[str, str]] | None:
+        """One video block's strip, computed once: its cells (`timeline_vm.strip_cells`:
+        the tiles of the stretch it uses, at its speed) and its row's style
+        (`strip_style`); None without a strip or without a cell to draw."""
+        if item.get("kind") != "video":
+            return None
+        strip = self._clip_strip_of(str(item.get("key") or ""))
+        if not strip:
+            return None
+        try:
+            cells = timeline_vm.strip_cells(
+                float(item["src_start"]),  # type: ignore[arg-type]
+                float(item["src_end"]),  # type: ignore[arg-type]
+                timeline_vm.speed_of(dict(item)),
+                frames=int(strip["frames"]),
+                columns=int(strip["columns"]),
+                rows=int(strip["rows"]),
+                interval_s=float(strip.get("interval_s") or 1),
+                offset_s=float(strip.get("offset_s", 0.5)),
+            )
+            style = timeline_vm.strip_style(
+                str(strip["url"]),
+                columns=int(strip["columns"]),
+                rows=int(strip["rows"]),
+                tile_width=int(strip["tile_width"]),
+                tile_height=int(strip["tile_height"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return (cells, style) if cells and style["strip"] else None
+
+    @rx.var
+    def clip_tl_frames(self) -> dict[str, list[dict[str, str]]]:
+        """ED-11b: each video block's strip cells, by the block's id (a block with no
+        strip is left out: it keeps its picture)."""
+        if not self._clip_frame_strips:
+            return {}
+        frames: dict[str, list[dict[str, str]]] = {}
+        for item in self._clip_tl_media():
+            drawn = self._clip_strip_draw(item)
+            if drawn is not None:
+                frames[str(item["id"])] = drawn[0]
+        return frames
+
+    @rx.var
+    def clip_strip_videos(self) -> str:
+        """ED-11b: the hidden strip reader's React key — the Clip's videos AND the blocks
+        of «Fotos y videos» as laid now — so a video added or taken away, and any change
+        of the timeline (a trim, a cut, a move, a speed), mounts it again
+        (`watch_clip_frame_strips`, which arms a reader only when none is alive: live
+        test 2026-11-26, a reader that gave up is armed again when the owner touches the
+        editor)."""
+        if not self.clip_editor_shown:
+            return ""
+        keys = upload_preview_state.strip_video_keys(self.clip_videos)
+        if not keys:
+            return ""
+        laid = ";".join(
+            f"{row['id']}@{row['start']}+{row['length']}" for row in self.clip_tl_media_rows
+        )
+        return "|".join(keys) + "#" + laid
+
+    def _clip_strips_settled(self, keys: Sequence[str], tenant: str) -> bool:
+        """A reader need not start: one is alive for these videos and business (it keeps
+        its own waits), or the last reader of these videos ended with nothing on its way
+        a short while ago — strips made (their paths still good:
+        `PIECE_VIEWS_FRESH_SECONDS`) or never coming. Other videos: read again."""
+        if self._clip_strip_tenant != tenant:
+            return False
+        sig, now = "|".join(keys), time.time()
+        alive = self._clip_strip_beat > 0 and (
+            now - self._clip_strip_beat < upload_preview_state.STRIP_READER_ALIVE_SECONDS
+        )
+        if alive and self._clip_strip_watch and self._clip_strip_keys == sig:
+            return True
+        return (
+            self._clip_strip_done_keys == sig
+            and now - self._clip_strip_done_at < PIECE_VIEWS_FRESH_SECONDS
+        )
+
+    @rx.event
+    async def watch_clip_frame_strips(self) -> rx.event.EventSpec | None:
+        """ED-11b: the timeline (re)mounted, or changed: arm a reader — server-side, with
+        the session's own business — unless one is alive or the strips are all fresh
+        (`_clip_strips_settled`). A strip of another business, or of a video no longer
+        here, is forgotten."""
+        keys = upload_preview_state.strip_video_keys(self.clip_videos)
+        if not self.clip_editor_shown or not keys:
+            self._clip_strip_watch = ""  # a reader still running stops
+            return None
+        try:
+            tenant_id = await self._clip_preview_tenant()
+        except Exception as exc:  # noqa: BLE001 — a strip is not worth failing the step
+            logger.warning("frame strips tenant not read: %s", type(exc).__name__)
+            return None
+        if tenant_id is None:
+            self._clip_strip_watch = ""
+            self._clip_frame_strips = {}
+            return None
+        if self._clip_strips_settled(keys, str(tenant_id)):
+            return None
+        self._clip_strip_watch = uuid4().hex  # never repeats, not even after a reset
+        self._clip_strip_keys = "|".join(keys)
+        self._clip_strip_beat = time.time()
+        if str(tenant_id) != self._clip_strip_tenant:
+            self._clip_frame_strips = {}
+            self._clip_strip_done_keys = ""
+        self._clip_strip_tenant = str(tenant_id)
+        kept = {k: v for k, v in self._clip_frame_strips.items() if k in keys}
+        if kept != self._clip_frame_strips:
+            self._clip_frame_strips = kept
+        return CreativeState.read_clip_frame_strips(self._clip_strip_watch)
+
+    async def _clip_strip_still_mine(self, watch: str, tenant_id: UUID) -> bool:
+        """Under the lock: this reader still owns the timeline — no newer reader, the
+        editor still shown, and the session still in the business it read for (a logout
+        or another business in between stops it)."""
+        if watch != self._clip_strip_watch or not self.clip_editor_shown:
+            return False
+        if self._clip_strip_tenant != str(tenant_id):
+            return False
+        try:
+            return await self._clip_preview_tenant() == tenant_id
+        except Exception as exc:  # noqa: BLE001 — no session: stop, show nothing new
+            logger.warning("frame strips session not read: %s", type(exc).__name__)
+            return False
+
+    @rx.event(background=True)
+    async def read_clip_frame_strips(self, watch: str) -> None:
+        """Read the strips of the Clip's uploaded videos, again while one is still on its
+        way — waiting longer each time (`upload_preview_state.strip_waits`: 6 s, 12 s,
+        30 s, then a minute) for up to `STRIP_GIVE_UP_SECONDS` — and ask, in the
+        background, once per video and reader (the service never repeats work), for a
+        strip that is wanted. Before every read and every ask, and before keeping a read,
+        it checks it still owns the timeline (`_clip_strip_still_mine`: no newer reader,
+        the editor on screen, the same business). It checks in (`_clip_strip_beat`) so a
+        remount or a timeline change does not start a second one; when it ends, the next
+        change arms a new one. Nothing here fails the screen: the picture of before
+        stays."""
+        async with self:
+            keys = upload_preview_state.strip_video_keys(self.clip_videos)
+            tenant_id = tenant_uuid(self._clip_strip_tenant)
+            brand_hint = str(self._brand_id or "")
+        if tenant_id is None or not keys:
+            return
+        asked: set[str] = set()
+        waits = upload_preview_state.strip_waits()
+        try:
+            for attempt in range(len(waits) + 1):
+                if attempt:
+                    await asyncio.sleep(waits[attempt - 1])
+                async with self:
+                    if not await self._clip_strip_still_mine(watch, tenant_id):
+                        return
+                    self._clip_strip_beat = time.time()
+                read = await asyncio.to_thread(
+                    upload_preview_state.read_strips, tenant_id, keys, frozenset(asked)
+                )
+                async with self:
+                    if not await self._clip_strip_still_mine(watch, tenant_id):
+                        return  # drop the read: it may be of a business no longer here
+                    strips = {k: v for k, v in self._clip_frame_strips.items() if k in keys}
+                    strips.update(read.strips)
+                    if strips != self._clip_frame_strips:
+                        self._clip_frame_strips = strips
+                    if not read.waiting:  # these videos are settled for a while
+                        self._clip_strip_done_keys = "|".join(keys)
+                        self._clip_strip_done_at = time.time()
+                for key in read.ask:
+                    if key not in asked:
+                        asked.add(key)
+                        upload_preview_provider.ask_for_preview(tenant_id, brand_hint, key)
+                if not read.waiting:
+                    return
+        finally:
+            async with self:
+                if watch == self._clip_strip_watch:
+                    self._clip_strip_beat = 0.0  # ended: the next change arms a new one
 
     def _clip_cut_note(self, key: str) -> str:
         """m-25114465 (live test): the panel's line for a block of the own video that
@@ -10116,7 +10325,8 @@ class CreativeState(rx.State):
         rows: list[dict[str, str]] = []
         for row in timeline_vm.media_blocks(media):  # type: ignore[arg-type]
             start, end = spans.get(row["id"], (0.0, 0.0))
-            time = f"de {timeline_vm.clock(start)} a {timeline_vm.clock(end)}"
+            # m-25129389: to the tenth — a 4,7 s video ends at 0:04,7, never «0:04,5»
+            time = f"de {timeline_vm.clock_tenth(start)} a {timeline_vm.clock_tenth(end)}"
             rows.append(
                 {
                     "id": row["id"],
@@ -13959,6 +14169,12 @@ class CreativeState(rx.State):
         self._pinterest_context_epoch += 1
         self.gallery_pick_note = ""
         self._clip_posters = {}
+        self._clip_frame_strips = {}
+        self._clip_strip_watch = ""  # a reader still running stops
+        self._clip_strip_beat = 0.0
+        self._clip_strip_keys = ""
+        self._clip_strip_done_keys = ""
+        self._clip_strip_done_at = 0.0
         self.source_pins = []
         self.clear_product()
         self.brand_logo_key = ""
