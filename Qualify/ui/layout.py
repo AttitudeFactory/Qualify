@@ -1061,17 +1061,10 @@ def page_header(
         top,
         bar,
         *(
-            # the phone's copy; the h1 is described by the wide one (`aria-describedby`
-            # reaches it even while hidden), so this one is not read a second time
-            [
-                rx.text(
-                    subtitle,
-                    size="2",
-                    color=T.TEXT_MUTED,
-                    class_name="q-page-head-sub",
-                    custom_attrs={"aria-hidden": "true"},
-                )
-            ]
+            # the phone's copy, read as content there (a screen reader on a phone may
+            # not announce `aria-describedby` on a heading); the wide copy, which the
+            # h1 names, is `display: none` at that width, so nothing is read twice
+            [rx.text(subtitle, size="2", color=T.TEXT_MUTED, class_name="q-page-head-sub")]
             if subtitle is not None
             else []
         ),

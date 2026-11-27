@@ -99,8 +99,9 @@ def test_the_bar_is_the_old_row_and_the_phone_copies_sit_outside_it() -> None:
     assert "aria-describedby" in str(_find(head, "q-page-head-title"))
     assert SUBTITLE_ID in str(_find(head, "q-page-head-title"))
     assert SUBTITLE_ID in str(_find(head, "q-page-head-desc"))
-    # the phone's subtitle copy is not read a second time
-    assert "aria-hidden" in str(_find(head, "q-page-head-sub"))
+    # the phone's subtitle copy is read as content (the wide copy is hidden there)
+    assert "aria-hidden" not in str(_find(head, "q-page-head-sub"))
+    assert SUBTITLE_ID not in str(_find(head, "q-page-head-sub"))
 
 
 def test_no_actions_box_no_subtitle_and_no_description_when_none_are_given() -> None:
@@ -136,6 +137,8 @@ def test_phone_pins_only_the_bar_as_the_one_glass_surface() -> None:
     # the title wraps, it is never cut
     title = _rule(phone, ".q-page-head-title h1")
     assert "ellipsis" not in title and "nowrap" not in title
+    # an actions box that renders nothing takes no row
+    assert "display: none" in _rule(phone, ".q-page-head-actions:empty")
     # a selector takes its whole row
     assert "width: 100%" in _rule(phone, ".q-page-head-actions > .rt-SelectTrigger")
     # the wide copies are not drawn on a phone

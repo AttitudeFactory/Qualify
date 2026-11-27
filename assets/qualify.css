@@ -2590,6 +2590,8 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     gap: var(--space-2);
     min-width: 0;
   }
+  /* an actions box that renders nothing (a false `rx.cond` leaves no node) takes no row */
+  .q-page-head-actions:empty { display: none; }
   /* A selector in the header (WhatsApp's number, Instagram's account) takes the row:
      its own width props are sized against the old row, which also held the toggle. */
   .q-page-head-actions > .rt-SelectTrigger { width: 100%; }
