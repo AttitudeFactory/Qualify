@@ -92,7 +92,9 @@ def test_tus_redes_shows_the_numbers_state(chats_page, size: dict[str, int]) -> 
         re.compile(rf"/connections/whatsapp/actividad\?cuenta={ids['whatsapp_connection']}$"),
         timeout=60_000,
     )
-    expect(page.get_by_role("heading", level=1, name="Actividad")).to_be_visible(timeout=60_000)
+    expect(
+        page.get_by_role("heading", level=1, name="Actividad de tu WhatsApp", exact=True)
+    ).to_be_visible(timeout=60_000)
     expect(page.get_by_role("link", name="Tus redes").first).to_be_visible()
     expect(page.get_by_text("Conversaciones nuevas").first).to_be_visible(timeout=60_000)
     if size is DESKTOP:
@@ -121,7 +123,12 @@ def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
 @pytest.mark.parametrize(
     ("address", "title", "lit", "back"),
     [
-        ("/chats/ajustes/whatsapp/perfil", "Perfil", "Ajustes de chats", "Ajustes de chats"),
+        (
+            "/chats/ajustes/whatsapp/perfil",
+            "Perfil de tu WhatsApp",
+            "Ajustes de chats",
+            "Ajustes de chats",
+        ),
         (
             "/chats/ajustes/whatsapp/codigos-qr",
             "Códigos QR",
@@ -129,7 +136,7 @@ def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
             "Ajustes de chats",
         ),
         ("/chats/ajustes/formas-de-pago", "Formas de pago", "Ajustes de chats", "Ajustes de chats"),
-        ("/connections/whatsapp/actividad", "Actividad", "Tus redes", "Tus redes"),
+        ("/connections/whatsapp/actividad", "Actividad de tu WhatsApp", "Tus redes", "Tus redes"),
     ],
 )
 @pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["360", "1280"])
@@ -142,7 +149,9 @@ def test_each_moved_section_opens_at_its_address(  # noqa: ANN001
     seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size(size)
     page.goto(_origin(page) + address)
-    expect(page.get_by_role("heading", level=1, name=title)).to_be_visible(timeout=60_000)
+    expect(page.get_by_role("heading", level=1, name=title, exact=True)).to_be_visible(
+        timeout=60_000
+    )
     # The way back to the place it hangs from, and (two numbers) the number selector.
     expect(page.locator(".q-page-header").get_by_role("link", name=back)).to_be_visible()
     selector = page.locator(".q-page-header [role=combobox]")
@@ -357,7 +366,9 @@ def test_actividad_from_the_second_card_shows_that_number(chats_page) -> None:  
     expect(selector).to_contain_text("+57 311")
     # The same for another page reached with `cuenta`.
     page.goto(_origin(page) + f"/chats/ajustes/whatsapp/perfil?cuenta={second['connection']}")
-    expect(page.get_by_role("heading", level=1, name="Perfil")).to_be_visible(timeout=60_000)
+    expect(
+        page.get_by_role("heading", level=1, name="Perfil de tu WhatsApp", exact=True)
+    ).to_be_visible(timeout=60_000)
     expect(selector).to_contain_text("+57 311", timeout=60_000)
 
 

@@ -2686,7 +2686,7 @@ def menu_status(*, published: bool, paused: bool) -> tuple[str, str]:
         return "Sin publicar", "neutral"
     if paused:
         return "En pausa", "warn"
-    return "Respondiendo a tus clientes", "ok"
+    return "Activo en tu WhatsApp", "ok"
 
 
 def build_menu_summary(

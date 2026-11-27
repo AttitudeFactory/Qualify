@@ -133,7 +133,10 @@ PROMOTIONS_SUBTITLE: Final = (
 )
 #: m-25027373 (BU-A10) — the pages of «Tu número»'s old panels: their titles are the
 #: sub-tab labels they had; the subtitles are NEW TEXT, NOT DECIDED BY THE FOUNDER.
+#: m-25131413 (founder, 2026-11-27): Perfil's and Actividad's h1 say the same as their
+#: browser tab (`Qualify.py`); the hub row and the card link keep the short name.
 PROFILE_TITLE: Final = "Perfil"
+PROFILE_PAGE_TITLE: Final = "Perfil de tu WhatsApp"
 PROFILE_SUBTITLE: Final = (
     "Lo que tus clientes ven de tu negocio en WhatsApp: tu foto, tu descripción, tu "
     "dirección y tus datos de contacto."
@@ -143,6 +146,7 @@ QR_SUBTITLE: Final = (
     "Para que tus clientes te escriban a WhatsApp desde el mostrador, el empaque o tu Instagram."
 )
 ACTIVITY_TITLE: Final = "Actividad"
+ACTIVITY_PAGE_TITLE: Final = "Actividad de tu WhatsApp"
 ACTIVITY_SUBTITLE: Final = (
     "Cuántas personas te escribieron por WhatsApp, cuánto tardas en responder y por dónde llegaron."
 )
@@ -357,7 +361,7 @@ def legacy_settings_target(params: Mapping[str, object]) -> str | None:
 
 
 #: m-25029799: the retired list's `?filtro=` → the single list's equivalent chip slug.
-#: «Abiertos» (its default: no `filtro`, or one it did not know) is «Todos» there — the
+#: «Abiertos» (its default: no `filtro`, or one it did not know) is «Abiertos» there — the
 #: same open chats, answered or not; `sin-leer` was «Por responder»'s old name.
 _OLD_LIST_FILTERS: Final[Mapping[str, str]] = {
     "abiertos": "todos",
@@ -579,7 +583,7 @@ def platform_status_display(status: str | None) -> tuple[str, str]:
 # the owner first reads whether the number works and, if not, what to do.
 # --------------------------------------------------------------------------------------
 
-HEALTH_OK = "Tu WhatsApp funciona bien ✓"
+HEALTH_OK = "Tu WhatsApp funciona bien"
 HEALTH_PENDING = "Tu WhatsApp todavía se está conectando. Vuelve a mirar en un rato."
 HEALTH_REVOKED = (
     "Tu WhatsApp está desconectado. Tus mensajes guardados siguen aquí. "

@@ -47,7 +47,7 @@ puts the text in the box, REPLACING what was there — the same as «Sugerir res
 suggestion in the box is set aside (`discarded`). A line over the box then names what is
 still to be completed (a `{variable}` with no value, a `[fill-in]`) until the person
 replaces it. Picking never sends and never queues: the text leaves only through
-`send_reply`. «Administrar plantillas» opens a drawer to create, edit, delete (with
+`send_reply`. «Editar mensajes guardados» opens a drawer to create, edit, delete (with
 confirmation) and reorder; the service's refusals (`ReplyTemplateError.message`) are
 shown inline as they come.
 

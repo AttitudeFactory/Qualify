@@ -54,10 +54,10 @@ FIELD_PLACEHOLDER: Final = "Escribe aquí…"
 #: U2: Instagram's closed window — no box; this line where the box was.
 REPLY_LATER_LINE: Final = "Cuando vuelva a escribir, podrás responderle aquí."
 #: U3: one wording for a send that did not go, on both channels.
-SEND_FAILED_RETRY: Final = "El mensaje no salió. Vuelve a tocar «Enviar» para mandarlo."
+SEND_FAILED_RETRY: Final = "El mensaje no salió. Toca «Enviar» otra vez."
 #: Decision (vi), 2026-11-14: the menu bot is «Tu menú de bienvenida»; the note under
-#: WhatsApp's box stops saying «respuesta automática». NEW TEXT awaiting the founder.
-MENU_PAUSE_NOTE: Final = "Al responder, tu menú de bienvenida se pausa en esta conversación."
+#: WhatsApp's box stops saying «respuesta automática». Founder-approved 2026-11-27.
+MENU_PAUSE_NOTE: Final = "Si respondes tú, tu menú de bienvenida se pausa en este chat."
 
 # ======================================================================================
 # The descriptor, read as the box needs it

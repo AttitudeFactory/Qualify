@@ -613,7 +613,7 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
         "Buscar en tus productos",
         "Ver todos",
         # m-25027374, decision (vi): the menu's name, awaiting the founder's nod
-        "Al responder, tu menú de bienvenida se pausa en esta conversación.",
+        "Si respondes tú, tu menú de bienvenida se pausa en este chat.",
         "Elegir una foto",
         "Volver al chat",
     ):

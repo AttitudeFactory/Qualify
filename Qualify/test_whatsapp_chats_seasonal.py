@@ -406,9 +406,9 @@ def test_the_create_link_s_way_back_is_safe_and_says_chats() -> None:
     back = return_path_from_query(params)
     # m-25029799: back to the chats of «Por responder» (WhatsApp's own list is gone).
     assert back == "/responder?tab=mensajes&canal=whatsapp"
-    assert return_label_for(back) == "Volver a tus chats"
+    assert return_label_for(back) == "Volver a Por responder"
     # Review C5: an old `?volver=` to WhatsApp's retired list still says where it leads.
-    assert return_label_for("/whatsapp?tab=chats") == "Volver a tus chats"
+    assert return_label_for("/whatsapp?tab=chats") == "Volver a Por responder"
     assert return_label_for("/whatsapp?tab=numero") == RETURN_LABEL
     assert return_label_for("/create") == RETURN_LABEL
     assert return_path_from_query({"volver": "https://example.com/whatsapp"}) == ""

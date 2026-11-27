@@ -10,12 +10,12 @@ Tree (docs/ux-chats-unificados.md §2):
     Por responder › Mensajes
       [Todos] [Instagram] [WhatsApp]          only with chats on 2+ channels; no TikTok
       [Todos los números ▾]                   one select, only with 2+ WhatsApp numbers
-      [Por responder · N] [Todos · N] [Cerrados · N] (+ [Pago por revisar · N] if N ≥ 1)
+      [Por responder · N] [Abiertos · N] [Cerrados · N] (+ [Pago por revisar · N] if N ≥ 1)
       «N chats de Instagram ya no se pueden responder aquí · Ver»   (in «Por responder»)
       the rows · «Ver más»
 
 **WhatsApp's own list, retired (m-25029799).** Its chips land here: «Abiertos» (the
-open chats of the number on screen, answered or not) is «Todos» — the same rule
+open chats of the number on screen, answered or not) is «Abiertos» — the same rule
 (`status = 'open'`), proven against WhatsApp's own read in
 `packages/api/tests/test_inbox_unified_numbers_db.py`; its old `sin-leer` is «Por
 responder»; and its «Elige un número» is the number choice above the chips, drawn only
@@ -78,7 +78,7 @@ DEFAULT_FILTER: Final = FILTER_AWAITING
 
 FILTER_LABELS: Final[Mapping[str, str]] = {
     FILTER_AWAITING: "Por responder",
-    FILTER_ALL: "Todos",
+    FILTER_ALL: "Abiertos",
     FILTER_CLOSED: "Cerrados",
     FILTER_PAYMENT: "Pago por revisar",
     # Only drawn while it is the filter on screen (opened from the notice), so the owner
@@ -97,7 +97,7 @@ FILTER_SLUGS: Final[Mapping[str, str]] = {
     "pago-por-revisar": FILTER_PAYMENT,
     "sin-responder-a-tiempo": FILTER_EXPIRED,
     # m-25029799: WhatsApp's retired list. Its «Abiertos» (open chats, answered or not)
-    # is this list's «Todos»; its «Sin leer» became «Por responder» (m-25017859).
+    # is this list's «Abiertos»; its «Sin leer» became «Por responder» (m-25017859).
     "abiertos": FILTER_ALL,
     # The Instagram-only chips this list replaces (old links, Inicio's old card): the
     # chats that waited («Pendientes», «Leídas» — read but not answered) wait under the
@@ -153,8 +153,9 @@ def merge_refreshed(
 
 
 # --------------------------------------------------------------------------------------
-# Words (qualify-copy-es). Founder-decided: «Por responder», «Todos», «Cerrados»,
-# «Pago por revisar · {N}», «WhatsApp», «Instagram», the empty «Por responder» text.
+# Words (qualify-copy-es). Founder-decided: «Por responder», «Abiertos» (2026-11-27,
+# m-25131413; was «Todos»), «Cerrados», «Pago por revisar · {N}», «WhatsApp»,
+# «Instagram», the empty «Por responder» text.
 # Founder-decided 2026-11-13 («Sí, los de UX»): the expired notice and pill. Applied with
 # them by the coordinator, to confirm: «Sin responder a tiempo». UX proposals: the other
 # empty texts.
@@ -331,7 +332,7 @@ def chip_label(filter_key: str, count: int) -> str:
 def filter_chips(
     counts: CountsLike | None, active: str, channel: str, number: str = ALL_NUMBERS
 ) -> list[ChipVM]:
-    """«Por responder» · «Todos» · «Cerrados», plus «Pago por revisar · N» only with N ≥ 1
+    """«Por responder» · «Abiertos» · «Cerrados», plus «Pago por revisar · N» only with N ≥ 1
     and «Sin responder a tiempo · N» only while it is the filter on screen. Counted on the
     channel the list shows — on the number, when one is picked (m-25029799)."""
     keys = list(BASE_FILTERS)
