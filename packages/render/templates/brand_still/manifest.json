@@ -3,17 +3,45 @@
   "version": 0,
   "name": "Pieza con el sistema visual de la marca (spike m-25042530)",
   "niche": [],
-  "serves_angles": ["brand_system_spike"],
+  "serves_angles": [
+    "brand_system_spike"
+  ],
   "inputs": {
-    "system":  {"type": "brand_visual_system"},
-    "recipe":  {"type": "string", "max": 40},
-    "content": {"type": "slot_data"}
+    "system": {
+      "type": "brand_visual_system"
+    },
+    "recipe": {
+      "type": "recipe_id"
+    },
+    "content": {
+      "type": "slot_data"
+    }
   },
   "outputs": {
-    "feed":   {"kind": "still", "width": 1080, "height": 1350, "composition": "brand-still-v0--feed", "format": "4:5"},
-    "square": {"kind": "still", "width": 1080, "height": 1080, "composition": "brand-still-v0--square", "format": "1:1"},
-    "story":  {"kind": "still", "width": 1080, "height": 1920, "composition": "brand-still-v0--story", "format": "9:16"}
+    "feed": {
+      "kind": "still",
+      "width": 1080,
+      "height": 1350,
+      "composition": "brand-still-v0--feed",
+      "format": "4:5"
+    },
+    "square": {
+      "kind": "still",
+      "width": 1080,
+      "height": 1080,
+      "composition": "brand-still-v0--square",
+      "format": "1:1"
+    },
+    "story": {
+      "kind": "still",
+      "width": 1080,
+      "height": 1920,
+      "composition": "brand-still-v0--story",
+      "format": "9:16"
+    }
   },
-  "cost_model": {"seconds_per_still": 3.0},
+  "cost_model": {
+    "seconds_per_still": 3.0
+  },
   "spike": "Not served by the HTTP server's recipes: rendered with scripts/brand-still-batch.mjs only. Schema: packages/creative/src/qualify_creative/brand_system/brand_visual_system.v0.schema.json"
 }

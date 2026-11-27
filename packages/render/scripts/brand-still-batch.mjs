@@ -43,10 +43,15 @@ for (const job of spec.jobs) {
   const id = `brand-still-v0--${PORT[recipe.format]}`;
   const inputProps = {meta: {templateId: 'brand_still', version: 0, port: PORT[recipe.format]}, system, recipe: job.recipe, content};
   const t0 = Date.now();
+  const warns = new Set();
   try {
     const composition = await selectComposition({serveUrl, id, inputProps});
     await renderStill({composition, serveUrl, output: out, inputProps, ...(job.out.endsWith('.jpg') ? {imageFormat: 'jpeg', jpegQuality: 92} : {imageFormat: 'png'}),
-      onBrowserLog: (l) => { if (l.type === 'warning' || l.type === 'error') console.log(`  [browser ${l.type}] ${l.text}`); }});
+      onBrowserLog: (l) => {
+        if (l.text.startsWith('BRANDSTILL_WARN ')) warns.add(l.text.slice(16));
+        else if (l.type === 'warning' || l.type === 'error') console.log(`  [browser ${l.type}] ${l.text}`);
+      }});
+    fs.writeFileSync(`${out}.report.json`, JSON.stringify({warnings: [...warns], ms: Date.now() - t0}, null, 1));
     console.log(`ok ${job.out} (${id}, ${Date.now() - t0} ms)`);
   } catch (e) {
     failed++;

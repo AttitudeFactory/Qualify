@@ -1675,6 +1675,7 @@
       "propertyNames": {
         "enum": [
           "product_hero",
+          "product_alt",
           "combo",
           "hours",
           "payments",

@@ -153,6 +153,22 @@ export const validateProps = (manifest, props, ports = undefined) => {
         problems.push(...layerProblems(manifest.layer_catalog, props.layer, {formats, hasPhoto, headingFamily}));
         break;
       }
+      // spike m-25042530: brand_still — the system and the slot data are validated in Python
+      // (qualify_creative.brand_system); here only their presence and shape.
+      case 'brand_visual_system': {
+        if (!isObj(props.system) || !isObj(props.system.recipes)) problems.push('system: required (brand_visual_system with recipes)');
+        break;
+      }
+      case 'slot_data': {
+        if (!isObj(props.content)) problems.push('content: required (slot data object)');
+        break;
+      }
+      case 'recipe_id': {
+        if (typeof props.recipe !== 'string' || !isObj(props.system?.recipes) || !(props.recipe in props.system.recipes)) {
+          problems.push(`recipe: '${String(props.recipe)}' is not a recipe of the system`);
+        }
+        break;
+      }
       default:
         problems.push(`manifest port '${name}' has unknown type '${port.type}'`);
     }

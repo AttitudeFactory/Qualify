@@ -863,7 +863,15 @@ export const BrandStill: React.FC<BrandStillProps> = ({system, recipe, content})
       });
   }, [system.typography, handle]);
   if (!faces) return <AbsoluteFill style={{background: system.colors.background}} />;
-  const ctx: Ctx = {sys: system, comp: system.components ?? {}, faces, H, content, warnings: []};
+  // Every warning (dropped price, scaled text block) also goes to the browser console, where the
+  // batch script / server collect it as the piece's report (SISVIS-002 discards on these).
+  const warnings: string[] = [];
+  const push = warnings.push.bind(warnings);
+  warnings.push = (...m: string[]) => {
+    m.forEach((x) => console.warn(`BRANDSTILL_WARN ${x}`));
+    return push(...m);
+  };
+  const ctx: Ctx = {sys: system, comp: system.components ?? {}, faces, H, content, warnings};
   const bg = rec.background ?? system.background;
   return (
     <AbsoluteFill style={{overflow: 'hidden', background: system.colors.background, color: system.colors.ink, fontFamily: faces.body.css, fontWeight: faces.body.weight}}>

@@ -284,7 +284,7 @@ class Recipe(_Strict):
     blocks: list[Block] = Field(min_length=1, max_length=14)
 
 
-RecipeId = Literal["product_hero", "combo", "hours", "payments", "contact", "story"]
+RecipeId = Literal["product_hero", "product_alt", "combo", "hours", "payments", "contact", "story"]
 
 
 class Provenance(_Strict):
