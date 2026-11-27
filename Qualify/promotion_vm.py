@@ -98,10 +98,10 @@ STORY_AD_ONLY = (
     "Si haces el anuncio, esta historia ya no sale en tu perfil. No se cobra nada hasta que "
     "apruebes el presupuesto."
 )
-STORY_AD_CONTINUE = "Hacer anuncio pagado"
 #: HIS-1 (m-25130281): a historia's card opens the story-only ad, and the wizard says so.
+#: Founder 2026-11-27: one name for this action everywhere (card and Tu semana).
 STORY_PROMOTE = "Promocionar como anuncio"
-#: Pending the founder's final word on the text (coordinator, 2026-11-27).
+STORY_AD_CONTINUE = STORY_PROMOTE
 STORY_PAID_NOTE = (
     "Esto crea un anuncio pagado que se muestra entre las historias de otras cuentas. "
     "Tu historia no cambia."

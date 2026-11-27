@@ -393,7 +393,7 @@ def test_an_ineligible_piece_is_never_offered_and_keeps_its_plan() -> None:
     assert state.story_ad_post == ""
     state._mark_story_ad(piece, True)
     state.ask_story_ad(piece)
-    # it stopped qualifying before «Hacer anuncio pagado» (e.g. published meanwhile)
+    # it stopped qualifying before «Promocionar como anuncio» (e.g. published meanwhile)
     assert state._leave_for_story_ad(piece, False) == []
     assert state.story_ad_post == "" and piece not in state.story_ad_ready
     assert state.form_open and len(state.plan_items) == 1  # the historia is still planned
@@ -428,7 +428,7 @@ def test_the_notice_says_it_is_paid_before_the_wizard() -> None:
     rendered = repr(_story_ad_choice(SimpleNamespace(post_id="p"), True).render())
     # repr escapes accents: match the plain-ASCII part of each string
     assert "entre las historias de otras cuentas" in rendered
-    assert "Hacer anuncio pagado" in rendered and "Dejar la historia sin bot" in rendered
+    assert "Promocionar como anuncio" in rendered and "Dejar la historia sin bot" in rendered
     assert "Continuar" not in rendered  # never a second «Continuar» next to the drawer's
     assert "story_ad_ready" in repr(_story_ad_offer(SimpleNamespace(post_id="p")).render())
     # checked from the step container, never from inside the per-row foreach (whose row
