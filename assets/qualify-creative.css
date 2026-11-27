@@ -910,6 +910,15 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   gap: var(--space-4);
   min-width: 0;
 }
+/* ED-06 (m-25026636, design D6): «Todo el video» over an AI part's panel, folded to one
+   line — the whole context is one «Cambiar» away, in the general panel */
+.q-edit__whole-value {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 @container edit-host (min-width: 46rem) {
   .q-edit { grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr); align-items: start; }
   .q-edit__preview { top: var(--space-3); background: transparent; padding-block: 0; }
