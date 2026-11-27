@@ -385,7 +385,8 @@ def post_card(
         body,
         rx.box(actions, width="100%", margin_top="0.5rem"),
         rx.cond(
-            (post.used_count > 0) & (post.kind != "story"),
+            # a historia never (same rule as the gallery card: the wizard has no source)
+            (post.used_count > 0) & ~post.is_story,
             promotion_link(post.post_id),
         ),
         padding="0.6rem 0.6rem 0.6rem 0.75rem",

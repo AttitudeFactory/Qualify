@@ -253,8 +253,9 @@ def test_the_share_button_is_android_only(agent: str, platform: str, offered: bo
 def test_the_card_gates_the_button_on_the_file_and_the_phone() -> None:
     source = inspect.getsource(creative_pages._story_share)
     assert '(post.story_share_url != "") & GalleryState.story_share_here' in source
-    assert "GalleryState.handle_story_share" in source
-    assert "STORY_SHARE_BUSY" in source and "data-busy" in source
+    assert "GalleryState.handle_story_share" in source and "story_share_block(" in source
+    block = inspect.getsource(stories_page.story_share_block)
+    assert "STORY_SHARE_BUSY" in block and "data-busy" in block
 
 
 def test_the_share_button_sits_right_under_the_main_button() -> None:

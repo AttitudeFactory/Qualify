@@ -22,6 +22,7 @@ import reflex as rx
 
 from .publishing_state import PublishState
 from .r2_media import BACKEND_BASE
+from .stories_vm import STORY_SHARE_BUSY, STORY_SHARE_HELP, STORY_SHARE_LABEL
 from .ui import tokens as T
 from .ui.video_preview import gallery_file_js
 
@@ -209,3 +210,33 @@ def story_share_from_url(
     src = js_literal(story_share_source_src(path))
     target = js_literal(button_id)
     return rx.call_script(f"{STORY_SHARE_FROM_URL_JS}({src}, {target})", callback=callback)
+
+
+def story_share_block(
+    path: rx.Var[str], button_id: rx.Var[str], callback: Callable
+) -> rx.Component:
+    """«Abrir en Instagram» with its help line — the ONE block the gallery card and the
+    historia's own page both render (the caller gates it: a file to share, Android).
+    While the file downloads the script swaps the label for «Preparando tu historia…»
+    (`data-busy`) and turns the button off."""
+    return rx.vstack(
+        rx.button(
+            rx.icon("share-2", size=15),
+            rx.text(STORY_SHARE_LABEL, as_="span", class_name="q-share-idle"),
+            rx.text(STORY_SHARE_BUSY, as_="span", class_name="q-share-busy"),
+            id=button_id,
+            variant="soft",
+            size="2",
+            width="100%",
+            min_height="44px",
+            style={
+                "& .q-share-busy": {"display": "none"},
+                "&[data-busy] .q-share-idle": {"display": "none"},
+                "&[data-busy] .q-share-busy": {"display": "inline"},
+            },
+            on_click=story_share_from_url(path, button_id, callback),
+        ),
+        rx.text(STORY_SHARE_HELP, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
+    )
