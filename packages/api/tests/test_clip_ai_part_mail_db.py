@@ -95,7 +95,7 @@ def test_one_row_per_failure_sent_once_and_invisible_to_another_business(
     assert _send(world, mailer) == 1 and _send(world, mailer) == 0
     (mail,) = mailer.sent
     assert mail.to == world["email"]
-    assert "La parte con IA 1 de tu video no salió" in mail.text
+    assert "La Parte con IA 1 de tu video no salió" in mail.text
     assert f"{BASE}/drafts/{made.clip_id}" in mail.text
     (row,) = _rows(tenant)
     assert row.sent_at is not None and row.provider_id == "resend-1"

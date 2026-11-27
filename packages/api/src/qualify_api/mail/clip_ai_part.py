@@ -30,7 +30,8 @@ from qualify_api.mail.clip_avatar import (
 )
 
 #: Provenance of every staged row (`clip_avatar_failure_mails.source_version`): bump it
-#: when a word or the layout changes.
+#: when a word or the layout changes (v1 = the words after the ux-designer review of
+#: 2026-11-27; none was ever sent before).
 AI_PART_TEMPLATE_VERSION = "clip-ai-part-failed-v1"
 
 #: The kind of email (`clip_avatar_failure_mails.kind`, migration 0193).
@@ -49,7 +50,7 @@ CHANGE_HINT = "(su descripción o sus fotos)"
 
 # -- one part ----------------------------------------------------------------------------
 SUBJECT = "{business}: una parte con IA de tu video no salió"
-HEADING = "La parte con IA {n} de tu video no salió"
+HEADING = "La Parte con IA {n} de tu video no salió"
 LEAD = (
     "Tu video de {business} está esperando en Por aprobar. La Parte con IA {n} no se pudo "
     "crear y no se descontó su vista previa. Elige {actions}."

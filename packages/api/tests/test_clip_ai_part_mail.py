@@ -160,7 +160,7 @@ def test_a_failed_part_stages_one_email_and_sends_it() -> None:
     (mail,) = m.mailer.sent
     assert mail.to == EMAIL
     assert mail.subject == f"{BUSINESS}: una parte con IA de tu video no salió"
-    assert "La parte con IA 1 de tu video no salió" in mail.text
+    assert "La Parte con IA 1 de tu video no salió" in mail.text
     assert "La Parte con IA 1 no se pudo crear y no se descontó su vista previa." in mail.text
     assert f"Elige «Intentar de nuevo», {CHANGE} o «Quitar»." in mail.text
     assert template.COST in mail.text and template.FOOTER.format(business=BUSINESS) in mail.text
@@ -220,7 +220,7 @@ def test_a_part_failing_on_a_later_pass_is_its_own_email_once() -> None:
     m.run()
     assert [r.slots for r in m.outbox.rows] == [(1,), (2,)]
     assert m.send() == 1 and m.send() == 0
-    assert "La parte con IA 2 de tu video no salió" in m.mailer.sent[1].text
+    assert "La Parte con IA 2 de tu video no salió" in m.mailer.sent[1].text
 
 
 def test_a_part_made_again_that_fails_again_is_one_more_email() -> None:
