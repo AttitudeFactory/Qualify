@@ -572,6 +572,11 @@ def test_capture_actividad_en_resultados(chats_page) -> None:  # noqa: ANN001
         page.screenshot(
             path=str(out / f"{label}-resultados-whatsapp-{size_name}.png"), full_page=True
         )
+        # The body scrolls inside the shell, so `full_page` stops at the screen: a tall
+        # screen of the same width shows the whole tab, block included.
+        page.set_viewport_size({**size, "height": 2400})
+        page.wait_for_timeout(1_500)
+        page.screenshot(path=str(out / f"{label}-resultados-whatsapp-{size_name}-entera.png"))
         page.goto(_origin(page) + "/connections")
         card = _number_card(page)
         expect(card).to_be_visible(timeout=60_000)
