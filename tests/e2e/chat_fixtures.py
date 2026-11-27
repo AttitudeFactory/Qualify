@@ -436,6 +436,42 @@ def seed_chats(
     return ids
 
 
+SHOP_ADDRESS = "Calle 10 # 5-20, Cúcuta"
+SHOP_PAYMENT = "Nequi 300 123 4567 a nombre de Arepera E2E"
+
+
+def seed_shop_details(tenant_id: uuid.UUID) -> None:
+    """m-25143229: what the «+» of both chats sends — the business's address (on its
+    WhatsApp number, as «Ajustes de chats › Perfil» saves it) and ONE active payment
+    method WITHOUT a QR (no R2 object: nothing is written to any bucket). Opt-in: the
+    empty states stay the default of `seed_chats`."""
+    from qualify_api.tenancy.models import Brand
+    from qualify_api.whatsapp.models import BrandPaymentMethod, WhatsAppPhoneNumber
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select, update
+
+    with tenant_session(tenant_id) as session:
+        brand_id = session.scalar(select(Brand.id).order_by(Brand.created_at))
+        session.execute(
+            update(WhatsAppPhoneNumber)
+            .where(WhatsAppPhoneNumber.brand_id == brand_id)
+            .values(location_name="Arepera E2E", location_address=SHOP_ADDRESS)
+        )
+        session.add(
+            BrandPaymentMethod(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                name="Nequi",
+                name_key="nequi",
+                currency="COP",
+                instructions=SHOP_PAYMENT,
+                active=True,
+                position=0,
+            )
+        )
+
+
 def seed_more_whatsapp_chats(
     tenant_id: uuid.UUID, connection_id: str, count: int, *, now: datetime | None = None
 ) -> list[str]:
