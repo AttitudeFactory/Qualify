@@ -35,6 +35,7 @@ def piece(**changes: object) -> dict:
         (piece(version_id=None), StoryBlock.MISSING),
         (piece(status="draft"), StoryBlock.NOT_APPROVED),
         (piece(revision=3), StoryBlock.EDITED),
+        (piece(published_media_id="1"), StoryBlock.PUBLISHED),
         (piece(media_purged_at=NOW), StoryBlock.FILES_DELETED),
         (piece(), None),
     ],

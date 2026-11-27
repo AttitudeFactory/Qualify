@@ -344,7 +344,7 @@ def story_empty() -> rx.Component:
                             spacing="3",
                             align_items="start",
                         ),
-                        callout(S.story_block, "info"),
+                        callout(S.story_block, "warn"),
                     ),
                     rx.cond(
                         S.story_block_href != "",

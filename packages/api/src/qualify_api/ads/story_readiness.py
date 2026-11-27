@@ -31,6 +31,9 @@ class StoryBlock(StrEnum):
     MISSING = "missing"  # no such top-level piece for this business, or no active version
     NOT_APPROVED = "not_approved"
     EDITED = "edited"  # changed after its approval
+    # The wizard's rule today (`content_drafts.published_media_id`); HIS-3 (m-25130283)
+    # may move «published» elsewhere — keep both reads in step.
+    PUBLISHED = "published"
     FILES_DELETED = "files_deleted"  # retention purge (ADR 39), its objects deleted or pending
     NO_VERTICAL = "no_vertical"  # no 9:16 JPG/PNG image nor 9:16 MP4 video
     VIDEO_WITHOUT_COVER = "video_without_cover"  # a 9:16 video with no 9:16 image as cover
@@ -46,7 +49,7 @@ VERTICAL = (9, 16)
 _IMAGE_TYPES, _VIDEO_TYPES = {"image/jpeg", "image/png"}, {"video/mp4"}
 
 _PIECE = text("""SELECT d.brand_id,d.status,d.revision,d.approved_revision,d.media_purged_at,
-  pv.id AS version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
+  d.published_media_id,pv.id AS version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
 FROM content_drafts d LEFT JOIN piece_versions pv ON pv.id=d.active_version_id
   AND pv.tenant_id=d.tenant_id AND pv.draft_id=d.id AND pv.status='active'
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
@@ -92,6 +95,8 @@ def piece_block(piece: Mapping[str, Any] | None) -> StoryBlock | None:
         return StoryBlock.NOT_APPROVED
     if piece["approved_revision"] != piece["revision"]:
         return StoryBlock.EDITED
+    if piece.get("published_media_id") is not None:
+        return StoryBlock.PUBLISHED
     # `media_objects_pending_at` never exists without `media_purged_at` (0139's check).
     if piece["media_purged_at"] is not None:
         return StoryBlock.FILES_DELETED

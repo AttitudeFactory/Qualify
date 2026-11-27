@@ -85,14 +85,14 @@ STORY_BACK_TO_PIECE = "Volver a la pieza"
 #: backend names (`qualify_api.ads.story_readiness.StoryBlock`) with its next step, and
 #: the link to where that step happens (None: the piece, «Volver a la pieza»).
 STORY_TUS_REDES = ("Ir a Tus redes", "/connections")
-STORY_TU_MARCA = ("Ir a Tu marca", "/brand/kit")
+STORY_TU_MARCA = ("Ir a Tu marca", "/brand/kit#permisos-de-meta")
 STORY_COP_ONLY = (
     "Por ahora, este anuncio solo funciona con cuentas publicitarias en pesos colombianos. "
     "Elige una cuenta en pesos colombianos en Tus redes."
 )
 STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
     "missing": (
-        "No encontramos esta historia entre tus piezas. Vuelve a la pieza y ábrela de nuevo.",
+        "No encontramos esta historia. Búscala de nuevo en Por aprobar.",
         None,
     ),
     "not_approved": (
@@ -104,9 +104,14 @@ STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
         "Cambiaste esta historia después de aprobarla. Apruébala otra vez para anunciarla.",
         None,
     ),
+    "published": (
+        "Esta historia ya está publicada, y por ahora este anuncio solo se hace con una "
+        "historia sin publicar. Mientras tanto, anuncia otra historia aprobada.",
+        None,
+    ),
     "files_deleted": (
-        "Los archivos de esta historia ya se borraron porque pasó su tiempo de guardado. "
-        "Crea la historia de nuevo para anunciarla.",
+        "Ya no tenemos los archivos de esta historia porque es antigua. Créala de nuevo para "
+        "anunciarla.",
         None,
     ),
     "no_vertical": (
@@ -115,15 +120,14 @@ STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
         None,
     ),
     "video_without_cover": (
-        "Por ahora, una historia en video solo se puede anunciar si también trae una foto "
-        "vertical para la portada, y esta no la tiene. Mientras tanto, puedes anunciar una "
-        "historia con foto.",
+        "Esta historia es un video sin foto de portada, y por ahora solo se pueden anunciar "
+        "historias con foto. Mientras tanto, anuncia una historia con foto.",
         None,
     ),
     "button": (
-        "El botón guardado en esta historia abre un chat o una llamada, o su enlace no sirve. "
-        "Un anuncio en historias solo puede llevar a una página web: cambia el botón en la "
-        "pieza y vuelve.",
+        "El botón de esta historia es para chatear o llamar, o su enlace no funciona. Un "
+        "anuncio en historias solo puede llevar a tu página web. Cambia el botón en la pieza "
+        "y vuelve.",
         None,
     ),
     "enhancements": (

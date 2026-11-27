@@ -10,6 +10,7 @@ import pytest
 from qualify_api.ads.story_readiness import StoryBlock, files_block
 
 from . import promotion_state
+from .ad_enhancements_ui import ad_enhancement_permissions
 from .promotion_provider import story_block_text
 from .promotion_state import PromotionState
 from .promotion_story_ui import story_empty
@@ -26,7 +27,7 @@ def test_every_cause_has_one_text_with_its_next_step() -> None:
         # No jargon, no impossible step: no «9:16», no cover picker, no «publica primero».
         for word in ("9:16", "Elige una portada", "Publica primero", "story", "post"):
             assert word not in message
-        assert action is None or action[1] in {"/connections", "/brand/kit"}
+        assert action is None or action[1] in {"/connections", "/brand/kit#permisos-de-meta"}
 
 
 def test_the_action_is_where_the_text_sends_the_owner() -> None:
@@ -35,7 +36,8 @@ def test_the_action_is_where_the_text_sends_the_owner() -> None:
         if "Tus redes" in label:
             assert "Tus redes" in message and href == "/connections"
         if "Tu marca" in label:
-            assert "Tu marca" in message and href == "/brand/kit"
+            assert "Tu marca" in message and href == "/brand/kit#permisos-de-meta"
+            assert "permisos-de-meta" in repr(ad_enhancement_permissions().render())
         assert (label, href) == (action or ("", ""))
 
 
