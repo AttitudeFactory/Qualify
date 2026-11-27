@@ -438,7 +438,7 @@ def test_the_fourth_scene_of_the_day_is_refused_with_clear_words() -> None:
         _create(world)
     assert refused.value.code == cs.SCENE_DAILY_CAP_CODE
     assert refused.value.owner_message == cs.DAILY_CAP_TEXT
-    assert "Ya creaste 3 escenas con tu personaje hoy" in cs.DAILY_CAP_TEXT
+    assert "Hoy ya usaste tus 3 creaciones con tu personaje" in cs.DAILY_CAP_TEXT
     _nothing_written(world)
 
 
@@ -448,7 +448,7 @@ def test_two_scenes_with_one_left_today_say_how_many_fit() -> None:
     with pytest.raises(ClipAvatarRefused) as refused:
         _create(world, _clip(_item(start=0.0), _item(start=10.0)))
     assert refused.value.owner_message == cs.daily_left_text(1, 2)
-    assert "Hoy solo puedes crear 1 escena más" in refused.value.owner_message
+    assert "Hoy te queda 1 creación con tu personaje" in refused.value.owner_message
     _nothing_written(world)
 
 
@@ -816,7 +816,7 @@ def test_the_cut_only_refusal_numbers_the_scene_and_offers_to_change_it() -> Non
         [_item(start=0.0), _item(start=4.5)], clip_seconds=20.0, joins=[blend_at]
     )
     assert problem.scene == 1 and problem.action == cs.CUT_ACTION
-    assert problem.text.startswith("Al terminar la escena 2")
+    assert problem.text.startswith("Después de la escena 2")
     assert "«Cambiar a Corte»" in problem.text
     with pytest.raises(cs.CharacterSceneRefused) as refused:
         cs.refuse_scene_problems([problem])

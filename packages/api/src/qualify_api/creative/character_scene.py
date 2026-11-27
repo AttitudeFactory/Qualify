@@ -122,9 +122,10 @@ SWITCHED_OFF_TEXT = (
     "Las escenas con tu personaje todavía no están disponibles. Quita la escena para crear "
     "tu video."
 )
+#: The cap counts scenes AND avatar blocks together (§9's cap): «creaciones».
 DAILY_CAP_TEXT = (
-    f"Ya creaste {SCENE_DAILY_CAP} escenas con tu personaje hoy. Mañana puedes crear más. "
-    "Quita la escena para crear tu video ahora."
+    f"Hoy ya usaste tus {SCENE_DAILY_CAP} creaciones con tu personaje. Mañana puedes crear "
+    "más. Quita la escena para crear tu video ahora."
 )
 DURATION_TEXT = (
     f"Cada escena dura de {CHARACTER_SCENE_MIN_S} a {CHARACTER_SCENE_MAX_S} segundos. "
@@ -136,8 +137,8 @@ TOO_MANY_TEXT = (
 )
 OVERLAP_TEXT = "Dos escenas no pueden aparecer al mismo tiempo. Mueve una para que no se crucen."
 NEEDS_OWN_MEDIA_TEXT = (
-    "Tu video necesita al menos 3 segundos con tus propias fotos o videos, sin una escena "
-    "encima. Acorta una escena o agrega más fotos o videos."
+    f"Tu video necesita al menos {LOCAL_TOTAL_MIN_S:g} segundos con tus propias fotos o "
+    "videos, sin escena de tu personaje. Acorta una escena o agrega más fotos o videos."
 )
 #: R7 / P5: the words the ADR fixes, plus what to do now.
 NEEDS_REDRAW_TEXT = (
@@ -152,8 +153,8 @@ TRANSITION_UNAVAILABLE = "character_scene_transition_unavailable"
 
 def past_end_text(number: int) -> str:
     return (
-        f"La escena {number} termina después del final de tu video. Muévela más temprano "
-        "o hazla más corta."
+        f"La escena {number} termina después del final de tu video. Muévela antes o hazla "
+        "más corta."
     )
 
 
@@ -166,9 +167,8 @@ def effect_text(number: int) -> str:
 
 def exit_cut_text(number: int) -> str:
     return (
-        f"Al terminar la escena {number}, el paso a lo que sigue tiene que ser «Corte», "
-        "para que se escuche completo lo que dice tu personaje. Toca «Cambiar a Corte» y "
-        "vuelve a crear tu video."
+        f"Después de la escena {number}, tu video tiene que cortar directo a lo que sigue, "
+        "para que se escuche completo lo que dice tu personaje. Toca «Cambiar a Corte»."
     )
 
 
@@ -206,16 +206,20 @@ def line_too_long_text(duration: int) -> str:
 
 
 def daily_left_text(left: int, asking: int) -> str:
-    """Fewer scenes left today (`left`, at least 1) than this «Crear» asks for."""
+    """Fewer creations left today (`left`, at least 1) than this «Crear» asks for."""
     extra = max(1, asking - left)
     return (
-        f"Hoy solo puedes crear {_scenes(left)} más con tu personaje. Quita {_scenes(extra)} "
-        "para crear tu video."
+        f"Hoy {'te queda' if left == 1 else 'te quedan'} {_creations(left)} con tu personaje. "
+        f"Quita {_scenes(extra)} para crear tu video."
     )
 
 
 def _scenes(count: int) -> str:
     return "1 escena" if count == 1 else f"{count} escenas"
+
+
+def _creations(count: int) -> str:
+    return "1 creación" if count == 1 else f"{count} creaciones"
 
 
 #: The schema's own refusals (`PydanticCustomError` types of `CharacterSceneItem` and
