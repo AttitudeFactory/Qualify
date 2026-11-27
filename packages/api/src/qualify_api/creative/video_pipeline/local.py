@@ -87,7 +87,13 @@ from uuid import UUID
 
 from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
-from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
+from qualify_creative.schemas import (
+    AI_PART_KIND,
+    ContentBrief,
+    PartRecipe,
+    PartRef,
+    SourceSegment,
+)
 
 from qualify_api.creative.clip_avatar import (
     AVATAR_EFFECT_TEXT,
@@ -924,6 +930,11 @@ def produce_local(
     if len(parts) != 1 or parts[0].mode != "local" or not parts[0].segments:
         return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=failed_text)
     (part,) = parts
+    if any(segment.kind == AI_PART_KIND for segment in part.segments):
+        # m-25129406: an AI block reaches the assembly only as its part's video (the
+        # Clip's wait resolves it, `clip_ai_parts.resolve`) — never as a key to read
+        logger.error("draft %s: an AI block reached the assembly unresolved", draft_id)
+        return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=failed_text)
     # the recipe again, with the business: a stretch of another one is never read
     problems = validate_recipe(parts, video_by_parts=in_part, tenant_id=tenant_id)
     if problems:
@@ -1053,6 +1064,15 @@ def produce_local(
     if made_by_ai:
         # m-25112920: the label's evidence — each AI stretch's asset, provider and model
         params["local"]["ai_sources"] = [s.source.ai_provenance(s.index) for s in made_by_ai]
+        # m-25129406 (ADR 50 §13.4): each «parte con IA» played — its draft, revision,
+        # asset, vendor, model, prompt, mode and why, reel, seconds, task and cost
+        ai_parts = [
+            s.source.part_provenance(s.index, s.segment.output_seconds)
+            for s in made_by_ai
+            if getattr(s.source, "ai_part", None) is not None
+        ]
+        if ai_parts:
+            params["local"]["ai_parts"] = ai_parts
     if blocks:
         # m-25112920: each block played — its draft, revision, asset, model and length
         params["local"]["avatar_blocks"] = [s.source.provenance(s.index) for s in blocks]

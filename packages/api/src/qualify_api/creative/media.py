@@ -182,6 +182,7 @@ from qualify_creative.schemas import (
     MediaInputs,
     PartRef,
     ScriptShot,
+    SourceSegment,
 )
 from qualify_creative.subtitles import chunk_script, clip_cues, timed_cues
 from qualify_creative.text_colors import text_colors
@@ -216,6 +217,7 @@ from qualify_api.creative.contact_sheet import (
 )
 from qualify_api.creative.part_extend import (
     EXTEND_MANIFEST,
+    EXTEND_OWN_SOURCE_MAX_S,
     EXTEND_SOURCE_MAX_S,
     EXTEND_SOURCE_MIN_S,
     PreviousLookup,
@@ -858,13 +860,17 @@ def _key_problems(
         *media.clip_audio_keys,
         *(
             key
-            for plan in (*media.parts, *media.parts_removed)
+            # m-25129406: a Clip's «parte con IA» entries carry the same guide and photos
+            for plan in (*media.parts, *media.parts_removed, *media.ai_parts)
             for key in (*(plan.clip_image_keys or ()), *plan.clip_video_keys, *plan.clip_audio_keys)
         ),
         # EF-02: the stretches of the owner's own video a Clip, a child's part or a
-        # parent's plan entry (kept or removed) is made from
-        *(segment.key for segment in media.segments),
+        # parent's plan entry (kept or removed) is made from — an AI block names its
+        # entry (`ai_part:<n>`), never a file
+        *(segment.key for segment in media.segments if segment.ai_part_at is None),
         *(segment.key for segment in (media.part.segments if media.part else ())),
+        # m-25129406: the owner's video an «extend» part of a Clip continues
+        *((media.part.extend_own.key,) if media.part and media.part.extend_own else ()),
         *(
             segment.key
             for plan in (*media.parts, *media.parts_removed)
@@ -6648,8 +6654,14 @@ class MediaProducer:
             raise _MediaFailed(FailureReason.INVALID_PARAMETERS.value, CLIP_NO_PUBLIC_URL)
         manifest_key = save.key_for(EXTEND_MANIFEST)
         manifest = self._extend_manifest(manifest_key)
+        own = brief.media.part.extend_own if brief.media.part is not None else None
         if manifest is None:
-            manifest = self._new_extend_source(tenant_id, draft_id, save)
+            # m-25129406: after the owner's OWN video in a Clip, that video is continued
+            manifest = (
+                self._own_extend_source(tenant_id, draft_id, own, save)
+                if own is not None
+                else self._new_extend_source(tenant_id, draft_id, save)
+            )
             written = save(
                 EXTEND_MANIFEST,
                 json.dumps(manifest, sort_keys=True).encode("utf-8"),
@@ -6667,6 +6679,8 @@ class MediaProducer:
         extend = {
             key: manifest.get(key)
             for key in (
+                "source_kind",
+                "source_window",
                 "source_draft_id",
                 "source_index",
                 "source_asset_id",
@@ -6696,6 +6710,80 @@ class MediaProducer:
         except ValueError:
             return None
         return manifest if isinstance(manifest, dict) and manifest.get("sent_key") else None
+
+    def _own_extend_source(
+        self, tenant_id: UUID, draft_id: UUID, own: SourceSegment, save: _Saver
+    ) -> dict[str, Any]:
+        """m-25129406 (Deivid, 2026-11-26): «Sigue a la anterior» right after the owner's
+        own video in a Clip — the LAST seconds of that stretch (at most
+        `EXTEND_OWN_SOURCE_MAX_S`, whole seconds, upright, no audio: `cut_window`), saved
+        in THIS part's revision folder, are what Seedance continues. Behind
+        `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until a paid measurement Deivid approves:
+        BytePlus may refuse a real face that is not one of its own outputs. Refused before
+        any spend (`part_failed`): the switch off, a file of another business, a file that
+        cannot be read or cut."""
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        from qualify_creative.video._source import VideoSourceError  # noqa: PLC0415
+        from qualify_creative.video.cut import cut_window  # noqa: PLC0415
+
+        from qualify_api.creative.video_pipeline.ai_parts import (  # noqa: PLC0415
+            clip_extend_own_video_on,
+        )
+
+        if not clip_extend_own_video_on():
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="extend own video is off"
+            )
+        if not owned_by(tenant_id, own.key):
+            logger.error("part %s: the own video it continues is not this business's", draft_id)
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="foreign own video"
+            )
+        try:
+            data = self._store.read(own.key)
+        except Exception as exc:  # noqa: BLE001 — R2 down or the file gone
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value,
+                PART_FAILED_TEXT,
+                raw=f"own video unreadable: {type(exc).__name__}",
+            ) from exc
+        start = max(own.start_s, own.end_s - EXTEND_OWN_SOURCE_MAX_S)
+        with tempfile.TemporaryDirectory(prefix="qualify-extend-own-") as folder:
+            source = Path(folder) / "own.mp4"
+            source.write_bytes(data)
+            out = Path(folder) / "tail.mp4"
+            try:
+                window = cut_window(
+                    source,
+                    start,
+                    own.end_s,
+                    out=out,
+                    toward="previous",
+                    min_seconds=int(EXTEND_SOURCE_MIN_S),
+                    max_seconds=int(EXTEND_OWN_SOURCE_MAX_S),
+                )
+            except VideoSourceError as exc:
+                raise _MediaFailed(
+                    FailureReason.PART_FAILED.value,
+                    PART_FAILED_TEXT,
+                    raw=f"own video not cut: {exc}",
+                ) from exc
+            tail = out.read_bytes()
+        sent_key = save(f"extend-source-own-{hashlib.sha256(data).hexdigest()[:16]}.mp4", tail, MP4)
+        return {
+            "source_kind": "own_video",
+            "source_draft_id": None,
+            "source_index": None,
+            "source_asset_id": None,
+            "source_key": own.key,
+            "source_window": [window.start_s, window.end_s],
+            "source_made_at": None,
+            "sent_key": sent_key,
+            "input_seconds": round(window.duration_sec, 3),
+            "sha256": hashlib.sha256(tail).hexdigest(),
+        }
 
     def _new_extend_source(self, tenant_id: UUID, draft_id: UUID, save: _Saver) -> dict[str, Any]:
         """The previous part's file, checked and copied into this part's folder."""
