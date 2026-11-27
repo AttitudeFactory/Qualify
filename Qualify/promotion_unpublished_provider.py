@@ -158,7 +158,7 @@ def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
     """«Agregar un botón con enlace» is offered only when the wizard will have a source:
     approved, a 9:16 file (with its cover for a video), an ad account. Already published by
     Qualify is fine: a story ad is always a new 9:16 creative (m-25130283, epic D1)."""
-    piece, accounts, assets = _read(tenant_id, draft_id, story=True)
+    piece, accounts, assets = _read(tenant_id, draft_id, True)
     return piece is not None and bool(accounts) and bool(story_kinds(assets))
 
 
