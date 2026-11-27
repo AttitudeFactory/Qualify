@@ -36,10 +36,11 @@ such a Clip exist and be assembled:
   the Clip waiting for its owner's choice — «Intentar de nuevo», «Cambiar», «Hacerla
   nueva», another mode or «Quitar» (`clip_ai_part_actions`) — for
   `CLIP_AI_PART_OWNER_WAIT` (72 h) from the latest failure the server saw (the failed
-  part's row was last written then). Once that time runs out the Clip fails
-  (`ai_part_expired`) and the vistas previas of ALL its parts come back with the Clip's
-  creations — the owner got no video. A part never created, or made without its video,
-  is a broken row, not a choice: the Clip fails at once (`ai_part_failed`), as in PR 2.
+  part's row, its vista previa given back, or its job ending — whichever came last).
+  Once that time runs out the Clip fails (`ai_part_expired`) and the vistas previas of
+  ALL its parts come back with the Clip's creations — the owner got no video. A part
+  never created, or made without its video, is a broken row, not a choice: the Clip
+  fails at once (`ai_part_failed`), as in PR 2.
   A part the owner removed is left out, its block dropped from the assembly.
 - **After the Clip is made** its brief plays each part as a stretch of the part's file.
   The assembly always plays a part's ACTIVE version (`refresh`): a stretch of an older
@@ -102,8 +103,8 @@ AI_PART_FAILED_TEXT = (
 CLIP_AI_PART_OWNER_WAIT = timedelta(hours=72)
 AI_PART_EXPIRED = "ai_part_expired"
 AI_PART_EXPIRED_TEXT = (
-    "Tu video no se armó: una de sus partes con IA no salió y pasaron 3 días sin que "
-    "eligieras qué hacer. No se descontó nada de tu plan. Créalo de nuevo cuando quieras."
+    "Tu video no se armó porque una de sus partes con IA no salió y pasaron 3 días sin una "
+    "elección. No se descontó nada de tu plan. Créalo de nuevo cuando quieras."
 )
 #: A Clip with AI parts that is not vertical (a part is always 9:16).
 NOT_VERTICAL_TEXT = (
@@ -156,8 +157,9 @@ class AiPartRow:
     failure_reason: str | None = None
     #: Its current revision (what its vista previa was charged at, to give it back).
     revision: int = 1
-    #: m-25129407: when its row was last written — for a failed part, when it failed (the
-    #: owner's 72 h run from the latest one); None when unknown.
+    #: m-25129407: when the part last moved (its row, its vista previa given back at its
+    #: revision, its job ending) — for a failed part, when it failed (the owner's 72 h run
+    #: from the latest one); None when unknown.
     changed_at: datetime | None = None
     #: Its mode as made now (`reference` / `edit` / `extend`).
     mode: str = "reference"
@@ -198,8 +200,18 @@ class PostgresAiPartsStore:
             rows = session.execute(
                 text("""
                 SELECT d.id, d.part_index, d.status, d.part_removed_at IS NOT NULL AS removed,
-                       d.failure_reason, d.revision, d.updated_at, d.failure_detail,
-                       COALESCE(b.media->'part'->>'mode', 'reference') AS mode
+                       d.failure_reason, d.revision, d.failure_detail,
+                       COALESCE(b.media->'part'->>'mode', 'reference') AS mode,
+                       -- m-25129407 (review): when the part last moved. A failure does not
+                       -- always write `updated_at` (`finish_generation`, the reaper), but it
+                       -- always gives its vista previa back at its revision and ends its job
+                       GREATEST(
+                           d.updated_at,
+                           (SELECT max(c.refunded_at) FROM creation_charges c
+                            WHERE c.draft_id = d.id AND c.revision = d.revision),
+                           (SELECT max(j.finished_at) FROM creative_jobs j
+                            WHERE j.draft_id = d.id AND j.revision = d.revision)
+                       ) AS changed_at
                 FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
                 WHERE d.parent_draft_id = :c AND b.media->'part' IS NOT NULL
                   AND jsonb_typeof(b.media->'part') = 'object'
@@ -215,7 +227,7 @@ class PostgresAiPartsStore:
                 removed=bool(row.removed),
                 failure_reason=row.failure_reason,
                 revision=int(row.revision),
-                changed_at=row.updated_at,
+                changed_at=row.changed_at,
                 mode=str(row.mode),
                 failure_detail=row.failure_detail,
             )
@@ -428,7 +440,7 @@ def refresh(brief: ContentBrief, swaps: Mapping[str, AiPartVideo]) -> Resolved:
     """m-25129407: a made Clip's recipe with each stretch of an OLD version of one of its
     parts (`swaps`: the old file → the part's active video) played from the new file — the
     same cut where it fits (its start kept inside the interval the join keeps,
-    `part_join.part_span`, its length kept up to the file's end), at ×1, its join kept;
+    `part_join.part_span`, its length kept up to the file's end), its speed and join kept;
     texts and effects moved to the new lengths as `resolve` moves them. Pure."""
     from qualify_api.creative.part_join import part_span  # noqa: PLC0415
 
@@ -450,7 +462,8 @@ def refresh(brief: ContentBrief, swaps: Mapping[str, AiPartVideo]) -> Resolved:
             key=video.object_key,
             start_s=round(start, 3),
             end_s=round(end, 3),
-            speed=1.0,
+            # the owner's speed on that stretch is kept (review of m-25129407)
+            speed=segment.speed,
             transition_in=segment.transition_in,
         )
         segments.append(stretch)

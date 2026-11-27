@@ -3202,12 +3202,15 @@ class ContentService:
             AiPartsReady,
             PostgresAiPartsStore,
             ai_parts_gate,
+            has_ai_part_blocks,
         )
         from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
 
         store = self._clip_ai_parts_store
         if store is None:
             if not isinstance(self._repo, PostgresContentRepository):
+                if not has_ai_part_blocks(brief):
+                    return draft, brief  # a made Clip without a parts' store: as it is
                 raise RuntimeError("a Clip waiting for its AI parts needs the parts' store")
             store = PostgresAiPartsStore()
         verdict = ai_parts_gate(

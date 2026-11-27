@@ -236,7 +236,7 @@ ClipAiPartsService(content).create_clip_with_ai_parts(
 
 Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre `ClipAiPartsService`) y la espera en `clip_ai_parts.ai_parts_gate`. Interruptor: el mismo `QUALIFY_CLIP_AI_PARTS`, apagado. Sin migración.
 
-**La espera del §11 vuelve.** Si una parte con IA falla mientras el Clip espera su primer armado, el Clip **sigue esperando** la elección del dueño (`AiPartsWait("part_failed")`, con `wait_until`). El plazo es de **72 h desde la última falla** que vio el servidor (`CLIP_AI_PART_OWNER_WAIT`; la hora es la última escritura de la fila de la parte fallida). Si se vence, el Clip falla con `ai_part_expired` («Tu video no se armó: una de sus partes con IA no salió y pasaron 3 días sin que eligieras qué hacer. No se descontó nada de tu plan. Créalo de nuevo cuando quieras.») y vuelven las vistas previas de todas sus partes, en su revisión actual, como en el PR 2. Una parte que nunca se creó, o hecha sin su video, sigue haciendo fallar el Clip de inmediato (`ai_part_failed`): no hay nada que el dueño pueda elegir. Por ahora no sale correo de falla (el de los avatares, m-25120319, no se extendió a las partes).
+**La espera del §11 vuelve.** Si una parte con IA falla mientras el Clip espera su primer armado, el Clip **sigue esperando** la elección del dueño (`AiPartsWait("part_failed")`, con `wait_until`). El plazo es de **72 h desde la última falla** que vio el servidor (`CLIP_AI_PART_OWNER_WAIT`; la hora es la más reciente entre la última escritura de la fila de la parte, la devolución de su vista previa en esa revisión y el fin de su trabajo en la cola, porque una falla no siempre escribe la fila). Si se vence, el Clip falla con `ai_part_expired` («Tu video no se armó porque una de sus partes con IA no salió y pasaron 3 días sin una elección. No se descontó nada de tu plan. Créalo de nuevo cuando quieras.») y vuelven las vistas previas de todas sus partes, en su revisión actual, como en el PR 2. Una parte que nunca se creó, o hecha sin su video, sigue haciendo fallar el Clip de inmediato (`ai_part_failed`): no hay nada que el dueño pueda elegir. Por ahora no sale correo de falla (el de los avatares, m-25120319, no se extendió a las partes).
 
 | Acción | Cuándo | Qué hace | Cobro | Tope de 10 armados |
 |---|---|---|---|---|
@@ -245,7 +245,7 @@ Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre
 | `make_part_new` «Hacerla nueva» | Igual, solo «Igual al original» donde la regla de partes lo ofrece | Pasa a «Nueva» | 1 vista previa | No cuenta |
 | `change_part_mode` | Clip esperando (parte fallida) o Clip armado (parte hecha) | Otro modo; ver reglas abajo | 1 vista previa | Cuenta solo con el Clip armado |
 | `remove_part` «Quitar» | Clip esperando, parte fallida | Se marca quitada (`part_removed_at`), el Clip se arma sin su bloque | 0 | No cuenta |
-| `redo_part` «Rehacer esta parte» | Clip armado, parte hecha y en el video | Otra versión de la parte (descripción o fotos; nunca el modo) y otra versión del Clip que la espera | 1 vista previa | Cuenta 1 |
+| `redo_part` «Rehacer esta parte» | Clip armado, parte hecha (o una versión rehecha que quedó fallida) y en el video | Otra versión de la parte (descripción o fotos; nunca el modo) y otra versión del Clip que la espera | 1 vista previa | Cuenta 1 |
 | `rearrange` | Clip armado | Orden, recortes, uniones, quitar un bloque, textos y efectos | 0 | Cuenta 1 |
 | `parts_view` | Siempre | Lo que la pantalla muestra de cada parte y qué botones ofrece | Gratis | — |
 
@@ -255,7 +255,7 @@ Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre
 
 **El tope** (criterio 3). Cuentan el «Crear», «Rehacer esta parte», otro modo con el Clip armado y `rearrange` (una fila `local_video` del Clip por revisión). No cuentan los armados automáticos: cuando termina un hijo, ni el que espera una parte rehecha.
 
-**Reglas de otro modo** (`mode_change_problem`): el mismo modo no (`mode_unchanged`); «Igual al original» solo para una parte que el plan hizo así desde el reel (`original_mode == "edit"`, `edit_needs_reel_window`); «Sigue a la anterior» solo con una parte con IA conservada justo antes (`extend_needs_block_before`) y salida de la misma toma (`extend_not_same_moment`, la regla del contrato), con los cortes del reel comprobados como en el «Crear» y su interruptor; «Nueva» siempre.
+**Reglas de otro modo** (`mode_change_problem`): el mismo modo no (`mode_unchanged`); «Igual al original» solo para una parte que el plan hizo así desde el reel (`original_mode == "edit"`, `edit_needs_reel_window`); «Sigue a la anterior» solo si el bloque justo antes en la línea de tiempo es la parte con IA anterior (`extend_needs_block_before`; un video o foto propios en medio no se continúan) y salida de la misma toma (`extend_not_same_moment`, la regla del contrato), con los cortes del reel comprobados como en el «Crear» y su interruptor; «Nueva» siempre.
 
 **«Quitar».** No se quita lo último que queda (`last_block`), y la receta que queda se revisa como en el «Crear». Una «Sigue a la anterior» justo después pasa a «Nueva»; mientras esa parte se está haciendo, «Quitar» se rechaza (el texto de siempre de «Video por partes»).
 
@@ -264,23 +264,25 @@ Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre
 | Código | Texto para el dueño |
 |---|---|
 | `switched_off` | Las partes con IA no están disponibles por ahora. Tu video queda como está. |
-| `clip_not_waiting` | Tu video ya no está esperando esta parte. Vuelve a abrirlo para ver cómo va. |
+| `clip_not_waiting` | Ya no hace falta elegir nada para esta parte. Abre tu video de nuevo para ver cómo va. |
 | `clip_busy` / `clip_not_made` | Tu video se está armando. Cuando termine, podrás cambiarlo. |
 | `clip_failed` | Este video no se pudo armar. Créalo de nuevo cuando quieras. |
 | `clip_moved` | Tu video cambió mientras tanto. Vuelve a abrirlo y elige otra vez. |
-| `part_not_failed` | Esta parte salió bien, así que no hace falta intentarla de nuevo. |
+| `part_not_failed` | Esta parte ya salió bien. No hace falta intentarla de nuevo. |
 | `part_not_ready` | Esta parte todavía se está creando. Cuando termine, podrás rehacerla. |
-| `part_being_made` | Esta parte se está creando ahora. Espera a que termine. |
+| `part_being_made` | Esta parte se está creando. Cuando termine, podrás quitarla. |
 | `part_not_in_video` | Esta parte ya no está en tu video. |
 | `last_block` | Si quitas esta parte, tu video se queda sin nada que mostrar. Intenta de nuevo o cámbiala. |
-| `mode_unchanged` | Esta parte ya se hace así. Elige otra forma. |
-| `edit_needs_reel_window` | «Igual al original» solo sirve con partes que copian un momento del video de inspiración. Elige «Nueva». |
+| `mode_unchanged` | Esta parte ya está así. Elige otra opción. |
+| `edit_needs_reel_window` | «Igual al original» solo funciona en partes que salen de un momento del video de inspiración. Elige «Nueva». |
 | `extend_needs_block_before` | «Sigue a la anterior» necesita una parte con IA justo antes. Elige «Nueva». |
-| `extend_not_same_moment` | «Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento del video de inspiración. Elige «Nueva». |
+| `extend_not_same_moment` | «Sigue a la anterior» solo funciona si esta parte y la anterior salen del mismo momento del video de inspiración. Elige «Nueva». |
 | `ai_part_file_not_owned` | No pudimos usar una de esas fotos. Elige otra de tus fotos o súbela de nuevo. |
 | `ai_part_added` | Por ahora no puedes agregar partes con IA a un video ya armado. Crea un video nuevo para usarlas. |
 | `stretch_not_of_clip` | Uno de los bloques de tu video ya no está disponible. Vuelve a abrir tu video e inténtalo de nuevo. |
 | `part_action_refused` | El texto de «Video por partes» (`part_actions`) |
+
+El texto de una parte fallida sin palabras propias (`PART_FAILED_TEXT`, en `parts_view`): «Esta parte no salió. Puedes intentarla de nuevo, cambiarla o quitarla. Tu video te espera 3 días.»
 
 Además, con sus textos de siempre: `PartChangeRefused` (programado, publicándose, purgado, la parte que sigue se está haciendo), `PartsExtendUnavailable`, `PartsSourceInvalid`, `PartsOverBudget`, `LocalDailyCapReached`, `NotEnoughCreations` y `RecipeRefused`.
 

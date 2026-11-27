@@ -730,3 +730,122 @@ def test_mode_change_rules() -> None:
     assert code(split, "extend", other_take) == "extend_not_same_moment"
     with pytest.raises(ValueError, match="mode"):
         act.mode_change_problem(plain, "local", previous=before)
+
+
+# ---------------------------------------------------------------------------
+# review of m-25129407
+
+
+def test_sigue_a_la_anterior_needs_the_part_right_before_on_the_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An own video between the two parts leaves nothing to continue: refused as «Crear»
+    refuses it, even when both parts come from the same take."""
+    monkeypatch.setenv(EXTEND_SWITCH, "draft")
+    _split_cuts_checked(monkeypatch)
+    world = _world()
+    first, second = _split_clip().media.ai_parts
+    brief = _clip(
+        (_own(4.0), _block(0), _own(3.0, OTHER), _block(1)),
+        (first, second.model_copy(update={"mode": "reference"})),
+    )
+    made = _create(world, brief)
+    _made(world, made.part_ids[0])
+    _fail(world, made.part_ids[1])
+    snap = _Snapshot(world)
+    with pytest.raises(cap.ClipAiPartsRefused) as refused:
+        _actions(world).change_part_mode(
+            tenant_id=TENANT_ID,
+            user_id=USER_ID,
+            clip_id=made.clip_id,
+            part_id=made.part_ids[1],
+            mode="extend",
+        )
+    assert refused.value.code == "extend_needs_block_before"
+    assert snap.same(world)
+
+
+def test_a_made_clip_offers_redo_only_on_the_parts_it_plays() -> None:
+    world = _world()
+    made, _ = _made_clip(world)
+    first, part_one, other, _part_two = _brief_of(world, made.clip_id).media.segments
+    _actions(world).rearrange(
+        tenant_id=TENANT_ID,
+        user_id=USER_ID,
+        clip_id=made.clip_id,
+        segments=(first, part_one, other),  # the second part taken out
+    )
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    view = _actions(world).parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and not view.waiting
+    assert [p.actions for p in view.parts] == [("redo", "change_mode"), ()]
+    with pytest.raises(cap.ClipAiPartsRefused) as refused:
+        _actions(world).redo_part(
+            tenant_id=TENANT_ID, user_id=USER_ID, clip_id=made.clip_id, part_id=made.part_ids[1]
+        )
+    assert refused.value.code == "part_not_in_video"
+
+
+def test_a_redo_left_failed_can_be_made_again() -> None:
+    """A version made again that ended failed (the reaper keeps no previous version) is
+    not a dead end: its previous file is still in the video and it can be redone."""
+    world = _world()
+    made, _ = _made_clip(world)
+    part = made.part_ids[0]
+    args: dict[str, Any] = {
+        "tenant_id": TENANT_ID,
+        "user_id": USER_ID,
+        "clip_id": made.clip_id,
+        "part_id": part,
+    }
+    _actions(world).redo_part(**args)
+    _fail(world, part)
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == GENERATED
+    view = _actions(world).parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and view.parts[0].actions == ("redo", "change_mode")
+    _actions(world).redo_part(**args)
+    assert (world.repo.drafts[part].status, world.repo.drafts[part].revision) == (DRAFTING, 3)
+
+
+def test_a_redo_refused_for_its_photos_is_not_sent_again_with_them() -> None:
+    """Re-review: a «Nueva» part whose redo was refused for its photos would fail again
+    with them — a paid call for nothing. Only «Cambiar» (new photos) or another mode."""
+    world = _world()
+    made, _ = _made_clip(world)
+    part = made.part_ids[0]
+    args: dict[str, Any] = {
+        "tenant_id": TENANT_ID,
+        "user_id": USER_ID,
+        "clip_id": made.clip_id,
+        "part_id": part,
+    }
+    _actions(world).redo_part(**args)
+    _fail(world, part, reason="refused_face")
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    view = _actions(world).parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and view.parts[0].actions == ("change_mode",)
+    snap = _Snapshot(world)
+    with pytest.raises(cap.ClipAiPartsRefused) as refused:
+        _actions(world).redo_part(**args)
+    assert refused.value.code == "part_action_refused"
+    assert snap.same(world)
+    photo = f"uploads/{TENANT_ID}/otra.jpg"
+    _actions(world).redo_part(changes=PartChanges(photo_keys=(photo,)), **args)
+    assert world.repo.drafts[part].status == DRAFTING
+
+
+def test_a_refreshed_stretch_keeps_its_cut_speed_and_join() -> None:
+    fade = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
+    old_key = f"t/{TENANT_ID}/generated/{uuid4()}/r1/video.mp4"
+    old = SourceSegment(key=old_key, start_s=1.0, end_s=4.0, speed=2, transition_in=fade)
+    brief = _clip((_own(4.0), old), ())
+    new = cap.AiPartVideo(
+        asset_id=uuid4(),
+        object_key=f"t/{TENANT_ID}/generated/{uuid4()}/r2/video.mp4",
+        seconds=5.0,
+        params={"duration_seconds": 5.0, "part": {"seconds": 5, "generation_seconds": 5}},
+    )
+    (_, stretch) = cap.refresh(brief, {old_key: new}).brief.media.segments
+    assert (stretch.key, stretch.start_s, stretch.end_s) == (new.object_key, 1.0, 4.0)
+    assert stretch.speed == 2 and stretch.transition_in == fade

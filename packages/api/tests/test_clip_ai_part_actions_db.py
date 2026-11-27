@@ -211,3 +211,30 @@ def test_remove_marks_the_part_and_writes_nothing_else(monkeypatch: pytest.Monke
     assert content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id).status == (
         "drafting"
     )
+
+
+def test_the_owners_clock_starts_when_the_part_failed_not_at_its_old_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of m-25129407: a failure does not always write `updated_at` (a part that
+    waited long, or reaped); its vista previa given back says when it failed."""
+    from datetime import UTC, datetime, timedelta
+
+    world = _world(monkeypatch)
+    tenant = world["tenant"]
+    made = _create(world)
+    part = made.part_ids[0]
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET updated_at = now() - interval '5 days' WHERE id = :p"),
+            {"p": part},
+        )
+    _fail(tenant, part)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET updated_at = now() - interval '5 days' WHERE id = :p"),
+            {"p": part},
+        )
+    (row,) = cap.PostgresAiPartsStore().parts_of(tenant_id=tenant, clip_id=made.clip_id)
+    assert row.changed_at is not None
+    assert row.changed_at > datetime.now(UTC) - timedelta(hours=1)

@@ -108,7 +108,7 @@ logger = logging.getLogger(__name__)
 SWITCHED_OFF_TEXT = "Las partes con IA no están disponibles por ahora. Tu video queda como está."
 #: The Clip no longer waits for its parts (assembled, failed, or another tab chose).
 CLIP_NOT_WAITING_TEXT = (
-    "Tu video ya no está esperando esta parte. Vuelve a abrirlo para ver cómo va."
+    "Ya no hace falta elegir nada para esta parte. Abre tu video de nuevo para ver cómo va."
 )
 #: The Clip is being assembled (or waits for a part made again): nothing changes meanwhile.
 CLIP_BUSY_TEXT = "Tu video se está armando. Cuando termine, podrás cambiarlo."
@@ -117,11 +117,11 @@ CLIP_FAILED_TEXT = "Este video no se pudo armar. Créalo de nuevo cuando quieras
 #: Something moved between the owner's screen and his tap (another tab, the server).
 CLIP_MOVED_TEXT = "Tu video cambió mientras tanto. Vuelve a abrirlo y elige otra vez."
 #: The part did not fail: there is nothing to try again.
-PART_NOT_FAILED_TEXT = "Esta parte salió bien, así que no hace falta intentarla de nuevo."
+PART_NOT_FAILED_TEXT = "Esta parte ya salió bien. No hace falta intentarla de nuevo."
 #: The part is not made yet (after the Clip was made: being made again).
 PART_NOT_READY_TEXT = "Esta parte todavía se está creando. Cuando termine, podrás rehacerla."
 #: «Quitar» on a part being made.
-PART_BEING_MADE_TEXT = "Esta parte se está creando ahora. Espera a que termine."
+PART_BEING_MADE_TEXT = "Esta parte se está creando. Cuando termine, podrás quitarla."
 #: The part's block is no longer in the video (removed, or taken out of the recipe).
 PART_NOT_IN_VIDEO_TEXT = "Esta parte ya no está en tu video."
 #: «Quitar» would leave the video empty or too short.
@@ -129,11 +129,11 @@ LAST_BLOCK_TEXT = (
     "Si quitas esta parte, tu video se queda sin nada que mostrar. Intenta de nuevo o cámbiala."
 )
 #: Another mode that is the part's own.
-MODE_UNCHANGED_TEXT = "Esta parte ya se hace así. Elige otra forma."
-#: «Igual al original» on a part that does not copy a moment of the inspiration video.
+MODE_UNCHANGED_TEXT = "Esta parte ya está así. Elige otra opción."
+#: «Igual al original» on a part that does not come from a moment of the inspiration video.
 EDIT_UNAVAILABLE_TEXT = (
-    "«Igual al original» solo sirve con partes que copian un momento del video de inspiración. "
-    "Elige «Nueva»."
+    "«Igual al original» solo funciona en partes que salen de un momento del video de "
+    "inspiración. Elige «Nueva»."
 )
 #: «Sigue a la anterior» without a part with AI right before it.
 EXTEND_NEEDS_PART_TEXT = (
@@ -141,7 +141,7 @@ EXTEND_NEEDS_PART_TEXT = (
 )
 #: «Sigue a la anterior» on a part that does not come from the same moment as the one before.
 EXTEND_NOT_SAME_MOMENT_TEXT = (
-    "«Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento "
+    "«Sigue a la anterior» solo funciona si esta parte y la anterior salen del mismo momento "
     "del video de inspiración. Elige «Nueva»."
 )
 #: A photo that is not this business's.
@@ -202,7 +202,10 @@ class ClipAiPartsView:
 
 
 #: A failed part's words when its row has none of its own.
-PART_FAILED_TEXT = "Esta parte no salió. Puedes intentarla de nuevo, cambiarla o quitarla."
+PART_FAILED_TEXT = (
+    "Esta parte no salió. Puedes intentarla de nuevo, cambiarla o quitarla. "
+    "Tu video te espera 3 días."
+)
 
 
 @dataclass(frozen=True)
@@ -297,15 +300,23 @@ class ClipAiPartActions(ClipAiPartsService):
             return None
         waiting = clip.status == DRAFTING and has_ai_part_blocks(brief)
         made = clip.status in _MADE
+        played = set(self._played(tenant_id, clip_id, brief).values()) if made else set()
         views = []
         for row in rows:
             state = part_state(row)
             actions: tuple[str, ...] = ()
             if waiting and state == "failed":
-                allowed = _failed_actions(row)
-                actions = (*allowed, "change_mode", "remove")
-            elif made and state == "ready":
-                actions = ("redo", "change_mode")
+                actions = (*_failed_actions(row), "change_mode")
+                follower = next((r for r in rows if r.slot > row.slot and not r.removed), None)
+                if not (follower and follower.mode == "extend" and follower.status == DRAFTING):
+                    # «Quitar» is refused while the «Sigue a la anterior» after it is made
+                    actions = (*actions, "remove")
+            elif made and state in ("ready", "failed") and row.id in played:
+                # a version made again that did not come out leaves the part failed with
+                # its previous file still in the video: it can be made again — «redo» as
+                # it is only where a failed part allows a retry (`failed_part`)
+                redo_ok = state == "ready" or "retry" in _failed_actions(row)
+                actions = ("redo", "change_mode") if redo_ok else ("change_mode",)
             views.append(
                 AiPartView(
                     part_id=row.id,
@@ -433,6 +444,14 @@ class ClipAiPartActions(ClipAiPartsService):
         assembly counts in today's local cap. The part's id."""
 
         def build(seen: _Seen) -> ContentBrief | None:
+            if part_state(seen.row) == "failed":
+                # a version made again that failed: the rules of a failed part (a «Nueva»
+                # refused for its photos is never sent again with the same photos — a
+                # paid call bound to fail; re-review of m-25129407)
+                action = PartAction.RETRY if changes is None else PartAction.CHANGE
+                refused = _refusal(action, seen.row.mode, seen.row.failure_reason)
+                if refused is not None:
+                    raise ClipAiPartsRefused("part_action_refused", refused)
             if changes is None:
                 return None
             return part_brief_with(seen.brief, seen.child_brief, changes)
@@ -548,6 +567,14 @@ class ClipAiPartActions(ClipAiPartsService):
         if not self._parts.parts_of(tenant_id=tenant_id, clip_id=clip_id):
             raise UnknownDraft(f"{clip_id} has no AI part")
         self._refuse_unless_made(clip, current)
+        if self._is_postgres():
+            # a Clip whose files the retention purge removed is never assembled again
+            from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+
+            from qualify_api.creative.parts import refuse_if_parent_purged  # noqa: PLC0415
+
+            with tenant_session(tenant_id) as session:
+                refuse_if_parent_purged(session, clip_id)
         if ai_part_blocks(tuple(segments)):
             raise ClipAiPartsRefused("ai_part_added", AI_PART_ADDED_TEXT)
         keys = [
@@ -633,7 +660,9 @@ class ClipAiPartActions(ClipAiPartsService):
         if not made and state != "failed":
             raise ClipAiPartsRefused("part_not_failed", PART_NOT_FAILED_TEXT)
         if made:
-            if state != "ready":
+            # `failed`: a version made again that did not come out (its previous file is
+            # still in the video) — it can be made again too (review of m-25129407)
+            if state not in ("ready", "failed"):
                 raise ClipAiPartsRefused("part_not_ready", PART_NOT_READY_TEXT)
             if not self._plays(tenant_id, seen):
                 raise ClipAiPartsRefused("part_not_in_video", PART_NOT_IN_VIDEO_TEXT)
@@ -783,12 +812,18 @@ class ClipAiPartActions(ClipAiPartsService):
 
     def _previous_plan(self, tenant_id: UUID, seen: _Seen) -> VideoPartPlan | None:
         """The plan of the kept AI part right before this one (the place «Sigue a la
-        anterior» continues, `part_extend.pick_previous`), None without one."""
+        anterior» continues, `part_extend.pick_previous`) — and ONLY when that part's block is
+        the one right before this part's block on the Clip's timeline (review of
+        m-25129407: the contract's rule, `video_pipeline.ai_parts`; an own photo or video
+        in between leaves nothing to continue). None otherwise."""
         before = [r for r in seen.rows if r.slot < seen.row.slot and not r.removed]
         if not before:
             return None
+        previous = max(before, key=lambda r: r.slot)
+        if self._block_before(tenant_id, seen) != previous.id:
+            return None
         repo = self._content.repository
-        record = repo.get_draft(tenant_id=tenant_id, draft_id=max(before, key=lambda r: r.slot).id)
+        record = repo.get_draft(tenant_id=tenant_id, draft_id=previous.id)
         brief = (
             None
             if record is None
@@ -798,15 +833,43 @@ class ClipAiPartActions(ClipAiPartsService):
             return None
         return _plan_of(brief)
 
-    def _plays(self, tenant_id: UUID, seen: _Seen) -> bool:
-        """Whether the made Clip's recipe plays a file of this part."""
+    def _block_before(self, tenant_id: UUID, seen: _Seen) -> UUID | None:
+        """The AI part whose block plays right before this part's block on the timeline
+        as it will be assembled (a waiting Clip: its recipe without the removed parts'
+        blocks; a made one: the files it plays), None when it is the owner's own media or
+        nothing."""
+        from qualify_api.creative.video_pipeline.ai_parts import ai_part_slots  # noqa: PLC0415
+
+        if seen.phase == "waiting":
+            removed = frozenset(r.slot for r in seen.rows if r.removed)
+            slots = ai_part_slots(seen.brief.media.segments)
+            by_slot = {r.slot: r.id for r in seen.rows}
+            owners = [
+                None if s.ai_part_at is None else by_slot.get(slots.get(s.ai_part_at, 0))
+                for s in kept_brief(seen.brief, removed).media.segments
+            ]
+        else:
+            played = self._played(tenant_id, seen.clip.id, seen.brief)
+            owners = [played.get(s.key) for s in seen.brief.media.segments]
+        at = next((i for i, owner in enumerate(owners) if owner == seen.row.id), None)
+        if at is None or at == 0:
+            return None
+        return owners[at - 1]
+
+    def _played(self, tenant_id: UUID, clip_id: UUID, brief: ContentBrief) -> dict[str, UUID]:
+        """The files of the Clip's AI parts its recipe plays → their part."""
         keys = [
             s.key
-            for s in seen.brief.media.segments
+            for s in brief.media.segments
             if s.kind == "video" and is_generated_file(tenant_id, s.key)
         ]
-        played = self._parts.played(tenant_id=tenant_id, clip_id=seen.clip.id, keys=keys)
-        return seen.row.id in played.values()
+        if not keys:
+            return {}
+        return self._parts.played(tenant_id=tenant_id, clip_id=clip_id, keys=keys)
+
+    def _plays(self, tenant_id: UUID, seen: _Seen) -> bool:
+        """Whether the made Clip's recipe plays a file of this part."""
+        return seen.row.id in self._played(tenant_id, seen.clip.id, seen.brief).values()
 
     def _in_mode(self, seen: _Seen, mode: str) -> ContentBrief:
         """The part's new brief in `mode`: same description, cuts, length, trim and photos
@@ -953,11 +1016,27 @@ class ClipAiPartActions(ClipAiPartsService):
     def _touch_clip(self, tenant_id: UUID, user_id: UUID, seen: _Seen) -> None:
         """A waiting Clip after its owner chose: the same brief written again — so a pass
         of its own that read the parts before this choice cannot fail it or place its
-        parts over it (its fence compares the brief) — and its run woken."""
+        parts over it (its fence compares the brief) — and its run woken AFTER the commit,
+        in a transaction of its own: the worker takes the run's row before the Clip's, so
+        taking it here, after the Clip's, could deadlock (review of m-25129407)."""
         self._content.repository.replace_brief(
             tenant_id=tenant_id, draft_id=seen.clip.id, user_id=user_id, brief=seen.brief
         )
-        self._wake_clip(tenant_id, seen.row.id)
+        if not self._is_postgres():
+            return
+        from qualify_shared.db.session import after_tenant_commit  # noqa: PLC0415
+
+        part_id = seen.row.id
+
+        def wake() -> None:
+            # never in the way of the dispatches after it: without the wake the Clip
+            # still retries by itself every 30 s
+            try:
+                self._wake_clip(tenant_id, part_id)
+            except Exception:
+                logger.exception("clip %s: waking it after the owner's choice", seen.clip.id)
+
+        after_tenant_commit(tenant_id, wake)
 
     def _as_new(self, tenant_id: UUID, user_id: UUID, part_id: UUID) -> None:
         """A «Sigue a la anterior» whose part before it was removed made «Nueva» (a new
