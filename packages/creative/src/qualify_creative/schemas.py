@@ -1783,6 +1783,11 @@ class CharacterSceneItem(BaseModel):
     line_suggested: bool = False
     line_prompt_version: str | None = Field(default=None, max_length=60)
     transition_in: EffectUse | None = None
+    #: Server-owned (m-25128784 PR 2): when the Clip's wait first saw this scene failed —
+    #: its failure email goes out with it and the Clip waits for the owner 72 h from the
+    #: latest one (ADR 50 §12.1, §11 P2). None while the scene is fine; never sent by the
+    #: editor (a «Crear» with it is refused) and never part of the scene's digest.
+    failed_at: datetime | None = None
 
     @field_validator("line")
     @classmethod

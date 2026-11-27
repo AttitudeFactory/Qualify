@@ -33,7 +33,7 @@ from .promotion_vm import (
     EMPTY_SOURCES,
     GREETING_QUESTION_SLOTS,
     LEAD_CTA_LABELS,
-    STORY_EMPTY,
+    STORY_PAID_NOTE,
     STORY_PLACEMENT,
     STORY_PREVIEW_BUTTON,
     WEBSITE_CTA_LABELS,
@@ -1097,7 +1097,7 @@ def promotion_index() -> rx.Component:
                 rx.button(
                     "Volver a consultar", on_click=S.load, variant="outline", min_height="44px"
                 ),
-                callout(rx.cond(S.story_entry, STORY_EMPTY, EMPTY_SOURCES), "info"),
+                callout(rx.cond(S.story_entry, S.story_block, EMPTY_SOURCES), "info"),
             ),
             rx.cond(
                 S.reviewed,
@@ -1184,6 +1184,8 @@ def promotion_index() -> rx.Component:
 def _wizard(body: rx.Component, foot: rx.Component) -> rx.Component:
     return step_frame(
         step_sync(S.step, S.direction),
+        # HIS-1 (m-25130281): right under the title, on the story path only
+        rx.cond(S.story_entry, rx.text(STORY_PAID_NOTE, size="2", color=T.TEXT_MUTED)),
         rx.cond((S.error != "") & ~S.error_by_locate, callout(S.error, "error")),
         rx.cond(S.success != "", callout(S.success, "ok")),
         rx.cond(

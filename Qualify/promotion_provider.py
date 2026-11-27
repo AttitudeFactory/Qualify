@@ -23,6 +23,7 @@ from qualify_api.ads.messaging_greeting import (
     current_greeting,
     save_greeting,
 )
+from qualify_api.ads.story_readiness import story_block
 from qualify_api.ads.wizard import (
     PIECE_BUTTON_UNSUPPORTED,
     WizardForm,
@@ -48,6 +49,7 @@ from .promotion_vm import (
     CHANNEL_STATUS,
     CHANNELS_FAILED,
     COUNTRY_LABELS,
+    STORY_BLOCKS,
     GreetingVM,
     LeadFormChoiceVM,
     MessagingDestinationVM,
@@ -187,6 +189,22 @@ def recheck_enhancement_permissions(
     if len(matches) != 1:
         raise WizardUnavailable("La publicación o su marca cambiaron. Abre la promoción de nuevo.")
     return load_policy(tenant_id, brand_id)
+
+
+def story_block_view(tenant_id: UUID, draft_id: UUID) -> tuple[str, str, str]:
+    """HIS-2 (m-25130282): (why, action label, action link) when this historia cannot be a
+    story ad; ("", "", "") when it can. Read before the sources, so a blocked historia
+    never refreshes an ad account's health at Meta."""
+    block = story_block(tenant_id, draft_id)
+    if block is None:
+        return "", "", ""
+    return story_block_text(block)
+
+
+def story_block_text(block: str) -> tuple[str, str, str]:
+    message, action = STORY_BLOCKS[block]
+    label, href = action or ("", "")
+    return message, label, href
 
 
 def load_sources(

@@ -31,7 +31,9 @@ The steps, per stretch in the recipe's order:
    it is; m-25114465: a block with a `transition_in` (`fundido`, `barrido`) is then
    blended with the block before it (`block_join`, EF-16's own segment join) — the blocks
    overlap, so the Clip lasts its blocks minus each transition; with only cuts nothing
-   changes;
+   changes; m-25128784 PR 2: a Clip's character scenes are then laid over their windows
+   (`qualify_creative.video.scene_overlay`: picture and sound replaced there, cut in and
+   cut out, the voice brought to one level) — the Clip keeps its length;
 4. «Humo», «Brasas», «Vapor» (EF-08, `qualify_creative.video.layer_overlay`): each use of
    a library layer in the part's `effects` (its entry at its version, through
    `TimedEffectLayer.from_entry` and the read-only `effects.layer_loop_file`; its params, or
@@ -299,6 +301,9 @@ class LocalRender:
     #: m-25114465: the blocks' transitions as blended (`block_join.BlockJoins.params`),
     #: None when every join is a cut (the step did not run).
     transitions: dict[str, Any] | None = None
+    #: m-25128784 PR 2: the character scenes as laid (`scene_overlay.OverlaidScenes.
+    #: params()`), None without scenes (the step did not run).
+    scenes: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -359,6 +364,7 @@ def render_local_part(
     render_client: Any = None,
     draft_id: UUID | None = None,
     source_jobs: Any = None,
+    scenes: tuple[Any, ...] = (),
 ) -> LocalRender:
     """Make `part`'s video in `root` (see the module): prepared stretches and held photos,
     sped up and laid end to end, then the part's texts over it. Raises `LocalVideoFailed`;
@@ -369,6 +375,10 @@ def render_local_part(
     `render_client` the render service's `RemotionRenderClient` (or a callable that builds
     one): both used only when the part has a text. Without a client a text fails as the
     service being down — never a video without the texts the owner chose.
+
+    m-25128784 PR 2: `scenes` (`character_scene.SceneSource`, a Clip's made character
+    scenes) are laid over their windows of the built video (`scene_overlay`) after the
+    blocks' transitions and before the layers and the texts — the texts stay on top.
 
     m-25119832: `beat` is also called every `LOCAL_HEARTBEAT_EVERY_S` on a side thread
     for the whole assembly — the speed step alone measured 867 s without returning (8
@@ -390,6 +400,7 @@ def render_local_part(
             render_client=render_client,
             draft_id=draft_id,
             source_jobs=source_jobs,
+            scenes=scenes,
         )
 
 
@@ -404,6 +415,7 @@ def _render_local_part(
     render_client: Any,
     draft_id: UUID | None,
     source_jobs: Any,
+    scenes: tuple[Any, ...] = (),
 ) -> LocalRender:
     """`render_local_part`'s steps, with a beat at the end of each long one (the side
     thread covers the time inside them)."""
@@ -540,6 +552,11 @@ def _render_local_part(
     # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
     # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
     video = joins.path if joins is not None else result.path
+    # m-25128784 PR 2: the character scenes over their windows, on the same clock as the
+    # layers and the texts (seconds of the Clip's output); the Clip keeps its length
+    laid_scenes: dict[str, Any] | None = None
+    if scenes:
+        video, laid_scenes = _lay_scenes(scenes, video, root, tenant_id, store, beat)
     effect_layers = _effect_layers(part)
     layered: tuple[Path, dict[str, Any]] | None = None
     if effect_layers and not part.text_layers:
@@ -568,6 +585,8 @@ def _render_local_part(
         steps["photo_hold"] = HOLD_VERSION
     if joins is not None:
         steps["block_join"] = joins.params["version"]
+    if laid_scenes is not None:
+        steps["scene_overlay"] = laid_scenes["version"]
     if layered is not None:
         steps["layer_compose"] = layered[1]["compose_version"]
     text_params: dict[str, Any] | None = None
@@ -589,7 +608,63 @@ def _render_local_part(
         sources=sources,
         sound=_sound_provenance(part, result.sound),
         transitions=joins.params if joins is not None else None,
+        scenes=laid_scenes,
     )
+
+
+def _lay_scenes(
+    scenes: tuple[Any, ...],
+    video: Path,
+    root: Path,
+    tenant_id: UUID,
+    store: Any,
+    beat: Callable[[], None] | None,
+) -> tuple[Path, dict[str, Any]]:
+    """m-25128784 PR 2: each scene's kept video read through the tenant-checking door
+    (`_fetch`: a file of another business is never read) and laid over its window
+    (`scene_overlay.overlay_scenes`); `video` is replaced. A scene that cannot be laid
+    for a reason of ours is `LocalVideoFailed` (never charged)."""
+    from qualify_creative.video.memory import release_memory  # noqa: PLC0415
+    from qualify_creative.video.scene_overlay import (  # noqa: PLC0415
+        SceneClip,
+        SceneOverlayError,
+        overlay_scenes,
+    )
+
+    from qualify_api.creative.character_scene import SCENE_BROKEN_TEXT  # noqa: PLC0415
+
+    clips = []
+    for number, scene in enumerate(scenes):
+        path = root / f"scene-{number}.mp4"
+        try:
+            _fetch(store, tenant_id, scene.object_key, path)
+        except LocalVideoFailed as exc:
+            # the scene's file is ours, not one the owner chose: never «cámbiala»
+            raise LocalVideoFailed(exc.failure, SCENE_BROKEN_TEXT, exc.raw, code=exc.code) from exc
+        clips.append(SceneClip(path=path, start_s=scene.start_s, duration_s=scene.duration_s))
+    try:
+        laid = overlay_scenes(video, root / "local-scenes.mp4", clips)
+    except (SceneOverlayError, OSError) as exc:
+        raise LocalVideoFailed(
+            FailureReason.RENDER_ERROR.value,
+            SCENE_BROKEN_TEXT,
+            raw=f"{type(exc).__name__}: {exc}",
+            code="scene_overlay_failed",
+        ) from exc
+    Path(video).unlink(missing_ok=True)  # never two large files on disk without need
+    for clip in clips:
+        clip.path.unlink(missing_ok=True)
+    release_memory()
+    if beat is not None:
+        beat()
+    params = laid.params()
+    params["scenes"] = [
+        {**laid_scene, "slot": scene.slot, "draft_id": str(scene.draft_id)}
+        for laid_scene, scene in zip(
+            params["scenes"], sorted(scenes, key=lambda s: s.start_s), strict=True
+        )
+    ]
+    return laid.path, params
 
 
 def _blend_blocks(
@@ -902,6 +977,7 @@ def produce_local(
     brand: Any = None,
     render_client: Any = None,
     generated_sources: Mapping[str, Any] | None = None,
+    scenes: tuple[Any, ...] = (),
 ) -> MediaOutcome:
     """The `local` Clip of `brief` as the producer's outcome — never raises for the
     owner's files: the outcome carries the failure. `allowed` is False outside the
@@ -917,7 +993,13 @@ def produce_local(
     `generated_sources` (m-25112920) maps the recipe's stretch keys that are files of
     the generator to their `clip_avatar.GeneratedSource` (the caller's lookup,
     `MediaProducer`): which are AI imagery, which are avatar blocks. None or empty: only
-    the owner's own files."""
+    the owner's own files.
+
+    `scenes` (m-25128784 PR 2): the Clip's made character scenes
+    (`character_scene.SceneSource`), laid over their windows; the Clip is then AI imagery
+    (`ai_generated`), each scene in `params.local.ai_sources` and its provenance (§12.7)
+    in `params.local.character_scenes`. A brief with a «Personajes» track and no scenes
+    is refused before anything is read (never assembled without them)."""
     part_ref = brief.media.part
     in_part = part_ref is not None
     failed_text = LOCAL_PART_FAILED_TEXT if in_part else LOCAL_SOURCE_FAILED_TEXT
@@ -930,6 +1012,10 @@ def produce_local(
     if len(parts) != 1 or parts[0].mode != "local" or not parts[0].segments:
         return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=failed_text)
     (part,) = parts
+    if len(scenes) != len(brief.media.character_scenes):
+        # m-25128784: the scenes reach the assembly made, every one — or nothing is read
+        logger.error("draft %s: its character scenes reached the assembly incomplete", draft_id)
+        return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=failed_text)
     if any(segment.kind == AI_PART_KIND for segment in part.segments):
         # m-25129406: an AI block reaches the assembly only as its part's video (the
         # Clip's wait resolves it, `clip_ai_parts.resolve`) — never as a key to read
@@ -992,7 +1078,8 @@ def produce_local(
     # video AI, with the avatar switches on or off; a generator file with no asset row and
     # the brand's avatar count as AI too (fail safe, `clip_avatar.ai_stretches`)
     made_by_ai = ai_stretches(part.segments, generated_sources or {}, tenant_id=tenant_id)
-    ai_generated = bool(made_by_ai)
+    # m-25128784: a character scene is Seedance's — the whole video is «hecho con IA»
+    ai_generated = bool(made_by_ai) or bool(scenes)
     try:
         with (
             # m-25042483: never alongside a part join — with one in flight this raises
@@ -1010,6 +1097,7 @@ def produce_local(
                 brand=brand,
                 render_client=render_client,
                 draft_id=draft_id,
+                scenes=tuple(scenes),
             )
             cost = local_price(made.seconds)
             if cost != 0:  # the price guard: a local video never pays a vendor
@@ -1061,9 +1149,24 @@ def produce_local(
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers
-    if made_by_ai:
+    if scenes:
+        # m-25128784 (§12.7): each scene laid — its draft, revision, asset, vendor, model,
+        # prompt version, character, product, place, line, seconds asked and real, task,
+        # cost — and how it was laid (frames held, its voice's gain)
+        laid = {entry["slot"]: entry for entry in (made.scenes or {}).get("scenes", [])}
+        params["local"]["character_scenes"] = [
+            scene.provenance(laid.get(scene.slot)) for scene in scenes
+        ]
+        if made.scenes is not None:
+            params["local"]["scene_overlay"] = {
+                key: value for key, value in made.scenes.items() if key != "scenes"
+            }
+    if made_by_ai or scenes:
         # m-25112920: the label's evidence — each AI stretch's asset, provider and model
-        params["local"]["ai_sources"] = [s.source.ai_provenance(s.index) for s in made_by_ai]
+        params["local"]["ai_sources"] = [
+            *(s.source.ai_provenance(s.index) for s in made_by_ai),
+            *(scene.ai_provenance() for scene in scenes),
+        ]
         # m-25129406 (ADR 50 §13.4): each «parte con IA» played — its draft, revision,
         # asset, vendor, model, prompt, mode and why, reel, seconds, task and cost
         ai_parts = [

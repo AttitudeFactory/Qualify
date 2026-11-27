@@ -81,10 +81,73 @@ STORY_PREVIEW_BUTTON = "Ver cómo queda (sin cobrar)"
 STORY_AUTO_CHANGES_LABEL = "Ajustes por su cuenta"
 STORY_AUTO_CHANGES = "No: el anuncio sale tal como lo apruebas"
 STORY_BACK_TO_PIECE = "Volver a la pieza"
-STORY_EMPTY = (
-    "Esta pieza no tiene una imagen o un video vertical (9:16) listo para anunciar en "
-    "historias. Vuelve a la pieza y revisa que esté aprobada y sin publicar."
+#: HIS-2 (m-25130282): why this historia cannot be a story ad, one text per cause the
+#: backend names (`qualify_api.ads.story_readiness.StoryBlock`) with its next step, and
+#: the link to where that step happens (None: the piece, «Volver a la pieza»).
+STORY_TUS_REDES = ("Ir a Tus redes", "/connections")
+STORY_POR_APROBAR = ("Ir a Por aprobar", "/drafts")
+STORY_TU_MARCA = ("Ir a Tu marca", "/brand/kit#permisos-de-meta")
+STORY_COP_ONLY = (
+    "Por ahora, este anuncio solo funciona con cuentas publicitarias en pesos colombianos. "
+    "Elige una cuenta en pesos colombianos en Tus redes."
 )
+STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
+    "missing": (
+        "No encontramos esta historia. Búscala de nuevo en Por aprobar.",
+        STORY_POR_APROBAR,  # the piece itself is gone: no «Volver a la pieza»
+    ),
+    "not_approved": (
+        "Esta historia todavía no está aprobada. Apruébala y vuelve a tocar «Promocionar "
+        "como anuncio».",
+        None,
+    ),
+    "edited": (
+        "Cambiaste esta historia después de aprobarla. Apruébala otra vez para anunciarla.",
+        None,
+    ),
+    "files_deleted": (
+        "Ya no tenemos los archivos de esta historia porque es antigua. Créala de nuevo para "
+        "anunciarla.",
+        None,
+    ),
+    "no_vertical": (
+        "Esta historia no tiene una foto o un video vertical, de pantalla completa. Créala de "
+        "nuevo en formato de historia para anunciarla.",
+        None,
+    ),
+    "video_without_cover": (
+        "Este video no trae una foto de portada vertical, y por ahora no podemos anunciarlo "
+        "sin ella. Mientras tanto, anuncia una historia con foto.",
+        None,
+    ),
+    "button": (
+        "El botón de esta historia es para chatear o llamar, o su enlace no funciona. Un "
+        "anuncio en historias solo puede llevar a tu página web. Cambia el botón en la pieza "
+        "y vuelve.",
+        None,
+    ),
+    "enhancements": (
+        "Tu marca permite que Meta cambie tus anuncios, y este anuncio debe salir tal como lo "
+        "apruebas. Apaga esos cambios en Tu marca, en «Qué puede cambiar Meta en tus "
+        "anuncios».",
+        STORY_TU_MARCA,
+    ),
+    "no_ad_account": (
+        "Esta marca todavía no tiene una cuenta publicitaria elegida. Elígela en Tus redes y "
+        "vuelve.",
+        STORY_TUS_REDES,
+    ),
+    "reconnect": (
+        "Tu cuenta publicitaria se desconectó. Conéctala de nuevo en Tus redes y vuelve.",
+        STORY_TUS_REDES,
+    ),
+    "ad_permission": (
+        "Falta tu permiso para anunciar, o ya venció. Autoriza los anuncios de nuevo en Tus "
+        "redes y vuelve.",
+        STORY_TUS_REDES,
+    ),
+    "currency": (STORY_COP_ONLY, STORY_TUS_REDES),
+}
 #: `/drafts/<id>/promote?formato=historia` — the wizard opened as a story with a button.
 STORY_FORMAT = "historia"
 #: Tu semana's historia (m-25026350): the option, and its one-line notice BEFORE the wizard.
@@ -98,7 +161,14 @@ STORY_AD_ONLY = (
     "Si haces el anuncio, esta historia ya no sale en tu perfil. No se cobra nada hasta que "
     "apruebes el presupuesto."
 )
-STORY_AD_CONTINUE = "Hacer anuncio pagado"
+#: HIS-1 (m-25130281): a historia's card opens the story-only ad, and the wizard says so.
+#: Founder 2026-11-27: one name for this action everywhere (card and Tu semana).
+STORY_PROMOTE = "Promocionar como anuncio"
+STORY_AD_CONTINUE = STORY_PROMOTE
+STORY_PAID_NOTE = (
+    "Esto crea un anuncio pagado que se muestra entre las historias de otras cuentas. "
+    "Tu historia no cambia."
+)
 STORY_AD_DECLINE = "Dejar la historia sin botón"
 #: The 9:16 safe zones Instagram covers with the account name (top) and the button (bottom).
 STORY_SAFE_TOP = "Aquí va tu nombre"

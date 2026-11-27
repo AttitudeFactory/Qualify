@@ -51,6 +51,8 @@ from . import clip_editor_vm as vm
 from . import clip_joins_vm as joins_vm
 from . import clip_photos_vm as photos_vm
 from . import clip_texts_vm
+from . import editor_idea_vm as idea_vm
+from . import parts_start_vm as start_vm
 from .creative_state import CreativeState
 from .parts_start_state import PartsStartState
 from .parts_start_view import parts_start_card
@@ -67,6 +69,7 @@ from .ui.primitives import (
     choice_card_check,
     drawer,
     dropzone,
+    progress_panel,
     removable_pill,
     tone_badge,
 )
@@ -136,8 +139,10 @@ def _parts_link() -> rx.Component:
     """«Armar mi video por partes»: the flow of always (m-24921079), behind a tertiary
     link — its question opens right here."""
     fresh = PartsStartState.piece == S.parts_piece
+    # ED-06: with the AI parts on, «Agregar → Pedir una idea» proposes the parts right on
+    # the track (plan §2.1): the list flow is not offered a second time here
     return rx.cond(
-        S.parts_start_shown,
+        S.parts_start_shown & ~S.clip_ai_on,
         rx.cond(
             fresh & (PartsStartState.open | PartsStartState.proposing),
             parts_start_card(),
@@ -156,23 +161,176 @@ def _parts_link() -> rx.Component:
 # -- «Pedir una idea» ----------------------------------------------------------------------
 
 
+_IDEA_FIELD_ID = "clip-edit-idea"
+
+
+def _typed_idea() -> rx.Var[str]:
+    """What «Pedir una idea»'s field holds right now, read in the browser at the tap (its
+    `on_change` is debounced: the last letters would not be in the state yet)."""
+    return rx.Var(f"(document.getElementById('{_IDEA_FIELD_ID}')?.value ?? '')", _var_type=str)
+
+
+def _idea_propose() -> rx.Component:
+    """ED-06 (design 03C, PR 7), only with `QUALIFY_CLIP_AI_PARTS` on: «Proponerme las
+    partes» — Claude proposes the parts and they go at the end of the track, free until
+    «Crear» —, the wait «Armando tu propuesta» (a `progress_panel`, never a spinner) and
+    why not. Off while no part fits, with its reason (design D22)."""
+    busy = PartsStartState.editor & PartsStartState.proposing
+    off = S.clip_idea_off != ""
+    return rx.cond(
+        busy,
+        progress_panel(
+            start_vm.PROGRESS_TITLE,
+            steps=PartsStartState.steps,
+            creep_seconds=start_vm.PROGRESS_CREEP_SECONDS,
+        ),
+        rx.vstack(
+            rx.cond(
+                # UX review P3: while the button is off its reason, under it, is enough
+                ~off
+                & PartsStartState.editor
+                & (PartsStartState.error != "")
+                & (PartsStartState.error_epoch == S.clip_idea_epoch),
+                callout(PartsStartState.error, "warn"),
+            ),
+            rx.button(
+                rx.icon("lightbulb", size=T.ICON_SM, aria_hidden="true"),
+                idea_vm.PROPOSE_LABEL,
+                type="button",
+                size="3",
+                min_height="44px",
+                width=["100%", "auto"],
+                on_click=PartsStartState.propose_idea(_typed_idea()),
+                aria_disabled=rx.cond(off, "true", "false"),
+                aria_describedby=idea_vm.PROPOSE_WHY_ID,
+                class_name=rx.cond(off, "q-button-off", ""),
+            ),
+            rx.text(
+                rx.cond(
+                    off,
+                    S.clip_idea_off,
+                    # UX review P4: nothing written yet, said before the tap
+                    rx.cond(S.clip_topic_said, idea_vm.PROPOSE_NOTE, idea_vm.STORY_MISSING),
+                ),
+                id=idea_vm.PROPOSE_WHY_ID,
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
 def _idea() -> rx.Component:
-    """«¿De qué trata tu video?»: the same `topic` as «Qué decir» (D-E4; moving it out of
-    step 2 is ED-06)."""
+    """«¿De qué trata tu video?»: the same `topic` as the editor's general panel (D-E4,
+    ED-06: the video's context lives in the editor) and, with the AI parts on, «Proponerme
+    las partes» (`_idea_propose`)."""
     return rx.vstack(
         rx.text_area(
             value=S.brief_topic,
             on_change=S.set_brief_topic,
-            id="clip-edit-idea",
+            id=_IDEA_FIELD_ID,
             aria_label=vm.FLOW_QUESTIONS[vm.FLOW_IDEA],
+            aria_describedby="clip-edit-idea-help",
             rows="4",
             width="100%",
         ),
-        rx.text(vm.IDEA_HELP, size="1", color=T.TEXT_MUTED),
-        rx.text(vm.IDEA_EXAMPLE, size="1", color=T.TEXT_MUTED),
+        rx.text(
+            vm.IDEA_HELP + " " + vm.IDEA_EXAMPLE,
+            id="clip-edit-idea-help",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        rx.cond(S.clip_ai_on, _idea_propose()),
         spacing="2",
         width="100%",
         align_items="start",
+    )
+
+
+def _whole_video() -> rx.Component:
+    """ED-06 (design D6, D21): «Todo el video» over an AI part's panel, folded to its
+    line — what the whole video is about, who guides what (in one sentence) and
+    «Cambiar», which goes back to the general panel without opening another sheet."""
+    return rx.flex(
+        rx.icon("film", size=T.ICON_SM, aria_hidden="true", flex_shrink="0"),
+        rx.vstack(
+            rx.text(idea_vm.WHOLE_TITLE, size="1", weight="medium", color=T.TEXT_MUTED),
+            rx.text(S.clip_topic_whole, size="2", class_name="q-edit__whole-value"),
+            rx.text(idea_vm.WHOLE_RULE, size="1", color=T.TEXT_MUTED),
+            spacing="1",
+            align_items="start",
+            flex="1",
+            min_width="0",
+        ),
+        _topic_button(),
+        align="start",
+        gap="0.75rem",
+        width="100%",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CONTROL,
+        padding="0.75rem 1rem",
+        class_name="q-edit__whole",
+    )
+
+
+def _topic_button(button_id: str = "") -> rx.Component:
+    """«Cambiar» (something written) or «Escribir» (nothing yet): the general panel opens
+    as the thing chosen, the focus on «¿De qué trata tu video?» (UX review)."""
+    said = S.clip_topic_said
+    return rx.button(
+        rx.cond(said, idea_vm.CHANGE_LABEL, idea_vm.WRITE_LABEL),
+        type="button",
+        variant="ghost",
+        size="2",
+        min_height="44px",
+        flex_shrink="0",
+        on_click=S.edit_clip_general,
+        aria_label=rx.cond(said, idea_vm.CHANGE_ARIA, idea_vm.WRITE_ARIA),
+        **({"id": button_id} if button_id else {}),
+    )
+
+
+def _topic_row() -> rx.Component:
+    """ED-06 (design D21): with nothing chosen, ONE folded row under the timeline — «Tu
+    video trata de: «…»» · «Cambiar», or «Cuenta de qué trata tu video: guía el texto.» ·
+    «Escribir»."""
+    return rx.flex(
+        rx.icon("film", size=T.ICON_SM, aria_hidden="true", flex_shrink="0"),
+        rx.text(
+            S.clip_topic_row, size="2", flex="1", min_width="0", class_name="q-edit__whole-value"
+        ),
+        _topic_button(idea_vm.ROW_BUTTON_ID),
+        align="center",
+        gap="0.75rem",
+        width="100%",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CONTROL,
+        padding="0.25rem 0.25rem 0.25rem 1rem",
+        class_name="q-edit__topic-row",
+    )
+
+
+def _general_panel(general: rx.Component) -> rx.Component:
+    """The general panel opened as the thing chosen (design D21), ending in «Listo»."""
+    return rx.vstack(
+        general,
+        rx.el.div(
+            rx.button(
+                tl_vm.DONE_LABEL,
+                type="button",
+                on_click=S.close_clip_general,
+                class_name="q-tl-actions__btn",
+            ),
+            class_name="q-tl-panel__done",
+        ),
+        spacing="4",
+        width="100%",
+        align_items="stretch",
+        role="region",
+        aria_label=idea_vm.PANEL_TITLE,
     )
 
 
@@ -961,6 +1119,8 @@ def _ai_part() -> rx.Component:
     return rx.cond(
         row["id"] != "",
         rx.vstack(
+            # ED-06 (design D6): the whole video's context first, folded to its line
+            _whole_video(),
             rx.text(row["not_created"], size="1", color=T.TEXT_MUTED),
             # ux review: what happens first, then its photos and seconds, then how
             _ai_description(),
@@ -1271,11 +1431,14 @@ def _problem() -> rx.Component:
     )
 
 
-def arma_tu_video(media_body: rx.Component) -> rx.Component:
+def arma_tu_video(media_body: rx.Component, general: rx.Component | None = None) -> rx.Component:
     """The step's body, top to bottom (Deivid, 2026-11-16): the preview (centred on a
     wide step), the timeline with its bar, the chosen block's panel under them («menú
     de control») and «Armar mi video por partes». What «Agregar» opens goes in the
-    ONE side panel (`_flow_drawer`; «¿Con qué lo armamos?» is ``media_body``)."""
+    ONE side panel (`_flow_drawer`; «¿Con qué lo armamos?» is ``media_body``). ED-06
+    (m-25026636): with nothing chosen — no block, no join, no side panel — the panel is
+    ``general`` («¿De qué trata tu video?» and «Datos clave»: the video has 3 steps)."""
+    nothing_chosen = (S.clip_tl_selected == "") & (S.clip_join_open == "") & (S.clip_tl_flow == "")
     # `.q-edit-host` is the size container: the preview is centred over the timeline on
     # a wide step, as tall as the screen allows on a phone (`[data-edit-sync]`: one
     # clock for preview and tracks)
@@ -1288,6 +1451,16 @@ def arma_tu_video(media_body: rx.Component) -> rx.Component:
         rx.box(
             rx.cond(S.clip_tl_selected != "", _block_panel()),
             rx.cond(S.clip_join_open != "", _join_panel()),
+            *(
+                [
+                    rx.cond(
+                        nothing_chosen,
+                        rx.cond(S.clip_general_open, _general_panel(general), _topic_row()),
+                    )
+                ]
+                if general is not None
+                else []
+            ),
             _problem(),
             rx.text(vm.PREVIEW_FREE, size="1", color=T.TEXT_MUTED),
             # m-25114465 (ux review): how to find the joins, until the first one; and,

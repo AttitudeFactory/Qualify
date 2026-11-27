@@ -89,6 +89,12 @@ class PartsStartState(rx.State):
     error: str = ""
     #: The plan on screen is «Prefiero armarlas yo»'s (empty parts), not Claude's.
     manual: bool = False
+    #: ED-06 (m-25026636): the last proposal was asked from the editor's «Pedir una
+    #: idea» (its wait and its error show there), not from the card.
+    editor: bool = False
+    #: ED-06: `CreativeState.clip_idea_epoch` when the editor's error was said — it shows
+    #: only until «Pedir una idea» opens again or the context is typed.
+    error_epoch: int = -1
     #: The piece the card belongs to (`CreativeState.parts_piece`, -1 = none yet): once
     #: the piece changes, the card shows as new (the view compares both).
     piece: int = -1
@@ -185,82 +191,134 @@ class PartsStartState(rx.State):
         `typed` is what the field holds at the tap, sent with it (live test 2026-11-10):
         the field's `on_change` is debounced, so a tap right after typing used to reach
         here before the last `set_story` and propose the OLD sentence."""
-        async with self:
-            creative = await self.get_state(CreativeState)
-            piece = creative.parts_piece
-            if self.phase == vm.PHASE_PROPOSING and self.piece == piece:
-                return
-            self.piece = piece
+        await _run_proposal(self, typed, editor=False)
+
+    @rx.event(background=True)
+    async def propose_idea(self, typed: str | None = None):
+        """ED-06 (m-25026636, PR 7): «Agregar → Pedir una idea» on «Arma tu video» with
+        `QUALIFY_CLIP_AI_PARTS` on — the same one paid Claude call as the card
+        (`propose_parts`, through the same seam), its sentence being the video's own
+        context («¿De qué trata tu video?», `brief_topic`, `typed` at the tap). The parts
+        go at the END of the track as far as the caps let (`CreativeState._clip_add_idea`),
+        nothing deleted; free until «Crear». Then the panel closes by itself."""
+        if await _run_proposal(self, typed, editor=True):
+            yield CreativeState.finish_clip_idea
+
+
+def _fail(state: Any, text: str, creative: CreativeState | None) -> None:
+    """The card's (or, with `creative`, the editor's) error, said until the owner opens
+    «Pedir una idea» again or types the context (`clip_idea_epoch`)."""
+    state._fail(text)
+    if creative is not None:
+        state.error_epoch = creative.clip_idea_epoch
+
+
+async def _run_proposal(state: Any, typed: str | None, *, editor: bool) -> bool:
+    """«Proponerme las partes» for the card (`editor` False: the plan becomes «Orden del
+    clip»'s list) or for the editor's «Pedir una idea» (`editor` True: blocks at the end
+    of the track). A module function, not a method: `state` is the background event's
+    own `self` (its lock and `get_state`). True when the parts went in."""
+    async with state:
+        creative = await state.get_state(CreativeState)
+        piece = creative.parts_piece
+        if state.phase == vm.PHASE_PROPOSING and state.piece == piece:
+            return False
+        state.piece = piece
+        state.editor = editor
+        if editor:
+            if isinstance(typed, str):
+                # the context is kept whole, as typed (and «Mejorar mi texto»'s versions
+                # with it); only what Claude reads is cut (`clean_story`, `STORY_MAX`)
+                creative.brief_topic = typed
+            story = vm.clean_story(creative.brief_topic)
+        else:
             if typed is not None:
-                self.story = vm.field_text(typed)
-            story = vm.clean_story(self.story)
-            if not story:
-                self._fail(vm.STORY_MISSING_TEXT)
-                return
-            auth = await self.get_state(AuthState)
-            tenant_id = tenant_uuid(auth.session_tenant_id)
-            if tenant_id is None:
-                self._fail(vm.NO_SESSION_TEXT)
-                return
-            product_id = creative.selected_product_id
-            product_name = creative.brief_product_ref
-            # m-25026509: the same answer step 3 shows — one value, two places
-            awareness_level = creative.clip_audience_level()
-            token = uuid.uuid4().hex
-            self._token = token
-            self.phase = vm.PHASE_PROPOSING
-            self.error = ""
-            self._show_stage(0)
-            brand_id = creative._brand_id
-        brand = UUID(brand_id) if brand_id else None
-        if brand is None:
-            try:
-                brand = await asyncio.to_thread(default_brand_id, tenant_id)
-            except Exception as exc:  # noqa: BLE001 — said on the card, never raised
-                logger.warning("parts proposal: brand unreadable (%s)", type(exc).__name__)
-                brand = None
-        if brand is None:
-            async with self:
-                if self._token == token:
-                    self._fail(vm.NO_SESSION_TEXT)
-            return
+                state.story = vm.field_text(typed)
+            story = vm.clean_story(state.story)
+        if editor:
+            # the caps (and a video still being read) said before the call: Claude is
+            # never asked for parts that cannot go in (design D22). The button already
+            # says why, under it: not a second time here (UX review)
+            if creative._clip_idea_off_reason():
+                return False
+        if not story:
+            _fail(state, vm.STORY_MISSING_TEXT, creative if editor else None)
+            return False
+        auth = await state.get_state(AuthState)
+        tenant_id = tenant_uuid(auth.session_tenant_id)
+        if tenant_id is None:
+            _fail(state, vm.NO_SESSION_TEXT, creative if editor else None)
+            return False
+        product_id = creative.selected_product_id
+        product_name = creative.brief_product_ref
+        # m-25026509: the same answer step 3 shows — one value, two places
+        awareness_level = creative.clip_audience_level()
+        token = uuid.uuid4().hex
+        state._token = token
+        state.phase = vm.PHASE_PROPOSING
+        state.error = ""
+        state._show_stage(0)
+        brand_id = creative._brand_id
+    brand = UUID(brand_id) if brand_id else None
+    if brand is None:
+        try:
+            brand = await asyncio.to_thread(default_brand_id, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — said on the card, never raised
+            logger.warning("parts proposal: brand unreadable (%s)", type(exc).__name__)
+            brand = None
+    if brand is None:
+        async with state:
+            if state._token == token:
+                creative = await state.get_state(CreativeState)
+                _fail(state, vm.NO_SESSION_TEXT, creative if editor else None)
+        return False
 
-        task = asyncio.ensure_future(
-            asyncio.to_thread(
-                provider.propose,
-                tenant_id,
-                brand,
-                story=story,
-                product_id=product_id,
-                product_name=product_name,
-                awareness_level=awareness_level,
-            )
+    task = asyncio.ensure_future(
+        asyncio.to_thread(
+            provider.propose,
+            tenant_id,
+            brand,
+            story=story,
+            product_id=product_id,
+            product_name=product_name,
+            awareness_level=awareness_level,
         )
-        stage = 0
-        while True:
-            try:
-                outcome = await asyncio.wait_for(asyncio.shield(task), timeout=vm.STAGE_SECONDS)
-                break
-            except TimeoutError:
-                stage = vm.next_stage(stage)
-                async with self:
-                    if self._token != token:
-                        continue  # superseded: keep waiting only to let the thread end
-                    self._show_stage(stage)
+    )
+    stage = 0
+    while True:
+        try:
+            outcome = await asyncio.wait_for(asyncio.shield(task), timeout=vm.STAGE_SECONDS)
+            break
+        except TimeoutError:
+            stage = vm.next_stage(stage)
+            async with state:
+                if state._token != token:
+                    continue  # superseded: keep waiting only to let the thread end
+                state._show_stage(stage)
 
-        async with self:
-            if self._token != token:
-                return  # a newer proposal, «Prefiero armarlas yo» or a new piece won
-            auth = await self.get_state(AuthState)
-            if str(tenant_id) != auth.session_tenant_id:
-                # the session's business changed while Claude answered: nothing of the
-                # other business is written here (`test_auth_state`'s write guard)
-                self._start_over()
-                return
-            if not outcome.ok:
-                self._fail(outcome.error)
-                return
-            creative = await self.get_state(CreativeState)
+    async with state:
+        if state._token != token:
+            return False  # a newer proposal, «Prefiero armarlas yo» or a new piece won
+        auth = await state.get_state(AuthState)
+        if str(tenant_id) != auth.session_tenant_id:
+            # the session's business changed while Claude answered: nothing of the
+            # other business is written here (`test_auth_state`'s write guard)
+            state._start_over()
+            return False
+        creative = await state.get_state(CreativeState)
+        if not outcome.ok:
+            _fail(state, outcome.error, creative if editor else None)
+            return False
+        if editor:
+            placed, line = (
+                creative._clip_add_idea(outcome.entries, outcome.provenance)
+                if creative.parts_piece == piece
+                else (False, "")
+            )
+            if not placed and line:
+                _fail(state, line, creative)
+                return False
+        else:
             placed = apply_to_creative(
                 creative,
                 story=story,
@@ -268,7 +326,8 @@ class PartsStartState(rx.State):
                 provenance=outcome.provenance,
                 piece=piece,
             )
-            self.phase = vm.PHASE_READY if placed else vm.PHASE_IDLE
-            self.manual = False
-            self.open = False
-            self.steps = []
+        state.phase = vm.PHASE_READY if placed else vm.PHASE_IDLE
+        state.manual = False
+        state.open = False
+        state.steps = []
+        return placed

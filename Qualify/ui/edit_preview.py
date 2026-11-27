@@ -458,8 +458,20 @@ def edit_sequence_preview(
                     ai_mark,
                     rx.el.span(
                         rx.icon(T.AI_ICON, size=T.ICON_SM, aria_hidden="true"),
-                        rx.el.span(custom_attrs={"data-edit-seq-ai-text": ""}),
+                        # its name and the rest apart: a narrow frame shows the name
+                        # alone (m-25026638, `.q-edit-seq__ai-rest`)
+                        rx.el.span(
+                            rx.el.span(custom_attrs={"data-edit-seq-ai-name": ""}),
+                            rx.el.span(
+                                class_name="q-edit-seq__ai-rest",
+                                custom_attrs={"data-edit-seq-ai-rest": ""},
+                            ),
+                            custom_attrs={"data-edit-seq-ai-text": ""},
+                        ),
                         class_name="q-ai-mark q-edit-seq__ai",
+                        # its words may end in «…» on a narrow frame: the full ones are
+                        # its name (`aria-label`, written by the script with its words)
+                        role="img",
                         custom_attrs={"data-edit-seq-ai": ""},
                     ),
                 )

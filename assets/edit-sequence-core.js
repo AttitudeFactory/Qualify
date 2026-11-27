@@ -406,8 +406,19 @@
     return block && block.kind === "ai" && block.mark ? String(block.mark) : "";
   }
 
+  /* m-25026638 (UX review): the mark in two pieces — its name («Parte con IA 1») and the
+     rest («· se crea al tocar «Crear»», from the « · » on) — so a narrow frame shows the
+     name alone; the words stay the signed ones, never a new short form. */
+  function aiMarkParts(mark) {
+    var text = String(mark || "");
+    var cut = text.indexOf(" · ");
+    if (cut < 0) return { name: text, rest: "" };
+    return { name: text.slice(0, cut), rest: text.slice(cut) };
+  }
+
   var api = {
     aiMark: aiMark,
+    aiMarkParts: aiMarkParts,
     joinFrame: joinFrame,
     joinUnder: joinUnder,
     underSourceTime: underSourceTime,

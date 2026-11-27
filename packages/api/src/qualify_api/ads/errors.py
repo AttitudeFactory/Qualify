@@ -20,7 +20,7 @@ CODE_MESSAGES = {
     **dict.fromkeys(RATE_LIMIT_CODES, _WAIT),
     294: "Meta no permitió esta acción. Revisa los permisos de la cuenta publicitaria.",
     2654: _REVIEW,
-    190: "Meta pidió volver a conectar la cuenta. Conéctala de nuevo en Cuentas conectadas.",
+    190: "Meta pidió volver a conectar la cuenta. Conéctala de nuevo en Tus redes.",
 }
 # Conservative copy for undocumented cases: do not invent a specific cause. The
 # discovery ticket must confirm the finer diagnoses before these become actionable.
