@@ -75,7 +75,8 @@ CODES = (
     "extend_after_own_media",
     "extend_not_same_moment",
     # m-25129406
-    "extend_own_video_unfit",
+    "extend_own_video_speed",
+    "extend_own_video_short",
 )
 
 

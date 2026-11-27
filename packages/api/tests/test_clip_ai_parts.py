@@ -473,17 +473,67 @@ def test_extend_after_the_owners_video_continues_it_with_its_switch_on(
     assert part.extend_own.end_s == 4.0
 
 
-@pytest.mark.parametrize("own", [_own(1.5), _own(4.0, speed=2)])
+@pytest.mark.parametrize(
+    ("own", "code"),
+    [(_own(1.5), "extend_own_video_short"), (_own(4.0, speed=2), "extend_own_video_speed")],
+)
 def test_extend_after_a_short_or_sped_up_own_video_is_refused(
-    own: SourceSegment, monkeypatch: pytest.MonkeyPatch
+    own: SourceSegment, code: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(EXTEND_SWITCH, "draft")
     monkeypatch.setenv(CLIP_EXTEND_OWN_VIDEO_SWITCH, "on")
     world = _world()
     with pytest.raises(RecipeRefused) as refused:
         _create(world, _clip((_own(3.0, OTHER), own, _block(0)), (_entry(mode="extend"),)))
-    assert "extend_own_video_unfit" in {p.code for p in refused.value.problems}
+    assert code in {p.code for p in refused.value.problems}
     _nothing_written(world)
+
+
+def test_the_owners_words_after_the_ux_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UX review of PR 2 (m-25129406): the texts the owner reads, pinned."""
+    from qualify_api.creative.video_pipeline import ai_parts as ap
+
+    assert ap.ai_part_text("extend_own_video_speed") == (
+        "Ese video va rápido o lento. Déjalo a velocidad normal para continuarlo."
+    )
+    assert ap.ai_part_text("extend_own_video_short") == (
+        "Ese video dura menos de 2 segundos. Usa uno más largo o elige «Nueva»."
+    )
+    # with the switch off, the words of PR 1; on, a photo is what is left to refuse
+    assert ap.ai_part_text("extend_after_own_media") == ap.AI_PART_TEXTS["extend_after_own_media"]
+    monkeypatch.setenv(CLIP_EXTEND_OWN_VIDEO_SWITCH, "on")
+    assert ap.ai_part_text("extend_after_own_media") == (
+        "«Sigue a la anterior» no puede continuar una foto. Pon una parte con IA o un video "
+        "tuyo justo antes, o elige «Nueva»."
+    )
+    assert cap.AI_PART_FAILED_TEXT == (
+        "Tu video no se pudo armar porque una de sus partes con IA falló. No se descontó nada "
+        "de tu plan. Vuelve a crear el video cuando quieras."
+    )
+    assert cap.NOT_VERTICAL_TEXT == (
+        "Las partes con IA solo funcionan en videos verticales. Cambia el formato a vertical "
+        "para usarlas."
+    )
+
+
+def test_a_misspelled_switch_is_logged_once_per_value(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The editor reads the switches dozens of times per event: one line per bad value."""
+    from qualify_api.creative.video_pipeline import ai_parts as ap
+
+    ap._warn_bad_switch.cache_clear()  # noqa: SLF001
+    caplog.set_level("ERROR", logger=ap.__name__)
+    for switch, reader in (
+        (CLIP_AI_PARTS_SWITCH, ap.clip_ai_parts_on),
+        (CLIP_EXTEND_OWN_VIDEO_SWITCH, ap.clip_extend_own_video_on),
+    ):
+        monkeypatch.setenv(switch, "encendido")
+        assert [reader() for _ in range(20)] == [False] * 20
+        monkeypatch.setenv(switch, "si")
+        assert reader() is False and reader() is False
+    lines = [r.getMessage() for r in caplog.records if r.name == ap.__name__]
+    assert len(lines) == 4  # (2 switches) x (2 distinct bad values)
 
 
 def test_extend_after_a_photo_is_never_continued(monkeypatch: pytest.MonkeyPatch) -> None:

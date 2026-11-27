@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Sequence
+from functools import cache
 from uuid import UUID
 
 from qualify_creative.effects import RecipeProblem
@@ -141,41 +142,61 @@ AI_PART_TEXTS: dict[str, str] = {
         "«Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento "
         "del video de inspiración. Elige «Nueva»."
     ),
-    # m-25129406: only with `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on
-    "extend_own_video_unfit": (
-        "Para que «Sigue a la anterior» continúe tu video, ese video tiene que ir a velocidad "
-        "normal y durar al menos 2 segundos. Cámbialo o elige «Nueva»."
+    # m-25129406: only with `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on (UX review of PR 2)
+    "extend_own_video_speed": (
+        "Ese video va rápido o lento. Déjalo a velocidad normal para continuarlo."
+    ),
+    "extend_own_video_short": (
+        "Ese video dura menos de 2 segundos. Usa uno más largo o elige «Nueva»."
     ),
 }
 
+#: m-25129406 (UX review): `extend_after_own_media` with `QUALIFY_CLIP_EXTEND_OWN_VIDEO`
+#: on — then only a photo right before is refused, and an own video is a way out.
+EXTEND_AFTER_PHOTO_TEXT = (
+    "«Sigue a la anterior» no puede continuar una foto. Pon una parte con IA o un video tuyo "
+    "justo antes, o elige «Nueva»."
+)
+
 
 def ai_part_text(code: str) -> str | None:
-    """The Spanish words for a code of this contract, None for any other code."""
+    """The Spanish words for a code of this contract, None for any other code. With
+    `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on, `extend_after_own_media` says what is left: a
+    photo is never continued, a video of the owner is."""
+    if code == "extend_after_own_media" and clip_extend_own_video_on():
+        return EXTEND_AFTER_PHOTO_TEXT
     return AI_PART_TEXTS.get(code)
+
+
+@cache
+def _warn_bad_switch(name: str, value: str) -> None:
+    """Log a misspelled switch ONCE per (switch, value): the editor reads the switches
+    dozens of times per event, and one line says it all."""
+    logger.error("%s must be off or on, not %r: read as off", name, value)
+
+
+def _switch_on(name: str) -> bool:
+    """`on` → True; `off`/empty → False; anything else is logged once and read as off —
+    never turned on by a typo."""
+    value = os.environ.get(name, "off").strip().lower()
+    if value in ("", "off"):
+        return False
+    if value == "on":
+        return True
+    _warn_bad_switch(name, value)
+    return False
 
 
 def clip_ai_parts_on() -> bool:
     """Whether `QUALIFY_CLIP_AI_PARTS` is `on`. Anything but `off`/empty/`on` is logged
-    and read as off: never an AI block by a typo."""
-    value = os.environ.get(CLIP_AI_PARTS_SWITCH, "off").strip().lower()
-    if value in ("", "off"):
-        return False
-    if value == "on":
-        return True
-    logger.error("%s must be off or on, not %r: read as off", CLIP_AI_PARTS_SWITCH, value)
-    return False
+    (once per value) and read as off: never an AI block by a typo."""
+    return _switch_on(CLIP_AI_PARTS_SWITCH)
 
 
 def clip_extend_own_video_on() -> bool:
     """Whether `QUALIFY_CLIP_EXTEND_OWN_VIDEO` is `on` (m-25129406). As the other switch:
-    anything but `off`/empty/`on` is logged and read as off."""
-    value = os.environ.get(CLIP_EXTEND_OWN_VIDEO_SWITCH, "off").strip().lower()
-    if value in ("", "off"):
-        return False
-    if value == "on":
-        return True
-    logger.error("%s must be off or on, not %r: read as off", CLIP_EXTEND_OWN_VIDEO_SWITCH, value)
-    return False
+    anything but `off`/empty/`on` is logged (once per value) and read as off."""
+    return _switch_on(CLIP_EXTEND_OWN_VIDEO_SWITCH)
 
 
 def ai_part_slots(segments: Sequence[SourceSegment]) -> dict[int, int]:
@@ -294,8 +315,10 @@ def _extend_problems(
         if before.kind == "video" and clip_extend_own_video_on():
             # m-25129406: the owner's own video, continued as it plays — at ×1 and long
             # enough for ModelArk's source (2 s); a photo is never continued
-            if before.speed != 1 or before.output_seconds < EXTEND_OWN_MIN_S:
-                return (RecipeProblem(code="extend_own_video_unfit", part=None, field=field),)
+            if before.speed != 1:
+                return (RecipeProblem(code="extend_own_video_speed", part=None, field=field),)
+            if before.output_seconds < EXTEND_OWN_MIN_S:
+                return (RecipeProblem(code="extend_own_video_short", part=None, field=field),)
             return ()
         return (RecipeProblem(code="extend_after_own_media", part=None, field=field),)
     entry, previous = ai_parts[entry_at], ai_parts[previous_at]

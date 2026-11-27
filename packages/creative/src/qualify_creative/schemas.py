@@ -760,7 +760,8 @@ RecipeRefusal = Literal[
     "extend_after_own_media",  # «Sigue a la anterior» right after the owner's video or photo
     "extend_not_same_moment",  # «Sigue a la anterior» not split from the same take as before
     # m-25129406 (ADR 50 §13, PR 2): appended, never reordered
-    "extend_own_video_unfit",  # «Sigue a la anterior» after an own video too short or sped up
+    "extend_own_video_speed",  # «Sigue a la anterior» after an own video not at ×1
+    "extend_own_video_short",  # «Sigue a la anterior» after an own video under 2 s
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 

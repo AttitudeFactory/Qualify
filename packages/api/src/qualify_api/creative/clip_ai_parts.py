@@ -77,11 +77,16 @@ CLIP_AI_PARTS_VERSION = 1
 
 # -- what the owner reads (Spanish, `qualify-copy-es`) -------------------------------------
 
-#: The Clip's failure when a part failed and nothing was chosen for 72 h.
+#: The Clip's failure when one of its parts failed (at once, until PR 3 brings a choice).
 AI_PART_FAILED = "ai_part_failed"
 AI_PART_FAILED_TEXT = (
-    "Tu video no se armó porque una de sus partes con IA no se pudo crear. "
-    "No se descontó nada de tu plan. Créalo de nuevo cuando quieras."
+    "Tu video no se pudo armar porque una de sus partes con IA falló. "
+    "No se descontó nada de tu plan. Vuelve a crear el video cuando quieras."
+)
+#: A Clip with AI parts that is not vertical (a part is always 9:16).
+NOT_VERTICAL_TEXT = (
+    "Las partes con IA solo funcionan en videos verticales. "
+    "Cambia el formato a vertical para usarlas."
 )
 #: Approving a Clip with AI parts waits for PR 4 (the seconds of its parts, their finals).
 APPROVE_UNAVAILABLE_CODE = "ai_parts_approve_unavailable"
@@ -531,7 +536,7 @@ class ClipAiPartsService(ClipAvatarService):
             # a part is always 9:16 (`parts._child_brief`): so is the Clip it goes into
             raise ClipAiPartsRefused(
                 "ai_part_outside_clip",
-                "Las partes con IA solo se pueden usar en un video vertical.",
+                NOT_VERTICAL_TEXT,
                 raw=f"clip format {brief.format.value}",
             )
         if any(p.entry.mode == "extend" for p in planned) and not extend_available():
@@ -661,6 +666,7 @@ __all__ = [
     "CLIP_AI_PARTS_VERSION",
     "NEEDS_DESCRIPTION_CODE",
     "NEEDS_DESCRIPTION_TEXT",
+    "NOT_VERTICAL_TEXT",
     "AiPartRow",
     "AiPartVideo",
     "AiPartsFailed",

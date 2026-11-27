@@ -156,7 +156,8 @@ def test_recipe_refusals_are_pinned() -> None:
         "extend_after_own_media",
         "extend_not_same_moment",
         # m-25129406: appended, never reordered
-        "extend_own_video_unfit",
+        "extend_own_video_speed",
+        "extend_own_video_short",
     )
 
 
