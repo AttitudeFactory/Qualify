@@ -1,8 +1,33 @@
 # Épica — Bandeja única de chats y respuesta automática en todos los canales
 
-`[EN CURSO · planeada 2026-11-12, actualizada 2026-11-14 · épica m-25017839 · ticket base m-24789459 · product-owner · 21 tickets en Meegle, 15 historias sin ticket · segundo incremento en curso]`
+`[EN CURSO · planeada 2026-11-12, actualizada 2026-11-27 · épica m-25017839 · ticket base m-24789459 · product-owner · tickets en Meegle en §2, 12 historias sin ticket · migración de la bandeja terminada; quedan cabos sueltos y la pista B]`
 
-> **Estado al 2026-11-14 (hora de Colombia).** Primer incremento (m-25017843 → m-25017844 →
+> **Estado al 2026-11-27 (hora de Colombia).** **La migración que pidió el fundador está terminada
+> y en producción:** todos los chats de WhatsApp e Instagram se atienden en «Por responder» y el
+> módulo «WhatsApp» ya no existe. En orden: «Promociones» junto a «Anuncios» (m-25017862, PR #693,
+> fusionado el 2026-11-14 a las 23:10); el menú de WhatsApp guarda su paso y su respuesta juntos
+> (m-25017846, PR #697, 2026-11-15 00:14); «Ajustes de chats» (m-25017861, PR #698, 2026-11-15
+> 11:43); un solo cuadro de respuesta (m-25027374, BU-A7, PR #700, 2026-11-15 12:10); el chat de
+> WhatsApp se abre junto a la lista (m-25029798, PR #705, 2026-11-15 14:58) y sus chats solo se
+> atienden en «Por responder» (m-25029799, PR #707, 2026-11-15 23:28) — las dos partes de BU-A11;
+> «Tu número» pasa a «Tus redes» y «Ajustes de chats» y se quita el módulo (m-25027373, BU-A10,
+> PR #852, 2026-11-26 23:34, desplegado); los 17 textos que aprobó el fundador el 2026-11-27
+> («Todo sí») aplicados (m-25131413, PR #854, 2026-11-27 08:00, desplegado). Los despliegues de los
+> PR #852 y #854 se comprobaron en GitHub Actions (`deploy.yml` en verde); los anteriores van
+> dentro de esos despliegues de `main`. **En curso:** m-25143229 (el mismo «+» de WhatsApp en los
+> chats de Instagram; reemplaza a BU-A15) y m-25143230 («Actividad» del número pasa a «Resultados ›
+> WhatsApp»), los dos sin PR al escribir esto. **Cabos sueltos** anotados por el fundador el
+> 2026-11-27, creados como Issues de la épica en Backlog: m-25143233, m-25143234, m-25143235,
+> m-25143236, m-25143237, m-25143238 y m-25143239 (§5).
+>
+> **Nunca comprobado, en ninguna de estas historias:** un celular real ni Safari / iOS (todas las
+> pruebas de navegador corrieron en Chromium); un envío real desde el cuadro único (ninguna prueba
+> toca «Enviar»); «Verificar ahora», «Guardar» y «Crear código» de la tarjeta del número (llaman a
+> Meta); el selector de número con dos números (producción tiene uno). Los PR #705, #707, #852 y
+> #854 dejan, cada uno, su lista «After deploy» de comprobaciones con la sesión del dueño; no hay
+> registro de que se hayan hecho.
+
+> **Estado anterior, al 2026-11-14 (hora de Colombia).** Primer incremento (m-25017843 → m-25017844 →
 > m-25017859, más m-25026457) fusionado y en producción desde el 2026-11-13. **Segundo incremento**
 > (decisión del fundador del 2026-11-14, §6 (viii) 1: igualar la pantalla del chat y separar los
 > ajustes): fusionados el 2026-11-14 m-25017860 (PR #677, contraste medido), m-25027372 (BU-A6,
@@ -73,6 +98,8 @@ configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]`
 - **Dependencias cargadas en Meegle («Bloqueado por»):** m-25017859 ← m-25017843, m-25017844;
   m-25017866 ← m-25017846; m-25017868 ← m-25017866; m-25027371 ← m-25017860;
   m-25027374 ← m-25027371, m-25027372; m-25027373 ← m-25017861.
+- **«Relacionado con» cargados el 2026-11-27:** m-25143234 ↔ m-25017866 (la misma píldora);
+  m-25143238 ↔ m-25143229 (va después del «+» de Instagram, mismos archivos).
 - **Fuera de las historias:** el error m-25027369 (Issue sin el campo «Feature»), encontrado en
   producción en la noche del 2026-11-13 al 2026-11-14, al revisar la lista única recién desplegada
   (PR #665); ticket creado a las 00:46 del 2026-11-14 (§5).
@@ -100,6 +127,23 @@ configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]`
 | BU-S2 | m-25017849 | P2 |
 | BU-S3 | m-25017850 | P2 |
 | BU-S4 | m-25017852 | P1 |
+| BU-A11 (parte 1) | m-25029798 | — |
+| BU-A11 (parte 2) | m-25029799 | — |
+| Los 17 textos aprobados | m-25131413 | — |
+| Reemplaza a BU-A15 | m-25143229 («+» de WhatsApp en Instagram) | — |
+| Seguimiento de BU-A10 | m-25143230 («Actividad» en «Resultados › WhatsApp») | — |
+| Cabo suelto (a) | m-25143233 (creado el 2026-11-27) | P2 |
+| Cabo suelto (b) | m-25143234 (creado el 2026-11-27) | P2 |
+| Cabo suelto (c) | m-25143235 (creado el 2026-11-27) | P3 |
+| Cabo suelto (d) | m-25143236 (creado el 2026-11-27) | P3 |
+| Cabo suelto (e) | m-25143237 (creado el 2026-11-27) | P3 |
+| Cabo suelto (f) | m-25143238 (creado el 2026-11-27; cubre BU-A8, BU-A17, BU-A18 en WhatsApp) | P2 |
+| Cabo suelto (g) | m-25143239 (creado el 2026-11-27) | P3 |
+
+Las filas con «—» se crearon después de la planificación de este documento, durante el segundo
+incremento; su prioridad está en Meegle y no se copió aquí. Estado en Meegle al 2026-11-27:
+m-25029798, m-25029799 y m-25131413 en RESOLVED; m-25143229 y m-25143230 en In Progress. Los cabos sueltos (a)–(g) se
+describen en §5.
 - **El Issue base m-24789459** «Bandeja unificada cross-canal» (Backlog, `parking-lot`, sin
   Assignee): recomiendo **no convertirlo** en Feature (cambiar el tipo de un ítem no es algo que
   hagamos por API y perdería su historial) sino enlazarlo a la Feature nueva como la historia de
@@ -394,9 +438,26 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25027374 (BU-A7) · Conversaciones: un solo cuadro de respuesta que muestra solo lo que el canal puede mandar
 
-> **Sin empezar (Backlog).** Sus dos dependencias, m-25027371 y m-25027372, ya están fusionadas.
-> **Espera el visto bueno del fundador para el menú «+» (`orbit_menu`) en Instagram.** Lo que trae
-> de las historias anteriores (comentarios del ticket):
+> **Fusionada el 2026-11-15 a las 12:10 — PR #700 (commit `57a95da7`); ticket RESOLVED; en
+> producción.** Entregado: un solo cuadro en los dos canales (`Qualify/reply_box.py` +
+> `reply_box_vm.py`): las herramientas arriba y abajo «+» (WhatsApp) · el campo · «Enviar»; una
+> herramienta se dibuja solo si el descriptor del canal la permite **y** el canal tiene hoy cómo
+> mandarla (`SEND_DOORS`, `missing_doors()`), nunca deshabilitada. El texto, cerrar, reabrir y
+> asignar van por el despachador de m-25027372; toda acción va dentro de `acting_login(...)` (la
+> comprobación de miembro del negocio ya corre en los chats) y `sending` evita el doble envío. En el
+> celular los mensajes pasan del 27 % (WhatsApp) y 15 % (Instagram) al 51 % de la pantalla a
+> 360×780. El fundador aprobó el «+» en Instagram con solo lo que Instagram permite, pero **el PR no
+> lo dibuja** (abrir el selector de archivos desde una fila del menú puede fallar en iOS Safari);
+> lo trae m-25143229 (en curso). La distribución construida (herramientas arriba) no es la de la
+> maqueta (tres renglones); la revisión de UX prefirió la construida.
+>
+> **Le falta a WhatsApp** (PR #700, «Limitations»): «Mensajes guardados», «Sugerir respuesta»,
+> «Archivo» y «Nota de voz» → m-25143238 (§5). **Nunca comprobado:** WebKit / un iPhone, el teclado
+> en pantalla, un envío real (ninguna prueba toca «Enviar»), la grabadora de voz.
+>
+> **Antes, sin empezar (2026-11-14):** sus dos dependencias, m-25027371 y m-25027372, ya estaban
+> fusionadas; esperaba el visto bueno del fundador para el menú «+» (`orbit_menu`) en Instagram. Lo
+> que traía de las historias anteriores (comentarios del ticket):
 >
 > - El cuadro único conserva por canal lo que hoy hace cada pantalla y el despachador no hace:
 >   `_owned(connection_id)` en los dos canales; en Instagram, `can_manage_dms and not is_degraded`
@@ -433,7 +494,8 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A8 · Chats: «Mensajes guardados» para WhatsApp e Instagram
 
-> **Sin ticket todavía — espera a BU-A7.**
+> **Sin ticket propio — BU-A7 ya está fusionada (PR #700).** Hoy «Mensajes guardados» se dibuja
+> solo en Instagram; llevarlo a WhatsApp es parte de m-25143238 (creado el 2026-11-27, §5).
 
 - **Tipo:** Issue · `Feature` · **P2** · **M** · dueño `backend` (+ `reflex-ui` en el mismo PR si es chico)
 - **Depende de:** BU-A7 · **Bloqueada por:** —
@@ -456,8 +518,16 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25017861 (BU-A9) · Chats: «Ajustes de chats» aparte de los mensajes
 
-> **En curso (In Progress) desde la noche del 2026-11-14; desbloqueada ese día por la decisión
-> (vi).** Se construye sobre la rama de m-25017862 (PR #693), que toca los mismos archivos. Al terminar saca «WhatsApp» de «Atiende» y el
+> **Fusionada el 2026-11-15 a las 11:43 — PR #698; ticket RESOLVED; en producción.** Entrada nueva
+> «Ajustes de chats» en «Atiende» con la página `/chats/ajustes` («Para todos tus chats»,
+> WhatsApp, Instagram); «Tu menú de bienvenida» en su propia página `/chats/ajustes/whatsapp`;
+> las «Preguntas iniciales» de Instagram salen de la pantalla de mensajes; nombres de la decisión
+> (vi) aplicados («Respuesta automática» → «Tu menú de bienvenida», «Atajos» → «Preguntas
+> iniciales»); las direcciones viejas del menú redirigen. Después, el PR #852 le agregó las filas
+> «Perfil» y «Códigos QR» de WhatsApp y el editor real de «Formas de pago» (m-25027373).
+>
+> **Antes (2026-11-14):** en curso desde la noche del 2026-11-14; desbloqueada ese día por la
+> decisión (vi). Se construye sobre la rama de m-25017862 (PR #693), que toca los mismos archivos. Al terminar saca «WhatsApp» de «Atiende» y el
 > menú lateral vuelve a su número de entradas (ver m-25017862).
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **L** · dueño `reflex-ui`
@@ -484,9 +554,27 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25027373 (BU-A10) · Conexiones: «Tu número» de WhatsApp pasa a «Tus redes»
 
-> **Sin empezar (Backlog).** Espera a m-25017861 (cargado en Meegle como «Bloqueado por») y la
-> respuesta del fundador sobre adónde van «Códigos QR» y «Actividad» cuando «Tu número»
-> desaparezca (§6 (viii)).
+> **Hecha — PR #852 (commit `e2766458`), fusionado el 2026-11-26 a las 23:34 y desplegado; ticket
+> RESOLVED.** Es el último paso de la migración. **El módulo «WhatsApp» ya no existe:** el menú
+> lateral (y «Más» en el celular) ya no tiene la entrada «WhatsApp»; «Atiende» queda con «Por
+> responder» y «Ajustes de chats». `/whatsapp` solo redirige (una vez, con sesión, solo
+> parámetros conocidos): `/whatsapp` y el antiguo «Estado» → `/connections`; «Perfil» →
+> `/chats/ajustes/whatsapp/perfil`; «Códigos QR» → `/chats/ajustes/whatsapp/codigos-qr`; «Formas
+> de pago» → `/chats/ajustes/formas-de-pago` (sin selector de número: los métodos son los mismos
+> para todos los números); «Actividad» → `/connections/whatsapp/actividad`. `/whatsapp/promociones`
+> no cambia. **El estado del número es una tarjeta en «Tus redes»**, con «Avisar al equipo de
+> Qualify» si WhatsApp pausó el número y, detrás de «Más detalles», los datos del número y
+> «Verificar ahora». Sin número, «Tus redes» muestra una tarjeta para pedir que conecten el
+> WhatsApp. Sin cambios de backend ni migración.
+>
+> **Siguió:** «Actividad» va a «Resultados › WhatsApp» (m-25143230, en curso, recomendación de UX
+> del PR). Cabos sueltos de esta tarjeta: «Desconectar» en el celular (m-25143236) y «Estado del
+> nombre: Rechazado» con nombre verificado (m-25143239), §5. **Nunca comprobado:** «Verificar
+> ahora», «Guardar» y «Crear código» tocados en un navegador (llaman a Meta); Safari o un iPhone;
+> las rutas por número (producción tiene uno).
+>
+> **Antes (2026-11-14):** sin empezar; esperaba a m-25017861 y la respuesta del fundador sobre
+> adónde van «Códigos QR» y «Actividad» cuando «Tu número» desaparezca (§6 (viii)).
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **S** · dueño `reflex-ui`
 - **Depende de:** m-25017861 · **Bloqueada por:** —
@@ -503,7 +591,25 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A11 · Navegación: un solo nombre por cosa y redirecciones a la bandeja
 
-> **Sin ticket todavía — espera a m-25017859 y m-25017861.**
+> **Hecha en dos tickets, los dos RESOLVED y en producción.** m-25029798 (PR #705, fusionado el
+> 2026-11-15 a las 14:58): un chat de WhatsApp se abre dentro de «Por responder», donde se abre uno
+> de Instagram (al lado de la lista en escritorio; pantalla completa con «‹ Por responder» en el
+> celular); al volver se conservan el filtro, el canal y la posición; las direcciones viejas de un
+> chat redirigen. m-25029799 (PR #707, fusionado el 2026-11-15 a las 23:28): WhatsApp › Chats
+> desaparece, todos los chats se atienden en «Por responder», la entrada «WhatsApp» deja de llevar
+> contador (el de «Por responder» ya los contaba) y, con dos o más números, la lista muestra
+> «Todos los números». La ruta quedó `/responder?tab=mensajes…` (no
+> `…&canal=whatsapp` como proponía este borrador, salvo en la redirección de la lista vieja).
+>
+> **Criterios de abajo:** no se revisaron uno por uno contra estos PR. El PR #698 cambió «Atajos» →
+> «Preguntas iniciales» y el PR #700 «Respuestas rápidas» → «Botones» en el cuadro de Instagram,
+> pero el `grep` del primer criterio **no queda limpio**: `Qualify/whatsapp_templates_vm.py:96`
+> todavía muestra «Respuestas rápidas» como tipo de botón de los mensajes aprobados de WhatsApp
+> (comprobado sobre `origin/main` el 2026-11-27; puede ser a propósito, es el nombre de Meta, y no
+> tiene ticket). **Límite medido** (PR #705): en ventanas bajas de escritorio (1512×664,
+> 1024×768) el cuadro de respuesta queda debajo del borde → m-25143233 (§5).
+>
+> **Antes (2026-11-14):** sin ticket; esperaba a m-25017859 y m-25017861.
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **M** · dueño `reflex-ui`
 - **Depende de:** m-25017859, m-25017861 · **Bloqueada por:** —
@@ -524,7 +630,11 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25017862 (BU-A12) · Menú: «Promociones por WhatsApp» junto a «Anuncios»
 
-> **PR #693 abierto (2026-11-14).** Entrada «Promociones» después de «Anuncios» (decisión
+> **Fusionada el 2026-11-14 a las 23:10 — PR #693; ticket RESOLVED; en producción.** El criterio
+> de las entradas del menú lateral se cumplió después: el PR #698 agregó «Ajustes de chats» y el
+> PR #852 quitó «WhatsApp» de «Atiende».
+>
+> **Antes: PR #693 abierto (2026-11-14).** Entrada «Promociones» después de «Anuncios» (decisión
 > «Solo «Promociones»», §6 (viii) 3); la página `/whatsapp/promociones` conserva el título
 > «Promociones por WhatsApp»; las direcciones viejas redirigen. **Criterio no cumplido:** el menú
 > lateral pasa a 17 entradas hasta que m-25017861 saque «WhatsApp» de «Atiende» (D3 ya aceptaba
@@ -594,7 +704,12 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A15 · Chats: formas de pago y «Cómo llegar» para todos los canales
 
-> **Sin ticket todavía — espera a BU-A14 y BU-A7.**
+> **Reemplazada por m-25143229** («Conversaciones: el mismo «+» de WhatsApp en los chats de
+> Instagram», In Progress desde antes del 2026-11-27, sin PR al escribir esto). No se crea ticket
+> para BU-A15. Lo de abajo queda como estaba planeado; el alcance que vale es el de m-25143229 en
+> Meegle. (Mientras tanto, el PR #852 ya llevó «Formas de pago» a «Ajustes de chats».)
+>
+> **Antes:** sin ticket; esperaba a BU-A14 y BU-A7.
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **M** · dueño `reflex-ui`
 - **Depende de:** BU-A14, BU-A7 · **Bloqueada por:** —
@@ -631,7 +746,11 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A17 · WhatsApp: «Sugerir respuesta» en el servicio, con tope diario y apagado por defecto
 
-> **Sin ticket todavía — espera a m-25017863 y la decisión (iii) para encenderlo.**
+> **Sin ticket propio — incluida en m-25143238** (lo que le falta al chat de WhatsApp, creado el
+> 2026-11-27): se construye apagado por defecto; **encenderlo sigue esperando** a m-25017863
+> (Backlog) y la decisión (iii) del fundador.
+>
+> **Antes:** sin ticket; esperaba a m-25017863 y la decisión (iii) para encenderlo.
 
 - **Tipo:** Issue · `Feature` · **P2** · **M** · dueño `backend`
 - **Depende de:** m-25017863 · **Bloqueada por:** decisión (iii) **para encenderlo** en cualquier
@@ -653,7 +772,10 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A18 · WhatsApp: botón «Sugerir respuesta» en el chat
 
-> **Sin ticket todavía — espera la decisión (iii).**
+> **Sin ticket propio — incluida en m-25143238** (creado el 2026-11-27). BU-A7 ya está (PR #700):
+> el cuadro no dibuja «Sugerir respuesta» en WhatsApp. Encenderlo espera la decisión (iii).
+>
+> **Antes:** sin ticket; esperaba la decisión (iii).
 
 - **Tipo:** Issue · `Feature`, `UI` · **P2** · **S** · dueño `reflex-ui`
 - **Depende de:** BU-A7, BU-A17 · **Bloqueada por:** decisión (iii)
@@ -716,7 +838,11 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A22 · Instagram: «Fotos y videos» en el chat antes de la unificación (condicionada)
 
-> **Sin ticket todavía — espera la decisión (iv); no se crea si elige esperar.**
+> **Reemplazada — no se crea.** «Foto o video» llegó a los chats de Instagram con el cuadro único
+> (BU-A7, PR #700, 2026-11-15), que era la opción A de la decisión (iv); el «+» de Instagram sigue
+> en m-25143229.
+>
+> **Antes:** sin ticket; esperaba la decisión (iv); no se creaba si elegía esperar.
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P3** · **M** · dueño `reflex-ui`
 - **Depende de:** — · **Bloqueada por:** decisión (iv). **No se crea** si el fundador elige esperar
@@ -746,6 +872,14 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 
 ### m-25017846 (BU-B1) · WhatsApp: el menú automático guarda su paso y su respuesta juntos, una conversación a la vez
 
+> **Fusionada el 2026-11-15 a las 00:14 — PR #697; ticket RESOLVED; en producción.** Además de lo
+> pedido, en el último reintento un fallo del menú ya no pierde el mensaje: se guarda sin
+> automatización y el chat se entrega a una persona (queda en «Por responder»), con el log
+> `whatsapp_automation_failed_handed_to_person` (`whatsapp/handler.py`). Nada le avisa al dueño de
+> ese fallo → m-25143234 (§5). Después, el PR #742 (m-25049598, 2026-11-19) hizo que los mensajes
+> de un paso del menú salgan en el orden en que se encolaron. Los criterios de abajo no se
+> marcaron uno por uno contra el PR.
+
 - **Tipo:** Issue · `Bug` (pérdida aceptada en el código) · **P1** (protege pedidos reales de Bianki;
   bloquea m-25017868) · **M** · dueño `backend`
 - **Depende de:** — (**puede empezar ya** `[arq §4.2 M1]`) · **Bloqueada por:** —
@@ -771,6 +905,10 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 - **Migración / medición / firma:** no / no / no.
 
 ### m-25017866 (BU-B2) · WhatsApp: si el dueño toma el control o un envío automático falla, el chat vuelve al dueño
+
+> **Sin empezar (Backlog al 2026-11-27).** m-25017846 ya está fusionada. «Relacionado con»
+> m-25143234: los dos usan la píldora «Tu menú no le llegó: respóndele tú»; un solo lugar del VM la
+> decide para los dos motivos.
 
 - **Tipo:** Issue · `Bug` · **P1** · **M** · dueño `backend`
 - **Depende de:** m-25017846 (mismos archivos) · **Bloqueada por:** —
@@ -1021,6 +1159,29 @@ carga el script después de la hidratación; comprobado en producción en escrit
 - «Entregado» y «Leído» se distinguen solo por el color.
 - El filtro de WhatsApp › Chats se ve distinto de los filtros de la lista única.
 - El ticket m-24984052 (PR #562, fusionado el 2026-11-09) sigue en «Todo» y sin Assignee.
+
+**Migración terminada (2026-11-14 → 2026-11-27, hora de Colombia), en producción:** m-25017862
+(PR #693), m-25017846 (PR #697), m-25017861 (PR #698), m-25027374 (BU-A7, PR #700), m-25029798
+y m-25029799 (BU-A11, PRs #705 y #707), m-25027373 (BU-A10, PR #852, desplegado el 2026-11-26) y
+m-25131413 (los 17 textos aprobados, PR #854, desplegado el 2026-11-27). Detalle en cada historia
+de §3 y §4. En curso: m-25143229 y m-25143230. **Nunca comprobado** en todo el tramo: un celular
+real o Safari, y un envío real desde el cuadro único.
+
+**Cabos sueltos (anotados por el fundador el 2026-11-27, «los cabos sueltos los convierto en
+tickets»), creados ese día como Issues de la épica, en Backlog, Reporter y Assignee el fundador:**
+
+| | Ticket | Qué | Prioridad · etiqueta · dueño |
+|---|---|---|---|
+| a | m-25143233 | Conversaciones: en ventanas bajas de escritorio (1512×664, 1024×768) el cuadro de respuesta queda debajo del borde (medido en el PR #705) | P2 · `Improvement`, `UI` · `reflex-ui` |
+| b | m-25143234 | WhatsApp: avisar al dueño cuando el menú de bienvenida falla y el chat pasa a una persona (hoy solo queda el log `whatsapp_automation_failed_handed_to_person`) | P2 · `Improvement` · `backend` + `reflex-ui` |
+| c | m-25143235 | Pruebas: `test_nav_active::test_the_phone_bar_marks_its_cell_or_more` y `test_the_number_select_shares_the_header_row_on_a_phone` fallan en `main` | P3 · `Testing` · `reflex-ui` |
+| d | m-25143236 | Tus redes: en el celular «Desconectar» queda entre «Más detalles» y los datos del número (punto 8 de UX del PR #852) | P3 · `Improvement`, `UI` · `reflex-ui` |
+| e | m-25143237 | Conversaciones: un solo formato de hora de 12 h («Quieren comprar» y «Preguntas iniciales» de Instagram siguen en 24 h) y una sola función (hoy tres: `chat_thread_vm.clock_12h`, `reels_ideas_vm.clock_12h`, `planner_vm.time_label_12h`) | P3 · `Deuda técnica` · `reflex-ui` |
+| f | m-25143238 | Conversaciones: lo que le falta al chat de WhatsApp de la caja compartida — «Mensajes guardados» (BU-A8), «Sugerir respuesta» (BU-A17/A18, D5; encender espera la decisión (iii)), «Archivo», «Nota de voz»; va después de m-25143229 | P2 · `Feature` · `backend` + `reflex-ui` |
+| g | m-25143239 | Tus redes: la tarjeta del número dice «Estado del nombre: Rechazado» con un nombre verificado (Meta devuelve `name_status` = `DECLINED`, probablemente un cambio de nombre viejo rechazado); **espera que el fundador mire «Nombre visible» en WhatsApp Manager** | P3 · `Improvement` · `reflex-ui` |
+
+De la lista de «Huecos anteriores a la épica» de abajo, la barra inferior del celular es el
+ticket c.
 
 **Primer incremento, como se planeó: m-25017843 → m-25017844 → m-25017859.** Una lista bajo
 «Por responder» con los clientes que esperan en WhatsApp e Instagram, ordenados por hora, con una
@@ -1279,6 +1440,24 @@ Decisiones del fundador del 2026-11-14 (hora de Colombia), en sus palabras:
 - Las anteriores: (i-a), (i-b) con el aviso al cliente final, (i-c), (iii), (iv) y el riesgo (v);
   las tomadas por el agente líder en (vii) siguen abiertas a que las cambie.
 
+**Qué pasó con esa lista al 2026-11-27** (según los PR; no es una decisión nueva):
+
+- **Hora en el chat:** 12 h («5:47 p. m.») en el chat abierto, entre los 17 textos que el fundador
+  aprobó el 2026-11-27 («Todo sí»; PR #854, m-25131413). Fuera del chat abierto sigue en 24 h →
+  m-25143237.
+- **«+» en Instagram:** aprobado por el fundador con solo lo que Instagram permite (PR #700); el PR
+  no lo dibujó y lo trae m-25143229 (en curso).
+- **«Códigos QR» y «Actividad»:** «Códigos QR» a «Ajustes de chats» › WhatsApp y «Actividad» a
+  `/connections/whatsapp/actividad` (PR #852); «Actividad» se mueve a «Resultados › WhatsApp» en
+  m-25143230 (en curso).
+- **«Pasaron 24 h…»:** el PR #700 cambió el texto de la cabecera de Instagram a «Pasaron 24 h:
+  Instagram no deja responder desde aquí»; el PR #854 cerró los avisos de Instagram con «Cuando
+  vuelva a escribir, podrás responderle aquí.». Si la frase de WhatsApp quedó aprobada tal cual no
+  se comprobó.
+- **Chip «Todos»:** pasó a «Abiertos» (PR #854). «Todas las redes» no se comprobó.
+- **Propuestas de contraste** (`docs/ux-chats-unificados.md` §6 punto 7), (i-a), (i-b), (i-c),
+  (iii) y el riesgo (v): sin cambio registrado. (iv) quedó resuelta por BU-A7 (opción A).
+
 ## 7. Issues aparte, fuera de la épica
 
 Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
@@ -1406,37 +1585,35 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 7. **«Por responder» con el menú** (decisión ii) bloqueaba m-25017843; el fundador la tomó el
    2026-11-13 («Solo si pasó a persona»), y el primer incremento ya está fusionado.
 
-## 9. Prompt para `/qualify-team-dev` (actualizado 2026-11-14, con el segundo incremento en curso)
+## 9. Prompt para `/qualify-team-dev` (actualizado 2026-11-27, con la migración terminada)
 
 ```
 /qualify-team-dev Épica «Bandeja única de chats y respuesta automática» — doc
-docs/epica-bandeja-unica.md. Ya fusionado: primer incremento (m-25017843 PR #625, m-25017844
-PR #624, m-25017859 PRs #649 #665, m-25026457 PR #653, m-25017852 PR #622) y, el 2026-11-14,
-m-25017860 (PR #677), m-25027372 (BU-A6, PR #678: packages/api/src/qualify_api/inbox/dispatch.py,
-ninguna pantalla lo usa) y m-25027371 (BU-A5, PR #688: Qualify/chat_thread.py + chat_thread_vm.py).
-Decisiones en §6: (ii), (vi) nombres del menú, (vii) lista única, (viii) qué sigue y «Promociones».
-Los chats se ven en local con tests/e2e/chat_fixtures.py (test_chat_thread.py).
-Siguiente (lo que pidió el fundador: igualar la pantalla del chat y separar los ajustes):
-- m-25017862 (PR #693): aprobado por el fundador el 2026-11-14 para fusionar cuando el CI esté en
-  verde («Sí, cuando esté verde»); sin fusionar al escribir esto. m-25017861 ya está en curso sobre esa rama.
-- reflex-ui-engineer (único dueño de whatsapp_tab_chats.py, conversations_page.py y el menú
-  lateral, en serie): m-25017861 «Ajustes de chats» con los nombres de (vi) («Tu menú de
-  bienvenida», «Usar en WhatsApp» / «Usar en Instagram»); saca «WhatsApp» de «Atiende» y el menú
-  vuelve de 17 entradas a su número de antes. Luego m-25027373 «Tus redes», solo cuando el fundador
-  diga adónde van «Códigos QR» y «Actividad».
-- reflex-ui-engineer: m-25027374 (cuadro de respuesta único) solo con el visto bueno del fundador
-  para el «+» en Instagram. Lee sus comentarios en Meegle: conservar _owned, en Instagram
-  can_manage_dms and not is_degraded, el indicador sending, y envolver las llamadas en
-  acting_login; arreglar a la vez el poco espacio del chat en el celular (partes B y C de la
-  maqueta). Si coincide con m-25017861 en archivos, en serie.
-- Comprobar en el celular del fundador m-25027371, m-25027369 y la lista única antes de pasarlas a Done.
-- backend-engineer (A): m-25017846 (en curso desde la noche del 2026-11-14) → m-25017866 (píldora «Tu menú no le llegó: respóndele tú») →
-  m-25017868 (mismos archivos, una sola persona; pruebas -m db).
-- ux-designer: la prueba «Responder yo» con Bianki (BU-B8).
-- data-scientist-fde: m-25017863 (medición de Sugerir respuesta, qualify-measure).
+docs/epica-bandeja-unica.md. La migración está en producción: todos los chats en «Por
+responder», sin módulo «WhatsApp» (/whatsapp solo redirige), número en «Tus redes», Perfil /
+Códigos QR / Formas de pago en «Ajustes de chats» (PRs #693 #697 #698 #700 #705 #707 #852 #854).
+Nunca comprobado: un celular real / Safari y un envío real desde el cuadro único — hacerlo con el
+fundador antes de pasar tickets a Done.
+En curso (no duplicar): m-25143229 («+» de WhatsApp en Instagram) y m-25143230 («Actividad» en
+«Resultados › WhatsApp»).
+Siguiente, por dueño:
+- reflex-ui-engineer (un solo dueño de reply_box*, chat_thread*, inbox_*, connections_page, en
+  serie): m-25143233 (cuadro de respuesta debajo del borde en 1512×664 y 1024×768, P2);
+  m-25143238 después de m-25143229 (lo que le falta al chat de WhatsApp; la parte de «Mensajes
+  guardados» y «Sugerir respuesta» lleva backend, ver abajo); m-25143236 («Desconectar» al final
+  de la tarjeta en el celular, P3); m-25143237 (una sola función de 12 h, P3); m-25143235 (dos
+  pruebas e2e que fallan en main, P3). m-25143239 («Rechazado» con nombre verificado) solo
+  después de que el fundador mire «Nombre visible» en WhatsApp Manager.
+- backend-engineer: m-25143234 (aviso cuando el menú falla y el chat pasa a una persona; misma
+  píldora que m-25017866) junto con m-25017866 (Backlog) → m-25017868 (mismos archivos, una sola
+  persona; pruebas -m db). En m-25143238: la biblioteca única de «Mensajes guardados» y
+  «Sugerir respuesta» de WhatsApp apagado por defecto con tope diario (encenderlo espera la
+  decisión (iii) del fundador).
+- data-scientist-fde: m-25017863 (medición de «Sugerir respuesta», qualify-measure).
+- ux-designer: la prueba «Responder yo» con Bianki (BU-B8); revisión local de cada PR de pantalla.
 - backend-engineer (fuera de la épica): m-25017850, m-25017849, m-25017848.
-Pendientes del fundador: hora en 12 o 24 h, propuestas de contraste (ux-chats-unificados §6.7),
-«Pasaron 24 h: …», «+» en Instagram, «Códigos QR»/«Actividad», «Todas las redes», (i-a/b/c), (iii), (iv).
+Pendientes del fundador: «Nombre visible» de Bianki (m-25143239); si m-25143234 reutiliza «Tu menú
+no le llegó: respóndele tú»; propuestas de contraste (ux-chats-unificados §6.7); (i-a/b/c), (iii).
 Cada historia es un PR con su m-<id>; nada de BU-B5/B6/B9 sin el ADR del menú escrito (aquí «ADR 48»
 es provisional: toma el siguiente número libre) y (i-b)/(i-c) decididas.
 ```
