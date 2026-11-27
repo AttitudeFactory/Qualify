@@ -102,19 +102,46 @@ ROW_BUTTON_ID = "clip-topic-row"
 GENERAL_SLUG = "de-que-trata"
 
 
+#: m-25026638 (live test): frames the field keeps the focus a step change took from it.
+#: «Editar» on «Revisa y crea» moves to step 1 AND opens the panel; the step's own settle
+#: (`ui.steps.step_settle_script`, run by `go_to_step` and again by `step_sync`, ~2–4
+#: frames later) scrolls the panel to the top and focuses the step's title — after the
+#: field already had the focus. ~0.5 s covers both settles.
+FOCUS_HOLD_FRAMES = 30
+#: What a step's settle focuses (`ui.steps._TITLE`): the focus taken back only from it
+#: (or from nothing), never from what the owner touched meanwhile.
+STEP_TITLE_SELECTOR = ".q-step-title"
+
+
 def focus_script(*field_ids: str) -> str:
     """The focus on a field of the general panel (the first of `field_ids` drawn; the
     context's by default) as soon as it is there — the chosen block's panel goes first:
     it tries each frame for up to ~2 s, as `ai_block_vm.focus_description_script` does,
-    never a fixed wait."""
+    never a fixed wait. m-25026638: for `FOCUS_HOLD_FRAMES` after that, a focus a step's
+    settle moved to the step's title (or to nothing, right after the field or the title
+    had it) comes back to the field, which is scrolled into view again (the settle
+    scrolls the panel to the top)."""
     ids = json.dumps(list(field_ids or (TOPIC_FIELD_ID,)))
+    title = json.dumps(STEP_TITLE_SELECTOR)
     return (
-        "(function () { var tries = 0; (function go() {"
+        "(function () { var tries = 0, held = -1, last = null;"
+        f" function isTitle(n) {{ return !!n && !!n.matches && n.matches({title}); }}"
+        " (function go() {"
         f" var el = {ids}.map(function (i) {{ return document.getElementById(i); }})"
         # a field turned off (12 phrases) cannot take the focus: the next one does
         ".filter(function (e) { return e && !e.disabled; })[0];"
-        " if (el) { el.focus(); el.scrollIntoView({block: 'nearest'}); return; }"
-        " if (++tries < 120) window.requestAnimationFrame(go); })(); })()"
+        " if (el) {"
+        " var now = document.activeElement;"
+        # review: the body (or nothing) counts as lost only when the field or the title
+        # had it a frame ago — Safari leaves the body focused after a tap on a button
+        " var gone = !now || now === document.body;"
+        " var lost = (now !== el && isTitle(now))"
+        " || (gone && (last === el || isTitle(last)));"
+        " if (held < 0 || lost) { el.focus(); el.scrollIntoView({block: 'nearest'}); }"
+        " last = document.activeElement;"
+        f" if (++held >= {FOCUS_HOLD_FRAMES}) return;"
+        " } else if (++tries >= 120) return;"
+        " window.requestAnimationFrame(go); })(); })()"
     )
 
 
@@ -138,11 +165,21 @@ def replace_with_step_script(target: str) -> str:
     leaves. Mirrors `Qualify/ui/steps.py` `_STEP_GO_JS` (its `pushState({ ...st,
     qPrevPaso: cur })`), which this must not change: if that rule changes, change this.
     The step's own script runs next, finds its address already written and stacks
-    nothing; «Atrás» then walks back (`qPrevPaso`) to the entry under the panel's."""
+    nothing; «Atrás» then walks back (`qPrevPaso`) to the entry under the panel's.
+
+    m-25026638 (review): only an entry THIS page load pushed (its `qBloque` is this
+    document's `__qBloqueDoc`, the `mine` check of `clip_editor_vm.block_url_script`).
+    One that came with the address (a link, a new tab, a reload) only loses its word,
+    as `release_address_script` does, and stays step 1's: the step's own script then
+    pushes the next step, and «Atrás» walks back to it inside this document."""
     return (
-        "(() => { const cur = new URL(window.location.href).searchParams.get('paso');"
-        " const st = Object.assign({}, window.history.state || {}); delete st.qBloque;"
-        " st.qPrevPaso = cur;"
+        "(() => { const st = Object.assign({}, window.history.state || {});"
+        " const mine = !!window.__qBloqueDoc && st.qBloque === window.__qBloqueDoc;"
+        " delete st.qBloque;"
+        " if (!mine) { const u = new URL(window.location.href);"
+        f" u.searchParams.delete({json.dumps(clip_editor_vm.BLOCK_PARAM)});"
+        " window.history.replaceState(st, '', u); return; }"
+        " st.qPrevPaso = new URL(window.location.href).searchParams.get('paso');"
         f" window.history.replaceState(st, '', {json.dumps(target)}); }})()"
     )
 
