@@ -32,8 +32,11 @@ afirmación sobre los límites de Meta. Meta debe aceptar la validación exacta 
 ## Qué cuenta como «publicada» (m-25130283)
 
 Una pieza está publicada cuando Qualify tiene, para esa pieza, un evento del calendario con un
-intento en `publish_attempts` en estado `published` y con el id de Meta
-(`published_media_id`). Vale para cualquier formato, historias incluidas. La columna
+intento en `publish_attempts` en estado `published` hecho por una conexión de Instagram. No
+se exige el id de Meta (`published_media_id`): cuando Meta confirma la publicación pero falla
+la lectura del id, el intento queda publicado sin id (QUA-111) y la publicación ya está en
+Instagram. Vale para cualquier formato, historias incluidas. Una
+pieza publicada solo en Facebook sigue disponible. La columna
 `content_drafts.published_media_id` no se usa: ningún código la escribe, y por eso antes se
 ofrecía «Anunciar sin publicar» en piezas que ya estaban en Instagram.
 
@@ -44,6 +47,10 @@ de confirmar (`load_image_source`, `guard_source`). Si la pieza se publica entre
 preparación y la confirmación, la confirmación se niega. La lectura va por `tenant_session`
 y compara el negocio en cada unión: el intento de otro negocio nunca cuenta (prueba con base
 de datos y dos negocios).
+
+La condición solo se aplica a la pareja 4:5 + 9:16. El anuncio de historia con botón de
+enlace (`feed_asset_id=None`, «formato historia») siempre crea un creativo 9:16 nuevo
+(decisión D1 de la épica), así que una pieza ya publicada por Qualify se sigue ofreciendo ahí.
 
 **Límite conocido:** una historia que el dueño sube a mano con «Abrir en Instagram» no deja
 ningún rastro en Qualify (no hay intento ni id de Meta). Por eso esa pieza se sigue tratando

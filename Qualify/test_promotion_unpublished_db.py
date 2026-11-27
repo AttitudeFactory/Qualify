@@ -13,7 +13,7 @@ from packages.api.tests.test_ad_audience_db import audience_world as shared_audi
 from packages.api.tests.test_ad_unpublished_db import publish
 from packages.api.tests.test_ad_unpublished_db import unpublished_world as shared_unpublished
 
-from .promotion_unpublished_provider import unpublished_sources
+from .promotion_unpublished_provider import story_ad_ready, unpublished_sources
 
 pytestmark = pytest.mark.db
 audience_world = shared_audience_world
@@ -47,7 +47,9 @@ def test_a_published_or_unselected_source_is_not_offered(unpublished_world):
     publish(source, actor)  # m-25130283: Qualify published it, as a story
     with acting_login(login):
         assert unpublished_sources(source.tenant_id, source.draft_id) == []
-        assert unpublished_sources(source.tenant_id, source.draft_id, story=True) == []
+        # Epic D1: the story path is a new 9:16 creative, so a published piece stays on it.
+        (story,) = unpublished_sources(source.tenant_id, source.draft_id, story=True)
+        assert story.story and story_ad_ready(source.tenant_id, source.draft_id)
 
 
 def test_story_source_offers_only_the_vertical_file(unpublished_world):

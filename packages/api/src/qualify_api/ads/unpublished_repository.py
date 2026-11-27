@@ -31,13 +31,19 @@ CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
 # A send claim idle this long lost its process (crash between claim and settle): it becomes
 # `unknown`, never re-sent. Must match the 0161 trigger.
 STALE_CLAIM_MINUTES = 30
-# m-25130283: «publicada» = Qualify has a published attempt with Meta's media id for this
-# piece (`content_drafts.published_media_id` is never written). Expects the piece as `d`.
-# A story the owner uploads by hand («Abrir en Instagram») leaves no attempt: unpublished.
-NOT_PUBLISHED_BY_QUALIFY = """NOT EXISTS (SELECT 1 FROM calendar_events pe
+# m-25130283: «publicada» = Qualify has a published Instagram attempt for this piece
+# (`content_drafts.published_media_id` is never written). Its media id is not required: a
+# confirmed publish whose id lookup failed is still live (QUA-111). Expects the piece
+# as `d` and a boolean `:story` bind: a story ad is always a new 9:16 creative (epic D1), so
+# the story path skips the check. A story uploaded by hand («Abrir en Instagram») leaves no
+# attempt: unpublished.
+NOT_PUBLISHED_BY_QUALIFY = """(CAST(:story AS boolean) OR NOT EXISTS (SELECT 1
+  FROM calendar_events pe
   JOIN publish_attempts pa ON pa.id=pe.publish_attempt_id AND pa.tenant_id=pe.tenant_id
+  JOIN social_connections pc ON pc.id=pa.connection_id AND pc.tenant_id=pa.tenant_id
+    AND pc.platform='instagram'
   WHERE pe.post_id=d.id AND pe.tenant_id=d.tenant_id
-    AND pa.status='published' AND pa.published_media_id IS NOT NULL)"""
+    AND pa.status='published'))"""
 
 
 def load_image_source(
@@ -69,7 +75,7 @@ def load_image_source(
               AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
               AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
               AND d.part_removed_at IS NULL FOR SHARE OF d,v,a,c"""),
-                {"draft": draft, "account": account},
+                {"draft": draft, "account": account, "story": feed_asset is None},
             )
             .mappings()
             .first()
