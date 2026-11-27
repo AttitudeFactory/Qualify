@@ -100,7 +100,13 @@ VIDEO_TEXT_LARGE_MAX_CHARS = 40
 #: ED-15 (D-T1): a still photo among the stretches shows 1 to 5 s, from 0, at speed 1.
 PHOTO_SECONDS_MIN = 1.0
 PHOTO_SECONDS_MAX = 5.0
-SegmentKind = Literal["video", "photo"]
+#: ED-07 (m-25026638, contract `docs/contrato-editor-unico.md` §2): `ai_part` is a block
+#: made by AI — its `key` is `ai_part:<n>`, the entry `n` of `media.ai_parts` (never a
+#: file), from 0, upright, at ×1, lasting its entry's whole seconds. The backend's type
+#: (`qualify_creative.schemas.SegmentKind`) has the three since PR 1.
+SegmentKind = Literal["video", "photo", "ai_part"]
+AI_PART_KIND = "ai_part"
+_AI_PART_KEY = re.compile(r"^ai_part:([0-9])$")
 #: The speeds the backend can make: EF-04's `speed.MIN_SPEED`/`MAX_SPEED` (a test pins it).
 SEGMENT_SPEED_MIN = 1.0
 SEGMENT_SPEED_MAX = 30.0
@@ -113,7 +119,10 @@ CUT_EFFECT_ID = "corte"
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
 ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
-SEGMENT_KINDS: tuple[str, ...] = get_args(SegmentKind)
+#: The owner's own material — what the editor wrote before ED-07, and the backend's
+#: `SEGMENT_KINDS` (a parity test pins them equal); `BLOCK_KINDS` adds the AI block.
+SEGMENT_KINDS: tuple[str, ...] = ("video", "photo")
+BLOCK_KINDS: tuple[str, ...] = get_args(SegmentKind)
 EffectParamValue = bool | int | float | str
 
 # -- the screen's own rules ------------------------------------------------------------------
@@ -143,6 +152,8 @@ SegmentProblem = Literal[
     "photo_not_from_start",
     "photo_with_speed",
     "photo_length_out_of_range",
+    # ED-07 (m-25026638) — the backend's own code (contract §3), appended
+    "ai_part_with_speed",
 ]
 RecipeProblem = Literal[
     "too_many_effects",
@@ -188,7 +199,11 @@ class SourceSegment:
     m-25114465 (ADR 50 §10): `transition_in` is how this block blends with the block
     BEFORE it in a normal Clip («la unión»): a library `transition` (`fundido` /
     `barrido` v2) with no span of its own; None is «Corte» (never written, so a Clip with
-    only cuts keeps its exact shape). Never on the first block."""
+    only cuts keeps its exact shape). Never on the first block.
+
+    ED-07 (m-25026638): `kind` "ai_part" is a «parte con IA» — `key` `ai_part:<n>` names
+    its entry of `media.ai_parts` (`ai_part_at`), from 0 to its seconds, upright, at ×1;
+    its `transition_in` is its join, as any block's."""
 
     key: str
     start_s: float
@@ -197,6 +212,12 @@ class SourceSegment:
     rotate: int = 0
     kind: str = "video"
     transition_in: EffectUse | None = None
+
+    @property
+    def ai_part_at(self) -> int | None:
+        """The entry of `media.ai_parts` an AI block points to (None for own material)."""
+        found = _AI_PART_KEY.match(self.key) if self.kind == AI_PART_KIND else None
+        return int(found.group(1)) if found else None
 
     @property
     def source_seconds(self) -> float:
@@ -742,13 +763,21 @@ def whole_video(key: str, source_duration_s: float) -> SourceSegment:
 def segment_problems(segment: SourceSegment, source_duration_s: float = 0.0) -> list[str]:
     """Every problem of a stretch, as codes. `source_duration_s` 0 = the length is not
     known yet: the «inside the video» check waits for it. A photo (ED-15) has no length
-    of its own to fall inside: it shows 1-5 s from 0, at speed 1."""
+    of its own to fall inside: it shows 1-5 s from 0, at speed 1. ED-07: an AI block
+    (`ai_part`) is not a file either — its key names its entry (`ai_part:<n>`, else
+    `bad_kind`, as the backend's type refuses it), from 0, upright, at ×1
+    (`ai_part_with_speed`); its seconds against its entry are `ai_block_vm`'s."""
     problems: list[str] = []
     photo = segment.kind == "photo"
+    ai = segment.kind == AI_PART_KIND
     if not segment.key.strip():
         problems.append("empty_key")
-    if segment.kind not in SEGMENT_KINDS:
+    if segment.kind not in BLOCK_KINDS or (
+        ai and (segment.ai_part_at is None or segment.start_s != 0 or segment.rotate != 0)
+    ):
         problems.append("bad_kind")
+    if ai and segment.speed != 1:
+        problems.append("ai_part_with_speed")
     if segment.end_s <= segment.start_s:
         problems.append("ends_before_start")
     elif segment.source_seconds < SEGMENT_MIN_SECONDS and not photo:
@@ -814,8 +843,9 @@ def rotate_quarter(rotate: int) -> int:
 
 
 def used_seconds(segments: Sequence[SourceSegment]) -> float:
-    """How much of the owner's video the recipe uses (before any speed; photos aside)."""
-    return _round(sum(s.source_seconds for s in segments if s.kind != "photo"))
+    """How much of the owner's video the recipe uses (before any speed; photos and AI
+    blocks aside)."""
+    return _round(sum(s.source_seconds for s in segments if s.kind == "video"))
 
 
 def output_seconds(segments: Sequence[SourceSegment]) -> float:

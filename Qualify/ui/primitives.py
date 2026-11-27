@@ -543,13 +543,16 @@ class OrbitItem:
     its `text` (16 characters at most, never icon alone) and the event that OPENS a flow
     (never one that sends or publishes). ``disabled`` (a bool or a `Var[bool]`): the
     option shows but cannot be chosen — the screen says why beside the «+» (ED-12:
-    «Foto o video» with 8 photos or videos)."""
+    «Foto o video» with 8 photos or videos). ``shown`` (a `Var[bool]`, ED-07): the
+    option is drawn only while it is true — outside its conditions it is not drawn
+    rather than disabled (§5.9); True = always."""
 
     key: str
     icon: str
     text: str
     on_select: Any
     disabled: Any = False
+    shown: Any = True
 
 
 def orbit_menu(
@@ -613,22 +616,8 @@ def orbit_menu(
         ),
         rx.menu.content(
             *[
-                rx.menu.item(
-                    rx.el.span(
-                        rx.icon(item.icon, size=T.ICON_MD, aria_hidden="true"),
-                        class_name="q-orbit-dot",
-                    ),
-                    rx.text(item.text, size="2", weight="medium"),
-                    on_click=item.on_select,
-                    disabled=item.disabled,
-                    class_name="q-orbit-pill",
-                    custom_attrs={"data-orbit-key": item.key},
-                    # the nearest to the button rises first, then each 30 ms (§5): a real
-                    # style mapping (React refuses a string `style`). Up, the nearest is
-                    # the last option; to the right, the first.
-                    style={"--q-orbit-i": str(i if right else len(items) - 1 - i)},
-                )
-                for i, item in enumerate(items)
+                _orbit_shown(item.shown, pill)
+                for item, pill in zip(items, _orbit_pills(items, right), strict=True)
             ],
             side="right" if right else "top",
             align="center" if right else "start",
@@ -638,6 +627,32 @@ def orbit_menu(
             class_name="q-orbit-menu q-orbit-menu--right" if right else "q-orbit-menu",
         ),
     )
+
+
+def _orbit_shown(shown: Any, pill: rx.Component) -> rx.Component:
+    """A pill drawn always (``shown`` True) or only while its `Var[bool]` is true."""
+    return pill if shown is True else rx.cond(shown, pill)
+
+
+def _orbit_pills(items: Sequence[OrbitItem], right: bool) -> list[rx.Component]:
+    return [
+        rx.menu.item(
+            rx.el.span(
+                rx.icon(item.icon, size=T.ICON_MD, aria_hidden="true"),
+                class_name="q-orbit-dot",
+            ),
+            rx.text(item.text, size="2", weight="medium"),
+            on_click=item.on_select,
+            disabled=item.disabled,
+            class_name="q-orbit-pill",
+            custom_attrs={"data-orbit-key": item.key},
+            # the nearest to the button rises first, then each 30 ms (§5): a real
+            # style mapping (React refuses a string `style`). Up, the nearest is
+            # the last option; to the right, the first.
+            style={"--q-orbit-i": str(i if right else len(items) - 1 - i)},
+        )
+        for i, item in enumerate(items)
+    ]
 
 
 def asset_script(name: str) -> str:

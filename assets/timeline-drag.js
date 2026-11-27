@@ -388,7 +388,8 @@
     var item = block.closest(".q-tl__item");
     var lane = item ? item.parentElement : null;
     if (!item || !lane) return;
-    var mode = kind === "video" || kind === "photo" ? "move" : "time";
+    // ED-07 (m-25026638): a «parte con IA» («ai») moves as a photo or a video
+    var mode = core().dragMode(kind);
     if (mode === "move" && itemsOf(lane).length < 2) return; // nothing to swap with
     var touch = e.pointerType !== "mouse";
     drag = {

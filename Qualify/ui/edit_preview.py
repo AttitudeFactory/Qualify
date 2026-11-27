@@ -397,6 +397,7 @@ def edit_sequence_preview(
     region_label: str,
     clock: bool = True,
     effect_url_base: tuple[str, rx.Var[str]] | None = None,
+    ai_mark: rx.Var[bool] | bool = False,
 ) -> rx.Component:
     """The preview of a whole video in order (ED-01b): `sequence` is
     `edit_sequence.PreviewSequence.to_json()`; `texts`/`effects` its overlays as rows
@@ -446,6 +447,26 @@ def edit_sequence_preview(
         ),
         rx.foreach(effects, lambda row: _seq_effect(row, effect_url_base)),
         rx.foreach(texts, _seq_text),
+        # ED-07 (m-25026638): over a «parte con IA» not made yet, its mark — «✦ Parte con
+        # IA 1 · se crea al tocar «Crear»» (`.q-ai-mark`, docs/design-system.md §5.10.1);
+        # the script writes its words and shows it only while the clock is on that part.
+        # Only while ``ai_mark`` (the screen's state var) is true; a screen without AI
+        # parts passes nothing and renders as before
+        *(
+            [
+                rx.cond(
+                    ai_mark,
+                    rx.el.span(
+                        rx.icon(T.AI_ICON, size=T.ICON_SM, aria_hidden="true"),
+                        rx.el.span(custom_attrs={"data-edit-seq-ai-text": ""}),
+                        class_name="q-ai-mark q-edit-seq__ai",
+                        custom_attrs={"data-edit-seq-ai": ""},
+                    ),
+                )
+            ]
+            if isinstance(ai_mark, rx.Var)
+            else []
+        ),
         # the notice is announced when it appears: its live region is always rendered
         rx.el.div(
             rx.el.p(
