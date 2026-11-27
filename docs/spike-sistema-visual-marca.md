@@ -338,7 +338,8 @@ un tope de US$15. Detalle de las llamadas en
 - **`LocalBiRefNetSegmenter`:** no se pudo probar sin instalar. Pide `rembg[cpu]` (onnxruntime) y
   los pesos de `birefnet-general-lite`, y ninguno está en el venv ni en `~/.u2net`. Según el
   encargo, no se instaló ni se descargó nada. Es la opción A de §4.4, ya escrita en el repositorio;
-  conectarla pide agregar la dependencia y medir la RAM en el servidor.
+  conectarla pide agregar la dependencia y medir la RAM en el servidor. **Medido después en
+  RECORTE-001 (§7.6):** recorta muy bien, pero en Linux arm64 muere por memoria aun con 6 GB.
 - **Recorte por color de las figuritas** (`kawaii.chroma_key`, numpy, sin dependencias nuevas), sobre
   una foto por negocio (`packages/api/evals/sistema_visual/cutout_probe.py`):
 
@@ -382,3 +383,65 @@ sin memoria de Node (`JavaScript heap out of memory`) en la VM de Docker Desktop
 CI ni si `brand_still` lo empeora: hay que mirar el job `docker-render` cuando esta rama se proponga.
 Si hace falta, es una línea (`NODE_OPTIONS=--max-old-space-size=4096` en ese paso) y solo afecta la
 construcción, no el límite de 1536 MB en marcha.
+
+### 7.6 Recorte del producto: medición RECORTE-001 y opciones para la historia m-25042543
+
+**Qué se midió:** se probaron 3 modelos abiertos en CPU (`birefnet-general-lite`, `isnet-general-use`
+y `u2net`) sobre 10 fotos reales:
+
+- 3 de teléfono del negocio 1;
+- 3 de estudio de Polette;
+- 4 GoPro de Bianki.
+
+Se midió en el Mac y en un contenedor Linux arm64. El detalle está en
+[RECORTE-001](modelos-generativos/pruebas.md#recorte-001) y la ficha del candidato en
+[isnet-general-use.md](modelos-generativos/isnet-general-use.md).
+
+**Resultado en una línea:** el modelo que nombra el repositorio recorta mejor que nadie, pero no
+cabe en el servidor. IS-Net recorta casi igual con 1,3 GB, que tampoco caben en ningún tope de hoy.
+
+**La prueba visual** (solo en disco local) es
+`/Users/herwin/dev/qualify-eval-out/sistema-visual/recorte/render/antes-despues.jpg`:
+
+- son las mismas 2 propuestas de SISVIS-002 con los mismos datos;
+- el producto recortado va sobre un disco de la marca, como en Bianki;
+- la caja del producto sale del alfa del recorte, como dato del hueco, sin tocar la plantilla.
+
+Cierra la brecha más visible con la vara de Bianki.
+
+| Opción | Calidad en fotos de teléfono | Costo por foto | RAM / tiempo | Licencia | Dónde correría | ¿Se puede deshacer? |
+|---|---|---|---|---|---|---|
+| A. `birefnet-general-lite` en nuestro servidor (lo que ya está en `segment.py`) | La mejor de las 3: tapas y bordes limpios. Falla en el trompo (se lleva la plancha) y le muerde un pedazo al cono | US$0 | **No corre:** OOM en Linux arm64 aun con 6 GB; 8–30 s por foto en M1 Pro | MIT código y pesos: sí | En ningún lado del CAX21 de 4 GB | Sí (sin datos a terceros), pero no es viable |
+| **B. `isnet-general-use` en nuestro servidor** | Casi igual en botellas y estudio. Manchas fantasma suaves en 1 de 3 fotos de teléfono; deja semitransparente un segundo producto en GoPro | US$0 | **1,34 GB de pico**, 5–8 s por foto con 2 CPU (Linux arm64), 1,1–1,6 s en M1 Pro | Apache-2.0 el código; los pesos no traen licencia propia: sí, con esa reserva | Un proceso de una foto a la vez con su propio tope (~1,5 GB), al subir la foto al catálogo. **No cabe en creative-worker (768m)** | Sí: es un modelo propio, se cambia por otro sin migrar datos (se recalcula la máscara) |
+| C. API pagada de quitar fondo (solo referencia: Photoroom Basic) | Buena en comida según el proveedor; **no se probó** | US$0,02 por imagen, lista pública (photoroom.com/api/pricing, 2026-11-26); ~US$0,40 al mes con 20 fotos por cliente | Ninguna en nuestro servidor; una llamada de red | Comercial, con contrato | En el proveedor: **las fotos del cliente salen a un tercero** (proveedor nuevo: pide ADR y revisar si guarda o entrena con los datos) | En parte: el código se deshace, los datos ya enviados no |
+| D. Seedream 5.0 pro regenera el producto sobre fondo plano + recorte por color (el camino de las figuritas) | **No se probó en esta medición.** El recorte por color sobre fondo plano generado ya funciona (figuritas en producción). **Puede cambiar el producto real:** etiqueta, teléfono impreso, cantidad de botellas | US$0,045 por imagen a 1K (`pricing_data/v9.json`); ~US$0,90 al mes con 20 fotos | Casi nada en nuestro servidor (numpy, ~0,2–0,8 s y <200 MB) | Comercial; Seedream 5.0 pro no cede datos (fundador, 2026-11-12) | BytePlus + nuestro worker, que ya existe | Sí en el código; el riesgo de marca está en cada pieza (una botella inventada es un producto que no existe) |
+
+**Recomendación (decide el fundador): B**, IS-Net en nuestro servidor, una foto a la vez y solo
+cuando el dueño sube o elige una foto de producto. Es la única opción que:
+
+- recorta lo bastante bien las fotos de teléfono;
+- no manda fotos a terceros;
+- no inventa el producto;
+- no cuesta por foto.
+
+Es una puerta de dos vías: el modelo se cambia sin migrar nada. Si mañana BiRefNet corre en menos
+memoria, se recalcula la máscara.
+
+**Para adoptarla tiene que ser cierto que:**
+
+1. en el CAX21 real el pico sea ≤ 1,5 GB y la foto tarde menos de ~20 s con 1 CPU, sin empujar a
+   otros servicios a swap (medir con el servidor en su hora más cargada);
+2. sirva en ≥ 80 % de un conjunto de oro de ~30 fotos reales del catálogo, juzgadas con reglas
+   escritas antes;
+3. exista una regla de rechazo que vuelva a la foto en el disco cuando el recorte no sirva: caja del
+   alfa pegada al borde, producto en varias piezas o primer plano fuera de rango;
+4. el fundador acepte un proceso o tope nuevo en el servidor (regla de la casa para todo servicio
+   nuevo).
+
+**Si el punto 1 falla,** la siguiente es D para las fotos que el dueño marque, con aprobación de la
+pieza como hoy. C solo si D cambia demasiado los productos.
+
+**Cambio propuesto en el código** (no hecho; lo hace creative-engineer): `SEGMENTATION_MODEL` →
+`"isnet-general-use"` y corregir el docstring de `LocalBiRefNetSegmenter`. El «~2s per photo» no es
+cierto en CPU.
+

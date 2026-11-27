@@ -22,6 +22,108 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="recorte-001"></a>
+
+## RECORTE-001 — Quitar el fondo de la foto del producto con modelos abiertos en CPU: BiRefNet lite contra IS-Net y U²-Net (m-25042530, historia m-25042543) — 2026-11-26/27 · LOCAL, SIN GASTO
+
+- **Pregunta:** ¿el segmentador que ya está en el repositorio (`LocalBiRefNetSegmenter`, `birefnet-general-lite`) recorta bien las fotos reales y cabe en el servidor? En SISVIS-002 las botellas del negocio 1 quedaron dentro de un disco, sin recorte, y esa es la diferencia más visible con los volantes de Bianki.
+- **Aprobación:** el fundador, 2026-11-26. Solo en esta máquina, fuera del proyecto. Sin producción, sin R2, sin llamadas pagas y sin dependencias nuevas en el `pyproject`/lock.
+- **Entorno aislado:** `uv venv` en `/Users/herwin/dev/qualify-eval-out/sistema-visual/recorte/venv` con `rembg[cpu]==2.0.88` (onnxruntime 1.32.0). Para medir en Linux arm64 se armó otro venv dentro de un contenedor (`qualify-photo-membench:1`, Python 3.12.16) con el binario oficial de `uv` 0.11.29.
+- **Código medido:** la clase del repositorio tal cual, cargada desde `segment.py` y llamada con cada nombre de modelo (`packages/api/evals/sistema_visual/recorte_probe.py`). Un proceso nuevo por modelo. Se mide la carga, la primera foto, la mejor de las repeticiones y el `ru_maxrss` del proceso.
+- **Fotos (10, solo en disco local):**
+  - 3 fotos de teléfono del negocio 1 (botellas de jugo sobre un mesón, fondo con cosas, 1080×1440);
+  - 3 fotos de estudio de Polette (sundae, cono en la mano, vaso; 768–928 px de ancho);
+  - 4 fotos GoPro de Bianki (shawarma con salsa, papas en un bol de acero, trompo, dos shawarmas; 2400–2656 px).
+- **Juicio de calidad:** a ojo, con cada recorte sobre magenta plano (`<modelo>/<foto>.check.png`).
+
+### Pesos descargados (solo los oficiales de rembg, con el md5 que rembg verifica)
+
+| Modelo | Archivo | Origen | Tamaño | md5 |
+|---|---|---|---|---|
+| `birefnet-general-lite` | `BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx` | `github.com/danielgatis/rembg/releases/download/v0.0.0/` | 224,0 MB | `4fab47ad…` ✓ |
+| `isnet-general-use` | `isnet-general-use.onnx` | igual | 178,6 MB | `fc16ebd8…` ✓ |
+| `u2net` | `u2net.onnx` | igual | 176,0 MB | `60024c5c…` ✓ |
+
+Otras descargas: paquetes de PyPI dentro del venv aislado y el binario `uv-aarch64-unknown-linux-gnu.tar.gz` 0.11.29 (24,4 MB, releases de `astral-sh/uv`). No se bajó nada de espejos desconocidos.
+
+### Licencias
+
+| Modelo | Código | Pesos | ¿Uso comercial? |
+|---|---|---|---|
+| `rembg` (la librería) | MIT | — | Sí |
+| `birefnet-general-lite` | MIT (`ZhengPeng7/BiRefNet`) | MIT (etiqueta del modelo en Hugging Face, `ZhengPeng7/BiRefNet_lite`) | **Sí** |
+| `isnet-general-use` | Apache-2.0 (`xuebinqin/DIS`, `LICENSE.md`) | Sin licencia propia: se publican con el repositorio Apache-2.0 | **Sí, con una reserva:** el repositorio no dice que la licencia cubra los pesos, y los términos del conjunto DIS5K no se leyeron |
+| `u2net` | Apache-2.0 (`xuebinqin/U-2-Net`) | Igual que IS-Net | **Sí, con la misma reserva** |
+| `bria-rmbg` (no se probó) | — | Piden un acuerdo pago para uso comercial | **No.** `segment.py` ya lo bloquea |
+
+### Tiempo y memoria
+
+**Mac:** Apple M1 Pro (8 núcleos: 6 de rendimiento y 2 de eficiencia), 16 GB, hilos por defecto. La máquina estaba compartida con otras sesiones (carga 9–11), así que los tiempos de BiRefNet varían mucho.
+
+| Modelo | Carga | Por foto, ya cargado | RSS pico del proceso |
+|---|---|---|---|
+| `birefnet-general-lite` | 14,0 s | **8–30 s** (mediana ~15) | **2,4 GB** recién cargado; **4,2 GB** pico (4,7 GB sin arena de memoria y con 2 hilos) |
+| `isnet-general-use` | 1,7 s | 1,1–1,6 s | 1,2 GB |
+| `u2net` | 0,6 s | 0,41–0,53 s | 1,0 GB |
+
+**Linux arm64:** contenedor de Docker Desktop, `--cpus 2`, la misma onnxruntime, 5 de las fotos. Es lo más parecido al servidor que hay en local, pero no es el CAX21.
+
+| Modelo | Con el tope de creative-worker (`768m`) | Sin tope: por foto | Sin tope: pico (`ru_maxrss`) |
+|---|---|---|---|
+| `birefnet-general-lite` | **muere por memoria** | — | **No termina ni con 3 GB ni con 6 GB**: lo mata el OOM, aun sin arena, con 2 hilos y con una sola foto |
+| `isnet-general-use` | **muere por memoria** | 5,2–7,7 s | **1,34 GB** |
+| `u2net` | **muere por memoria** | 2,3–3,8 s | **0,96 GB** |
+
+### Calidad
+
+| Foto | `birefnet-general-lite` | `isnet-general-use` | `u2net` |
+|---|---|---|---|
+| Botellas, teléfono (3) | **La mejor:** bordes limpios, tapas blancas y amarillas enteras, sin halo | Igual en 2 fotos. En la tercera deja manchas fantasma suaves sobre el fondo | En la tercera **pierde una tapa blanca**: justo el fallo que se temía |
+| Estudio Polette (3) | Sundae y vaso limpios. **Al cono le muerde un pedazo del papel** | Limpios. El cono sale con la mano que lo sostiene | Limpios. El cono sale con la mano y el brazo |
+| GoPro Bianki (4) | Shawarma y papas bien. **El trompo sale con la plancha de acero.** Los dos shawarmas, bien | **El trompo, el mejor.** A los dos shawarmas les deja uno semitransparente y una mancha morada | Trompo bien. **Se pierde el segundo shawarma** |
+
+- **Corte en el borde de la foto:** los tres modelos lo heredan. Si el producto toca el borde de la foto (botellas o el bol cortados por el encuadre), el recorte tiene un borde recto. Una regla barata detecta ese caso con la caja del alfa pegada al borde.
+- **El vapor no se pudo juzgar:** ninguna de las fotos de Bianki lo tiene visible.
+
+### La prueba visual
+
+Se volvieron a componer las dos mejores propuestas del negocio 1 en SISVIS-002 («Cartel de sol» de Fable y «Cartel turquesa» de Opus), en producto estrella y segundo producto. En lugar de la foto dentro del marco va el recorte de `birefnet-general-lite`, sobre un disco plano del color `product_frame.glow` de la propuesta.
+
+- **Todo como datos,** sin tocar la plantilla (`packages/api/evals/sistema_visual/recorte_render.py`):
+  - `product_frame.variant` pasa a `cutout_sun`;
+  - se agrega un bloque `sun` con los dos colores iguales detrás del producto;
+  - el hueco `product` lleva `box`, calculada desde la caja del alfa: el área del producto se ensancha 1,45 veces y el recorte se ajusta abajo y al centro.
+- **Pillow** solo recorta el PNG a la caja del alfa y lo guarda.
+- **Render:** 1,1–1,7 s por pieza con `brand-still-batch.mjs`. Hoja antes/después solo en disco local: `/Users/herwin/dev/qualify-eval-out/sistema-visual/recorte/render/antes-despues.jpg`.
+- **Juicio:** el salto es grande. Las botellas llenan el lienzo sobre el disco, como en los volantes de Bianki. Queda un detalle: en el segundo producto de «Cartel de sol», las botellas tocan el título y el precio. La receta de ese bloque está pensada para un producto que sangra por la derecha, y con 6 botellas en fila no alcanza el ancho.
+- **Primer intento descartado:** el área crecía también hacia arriba y las tapas tapaban el titular.
+
+### Costo
+
+- **Esta prueba:** US$0, sin llamadas pagas.
+- **En producción local:** US$0 por foto más CPU y RAM del servidor, una vez por foto del catálogo.
+- **Referencias para la tabla de opciones** (`docs/spike-sistema-visual-marca.md` §7.6):
+  - Photoroom Remove Background API Basic: US$0,02 por imagen (photoroom.com/api/pricing, leído 2026-11-26).
+  - Seedream 5.0 pro a 1K: US$0,045 por imagen (`pricing_data/v9.json`, la misma de las figuritas).
+
+### Lo que contradice al repositorio
+
+1. **El docstring de `LocalBiRefNetSegmenter`** dice «~2s per photo» en CPU:
+   - medido en M1 Pro: 8–30 s;
+   - en Linux arm64 ni siquiera termina con 6 GB.
+2. **`birefnet-general-lite` no sirve en el CAX21 de 4 GB.** Ni siquiera con un contenedor propio.
+3. **La opción A de §4.4** (modelo abierto en nuestro servidor) **sigue en pie, pero con otro modelo.** `isnet-general-use` pide ~1,3 GB, que tampoco caben en ningún tope de hoy.
+4. **Propuesta:** cambiar `SEGMENTATION_MODEL` y el docstring cuando el fundador decida. Lo hace el dueño del módulo (creative-engineer), no esta prueba.
+
+### Lo que no se hizo
+
+- No se midió en el CAX21 real.
+- No hay un conjunto de oro con veredicto por foto de otra persona: el juicio es de un solo evaluador sobre 10 fotos.
+- No se probó Seedream: sería una llamada paga.
+- No se probaron los modelos BiRefNet más grandes, porque piden más memoria que el lite.
+
+---
+
 <a id="sisvis-002"></a>
 
 ## SISVIS-002 — Propuestas RESTRINGIDAS (esquema v1) para 2 negocios reales con pocos datos: Fable 5.2 contra Opus 5.5 (m-25042530) — 2026-11-26 · SPIKE, TOPE US$15
