@@ -186,7 +186,8 @@ def test_with_three_texts_mas_texto_is_off_and_says_why(editor_on: None) -> None
     # the orbit's «Texto» is off by the same var (`add_off`), described by the note
     from . import clip_editor_view
 
-    rendered = str(clip_editor_view._timeline_body().render())
+    # m-25026636: the bar is its own box, beside the timeline in the editor's grid
+    rendered = str(clip_editor_view._timeline_bar().render())
     assert "clip_text_full" in rendered and "clip_tl_add_note" in rendered
     # one taken out: on again
     CreativeState.select_clip_block.fn(state, "texto-t1")

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5 · El panel de la parte con IA — m-25142725</title>
+<link rel="stylesheet" href="editor-unico.css">
+<link rel="stylesheet" href="referencias.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <a href="01-pistas.html">1 · Pistas</a> · <a href="02-referencia-elegida.html">2 · Referencia elegida</a> · <a href="03-agregar.html">3 · Agregar</a> · <a href="04-tope.html">4 · Tope</a> · <b>5 · Panel de la parte</b> · <a href="06-celular.html">6 · Celular</a> · <a href="07-usar-tambien.html">7 · Usar también</a></nav>
+  <h1 class="mk-title">5 · El panel de la parte con IA, sin fotos ni video o audio</h1>
+  <p class="mk-sub">Es el panel firmado (<code>02-panel-bloque-ia.html</code>) con dos cambios: se van <b>«Fotos de tu producto»</b> y <b>«Video o audio tuyo»</b> (que estaba en «Más opciones»), y en su lugar entra la caja <b>«Lo que la IA mira aquí»</b>. La caja no edita nada: dice qué referencias tiene debajo esta parte y dónde se cambian. Tiene un solo botón, «Agregar una referencia», que abre la pestaña de la pantalla 3 ya apuntando a esta parte.</p>
+
+  <div class="mk-variants">
+  <section class="mk-variant">
+    <h2>A · Parte con IA 1, «Nueva»</h2>
+    <template id="s5a">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body"><div class="ed">
+        <script type="application/json" data-tl>
+        {"total":17,"t":4,"chosen":"ai1",
+         "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":2,"len":5},{"id":"v1","kind":"video","name":"Video 1","start":7,"len":4,"pic":"pic-b"},{"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"new","start":11,"len":4},{"id":"f2","kind":"photo","name":"Foto 2","start":15,"len":2,"pic":"pic-c"}],
+         "refs":{"photo":[{"id":"rp0","name":"Combo Vecino · 2 fotos","start":0,"len":17,"row":0,"pic":"pic-c","prod":true},{"id":"rp1","name":"Foto de referencia 1","start":2,"len":5,"row":1,"pic":"pic-d"}],"video":[],"audio":[{"id":"ra1","name":"Audio de referencia 1","start":2,"len":5,"row":0}]},
+         "fold":true,"texts":[],"effects":[],"status":"Elegiste la parte con IA 1."}
+        </script>
+        <div class="q-island q-tl-actions"><button class="btn surface" type="button"><span data-i="trash"></span>Quitar</button></div>
+        <section class="q-tl-panel" aria-labelledby="p5a">
+          <div class="q-tl-panel__head"><h2 class="q-tl-panel__title" id="p5a"><span data-i="sparkles"></span>Parte con IA 1 <span class="muted q-nums" style="font-weight:400">· de 0:02 a 0:07</span></h2><span class="pill" data-tone="neutral">Sin crear · gratis hasta «Crear»</span></div>
+          <div class="panel-grid">
+            <div class="stack">
+              <label class="field-label" for="d5a">¿Qué pasa en esta parte?</label>
+              <textarea class="field" id="d5a" rows="3">Una mano sirve el combo en la mesa.</textarea>
+              <p class="field-help">Ej.: «Una mano acerca el vaso».</p>
+              <div class="uses">
+                <span class="uses__k"><span data-i="eye" data-c="sm"></span>Lo que la IA mira aquí</span>
+                <div class="uses__list">
+                  <div class="uses__item"><span class="thumb pic-c"></span><span>Combo Vecino · 2 fotos <small>Fotos de tu producto</small></span></div>
+                  <div class="uses__item"><span class="thumb pic-d"></span><span>Foto de referencia 1</span></div>
+                  <div class="uses__item"><span class="thumb ref-audio"><span data-i="music"></span></span><span>Audio de referencia 1</span></div>
+                </div>
+                <p class="field-help" style="margin:0">Son las fotos, videos y audios que están debajo de esta parte. Para cambiarlos, muévelos o quítalos en la línea.</p>
+                <button class="btn soft accent sm" type="button" style="align-self:flex-start"><span data-i="plus"></span>Agregar una referencia</button>
+              </div>
+              <div>
+                <span class="field-label">Cuánto dura en tu video</span>
+                <div class="row"><button class="btn soft" type="button" aria-label="Un segundo menos">− 1 s</button><span class="q-nums" style="font-weight:700;min-width:3rem;text-align:center">5 s</span><button class="btn soft" type="button" aria-label="Un segundo más">+ 1 s</button></div>
+              </div>
+            </div>
+            <div class="stack" role="radiogroup" aria-labelledby="q5a">
+              <span class="field-label" id="q5a">¿Cómo la hacemos?</span>
+              <div class="choices">
+                <button class="choice" role="radio" aria-checked="true" type="button"><span class="choice__dot"></span><span class="choice__title">Nueva, con tu producto</span><span class="choice__help">Creamos una parte nueva con tu producto y tu marca.</span></button>
+                <button class="choice" role="radio" aria-checked="false" aria-disabled="true" type="button"><span class="choice__dot"></span><span class="choice__title">Sigue a la anterior</span><span class="choice__why"><span data-i="alert" data-c="sm"></span>La anterior es una foto tuya: solo sigue a otra parte con IA.</span></button>
+              </div>
+            </div>
+            <div class="span2 stack">
+              <hr class="hr">
+              <div class="row"><button class="btn soft accent" type="button"><span data-i="sparkles"></span>Probar esta parte</button></div>
+              <div class="q-tl-panel__done"><button class="btn solid sm" type="button" style="min-height:44px">Listo</button></div>
+            </div>
+          </div>
+        </section>
+      </div></div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div><button class="btn ghost sm step-foot__later" type="button">Seguir después</button></footer>
+    </template>
+    <div class="mk-row" data-pair="s5a"
+      data-note-phone="La caja va justo debajo de «¿Qué pasa en esta parte?», en el lugar donde estaban las fotos: el dueño las busca ahí. Sin referencias debajo, dice «Nada todavía. La IA usa lo que escribiste arriba.» y el botón «Agregar una referencia»."
+      data-note-desk="«Fotos de tu producto» se queda como etiqueta del bloque del producto (contrato: quedan marcadas «del producto»). Ayuda a entender por qué esas fotos aparecieron solas. La lista lleva miniaturas de 40 px solo para reconocerlas: tocar una no hace nada (se cambian en la línea), para no tener dos lugares por acción."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>B · Parte con IA 2, «Sigue a la anterior», con un video debajo <small>— decidido: se ignora y se avisa</small></h2>
+    <template id="s5b">
+      <div class="step-body"><div class="ed">
+        <script type="application/json" data-tl>
+        {"total":17,"t":9,"chosen":"ai2",
+         "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":2,"len":5},{"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"follow","start":7,"len":4},{"id":"v1","kind":"video","name":"Video 1","start":11,"len":4,"pic":"pic-b"},{"id":"f2","kind":"photo","name":"Foto 2","start":15,"len":2,"pic":"pic-c"}],
+         "refs":{"photo":[{"id":"rp0","name":"Combo Vecino · 2 fotos","start":0,"len":17,"row":0,"pic":"pic-c","prod":true}],"video":[{"id":"rv1","name":"Video de referencia 1","start":2,"len":9,"row":0,"pic":"pic-b","off":[[7,4]]}],"audio":[]},
+         "fold":true,"texts":[],"effects":[],"status":"Elegiste la parte con IA 2."}
+        </script>
+        <section class="q-tl-panel" aria-labelledby="p5b">
+          <div class="q-tl-panel__head"><h2 class="q-tl-panel__title" id="p5b"><span data-i="sparkles"></span>Parte con IA 2 <span class="muted q-nums" style="font-weight:400">· de 0:07 a 0:11</span></h2></div>
+          <div class="uses">
+            <span class="uses__k"><span data-i="eye" data-c="sm"></span>Lo que la IA mira aquí</span>
+            <div class="uses__list">
+              <div class="uses__item"><span class="thumb pic-c"></span><span>Combo Vecino · 2 fotos <small>Fotos de tu producto</small></span></div>
+              <div class="uses__item" data-off="1"><span class="thumb pic-b"></span><span><s>Video de referencia 1</s> <small><span data-i="alert" data-c="sm"></span> No se usa aquí</small></span></div>
+            </div>
+            <div class="callout" data-tone="warn"><span data-i="alert"></span><span>Esta parte no usa videos ni audios de referencia. Para que use el video, elige «Nueva» en «¿Cómo la hacemos?».</span></div>
+          </div>
+          <div class="q-tl-panel__done"><button class="btn solid sm" type="button" style="min-height:44px">Listo</button></div>
+        </section>
+      </div></div>
+    </template>
+    <div class="mk-row" data-pair="s5b"
+      data-note-phone="El video sigue en la lista, tachado y con «No se usa aquí» en palabras, para que el dueño no crea que se perdió. El aviso usa el texto del contrato (reference_mode_ignored) y agrega la salida."
+      data-note-desk="Aquí sí tiene sentido decir cómo cambiarlo, porque «¿Cómo la hacemos?» vive en este mismo panel. No bloquea «Siguiente» (decisión de Deivid, 2026-11-27). Las fotos sí se usan en los tres modos."></div>
+  </section>
+  </div>
+</div>
+</body>
+</html>

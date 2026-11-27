@@ -77,7 +77,10 @@ FLOW_MEDIA = "media"
 FLOW_TEXT = "text"
 FLOW_EFFECT = "effect"
 FLOW_IDEA = "idea"
-FLOWS: tuple[str, ...] = (FLOW_MEDIA, FLOW_TEXT, FLOW_EFFECT, FLOW_IDEA)
+#: m-25142725: «Mostrar a la IA» — its tab shows only with the AI parts on
+#: (`REF_TAB`, never in `FLOW_TABS`: off, the panel is as before).
+FLOW_REF = "ref"
+FLOWS: tuple[str, ...] = (FLOW_MEDIA, FLOW_TEXT, FLOW_EFFECT, FLOW_IDEA, FLOW_REF)
 #: A flow open in the panel is held where a chosen block's id would be, with this mark
 #: (`+media`): one thing at a time under the timeline.
 FLOW_MARK = "+"
@@ -86,6 +89,7 @@ FLOW_QUESTIONS = {
     FLOW_TEXT: "¿Qué dice tu video?",
     FLOW_EFFECT: "¿Qué le pones a tu video?",
     FLOW_IDEA: "¿De qué trata tu video?",
+    FLOW_REF: "¿Qué le mostramos a la IA?",
 }
 #: Deivid 2026-11-17 («que se junten todo en un solo slide panel»): every flow is a tab of
 #: ONE side panel — (flow, lucide icon, the tab's name). The chosen tab shows its icon and
@@ -96,6 +100,8 @@ FLOW_TABS: tuple[tuple[str, str, str], ...] = (
     (FLOW_EFFECT, "sparkles", "Efecto"),
     (FLOW_IDEA, "lightbulb", "Pedir una idea"),
 )
+#: m-25142725: the reference's tab, after the others, only while the AI parts are on.
+REF_TAB: tuple[str, str, str] = (FLOW_REF, "scan-eye", "Referencia")
 #: The side panel's title (the tab's question goes under it, over its fields).
 FLOW_PANEL_TITLE = "Agregar a tu video"
 FLOW_TABS_LABEL = "Qué agregar"
@@ -1198,6 +1204,10 @@ EDITOR_ACTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "effect": ((REMOVE, "trash-2"),),
     # ED-07: a «parte con IA» — its panel holds the rest (mode, words, seconds…)
     AI_BLOCK_KIND: ((REMOVE, "trash-2"),),
+    # m-25142725: a reference — «Quitar» on the bar, without asking (free to put back)
+    "refphoto": ((REMOVE, "trash-2"),),
+    "refvideo": ((REMOVE, "trash-2"),),
+    "refaudio": ((REMOVE, "trash-2"),),
 }
 #: «Velocidad» of the editor's video: «Normal» or one of «Cámara rápida»'s speeds.
 SPEED_NORMAL = "1"

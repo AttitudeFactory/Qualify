@@ -217,34 +217,35 @@ def test_seconds_are_whole_from_1_to_10() -> None:
 
 
 @pytest.mark.usefixtures("ai_on")
-def test_description_and_photos_are_kept_at_once() -> None:
+def test_the_description_is_kept_at_once_and_the_part_has_no_photos_of_its_own() -> None:
     state = _state()
     block = _add(state, 0.5)
     _described(state, block, "  Una mano acerca el vaso  ")
     assert ai_vm.plans(state.clip_ai_parts)[0]["description"] == "Una mano acerca el vaso"
     assert state.clip_ai_chosen["missing"] == ""
-    assert [p["on"] for p in state.clip_ai_photos] == ["1", "1"]  # none chosen = the Clip's
-    CreativeState.toggle_clip_ai_photo.fn(state, _TWO)
-    assert state.clip_ai_parts[0]["plan"]["clip_image_keys"] == [_ONE]
-    assert [p["on"] for p in state.clip_ai_photos] == ["1", ""]
-    CreativeState.toggle_clip_ai_photo.fn(state, "uploads/otro/negocio.jpg")  # not the Clip's
-    assert state.clip_ai_parts[0]["plan"]["clip_image_keys"] == [_ONE]
+    # m-25142725: «Fotos de tu producto» left the panel — a new part takes no photos of
+    # its own; what it looks at is the reference tracks' («Lo que la IA mira aquí»)
+    assert state.clip_ai_parts[0]["plan"]["clip_image_keys"] is None
+    assert not hasattr(CreativeState, "toggle_clip_ai_photo")
+    assert state.clip_ai_refs == []
 
 
 @pytest.mark.usefixtures("ai_on")
-def test_leaving_nueva_drops_the_guide() -> None:
+def test_leaving_nueva_drops_the_guide_of_a_part_from_before() -> None:
     state = _state()
     block = _add(state, 0.5)
     plan, why = ai_vm.with_guide(state.clip_ai_parts[0]["plan"], f"uploads/{_TENANT}/baile.mp4")
     assert why == ""
     state._clip_ai_put(block, plan)
-    assert [g["kind"] for g in state.clip_ai_guides] == ["video"]
     plan = ai_vm.with_owner_mode(state.clip_ai_parts[0]["plan"], "extend")
     assert (plan["clip_video_keys"], plan["clip_audio_keys"]) == ([], [])
     _wrong, why = ai_vm.with_guide(plan, f"uploads/{_TENANT}/baile.webm")
     assert why == ai_vm.GUIDE_NEEDS_NEW
     _wrong, why = ai_vm.with_guide(state.clip_ai_parts[0]["plan"], "x/baile.webm")
     assert why == contract_ai.ai_part_text("ai_part_guide_type")
+    # m-25142725: and the brief never carries it (`references_and_old_fields`)
+    (entry,) = ai_vm.plans(state.clip_ai_parts, references=True)
+    assert (entry["clip_video_keys"], entry["clip_image_keys"]) == ([], None)
 
 
 # -- move, remove ------------------------------------------------------------------------------
@@ -338,14 +339,17 @@ def test_the_clip_keeps_it_in_its_recipe_and_the_servers_validator_takes_it(
 ) -> None:
     """Deivid (2026-11-26, ED-07 criterion): the brief carries the `ai_part` block with
     its `transition_in`, the text and the effect over its seconds, and passes the
-    server's own `validate_brief_recipe` with the switch on — its entry with a guide of
-    the business and a catalog photo, so the guide's checks run too."""
+    server's own `validate_brief_recipe` with the switch on. m-25142725: a guide or a
+    photo left on the entry from before never reaches the brief (the reference tracks
+    hold them now, `references_and_old_fields`)."""
     state, block_id = _between_two_photos(monkeypatch)
     guide = f"uploads/{_TENANT}/clip/baile.mp4"
     photo = f"uploads/{_TENANT}/catalog/arepa.jpg"
     plan, why = ai_vm.with_guide(state.clip_ai_parts[0]["plan"], guide)
     assert why == ""
-    state._clip_ai_put(block_id, ai_vm.with_photos(plan, [photo]))
+    state._clip_ai_put(
+        block_id, {**plan, "clip_image_keys": [photo], "clip_image_roles": ["product"]}
+    )
     media = state._clip_edit_media()
     segments: list[dict[str, Any]] = media["segments"]  # type: ignore[assignment]
     assert [s.get("kind", "video") for s in segments] == ["photo", AI_PART_KIND, "photo"]
@@ -360,7 +364,10 @@ def test_the_clip_keeps_it_in_its_recipe_and_the_servers_validator_takes_it(
     (entry,) = brief.media.ai_parts
     assert entry.mode == "reference" and entry.seconds == 5
     assert entry.description == "Una mano acerca el vaso"
-    assert entry.clip_video_keys == (guide,) and entry.clip_image_keys == (photo,)
+    # m-25142725: the entry carries no photos, videos or audios of its own any more —
+    # what it looks at is the reference tracks' (`references_version` 1)
+    assert entry.clip_video_keys == () and entry.clip_image_keys is None
+    assert brief.media.references_version == 1
     # no recipe of its own: its texts, effects and join are the Clip's (contract §2)
     assert not (entry.effects or entry.text_layers or entry.segments or entry.transition_in)
     block = brief.media.segments[1]
@@ -416,8 +423,8 @@ def test_the_contracts_refusals_show_before_crear() -> None:
 
 
 @pytest.mark.usefixtures("ai_on")
-def test_a_guide_of_another_business_is_said_before_crear() -> None:
-    """Review: the session's business goes to the contract (`foreign_key`)."""
+def test_without_the_business_nothing_is_skipped_and_an_old_guide_never_reaches_the_brief() -> None:
+    """Review: without the session's business nothing is skipped in silence."""
     state = _state()
     block = _add(state, 0.5)
     _described(state, block)
@@ -429,13 +436,12 @@ def test_a_guide_of_another_business_is_said_before_crear() -> None:
     assert [p["code"] for p in state._clip_ai_problems()] == ["ai_parts_mismatch"]
     assert state.clip_edit_problem == [ai_vm.refusal_text("ai_parts_mismatch"), "warn"]
     state._clip_session_tenant = str(_TENANT)
-    assert [p["code"] for p in state._clip_ai_problems()] == ["foreign_key"]
-    assert state.clip_edit_problem == [ai_vm.refusal_text("foreign_key"), "warn"]
-    mine, _why = ai_vm.with_guide(
-        ai_vm.without_guide(plan, other), f"uploads/{_TENANT}/clip/baile.mp4"
-    )
-    state._clip_ai_put(block, mine)
+    # m-25142725: a guide left on the entry from before never reaches the contract (nor
+    # the brief): the entry goes without its own files (`plans(references=True)`); what
+    # a part looks at is on the reference tracks, uploaded to the business's own folder
     assert state._clip_ai_problems() == []
+    (entry,) = state._clip_edit_media()["ai_parts"]  # type: ignore[misc]
+    assert entry["clip_video_keys"] == []
 
 
 @pytest.mark.usefixtures("ai_on")
@@ -487,31 +493,6 @@ def test_moving_says_the_new_number() -> None:
     _add(state, 999.0)  # last
     state._clip_move_media(first, 4)  # to the end: it is the second AI part now
     assert state.clip_edit_notice == "Moviste la parte con IA 1: ahora es la parte con IA 2."
-
-
-@pytest.mark.usefixtures("ai_on")
-def test_the_guide_upload_keeps_only_a_guides_types(monkeypatch: pytest.MonkeyPatch) -> None:
-    import asyncio  # noqa: PLC0415
-
-    stored: list[str] = []
-
-    async def save(self: CreativeState, files: list[Any]) -> list[tuple[str, str]]:
-        stored.extend(f.name for f in files)
-        return [(f"uploads/{_TENANT}/clip/{f.name}", f.name) for f in files]
-
-    monkeypatch.setattr(CreativeState, "_save_uploads", save)
-
-    class _File:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-    state = _state()
-    _add(state, 0.5)
-    files = [_File("baile.mp4"), _File("nota.txt"), _File("ritmo.mp3")]
-    asyncio.run(CreativeState.handle_clip_ai_guide_uploads.fn(state, files))
-    assert stored == ["baile.mp4", "ritmo.mp3"]  # the .txt is never stored
-    assert [g["kind"] for g in state.clip_ai_guides] == ["video", "audio"]
-    assert state.clip_edit_notice == contract_ai.ai_part_text("ai_part_guide_type")
 
 
 def test_the_screen_contract_names_the_ai_block_as_the_server() -> None:

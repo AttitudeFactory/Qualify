@@ -43,6 +43,8 @@ built by `content_generator` from its own helpers and handed in.
 
 from __future__ import annotations
 
+from typing import Any
+
 import reflex as rx
 from qualify_creative.schemas import PART_DESCRIPTION_MAX
 
@@ -50,6 +52,7 @@ from . import ai_block_vm as ai_vm
 from . import clip_editor_vm as vm
 from . import clip_joins_vm as joins_vm
 from . import clip_photos_vm as photos_vm
+from . import clip_refs_vm as refs_vm
 from . import clip_texts_vm
 from . import editor_idea_vm as idea_vm
 from . import parts_start_vm as start_vm
@@ -70,7 +73,6 @@ from .ui.primitives import (
     drawer,
     dropzone,
     progress_panel,
-    removable_pill,
     tone_badge,
 )
 from .ui.text_panel import text_panel
@@ -78,7 +80,6 @@ from .ui.timeline import (
     timeline,
     timeline_actions,
     timeline_join_panel,
-    timeline_layout,
     timeline_panel,
     timeline_script,
 )
@@ -174,7 +175,8 @@ def _idea_propose() -> rx.Component:
     """ED-06 (design 03C, PR 7), only with `QUALIFY_CLIP_AI_PARTS` on: «Proponerme las
     partes» — Claude proposes the parts and they go at the end of the track, free until
     «Crear» —, the wait «Armando tu propuesta» (a `progress_panel`, never a spinner) and
-    why not. Off while no part fits, with its reason (design D22)."""
+    why not. Off while no part fits or nothing is written yet, with its reason (design
+    D22)."""
     busy = PartsStartState.editor & PartsStartState.proposing
     off = S.clip_idea_off != ""
     return rx.cond(
@@ -206,12 +208,9 @@ def _idea_propose() -> rx.Component:
                 class_name=rx.cond(off, "q-button-off", ""),
             ),
             rx.text(
-                rx.cond(
-                    off,
-                    S.clip_idea_off,
-                    # UX review P4: nothing written yet, said before the tap
-                    rx.cond(S.clip_topic_said, idea_vm.PROPOSE_NOTE, idea_vm.STORY_MISSING),
-                ),
+                # nothing written yet is one more reason the button is off (UX review P4,
+                # m-25026636): said before the tap, in `clip_idea_off`
+                rx.cond(off, S.clip_idea_off, idea_vm.PROPOSE_NOTE),
                 id=idea_vm.PROPOSE_WHY_ID,
                 size="1",
                 color=T.TEXT_MUTED,
@@ -737,15 +736,6 @@ _AI_DESCRIPTION_DEBOUNCE_MS = 400
 _AI_SECONDS_ID = "q-ai-part-seconds-why"
 _AI_TRY_ID = "q-ai-part-try-why"
 _AI_MERGE_ID = "q-ai-part-merge-why"
-_AI_GUIDE_ID = "q-ai-part-guide"
-#: «Video o audio tuyo»'s upload (the business's own folder, as «Subir»).
-AI_GUIDE_UPLOAD_ID = "clip_ai_guide"
-_AI_GUIDE_ACCEPT = {
-    "video/mp4": [".mp4"],
-    "video/quicktime": [".mov"],
-    "audio/mpeg": [".mp3"],
-    "audio/wav": [".wav"],
-}
 
 
 def _mode_icon(name: rx.Var, size: int = 16) -> rx.Component:
@@ -886,64 +876,6 @@ def _ai_description() -> rx.Component:
     )
 
 
-def _ai_photo(photo: rx.Var) -> rx.Component:
-    return choice_card(
-        rx.hstack(
-            rx.cond(
-                photo["thumb"] != "",
-                rx.image(
-                    src=BACKEND_BASE + photo["thumb"],
-                    alt="",
-                    width="40px",
-                    height="40px",
-                    object_fit="cover",
-                    border_radius=T.RADIUS_CONTROL,
-                ),
-                rx.icon("image", size=T.ICON_MD, aria_hidden="true"),
-            ),
-            rx.text(photo["name"], size="1", class_name="q-truncate"),
-            choice_card_check(),
-            spacing="2",
-            align="center",
-            width="100%",
-        ),
-        selected=photo["on"] == "1",
-        role="checkbox",
-        on_select=S.toggle_clip_ai_photo(photo["key"]),
-        padding="0.5rem 0.75rem",
-        width="100%",
-    )
-
-
-def _ai_photos() -> rx.Component:
-    row = S.clip_ai_chosen
-    return rx.vstack(
-        rx.text(ai_vm.PHOTOS_TITLE, size="2", weight="bold", as_="div"),
-        rx.cond(
-            S.clip_ai_photos.length() > 0,  # type: ignore[attr-defined]
-            rx.el.div(
-                rx.foreach(S.clip_ai_photos, _ai_photo),
-                role="group",
-                aria_label=ai_vm.PHOTOS_TITLE,
-                style={
-                    "display": "grid",
-                    "gap": "0.5rem",
-                    "width": "100%",
-                    "gridTemplateColumns": "repeat(auto-fill, minmax(9rem, 1fr))",
-                },
-            ),
-            rx.text(ai_vm.PHOTOS_NONE, size="1", color=T.TEXT_MUTED),
-        ),
-        rx.cond(
-            row["product_note"] != "",
-            rx.text(row["product_note"], size="1", color=T.TEXT_MUTED),
-        ),
-        spacing="2",
-        width="100%",
-        align_items="start",
-    )
-
-
 def _ai_step(label: str, delta: int, reason: rx.Var) -> rx.Component:
     """«− 1 s» / «+ 1 s»: off with its reason (focusable, `aria-disabled`)."""
     return rx.button(
@@ -996,63 +928,316 @@ def _ai_seconds() -> rx.Component:
     )
 
 
-def _ai_guide_file(item: rx.Var) -> rx.Component:
-    return removable_pill(
-        item["name"],
-        S.remove_clip_ai_guide(item["key"]),
-        icon=None,
-        remove_label="Quitar " + item["name"],
+# -- m-25142725: the reference tracks — the AI part's box, a reference's panel, the tab --
+
+#: «Subir de tu teléfono»'s upload in «Mostrar a la IA» (the business's own folder).
+REF_UPLOAD_ID = "clip_ref_upload"
+#: «Pone una copia en «{track}» para que la IA la mire. Gratis.», around its track.
+_AS_REF_HEAD, _, _AS_REF_TAIL = refs_vm.USE_AS_REF_HELP.partition("{track}")
+_REF_BOX_ID = "q-ai-part-refs"
+
+
+def _ref_thumb(item: rx.Var, size: str = "40px") -> rx.Component:
+    """A reference's picture, else its kind's icon (an audio always its icon)."""
+    icon = rx.match(
+        item["kind"],
+        ("video", rx.icon("film", size=T.ICON_MD, aria_hidden="true")),
+        ("audio", rx.icon("audio-lines", size=T.ICON_MD, aria_hidden="true")),
+        rx.icon("image", size=T.ICON_MD, aria_hidden="true"),
+    )
+    return rx.cond(
+        item["thumb"] != "",
+        rx.image(
+            src=BACKEND_BASE + item["thumb"],
+            alt="",
+            width=size,
+            height=size,
+            object_fit="cover",
+            border_radius=T.RADIUS_CONTROL,
+            flex="none",
+        ),
+        rx.box(icon, class_name="q-ref-thumb", width=size, height=size),
     )
 
 
-def _ai_guide() -> rx.Component:
-    """«Más opciones → Video o audio tuyo» («Nueva» only, contract §3.1): folded; in any
-    other mode, how to get it."""
-    row = S.clip_ai_chosen
-    body = rx.vstack(
-        rx.text(ai_vm.GUIDE_HELP, size="1", color=T.TEXT_MUTED),
-        rx.flex(rx.foreach(S.clip_ai_guides, _ai_guide_file), wrap="wrap", gap="0.5rem"),
-        dropzone(
-            rx.hstack(
-                rx.icon("upload", size=T.ICON_SM, aria_hidden="true"),
-                rx.text(ai_vm.GUIDE_LABEL, size="2"),
-                spacing="2",
-                align="center",
+def _ai_ref(item: rx.Var) -> rx.Component:
+    """One line of «Lo que la IA mira aquí»: its picture and name; a video or an audio
+    this part does not use in its mode, struck through with the contract's words."""
+    return rx.hstack(
+        _ref_thumb(item),
+        rx.vstack(
+            rx.text(
+                item["name"],
+                size="1",
+                class_name=rx.cond(item["ignored"] == "1", "q-truncate q-ref-off", "q-truncate"),
             ),
-            upload_id=AI_GUIDE_UPLOAD_ID,
-            accept=_AI_GUIDE_ACCEPT,
-            max_files=3,
-            variant="compact",
-            multiple=True,
-            on_drop=S.handle_clip_ai_guide_uploads(  # type: ignore[call-arg]
-                rx.upload_files(upload_id=AI_GUIDE_UPLOAD_ID)
-            ),
+            rx.cond(item["tag"] != "", rx.text(item["tag"], size="1", color=T.TEXT_MUTED)),
+            rx.cond(item["note"] != "", rx.text(item["note"], size="1", color=T.TEXT_MUTED)),
+            spacing="0",
+            min_width="0",
         ),
-        id=_AI_GUIDE_ID,
+        spacing="2",
+        align="center",
+        width="100%",
+        role="listitem",
+    )
+
+
+def _ai_refs_box() -> rx.Component:
+    """«Lo que la IA mira aquí» (notas §11): what lies under the chosen AI part on the
+    reference tracks — read-only (one place per action: they move on the timeline) —,
+    its cap's words when it takes too many, and «Agregar una referencia»."""
+    row = S.clip_ai_chosen
+    ignored = S.clip_ai_refs.contains("1", "ignored")  # type: ignore[attr-defined]
+    return rx.vstack(
+        rx.text(refs_vm.BOX_TITLE, size="2", weight="bold", as_="div"),
+        rx.text(refs_vm.BOX_HELP, size="1", color=T.TEXT_MUTED),
+        rx.cond(
+            S.clip_ai_refs.length() > 0,  # type: ignore[attr-defined]
+            rx.el.div(
+                rx.foreach(S.clip_ai_refs, _ai_ref),
+                role="list",
+                aria_label=refs_vm.BOX_TITLE,
+                class_name="q-ref-box",
+            ),
+            rx.text(refs_vm.BOX_EMPTY, size="1", color=T.TEXT_MUTED),
+        ),
+        rx.cond(ignored, rx.text(refs_vm.IGNORED_HELP, size="1", color=T.TEXT_MUTED)),
+        rx.cond(row["refs_problem"] != "", callout(row["refs_problem"], "warn")),
+        # Deivid (option A): before «Quitar», that its references go with it
+        rx.cond(row["refs_go"] != "", rx.text(row["refs_go"], size="1", color=T.TEXT_MUTED)),
+        rx.button(
+            rx.icon("plus", size=T.ICON_SM, aria_hidden="true"),
+            refs_vm.ADD_SHORTCUT,
+            type="button",
+            variant="surface",
+            min_height="44px",
+            on_click=S.open_clip_ref_for_part,
+        ),
+        id=_REF_BOX_ID,
         spacing="2",
         width="100%",
         align_items="start",
+        class_name="q-ref-box-wrap",
     )
-    return rx.vstack(
+
+
+def _ref_photo(photo: rx.Var) -> rx.Component:
+    return rx.hstack(
+        _ref_thumb({"thumb": photo["thumb"], "kind": "photo"}),  # type: ignore[arg-type]
         rx.button(
-            rx.icon(rx.cond(S.clip_ai_more, "chevron-down", "chevron-right"), size=16),
-            ai_vm.MORE_OPTIONS + " · " + ai_vm.GUIDE_LABEL,
+            rx.icon("x", size=T.ICON_SM, aria_hidden="true"),
+            refs_vm.REMOVE_PHOTO,
             type="button",
-            variant="ghost",
+            variant="soft",
+            color_scheme="gray",
             min_height="44px",
-            aria_expanded=S.clip_ai_more,
-            aria_controls=_AI_GUIDE_ID,
-            on_click=S.toggle_clip_ai_more,
+            on_click=S.remove_clip_ref_photo(photo["key"]),
+            aria_label=photo["remove"],
         ),
+        spacing="2",
+        align="center",
+        role="listitem",
+    )
+
+
+def _ref_panel() -> rx.Component:
+    """A reference's panel (notas §8): what it is used for first («Se usa en las partes
+    con IA 1 y 2.»), what it is, its times and how to change them (dragging its block),
+    a product's photos one by one, and «Usar también en el video» (decision 6; never for
+    an audio). «Quitar» is the bar's."""
+    row = S.clip_ref_chosen
+    return rx.vstack(
+        rx.text(row["used"], size="2", weight="medium"),
+        rx.text(row["what"], size="1", color=T.TEXT_MUTED),
+        rx.text(row["times"], size="2", class_name="q-nums"),
+        rx.text(row["hint"], size="1", color=T.TEXT_MUTED),
         rx.cond(
-            S.clip_ai_more,
-            rx.cond(
-                row["guide_shown"] == "1",
-                body,
-                rx.text(row["guide_reason"], size="1", color=T.TEXT_MUTED, id=_AI_GUIDE_ID),
+            row["product"] == "1",
+            rx.vstack(
+                rx.text(refs_vm.PRODUCT_PHOTOS_TITLE, size="2", weight="bold", as_="div"),
+                rx.el.div(
+                    rx.foreach(S.clip_ref_chosen_photos, _ref_photo),
+                    role="list",
+                    aria_label=refs_vm.PRODUCT_PHOTOS_TITLE,
+                    class_name="q-ref-box",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
         ),
-        spacing="1",
+        rx.cond(
+            row["copy"] == "1",
+            rx.vstack(
+                rx.button(
+                    rx.icon("copy-plus", size=T.ICON_SM, aria_hidden="true"),
+                    refs_vm.USE_IN_VIDEO,
+                    type="button",
+                    variant="surface",
+                    min_height="44px",
+                    on_click=S.copy_clip_ref_to_video,
+                ),
+                rx.text(refs_vm.USE_IN_VIDEO_HELP, size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+        custom_attrs={"data-ref-panel": row["id"]},
+    )
+
+
+def _use_as_ref() -> rx.Component:
+    """Decision 5: «Usar también como referencia» in an own photo's or video's panel —
+    only while the Clip has AI parts (`clip_ref_copy_shown`)."""
+    track = rx.cond(
+        S.clip_tl_chosen_kind == "video",
+        refs_vm.TRACK_NAMES["video"],
+        refs_vm.TRACK_NAMES["photo"],
+    )
+    return rx.cond(
+        S.clip_ref_copy_shown,
+        rx.vstack(
+            rx.button(
+                rx.icon(T.AI_ICON, size=T.ICON_SM, aria_hidden="true"),
+                refs_vm.USE_AS_REF,
+                type="button",
+                variant="surface",
+                min_height="44px",
+                on_click=S.copy_clip_block_to_refs,
+            ),
+            rx.text(
+                _AS_REF_HEAD + track + _AS_REF_TAIL,
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="1",
+            align_items="start",
+        ),
+    )
+
+
+def _ref_seg(
+    options: tuple[tuple[str, str], ...], value: rx.Var, on_change: Any, label: str
+) -> rx.Component:
+    """The kit's segmented menu (`.q-source-seg`): Radix radios, 44 px."""
+    return rx.box(
+        rx.segmented_control.root(
+            *(
+                rx.segmented_control.item(
+                    text, value=key, min_height="44px", aria_label=text, title=text
+                )
+                for key, text in options
+            ),
+            value=value,
+            on_change=on_change,
+            size="2",
+            aria_label=label,
+            class_name="q-source-seg q-tl-seg q-seg-fill",
+        ),
+        width="100%",
+        min_width="0",
+    )
+
+
+def _ref_pick(item: rx.Var) -> rx.Component:
+    """A product's photo or video, put under the AI part in one tap."""
+    return rx.el.button(
+        _ref_thumb(
+            {"thumb": item["thumb"], "kind": S.clip_ref_kind},  # type: ignore[arg-type]
+            "56px",
+        ),
+        rx.text(item["name"], size="1", class_name="q-truncate"),
+        type="button",
+        class_name="q-ref-pick",
+        on_click=S.add_clip_ref_key(item["key"]),
+        aria_label=rx.cond(
+            S.clip_ref_kind == "video",
+            refs_vm.PICK_LABEL["video"],
+            refs_vm.PICK_LABEL["photo"],
+        )
+        + ": "
+        + item["name"],
+    )
+
+
+def _ref_upload(kind: str) -> rx.Component:
+    return dropzone(
+        rx.hstack(
+            rx.icon("upload", size=T.ICON_SM, aria_hidden="true"),
+            rx.text(refs_vm.UPLOAD_LABELS[kind], size="2"),
+            spacing="2",
+            align="center",
+        ),
+        upload_id=REF_UPLOAD_ID,
+        accept=dict(refs_vm.ACCEPT[kind]),
+        max_files=1,
+        variant="compact",
+        multiple=False,
+        on_drop=S.handle_clip_ref_uploads(  # type: ignore[call-arg]
+            rx.upload_files(upload_id=REF_UPLOAD_ID)
+        ),
+    )
+
+
+def _ref_tab() -> rx.Component:
+    """«Mostrar a la IA» (notas §9, UX review): where it goes and that it is not in the
+    video, «Foto · Video · Audio», then the two sources one under the other — «De tus
+    productos» with their pictures and «De tu teléfono» to upload (an audio only from the
+    phone). Without an AI part it only says why."""
+    products = rx.cond(
+        S.clip_ref_products.length() > 0,  # type: ignore[attr-defined]
+        rx.el.div(rx.foreach(S.clip_ref_products, _ref_pick), class_name="q-ref-picks"),
+        rx.text(S.clip_ref_products_none, size="1", color=T.TEXT_MUTED),
+    )
+    upload = rx.match(
+        S.clip_ref_kind,
+        ("video", _ref_upload("video")),
+        ("audio", _ref_upload("audio")),
+        _ref_upload("photo"),
+    )
+    return rx.vstack(
+        rx.text(S.clip_ref_where, size="2"),
+        rx.cond(
+            S.clip_ref_can_add,
+            rx.vstack(
+                _ref_seg(
+                    refs_vm.KIND_OPTIONS, S.clip_ref_kind, S.set_clip_ref_kind, refs_vm.KIND_LABEL
+                ),
+                rx.cond(
+                    S.clip_ref_kind != "audio",
+                    rx.vstack(
+                        rx.text(refs_vm.FROM_PRODUCTS, size="2", weight="bold", as_="div"),
+                        products,
+                        spacing="2",
+                        width="100%",
+                        align_items="start",
+                    ),
+                ),
+                rx.vstack(
+                    rx.text(refs_vm.FROM_PHONE, size="2", weight="bold", as_="div"),
+                    rx.cond(
+                        S.clip_ref_kind == "audio",
+                        rx.text(refs_vm.NO_PRODUCT_MEDIA["audio"], size="1", color=T.TEXT_MUTED),
+                        rx.cond(
+                            S.clip_ref_kind == "photo",
+                            rx.text(refs_vm.PHONE_EXAMPLE, size="1", color=T.TEXT_MUTED),
+                        ),
+                    ),
+                    upload,
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
+                spacing="4",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        spacing="3",
         width="100%",
         align_items="start",
     )
@@ -1112,9 +1297,11 @@ def _ai_actions() -> rx.Component:
 
 def _ai_part() -> rx.Component:
     """ED-07 (m-25026638): the chosen «parte con IA»'s panel (design 02): «Sin crear ·
-    gratis hasta «Crear»», «¿Cómo la hacemos?», «¿Qué pasa en esta parte?», its photos,
-    its whole seconds, «Más opciones → Video o audio tuyo» and its actions. No
-    «Velocidad», «Girar» nor «Cortar»: an AI part goes at ×1 (contract §2)."""
+    gratis hasta «Crear»», «¿Qué pasa en esta parte?», m-25142725's «Lo que la IA mira
+    aquí» (its photos, videos and audios are the reference tracks' now: no «Fotos de tu
+    producto» nor «Video o audio tuyo» of its own), its whole seconds, «¿Cómo la
+    hacemos?» and its actions. No «Velocidad», «Girar» nor «Cortar»: an AI part goes at
+    ×1 (contract §2)."""
     row = S.clip_ai_chosen
     return rx.cond(
         row["id"] != "",
@@ -1122,12 +1309,11 @@ def _ai_part() -> rx.Component:
             # ED-06 (design D6): the whole video's context first, folded to its line
             _whole_video(),
             rx.text(row["not_created"], size="1", color=T.TEXT_MUTED),
-            # ux review: what happens first, then its photos and seconds, then how
+            # ux review: what happens first, then what it looks at and its seconds
             _ai_description(),
-            _ai_photos(),
+            _ai_refs_box(),
             _ai_seconds(),
             _ai_mode(),
-            _ai_guide(),
             _ai_actions(),
             spacing="4",
             width="100%",
@@ -1138,31 +1324,39 @@ def _ai_part() -> rx.Component:
 
 
 def _block_extra() -> rx.Component:
-    """The chosen block's own fields, by what it is."""
+    """The chosen block's own fields, by what it is. m-25142725: a reference's panel, and
+    «Usar también como referencia» in an own photo's or video's."""
     row = S.clip_tl_chosen
+    ref = _ref_panel()
     return rx.match(
         row["kind"],
-        ("photo", _photo_block()),
+        ("photo", rx.fragment(_photo_block(), _use_as_ref())),
         (ai_vm.TL_KIND, _ai_part()),
         (
             "video",
-            rx.cond(
-                row["own"] == "1",
-                _own_video(),
+            rx.fragment(
                 rx.cond(
-                    row["mine"] == "1",
-                    # the own video not measured yet, or one this browser cannot play —
-                    # decided from THIS block's file (m-25114465, `_clip_cut_note`)
-                    rx.text(
-                        row["cut_note"],
-                        size="2",
-                        color=T.TEXT_MUTED,
-                        role="status",
+                    row["own"] == "1",
+                    _own_video(),
+                    rx.cond(
+                        row["mine"] == "1",
+                        # the own video not measured yet, or one this browser cannot play
+                        # — decided from THIS block's file (m-25114465, `_clip_cut_note`)
+                        rx.text(
+                            row["cut_note"],
+                            size="2",
+                            color=T.TEXT_MUTED,
+                            role="status",
+                        ),
+                        rx.text(vm.SECOND_VIDEO_NOTE, size="2", color=T.TEXT_MUTED),
                     ),
-                    rx.text(vm.SECOND_VIDEO_NOTE, size="2", color=T.TEXT_MUTED),
                 ),
+                _use_as_ref(),
             ),
         ),
+        (refs_vm.TL_KINDS["photo"], ref),
+        (refs_vm.TL_KINDS["video"], ref),
+        (refs_vm.TL_KINDS["audio"], ref),
         rx.fragment(),
     )
 
@@ -1228,7 +1422,14 @@ def _flow_question() -> rx.Var:
 def _flow_tabs() -> rx.Component:
     """The panel's tabs — «¿Con qué lo armamos? · Texto · Efecto · Pedir una idea» — on
     the design system's segmented menu with an icon and a name (`.q-source-seg`, like
-    the media sources: the chosen tab shows both, the others their icon)."""
+    the media sources: the chosen tab shows both, the others their icon). m-25142725:
+    «Referencia» last, only while the state says the AI parts are on (`clip_ai_on`)."""
+    return rx.cond(
+        S.clip_ai_on, _flow_tab_bar((*vm.FLOW_TABS, vm.REF_TAB)), _flow_tab_bar(vm.FLOW_TABS)
+    )
+
+
+def _flow_tab_bar(tabs: tuple[tuple[str, str, str], ...]) -> rx.Component:
     return rx.box(
         rx.segmented_control.root(
             *(
@@ -1241,7 +1442,7 @@ def _flow_tabs() -> rx.Component:
                     title=name,
                     custom_attrs={"data-flow-tab": flow},
                 )
-                for flow, icon, name in vm.FLOW_TABS
+                for flow, icon, name in tabs
             ),
             value=S.clip_tl_flow,
             on_change=S.switch_clip_flow,
@@ -1280,6 +1481,7 @@ def _flow_drawer(media_body: rx.Component) -> rx.Component:
                     (vm.FLOW_TEXT, _text_tab()),
                     (vm.FLOW_EFFECT, _effects()),
                     (vm.FLOW_IDEA, _idea()),
+                    (vm.FLOW_REF, _ref_tab()),  # m-25142725
                     rx.fragment(),
                 ),
                 spacing="4",
@@ -1338,11 +1540,12 @@ def _trim_hint() -> rx.Component:
 
 
 def _timeline() -> rx.Component:
-    """The timeline and its bar. ED-12 (m-25029107): the whole of it takes files of the
-    computer dropped on it (the design system's «section» dropzone: never a click, its
-    own controls stay usable) — uploaded as «Subir» does and put in the gap the line
-    marked (`assets/timeline-insert.js`); «Foto o video» is off with 8 photos or
-    videos, and says why."""
+    """The timeline's tracks (their bar is `_timeline_bar`, its own box since
+    m-25026636). ED-12 (m-25029107): the tracks take files of the computer dropped on
+    them (the design system's «section» dropzone: never a click, its own controls stay
+    usable) — uploaded as «Subir» does and put in the gap the line marked
+    (`assets/timeline-insert.js`); «Foto o video» is off with 8 photos or videos, and
+    says why (on the bar)."""
     return dropzone(
         rx.box(_timeline_body(), custom_attrs={"data-tl-insert-zone": ""}),
         upload_id=vm.TIMELINE_UPLOAD_ID,
@@ -1372,51 +1575,87 @@ def _timeline_body() -> rx.Component:
 
 
 def _timeline_layout() -> rx.Component:
-    return timeline_layout(
-        timeline(
-            media=S.clip_tl_media_rows,
-            texts=S.clip_tl_text_rows,
-            effects=S.clip_tl_effect_rows,
-            ticks=S.clip_tl_ticks,
-            total=S.clip_tl_total,
-            selected=S.clip_tl_selected,
-            on_select=S.select_clip_block,
-            status=S.clip_edit_notice,
-            on_key=S.clip_block_key,
-            on_drag=S.drop_clip_block,
-            status_action=_trim_hint(),
-            # ED-04: «Efectos» in rows that come and go on their own
-            effect_lanes=S.clip_tl_effect_lanes,
-            effect_lane_names=S.clip_tl_effect_lane_names,
-            # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
-            thumb_base=BACKEND_BASE,
-            # ED-11b: each uploaded video's frame strip, by block (its path after BACKEND_BASE)
-            frames=S.clip_tl_frames,
-            # m-25114465: «la unión» between every two blocks ([] off the switch)
-            joins=S.clip_tl_joins,
-            on_join=S.open_clip_join,
-            # ED-07: a «parte con IA» is drawn while the state says the switch is on
-            ai_on=S.clip_ai_on,
+    """The tracks (`.q-tl-stack__track`); their bar is `_timeline_bar`, a sibling of
+    the timeline in the editor's grid (m-25026636)."""
+    return rx.el.div(
+        rx.el.div(_tracks(), class_name="q-tl-stack__track"),
+        class_name="q-tl-stack q-tl-stack--bar-below",
+    )
+
+
+def _timeline_bar() -> rx.Component:
+    """The bar under the tracks: «Agregar» with nothing chosen, the chosen block's
+    actions otherwise. m-25026636 (live test): its own box in the editor's grid, not
+    inside the timeline, so on a phone it can stay pinned right under the sticky preview
+    (`.q-edit__bar`) — inside the timeline it slid half under the preview, the top of the
+    «+» hidden and untappable. The same `.q-tl-stack` classes as before: same look."""
+    return rx.el.div(
+        rx.el.div(_actions(), class_name="q-tl-stack__actions"),
+        class_name="q-tl-stack q-tl-stack--bar-below q-edit__bar",
+    )
+
+
+def _tracks() -> rx.Component:
+    return timeline(
+        media=S.clip_tl_media_rows,
+        texts=S.clip_tl_text_rows,
+        effects=S.clip_tl_effect_rows,
+        ticks=S.clip_tl_ticks,
+        total=S.clip_tl_total,
+        selected=S.clip_tl_selected,
+        on_select=S.select_clip_block,
+        status=S.clip_edit_notice,
+        on_key=S.clip_block_key,
+        on_drag=S.drop_clip_block,
+        status_action=_trim_hint(),
+        # ED-04: «Efectos» in rows that come and go on their own
+        effect_lanes=S.clip_tl_effect_lanes,
+        effect_lane_names=S.clip_tl_effect_lane_names,
+        # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
+        thumb_base=BACKEND_BASE,
+        # ED-11b: each uploaded video's frame strip, by block (its path after BACKEND_BASE)
+        frames=S.clip_tl_frames,
+        # m-25114465: «la unión» between every two blocks ([] off the switch)
+        joins=S.clip_tl_joins,
+        on_join=S.open_clip_join,
+        # ED-07: a «parte con IA» is drawn while the state says the switch is on
+        ai_on=S.clip_ai_on,
+        # m-25142725: the reference tracks, only while the Clip has AI parts
+        refs={
+            "shown": S.clip_ref_shown,
+            "lanes": S.clip_ref_lanes,
+            "names": S.clip_ref_lane_names,
+            "folded": S.clip_ref_folded,
+            "columns": S.clip_ref_columns,
+            "on_add": S.open_clip_refs_folded,
+        },
+    )
+
+
+def _actions() -> rx.Component:
+    return timeline_actions(
+        S.clip_tl_chosen_kind,
+        on_add=S.open_clip_flow,
+        on_action=S.clip_block_action,
+        label=S.clip_tl_chosen_label,
+        actions=vm.EDITOR_ACTIONS,
+        # ED-13 (criterion 2): «Texto» off with 3 texts, said above the «+»
+        add_off={
+            "media": S.clip_tl_full,
+            "text": S.clip_text_full,
+            ai_vm.ADD_KEY: S.clip_ai_add_off,  # ED-07: 8 blocks, 6 AI parts or 60 s
+            # m-25142725: «Mostrar a la IA» off without an AI part (signed)
+            vm.FLOW_REF: S.clip_ref_add_off,
+        },
+        # ED-07: «Parte con IA», drawn only while the state says the switch is on
+        # (`clip_ai_on`, read on the server — as `clip_editor_shown` for the editor)
+        # m-25142725: «Mostrar a la IA» after it, also behind the switch
+        add_options=(
+            *ai_vm.add_options(tl_vm.ADD_OPTIONS, on=True),
+            (vm.FLOW_REF, refs_vm.ADD_ICON, refs_vm.ADD_LABEL),
         ),
-        timeline_actions(
-            S.clip_tl_chosen_kind,
-            on_add=S.open_clip_flow,
-            on_action=S.clip_block_action,
-            label=S.clip_tl_chosen_label,
-            actions=vm.EDITOR_ACTIONS,
-            # ED-13 (criterion 2): «Texto» off with 3 texts, said above the «+»
-            add_off={
-                "media": S.clip_tl_full,
-                "text": S.clip_text_full,
-                ai_vm.ADD_KEY: S.clip_ai_add_off,  # ED-07: 8 blocks, 6 AI parts or 60 s
-            },
-            # ED-07: «Parte con IA», drawn only while the state says the switch is on
-            # (`clip_ai_on`, read on the server — as `clip_editor_shown` for the editor)
-            add_options=ai_vm.add_options(tl_vm.ADD_OPTIONS, on=True),
-            add_shown={ai_vm.ADD_KEY: S.clip_ai_on},
-            add_note=S.clip_tl_add_note,
-        ),
-        bar_below=True,
+        add_shown={ai_vm.ADD_KEY: S.clip_ai_on, vm.FLOW_REF: S.clip_ai_on},
+        add_note=S.clip_tl_add_note,
     )
 
 
@@ -1448,6 +1687,8 @@ def arma_tu_video(media_body: rx.Component, general: rx.Component | None = None)
         rx.box(display="none", on_mount=rx.call_script(asset_script(ROOM_SCRIPT))),
         _preview(),
         rx.box(_timeline(), class_name="q-edit__timeline"),
+        # m-25026636: the bar is its own box, pinned under the preview on a phone
+        _timeline_bar(),
         rx.box(
             rx.cond(S.clip_tl_selected != "", _block_panel()),
             rx.cond(S.clip_join_open != "", _join_panel()),
@@ -1461,6 +1702,8 @@ def arma_tu_video(media_body: rx.Component, general: rx.Component | None = None)
                 if general is not None
                 else []
             ),
+            # m-25142725: a card under the line for each AI part over its cap
+            rx.foreach(S.clip_ref_cards, lambda card: callout(card, "warn")),
             _problem(),
             rx.text(vm.PREVIEW_FREE, size="1", color=T.TEXT_MUTED),
             # m-25114465 (ux review): how to find the joins, until the first one; and,

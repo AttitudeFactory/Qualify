@@ -532,9 +532,23 @@
     return MOVE_KINDS.indexOf(kind) >= 0 ? "move" : "time";
   }
 
+  /* What a held block that slides in time may also do up or down: an effect changes
+     row of «Efectos» (ED-04) and — m-25142725 — a reference changes row of ITS OWN
+     track («Fotos / Videos / Audios de referencia»: `.q-tl__lane--refphoto`…), never
+     another kind's. Only an effect opens a new row by being dropped under the last one;
+     references stack in rows on their own (the screen puts one that overlaps another on
+     the first free row). `rowKind(kind)` → {lanes: the rows' class, newLane}, or null. */
+  var REF_KINDS = ["refphoto", "refvideo", "refaudio"];
+  function rowKind(kind) {
+    if (kind === "effect") return { lanes: ".q-tl__lane--effect", newLane: true };
+    if (REF_KINDS.indexOf(kind) >= 0) return { lanes: ".q-tl__lane--" + kind, newLane: false };
+    return null;
+  }
+
   var api = {
     STEP: STEP,
     dragMode: dragMode,
+    rowKind: rowKind,
     LONG_PRESS_MS: LONG_PRESS_MS,
     MOUSE_LIFT_PX: MOUSE_LIFT_PX,
     MOVE_CANCEL_PX: MOVE_CANCEL_PX,

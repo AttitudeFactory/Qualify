@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3 · Agregar una referencia — m-25142725</title>
+<link rel="stylesheet" href="editor-unico.css">
+<link rel="stylesheet" href="referencias.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <a href="01-pistas.html">1 · Pistas</a> · <a href="02-referencia-elegida.html">2 · Referencia elegida</a> · <b>3 · Agregar</b> · <a href="04-tope.html">4 · Tope</a> · <a href="05-panel-parte.html">5 · Panel de la parte</a> · <a href="06-celular.html">6 · Celular</a> · <a href="07-usar-tambien.html">7 · Usar también</a></nav>
+  <h1 class="mk-title">3 · Agregar una referencia</h1>
+  <p class="mk-sub">Comparé tres entradas. Elijo <b>«Agregar» → «Referencia para la IA»</b>, con un atajo en el panel de la parte con IA que abre lo mismo. El dueño no tiene que entender la regla de posición: la referencia cae <b>sola debajo de la parte con IA que está en el cabezal, con su mismo largo</b>, y se usa ahí desde el primer momento.</p>
+
+  <div class="mk-compare">
+    <div class="card"><h3>A · Desde «Agregar» <span class="mk-pick">Elegida</span></h3><p>El mismo «+» de siempre suma una opción: llega a 6, el máximo del menú. Un solo lugar para agregar cualquier cosa (§5.10, punto 8). Abre el panel lateral en su pestaña.</p></div>
+    <div class="card"><h3>B · Un «+» dentro de cada pista <span class="mk-drop">Descartada</span></h3><p>En el celular las pistas se deslizan y el «+» se pierde de vista. Son tres botones más, de 44 px, encima de pistas que ya son angostas. Y duplica «Agregar» sin decir más que él.</p></div>
+    <div class="card"><h3>C · Atajo en el panel de la parte <span class="mk-pick">Se suma a A</span></h3><p>Es donde el dueño piensa «para esta parte quiero esta foto». «Agregar una referencia» abre la misma pestaña y la deja exactamente bajo esa parte. Ver la pantalla 5.</p></div>
+  </div>
+
+  <div class="mk-variants">
+  <section class="mk-variant">
+    <h2>A · El «+» abierto, con la opción nueva</h2>
+    <template id="s3a">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body"><div class="ed">
+        <script type="application/json" data-tl>
+        {"total":17,"t":4,"chosen":"",
+         "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":2,"len":5},{"id":"v1","kind":"video","name":"Video 1","start":7,"len":4,"pic":"pic-b"},{"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"new","start":11,"len":4},{"id":"f2","kind":"photo","name":"Foto 2","start":15,"len":2,"pic":"pic-c"}],
+         "refs":{"photo":[{"id":"rp0","name":"Combo Vecino · 2 fotos","start":0,"len":17,"row":0,"pic":"pic-c","prod":true}],"video":[],"audio":[]},
+         "fold":true,"texts":[],"effects":[],"status":""}
+        </script>
+        <div class="orbit-wrap">
+          <div class="orbit" role="menu" aria-label="Agregar">
+            <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="image"></span></span>Foto o video</button>
+            <button class="orbit__pill ai" role="menuitem" type="button"><span class="ic"><span data-i="sparkles"></span></span>Parte con IA</button>
+            <button class="orbit__pill ai" role="menuitem" type="button"><span class="ic"><span data-i="eye"></span></span>Referencia para la IA</button>
+            <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="type"></span></span>Texto</button>
+            <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="cloud"></span></span>Efecto</button>
+            <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="bulb"></span></span>Pedir una idea</button>
+          </div>
+          <div class="q-island" style="width:max-content"><div class="row"><button class="orbit__plus" type="button" aria-label="Cerrar" aria-expanded="true"><span data-i="x"></span></button><span style="font-weight:700;padding-right:12px">Agregar</span></div></div>
+        </div>
+      </div></div>
+    </template>
+    <div class="mk-row" data-pair="s3a" data-only="phone"
+      data-note-phone="«Referencia para la IA» va justo después de «Parte con IA», con el mismo tono iris, porque sirve para ella. Sin ninguna parte con IA en el video, queda no disponible y su motivo va encima del «+»: «Primero agrega una parte con IA: las referencias son para ella.»"></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>B · El panel lateral, pestaña «Referencia» <small>— una decisión: qué foto, video o audio</small></h2>
+    <template id="s3b">
+      <div style="position:relative;min-height:720px">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="drawer-layer">
+        <aside class="drawer" role="dialog" aria-labelledby="dr3">
+          <div class="drawer__head"><h2 id="dr3" style="margin:0;font-size:17px">Agregar a tu video</h2><button class="btn ghost" type="button" aria-label="Cerrar"><span data-i="x"></span></button></div>
+          <div class="drawer__body">
+            <div class="tabs" role="tablist" aria-label="Qué agregar">
+              <button role="tab" aria-selected="false" aria-label="¿Con qué lo armamos?" type="button"><span data-i="image"></span></button>
+              <button role="tab" aria-selected="false" aria-label="Parte con IA" type="button"><span data-i="sparkles"></span></button>
+              <button role="tab" aria-selected="true" type="button"><span data-i="eye"></span>Referencia</button>
+              <button role="tab" aria-selected="false" aria-label="Texto en pantalla" type="button"><span data-i="type"></span></button>
+              <button role="tab" aria-selected="false" aria-label="Efecto" type="button"><span data-i="cloud"></span></button>
+              <button role="tab" aria-selected="false" aria-label="Pedir una idea" type="button"><span data-i="bulb"></span></button>
+            </div>
+            <div class="callout" data-tone="info"><span data-i="sparkles"></span><span>Va debajo de la <b>parte con IA 1</b>, donde está el cabezal, y dura lo mismo. La IA la mira para hacer esa parte; no sale en tu video.</span></div>
+            <div>
+              <span class="field-label" id="k3">¿Qué le mostramos a la IA?</span>
+              <div class="seg" role="radiogroup" aria-labelledby="k3"><button role="radio" aria-checked="true" type="button">Foto</button><button role="radio" aria-checked="false" type="button">Video</button><button role="radio" aria-checked="false" type="button">Audio</button></div>
+            </div>
+            <div>
+              <span class="field-label">De tus productos</span>
+              <div class="thumbs">
+                <button class="thumb pic-c" type="button" aria-label="Combo Vecino, foto 1 (ya está en tu video)" style="opacity:.5"></button>
+                <button class="thumb pic-d" type="button" aria-label="Shawarma mixto, foto 1"></button>
+                <button class="thumb pic-a" type="button" aria-label="Shawarma mixto, foto 2" style="box-shadow:inset 0 0 0 2px var(--accent-9),0 0 0 3px var(--accent-a4)"></button>
+                <button class="thumb pic-b" type="button" aria-label="Ensalada César, foto 1"></button>
+              </div>
+              <p class="field-help">Las de Combo Vecino ya están en todo tu video.</p>
+            </div>
+            <div>
+              <span class="field-label">De tu teléfono</span>
+              <button class="btn surface block" type="button"><span data-i="upload"></span>Subir una foto</button>
+              <p class="field-help">Ej.: una foto del local o de cómo sirves el plato.</p>
+            </div>
+          </div>
+          <div class="drawer__foot"><button class="btn solid block" type="button">Agregar esta foto</button></div>
+        </aside>
+      </div>
+      </div>
+    </template>
+    <div class="mk-row" data-pair="s3b"
+      data-note-phone="Una sola decisión por pantalla: elegir la foto (el tipo ya viene en «Foto», lo más común). Al tocar «Agregar esta foto», el panel se cierra y la línea viva dice «Agregaste una foto de referencia a la parte con IA 1.». Si debajo ya hay otra, se apila en una fila nueva, sola."
+      data-note-desk="Si el cabezal está sobre algo que no es una parte con IA, la caja azul dice «Va debajo de la parte con IA 1, la más cercana al cabezal.». Si la parte ya tiene el tope del modelo de ese tipo, «Agregar esta foto» queda no disponible con su motivo: «La parte con IA 1 ya tiene 9 fotos, lo más que usa la IA. Quita una para agregar otra.» (el número sale del modelo activo)."></div>
+  </section>
+  </div>
+</div>
+</body>
+</html>

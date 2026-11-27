@@ -236,9 +236,10 @@ async def _run_proposal(state: Any, typed: str | None, *, editor: bool) -> bool:
                 state.story = vm.field_text(typed)
             story = vm.clean_story(state.story)
         if editor:
-            # the caps (and a video still being read) said before the call: Claude is
-            # never asked for parts that cannot go in (design D22). The button already
-            # says why, under it: not a second time here (UX review)
+            # the caps, a video still being read and an empty context said before the
+            # call: Claude is never asked for parts that cannot go in (design D22,
+            # m-25026636). The button already says why, under it: not a second time here
+            # (UX review)
             if creative._clip_idea_off_reason():
                 return False
         if not story:

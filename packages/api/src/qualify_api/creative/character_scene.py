@@ -170,6 +170,13 @@ NEEDS_REDRAW_TEXT = (
 #: Corte»: the join after the scene becomes a cut).
 CUT_ACTION = "cut_after_scene"
 TRANSITION_UNAVAILABLE = "character_scene_transition_unavailable"
+#: A line marked as suggested with no known prompt version, or a prompt version on a line
+#: the owner wrote (m-25129386): its provenance does not hold, so the scene is refused.
+LINE_PROVENANCE = "character_line_provenance"
+#: The prompt versions of «Sugerir con IA» (`character_line_ai.LINE_PROMPT_VERSION`) a
+#: suggested line may carry. A new version is added here when it ships.
+#: v1 stays known for provenance (a line suggested by it is still a suggested line).
+KNOWN_LINE_PROMPT_VERSIONS = frozenset({"personaje-linea-v1", "personaje-linea-v2"})
 
 
 def past_end_text(number: int) -> str:
@@ -215,6 +222,21 @@ WAITING_TEXT = (
     "Estamos creando las escenas con tu personaje. Puede tardar varios minutos. Puedes "
     "salir: tu video te espera en Por aprobar."
 )
+
+
+def line_provenance_text(number: int) -> str:
+    return (
+        f"Lo que dice tu personaje en la escena {number} viene de una sugerencia que ya no "
+        "podemos usar. Pide otra sugerencia o escríbelo tú."
+    )
+
+
+def line_provenance_ok(item: CharacterSceneItem) -> bool:
+    """`line_suggested` ⇔ a known `line_prompt_version` (ADR 50 §12.7: the scene records
+    whether the line was suggested and by which prompt). Pure."""
+    if item.line_suggested:
+        return item.line_prompt_version in KNOWN_LINE_PROMPT_VERSIONS
+    return item.line_prompt_version is None
 
 
 def line_too_long_text(duration: int) -> str:
@@ -467,11 +489,15 @@ def scene_problems(
     """Every rule of §12.2 the schema cannot check alone, on the Clip's OUTPUT timeline
     (`clip_seconds`: its stretches at their speed minus the overlaps of its blends):
     no scene past the end; at least `LOCAL_TOTAL_MIN_S` of the owner's own video in view
-    (P5 of §11); no smoke, embers or steam crossing a scene (§11 point 8); and no blend
+    (P5 of §11); a suggested line carries a known prompt version and a written one none
+    (m-25129386); no smoke, embers or steam crossing a scene (§11 point 8); and no blend
     at a scene's exit (§12.6) — a join whose blend window reaches past the scene's end
     while starting at or before it. A blend that comes in at the scene's start, or lies
     wholly under it, is fine. Pure."""
     found: list[SceneProblem] = []
+    for number, scene in enumerate(scenes):
+        if not line_provenance_ok(scene):
+            found.append(SceneProblem(LINE_PROVENANCE, line_provenance_text(number + 1), number))
     for number, scene in enumerate(scenes):
         if scene.transition_in is not None:
             # PR 2's assembly (`scene_overlay`) draws a scene's way in as a cut; another
