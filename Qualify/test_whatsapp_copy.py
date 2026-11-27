@@ -78,10 +78,10 @@ def test_chat_badges_say_who_answers_and_until_when() -> None:
     assert mode_pill(True) == ("Respondes tú", "info")
     now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
     label, tone = window_pill(True, datetime(2026, 10, 14, 17, 0, tzinfo=UTC), now, UTC)
-    # m-25027371: the bubbles' 24 h clock, one way of saying the time in the thread
-    assert (label, tone) == ("Puedes escribirle hasta las 17:00", "ok")
+    # m-25131413: the bubbles' 12 h clock, one way of saying the time in the thread
+    assert (label, tone) == ("Puedes escribirle hasta las 5:00 p. m.", "ok")
     label, _tone = window_pill(True, datetime(2026, 10, 15, 1, 30, tzinfo=UTC), now, UTC)
-    assert label == "Puedes escribirle hasta mañana a las 01:30"
+    assert label == "Puedes escribirle hasta mañana a las 1:30 a. m."
 
 
 def test_follow_up_strings_are_exact() -> None:

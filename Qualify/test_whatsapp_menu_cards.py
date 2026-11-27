@@ -101,7 +101,7 @@ def _card(card: MenuCardInput, **kw: Any) -> Any:
 
 def test_status_per_menu() -> None:
     live = _card(_input())
-    assert (live.status_label, live.status_tone) == ("Respondiendo a tus clientes", "ok")
+    assert (live.status_label, live.status_tone) == ("Activo en tu WhatsApp", "ok")
     assert live.is_live and not live.is_paused
     paused = _card(_input(paused=True))
     assert (paused.status_label, paused.status_tone) == ("En pausa", "warn")
@@ -273,7 +273,7 @@ async def _run(handler: object, state: WhatsAppMenuState, *args: object) -> list
 
 
 def _summary(menu_id: str, name: str, *, live: bool, paused: bool = False) -> MenuSummaryVM:
-    label = ("En pausa" if paused else "Respondiendo a tus clientes") if live else "Sin publicar"
+    label = ("En pausa" if paused else "Activo en tu WhatsApp") if live else "Sin publicar"
     return MenuSummaryVM(
         menu_id=menu_id,
         name=name,
@@ -410,7 +410,7 @@ async def test_publishing_another_menu_demotes_the_live_one_on_screen(
 
     # The picker's order puts the menu that answers first (m-24986800).
     assert [(c.menu_id, c.status_label) for c in state.menu_cards] == [
-        (B, "Respondiendo a tus clientes"),
+        (B, "Activo en tu WhatsApp"),
         (A, "Sin publicar"),
     ]
     assert not state.menu.is_published  # A, open in the editor, no longer answers
@@ -505,7 +505,7 @@ async def test_pausar_and_reanudar_go_through_set_paused(
     # «Reanudar» is one tap: no banner, a toast that offers «Pausar» back.
     assert len(events) == 1 and RESUMED_TOAST in str(events[0]) and "Pausar" in str(events[0])
     assert state.banner == ""
-    assert state.menu_cards[0].status_label == "Respondiendo a tus clientes"
+    assert state.menu_cards[0].status_label == "Activo en tu WhatsApp"
     assert state.card_busy == ""
 
 
@@ -581,7 +581,7 @@ async def test_a_late_pause_after_switching_number_is_dropped(
     monkeypatch.setattr(module, "set_paused", set_paused)
     await _run(WhatsAppMenuState.pause_card, state, A, True)
 
-    assert state.menu_cards[0].status_label == "Respondiendo a tus clientes"
+    assert state.menu_cards[0].status_label == "Activo en tu WhatsApp"
     assert state.banner == "" and state.card_busy == ""
 
 
@@ -622,7 +622,7 @@ def test_each_option_says_its_status_in_words() -> None:
         today=TODAY,
     )
     assert [c.option_label for c in cards] == [
-        "prueba 2 · Respondiendo a tus clientes",
+        "prueba 2 · Activo en tu WhatsApp",
         "Navidad · Sin publicar",
     ]
 

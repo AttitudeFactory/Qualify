@@ -207,7 +207,7 @@ def test_the_card_says_how_they_pay_and_who_confirmed() -> None:
         agents={str(USER): AgentVM(user_id=str(USER), name="Ana", initials="A")},
     )
     assert not done.can_confirm
-    assert done.confirmed_line == "Pago recibido · lo confirmó Ana · 15:00"
+    assert done.confirmed_line == "Pago recibido · lo confirmó Ana · 3:00 p. m."
     assert payment_confirm_title("María G.") == "¿Ya te llegó el pago de María G.?"
 
 

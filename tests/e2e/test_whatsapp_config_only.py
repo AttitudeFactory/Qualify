@@ -142,8 +142,8 @@ def test_whatsapp_lands_on_the_numbers_card(chats_page, size: dict[str, int]) ->
 @pytest.mark.parametrize(
     ("old", "chip", "pressed"),
     [
-        ("/whatsapp?tab=chats", "todos", "Todos"),
-        ("/whatsapp?tab=chats&filtro=abiertos", "todos", "Todos"),
+        ("/whatsapp?tab=chats", "todos", "Abiertos"),
+        ("/whatsapp?tab=chats&filtro=abiertos", "todos", "Abiertos"),
         ("/whatsapp?tab=chats&filtro=sin-leer", "por-responder", "Por responder"),
         ("/whatsapp?tab=chats&filtro=por-responder", "por-responder", "Por responder"),
         ("/whatsapp?tab=chats&filtro=cerrados", "cerrados", "Cerrados"),
@@ -195,9 +195,9 @@ def test_the_number_choice_narrows_and_survives_a_chat(chats_page) -> None:  # n
     expect(_row(page, "Laura Gómez")).to_have_count(0, timeout=30_000)
     expect(_row(page, "Sofía Ruiz")).to_be_visible()
     todos = page.get_by_role("group", name="Qué chats ver").get_by_role(
-        "button", name=re.compile("^Todos")
+        "button", name=re.compile("^Abiertos")
     )
-    expect(todos).to_have_text("Todos · 2")
+    expect(todos).to_have_text("Abiertos · 2")
     # Its chat opens beside the list and the way back keeps the number.
     _row(page, "Sofía Ruiz").click()
     expect(page.locator(".q-chat-thread .q-chat-msg").first).to_be_visible(timeout=60_000)
@@ -247,9 +247,9 @@ def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> No
     respond.click()
     expect(page).to_have_url(re.compile(r"/responder"), timeout=60_000)
     expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
-    # The default chip is «Por responder»; every WhatsApp chat is under «Todos».
+    # The default chip is «Por responder»; every WhatsApp chat is under «Abiertos».
     page.get_by_role("group", name="Qué chats ver").get_by_role(
-        "button", name=re.compile("^Todos")
+        "button", name=re.compile("^Abiertos")
     ).click()
     expect(_row(page, "Laura Gómez")).to_be_visible(timeout=60_000)
     expect(page.locator('nav [aria-current="page"]').first).to_contain_text("Por responder")
@@ -260,9 +260,9 @@ def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> No
     link.first.click()
     expect(page).to_have_url(re.compile(r"/responder"), timeout=60_000)
     expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
-    # The default chip is «Por responder»; every WhatsApp chat is under «Todos».
+    # The default chip is «Por responder»; every WhatsApp chat is under «Abiertos».
     page.get_by_role("group", name="Qué chats ver").get_by_role(
-        "button", name=re.compile("^Todos")
+        "button", name=re.compile("^Abiertos")
     ).click()
     expect(_row(page, "Laura Gómez")).to_be_visible(timeout=60_000)
     expect(page.locator('nav [aria-current="page"]').first).to_contain_text("Por responder")

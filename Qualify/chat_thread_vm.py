@@ -36,9 +36,9 @@ from .whatsapp_vm import TAB_MENU, tab_url
 
 #: The «⋯» button's accessible name (it has no visible text).
 MORE_ACTIONS_LABEL: Final = "Más acciones de este chat"
-#: m-25029798: the desk's «✕» of an open chat (the back row hides there; new text,
-#: awaiting the founder).
-CLOSE_CHAT_LABEL: Final = "Volver a la lista"
+#: m-25029798: the desk's «✕» of an open chat (the back row hides there; founder-approved
+#: 2026-11-27, m-25131413).
+CLOSE_CHAT_LABEL: Final = "Volver a Por responder"
 #: The menu's group of people the chat can be given to (ticket «Asignar»).
 ASSIGN_LABEL: Final = "Asignar"
 UNASSIGNED_LABEL: Final = "Sin asignar"
@@ -113,9 +113,10 @@ def window_line(
 ) -> tuple[str, str]:
     """(text, tone) of the header line that says until when the owner can write.
 
-    Open with more than an hour left → «Puedes escribirle hasta las 17:47» (`ok`), or
-    «… hasta mañana a las 01:18» when it closes on another day of the tenant's calendar
-    — the bubbles' 24 h clock, and the clock of Instagram's composer line;
+    Open with more than an hour left → «Puedes escribirle hasta las 5:47 p. m.» (`ok`),
+    or «… hasta mañana a las 1:18 a. m.» when it closes on another day of the tenant's
+    calendar — the bubbles' 12 h clock (`clock_12h`), and the clock of Instagram's
+    composer line;
     under an hour → the row's own «Quedan 12 min para responder» (`warn`), the same
     count (`chat_row_vm.minutes_left`); closed → `closed_text` (each channel says what
     the owner can still do) with the `neutral` tone, "" for no line."""
@@ -125,8 +126,8 @@ def window_line(
     if minutes:
         return reply_soon_pill(minutes), "warn"
     local_close = _local(closes_at, zone)
-    # The bubbles' clock (24 h, «17:47»): one fact, one way of saying the time.
-    clock = local_close.strftime("%H:%M")
+    # The bubbles' clock (12 h, «5:47 p. m.»): one fact, one way of saying the time.
+    clock = clock_12h(local_close)
     if local_close.date() == _local(now, zone).date():
         return f"Puedes escribirle hasta las {clock}", "ok"
     return f"Puedes escribirle hasta mañana a las {clock}", "ok"
@@ -134,6 +135,15 @@ def window_line(
 
 def _local(value: datetime, zone: tzinfo) -> datetime:
     return value.astimezone(zone) if value.tzinfo is not None else value
+
+
+def clock_12h(local: datetime) -> str:
+    """The open chat's clock (founder, 2026-11-27, m-25131413): 12 h Spanish, no leading
+    zero — «5:47 p. m.», «12:05 p. m.» at noon, «12:05 a. m.» at midnight. `local` is
+    already in the business's time zone. Used by the header, the bubbles and the cards
+    of an open chat (both channels), nothing else."""
+    hour = local.hour % 12 or 12
+    return f"{hour}:{local.minute:02d} {'a. m.' if local.hour < 12 else 'p. m.'}"
 
 
 # ======================================================================================

@@ -171,7 +171,7 @@ def test_the_composer_offers_templates_and_their_manager() -> None:
 
     for text in (
         "Mensajes guardados",
-        "Administrar plantillas",
+        "Editar mensajes guardados",
         "Nueva plantilla",
         "Aún no tienes plantillas en esta cuenta",
         "Guardar",

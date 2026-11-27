@@ -2,7 +2,7 @@
 responder»; what WhatsApp's own list offered and the single list lacked is there now.
 
 - «Abiertos» (WhatsApp's default chip: the open chats, answered or not) is the single
-  list's «Todos» — the same rule; `?filtro=abiertos` lands on it.
+  list's «Abiertos» — the same rule; `?filtro=abiertos` lands on it.
 - The number choice: drawn only for a business with two or more WhatsApp numbers (and
   not on the Instagram view); it narrows the list AND its chips to that number; an id
   the business does not own never narrows anything.
@@ -67,11 +67,11 @@ class _Tally:
 
 def test_abiertos_is_the_lists_todos() -> None:
     """WhatsApp's «Abiertos» listed `status = 'open'` chats, answered or not: the single
-    list's «Todos» (proven against Postgres in `test_inbox_unified_numbers_db.py`)."""
+    list's «Abiertos» (proven against Postgres in `test_inbox_unified_numbers_db.py`)."""
     assert filter_from_params({"filtro": "abiertos"}) == FILTER_ALL
     assert filter_from_params({"filtro": "sin-leer"}) == FILTER_AWAITING
     assert filter_from_params({"filtro": "cerrados"}) == FILTER_CLOSED
-    # One chip for it, not two with the same number: «Todos» lists both channels' open chats.
+    # One chip for it, not two with the same number: «Abiertos» lists both channels' open chats.
     keys = [c.key for c in filter_chips(_Tally(), FILTER_ALL, ALL_CHANNELS)]
     assert keys.count(FILTER_ALL) == 1 and "abiertos" not in keys
 
@@ -110,7 +110,7 @@ def test_the_chips_count_the_number_on_screen() -> None:
     assert count_of(tally, FILTER_AWAITING, CHANNEL_WHATSAPP) == 3
     assert count_of(tally, FILTER_AWAITING, CHANNEL_WHATSAPP, SECOND) == 2
     labels = [c.label for c in filter_chips(tally, FILTER_AWAITING, CHANNEL_WHATSAPP, SECOND)]
-    assert labels == ["Por responder · 2", "Todos · 2", "Cerrados · 1", "Pago por revisar · 1"]
+    assert labels == ["Por responder · 2", "Abiertos · 2", "Cerrados · 1", "Pago por revisar · 1"]
     # FIRST has nothing to check: «Pago por revisar» is not drawn on it.
     first = [c.key for c in filter_chips(tally, FILTER_AWAITING, CHANNEL_WHATSAPP, FIRST)]
     assert "pago_por_revisar" not in first

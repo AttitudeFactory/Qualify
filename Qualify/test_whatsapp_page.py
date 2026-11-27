@@ -622,7 +622,7 @@ def test_the_number_in_one_line(
     assert got == tone
     assert label
     if tone == "ok":
-        assert label == "Tu WhatsApp funciona bien ✓"
+        assert label == "Tu WhatsApp funciona bien"
     if status in {"degraded", "revoked"} or platform == "BANNED":
         # UX review: the owner reads what happened and gets a button to ask for help,
         # never the administrative «vuelva a ejecutar la conexión» hint.
@@ -653,7 +653,7 @@ def test_a_failing_number_offers_the_review_request() -> None:
 
 def test_number_vm_carries_its_line() -> None:
     vm = _number()
-    assert (vm.health_label, vm.health_tone) == ("Tu WhatsApp funciona bien ✓", "ok")
+    assert (vm.health_label, vm.health_tone) == ("Tu WhatsApp funciona bien", "ok")
     assert _number(status="revoked").health_tone == "warn"
 
 
@@ -811,14 +811,14 @@ def _present(rendered: str, text: str) -> bool:
         # m-25027373: every action of «Tu número»'s panels, now on their own pages.
         (
             whatsapp_page.whatsapp_profile_index,
-            ("Perfil", "Guardar", "Descartar cambios", "Volver a leer de WhatsApp"),
+            ("Perfil de tu WhatsApp", "Guardar", "Descartar cambios", "Volver a leer de WhatsApp"),
         ),
         (
             whatsapp_page.whatsapp_qr_index,
             ("Códigos QR", "Crear código", "Copiar enlace", "Descargar PNG", "Eliminar"),
         ),
         (whatsapp_page.whatsapp_payments_index, ("Formas de pago", "Agregar forma de pago")),
-        (whatsapp_page.whatsapp_activity_index, ("Actividad", "Tus redes")),
+        (whatsapp_page.whatsapp_activity_index, ("Actividad de tu WhatsApp", "Tus redes")),
     ],
 )
 def test_each_moved_panel_renders_on_its_page(page: typing.Any, texts: tuple[str, ...]) -> None:
@@ -826,7 +826,15 @@ def test_each_moved_panel_renders_on_its_page(page: typing.Any, texts: tuple[str
     for text in (*texts, NO_NUMBER_ACTION):
         assert _present(rendered, text), text
     # No «Tu número» strip, no chats, no chat notice on any of them.
-    for gone in ("Tu número", "Secciones de WhatsApp", "Filtrar chats", "Ir a Por responder"):
+    # The retired «where the chats went» notice is named by its sentence: its action's
+    # words («Ir a Por responder») are now also the approved messages' next step
+    # (m-25131413), which is in every panel page's component tree.
+    for gone in (
+        "Tu número",
+        "Secciones de WhatsApp",
+        "Filtrar chats",
+        "Tus chats de WhatsApp se responden en Por responder",
+    ):
         assert not _present(rendered, gone), gone
 
 

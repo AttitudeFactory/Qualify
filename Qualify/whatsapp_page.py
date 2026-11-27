@@ -75,6 +75,7 @@ from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     ACCOUNT_PARAM,
+    ACTIVITY_PAGE_TITLE,
     ACTIVITY_ROUTE,
     ACTIVITY_SUBTITLE,
     ACTIVITY_TITLE,
@@ -94,8 +95,8 @@ from .whatsapp_vm import (
     NO_NUMBER_GAINS,
     NO_NUMBER_NEXT,
     NO_NUMBER_TITLE,
+    PROFILE_PAGE_TITLE,
     PROFILE_SUBTITLE,
-    PROFILE_TITLE,
     PROMOTION_SUBS,
     PROMOTIONS_SUBTITLE,
     PROMOTIONS_TITLE,
@@ -507,7 +508,7 @@ def _panel_page(
 def whatsapp_profile_index() -> rx.Component:
     """`/chats/ajustes/whatsapp/perfil`: the number's profile and «Tu local en el mapa»
     (what «Cómo llegar» sends)."""
-    return _panel_page(TAB_PROFILE, PROFILE_TITLE, PROFILE_SUBTITLE, back_to_chat_settings())
+    return _panel_page(TAB_PROFILE, PROFILE_PAGE_TITLE, PROFILE_SUBTITLE, back_to_chat_settings())
 
 
 def whatsapp_qr_index() -> rx.Component:
@@ -528,7 +529,7 @@ def whatsapp_payments_index() -> rx.Component:
 def whatsapp_activity_index() -> rx.Component:
     """`/connections/whatsapp/actividad`: the number's activity, reached from its card
     in «Tus redes»."""
-    return _panel_page(TAB_ACTIVITY, ACTIVITY_TITLE, ACTIVITY_SUBTITLE, back_to_connections())
+    return _panel_page(TAB_ACTIVITY, ACTIVITY_PAGE_TITLE, ACTIVITY_SUBTITLE, back_to_connections())
 
 
 def whatsapp_settings_index() -> rx.Component:

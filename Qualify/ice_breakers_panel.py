@@ -2,7 +2,7 @@
 from Conversaciones' header for the selected account — the place where the taps of
 these questions arrive, so the person sets them up where they will answer them.
 
-Same pattern as «Administrar plantillas» (`conversations_page.templates_manager`): the
+Same pattern as «Editar mensajes guardados» (`conversations_page.templates_manager`): the
 `ui.drawer` primitive, rows as cards with icon tools («Subir», «Bajar», «Quitar»), and
 confirmations IN PLACE (a second dialog over the drawer would trap focus twice). States
 are tones through `signal_pill` / `tone_badge` / `callout`; content loading is a

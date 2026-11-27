@@ -135,7 +135,7 @@ def test_vms_are_frozen_and_carry_no_raw_datetimes() -> None:
 
 def test_window_pill_open_is_ok_with_the_local_closing_time() -> None:
     label, tone = window_pill(True, NOW + timedelta(hours=5), NOW, ZONE)
-    assert (label, tone) == ("Puedes escribirle hasta las 17:00", "ok")
+    assert (label, tone) == ("Puedes escribirle hasta las 5:00 p. m.", "ok")
 
 
 def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
@@ -430,9 +430,9 @@ def test_the_conversation_threads_media_state_through() -> None:
 
 
 def test_message_time_today_yesterday_and_older() -> None:
-    assert message_time(NOW - timedelta(minutes=3), NOW, ZONE) == "11:57"
-    assert message_time(NOW - timedelta(days=1), NOW, ZONE) == "ayer 12:00"
-    assert message_time(NOW - timedelta(days=9), NOW, ZONE) == "5 oct 12:00"
+    assert message_time(NOW - timedelta(minutes=3), NOW, ZONE) == "11:57 a. m."
+    assert message_time(NOW - timedelta(days=1), NOW, ZONE) == "ayer 12:00 p. m."
+    assert message_time(NOW - timedelta(days=9), NOW, ZONE) == "5 oct 12:00 p. m."
 
 
 def test_conversation_merges_unsent_outbox_rows_chronologically() -> None:
@@ -515,7 +515,7 @@ def test_order_card_from_thread_context() -> None:
     assert card.total_label == "COP 35.000"
     assert card.items_label == "3 productos"
     assert card.collected == [OrderFieldVM(label="Dirección", value="Calle 10 # 5-20")]
-    assert card.confirmed_label == "Confirmado 11:30"
+    assert card.confirmed_label == "Confirmado 11:30 a. m."
 
 
 def test_order_card_puts_the_address_first() -> None:

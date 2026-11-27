@@ -62,8 +62,9 @@ from .chat_row_vm import (
     reply_soon_pill,
     unknown_contact,
 )
-from .chat_thread_vm import INSTAGRAM_WINDOW_CLOSED_LINE, day_label, window_line
+from .chat_thread_vm import INSTAGRAM_WINDOW_CLOSED_LINE, clock_12h, day_label, window_line
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
+from .reply_box_vm import REPLY_LATER_LINE
 from .whatsapp_chats_vm import bubble_clock, message_time, relative_time
 
 # ======================================================================================
@@ -119,16 +120,16 @@ VOICE_CONTENT_TYPE = "audio/wav"
 CHANNEL_LABELS: dict[str, str] = {"dm": "Instagram Direct"}
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
+#: m-25131413 (founder, 2026-11-27): both notices end with the reply box's own line,
+#: the sentence WhatsApp already uses (`reply_box_vm.REPLY_LATER_LINE`).
 WINDOW_CLOSED_NOTICE = (
     "Ya no puedes responder: pasaron más de 24 h desde el último mensaje de la persona. "
-    "Instagram solo permite contestar dentro de ese plazo; cuando vuelva a escribir, "
-    "podrás responder de nuevo."
+    "Instagram solo permite contestar dentro de ese plazo. " + REPLY_LATER_LINE
 )
 #: m-25018661: the person unsent every message they had sent (Meta makes us erase them),
 #: so only the business's replies remain and there is no 24 h to count from.
 NO_INBOUND_NOTICE = (
-    "Ya no puedes responder: no queda ningún mensaje de esta persona. "
-    "Cuando vuelva a escribir, podrás responder de nuevo."
+    "Ya no puedes responder: no queda ningún mensaje de esta persona. " + REPLY_LATER_LINE
 )
 #: The rule itself, said once, so «hasta mañana a las 19:27» is never a bare deadline.
 WINDOW_RULE = (
@@ -592,7 +593,7 @@ def window_words(
     *,
     has_inbound: bool = True,
 ) -> tuple[str, str]:
-    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Quedan
+    """(sentence for the header, tone). «Puedes responder hasta las 5:47 p. m.» / «Quedan
     12 min para responder» / «Ya no puedes responder…». `has_inbound=False` (no message
     of the person is left, m-25018661) says that instead of the 24 h. The row says the
     window through the shared pill (`chat_row_vm`), with the same minute count."""
@@ -605,13 +606,14 @@ def window_words(
         minutes = max(1, minutes_left(is_open, closes_at, now))
         return f"{reply_soon_pill(minutes)}: {WINDOW_RULE}", "warn"
     local_close, local_now = _local(closes_at, zone), _local(now, zone)
-    clock = local_close.strftime("%H:%M")
+    clock = clock_12h(local_close)
     when = (
         f"hasta las {clock}"
         if local_close.date() == local_now.date()
         else (f"hasta mañana a las {clock}")
     )
-    return f"{WINDOW_RULE} En esta conversación, {when}.", "ok"
+    # «p. m.» already ends the sentence: never «p. m..».
+    return f"{WINDOW_RULE} En esta conversación, {when}".rstrip(".") + ".", "ok"
 
 
 # ======================================================================================
@@ -1213,7 +1215,7 @@ def classify_attachment(content_type: str, size: int) -> tuple[str, str]:
 
 
 def voice_note_name(seconds: int, now: datetime, zone: tzinfo) -> str:
-    """`Nota de voz 0:42 · 17:03` — what the chip shows for a recording."""
+    """`Nota de voz 0:42 · 5:03 p. m.` — what the chip shows for a recording."""
     minutes, rest = divmod(max(0, int(seconds)), 60)
     return f"Nota de voz {minutes}:{rest:02d} · {message_time(now, now, zone)}"
 

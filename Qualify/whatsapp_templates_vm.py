@@ -459,7 +459,7 @@ MAX_LABEL_CHARS = 60
 SUBMITTED_MESSAGE = "Te avisamos cuando esté aprobado (puede tardar hasta 24 h)."
 NEXT_STEP_CONTACTS = "Ver clientes que aceptaron"
 #: N3 for «Un aviso de pedido»: the real next job is to use it from that client's chat.
-NEXT_STEP_CHATS = "Ir a los chats"
+NEXT_STEP_CHATS = "Ir a Por responder"
 DONE_HINT_PROMO = (
     "Mientras tanto, revisa quiénes aceptaron recibir tus promociones: a ellos les "
     "podrás enviar este mensaje."

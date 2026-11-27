@@ -395,7 +395,7 @@ def test_the_hints_and_next_step_follow_the_type() -> None:
     """UX review: a promotion sends one text to everyone; an order notice goes from a chat."""
     assert "todos reciben el mismo texto" in NAME_HINT_PROMO
     assert NAME_EXAMPLE in NAME_HINT_UTILITY
-    assert NEXT_STEP_CHATS == "Ir a los chats"
+    assert NEXT_STEP_CHATS == "Ir a Por responder"
     assert "chat" in DONE_HINT_UTILITY and "promociones" in DONE_HINT_PROMO
     assert "plantilla" not in FORM_REVIEW_NOTICE.lower()
     assert RESUME_NOTICE == "Seguimos donde lo dejaste."

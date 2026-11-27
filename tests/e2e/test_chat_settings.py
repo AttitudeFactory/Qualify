@@ -69,10 +69,10 @@ def test_the_hub_has_three_cards_on_phone_and_desktop(chats_page) -> None:  # no
     expect(main.get_by_role("button", name=re.compile("Preguntas iniciales"))).to_have_count(1)
     expect(main.get_by_role("link", name=re.compile("Preguntas iniciales"))).to_have_count(0)
     expect(main.get_by_role("link", name="Ir a Tus redes")).to_be_visible()
-    for link in ("Ir a tus chats", "Ir a Tus redes"):  # N12: 44 px targets
+    for link in ("Ir a Por responder", "Ir a Tus redes"):  # N12: 44 px targets
         box = main.get_by_role("link", name=re.compile(link)).first.bounding_box()
         assert box and box["height"] >= 44, (link, box)
-    expect(main.get_by_role("link", name=re.compile("Ir a tus chats"))).to_have_attribute(
+    expect(main.get_by_role("link", name=re.compile("Ir a Por responder"))).to_have_attribute(
         "href", "/responder"
     )
     expect(page.get_by_text("Respuesta automática")).to_have_count(0)
