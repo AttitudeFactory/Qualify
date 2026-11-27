@@ -3102,8 +3102,31 @@ class ContentService:
                     revision=revision,
                     reason=after.failure_reason or "kept_previous_version",
                 )
+            if after.status == FAILED and after.parent_draft_id is None:
+                self._give_back_broken_scenes(tenant_id, after)
         except Exception:
             logger.exception("draft %s: creations refund failed", draft_id)
+
+    def _give_back_broken_scenes(self, tenant_id: UUID, clip: DraftRecord) -> None:
+        """m-25128784 PR 2: a Clip with character scenes that failed for a reason of ours
+        (`SCENE_BROKEN_TEXT`: its scenes could not be laid) gives back the vistas previas
+        of ALL its scenes, as `ScenesBroken` does — the owner got no video. Idempotent (the
+        ledger gives back only a row still charged); nothing for any other failure."""
+        from qualify_api.creative.character_scene import (  # noqa: PLC0415
+            SCENE_BROKEN,
+            SCENE_BROKEN_TEXT,
+            PostgresCharacterSceneStore,
+        )
+
+        if clip.failure_detail != SCENE_BROKEN_TEXT:
+            return
+        store = self._character_scene_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return
+            store = PostgresCharacterSceneStore()
+        rows = store.scene_rows(tenant_id=tenant_id, clip_id=clip.id)
+        self._give_back_parts(tenant_id, [(row.id, row.revision) for row in rows], SCENE_BROKEN)
 
     def _brand_context(self, tenant_id: UUID, brand_id: UUID) -> BrandContext | None:
         """The business context for the prompt; never a reason to fail generation."""

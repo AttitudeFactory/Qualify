@@ -206,6 +206,40 @@ def test_every_scene_made_assembles_the_clip_once_from_the_same_brief() -> None:
     assert called.media.character_scenes == _clip_brief(world, made.clip_id).media.character_scenes
 
 
+def test_an_assembly_that_fails_on_our_side_gives_every_scenes_vista_previa_back() -> None:
+    from qualify_api.creative.media import MediaOutcome
+
+    from .test_content_service import FakeMedia
+
+    broken = MediaOutcome(failure="render_error", detail=cs.SCENE_BROKEN_TEXT)
+    world, _, _ = _scene_world(media=FakeMedia(broken))
+    made = _create(world)
+    (scene_id,) = made.scene_ids
+    _made(world, scene_id)
+    assert world.ledger is not None
+    assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 1
+    _run(world, made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == FAILED
+    assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 0
+
+
+def test_the_owners_72_hours_out_keep_the_vista_previa_of_a_scene_that_was_made() -> None:
+    world, clock, _ = _scene_world()
+    made = _create(world, _clip(_item(start=0.0), _item(start=10.0)))
+    first, second = made.scene_ids
+    assert world.ledger is not None
+    assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 2
+    _made(world, first)
+    _set(world, second, status=FAILED, failure_reason="provider_error")
+    with pytest.raises(ClipBlocksWait):
+        _run(world, made.clip_id)
+    clock.now = AFTER + timedelta(hours=72)
+    _run(world, made.clip_id)
+    assert world.repo.drafts[made.clip_id].failure_reason == cs.SCENE_FAILED
+    # P2: only what the vendor never delivered comes back
+    assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 1
+
+
 def test_a_clip_with_scenes_is_never_approved_before_its_finals() -> None:
     from qualify_api.creative.media import MediaOutcome
 

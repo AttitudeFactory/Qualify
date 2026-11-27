@@ -636,7 +636,11 @@ def _lay_scenes(
     clips = []
     for number, scene in enumerate(scenes):
         path = root / f"scene-{number}.mp4"
-        _fetch(store, tenant_id, scene.object_key, path)
+        try:
+            _fetch(store, tenant_id, scene.object_key, path)
+        except LocalVideoFailed as exc:
+            # the scene's file is ours, not one the owner chose: never «cámbiala»
+            raise LocalVideoFailed(exc.failure, SCENE_BROKEN_TEXT, exc.raw, code=exc.code) from exc
         clips.append(SceneClip(path=path, start_s=scene.start_s, duration_s=scene.duration_s))
     try:
         laid = overlay_scenes(video, root / "local-scenes.mp4", clips)
