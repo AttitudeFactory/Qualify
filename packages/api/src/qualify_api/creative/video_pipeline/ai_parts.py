@@ -26,9 +26,9 @@ file, the database or the network, and nothing is written or paid.
   blocks' own (`transition_in`), so `block_transition_problems` and
   `block_transition_room_problems` already check them, as for any block.
 
-Character scenes (`MediaInputs.character_scenes`, ADR 50 §12, m-25128784) are not on
-`main` yet: `ai_children_of` reads them when the field exists and counts 0 otherwise, so
-the cap of 6 already holds the day the field lands.
+Character scenes (`MediaInputs.character_scenes`, ADR 50 §12, m-25128784, on `main` since
+#848) take a child place too: `ai_children_of` counts them, so the cap of 6 holds for
+parts and scenes together.
 """
 
 from __future__ import annotations
@@ -227,9 +227,9 @@ def own_seconds(segments: Sequence[SourceSegment]) -> float:
 
 def ai_children_of(media: MediaInputs) -> int:
     """The AI children a Clip has BESIDES its AI parts — the character scenes of §12
-    (`character_scenes`, counted once the field exists) and the avatar blocks it still
+    (`character_scenes`) and the avatar blocks it still
     waits for (`clip_avatar_plan`): all take a place in `part_index` 1-6. Pure."""
-    scenes = getattr(media, "character_scenes", ()) or ()
+    scenes = media.character_scenes
     return len(scenes) + len(media.clip_avatar_plan)
 
 

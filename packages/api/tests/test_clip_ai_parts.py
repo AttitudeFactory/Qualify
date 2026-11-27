@@ -875,3 +875,22 @@ def test_a_missing_or_videoless_part_fails_the_clip() -> None:
     both = (*only_one, cap.AiPartRow(id=uuid4(), slot=2, status=GENERATED))
     gate = cap.ai_parts_gate(tenant_id=TENANT_ID, clip_id=uuid4(), brief=brief, store=_Rows(*both))
     assert isinstance(gate, cap.AiPartsFailed)  # made, but no video to play
+
+
+def test_ai_parts_and_character_scenes_together_are_refused_before_anything() -> None:
+    """Review of 1aa5e611: this service makes no scene child — a Clip with both would pay
+    its previews and wait for scenes that never come. Until PR 4 joins both paths, one or
+    the other: refused before any read, write, charge or dispatch."""
+    from .test_character_scene import _item
+
+    world = _world()
+    brief = _clip(character_scenes=(_item(start=0.0, duration=5),))
+    with pytest.raises(cap.ClipAiPartsRefused) as refused:
+        _create(world, brief)
+    assert refused.value.code == cap.WITH_SCENES_CODE == "ai_parts_with_scenes"
+    assert refused.value.owner_message == (
+        "Por ahora un video no puede tener partes con IA y escenas de tu personaje a la vez. "
+        "Quita una de las dos para crearlo."
+    )
+    _nothing_written(world)
+    assert world.store.reads == 0

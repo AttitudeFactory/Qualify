@@ -94,6 +94,12 @@ APPROVE_UNAVAILABLE_TEXT = (
     "Por ahora no se puede aprobar un video con partes con IA. Tu video queda guardado como está."
 )
 #: A part with nothing to make it from: no words, no reel.
+#: AI parts and character scenes in one Clip wait for PR 4 (one path for both children).
+WITH_SCENES_CODE = "ai_parts_with_scenes"
+WITH_SCENES_TEXT = (
+    "Por ahora un video no puede tener partes con IA y escenas de tu personaje a la vez. "
+    "Quita una de las dos para crearlo."
+)
 NEEDS_DESCRIPTION_CODE = "ai_part_needs_description"
 NEEDS_DESCRIPTION_TEXT = (
     "Cuéntanos qué se ve en cada parte con IA antes de crear tu video. "
@@ -526,6 +532,15 @@ class ClipAiPartsService(ClipAvatarService):
         media = brief.media
         if media.clip_avatar_plan or media.clip_avatar_block:
             raise ValueError("a Clip's avatar plan is the server's to write")
+        if media.character_scenes:
+            # review of m-25129406: this service makes no scene child, so such a Clip
+            # would pay its previews and wait for scenes that never come — until PR 4
+            # joins both paths (§12.4 + §13.4), not both in one video
+            raise ClipAiPartsRefused(
+                WITH_SCENES_CODE,
+                WITH_SCENES_TEXT,
+                raw=f"{len(media.character_scenes)} character scene(s)",
+            )
         problems = validate_brief_recipe(brief, tenant_id=tenant_id)
         if problems:
             raise RecipeRefused(problems)
@@ -667,6 +682,8 @@ __all__ = [
     "NEEDS_DESCRIPTION_CODE",
     "NEEDS_DESCRIPTION_TEXT",
     "NOT_VERTICAL_TEXT",
+    "WITH_SCENES_CODE",
+    "WITH_SCENES_TEXT",
     "AiPartRow",
     "AiPartVideo",
     "AiPartsFailed",

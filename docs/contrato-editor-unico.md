@@ -202,6 +202,7 @@ ClipAiPartsService(content).create_clip_with_ai_parts(
 | Interruptor apagado y todas las reglas del §3 | `RecipeRefused` (`problems`, con los códigos del §3) | Los del §3 |
 | Una parte sin descripción y sin video de inspiración (o con el aviso `describe_it` sin descripción) | `ClipAiPartsRefused` · `ai_part_needs_description` (`block` = lugar del bloque en la pista, desde 0) | Cuéntanos qué se ve en cada parte con IA antes de crear tu video. Escríbelo en la parte que está vacía. |
 | Un Clip que no es vertical 9:16 | `ClipAiPartsRefused` · `ai_part_outside_clip` | Las partes con IA solo funcionan en videos verticales. Cambia el formato a vertical para usarlas. |
+| Partes con IA y escenas del personaje en el mismo video (hasta el PR 4, que junta los dos caminos) | `ClipAiPartsRefused` · `ai_parts_with_scenes` | Por ahora un video no puede tener partes con IA y escenas de tu personaje a la vez. Quita una de las dos para crearlo. |
 | «Sigue a la anterior» con `QUALIFY_PARTS_EXTEND` apagado | `PartsExtendUnavailable` | El de siempre |
 | Una toma del reel dividida que no se puede comprobar | `PartsSourceInvalid` | El de siempre |
 | El tope de dólares del negocio | `PartsOverBudget` | El de siempre |
