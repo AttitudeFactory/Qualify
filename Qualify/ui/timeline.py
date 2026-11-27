@@ -1225,8 +1225,7 @@ def timeline_layout(
     """The timeline with its action bar and its panel, in their places: on a phone the
     bar sits ABOVE the tracks (in the flow: it never covers the tracks nor the
     playhead), on a desktop under them; the panel always last (`.q-tl-stack`).
-    ``bar_below``: the bar under the tracks at every size (the editor, ED-10: preview,
-    tracks, bar, panel — top to bottom)."""
+    ``bar_below``: the bar under the tracks at every size."""
     return rx.el.div(
         rx.el.div(actions, class_name="q-tl-stack__actions"),
         rx.el.div(timeline_view, class_name="q-tl-stack__track"),

@@ -80,7 +80,6 @@ from .ui.timeline import (
     timeline,
     timeline_actions,
     timeline_join_panel,
-    timeline_layout,
     timeline_panel,
     timeline_script,
 )
@@ -176,7 +175,8 @@ def _idea_propose() -> rx.Component:
     """ED-06 (design 03C, PR 7), only with `QUALIFY_CLIP_AI_PARTS` on: «Proponerme las
     partes» — Claude proposes the parts and they go at the end of the track, free until
     «Crear» —, the wait «Armando tu propuesta» (a `progress_panel`, never a spinner) and
-    why not. Off while no part fits, with its reason (design D22)."""
+    why not. Off while no part fits or nothing is written yet, with its reason (design
+    D22)."""
     busy = PartsStartState.editor & PartsStartState.proposing
     off = S.clip_idea_off != ""
     return rx.cond(
@@ -208,12 +208,9 @@ def _idea_propose() -> rx.Component:
                 class_name=rx.cond(off, "q-button-off", ""),
             ),
             rx.text(
-                rx.cond(
-                    off,
-                    S.clip_idea_off,
-                    # UX review P4: nothing written yet, said before the tap
-                    rx.cond(S.clip_topic_said, idea_vm.PROPOSE_NOTE, idea_vm.STORY_MISSING),
-                ),
+                # nothing written yet is one more reason the button is off (UX review P4,
+                # m-25026636): said before the tap, in `clip_idea_off`
+                rx.cond(off, S.clip_idea_off, idea_vm.PROPOSE_NOTE),
                 id=idea_vm.PROPOSE_WHY_ID,
                 size="1",
                 color=T.TEXT_MUTED,
@@ -1543,11 +1540,12 @@ def _trim_hint() -> rx.Component:
 
 
 def _timeline() -> rx.Component:
-    """The timeline and its bar. ED-12 (m-25029107): the whole of it takes files of the
-    computer dropped on it (the design system's «section» dropzone: never a click, its
-    own controls stay usable) — uploaded as «Subir» does and put in the gap the line
-    marked (`assets/timeline-insert.js`); «Foto o video» is off with 8 photos or
-    videos, and says why."""
+    """The timeline's tracks (their bar is `_timeline_bar`, its own box since
+    m-25026636). ED-12 (m-25029107): the tracks take files of the computer dropped on
+    them (the design system's «section» dropzone: never a click, its own controls stay
+    usable) — uploaded as «Subir» does and put in the gap the line marked
+    (`assets/timeline-insert.js`); «Foto o video» is off with 8 photos or videos, and
+    says why (on the bar)."""
     return dropzone(
         rx.box(_timeline_body(), custom_attrs={"data-tl-insert-zone": ""}),
         upload_id=vm.TIMELINE_UPLOAD_ID,
@@ -1577,66 +1575,87 @@ def _timeline_body() -> rx.Component:
 
 
 def _timeline_layout() -> rx.Component:
-    return timeline_layout(
-        timeline(
-            media=S.clip_tl_media_rows,
-            texts=S.clip_tl_text_rows,
-            effects=S.clip_tl_effect_rows,
-            ticks=S.clip_tl_ticks,
-            total=S.clip_tl_total,
-            selected=S.clip_tl_selected,
-            on_select=S.select_clip_block,
-            status=S.clip_edit_notice,
-            on_key=S.clip_block_key,
-            on_drag=S.drop_clip_block,
-            status_action=_trim_hint(),
-            # ED-04: «Efectos» in rows that come and go on their own
-            effect_lanes=S.clip_tl_effect_lanes,
-            effect_lane_names=S.clip_tl_effect_lane_names,
-            # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
-            thumb_base=BACKEND_BASE,
-            # ED-11b: each uploaded video's frame strip, by block (its path after BACKEND_BASE)
-            frames=S.clip_tl_frames,
-            # m-25114465: «la unión» between every two blocks ([] off the switch)
-            joins=S.clip_tl_joins,
-            on_join=S.open_clip_join,
-            # ED-07: a «parte con IA» is drawn while the state says the switch is on
-            ai_on=S.clip_ai_on,
-            # m-25142725: the reference tracks, only while the Clip has AI parts
-            refs={
-                "shown": S.clip_ref_shown,
-                "lanes": S.clip_ref_lanes,
-                "names": S.clip_ref_lane_names,
-                "folded": S.clip_ref_folded,
-                "columns": S.clip_ref_columns,
-                "on_add": S.open_clip_refs_folded,
-            },
+    """The tracks (`.q-tl-stack__track`); their bar is `_timeline_bar`, a sibling of
+    the timeline in the editor's grid (m-25026636)."""
+    return rx.el.div(
+        rx.el.div(_tracks(), class_name="q-tl-stack__track"),
+        class_name="q-tl-stack q-tl-stack--bar-below",
+    )
+
+
+def _timeline_bar() -> rx.Component:
+    """The bar under the tracks: «Agregar» with nothing chosen, the chosen block's
+    actions otherwise. m-25026636 (live test): its own box in the editor's grid, not
+    inside the timeline, so on a phone it can stay pinned right under the sticky preview
+    (`.q-edit__bar`) — inside the timeline it slid half under the preview, the top of the
+    «+» hidden and untappable. The same `.q-tl-stack` classes as before: same look."""
+    return rx.el.div(
+        rx.el.div(_actions(), class_name="q-tl-stack__actions"),
+        class_name="q-tl-stack q-tl-stack--bar-below q-edit__bar",
+    )
+
+
+def _tracks() -> rx.Component:
+    return timeline(
+        media=S.clip_tl_media_rows,
+        texts=S.clip_tl_text_rows,
+        effects=S.clip_tl_effect_rows,
+        ticks=S.clip_tl_ticks,
+        total=S.clip_tl_total,
+        selected=S.clip_tl_selected,
+        on_select=S.select_clip_block,
+        status=S.clip_edit_notice,
+        on_key=S.clip_block_key,
+        on_drag=S.drop_clip_block,
+        status_action=_trim_hint(),
+        # ED-04: «Efectos» in rows that come and go on their own
+        effect_lanes=S.clip_tl_effect_lanes,
+        effect_lane_names=S.clip_tl_effect_lane_names,
+        # ED-11: each block's picture is a backend path (`clip_editor_vm.block_thumbs`)
+        thumb_base=BACKEND_BASE,
+        # ED-11b: each uploaded video's frame strip, by block (its path after BACKEND_BASE)
+        frames=S.clip_tl_frames,
+        # m-25114465: «la unión» between every two blocks ([] off the switch)
+        joins=S.clip_tl_joins,
+        on_join=S.open_clip_join,
+        # ED-07: a «parte con IA» is drawn while the state says the switch is on
+        ai_on=S.clip_ai_on,
+        # m-25142725: the reference tracks, only while the Clip has AI parts
+        refs={
+            "shown": S.clip_ref_shown,
+            "lanes": S.clip_ref_lanes,
+            "names": S.clip_ref_lane_names,
+            "folded": S.clip_ref_folded,
+            "columns": S.clip_ref_columns,
+            "on_add": S.open_clip_refs_folded,
+        },
+    )
+
+
+def _actions() -> rx.Component:
+    return timeline_actions(
+        S.clip_tl_chosen_kind,
+        on_add=S.open_clip_flow,
+        on_action=S.clip_block_action,
+        label=S.clip_tl_chosen_label,
+        actions=vm.EDITOR_ACTIONS,
+        # ED-13 (criterion 2): «Texto» off with 3 texts, said above the «+»
+        add_off={
+            "media": S.clip_tl_full,
+            "text": S.clip_text_full,
+            ai_vm.ADD_KEY: S.clip_ai_add_off,  # ED-07: 8 blocks, 6 AI parts or 60 s
+            # m-25142725: «Mostrar a la IA» off without an AI part (signed)
+            vm.FLOW_REF: S.clip_ref_add_off,
+        },
+        # ED-07: «Parte con IA», drawn only while the state says the switch is on
+        # (`clip_ai_on`, read on the server — as `clip_editor_shown` for the editor)
+        # m-25142725: «Mostrar a la IA» after it, also behind the switch
+        add_options=(
+            *ai_vm.add_options(tl_vm.ADD_OPTIONS, on=True),
+            (vm.FLOW_REF, refs_vm.ADD_ICON, refs_vm.ADD_LABEL),
         ),
-        timeline_actions(
-            S.clip_tl_chosen_kind,
-            on_add=S.open_clip_flow,
-            on_action=S.clip_block_action,
-            label=S.clip_tl_chosen_label,
-            actions=vm.EDITOR_ACTIONS,
-            # ED-13 (criterion 2): «Texto» off with 3 texts, said above the «+»
-            add_off={
-                "media": S.clip_tl_full,
-                "text": S.clip_text_full,
-                ai_vm.ADD_KEY: S.clip_ai_add_off,  # ED-07: 8 blocks, 6 AI parts or 60 s
-                # m-25142725: «Mostrar a la IA» off without an AI part (signed)
-                vm.FLOW_REF: S.clip_ref_add_off,
-            },
-            # ED-07: «Parte con IA», drawn only while the state says the switch is on
-            # (`clip_ai_on`, read on the server — as `clip_editor_shown` for the editor)
-            # m-25142725: «Mostrar a la IA» after it, also behind the switch
-            add_options=(
-                *ai_vm.add_options(tl_vm.ADD_OPTIONS, on=True),
-                (vm.FLOW_REF, refs_vm.ADD_ICON, refs_vm.ADD_LABEL),
-            ),
-            add_shown={ai_vm.ADD_KEY: S.clip_ai_on, vm.FLOW_REF: S.clip_ai_on},
-            add_note=S.clip_tl_add_note,
-        ),
-        bar_below=True,
+        add_shown={ai_vm.ADD_KEY: S.clip_ai_on, vm.FLOW_REF: S.clip_ai_on},
+        add_note=S.clip_tl_add_note,
     )
 
 
@@ -1668,6 +1687,8 @@ def arma_tu_video(media_body: rx.Component, general: rx.Component | None = None)
         rx.box(display="none", on_mount=rx.call_script(asset_script(ROOM_SCRIPT))),
         _preview(),
         rx.box(_timeline(), class_name="q-edit__timeline"),
+        # m-25026636: the bar is its own box, pinned under the preview on a phone
+        _timeline_bar(),
         rx.box(
             rx.cond(S.clip_tl_selected != "", _block_panel()),
             rx.cond(S.clip_join_open != "", _join_panel()),

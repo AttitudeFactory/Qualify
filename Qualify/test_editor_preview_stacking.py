@@ -106,6 +106,90 @@ def test_what_follows_the_preview_is_its_own_context_under_it() -> None:
     assert "top: var(--q-sticky-header-height, 0px);" in _rule(".q-edit__preview")
 
 
+# -- m-25026636: «Agregar»'s «+» under the pinned preview's empty band ---------------------
+
+
+def test_the_bar_pins_under_the_preview_and_the_band_still_covers() -> None:
+    """Live test (m-25026636): scrolled a little, the bar with «Agregar» slid half under
+    the pinned preview — the top of the «+» hidden and untappable. The bar is pinned right
+    under the preview while stacked, over what scrolls under it; the preview's band keeps
+    taking the taps over what it hides (never `pointer-events: none`)."""
+    box = _rule(".q-edit__preview")
+    assert "pointer-events" not in box
+    assert "background: var(--color-panel-solid);" in box and _z(".q-edit__preview") == 3
+    stacked = _CSS[_CSS.index("@container edit-host (max-width: 45.99rem) {") :]
+    bar = _rule(".q-edit--timeline > .q-edit__bar", stacked)
+    assert "position: sticky;" in bar
+    assert "top: calc(var(--q-sticky-header-height, 0px) + var(--q-edit-preview-h, 0px));" in bar
+    assert "z-index: 3;" in bar and "background: var(--color-panel-solid);" in bar
+    # its own place in the editor's grid, between the tracks and the panel
+    assert '"preview" "timeline" "bar" "main" "parts"' in _CSS
+    assert ".q-edit--timeline > .q-edit__bar { grid-area: bar; min-width: 0; }" in _CSS
+    # a panel brought into view stops under the pinned bar too
+    rule = _rule(".q-edit--timeline > .q-edit__main,\n.q-edit--timeline > .q-edit__main *")
+    assert "var(--q-edit-bar-h, 0px)" in rule
+
+
+def test_the_bar_is_the_editor_s_own_child_after_the_timeline() -> None:
+    """Pinned inside the timeline it could never leave it (a sticky box stays in its
+    parent) nor its z 0: the bar is a sibling of `.q-edit__timeline`, with «Agregar»."""
+    import reflex as rx  # noqa: PLC0415
+
+    from . import clip_editor_view  # noqa: PLC0415
+
+    edit = str(clip_editor_view.arma_tu_video(rx.text("MEDIA")).render())
+    assert edit.index("q-edit__timeline") < edit.index("q-edit__bar") < edit.index("q-edit__main")
+    assert "clip_tl_add_note" in str(clip_editor_view._timeline_bar().render())
+    assert "q-tl-stack__actions" not in str(clip_editor_view._timeline_body().render())
+
+
+_BAR_HARNESS = """
+function runBar(scrolled) {
+  const preview = el({ height: 300.4, top: 0, bottom: 300 });
+  const frame = el({ height: 280, top: 10, bottom: 290 });
+  // the timeline ends at 540 in the flow; the bar's box (52 px, its actions 44 px on
+  // top) is either in the flow (556) or pinned under the preview (300) while scrolled
+  const timeline = el({ height: 224, top: 316 - scrolled, bottom: 540 - scrolled });
+  const holderTop = scrolled ? 300 : 556;
+  const holder = el({ height: 52, top: holderTop, bottom: holderTop + 52 });
+  const bar = el({ height: 44, top: holderTop, bottom: holderTop + 44 });
+  const host = el({ width: 594, height: 900 });
+  const edit = el({ height: 900 }, {
+    closest: () => host, scrollTop: scrolled,
+    querySelector: s => ({ ".q-edit__preview": preview,
+      ".q-edit__preview .q-edit-preview__frame": frame,
+      ".q-tl-stack__actions": bar, ".q-edit__timeline": timeline,
+      ".q-edit__bar": holder })[s] || null,
+  });
+  edit.parentElement = { scrollTop: scrolled, parentElement: null };
+  globalThis.window = { innerHeight: 900, scrollY: 0, addEventListener: () => {},
+    requestAnimationFrame: f => f() };
+  globalThis.getComputedStyle = () => ({ fontSize: "16px", rowGap: "16px" });
+  globalThis.document = { documentElement: {}, querySelector: () => null,
+    querySelectorAll: s => s === ".q-edit--timeline" ? [edit] : [] };
+  eval(SRC);
+  return [edit.props["--q-edit-bar-h"] || "", edit.props["--q-edit-frame-h"] || ""];
+}
+"""
+
+
+@_needs_node
+def test_the_room_script_reads_the_pinned_bar_from_the_flow() -> None:
+    """The bar's height goes in `--q-edit-bar-h`, and the frame's height is the same
+    whether the page is at its top or scrolled with the bar pinned (its flow position is
+    read from the timeline above it, never from where it is stuck)."""
+    src = _ROOM.read_text(encoding="utf-8")
+    script = (
+        f"const SRC = {json.dumps(src)};\n{_ROOM_HARNESS}\n{_BAR_HARNESS}\n"
+        "console.log(JSON.stringify([runBar(0), runBar(250)]));"
+    )
+    at_top, scrolled = _node(script)
+    assert at_top[0] == "52px" and at_top == scrolled
+    # the frame (280) grows by what is left from the actions' flow bottom (540 + 16 + 44)
+    # to the window less 8 px (892): 280 + 292
+    assert at_top[1] == "572px"
+
+
 # -- 7. a panel or a field scrolled into view stops under the pinned preview --------------
 
 
