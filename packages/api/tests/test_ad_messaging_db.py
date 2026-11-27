@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
@@ -15,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
+from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_attribution import (
     attribute_inbound_message,
@@ -331,6 +333,37 @@ def test_legacy_promotion_never_gains_a_destination_from_current_brand(messaging
 
 
 @pytest.mark.parametrize("channel", ["whatsapp", "dm"])
+def test_token_renewal_keeps_attributing_new_events_to_the_approved_ad(messaging_world, channel):
+    """m-25072004: snapshot credential versions are provenance, not a condition."""
+    w = messaging_world
+    _promotion(w, channel)
+    with tenant_session(w["tenant"]) as s:
+        s.execute(
+            text("""UPDATE social_connections SET current_credential_version=2
+            WHERE id IN (:source,:target)"""),
+            {"source": w["source"], "target": w["target"]},
+        )
+    assert attribute_inbound_message(event=_record(w, channel), **_message(w, channel))
+
+
+@pytest.mark.parametrize("channel", ["whatsapp", "dm"])
+def test_token_renewal_with_a_relinked_page_is_not_attributed(messaging_world, channel):
+    w = messaging_world
+    _promotion(w, channel)
+    with tenant_session(w["tenant"]) as s:
+        s.execute(
+            text("""UPDATE social_connections SET current_credential_version=2
+            WHERE id IN (:source,:target)"""),
+            {"source": w["source"], "target": w["target"]},
+        )
+        s.execute(
+            text("UPDATE social_connections SET linked_page_id='8' WHERE id=:source"),
+            {"source": w["source"]},
+        )
+    assert not attribute_inbound_message(event=_record(w, channel), **_message(w, channel))
+
+
+@pytest.mark.parametrize("channel", ["whatsapp", "dm"])
 def test_reconnect_invalidates_frozen_event_custody(messaging_world, channel):
     w = messaging_world
     _promotion(w, channel)
@@ -486,6 +519,20 @@ async def test_destination_read_is_unknown_on_missing_fields_and_rejects_late_co
         )
         assert results[1].linked is None and not results[1].available
         assert "No pudimos comprobar" in results[1].reason
+
+    class FailingReader:
+        def __init__(self, error):
+            self.error = error
+
+        async def read_page(self, page_id):
+            raise self.error
+
+    for error in (MarketingError("x", code=1), httpx.ConnectError("down")):
+        with acting_login(w["login"]):
+            failed = await check_messaging_destinations(
+                tenant_id=w["tenant"], connection_id=w["source"], reader=FailingReader(error)
+            )
+        assert failed[1].linked is None and failed[1].reason == UNKNOWN
 
     class LateReader:
         async def read_page(self, page_id):

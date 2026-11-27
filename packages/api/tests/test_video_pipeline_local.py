@@ -128,6 +128,35 @@ def queue_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(SWITCH, "queue")
 
 
+#: The one test that assembles at the real 1080×1920 (m-25041163).
+REAL_SIZE_TEST = "test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once"
+
+
+@pytest.fixture(autouse=True)
+def assemble_at_the_sources_size(request: pytest.FixtureRequest, monkeypatch: Any) -> None:
+    """A local part comes out 1080×1920 (m-25041163). Here, where the subject is the
+    pipeline around the size, it is assembled at the sources' own 9:16 `SIZE` instead:
+    encoding 1080×1920 in every test made this file ten times slower (20 s → 220 s). The
+    real size is `REAL_SIZE_TEST`'s, and `speed`'s own tests'."""
+    if request.node.name == REAL_SIZE_TEST:
+        return
+    from qualify_creative.video import prepare
+
+    # `render_local_part` reads it at call time: the size of the photos and of the speed
+    monkeypatch.setattr(prepare, "TARGET_SIZE", SIZE)
+
+
+@pytest.fixture(autouse=True)
+def no_normalize_jobs(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """m-25042483: the `normalize_local` jobs in memory (offline), none to begin with —
+    this module's sources are 8-bit and small: read as they are, as before."""
+    from qualify_api.creative.video_pipeline import local_sources
+
+    jobs = local_sources.InMemoryLocalSourceJobs()
+    monkeypatch.setattr(local_sources, "default_jobs", lambda: jobs)
+    return jobs
+
+
 @pytest.fixture(scope="module")
 def sources() -> dict[str, bytes]:
     return {VIDEO_KEY: _video_bytes(4.0), PHOTO_KEY: _png_bytes()}
@@ -206,7 +235,7 @@ def _stamped(brief: ContentBrief) -> ContentBrief:
 def _decoded(data: bytes) -> list[Any]:
     with av.open(io.BytesIO(data)) as container:
         stream = container.streams.video[0]
-        assert not container.streams.audio
+        assert len(container.streams.audio) == 1  # m-25049580: always one sound track
         return list(container.decode(stream))
 
 
@@ -311,13 +340,84 @@ def test_the_asset_records_its_provenance(queue_on: None, sources: dict[str, byt
     (write,) = outcome.media
     assert write.ai_generated is False and write.provider == "local"
     meta = write.params["local"]
-    assert meta["recipe_contract"] == 2 and meta["recipe_version"] == "local-v1"
+    assert meta["recipe_contract"] == 2 and meta["recipe_version"] == "local-v2"
     assert meta["effects_pipeline_version"] == 1 and meta["pricing_version"] == "v10"
-    assert meta["effect_version"] == "camara_rapida-v1"
-    assert meta["speed"]["effect_version"] == "camara_rapida-v1"
-    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold"}
+    assert meta["effect_version"] == 1 and type(meta["effect_version"]) is int  # m-25029126
+    assert meta["speed"]["recipe_version"] == "camara_rapida-v3"
+    assert meta["speed"]["effect_version"] == 1
+    assert meta["steps"]["speed"] == "camara_rapida-v3"
+    from qualify_creative.video.speed import speed_effect_version
+
+    assert speed_effect_version(meta) == speed_effect_version(meta["speed"]) == 1
+    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold", "sound"}
     assert [s["kind"] for s in meta["segments"]] == ["video", "photo"]
     assert all("tmp" not in str(s["source"]).lower() for s in meta["speed"]["segments"])
+
+
+def test_a_local_clip_comes_out_1080x1920_encoded_at_that_size_once(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-25041163: a small 180×320 video and a photo come out one 1080×1920 video, BT.709
+    tagged. `prepare` keeps the video at its own size (an intermediate, never enlarged) and
+    the speed's single encode enlarges it — 1080×1920 is encoded once, not twice — and the
+    provenance names the speed recipe that does it."""
+    from qualify_creative.video import prepare
+    from qualify_creative.video.speed import SPEED_RECIPE_VERSION
+
+    assert prepare.TARGET_SIZE == (1080, 1920)  # not shrunk by the autouse fixture
+    prepared: list[tuple[int, int]] = []
+    real_apply = prepare.apply_prepare
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        made = real_apply(*args, **kwargs)
+        prepared.append((made.width, made.height))
+        return made
+
+    monkeypatch.setattr(prepare, "apply_prepare", spy)
+    store = ReadingStore(sources)
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_stamped(_local_clip(_video(), _photo(1.5))),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert prepared == [SIZE]  # the intermediate: never enlarged by `prepare`
+    steps = write.params["local"]["steps"]
+    assert steps["speed"] == SPEED_RECIPE_VERSION == "camara_rapida-v3"
+    frames = _decoded(store.files[write.object_key])
+    assert {(f.width, f.height) for f in frames} == {(1080, 1920)}
+    with av.open(io.BytesIO(store.files[write.object_key])) as written:
+        context = written.streams.video[0].codec_context
+        assert (context.color_range, context.colorspace) == (1, 1)  # limited, BT.709
+        assert (context.color_primaries, context.color_trc) == (1, 1)
+    first = frames[0].to_ndarray(format="rgb24")[960, 540]
+    last = frames[-1].to_ndarray(format="rgb24")[960, 540]
+    assert first[1] > 150 and first[0] < 90  # green: the video, enlarged
+    assert last[0] > 150 and last[1] < 90  # red: the photo, at the same size
+
+
+def test_a_local_video_waits_for_a_part_join_before_reading_anything(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """m-25042483: with a part join holding the worker, the local video is not made now:
+    `LocalAssemblyWait` (retried on the next pass) before any file is read."""
+    from qualify_api.creative.heavy_video import LocalAssemblyWait, joining
+
+    store = ReadingStore(sources)
+    with joining(), pytest.raises(LocalAssemblyWait):
+        _producer(store, ExplodingByteplus()).produce(
+            tenant_id=TENANT_ID,
+            draft_id=uuid4(),
+            brief=_stamped(_local_clip()),
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        )
+    assert store.reads == []
 
 
 def test_a_photo_and_a_video_make_one_video_with_no_gaps(
@@ -348,6 +448,272 @@ def test_a_photo_and_a_video_make_one_video_with_no_gaps(
     assert last[0] > 150 and last[1] < 90  # red: the photo
     speed = write.params["local"]["speed"]["segments"]
     assert [(s["out_start_s"], s["out_end_s"]) for s in speed] == [(0.0, 2.0), (2.0, 3.5)]
+
+
+def _blended_clip(how: dict[str, Any]) -> ContentBrief:
+    """m-25114465: 2 s of green video (60 frames), then a red photo held 1.5 s (45 frames)
+    blending into it for 0.5 s (15 frames)."""
+    photo = SourceSegment(key=PHOTO_KEY, start_s=0.0, end_s=1.5, kind="photo", transition_in=how)
+    return _stamped(_local_clip(_video(), photo))
+
+
+@pytest.mark.parametrize("effect", ["fundido", "barrido"])
+def test_a_block_blends_into_the_one_before_it_and_the_clip_is_shorter(
+    queue_on: None, sources: dict[str, bytes], effect: str
+) -> None:
+    """m-25114465: the two blocks overlap 15 frames — 105 − 15 = 90 frames (3.0 s), green
+    before the join, red after it, the 15 frames between both mixed (fade) or split (wipe,
+    the photo entering from the right edge), one sound track; recorded in
+    `params.local.transitions` and `steps["block_join"]`."""
+    store = ReadingStore(sources)
+    how = {"effect_id": effect, "version": 2, "params": {"duration_s": 0.5}}
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip(how),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert write.params["duration_seconds"] == pytest.approx(3.0)
+    frames = _decoded(store.files[write.object_key])
+    assert len(frames) == 90
+    assert [f.pts for f in frames] == sorted(f.pts for f in frames)
+    pixel = [f.to_ndarray(format="rgb24") for f in (frames[10], frames[52], frames[80])]
+    green, mixed, red = (p[160, 90] for p in pixel)
+    assert green[1] > 150 and green[0] < 90
+    assert red[0] > 150 and red[1] < 90
+    if effect == "fundido":
+        assert 70 < mixed[0] < 190 and 70 < mixed[1] < 190  # both at once
+    else:
+        left, right = pixel[1][160, 5], pixel[1][160, 175]
+        assert left[1] > 150 and right[0] > 150  # green stays left, red came in from the right
+    meta = write.params["local"]
+    assert meta["steps"]["block_join"] == "block-join-v1"
+    joins = meta["transitions"]
+    assert joins["fps"] == 30 and joins["frames"] == 90 and joins["fallback_cuts"] == []
+    kind = {"fundido": "fade", "barrido": "wipe"}[effect]
+    assert joins["joins"] == [
+        {
+            "block": 1,
+            "effect_id": effect,
+            "version": 2,
+            "kind": kind,
+            "duration_s": 0.5,
+            "direction": "left",
+            "frames": 15,
+        }
+    ]
+    # the chosen transition is in the recipe's provenance too
+    assert meta["segments"][1]["transition_in"]["effect_id"] == effect
+
+
+def test_a_clip_of_cuts_records_no_block_join(queue_on: None, sources: dict[str, bytes]) -> None:
+    store = ReadingStore(sources)
+    cut = {"effect_id": "corte", "version": 1}
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip(cut),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    (write,) = outcome.media
+    assert write.params["duration_seconds"] == pytest.approx(3.5)
+    assert "transitions" not in write.params["local"]
+    assert "block_join" not in write.params["local"]["steps"]
+    assert all("transition_in" not in s for s in write.params["local"]["segments"])
+
+
+def test_a_blended_run_retried_makes_the_same_video(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """Idempotent: the same draft blended twice writes the same key and the same bytes."""
+    store = ReadingStore(sources)
+    producer = _producer(store, ExplodingByteplus())
+    draft_id = uuid4()
+    brief = _blended_clip({"effect_id": "fundido", "version": 2})
+    made = []
+    for _ in range(2):
+        (write,) = producer.produce(
+            tenant_id=TENANT_ID,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        ).media
+        made.append((write.object_key, store.files[write.object_key]))
+    assert made[0] == made[1]
+
+
+BLUE, YELLOW, WHITE = (30, 40, 210), (220, 210, 30), (235, 235, 235)
+
+
+def _coloured(name: str, colour: tuple[int, int, int], seconds: float, how: Any = None) -> Any:
+    return SourceSegment(
+        key=f"uploads/{TENANT_ID}/{name}.png",
+        start_s=0.0,
+        end_s=seconds,
+        kind="photo",
+        transition_in=how,
+    )
+
+
+def _rgb(frame: Any, x: int = 90, y: int = 160) -> Any:
+    return frame.to_ndarray(format="rgb24")[y, x]
+
+
+def _near(pixel: Any, colour: tuple[int, int, int], tolerance: int = 45) -> bool:
+    return all(abs(int(p) - c) <= tolerance for p, c in zip(pixel, colour, strict=True))
+
+
+def test_five_blocks_cut_fade_cut_wipe_land_where_the_recipe_says(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """Review #5: green video 2 s (60) | cut | red 1 s (30) | fade 0.5 | blue 1.5 s (45) |
+    cut | yellow 1 s (30) | wipe 0.5 | white 1.5 s (45): 210 − 15 − 15 = 180 frames. Each
+    cut is exact, each blend sits on its 15 frames, nothing else is touched."""
+    fade = {"effect_id": "fundido", "version": 2, "params": {"duration_s": 0.5}}
+    wipe = {"effect_id": "barrido", "version": 2, "params": {"duration_s": 0.5}}
+    files = dict(sources)
+    for name, colour in (("rojo", RED), ("azul", BLUE), ("amarillo", YELLOW), ("blanco", WHITE)):
+        files[f"uploads/{TENANT_ID}/{name}.png"] = _png_bytes(colour)
+    store = ReadingStore(files)
+    brief = _stamped(
+        _local_clip(
+            _video(),
+            _coloured("rojo", RED, 1.0),
+            _coloured("azul", BLUE, 1.5, fade),
+            _coloured("amarillo", YELLOW, 1.0),
+            _coloured("blanco", WHITE, 1.5, wipe),
+        )
+    )
+    outcome = _producer(store, ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit(), copy=COPY, budget=BUDGET
+    )
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    frames = _decoded(store.files[write.object_key])
+    assert len(frames) == 180
+    assert _near(_rgb(frames[0]), GREEN) and _near(_rgb(frames[59]), GREEN)
+    assert _near(_rgb(frames[60]), RED) and _near(_rgb(frames[74]), RED)  # the cut, exact
+    mixed = _rgb(frames[82])  # the fade, red into blue
+    assert 60 < int(mixed[0]) < 190 and 60 < int(mixed[2]) < 190
+    assert _near(_rgb(frames[90]), BLUE) and _near(_rgb(frames[119]), BLUE)
+    assert _near(_rgb(frames[120]), YELLOW) and _near(_rgb(frames[134]), YELLOW)  # the cut
+    wiping = frames[142]  # the wipe: yellow stays left, white came in from the right
+    assert _near(_rgb(wiping, x=5), YELLOW) and _near(_rgb(wiping, x=175), WHITE)
+    assert _near(_rgb(frames[150]), WHITE) and _near(_rgb(frames[179]), WHITE)
+    joins = write.params["local"]["transitions"]["joins"]
+    assert [(j["block"], j["effect_id"], j["frames"]) for j in joins] == [
+        (2, "fundido", 15),
+        (4, "barrido", 15),
+    ]
+
+
+def test_a_block_a_frame_short_is_joined_with_a_cut_and_said_in_the_warnings(
+    sources: dict[str, bytes], tmp_path: Path
+) -> None:
+    """The safety net (the recipe refuses this before: here it is rendered straight): a
+    1 s photo with 0.5 s in and 0.5 s out keeps no frame of its own, so the transition
+    out of it becomes a cut — recorded in `fallback_cuts` and the warnings."""
+    half = {"effect_id": "fundido", "version": 2, "params": {"duration_s": 0.5}}
+    part = local.recipe_of(
+        _stamped(
+            _local_clip(
+                _photo(2.0),
+                SourceSegment(
+                    key=PHOTO_KEY, start_s=0, end_s=1.0, kind="photo", transition_in=half
+                ),
+                SourceSegment(
+                    key=PHOTO_KEY, start_s=0, end_s=2.0, kind="photo", transition_in=half
+                ),
+            )
+        )
+    )[0]
+    made = local.render_local_part(
+        part, tenant_id=TENANT_ID, store=ReadingStore(sources), root=tmp_path, draft_id=uuid4()
+    )
+    assert made.frames == 60 + 30 + 60 - 15
+    assert made.transitions is not None and made.transitions["fallback_cuts"] == [2]
+    assert {"block": 2, "code": "transition_fallback_cut"} in made.warnings
+
+
+def test_the_join_keeps_the_draft_alive_while_it_runs(
+    sources: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review #3: the heartbeat right before the join, after every run and transition, and
+    from a thread every `BEAT_EVERY_S` while it runs (`reap_stale_drafts` fails a draft
+    whose `updated_at` stops for 20 min)."""
+    import threading
+
+    from qualify_api.creative.video_pipeline import block_join
+
+    monkeypatch.setattr(block_join, "BEAT_EVERY_S", 0.001)
+    beats: list[str] = []
+    part = local.recipe_of(_blended_clip({"effect_id": "fundido", "version": 2}))[0]
+    local.render_local_part(
+        part,
+        tenant_id=TENANT_ID,
+        store=ReadingStore(sources),
+        root=tmp_path,
+        beat=lambda: beats.append(threading.current_thread().name),
+    )
+    on_thread = [name for name in beats if name == "creative-final-beat"]
+    in_line = [name for name in beats if name != "creative-final-beat"]
+    # 1 for the video stretch, 1 before the join, 2 runs + 1 transition
+    assert len(in_line) >= 5
+    assert on_thread  # the thread beat while the encodes ran
+
+
+def test_a_join_that_fails_on_our_side_tells_the_owner_and_offers_the_cut(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review #2: a `JoinError` of the block join reaches the owner in Spanish, uncharged,
+    with «Corte» as the way out — never a stack trace."""
+    from qualify_creative.video import join
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise join.JoinError("the segments could not be laid end to end")
+
+    monkeypatch.setattr(join, "concat_segments", broken)
+    outcome = _producer(ReadingStore(sources), ExplodingByteplus()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_blended_clip({"effect_id": "fundido", "version": 2}),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    )
+    assert outcome.media == () or not outcome.media
+    assert outcome.detail == local.LOCAL_TRANSITION_FAILED_TEXT
+    assert "«Corte»" in outcome.detail and "No se descontó" in outcome.detail
+
+
+def test_fitting_cuts_where_a_block_would_keep_too_few_frames() -> None:
+    """Review #4: the join's safety net, unit by unit (30 fps, 9 frames of its own)."""
+    from qualify_creative.video.join import JoinTransition
+
+    from qualify_api.creative.video_pipeline.block_join import fitting
+
+    half = JoinTransition(kind="fade", duration_s=0.5)  # 15 frames
+    # all fit: nothing changes
+    assert fitting([60, 60, 60], [None, half, half], 30) == ([None, half, half], [])
+    # the middle block (30) eaten 15 + 15 + 9 > 30: the transition out of it gives way
+    assert fitting([60, 30, 60], [None, half, half], 30) == ([None, half, None], [2])
+    # a block too short for its own transition in: that one becomes a cut
+    assert fitting([60, 20], [None, half], 30) == ([None, None], [1])
+    # a block with no transition needs nothing of its own
+    assert fitting([60, 1, 60], [None, None, None], 30) == ([None, None, None], [])
+    # with no frames of its own required, 15 + 15 = 30 fits exactly
+    assert fitting([60, 30, 60], [None, half, half], 30, min_free=0) == (
+        [None, half, half],
+        [],
+    )
 
 
 def test_a_retried_run_makes_the_same_single_asset(
@@ -426,8 +792,12 @@ def test_a_local_clip_outside_3_to_60_seconds_is_refused_saying_how_long(
     brief = _local_clip(_video(0.0, end_s, 1.0))
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief, user_id=USER_ID)
-    (problem,) = refused.value.problems
+    # 61 s at ×1 is also a stretch over 60 s of its video (m-25042483): both are said
+    problem = refused.value.problems[0]
     assert (problem.code, problem.duration_s) == ("local_length_out_of_range", duration)
+    assert [p.code for p in refused.value.problems[1:]] == (
+        ["segment_source_too_long"] if end_s > 60 else []
+    )
     assert repo.drafts == {} and repo.briefs == {}
     assert ledger.rows == {} and dispatcher.calls == []
 
@@ -592,6 +962,30 @@ def test_a_video_the_decoder_cannot_open_is_unreadable_not_a_vendor_error(
         )
     assert failed.value.code == "unreadable"
     assert failed.value.detail == local.LOCAL_SOURCE_FAILED_TEXT
+
+
+@pytest.mark.parametrize("in_part", [False, True])
+def test_a_stored_stretch_over_60_seconds_of_video_says_so_before_any_read(
+    queue_on: None, in_part: bool
+) -> None:
+    """m-25042483: the worker's backstop — a stretch taking 90 s of its video (at ×10 it
+    would last 9 s) is refused before anything is read, in the owner's words reviewed by
+    ux-designer, «esta parte» in a part; nothing charged."""
+    from qualify_creative.schemas import PartRef
+
+    store = ReadingStore()
+    whole = _local_clip(_video(0.0, 90.0, 10.0))
+    brief = whole
+    if in_part:
+        part = PartRef(index=2, mode="local", seconds=9, segments=whole.media.segments)
+        brief = whole.model_copy(update={"media": whole.media.model_copy(update={"part": part})})
+    outcome = local.produce_local(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=_stamped(brief), store=store, save=None
+    )
+    want = local.LOCAL_PART_SOURCE_TOO_LONG_TEXT if in_part else local.LOCAL_SOURCE_TOO_LONG_TEXT
+    assert outcome.detail == want and outcome.media == ()
+    assert "aunque lo aceleres" in want and "1 minuto" in want
+    assert store.reads == []
 
 
 def test_a_part_whose_save_fails_says_this_part(queue_on: None, sources: dict[str, bytes]) -> None:
@@ -884,7 +1278,8 @@ def test_the_fade_the_owner_chose_reaches_the_compose_as_is(
         return real(video, out, layers, brand, **kw)
 
     monkeypatch.setattr(compose, "compose_text_layers", spy)
-    chosen, default = _words(fade_s=0.8), _words(place="bottom")
+    # 3 s on screen: the 0.8 s fade fits in a third of it (m-25029108)
+    chosen, default = _words(fade_s=0.8, end_s=3.0), _words(place="bottom")
     outcome = _produce(_texts(chosen, default), ReadingStore(sources), _render_service())
     assert outcome.failure is None, outcome.detail
     ((top, bottom),) = seen
@@ -1161,7 +1556,7 @@ def test_without_layers_nothing_is_encoded_again(
     second = _kept(outcome, store)
     meta = outcome.media[0].params["local"]
     assert "effect_layers" not in meta
-    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold"}
+    assert set(meta["steps"]) == {"prepare", "speed", "photo_hold", "sound"}
     assert _frame_hashes(first) == _frame_hashes(second)
 
 
@@ -1204,7 +1599,8 @@ def test_a_layer_failure_of_ours_charges_nothing_and_hides_its_message(
 
 def test_an_effect_still_unbuilt_is_refused_before_any_row(queue_on: None) -> None:
     """Only the library's layers over a `local` piece are laid: fast motion as an effect
-    stays `recipe_unavailable`, and so does smoke over a Clip that is not `local`."""
+    stays `recipe_unavailable`, and so does smoke over a Clip that is not `local` and
+    that EF-14 does not compose either (a square one: the layers are drawn for 9:16)."""
     from qualify_creative.schemas import EffectUse
 
     fast = EffectUse(effect_id="camara_rapida", version=1, params={"speed": 8.0})
@@ -1221,7 +1617,7 @@ def test_an_effect_still_unbuilt_is_refused_before_any_row(queue_on: None) -> No
     seedance = make_brief(
         variants=1,
         kind=ContentKind.CLIP,
-        format=ContentFormat.REELS_9_16,
+        format=ContentFormat.FEED_1_1,
         media=MediaInputs(duration_seconds=5, effects=(_smoke(),)),
     )
     with pytest.raises(RecipeRefused) as refused:
@@ -1254,10 +1650,310 @@ def test_v3_lets_a_local_part_use_the_three_layers_up_to_three_times_each() -> N
     )
     part = PartRecipe(index=1, mode="local", seconds=6, segments=(stretch,), effects=uses)
     library = load_effects()
-    assert library.version == 3
+    assert library.version >= 3  # v3 and later (D9: v4) offer the three layers
     assert validate_recipe((part,), video_by_parts=False, library=library) == ()
     four = part.model_copy(update={"effects": (*uses, _smoke(start_s=5.0, end_s=6.0))})
     codes = [p.code for p in validate_recipe((four,), video_by_parts=False, library=library)]
     assert codes == ["too_many_of_effect"]
     # and nothing of it is left unbuilt
     assert unbuilt_recipe_problems(_local_clip(_video(0.0, 4.0, 1.0), effects=uses)) == ()
+
+
+# ---------------------------------------------------------------------------
+# m-25049580: the ×1 stretches keep their original sound
+
+SOUND_KEY = f"uploads/{TENANT_ID}/con-sonido.mp4"
+
+
+def _video_with_sound_bytes(seconds: float, click_s: float) -> bytes:
+    """A 30 fps H.264 of `seconds` at `SIZE` with a mono 48 kHz AAC track: a quiet 440 Hz
+    tone and a 20 ms 2 kHz burst at `click_s`."""
+    import numpy as np
+
+    out = io.BytesIO()
+    with av.open(out, mode="w", format="mp4") as sink:
+        stream = sink.add_stream("libx264", rate=30)
+        stream.width, stream.height = SIZE
+        stream.pix_fmt = "yuv420p"
+        stream.codec_context.time_base = Fraction(1, 30)
+        track = sink.add_stream("aac", rate=48_000)
+        track.layout = "mono"
+        picture = Image.new("RGB", SIZE, GREEN)
+        for index in range(round(seconds * 30)):
+            frame = av.VideoFrame.from_image(picture).reformat(format="yuv420p")
+            frame.pts = index
+            frame.time_base = Fraction(1, 30)
+            for packet in stream.encode(frame):
+                sink.mux(packet)
+        t = np.arange(round(seconds * 48_000)) / 48_000
+        wave = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        burst = (t >= click_s) & (t < click_s + 0.02)
+        wave[burst] = (0.8 * np.sin(2 * np.pi * 2000 * (t[burst] - click_s))).astype(np.float32)
+        for start in range(0, len(wave), 1024):
+            chunk = av.AudioFrame.from_ndarray(
+                wave[start : start + 1024].reshape(1, -1), format="fltp", layout="mono"
+            )
+            chunk.sample_rate = 48_000
+            chunk.pts = start
+            chunk.time_base = Fraction(1, 48_000)
+            for packet in track.encode(chunk):
+                sink.mux(packet)
+        for packet in track.encode():
+            sink.mux(packet)
+        for packet in stream.encode():
+            sink.mux(packet)
+    return out.getvalue()
+
+
+def _sound_of(data: bytes) -> tuple[Any, Any]:
+    """The kept video's one audio track (its codec context) and its samples."""
+    import numpy as np
+
+    with av.open(io.BytesIO(data)) as container:
+        (track,) = container.streams.audio
+        context = track.codec_context
+        chunks = [frame.to_ndarray() for frame in container.decode(track)]
+    return context, np.concatenate(chunks, axis=1)
+
+
+def _rms(samples: Any, start_s: float, end_s: float) -> float:
+    import numpy as np
+
+    window = samples[:, int(start_s * 48_000) : int(end_s * 48_000)]
+    return float(np.sqrt(np.mean(window.astype(np.float64) ** 2)))
+
+
+def _click_s(samples: Any) -> float:
+    import numpy as np
+
+    return float(np.flatnonzero(np.abs(samples).max(axis=0) > 0.5)[0] / 48_000)
+
+
+@pytest.fixture(scope="module")
+def sound_sources() -> dict[str, bytes]:
+    return {SOUND_KEY: _video_with_sound_bytes(4.0, 1.5), PHOTO_KEY: _png_bytes()}
+
+
+def _sound_clip(**media: Any) -> ContentBrief:
+    """×1 of [0.5, 3.5) — the click at 1.5 s of the file lands at 1.0 s —, ×2 of the whole
+    file (2 s, silent), a photo of 1.5 s (silent): 6.5 s."""
+    return _stamped(
+        _local_clip(
+            SourceSegment(key=SOUND_KEY, start_s=0.5, end_s=3.5, speed=1.0),
+            SourceSegment(key=SOUND_KEY, start_s=0.0, end_s=4.0, speed=2.0),
+            _photo(1.5),
+            **media,
+        )
+    )
+
+
+def test_a_x1_stretch_keeps_its_sound_and_the_rest_is_silence(
+    queue_on: None, sound_sources: dict[str, bytes]
+) -> None:
+    """Criteria 1-4, 6, 7 through the whole assembly: one AAC 48 kHz stereo track, the ×1
+    stretch's own sound trimmed to its picture (the click within a frame of 1.0 s), the
+    sped-up stretch and the photo silent; the provenance says which and why."""
+    from qualify_creative.video.sound import SOUND_VERSION
+
+    store = ReadingStore(sound_sources)
+    outcome = _produce(_sound_clip(), store, None)
+    data = _kept(outcome, store)
+    meta = outcome.media[0].params["local"]
+    assert meta["recipe_version"] == local.LOCAL_RECIPE_VERSION == "local-v2"
+    assert meta["steps"]["sound"] == SOUND_VERSION and meta["steps"]["prepare"] == "prepare-v2"
+    sound = meta["sound"]
+    assert [(s["segment"], s["original_sound"], s["why"]) for s in sound["segments"]] == [
+        (0, True, "kept"),
+        (1, False, "sped_up"),
+        (2, False, "photo"),
+    ]
+    assert sound["format"] == {
+        "codec": "aac",
+        "sample_rate": 48_000,
+        "layout": "stereo",
+        "bit_rate": 128_000,
+    }
+    assert sound["crossfade_s"] == 0.08
+    assert meta["speed"]["audio"] is True and meta["speed"]["sound"]["original_sound"] == [0]
+    context, samples = _sound_of(data)
+    assert (context.name, context.sample_rate, context.channels) == ("aac", 48_000, 2)
+    assert abs(samples.shape[1] - 6.5 * 48_000) <= 1024
+    assert abs(_click_s(samples) - 1.0) <= 1 / 30
+    assert _rms(samples, 0.1, 0.4) > 0.1  # the tone, from the stretch's first instant
+    assert _rms(samples, 3.1, 6.4) < 0.005  # sped up, then the photo: silence
+    assert len(_decoded(data)) == 195
+
+
+def test_the_sound_stays_in_sync_under_the_texts(
+    queue_on: None, sound_sources: dict[str, bytes]
+) -> None:
+    """EF-05 copies the built video's sound: with a text over it, the click is still within
+    a frame of 1.0 s and the track as long as the picture."""
+    store = ReadingStore(sound_sources)
+    outcome = _produce(_sound_clip(text_layers=(_words(),)), store, _render_service())
+    data = _kept(outcome, store)
+    assert outcome.media[0].params["local"]["steps"]["compose"]
+    _, samples = _sound_of(data)
+    assert abs(_click_s(samples) - 1.0) <= 1 / 30
+    assert abs(samples.shape[1] - 6.5 * 48_000) <= 2048
+
+
+# ---------------------------------------------------------------------------
+# EF-18 (m-25026598): the contact sheet of the composed video, kept with the piece
+
+
+def _sheet_pixels(store: Any, block: dict[str, Any]) -> list[Any]:
+    import numpy as np
+
+    out = []
+    for frame in block["frames"]:
+        with Image.open(io.BytesIO(store.files[frame["key"]])) as image:
+            out.append(np.asarray(image.convert("RGB"), dtype=np.int16))
+    return out
+
+
+def test_a_local_clip_keeps_a_six_frame_contact_sheet_with_its_texts_on(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    """The sheet is taken from the composed file: six frames, kept in the piece's folder,
+    tied to the video it was made from, with the text in every frame that shows it."""
+    import hashlib
+
+    from qualify_api.creative.contact_sheet import contact_sheet_of
+
+    plain_store, texts_store = ReadingStore(sources), ReadingStore(sources)
+    plain = _produce(_texts(), plain_store, _render_service())
+    composed = _produce(_texts(_words(end_s=None)), texts_store, _render_service())
+    assert plain.failure is None and composed.failure is None, composed.detail
+    (write,) = composed.media
+    block = write.params["contact_sheet"]
+    assert block["version"] == "contact-sheet-4" and block["cost_usd"] == "0"
+    assert block["review"] == "owner_only"
+    assert len(block["frames"]) == 6
+    assert block["source"]["stage"] == "local"
+    assert block["source"]["object_key"] == write.object_key
+    kept_video = texts_store.files[write.object_key]
+    assert block["source"]["sha256"] == hashlib.sha256(kept_video).hexdigest()
+    folder = write.object_key.rsplit("/", 1)[0]
+    for number, frame in enumerate(block["frames"], start=1):
+        assert frame["key"] == f"{folder}/contact-{number}.jpg"
+        assert frame["key"] in texts_store.files and frame["time_s"] >= 0
+    assert block["sheet"]["key"] == f"{folder}/contact-sheet.jpg"
+    view = contact_sheet_of(write.object_key, write.params)
+    assert view is not None and len(view.frames) == 6
+    # «con la capa encima»: every frame differs from the same clip's without the text
+    (bare,) = plain.media
+    with_texts = _sheet_pixels(texts_store, block)
+    without = _sheet_pixels(plain_store, bare.params["contact_sheet"])
+    assert all(abs(a - b).mean() > 1.0 for a, b in zip(with_texts, without, strict=True))
+
+
+def test_a_retried_local_clip_keeps_one_contact_sheet(
+    queue_on: None, sources: dict[str, bytes]
+) -> None:
+    store = ReadingStore(sources)
+    producer = _producer(store, ExplodingByteplus(), render_client=_render_service())
+    draft_id, brief = uuid4(), _texts(_words())
+    blocks = []
+    for _ in range(2):
+        outcome = producer.produce(
+            tenant_id=TENANT_ID,
+            draft_id=draft_id,
+            brief=brief,
+            kit=_branded_kit(),
+            copy=COPY,
+            budget=BUDGET,
+        )
+        blocks.append(outcome.media[0].params["contact_sheet"])
+    assert blocks[0] == blocks[1]
+    # six frames and the sheet, once
+    assert len([key for key in store.files if "/contact-" in key]) == 7
+
+
+def test_a_contact_sheet_that_cannot_be_made_leaves_the_piece_as_it_is(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("decoder gone")
+
+    monkeypatch.setattr("qualify_creative.video.contact_sheet.make_contact_sheet", broken)
+    store = ReadingStore(sources)
+    outcome = _produce(_texts(_words()), store, _render_service())
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert CONTACT_SHEET_PARAMS_KEY not in write.params
+    assert not any("/contact-" in key for key in store.files)
+
+
+@pytest.mark.parametrize("how", ["hook_raises", "import_fails"])
+def test_a_failing_sheet_never_fails_the_local_video(
+    queue_on: None, sources: dict[str, bytes], monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Whatever the sheet does — its keeper raising, or its module not importing — the
+    local Clip comes out as without EF-18: the same composed video, no sheet."""
+    import sys
+
+    if how == "hook_raises":
+
+        def broken(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("the sheet blew up")
+
+        monkeypatch.setattr(local, "keep_contact_sheet", broken)
+    else:
+        monkeypatch.setitem(sys.modules, "qualify_creative.video.contact_sheet", None)
+    store = ReadingStore(sources)
+    outcome = _produce(_texts(_words()), store, _render_service())
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert "contact_sheet" not in write.params
+    assert write.params["local"]["text_layers"]  # the texts are laid
+    assert len(_decoded(store.files[write.object_key])) == 105
+    assert not any("/contact-" in key for key in store.files)
+
+
+def _real_joined(parts: tuple[PartPreview, ...], store: ReadingStore, parent_id: UUID) -> Any:
+    snapshot = PartsToJoin(parent_id=parent_id, revision=1, planned=len(parts), parts=parts)
+    video = _video_bytes(3.0)
+
+    def joiner(clips: Any, *, out: Path, size: Any, overlay: Any) -> Any:
+        out.write_bytes(video)
+        return SimpleNamespace(path=out, frames=90, poster=None)
+
+    return join_preview(store, _Joins(snapshot), TENANT_ID, parent_id, joiner=joiner)
+
+
+def test_the_joined_preview_keeps_its_contact_sheet_once() -> None:
+    """«Tu video completo»: the joined preview's sheet lives beside it, named by the
+    join's fingerprint; a run that finds the join already kept makes the same sheet
+    from that file — the same keys, nothing duplicated."""
+    from qualify_api.creative.contact_sheet import contact_sheet_of
+
+    parts = (_part(1, mode="local"), _part(2, mode="local"))
+    store = ReadingStore({p.object_key: b"mp4" for p in parts if p.object_key})
+    parent_id = uuid4()
+    first = _real_joined(parts, store, parent_id)
+    assert first is not None
+    block = first.params["contact_sheet"]
+    fingerprint = first.params["draft"]["fingerprint"]
+    assert block["source"] == {
+        "stage": "join",
+        "object_key": first.object_key,
+        "fingerprint": fingerprint,
+        "sha256": block["source"]["sha256"],
+    }
+    folder = f"t/{TENANT_ID}/generated/{parent_id}"
+    assert [f["key"] for f in block["frames"]] == [
+        f"{folder}/join-{fingerprint}-contact-{n}.jpg" for n in range(1, 7)
+    ]
+    assert contact_sheet_of(first.object_key, first.params) is not None
+    files = dict(store.files)
+    again = _real_joined(parts, store, parent_id)  # the join is held: reused
+    assert again is not None and again.params["contact_sheet"] == block
+    assert store.files == files
+
+
+def test_a_join_whose_file_is_no_video_has_no_sheet_but_is_joined() -> None:
+    write = _joined((_part(1, mode="local"), _part(2, mode="local")))
+    assert write is not None and "contact_sheet" not in write.params

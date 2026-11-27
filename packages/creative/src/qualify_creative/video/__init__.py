@@ -22,7 +22,7 @@ from qualify_creative.video.fit import (
     SubtitleLayer,
     VideoFitter,
 )
-from qualify_creative.video.join import JoinClip, JoinedVideo, JoinError, join_clips
+from qualify_creative.video.join import JoinClip, JoinedVideo, JoinError, JoinTransition, join_clips
 from qualify_creative.video.normalize import (
     FfmpegUnavailable,
     FfmpegVideoNormalizer,
@@ -43,7 +43,8 @@ from qualify_creative.video.shots import (
 )
 from qualify_creative.video.speed import (
     SPEED_EFFECT_ID,
-    SPEED_VERSION,
+    SPEED_EFFECT_VERSION,
+    SPEED_RECIPE_VERSION,
     PlannedSegment,
     SpeedDurationOutOfRange,
     SpeedError,
@@ -53,6 +54,7 @@ from qualify_creative.video.speed import (
     plan_speed,
     render_speed,
     resolve_segment,
+    speed_effect_version,
 )
 from qualify_creative.video.still import (
     POSTER_TIMEOUT_SECONDS,
@@ -90,7 +92,8 @@ __all__ = [
     "SamplingPlan",
     "ShotSpan",
     "SPEED_EFFECT_ID",
-    "SPEED_VERSION",
+    "SPEED_EFFECT_VERSION",
+    "SPEED_RECIPE_VERSION",
     "SpeedDurationOutOfRange",
     "SpeedError",
     "SpeedPlan",
@@ -105,6 +108,7 @@ __all__ = [
     "render_speed",
     "resolve_segment",
     "sample_frames",
+    "speed_effect_version",
     "FfmpegVideoNormalizer",
     "FittedVideo",
     "JoinClip",
@@ -118,6 +122,7 @@ __all__ = [
     "VideoNormalizer",
     "is_video_filename",
     "join_clips",
+    "JoinTransition",
     "FfmpegUnavailable",
     "POSTER_TIMEOUT_SECONDS",
     "VideoFacts",

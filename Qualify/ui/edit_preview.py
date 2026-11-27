@@ -18,8 +18,10 @@ What it shows, all in one 9:16 frame:
   inside the catalog's 9:16 safe zone (x 64–1016, y 270–1536 of 1080×1920)
   — to scale;
 - **the effects**: each a looping, muted `<video>` with `mix-blend-mode: screen` (their
-  `preview_asset`). A missing file is never rendered (the screen passes only addresses
-  that exist), so nothing 404s.
+  `preview_asset`) at the library's default intensity as its `opacity` (ED-04
+  m-25026627: the strength of the final video). A missing file is never rendered (the
+  screen passes only addresses that exist), so nothing 404s. With
+  `prefers-reduced-motion` the loops stay on a still frame (`assets/edit-preview.js`).
 
 ONE sound: the main video (muted until the owner turns the sound on); the layers are
 always muted. When the video cannot be played, the frame keeps its picture and
@@ -29,7 +31,7 @@ server learns from the browser — and a failure the same way (a negative length
 `error`, or no length after ~15 s), so «Cortar» never waits forever.
 
 Under the frame, in the fixed zone: «{t} de {total} · Así va quedando» (the time written
-by the script, in the final video's time), or «Deshacer» while a change is fresh.
+by the script, in the final video's time).
 """
 
 from __future__ import annotations
@@ -80,9 +82,27 @@ def _resolve_trigger(on_resolve: object) -> rx.Component:
     )
 
 
+def _effect_opacities() -> dict[str, str]:
+    """`{loop address: opacity}` of the Clip's layer effects (ED-04 m-25026627): the
+    library's default intensity, which with the «screen» blend is what the final video
+    lays (`clip_editor_vm.effect_opacity`). Read when the page is built, never at import
+    (the view model imports `ui`)."""
+    from .. import clip_editor_vm  # noqa: PLC0415 — `clip_editor_vm` imports `ui`
+    from .. import editor_preview_contract as contract  # noqa: PLC0415
+
+    urls = {
+        effect.effect_id: "/" + effect.preview_asset
+        for effect in contract.CLIP_EFFECTS
+        if effect.preview_asset
+    }
+    return {url: f"{op:g}" for url, op in clip_editor_vm.effect_opacity_by_url(urls).items()}
+
+
 def _effect_layer(src: rx.Var) -> rx.Component:
+    opacity = rx.match(src, *_effect_opacities().items(), "1")
     return rx.el.video(
         src=src,
+        style={"opacity": opacity},
         muted=True,
         loop=True,
         auto_play=True,
@@ -301,25 +321,50 @@ def _time_trigger(on_time: object) -> rx.Component:
 
 
 def _seq_text(row: rx.Var) -> rx.Component:
-    """A text of the sequence: hidden until the script marks it on (`data-on`)."""
+    """A text of the sequence: hidden until the script marks it on (`data-on`). ED-13:
+    drawn over its own background (`data-layout`: `scrim`, `band`, `brand_fill`,
+    `shadow`), the box in the brand's colour with legible letters (`--q-text-bg`,
+    `--q-text-ink`), the smaller title size past 32 characters (`data-long`), scaled by
+    the owner's size (`data-size`, round 4); the script
+    animates it through `--q-a`, `--q-dy` and `--q-s`. «Letra por letra»: the script
+    lays the whole text out, a span per character, in the empty `[data-seq-type]` line laid
+    over the whole one (which keeps the box its final size, hidden meanwhile) and shows the
+    letters typed so far on the final video's clock — React never renders children there,
+    so the two never fight."""
     return rx.box(
-        rx.el.p(row["text"], class_name="q-edit-preview__text-line"),
+        rx.box(
+            rx.el.p(row["text"], class_name="q-edit-preview__text-line q-edit-seq__full"),
+            rx.el.p(
+                class_name="q-edit-preview__text-line q-edit-seq__type",
+                aria_hidden="true",
+                custom_attrs={"data-seq-type": ""},
+            ),
+            class_name="q-edit-preview__text-box",
+        ),
         class_name="q-edit-preview__text q-edit-seq__overlay",
+        style={"--q-text-bg": row["bg"], "--q-text-ink": row["ink"]},
         custom_attrs={
             "data-place": row["place"],
-            "data-layout": "scrim",
-            "data-long": "false",
+            "data-layout": row["layout"],
+            "data-long": row["long"],
+            # ED-13 round 4: «Pequeña» / «Mediana» / «Grande» scale both title sizes
+            "data-size": row["size"],
             "data-seq-text": row["index"],
         },
     )
 
 
-def _seq_effect(row: rx.Var) -> rx.Component:
-    """An effect's loop (only when its file exists), shown while it is on."""
+def _seq_effect(row: rx.Var, url_base: tuple[str, rx.Var[str]] | None = None) -> rx.Component:
+    """An effect's loop (only when its file exists), shown while it is on. ``url_base``
+    `(mark, origin)` puts the origin the browser sees where a row's address carries the
+    mark (an effect served by the backend, m-25120474)."""
+    src = row["url"].to(str)
+    if url_base is not None:
+        src = src.replace(url_base[0], url_base[1])
     return rx.cond(
         row["url"] != "",
         rx.el.video(
-            src=row["url"],
+            src=src,
             muted=True,
             loop=True,
             plays_inline=True,
@@ -328,6 +373,8 @@ def _seq_effect(row: rx.Var) -> rx.Component:
             aria_hidden="true",
             custom_attrs={"data-edit-effect": "", "data-seq-effect": row["index"]},
             class_name="q-edit-preview__effect q-edit-seq__overlay",
+            # ED-04: as strong as the final video (the library's default intensity)
+            style={"opacity": row["opacity"]},
         ),
     )
 
@@ -348,6 +395,8 @@ def edit_sequence_preview(
     sound_label: str,
     mute_label: str,
     region_label: str,
+    clock: bool = True,
+    effect_url_base: tuple[str, rx.Var[str]] | None = None,
 ) -> rx.Component:
     """The preview of a whole video in order (ED-01b): `sequence` is
     `edit_sequence.PreviewSequence.to_json()`; `texts`/`effects` its overlays as rows
@@ -357,9 +406,23 @@ def edit_sequence_preview(
     card with its name — and `broken_text` when it failed. Put it and a `timeline` in
     one `[data-edit-sync]` box and their clocks are one. The sound button says
     `sound_label` while muted and `mute_label` while the sound is on (the script swaps
-    them, like ▶/❚❚). The single-stretch `edit_preview` is unchanged."""
+    them, like ▶/❚❚). The single-stretch `edit_preview` is unchanged.
+
+    ``clock`` False (ED-10's editor): no «{t} de {total}» under the frame — the linked
+    timeline's clock over the tracks is the only one; with ``note_text`` "" too, the
+    line under the frame is not drawn at all (the frame gets its height).
+
+    ``effect_url_base`` `(mark, origin)`: an effect row's address carrying `mark` gets
+    `origin` there (the R2 «Así se ve» videos live on the backend's origin, m-25120474)."""
     layer = "q-edit-preview__video q-edit-seq__layer"
     frame = rx.box(
+        # m-25114465: the photo of the block that goes on UNDER the next one while that
+        # one fades or wipes in (a video goes on in its own player: `data-under`)
+        rx.image(
+            alt="",
+            class_name="q-edit-preview__poster q-edit-seq__layer",
+            custom_attrs={"data-edit-seq-under": ""},
+        ),
         rx.image(
             alt="",
             class_name="q-edit-preview__poster q-edit-seq__layer",
@@ -381,7 +444,7 @@ def edit_sequence_preview(
             )
             for name in ("a", "b")
         ),
-        rx.foreach(effects, _seq_effect),
+        rx.foreach(effects, lambda row: _seq_effect(row, effect_url_base)),
         rx.foreach(texts, _seq_text),
         # the notice is announced when it appears: its live region is always rendered
         rx.el.div(
@@ -416,9 +479,8 @@ def edit_sequence_preview(
         ),
         class_name="q-edit-preview__frame",
     )
-    return rx.box(
-        frame,
-        rx.hstack(
+    time = (
+        [
             rx.el.span(
                 custom_attrs={"data-edit-seq-time": ""},
                 class_name="q-edit-preview__time q-nums",
@@ -427,13 +489,28 @@ def edit_sequence_preview(
             rx.text(
                 "·", size="1", color=T.TEXT_MUTED, aria_hidden="true", class_name="q-edit-seq__dot"
             ),
-            rx.text(note_text, size="1", color=T.TEXT_MUTED),
-            spacing="1",
-            align="center",
-            justify="center",
-            wrap="wrap",
-            width="100%",
-        ),
+        ]
+        if clock
+        else []
+    )
+    note = (
+        [
+            rx.hstack(
+                *time,
+                *([rx.text(note_text, size="1", color=T.TEXT_MUTED)] if note_text else []),
+                spacing="1",
+                align="center",
+                justify="center",
+                wrap="wrap",
+                width="100%",
+            )
+        ]
+        if clock or note_text
+        else []
+    )
+    return rx.box(
+        frame,
+        *note,
         rx.cond(slower, rx.text(slower_text, size="1", color=T.TEXT_MUTED, text_align="center")),
         _duration_trigger(on_duration),
         _time_trigger(on_time),

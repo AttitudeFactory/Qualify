@@ -22,7 +22,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.claude_tools import CallStats
-from qualify_api.referentes import MemoryReferentesRepository, brand_brief, reels_ai
+from qualify_api.referentes import MemoryReferentesRepository, brand_brief, manual_search, reels_ai
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import reel_runs as rr
 from qualify_api.referentes.reel_analysis_types import TranscriptSegment
@@ -406,3 +406,39 @@ def test_the_default_brief_loaders_read_the_kit_and_catalog(setup: dict[str, Any
     (ta, ba) = setup["a"]
     assert brand_brief.load_kit(ta, ba) is None
     assert brand_brief.load_products(ta, ba) == ()
+
+
+def test_the_owners_search_is_one_a_day_and_each_business_sees_its_own(
+    setup: dict[str, Any],
+) -> None:
+    """RF-14 (m-25129383): «Buscar reels nuevos» over the live schema — a double press is
+    one `manual` run of the business's local day, `manual_run` finds it only for its own
+    tenant, and another business may search the same day."""
+    env = setup
+    store: PostgresReelRunStore = env["store"]
+    (ta, ba), (tb, bb) = env["a"], env["b"]
+    ledger = usage.InMemoryUsageStore({ta: "America/Bogota", tb: "America/Bogota"})
+    usage.configure_store(ledger)  # the conftest puts the default back after the test
+
+    def press(tenant: UUID, brand: UUID) -> manual_search.SearchNow:
+        return manual_search.search_now(tenant, brand, store=store, ready=lambda t, b: True)
+
+    first, second = press(ta, ba), press(ta, ba)
+    assert first.state == second.state == manual_search.STATE_SEARCHING
+    assert first.run is not None and second.run is not None and first.run.id == second.run.id
+    today = first.run.run_date
+    found = store.manual_run(ta, ba, run_date=today)
+    assert found is not None and found.id == first.run.id and found.trigger == "manual"
+    # RLS: B never sees A's search, not even naming A's brand
+    assert store.manual_run(tb, ba, run_date=today) is None
+    assert manual_search.search_state(tb, bb, store=store).state == manual_search.STATE_IDLE
+    assert press(tb, bb).state == manual_search.STATE_SEARCHING
+    with tenant_session(ta) as session:
+        count = session.scalar(
+            text(
+                "SELECT count(*) FROM brand_reel_runs "
+                "WHERE brand_id = :b AND trigger = 'manual' AND run_date = :d"
+            ),
+            {"b": ba, "d": today},
+        )
+    assert count == 1

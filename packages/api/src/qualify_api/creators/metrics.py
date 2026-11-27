@@ -373,7 +373,10 @@ def reels_per_week(gap: MetricValue) -> MetricValue:
     return _ok("reels_per_week", 7.0 / gap.value, gap.sample)
 
 
-def _lift(reel: ReelRead, median: MetricValue) -> float | None:
+def lift(reel: ReelRead, median: MetricValue) -> float | None:
+    """A reel's views over its account's median views (`median_views`); None when the
+    median is not `ok` or the reel's views are unknown. Public for the reel badges
+    (RF-09, `referentes.reel_badges`)."""
     if median.status != "ok" or not median.value or reel.views is None:
         return None
     return reel.views / median.value
@@ -494,7 +497,7 @@ def _card(
         views=reel.views,
         likes=reel.likes,
         comments=reel.comments,
-        lift=_lift(reel, median),
+        lift=lift(reel, median),
         is_young=is_young(reel, read_at),
         is_paid_partnership=reel.is_paid_partnership,
         # the other accounts on the reel (the stored list names every account on it)
@@ -780,7 +783,9 @@ __all__ = [
     "build_sheet",
     "compare",
     "cost_per_thousand_views",
+    "is_measurable",
     "latest_measurable",
+    "lift",
     "lowest_in_currency",
     "reels_per_creator",
 ]

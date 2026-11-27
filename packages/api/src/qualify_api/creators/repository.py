@@ -335,6 +335,27 @@ def upsert_creators_in(session: Session, rows: Sequence[CreatorFacts]) -> int:
     return len(rows)
 
 
+def record_sightings_in(session: Session, rows: Sequence[Sighting]) -> int:
+    """The pool's sightings upsert inside an open session (`times` + 1 on a repeat), so a
+    caller can keep it in the same transaction as the accounts it saw (RF-07b)."""
+    for row in rows:
+        stmt = insert(CreatorSighting).values(
+            network=row.network,
+            handle=row.handle,
+            kind=row.kind,
+            term=row.term,
+            country_code=row.country_code,
+            city_slug=row.city_slug,
+            seen_at=row.seen_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_sighting",
+            set_={"seen_at": row.seen_at, "times": CreatorSighting.times + 1},
+        )
+        session.execute(stmt)
+    return len(rows)
+
+
 class PostgresCreatorPoolRepository:
     """`tenant_session` for the role and the pool; the tables themselves are global."""
 
@@ -415,22 +436,7 @@ class PostgresCreatorPoolRepository:
         if not rows:
             return 0
         with tenant_session(self.tenant_id) as session:
-            for row in rows:
-                stmt = insert(CreatorSighting).values(
-                    network=row.network,
-                    handle=row.handle,
-                    kind=row.kind,
-                    term=row.term,
-                    country_code=row.country_code,
-                    city_slug=row.city_slug,
-                    seen_at=row.seen_at,
-                )
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uq_sighting",
-                    set_={"seen_at": row.seen_at, "times": CreatorSighting.times + 1},
-                )
-                session.execute(stmt)
-        return len(rows)
+            return record_sightings_in(session, rows)
 
     def creator(self, network: str, handle: str) -> CreatorFacts | None:
         stmt = select(Creator).where(

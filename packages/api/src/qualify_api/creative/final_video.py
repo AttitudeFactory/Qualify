@@ -68,6 +68,7 @@ from qualify_api.creative.part_join import (
     PartJoinStore,
     PartPreview,
     PartsToJoin,
+    join_transitions,
     ready_parts,
 )
 from qualify_api.creative.video_pipeline.local import is_local_recipe
@@ -375,7 +376,8 @@ def join_state(
         block is not None
         and block.get("status") == JOIN_PREVIEW_STATUS
         and block.get("parent_revision") == snapshot.revision
-        and preview_fingerprint(parts, block) == snapshot.joined_fingerprint
+        and preview_fingerprint(parts, block, join_transitions(snapshot, parts))
+        == snapshot.joined_fingerprint
     ):
         return JoinState.READY
     pending = run is not None and (

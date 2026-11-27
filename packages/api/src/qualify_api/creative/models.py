@@ -904,6 +904,15 @@ class CreativeUsageEvent(Base):
     __table_args__ = (
         Index("ix_usage_event_brand_occurred", "brand_id", "occurred_at"),
         Index("ix_usage_events_tenant", "tenant_id"),
+        # 0179 (m-25112161): one event per paid vendor task — writers insert with
+        # ON CONFLICT on this partial key and add to the budget only what was written
+        Index(
+            "uq_usage_event_tenant_vendor_task",
+            "tenant_id",
+            "vendor_task_id",
+            unique=True,
+            postgresql_where=text("vendor_task_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -920,6 +929,9 @@ class CreativeUsageEvent(Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The vendor's own id of the task this row paid for (Seedance `cgt-…`, OmniHuman's
+    #: `task_id`); NULL for a call without one (Claude, Seedream, Seed Speech, Remotion).
+    vendor_task_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     unit: Mapped[str] = mapped_column(Text, nullable=False)  # 'piece' | 'token'
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

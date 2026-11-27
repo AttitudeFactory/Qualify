@@ -19,12 +19,6 @@ from qualify_api.ads.fake import FakeMarketingClient
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import ADAPTER_VERSION, PromotionRequest, fingerprint
 from qualify_api.ads.results import ResultsUnavailable
-from qualify_api.ads.results_management import (
-    PromotionEdit,
-    VerifiedEditApproval,
-    apply_verified_edit,
-    edit_scope_hash,
-)
 from qualify_api.connections.ad_accounts import (
     AdAccountObservation,
     PostgresAdsGrantRecorder,
@@ -99,7 +93,12 @@ def test_prepared_edit_ledger_cas_and_unknown_block_different_keys(result_world)
             )
         with pytest.raises(ResultsUnavailable, match="treinta"):
             service._claim_pause(
-                scope, "fresh-but-unknown-key", datetime.now(UTC), expected_revision=current
+                scope,
+                "fresh-but-unknown-key",
+                datetime.now(UTC),
+                action="resume",
+                payload={"status": "ACTIVE"},
+                expected_revision=current,
             )
         replay, replay_state = service._claim_pause(
             scope,
@@ -518,8 +517,9 @@ async def test_pause_audit_idempotency_and_immutable_approval(result_world):
         await service._pause(ids["tenant_id"], promotion.id, "intent-1", api=api)
         await service._pause(ids["tenant_id"], promotion.id, "intent-1", api=api)
         assert len([c for c in api.calls if c[0] == "POST"]) == 1
-        with pytest.raises(ResultsUnavailable, match="treinta"):
-            await service._pause(ids["tenant_id"], promotion.id, "intent-2", api=api)
+        # A new key after a finished pause sends PAUSED again (harmless, m-25072681).
+        await service._pause(ids["tenant_id"], promotion.id, "intent-2", api=api)
+        assert len([c for c in api.calls if c[0] == "POST"]) == 2
     with tenant_session(ids["tenant_id"]) as s:
         row = (
             s.execute(
@@ -527,7 +527,7 @@ async def test_pause_audit_idempotency_and_immutable_approval(result_world):
                 {"id": promotion.id},
             )
             .mappings()
-            .one()
+            .first()
         )
         assert row["actor_id"] == user and row["state"] == "completed"
         assert row["created_at"] and row["finished_at"]
@@ -688,67 +688,15 @@ async def test_specific_meta_reason_saved_only_after_exact_account_and_safe_text
 
 
 @pytest.mark.asyncio
-async def test_injected_paid_budget_edit_audited_but_production_wrapper_disabled(result_world):
-    ids, login, user, _, promotion, api = result_world
-    edit = PromotionEdit("budget", "lifetime", 20000)
-    now = datetime.now(UTC)
-    api.objects["2"] = {"id": "2", "_resource": "adsets"}
-
-    class FixtureApprovals:
-        async def verify(self, scope, requested):
-            return VerifiedEditApproval(
-                scope.tenant_id,
-                scope.promotion_id,
-                scope.account_id,
-                scope.connection.version,
-                login,
-                fingerprint({"action": edit.action, "payload": edit.payload()}),
-                now + timedelta(minutes=1),
-                True,
-                True,
-                True,
-                "lifetime",
-                1000,
-                100,
-                now - timedelta(days=1),
-                "fixture-only-v1",
-                edit_scope_hash(scope),
-            )
-
-    with acting_login(login):
-        with pytest.raises(ResultsUnavailable):
-            await service.edit_promotion(
-                tenant_id=ids["tenant_id"],
-                promotion_id=promotion.id,
-                action="budget",
-                request_key="paid",
-                budget_minor=20000,
-            )
-        await apply_verified_edit(
+async def test_production_wrapper_refuses_paid_budget_edit(result_world):
+    ids, login, _, _, promotion, _ = result_world
+    with acting_login(login), pytest.raises(ResultsUnavailable):
+        await service.edit_promotion(
             tenant_id=ids["tenant_id"],
             promotion_id=promotion.id,
+            action="budget",
             request_key="paid",
-            edit=edit,
-            api=api,
-            approvals=FixtureApprovals(),
-        )
-    with tenant_session(ids["tenant_id"]) as s:
-        row = (
-            s.execute(
-                text("SELECT * FROM ad_promotion_operations WHERE promotion_id=:id"),
-                {"id": promotion.id},
-            )
-            .mappings()
-            .one()
-        )
-        assert row["actor_id"] == user and row["payload"] == {"lifetime_budget": 20000}
-        assert row["action"] == "budget" and row["approval_evidence"]["confirmed"] is True
-        assert (
-            s.scalar(
-                text("SELECT request_snapshot FROM ad_promotions WHERE id=:id"),
-                {"id": promotion.id},
-            )
-            == promotion.request
+            budget_minor=20000,
         )
 
 
@@ -800,47 +748,6 @@ async def test_pause_keeps_last_daily_results_but_requires_new_status_read(resul
 
 
 @pytest.mark.asyncio
-async def test_paid_edit_evidence_expiring_during_cooldown_never_dispatches(result_world):
-    ids, login, _, _, promotion, api = result_world
-    now = datetime.now(UTC)
-    edit = PromotionEdit("resume")
-    times = iter([now, now, now + timedelta(minutes=2)])
-
-    class FixtureApprovals:
-        async def verify(self, scope, requested):
-            return VerifiedEditApproval(
-                scope.tenant_id,
-                scope.promotion_id,
-                scope.account_id,
-                scope.connection.version,
-                login,
-                fingerprint({"action": edit.action, "payload": edit.payload()}),
-                now + timedelta(seconds=30),
-                True,
-                True,
-                True,
-                "lifetime",
-                1000,
-                100,
-                now - timedelta(days=1),
-                "fixture-only-v1",
-                edit_scope_hash(scope),
-            )
-
-    with acting_login(login), pytest.raises(ResultsUnavailable):
-        await apply_verified_edit(
-            tenant_id=ids["tenant_id"],
-            promotion_id=promotion.id,
-            request_key="resume",
-            edit=edit,
-            api=api,
-            approvals=FixtureApprovals(),
-            clock=lambda: next(times),
-        )
-    assert all(call[0] == "GET" for call in api.calls)
-
-
-@pytest.mark.asyncio
 async def test_context_change_after_write_is_unknown_audit_not_success(result_world):
     ids, login, _, connection, promotion, api = result_world
     original = api.update
@@ -884,8 +791,11 @@ async def test_old_claim_with_recent_dispatch_is_not_reconciled_while_http_in_fl
                 )
                 == "in_flight"
             )
-        with pytest.raises(ResultsUnavailable, match="treinta"):
-            service._claim_pause(scope, "second-intent", datetime.now(UTC))
+        # The pause still on its way answers a second pause: one Meta write.
+        assert service._claim_pause(scope, "second-intent", datetime.now(UTC)) == (
+            operation,
+            "in_flight",
+        )
 
 
 @pytest.mark.asyncio
@@ -951,3 +861,343 @@ def test_summary_caption_uses_only_bound_published_unpurged_source(result_world,
             ).promotion.caption
             == ""
         )
+
+
+# m-25072681: the pause is the brake — always claimable except while another pause is on its way.
+
+
+def _unresolved(scope, key, *, action="budget", state="unknown", evidence=None):
+    payload = {"lifetime_budget": 300} if action == "budget" else {"status": "ACTIVE"}
+    operation, claimed = service._claim_pause(
+        scope,
+        key,
+        datetime.now(UTC),
+        action=action,
+        payload=payload,
+        evidence=evidence or {"confirmed": True},
+    )
+    assert claimed == "claimed"
+    if state != "in_flight":
+        service._finish_pause(scope, operation, state)
+    return operation
+
+
+def _states(ids, promotion):
+    with tenant_session(ids["tenant_id"]) as s:
+        return dict(
+            s.execute(
+                text(
+                    "SELECT action,state FROM ad_promotion_operations WHERE promotion_id=:id "
+                    "ORDER BY created_at,id"
+                ),
+                {"id": promotion.id},
+            ).all()
+        )
+
+
+def _posts(api):
+    return [call[1:] for call in api.calls if call[0] == "POST"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edit_state", ["unknown", "completed"])
+async def test_pause_is_sent_past_an_unresolved_edit_and_the_thirty_second_window(
+    result_world, edit_state
+):
+    ids, login, _, _, promotion, api = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        _unresolved(scope, "budget-edit", state=edit_state)
+        await service._refresh(ids["tenant_id"], promotion.id, api=api)
+        shown = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert shown.promotion.can_pause
+        assert shown.promotion.operation_pending is (edit_state == "unknown")
+        # Resume and edits keep today's rule: an unresolved change or the 30 s pacing blocks.
+        with pytest.raises(ResultsUnavailable, match="treinta"):
+            service._claim_pause(
+                scope,
+                "resume-blocked",
+                datetime.now(UTC),
+                action="resume",
+                payload={"status": "ACTIVE"},
+            )
+        await service._pause(ids["tenant_id"], promotion.id, "brake", api=api)
+    assert _posts(api) == [("3", {"status": "PAUSED"})]
+    assert _states(ids, promotion) == {"budget": edit_state, "pause": "completed"}
+
+
+@pytest.mark.asyncio
+async def test_two_pauses_with_different_keys_make_one_meta_write(result_world):
+    import asyncio
+
+    ids, login, _, _, promotion, api = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        _unresolved(scope, "budget-edit")
+        original, sending, release = api.update, asyncio.Event(), asyncio.Event()
+
+        async def slow(*args, **kwargs):
+            sending.set()
+            await release.wait()  # The first pause is still on its way to Meta.
+            return await original(*args, **kwargs)
+
+        api.update = slow
+        first = asyncio.create_task(
+            service._pause(ids["tenant_id"], promotion.id, "click-1", api=api)
+        )
+        await asyncio.wait_for(sending.wait(), 5)
+        api.update = original
+        with pytest.raises(ResultsUnavailable, match="Ya estamos pausando"):
+            await service._pause(ids["tenant_id"], promotion.id, "click-2", api=api)
+        release.set()
+        await first
+    assert _posts(api) == [("3", {"status": "PAUSED"})]
+    with tenant_session(ids["tenant_id"]) as s:
+        assert (
+            s.scalar(
+                text(
+                    "SELECT count(*) FROM ad_promotion_operations "
+                    "WHERE promotion_id=:id AND action='pause'"
+                ),
+                {"id": promotion.id},
+            )
+            == 1
+        )
+
+
+def test_database_allows_one_pause_in_flight_beside_an_unresolved_edit(result_world):
+    from sqlalchemy.exc import IntegrityError
+
+    ids, login, user, _, promotion, _ = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        _unresolved(scope, "budget-edit")
+        service._claim_pause(scope, "brake", datetime.now(UTC))
+    with pytest.raises(IntegrityError), tenant_session(ids["tenant_id"]) as s:
+        s.execute(
+            text(
+                "INSERT INTO ad_promotion_operations (tenant_id,promotion_id,request_key,"
+                "actor_id,action,payload,approval_evidence,state,created_at,pipeline_version) "
+                "VALUES (:tenant,:id,'raced-brake',:actor,'pause',CAST('{}' AS jsonb),"
+                "CAST('{}' AS jsonb),'in_flight',now(),'t')"
+            ),
+            {"tenant": ids["tenant_id"], "id": promotion.id, "actor": user},
+        )
+
+
+@pytest.mark.asyncio
+async def test_meta_edit_rate_limit_on_pause_asks_to_retry_and_frees_the_brake(result_world):
+    ids, login, _, _, promotion, api = result_world
+    original = api.update
+
+    async def too_soon(*args, **kwargs):
+        api.failures.append(MarketingError("fixture", subcode=4841018, http_status=400))
+        return await original(*args, **kwargs)
+
+    api.update = too_soon
+    with acting_login(login):
+        with pytest.raises(ResultsUnavailable, match="otra vez"):
+            await service._pause(ids["tenant_id"], promotion.id, "first", api=api)
+        assert _states(ids, promotion) == {"pause": "failed"}
+        api.update = original
+        await service._pause(ids["tenant_id"], promotion.id, "second", api=api)
+    assert len(_posts(api)) == 2
+
+
+def test_resume_in_flight_aborts_once_a_pause_row_exists(result_world):
+    from qualify_api.ads import live_management
+    from qualify_api.ads.edit_ledger import revision
+
+    ids, login, _, _, promotion, _ = result_world
+
+    class Gateway:
+        def local_guard(self, source):
+            return None
+
+    expires = datetime.now(UTC) + timedelta(minutes=5)
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        resume = _unresolved(scope, "resume", action="resume", state="in_flight")
+        ledger = revision([])
+        live_management._local(scope, Gateway(), None, promotion, ledger, expires, resume)
+        service._claim_pause(scope, "brake", datetime.now(UTC))
+        with pytest.raises(ResultsUnavailable):
+            live_management._local(scope, Gateway(), None, promotion, ledger, expires, resume)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ad_reads", ["PAUSED", "ACTIVE"])
+async def test_older_unknown_resume_reconciled_after_a_finished_pause_never_wins(
+    result_world, monkeypatch, ad_reads
+):
+    from qualify_api.ads import live_management
+    from qualify_api.ads.edit_ledger import EDIT_PIPELINE, revision
+
+    ids, login, user, _, promotion, api = result_world
+    values = {key: promotion.request[key] for key in ("budget_minor", "end_time")}
+    evidence = {
+        "pipeline": EDIT_PIPELINE,
+        "confirmed": True,
+        "actor": str(user),
+        "ledger": revision([]),
+        "original": fingerprint(promotion.request),
+        "before": values,
+        "after": values,
+        "baseline": ["adsets", "campaigns"],
+    }
+    old = datetime.now(UTC) - timedelta(seconds=120)
+    reads = []
+
+    class Gateway:
+        def __init__(self, *, actor, **kwargs):
+            self.actor = actor
+
+        async def remote_guard(self, desired, *, active_resources):
+            # A strict read-back: the ad must be exactly as expected.
+            reads.append(tuple(sorted(active_resources)))
+            if ("ads" in active_resources) != (ad_reads == "ACTIVE"):
+                raise ResultsUnavailable("read-back differs")
+
+    monkeypatch.setattr(live_management, "LiveWizardGateway", Gateway)
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        resume = _unresolved(scope, "old-resume", action="resume", evidence=evidence)
+        with tenant_session(ids["tenant_id"]) as s:
+            s.execute(
+                text(
+                    "UPDATE ad_promotion_operations SET created_at=:old,dispatched_at=:old "
+                    "WHERE id=:id"
+                ),
+                {"id": resume, "old": old},
+            )
+        await service._pause(ids["tenant_id"], promotion.id, "brake", api=api)
+        assert await live_management.reconcile_promotion_edit(scope) is (ad_reads == "PAUSED")
+        # Expected only with the ad paused: the later pause wins over the older resume.
+        assert reads == [("adsets", "campaigns")]
+        assert _states(ids, promotion) == {
+            "resume": "reconciled" if ad_reads == "PAUSED" else "unknown",
+            "pause": "completed",
+        }
+        if ad_reads == "ACTIVE":
+            # The old resume landed after the pause: the screen shows Meta's ACTIVE and the
+            # owner can pause again, never a silent success.
+            api.objects["3"]["status"] = api.objects["3"]["effective_status"] = "ACTIVE"
+            shown = await service._refresh(ids["tenant_id"], promotion.id, api=api)
+            assert shown.promotion.status == "ACTIVE" and shown.promotion.can_pause
+            with tenant_session(ids["tenant_id"]) as s:
+                s.execute(
+                    text(
+                        "UPDATE ad_promotion_operations SET finished_at=now()-interval '1 minute'"
+                        " WHERE promotion_id=:id AND action='pause'"
+                    ),
+                    {"id": promotion.id},
+                )
+            await service._pause(ids["tenant_id"], promotion.id, "brake-again", api=api)
+            assert len(_posts(api)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_pause_stuck_in_flight_past_five_minutes_gives_the_brake_back(result_world):
+    ids, login, _, _, promotion, api = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        stuck, _ = service._claim_pause(scope, "worker-died", datetime.now(UTC))
+        await service._refresh(ids["tenant_id"], promotion.id, api=api)
+        shown = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert not shown.promotion.can_pause
+        with tenant_session(ids["tenant_id"]) as s:
+            s.execute(
+                text(
+                    "UPDATE ad_promotion_operations SET created_at=now()-interval '6 minutes' "
+                    "WHERE id=:id"
+                ),
+                {"id": stuck},
+            )
+        shown = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert shown.promotion.can_pause
+        await service._pause(ids["tenant_id"], promotion.id, "brake", api=api)
+    assert _posts(api) == [("3", {"status": "PAUSED"})]
+    with tenant_session(ids["tenant_id"]) as s:
+        assert (
+            s.scalar(text("SELECT state FROM ad_promotion_operations WHERE id=:id"), {"id": stuck})
+            == "failed"
+        )
+
+
+def test_an_edit_claimed_before_a_pause_never_dispatches(result_world):
+    ids, login, _, _, promotion, _ = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        resume = _unresolved(scope, "resume", action="resume", state="in_flight")
+        brake, _ = service._claim_pause(scope, "brake", datetime.now(UTC))
+        service._dispatch(scope, brake)
+        service._finish_pause(scope, brake, "completed")
+        with pytest.raises(ResultsUnavailable, match="se pausó"):
+            service._dispatch(scope, resume)
+    assert _states(ids, promotion) == {"resume": "failed", "pause": "completed"}
+    with tenant_session(ids["tenant_id"]) as s:
+        assert (
+            s.scalar(
+                text("SELECT dispatched_at FROM ad_promotion_operations WHERE id=:id"),
+                {"id": resume},
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_pause_right_after_a_finished_pause_still_writes_to_meta(result_world):
+    ids, login, _, _, promotion, api = result_world
+    with acting_login(login):
+        await service._pause(ids["tenant_id"], promotion.id, "brake", api=api)
+        # A late resume re-activated the ad within 30 s of the finished pause.
+        api.objects["3"]["status"] = api.objects["3"]["effective_status"] = "ACTIVE"
+        await service._pause(ids["tenant_id"], promotion.id, "brake-again", api=api)
+    assert _posts(api) == [("3", {"status": "PAUSED"})] * 2
+
+
+@pytest.mark.asyncio
+async def test_poller_skips_abandoned_promotions_but_reads_activated_ones(
+    result_world, monkeypatch
+):
+    """m-25077974: a paused promotion whose preview expired unconfirmed is never read again."""
+    ids, _, user, _, promotion, _ = result_world
+    read: list = []
+
+    async def refresh(tenant_id, promotion_id, *, system=False):
+        read.append(promotion_id)
+
+    monkeypatch.setattr(service, "_refresh", refresh)
+    # Created in Meta, but no preview was ever saved: nothing the owner could activate.
+    await service.poll_promotion_results(tenant_id=ids["tenant_id"])
+    assert read == []
+    with tenant_session(ids["tenant_id"]) as s:
+        s.execute(
+            text("""INSERT INTO ad_promotion_activations
+            (tenant_id,promotion_id,request_hash,preview_html,preview_hash,checks_snapshot,
+             pipeline_version,expires_at,prepared_by)
+            VALUES (:tenant,:promotion,'h','<p></p>','p','{}','promotion-wizard-v1',
+                    :expires,:actor)"""),
+            {
+                "tenant": ids["tenant_id"],
+                "promotion": promotion.id,
+                "expires": datetime.now(UTC) - timedelta(minutes=1),
+                "actor": user,
+            },
+        )
+    await service.poll_promotion_results(tenant_id=ids["tenant_id"])
+    assert read == []  # The preview expired without confirmation: abandoned.
+    with tenant_session(ids["tenant_id"]) as s:
+        s.execute(
+            text("""UPDATE ad_promotion_activations SET state='in_flight',confirmed_by=:actor,
+            confirmed_at=now(),claim_token=gen_random_uuid() WHERE promotion_id=:promotion"""),
+            {"promotion": promotion.id, "actor": user},
+        )
+    await service.poll_promotion_results(tenant_id=ids["tenant_id"])
+    assert read == [promotion.id]  # Activated once: read even after the preview expired.

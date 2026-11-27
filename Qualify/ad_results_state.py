@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.ads.money import budget_field
 from qualify_api.ads.results import ResultsUnavailable
 from qualify_api.tenancy.acting import acting_login
 
@@ -39,6 +40,7 @@ from .ad_results_vm import (
     AdResultVM,
     AlertAccountVM,
     EditInputError,
+    budget_unit,
     edit_budget,
     edit_budget_down,
     edit_end,
@@ -81,6 +83,11 @@ class AdResultsState(rx.State):
     _edit_request: str = ""
     _edit_token: str = ""
     _edit_expires: str = ""
+
+    @rx.var
+    def edit_unit(self) -> str:
+        """«pesos colombianos», «dólares», «pesos uruguayos»: the edit field's unit."""
+        return budget_unit(self.detail.promotion.currency)
 
     @rx.var
     def can_confirm_edit(self) -> bool:
@@ -138,7 +145,7 @@ class AdResultsState(rx.State):
             and not row.stale
             and not row.refresh_failed
             and row.id == self._selected_id
-            and row.currency == "COP"
+            and budget_field(row.currency) is not None
             and (row.can_resume if action == "resume" else row.can_manage)
         )
 
@@ -238,10 +245,13 @@ class AdResultsState(rx.State):
             ):
                 return
             promotion, request = UUID(self._selected_id), self._edit_request
+            currency = self.detail.promotion.currency
             self.floor_loading = True
         try:
             with acting_login(UUID(context[1])):
-                label, floor = await asyncio.to_thread(read_floor, UUID(context[0]), promotion)
+                label, floor = await asyncio.to_thread(
+                    read_floor, UUID(context[0]), promotion, currency
+                )
         except Exception as exc:
             logger.warning("ad budget floor read failed: %s", type(exc).__name__)
             label, floor = FLOOR_FAILED, ""
@@ -382,7 +392,7 @@ class AdResultsState(rx.State):
 
     @rx.event
     def ask_pause(self) -> None:
-        if self.busy or self.loading or self.change_pending or not self.detail.promotion.can_pause:
+        if self.busy or self.loading or not self.detail.promotion.can_pause:
             return
         self.pause_open = True
         self._pause_request = str(uuid4())
@@ -408,7 +418,6 @@ class AdResultsState(rx.State):
                 or not self.pause_open
                 or not self._pause_request
                 or not self.detail.promotion.can_pause
-                or self.change_pending
                 or self.detail.promotion.id != self._selected_id
             ):
                 return
@@ -527,10 +536,13 @@ class AdResultsState(rx.State):
             row = self.detail.promotion
             try:
                 budget = (
-                    edit_budget(self.edit_budget_total, row.current_budget_input)
+                    edit_budget(self.edit_budget_total, row.current_budget_input, row.currency)
                     if self.edit_action == "budget"
                     else edit_budget_down(
-                        self.edit_budget_total, row.current_budget_input, self._floor_input
+                        self.edit_budget_total,
+                        row.current_budget_input,
+                        self._floor_input,
+                        row.currency,
                     )
                     if self.edit_action == "budget_down"
                     else None
@@ -560,6 +572,7 @@ class AdResultsState(rx.State):
                     request,
                     action,
                     row.timezone_name,
+                    currency=row.currency,
                     budget_minor=budget,
                     end_time=end,
                 )

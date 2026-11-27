@@ -33,7 +33,10 @@ from qualify_api.ads.live_wizard import (
     PersistedWizardSources,
     authorize_actor,
     request_goal,
+    spend_cap_exceeded,
+    spend_cap_room,
 )
+from qualify_api.ads.money import META_CURRENCY_OFFSETS, from_meta, money_display, to_meta
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import Promotion, fingerprint
 from qualify_api.ads.results import ResultsUnavailable
@@ -81,8 +84,9 @@ def _context(scope: ResultScope) -> tuple[Promotion, str, LiveWizardGateway, Any
         not consent
         or original is None
         or original.status != "active"
-        or original.request.get("currency") != "COP"
-        or original.request.get("meta_currency_offset") != 1
+        or original.request.get("currency") not in META_CURRENCY_OFFSETS
+        or original.request.get("meta_currency_offset")
+        != META_CURRENCY_OFFSETS[original.request["currency"]]
         or original.request.get("budget_kind") != "lifetime"
         or original.request.get("publish_attempt_id") is None
         or set(original.ids) != {"campaigns", "adsets", "adcreatives", "ads"}
@@ -175,9 +179,9 @@ def _intent(
         ):
             raise ResultsUnavailable("Escribe un monto sin centavos y distinto del actual.")
         request["budget_minor"] = budget_minor
-        payload = {"lifetime_budget": budget_minor // 100}
-        amount = f"{budget_minor // 100:,}".replace(",", ".")
-        summary = f"Cambiar el presupuesto total a {amount} COP."
+        payload = {"lifetime_budget": to_meta(budget_minor, request["currency"])}
+        amount = money_display(budget_minor, request["currency"])
+        summary = f"Cambiar el presupuesto total a {amount}."
     elif action == "end_time" and budget_minor is None and isinstance(end_time, datetime):
         if end_time.utcoffset() is None or end_time <= max(
             datetime.now(UTC), datetime.fromisoformat(request["start_time"])
@@ -209,14 +213,59 @@ def _values(promotion: Promotion) -> dict[str, Any]:
 
 
 def _whole(value: Any) -> int | None:
-    """A Meta amount in its own unit (whole pesos for COP, offset 1): int or digit string."""
+    """A Meta amount in its own unit (whole pesos for COP, cents for USD/UYU)."""
     if isinstance(value, int) and not isinstance(value, bool):
         return value if value >= 0 else None
     return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]{1,18}", value) else None
 
 
+def meta_daily_minimum(rows: list[dict[str, Any]], currency: str) -> int | None:
+    """The largest `min_daily_budget*` of the one `currency` row of `act_/minimum_budgets`,
+    in Meta's unit (whole pesos for COP); None when absent, repeated or malformed."""
+    rows = [row for row in rows if row.get("currency") == currency]
+    daily = (
+        [_whole(v) for k, v in rows[0].items() if k.startswith("min_daily_budget")]
+        if len(rows) == 1
+        else []
+    )
+    if not daily or any(value is None or value <= 0 for value in daily):
+        return None
+    return max(daily)  # type: ignore[type-var]
+
+
 def _decrease(action: str, before: Promotion, after: Promotion) -> bool:
     return action == "budget" and after.request["budget_minor"] < before.request["budget_minor"]
+
+
+def _increase(action: str, before: Promotion, after: Promotion) -> bool:
+    return action == "budget" and after.request["budget_minor"] > before.request["budget_minor"]
+
+
+async def _spend_cap_guard(
+    gateway: LiveWizardGateway, source: Any, promotion: Promotion, new_minor: int
+) -> None:
+    """Refuse a raise the account's spending cap cannot cover (m-25077975), read live.
+
+    What this ad can still spend after the change (its unspent budget plus the raise) is
+    compared with what the cap still allows (`spend_cap - amount_spent`, which already
+    counts this ad's spend). No cap blocks nothing; a failed read refuses the raise.
+    """
+    currency = promotion.request["currency"]
+    raise_meta = to_meta(new_minor - promotion.request["budget_minor"], currency)
+    # A failed read (MarketingError) refuses the raise: results_service maps it to its retry
+    # message. Money safety: a raise is never sent without reading the cap first.
+    async with gateway.client(source) as client:
+        room = spend_cap_room(await client.read_account(fields="spend_cap,amount_spent"))
+        if room is None:
+            return
+        adset = await client.read_object(promotion.ids["adsets"], fields="id,budget_remaining")
+    unspent = _whole(adset.get("budget_remaining"))
+    if adset.get("id") != promotion.ids["adsets"] or unspent is None:
+        unspent = 0  # Unknown unspent budget: the raise alone still has to fit.
+    if unspent + raise_meta > room:
+        raise ResultsUnavailable(
+            spend_cap_exceeded(room, META_CURRENCY_OFFSETS[currency], currency)
+        )
 
 
 FLOOR_UNAVAILABLE = "No pudimos comprobar lo gastado y el mínimo de Meta. Inténtalo de nuevo."
@@ -227,9 +276,9 @@ async def _decrease_floor(
 ) -> dict[str, int]:
     floor = await _budget_floor(gateway, source, promotion)
     if new_minor < floor["floor"]:
-        amount = f"{floor['floor'] // 100:,}".replace(",", ".")
+        amount = money_display(floor["floor"], promotion.request["currency"])
         raise ResultsUnavailable(
-            f"Puedes bajarlo hasta ${amount}. Por debajo, Meta no deja que tu anuncio siga "
+            f"Puedes bajarlo hasta {amount}. Por debajo, Meta no deja que tu anuncio siga "
             "saliendo los días que faltan."
         )
     return floor
@@ -242,11 +291,13 @@ async def _budget_floor(
 
     floor = max(spent + daily_min x remaining_days, daily_min x schedule_days), where
     `spent` = the ad set's `lifetime_budget - budget_remaining` and `daily_min` the
-    largest `min_daily_budget*` of `act_<id>/minimum_budgets` for COP. Meta's own
+    largest `min_daily_budget*` of `act_<id>/minimum_budgets` for the promotion's currency
+    (all in Meta's unit, converted back to hundredths at the end). Meta's own
     `validate_only` on the exact amount stays the final word; this only refuses earlier.
     """
     request = promotion.request
-    current = request["budget_minor"] // 100
+    currency = request["currency"]
+    current = to_meta(request["budget_minor"], currency)
     async with gateway.client(source) as client:
         adset = await client.read_object(
             promotion.ids["adsets"], fields="id,lifetime_budget,budget_remaining"
@@ -256,22 +307,15 @@ async def _budget_floor(
         _whole(adset.get("lifetime_budget")),
         _whole(adset.get("budget_remaining")),
     )
-    rows = [row for row in minimums.data if row.get("currency") == "COP"]
-    daily = (
-        [_whole(v) for k, v in rows[0].items() if k.startswith("min_daily_budget")]
-        if len(rows) == 1
-        else []
-    )
+    minimum = meta_daily_minimum(minimums.data, currency)
     if (
         adset.get("id") != promotion.ids["adsets"]
         or lifetime != current
         or remaining is None
         or remaining > lifetime
-        or not daily
-        or any(value is None or value <= 0 for value in daily)
+        or minimum is None
     ):
         raise ResultsUnavailable(FLOOR_UNAVAILABLE)
-    minimum = max(daily)
     start = datetime.fromisoformat(request["start_time"])
     end = datetime.fromisoformat(request["end_time"])
     day = timedelta(days=1)
@@ -280,8 +324,12 @@ async def _budget_floor(
     schedule_days = max(1, -(-(end - start) // day))
     remaining_days = max(0, -(-(end - max(datetime.now(UTC), start)) // day))
     spent = lifetime - remaining
-    floor = max(spent + minimum * remaining_days, minimum * schedule_days) * 100
-    return {"spent_minor": spent * 100, "daily_minimum_minor": minimum * 100, "floor": floor}
+    floor = max(spent + minimum * remaining_days, minimum * schedule_days)
+    return {
+        "spent_minor": from_meta(spent, currency),
+        "daily_minimum_minor": from_meta(minimum, currency),
+        "floor": from_meta(floor, currency),
+    }
 
 
 @dataclass(frozen=True)
@@ -332,6 +380,8 @@ async def prepare_promotion_edit(
         if _decrease(action, promotion, changed)
         else None
     )
+    if _increase(action, promotion, changed):
+        await _spend_cap_guard(gateway, source, promotion, changed.request["budget_minor"])
     async with gateway.client(source) as client:
         for resource in targets:
             await client.validate_update(promotion.ids[resource], params=payload)
@@ -363,6 +413,7 @@ async def prepare_promotion_edit(
             "effective": fingerprint(promotion.request),
             "pipeline": EDIT_PIPELINE,
             "floor": floor,
+            "offset": META_CURRENCY_OFFSETS[promotion.request["currency"]],
         },
         now,
     )
@@ -390,7 +441,11 @@ async def confirm_promotion_edit(
         raise ResultsUnavailable("Confirma el cambio después de revisar sus detalles.")
     body = unseal(approval_token, datetime.now(UTC))
     if not consistent_intent(
-        body.get("action"), body.get("payload"), body.get("before"), body.get("after")
+        body.get("action"),
+        body.get("payload"),
+        body.get("before"),
+        body.get("after"),
+        body.get("offset", 1),
     ):
         raise ResultsUnavailable(REPREPARE)
     scope = _scope(tenant_id, promotion_id)
@@ -455,6 +510,9 @@ async def confirm_promotion_edit(
     if _decrease(body["action"], promotion, changed):
         # Spending went on while the owner read the review: floor it again before the claim.
         await _decrease_floor(gateway, source, promotion, changed.request["budget_minor"])
+    if _increase(body["action"], promotion, changed):
+        # Other ads may have spent against the cap while the owner read the review.
+        await _spend_cap_guard(gateway, source, promotion, changed.request["budget_minor"])
     _local(scope, gateway, source, promotion, ledger, expires)
     operation, state = _claim_pause(
         scope,
@@ -517,6 +575,17 @@ async def confirm_promotion_edit(
         return PromotionEditResult(promotion_id, body["action"], "unknown", UNKNOWN)
 
 
+def _after_pauses(rows: list[Any], operation: UUID) -> tuple[list[Any], dict[UUID, str]]:
+    """Split the pauses claimed after `operation` (m-25072681) from the rest of the chain.
+
+    A pause may be claimed while an edit is unresolved; it changes neither budget nor end
+    time, so it is not part of the history the edit was reviewed against.
+    """
+    position = next(index for index, row in enumerate(rows) if row["id"] == operation)
+    later = {row["id"]: row["state"] for row in rows[position + 1 :] if row["action"] == "pause"}
+    return [row for row in rows if row["id"] != operation and row["id"] not in later], later
+
+
 async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) -> bool:
     """Read the entire approved chain; never resends a write with an uncertain outcome."""
     with tenant_session(scope.tenant_id, independent=True) as session:
@@ -547,12 +616,16 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
         or body.get("pipeline") != EDIT_PIPELINE
         or body.get("confirmed") is not True
         or not consistent_intent(
-            own["action"], own["payload"], body.get("before"), body.get("after")
+            own["action"],
+            own["payload"],
+            body.get("before"),
+            body.get("after"),
+            body.get("offset", 1),
         )
     ):
         return False
-    others = [row for row in rows if row["id"] != operation]
-    if revision(others) != body.get("ledger"):
+    others, later = _after_pauses(rows, operation)
+    if revision(others) != body.get("ledger") or {"in_flight", "unknown"} & set(later.values()):
         return False
     original = PostgresPromotionRepository().get(scope.tenant_id, scope.promotion_id)
     if original is None or fingerprint(original.request) != body.get("original"):
@@ -581,6 +654,10 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
         goal=request_goal(after.request),
     )
     active = tuple(RESOURCES) if own["action"] == "resume" else tuple(body["baseline"])
+    if {"completed", "reconciled"} & set(later.values()):
+        # m-25072681: a later pause wins. The ad must read back PAUSED; an older resume that
+        # landed after it leaves the ad ACTIVE, fails this read and is never marked a success.
+        active = tuple(resource for resource in active if resource != "ads")
     try:
         await gateway.remote_guard(after, active_resources=active)
         authorize(scope.tenant_id, gateway.actor)
@@ -598,7 +675,8 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
             if (
                 observed_dispatch != dispatch_stamp
                 or current_own["state"] not in {"in_flight", "unknown"}
-                or revision([row for row in current if row["id"] != operation]) != body["ledger"]
+                or revision(_after_pauses(current, operation)[0]) != body["ledger"]
+                or _after_pauses(current, operation)[1] != later
             ):
                 return False
             session.execute(

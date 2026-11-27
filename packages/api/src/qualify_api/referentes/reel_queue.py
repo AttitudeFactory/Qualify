@@ -13,10 +13,10 @@ only one allowed to import that door.
 Scope: `tenants=None` is every business (`--all-tenants`, production); a list keeps every
 read to those businesses (`--tenant`, local).
 
-The next run: the oldest `queued` one, `manual` and `operator_90d` before `weekly` —
-someone who asked for a search is waiting, a Monday run is not. (Today every run is
-`weekly`, the first-run of option A included: the button of R9 and the operator's read of
-R10 are what will enqueue the others.)
+The next run: the oldest `queued` one, `manual`, `operator_90d` and `competitor_now` before
+`weekly` — someone who asked for a read is waiting, a Monday run is not. (The owner's
+«Ver sus reels ahora», RF-05 m-25119465, enqueues `competitor_now`; a failed one is never
+retried by the worker — `failed_checks` skips it — the owner presses again.)
 Taking it is `reel_runs.run`'s claim (`queued` → `running`, compare-and-set), so two
 workers that pick the same run never both run it: the second gets `ran=False`.
 """
@@ -36,6 +36,7 @@ from qualify_api.referentes.reel_store import (
     STATUS_CHECK_FAILED,
     STATUS_QUEUED,
     STATUS_RUNNING,
+    TRIGGER_COMPETITOR_NOW,
     TRIGGER_WEEKLY,
     MemoryReelRunStore,
 )
@@ -161,6 +162,7 @@ class MemoryReelQueue(ReelQueue):
             NextRun(r.id, r.tenant_id)
             for r in sorted(self.store.runs.values(), key=lambda r: (r.queued_at, str(r.id)))
             if r.status == STATUS_CHECK_FAILED
+            and r.trigger != TRIGGER_COMPETITOR_NOW
             and r.attempts < max_attempts
             and r.finished_at is not None
             and finished_after < r.finished_at <= finished_before
@@ -248,6 +250,7 @@ class PostgresReelQueue(ReelQueue):
         scope, params = self._scoped("tenant_id")
         rows = self._rows(
             "SELECT id, tenant_id FROM brand_reel_runs WHERE status = 'check_failed' "
+            "AND trigger <> 'competitor_now' "
             "AND attempts < :max AND finished_at > :after AND finished_at <= :before"
             f"{scope} ORDER BY queued_at, id LIMIT :limit",
             {

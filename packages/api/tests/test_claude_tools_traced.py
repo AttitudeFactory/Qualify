@@ -250,8 +250,7 @@ def test_every_brand_kit_model_call_is_a_traced_unit() -> None:
 
 
 def test_the_client_is_anthropic_itself() -> None:
-    """§ 2026-10-19: the OmniRoute gateway option was reverted — every call goes to
-    api.anthropic.com."""
+    """Every call goes straight to api.anthropic.com."""
     pytest.importorskip("anthropic")
     from qualify_api.claude_tools import default_client
 

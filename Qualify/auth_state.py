@@ -273,6 +273,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .ad_accounts_state import AdAccountsState
     from .ad_enhancements_state import AdEnhancementsState
     from .ad_forms_state import AdFormsState
+    from .ad_month_plan_state import AdMonthPlanState
     from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
@@ -293,6 +294,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .chat_settings_state import ChatSettingsState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
+    from .contact_sheet_panel import ContactSheetState
     from .conversations_state import ConversationsState
     from .create_gallery_state import CreateGalleryState
     from .creative_state import CreativeState
@@ -310,7 +312,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .ice_breakers_state import IceBreakersState
     from .inbox_list_state import InboxListState
     from .inbox_state import InboxState
+    from .investment_profile_state import InvestmentProfileState
     from .leads_state import LeadsState
+    from .monthly_post_state import MonthlyPostState
     from .offer_mark_state import OfferMarkState
     from .part_progress_state import PartProgressState
     from .parts_start_state import PartsStartState
@@ -329,8 +333,10 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
+    from .story_mark_state import StoryMarkState
     from .tiktok_state import TikTokConnectionsState, TikTokDraftState
     from .trending_state import TrendingState
+    from .upload_preview_state import UploadPreviewState
     from .variations_state import VariationsState
     from .voice_lab import VoiceLabState
     from .whatsapp_campaigns_state import WhatsAppCampaignsState
@@ -349,6 +355,12 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         GenGalleryPickState,
         AdEnhancementsState,
         AdFormsState,
+        # m-25091387: the brand's investment profile and the session's offer flags
+        InvestmentProfileState,
+        # m-25091392: the month plan card on Anuncios
+        AdMonthPlanState,
+        # m-25120704: «Publicación del mes» on the Planificador
+        MonthlyPostState,
         PromotionState,
         AdResultsState,
         ConnectionsState,
@@ -373,8 +385,12 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         CreativeState,
         # m-24921082 UI-7: the rows of a video by parts
         PartProgressState,
+        # m-25026643 ED-09: the editor's video whose 480p copy failed (a tenant key)
+        UploadPreviewState,
         PinterestState,
         FinalVideoState,  # m-24921084: «Tu video completo» of a video by parts
+        # m-25026598 EF-18: the piece's contact sheet (`/r2media` paths of a tenant)
+        ContactSheetState,
         # «Descubrir reels» (2026-10-15): the brand's referentes' reels
         DiscoverReelsState,
         # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step, chosen
@@ -465,6 +481,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         PendingState,
         # m-24945889: which piece is this business's «Tu oferta», and the map point
         OfferMarkState,
+        # m-25040496: whether the piece on screen is a historia
+        StoryMarkState,
         WhatsAppLocationState,
         # m-24973458: whether a publication of this tenant is being made
         GenerationState,

@@ -4,6 +4,7 @@ Pure: no database, no network, a fixed clock."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -24,6 +25,7 @@ from qualify_api.referentes.reel_store import (
     RunRecord,
     StoredVerdict,
 )
+from qualify_api.referentes.reviewed_reels import NO_FILTERS, ReviewedReel, ReviewedReels
 
 from . import reels_ideas_vm as vm
 
@@ -322,7 +324,9 @@ def test_this_weeks_ideas_say_since_when_and_when_the_next_come() -> None:
     today = vm.ideas_screen(_with_ideas(monday), now=datetime(2026, 11, 2, 12, tzinfo=UTC))
     assert today.title == "Ideas de esta semana"
     # UX re-check 3: under a notice that names Monday, the header leaves it out
-    failed = _run(datetime(2026, 11, 3, 15, 0, tzinfo=UTC), status=STATUS_CHECK_FAILED)
+    failed = _run(
+        datetime(2026, 11, 3, 15, 0, tzinfo=UTC), status=STATUS_CHECK_FAILED, trigger=TRIGGER_WEEKLY
+    )
     noticed = vm.ideas_screen(
         _stored(latest=failed, shown=monday, ideas=[_idea(1, _reel("A"))]), now=NOW
     )
@@ -371,7 +375,9 @@ def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_calm_notice() -> Non
     """Founder, 2026-11-04: «No pudimos traer ideas nuevas» (info, nothing to fix), and
     when the run is tried again."""
     shown = _run(datetime(2026, 10, 26, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
-    failed = _run(datetime(2026, 11, 2, 11, 9, tzinfo=UTC), status=STATUS_CHECK_FAILED)
+    failed = _run(
+        datetime(2026, 11, 2, 11, 9, tzinfo=UTC), status=STATUS_CHECK_FAILED, trigger=TRIGGER_WEEKLY
+    )
     stored = _stored(latest=failed, shown=shown, ideas=[_idea(1, _reel("A"))])
     screen = vm.ideas_screen(stored, now=NOW)
     assert screen.screen == vm.SCREEN_IDEAS and len(screen.cards) == 1
@@ -399,12 +405,25 @@ def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_calm_notice() -> Non
         ideas=[_idea(1, _reel("A"))],
     )
     assert vm.ideas_screen(same_day, now=NOW).notice_body.endswith("tienes las de hoy.")
+    # RF-13: the notice names the day already — the end of the list does not say it again
+    assert screen.end_note == ""
+
+
+def test_the_end_of_the_list_names_the_next_monday() -> None:
+    """RF-13 (ux-designer, Deivid 2026-11-26): with no notice above, «Eso es todo por
+    ahora. Las próximas ideas llegan el lunes {d}.», in the business's zone."""
+    shown = _run(datetime(2026, 10, 26, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
+    screen = vm.ideas_screen(_stored(shown=shown, ideas=[_idea(1, _reel("A"))]), now=NOW)
+    assert screen.notice_title == ""
+    # NOW is Wednesday 4 Nov 2026 in Bogotá: the next weekly run is Monday the 9th
+    assert screen.end_note == "Eso es todo por ahora. Las próximas ideas llegan el lunes 9."
+    assert vm.END_OF_LIST == "Eso es todo por ahora. Las próximas ideas llegan el lunes {d}."
 
 
 @pytest.mark.parametrize("status", [STATUS_BUDGET_STOPPED, STATUS_ERROR])
 def test_a_newer_stopped_run_keeps_the_stored_ideas_with_the_same_notice(status: str) -> None:
     shown = _run(datetime(2026, 10, 26, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
-    stopped = _run(datetime(2026, 11, 2, 11, 9, tzinfo=UTC), status=status)
+    stopped = _run(datetime(2026, 11, 2, 11, 9, tzinfo=UTC), status=status, trigger=TRIGGER_WEEKLY)
     screen = vm.ideas_screen(
         _stored(latest=stopped, shown=shown, ideas=[_idea(1, _reel("A"))]), now=NOW
     )
@@ -415,6 +434,20 @@ def test_a_newer_stopped_run_keeps_the_stored_ideas_with_the_same_notice(status:
     in_flight = _run(None, status=STATUS_QUEUED)  # a newer run on its way: no notice
     calm = _stored(latest=in_flight, shown=shown, ideas=[_idea(1, _reel("A"))])
     assert vm.ideas_screen(calm, now=NOW).notice_title == ""
+
+
+@pytest.mark.parametrize("status", [STATUS_BUDGET_STOPPED, STATUS_ERROR, STATUS_CHECK_FAILED])
+def test_the_owners_search_that_ended_badly_leaves_the_list_quiet(status: str) -> None:
+    """RF-14 (Deivid, 2026-11-26): «Buscar reels nuevos» that the cap stopped or that found
+    nothing new is no error — the stored ideas stay with no notice over them (the button's
+    own toast, once, says the cap's sentence)."""
+    shown = _run(datetime(2026, 11, 2, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
+    search = _run(NOW - timedelta(minutes=3), status=status, trigger=TRIGGER_MANUAL)
+    screen = vm.ideas_screen(
+        _stored(latest=search, shown=shown, ideas=[_idea(1, _reel("A"))]), now=NOW
+    )
+    assert screen.screen == vm.SCREEN_IDEAS and len(screen.cards) == 1
+    assert screen.notice_title == screen.notice_body == ""
 
 
 # --------------------------------------------------------------------------------------
@@ -597,3 +630,58 @@ def test_the_screen_never_names_credits_vendors_reads_or_errors(text: str) -> No
     for english in ("post", "feed", "insight", "brand kit", "refresh"):
         assert english not in lowered
     assert not set("()[]?¿") & set(text)
+
+
+# --------------------------------------------------------------------------------------
+# RF-02 (m-25119460): the filtered read of RF-01
+# --------------------------------------------------------------------------------------
+
+
+def _filtered(
+    stored: vm.StoredIdeas,
+    *,
+    ideas: list[Idea],
+    more: tuple[Idea, ...] = (),
+    has_more: bool = False,
+) -> vm.StoredIdeas:
+    reviewed = ReviewedReels(
+        view=stored.view,
+        ideas=ideas,
+        more=[
+            ReviewedReel(reel=i.reel, verdict=i.verdict, account_kind="referente")
+            for i in more
+            if i.verdict is not None
+        ],
+        filters=NO_FILTERS,
+        offset=0,
+        limit=12,
+        has_more=has_more,
+        accounts={("instagram", "heladosdonde"): "referente"},
+    )
+    return replace(stored, reviewed=reviewed)
+
+
+def test_the_cards_are_the_filtered_ideas_and_the_screen_stays_on_ideas() -> None:
+    """RF-02: the ideas shown are RF-01's `ideas` (filtered), never `view.ideas`; a filter
+    that leaves none keeps the screen on the ideas (with its bar), not «no encontramos»."""
+    stored = _with_ideas(_run(NOW - timedelta(hours=2)))
+    screen = vm.ideas_screen(_filtered(stored, ideas=[stored.view.ideas[1]]), now=NOW)
+    assert screen.screen == vm.SCREEN_IDEAS and [c["id"] for c in screen.cards] == ["B"]
+    assert screen.accounts == {"instagram:heladosdonde": "referente"}
+    none_left = vm.ideas_screen(_filtered(stored, ideas=[]), now=NOW)
+    assert none_left.screen == vm.SCREEN_IDEAS and none_left.cards == []
+
+
+def test_a_run_without_ideas_but_more_reviewed_reels_shows_them() -> None:
+    run = _run(NOW - timedelta(hours=2))
+    stored = _filtered(
+        _stored(shown=run, ideas=[]), ideas=[], more=(_idea(0, _reel("M")),), has_more=True
+    )
+    screen = vm.ideas_screen(stored, now=NOW)
+    assert screen.screen == vm.SCREEN_IDEAS and screen.cards == []
+    assert [c["id"] for c in screen.more_cards] == ["M"] and screen.has_more
+    card = screen.more_cards[0]
+    assert card["can_replicate"] == "" and card["lift"] == "" and card["rank"] == ""
+    # without a second list either, the run found nothing: as before RF-02
+    empty = vm.ideas_screen(_filtered(_stored(shown=run, ideas=[]), ideas=[]), now=NOW)
+    assert empty.screen == vm.SCREEN_NO_IDEAS

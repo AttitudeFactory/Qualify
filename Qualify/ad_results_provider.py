@@ -59,7 +59,8 @@ def summary_vm(row: PromotionResultSummary) -> AdResultVM:
         approved_budget=money_label(Decimal(row.budget_minor) / 100, row.currency),
         end_label=date_label(row.end_time, row.timezone_name),
         checked_label=date_label(row.checked_at, row.timezone_name),
-        can_pause=row.can_pause is True and fresh,
+        # m-25072681: an unresolved edit does not hide the pause (the brake).
+        can_pause=row.can_pause is True and not row.stale and not row.refresh_failed,
         can_manage=row.can_manage is True and fresh,
         management_reason=row.management_reason,
         currency=row.currency,
@@ -112,17 +113,19 @@ def detail_vm(result: PromotionResults) -> AdDetailVM:
     )
 
 
-def read_floor(tenant_id: UUID, promotion_id: UUID) -> tuple[str, str]:
-    """(label, floor in whole pesos) for lowering a budget; read-only."""
+def read_floor(tenant_id: UUID, promotion_id: UUID, currency: str) -> tuple[str, str]:
+    """(label, floor in whole units of `currency`) for lowering a budget; read-only."""
     from qualify_api.ads.results_service import read_budget_floor
 
     floor = asyncio.run(read_budget_floor(tenant_id=tenant_id, promotion_id=promotion_id))
     if any(
-        type(value) is not int or value < 0 or value % 100
+        # USD/UYU minimums and spend may carry cents; the input is rounded up to a whole unit.
+        type(value) is not int or value < 0
         for value in (floor.floor_minor, floor.spent_minor)
     ):
         raise ResultsUnavailable("Vuelve a consultar el mínimo con Meta.")
-    return floor_label(floor.floor_minor, floor.spent_minor), str(floor.floor_minor // 100)
+    whole = -(-floor.floor_minor // 100)  # a cents floor shows and checks as the next unit
+    return floor_label(whole * 100, floor.spent_minor, currency), str(whole)
 
 
 def alert_accounts(tenant_id: UUID) -> list[AlertAccountVM]:
@@ -190,6 +193,7 @@ def prepare_edit(
     action: str,
     timezone_name: str,
     *,
+    currency: str,
     budget_minor: int | None = None,
     end_time: datetime | None = None,
 ) -> PreparedAdEdit:
@@ -236,11 +240,13 @@ def prepare_edit(
         AdEditReviewVM(
             action=action,
             title=EDIT_ACTION_LABELS[action],
-            summary=budget_down_summary(result.current_budget_minor, result.new_budget_minor)
+            summary=budget_down_summary(
+                result.current_budget_minor, result.new_budget_minor, currency
+            )
             if action == "budget_down"
             else result.summary,
-            current_budget=money_label(Decimal(result.current_budget_minor) / 100, "COP"),
-            new_budget=money_label(Decimal(result.new_budget_minor) / 100, "COP"),
+            current_budget=money_label(Decimal(result.current_budget_minor) / 100, currency),
+            new_budget=money_label(Decimal(result.new_budget_minor) / 100, currency),
             current_end=date_label(result.current_end_time, timezone_name),
             new_end=date_label(result.new_end_time, timezone_name),
             expires_label=date_label(result.expires_at, timezone_name),

@@ -34,8 +34,17 @@ from uuid import UUID
 from pydantic import ValidationError
 from qualify_api.claude_tools import Attribution
 from qualify_api.creative import models as orm
+from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.creative.brand_service import BrandKitService
-from qualify_api.creative.composition import media_root, production_content_service
+from qualify_api.creative.composition import (
+    PRESENTER_KEY_ENVS,
+    VIDEO_ENGINE_ENV,
+    VIDEO_ENGINES,
+    configured_video_engine,
+    media_root,
+    presenter_keys_ready,
+    production_content_service,
+)
 from qualify_api.creative.context_ai import FEATURE as CONTEXT_FEATURE
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
 from qualify_api.creative.creations import CreationsBalance
@@ -141,6 +150,11 @@ from .reel_parts_vm import QUEUE_OFF_TEXT
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PRESENTER_KEY_ENVS",
+    "VIDEO_ENGINE_ENV",
+    "VIDEO_ENGINES",
+    "configured_video_engine",
+    "presenter_keys_ready",
     "acting_user_id",
     "approval_videos",
     "creations_balance",
@@ -152,12 +166,14 @@ __all__ = [
     "brand_clone_voice",
     "brand_readiness",
     "catalog_products",
+    "clip_placement_advice",
     "default_brand_id",
     "draft_detail",
     "edit_variant",
     "piece_archive",
     "list_drafts",
     "load_kit_form",
+    "clip_text_look",
     "load_voice_screen",
     "propose_voice",
     "recipe_options",
@@ -185,6 +201,61 @@ def default_brand_id(tenant_id: UUID) -> UUID | None:
     tenant was provisioned with, not an arbitrary one."""
     with tenant_session(tenant_id) as session:
         return session.scalar(select(Brand.id).order_by(Brand.created_at))
+
+
+def business_kind(tenant_id: UUID, brand_id: UUID) -> tuple[str, str]:
+    """ED-04 (m-25026627): the business's niche and rubro as its Brand Kit keeps them
+    (`connect.sector`, a `discovery_seed.NICHE_LABELS` key, and `connect.rubro_text`, the
+    owner's own words) — ("", "") when there is no kit yet. Read through the store's
+    `tenant_session`: the session's own business only."""
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
+    data = connect if isinstance(connect, dict) else {}
+    return str(data.get("sector") or ""), str(data.get("rubro_text") or "")
+
+
+@dataclasses.dataclass(frozen=True)
+class ClipPlacementRead:
+    """What `clip_placement_advice` read for a Clip's videos."""
+
+    #: The kept advice per source key (`PlacementAdvice.to_params`); {} = none.
+    advice: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+    #: A video the owner uploaded here has no advice yet (the `media-worker` makes it a
+    #: little after the upload): worth reading again later. Never for a video that will
+    #: never get one (Galería, stock, a publication) nor with the switch off.
+    waiting: bool = False
+    #: The read failed: keep what was shown, and try again later.
+    failed: bool = False
+
+
+def clip_placement_advice(
+    tenant_id: UUID, source_keys: Sequence[str], env: Mapping[str, str] | None = None
+) -> ClipPlacementRead:
+    """EF-20 phase 2 (m-25026599): the advice already kept for the Clip's uploaded videos —
+    where the product shows and which band the text should go to — as plain dicts,
+    keyed by source key. ONE query through `placement_advice_for` (`tenant_session`;
+    another business's key is left out, never looked up). Blocking (database): the state
+    calls it in a thread. It only READS: the advice is made by the `media-worker`;
+    nothing here asks the model.
+
+    With the switch off (`QUALIFY_VIDEO_PLACEMENT_AI`) or no key: no advice and nothing
+    to wait for — the editor shows nothing new. Never raises (a failure is `failed`)."""
+    from qualify_api.creative.placement_advice import placement_advice_for  # noqa: PLC0415
+    from qualify_api.creative.placement_ai import placement_enabled  # noqa: PLC0415
+    from qualify_api.creative.upload_previews import is_previewable  # noqa: PLC0415
+
+    keys = [str(key) for key in source_keys if key]
+    if not keys or not placement_enabled(env):
+        return ClipPlacementRead()
+    try:
+        found = placement_advice_for(tenant_id, keys)
+        advisable = [key for key in keys if is_previewable(tenant_id, key)]
+    except Exception as exc:  # noqa: BLE001 — a hint is never worth failing the editor
+        logger.warning("placement advice not read: %s", type(exc).__name__)
+        return ClipPlacementRead(failed=True, waiting=True)
+    return ClipPlacementRead(
+        advice={key: advice.to_params() for key, advice in found.items()},
+        waiting=any(key not in found for key in advisable),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -596,30 +667,10 @@ def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:
 
 
 def brand_character(tenant_id: UUID, brand_id: UUID) -> dict[str, str]:
-    """The «Avatar animado»'s character, from the Brand Kit (§ request 2026-10-20: no
-    picker any more): the brand's own drawn avatar when the kit has a ready one (an image
-    Qualify made for the brand, so its rights are the brand's), else a mascot described
-    from the kit — name, business, colours, tone. `{}` without a kit.
+    """The «Avatar animado»'s character (`qualify_api.creative.brand_avatar`)."""
+    from qualify_api.creative.brand_avatar import brand_character as character
 
-    `{source: "image", key, name}` or `{source: "ai", prompt, name}`."""
-    from qualify_api.creative.brand_avatar import (
-        AvatarStatus,
-        describe_character,
-        load_avatar_inputs,
-        load_brand_avatar,
-    )
-
-    avatar = load_brand_avatar(tenant_id, brand_id)
-    if avatar is not None and avatar.status is AvatarStatus.READY and avatar.object_key:
-        return {"source": "image", "key": avatar.object_key, "name": "El avatar de tu marca"}
-    inputs = load_avatar_inputs(tenant_id, brand_id)
-    if inputs is None:
-        return {}
-    return {
-        "source": "ai",
-        "prompt": describe_character(inputs),
-        "name": "La mascota de tu marca, creada con tu Brand Kit",
-    }
+    return character(tenant_id, brand_id)
 
 
 def enhance_generator_context(
@@ -803,19 +854,46 @@ def _piece_label(title: str, media_type: str, created_at: object) -> str:
     return f"{what} del {day} {_MONTHS[month - 1]}" if day and month else what
 
 
+#: What a publication is, for its thumbnail's mark in «Publicaciones» (Deivid
+#: 2026-11-17: «quiero que haya una manera de distinguir cuales son videos, galerias e
+#: imagenes»): a file of a piece with several files is a gallery's (carousel) slide.
+PIECE_KIND_VIDEO = "video"
+PIECE_KIND_GALLERY = "gallery"
+PIECE_KIND_IMAGE = "image"
+
+
+def piece_kind(media_type: str, files_in_piece: int) -> str:
+    """`gallery` for a file of a piece with two or more files (a carousel), else
+    `video` or `image` by the file itself."""
+    if files_in_piece > 1:
+        return PIECE_KIND_GALLERY
+    return PIECE_KIND_VIDEO if media_type == "video" else PIECE_KIND_IMAGE
+
+
 def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     """The images and videos of the brand's own pieces, the most recent first — what a
     carousel's «De una pieza» slide picks from (§ request 2026-10-09). `view` is a
     short-lived `/r2media` path of the thumbnail (a video's poster frame), "" when the
-    file is not in R2 or has no poster; `label` says which piece it came from."""
+    file is not in R2 or has no poster; `label` says which piece it came from; `kind`
+    whether the piece is a video, a gallery or an image (`piece_kind`); `piece` the
+    piece's id and `position` the file's place in it ("0", "1"…) — a gallery picked
+    whole goes in in its carousel order (ED-10, Deivid 2026-11-17: «cuando selecciona
+    una galería solo trae una imagen, no todo su contenido»)."""
     from qualify_api.creative.pieces import DbPieceFiles
 
+    files = DbPieceFiles().files(tenant_id=tenant_id, brand_id=brand_id)
+    per_piece: dict[object, int] = {}
+    for piece in files:
+        per_piece[piece.draft_id] = per_piece.get(piece.draft_id, 0) + 1
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
-    for piece in DbPieceFiles().files(tenant_id=tenant_id, brand_id=brand_id):
+    placed: dict[object, int] = {}
+    for piece in files:
         if piece.object_key in seen:
             continue
         seen.add(piece.object_key)
+        position = placed.get(piece.draft_id, 0)
+        placed[piece.draft_id] = position + 1
         thumb = piece.object_key if piece.media_type == "image" else piece.poster_key
         try:
             view = issue_view_path(tenant_id, thumb, "image") if thumb else ""
@@ -826,8 +904,11 @@ def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
             {
                 "key": piece.object_key,
                 "media_type": piece.media_type,
+                "kind": piece_kind(piece.media_type, per_piece.get(piece.draft_id, 1)),
                 "label": _piece_label(piece.title, piece.media_type, piece.created_at),
                 "view": view,
+                "piece": str(piece.draft_id),
+                "position": str(position),
             }
         )
     return tuple(rows)
@@ -1526,38 +1607,9 @@ def reject_draft(
 # ---------------------------------------------------------------------------
 # The avatar kinds' video engine (/create, § request 2026-10-07; ByteDance 2026-10-16)
 
-#: Which vendor renders the two avatar kinds. HeyGen is retired (2026-10-16): the
-#: talking presenter is OmniHuman (photo + Seed Speech voice, lips in sync), the scene
-#: video Seedance. Read per call, like the keys: an env change, nothing else.
-VIDEO_ENGINE_ENV = "QUALIFY_VIDEO_ENGINE"
-VIDEO_ENGINES = ("omnihuman", "seedance")
-#: The two keys the talking presenter needs (Seed Speech reads, OmniHuman animates).
-PRESENTER_KEY_ENVS = ("QUALIFY_BYTEPLUS_SPEECH_API_KEY", "QUALIFY_BYTEPLUS_CV_API_KEY")
+# the avatar kinds' engine lives in the backend (`composition.configured_video_engine`,
+# m-25121346): the monthly post reads the same one
 GENDERS = ("female", "male")
-
-
-def presenter_keys_ready() -> bool:
-    import os
-
-    return all(os.environ.get(name, "").strip() for name in PRESENTER_KEY_ENVS)
-
-
-def configured_video_engine() -> str:
-    """`QUALIFY_VIDEO_ENGINE` when it names a live engine; otherwise OmniHuman once both
-    of its keys are set (§ request 2026-10-16: «dejar todo preparado para cuando tenga
-    las api key»), Seedance until then. A stale `heygen` falls through the same way."""
-    import os
-
-    value = (os.environ.get(VIDEO_ENGINE_ENV) or "").strip().lower()
-    if value in VIDEO_ENGINES:
-        return value
-    if not presenter_keys_ready():
-        return "seedance"
-    # OmniHuman downloads the photo and the voice: without a public URL (a local run, no
-    # tunnel) every presenter would fail after its frame and voice were paid for
-    from qualify_api.creative.composition import public_media_ready
-
-    return "omnihuman" if public_media_ready() else "seedance"
 
 
 # ---------------------------------------------------------------------------
@@ -1599,3 +1651,37 @@ def voice_options(tenant_id: UUID | None, brand_id: UUID | None) -> list[dict[st
         except Exception as exc:  # noqa: BLE001 — the public voices still serve
             logger.warning("brand voice clone unreadable: %s", type(exc).__name__)
     return [own, *public_voices()] if own else public_voices()
+
+
+@dataclasses.dataclass(frozen=True)
+class ClipTextLook:
+    """ED-13 (m-25029108) B: what the texts of «Arma tu video» are drawn in — the Brand
+    Kit's typography (`font_name`, and the `/r2media` path of its uploaded font file, ""
+    without one) and its palette (accent, text, surface, in order)."""
+
+    font_name: str = ""
+    font_path: str = ""
+    palette: tuple[str, ...] = ()
+
+
+def clip_text_look(tenant_id: UUID, brand_id: UUID) -> ClipTextLook:
+    """The brand's typography and colours for the editor's preview. A font file whose
+    view cannot be issued (Redis down) leaves the family name alone."""
+    from qualify_api.creative.brand_kit_store import FONT  # noqa: PLC0415
+
+    from .r2_media import issue_view_path  # noqa: PLC0415 — the screens' view paths
+
+    kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
+    # the render's order (`brand_fonts._SLOT_ORDER`, `BrandKit.typeface`): heading, then body
+    name = kit.typeface if kit is not None else ""
+    palette = tuple(kit.palette_rgb) if kit is not None else ()
+    path = ""
+    assets = BrandKitStore().list_assets(tenant_id=tenant_id, brand_id=brand_id)
+    fonts = {a.slot: a for a in assets if a.kind == FONT}
+    font = fonts.get("heading") or fonts.get("body")
+    if font is not None:
+        try:
+            path = issue_view_path(tenant_id, font.object_key, "font", font.content_type or None)
+        except Exception as exc:  # noqa: BLE001 — the family name still serves
+            logger.warning("brand font view not issued: %s", type(exc).__name__)
+    return ClipTextLook(font_name=name, font_path=path, palette=palette)

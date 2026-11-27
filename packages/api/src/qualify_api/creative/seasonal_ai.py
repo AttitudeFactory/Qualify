@@ -650,8 +650,9 @@ class PostgresUsageLedger:
         from qualify_api.creative import models as orm  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
-            # The event's id IS the task (uuid5): a second booking of the same paid task
-            # conflicts on the primary key and adds nothing — no migration needed.
+            # The event's id IS the task (uuid5), and since 0179 (m-25112161) the row
+            # names the task too: a second booking of the same paid task conflicts and
+            # adds nothing — neither a row nor spend.
             booked = session.scalar(
                 insert(orm.CreativeUsageEvent)
                 .values(
@@ -673,8 +674,11 @@ class PostgresUsageLedger:
                     paid_by=PaidBy.PLATFORM.value,
                     pricing_table_version=pricing_version,
                     occurred_at=occurred_at,
+                    vendor_task_id=vendor_task_id,  # m-25112161
                 )
-                .on_conflict_do_nothing(index_elements=["id"])
+                # no conflict target: the id (uuid5 of the task) or the task key of
+                # 0179 — either one already taken means the task is booked
+                .on_conflict_do_nothing()
                 .returning(orm.CreativeUsageEvent.id)
             )
             if booked is None:

@@ -101,12 +101,23 @@ DEFAULT_ZONE = "UTC"
 CLIENT_ATTR = "qualify_usage_charge"
 
 
+#: The account label whose reads are booked apart (RF-05, m-25119465): a competitor's
+#: reels list and transcripts go under the gate's `competitor_*` features
+#: (`scrapecreators.labelled_feature`), inside the same caps.
+LABEL_COMPETITOR = "competencia"
+
+
 @dataclass(frozen=True)
 class UsageCharge:
-    """Who pays a read: the business, and the brand it was for when there is one."""
+    """Who pays a read: the business, and the brand it was for when there is one.
+
+    `account_label` (RF-05): the label of the account being read when its spend must sum
+    apart — `LABEL_COMPETITOR` books a reels list or transcript under the competitor
+    features; "" (the default) books every feature as asked."""
 
     tenant_id: UUID
     brand_id: UUID | None = None
+    account_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -515,6 +526,7 @@ __all__ = [
     "DAILY_CAP_NOTICE",
     "DAILY_CAP_TITLE",
     "DEFAULT_ZONE",
+    "LABEL_COMPETITOR",
     "MONTHLY_CAP",
     "MONTHLY_CAP_NOTICE",
     "MONTHLY_CAP_TITLE",

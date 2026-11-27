@@ -47,6 +47,47 @@ the «en corte» mark. A failure between 3 and 5 is retried (both steps are idem
 when the attempts run out the job is closed `done` with `original_left_to_reconciler`,
 and the reconciler's tombstone rule (b) finishes it — a saved cut is never undone.
 
+`normalize_local` (m-25042483, migration 0171; founder's decision «Bajarlos a 4K 8 bits»):
+the creative worker asked for it because a video stretch of a local assembly is over
+3840×2160 or 10-bit (`qualify_creative.video.source_limits`); the piece waits for it,
+silently and at cost 0.
+
+1. the normalized copy's key (`payload.normalized_key`, deterministic, under `t/`) already
+   in R2 → nothing is encoded again (a retry after the upload; `t/` is write-once);
+2. the owner's file (`payload.source_key`: R2, or an old local `uploads/` key — through the
+   CM-9 key map, else the volume) into a temp dir; its header gives the length the time
+   allowed and the rate cap scale with;
+3. `FfmpegLocalSourceNormalizer` (whole length and timing, upright, inside 3840×2160, 8-bit
+   `yuv420p` BT.709, no sound), the lease held for the encode's whole allowance; the copy's
+   header checked against the rule;
+4. the copy to R2 at its key, the job `done` with `{normalized_key, version, …}`.
+
+An unreadable file, a missing one or a copy over the limit fails it for good (the piece
+then fails with «No pudimos armar tu video…», never a charge); a killed or timed-out encode
+or an R2 hiccup is retried like the other kinds.
+
+`upload_preview` (m-25026643 ED-09, migration 0175; ADR 50 D-E2): the light 480p copy of
+a video the owner uploaded to the generator, which the editor plays when the owner comes
+back (`qualify_api.creative.upload_previews` queues it and reads it). The same steps as
+`normalize_local` (`_process_copy`): the copy's key (`payload.preview_key`,
+`t/{tenant}/uploads/previews/…`, deterministic) already in R2 → nothing encoded again; the
+owner's file into a temp dir; `FfmpegUploadPreviewer` (whole length and timing, upright,
+short side ≤ 480, silent, 8-bit H.264, one thread); the copy's header checked; the copy
+to R2, the job `done` with `{preview_key, version, source, preview, bytes, encode_s,
+cost_usd}`. Claimed after `ingest`/`cut` and `normalize_local` (a piece being made
+waits for a normalize; nobody waits for a preview). A timed-out encode fails it for good
+(`preview_timeout`): the copy is dispensable, and more long encodes of the same file would
+only delay the jobs behind it. Measured with `deploy/measure/upload-preview-memory.sh`.
+ED-11b (m-25029110): a v2 job's payload also names `strip_key` (`…/strip.jpg`, same folder):
+the frame strip (one 56 px frame a second, tiled) is a second output of the SAME FFmpeg
+run, PUT after the copy (`image/jpeg`); the result gains `strip_key` and `strip` (layout,
+tile size, bytes). A copy already in place gets the strip alone (no second 480p encode).
+EF-20 phase 2 (m-25026599): with `QUALIFY_VIDEO_PLACEMENT_AI` on, a settled copy is then
+read by `qualify_api.creative.placement_advice` (3 frames, one Claude Haiku call at most
+per try, Postgres-backed caps) and the advice — where the product is, the band the text
+would not cover it in — added to the job's `result` (`placement_advice`). Best effort: it
+never changes the job's outcome.
+
 **Reconciler** (at start, then every 24 h — rule 5 of the ADR 39 amendment), per tenant:
 (a) R2 folders under `gallery/{tenant}/` with no row (live or tombstoned) and no active
 job expecting them, older than 24 h → deleted (an upload cut between the PUT and the row);
@@ -73,11 +114,17 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID, uuid5
 
-from qualify_creative.video.business import BusinessVideoNormalizer, UnreadableVideo
+from qualify_creative.video.business import (
+    BusinessVideoNormalizer,
+    TranscodeTimedOut,
+    UnreadableVideo,
+)
 from qualify_creative.video.business_cut import BusinessVideoCutter, CutBusinessPart
+from qualify_creative.video.upload_preview import STRIP_CONTENT_TYPE, StripLayout, strip_layout
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import (
     ObjectNotFound,
+    ObjectSizeExceeded,
     describe_failure,
     is_bucket_refusal,
     refusal_codes,
@@ -99,6 +146,8 @@ from qualify_api.catalog.business_media_models import (
     INGEST_PIPELINE_VERSION,
     JOB_CUT,
     JOB_INGEST,
+    JOB_NORMALIZE_LOCAL,
+    JOB_UPLOAD_PREVIEW,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_PARTS_SAVED,
@@ -157,7 +206,8 @@ def worker_id() -> str:
 
 
 class GalleryObjects(Protocol):
-    """The `ObjectGate` methods this worker uses."""
+    """The `ObjectGate` methods this worker uses (`has_object` and `put_media` only for
+    `normalize_local`)."""
 
     def put_gallery_media(
         self, tenant_id: UUID, media_id: UUID, filename: str, fileobj: Any, content_type: str
@@ -168,6 +218,80 @@ class GalleryObjects(Protocol):
     def delete_gallery_media(self, tenant_id: UUID, media_id: UUID) -> Any: ...
 
     def list_gallery_media(self, tenant_id: UUID) -> list[Any]: ...
+
+    def has_object(self, tenant_id: UUID, object_key: str) -> bool: ...
+
+    def put_media(
+        self, tenant_id: UUID, object_key: str, fileobj: Any, content_type: str
+    ) -> None: ...
+
+
+class LocalSourceNormalizer(Protocol):
+    """`qualify_creative.video.local_normalize.FfmpegLocalSourceNormalizer`'s shape."""
+
+    @property
+    def version(self) -> str: ...
+
+    def allowance(self, duration_s: float | None) -> timedelta: ...
+
+    def normalize_file(self, source: Path, out: Path, *, duration_s: float | None) -> None: ...
+
+
+class UploadPreviewer(Protocol):
+    """`qualify_creative.video.upload_preview.FfmpegUploadPreviewer`'s shape."""
+
+    @property
+    def version(self) -> str: ...
+
+    def allowance(self, duration_s: float | None) -> timedelta: ...
+
+    def make_preview(
+        self,
+        source: Path,
+        out: Path | None,
+        *,
+        duration_s: float | None,
+        strip_out: Path | None = None,
+        layout: Any = None,
+    ) -> None: ...
+
+
+class PlacementAdvisor(Protocol):
+    """`qualify_api.creative.placement_advice.PlacementAdvisor`'s shape (EF-20 phase 2)."""
+
+    def advise(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        job_id: UUID,
+        source_key: str,
+        preview_key: str,
+        fetch: Callable[[UUID, str, Path], None],
+    ) -> str: ...
+
+
+@dataclass(frozen=True)
+class _CopySpec:
+    """How one kind of derived copy (`normalize_local`, `upload_preview`) is named: the
+    payload/result field of its key, the only folder it may be written to, and the words
+    its error codes and result use (`{step}:<error>`, `{label}_unreadable`, …)."""
+
+    target_field: str
+    target_root: str
+    step: str
+    label: str
+    #: Whether an encode that ran out of its time fails the job for good
+    #: (`{label}_timeout`) instead of being retried: true for a dispensable copy.
+    final_on_timeout: bool = False
+    #: Whether a copy found already written still records the original's header
+    #: (`result["source"]`): true for the upload preview, whose original size the editor
+    #: needs to judge «Cortar» while it shows the copy (m-25026643 review).
+    source_on_reuse: bool = False
+    #: ED-11b (m-25029110): the payload/result field of a second output of the same
+    #: decode — the upload preview's frame strip (`strip_key`); None for a single copy.
+    #: A payload without it (a v1 job) makes the copy alone, as before.
+    strip_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -228,6 +352,9 @@ class MediaJobRunner:
         normalizer: BusinessVideoNormalizer,
         cutter: BusinessVideoCutter | None = None,
         seasonal: SeasonalMediaJobHandler | None = None,
+        local_normalizer: LocalSourceNormalizer | None = None,
+        previewer: UploadPreviewer | None = None,
+        placement: PlacementAdvisor | None = None,
         clock: Callable[[], datetime] = _now,
         lease: timedelta = LEASE,
         max_attempts: int = MAX_ATTEMPTS,
@@ -237,6 +364,9 @@ class MediaJobRunner:
         self._normalizer = normalizer
         self._cutter = cutter
         self._seasonal = seasonal
+        self._local_normalizer = local_normalizer
+        self._previewer = previewer
+        self._placement = placement
         self._clock = clock
         self._lease = lease
         self._max_attempts = max_attempts
@@ -244,17 +374,28 @@ class MediaJobRunner:
     # -- claim -------------------------------------------------------------------------
 
     def claim(self, tenant_id: UUID) -> ClaimedJob | None:
-        """The oldest claimable job of the tenant (`ingest` or `cut`), leased to this
-        worker. A job already at the attempt ceiling whose lease expired (its worker kept
-        dying) is failed here instead of being run a fourth time — except a cut already
-        past its point of no return (`parts_saved`), which is closed for the reconciler
-        instead: a saved cut is never undone."""
+        """The oldest claimable job of the tenant, leased to this worker: the Galería's
+        own (`ingest`, `cut`) first, then `normalize_local` (m-25042483: a long normalize
+        never delays an owner's upload or cut; a piece being made waits for it), then
+        `upload_preview` (m-25026643: nobody waits for it — the editor plays the phone's
+        own file right after the upload), then `seasonal_media` — except a seasonal job
+        waiting `SEASONAL_WAIT_BOUND`, which joins the Galería's by age. A job only of a
+        kind this runner can run (`seasonal_media`, `normalize_local` and `upload_preview`
+        need their handler). A job already at the
+        attempt ceiling whose lease expired (its worker kept dying) is failed here instead
+        of being run a fourth time — except a cut already past its point of no return
+        (`parts_saved`), which is closed for the reconciler instead: a saved cut is never
+        undone."""
         while True:
             exhausted: ClaimedJob | None = None
             now = self._clock()
             expired = or_(GalleryJob.lease_until.is_(None), GalleryJob.lease_until <= now)
             # m-24976892: `seasonal_media` jobs only when this runner has their handler
             kinds = (JOB_INGEST, JOB_CUT) + ((JOB_SEASONAL,) if self._seasonal else ())
+            # m-25042483: `normalize_local` jobs only when this runner has its normalizer
+            kinds += (JOB_NORMALIZE_LOCAL,) if self._local_normalizer else ()
+            # m-25026643: `upload_preview` jobs only when this runner has its previewer
+            kinds += (JOB_UPLOAD_PREVIEW,) if self._previewer else ()
             with tenant_session(tenant_id) as session:
                 job = session.scalar(
                     select(GalleryJob)
@@ -274,12 +415,18 @@ class MediaJobRunner:
                     # except a seasonal job already waiting SEASONAL_WAIT_BOUND: by age
                     .order_by(
                         case(
+                            # m-25042483: after every queued `ingest`/`cut`
+                            (GalleryJob.kind == JOB_NORMALIZE_LOCAL, 1),
+                            # m-25026643: after a normalize too — a piece being made
+                            # waits for that one; nobody waits for a preview (the editor
+                            # plays the phone's own file right after the upload)
+                            (GalleryJob.kind == JOB_UPLOAD_PREVIEW, 2),
                             (
                                 and_(
                                     GalleryJob.kind == JOB_SEASONAL,
                                     GalleryJob.created_at > now - SEASONAL_WAIT_BOUND,
                                 ),
-                                1,
+                                3,
                             ),
                             else_=0,
                         ),
@@ -330,7 +477,324 @@ class MediaJobRunner:
             return self._process_cut(job)
         if job.kind == JOB_SEASONAL:
             return self._process_seasonal(job)
+        if job.kind == JOB_NORMALIZE_LOCAL:
+            return self._process_normalize_local(job)
+        if job.kind == JOB_UPLOAD_PREVIEW:
+            return self._process_upload_preview(job)
         return self._fail(job, "unsupported_kind", permanent=True)
+
+    # -- normalize_local (m-25042483) --------------------------------------------------
+
+    def _process_normalize_local(self, job: ClaimedJob) -> JobOutcome:
+        """A local-video source brought to 4K 8 bits (see the module): written once at
+        its deterministic key, the job `done` with the copy's key and the version."""
+        normalizer = self._local_normalizer
+        if normalizer is None:
+            return self._fail(job, "normalizer_unavailable", permanent=False)
+        return self._process_copy(
+            job,
+            _CopySpec(
+                target_field="normalized_key",
+                target_root=f"t/{job.tenant_id}/normalized/",
+                step="normalize",
+                label="normalized",
+            ),
+            version=normalizer.version,
+            allowance=normalizer.allowance,
+            make=normalizer.normalize_file,
+            rejects=lambda made: made.needs_normalizing(),
+        )
+
+    # -- upload_preview (m-25026643) ---------------------------------------------------
+
+    def _process_upload_preview(self, job: ClaimedJob) -> JobOutcome:
+        """The light 480p copy of a video uploaded to the generator (ED-09): written once
+        at its deterministic key next to the original, the job `done` with the copy's key,
+        the version and both headers."""
+        from qualify_creative.video.upload_preview import fits_preview  # noqa: PLC0415
+
+        from qualify_api.creative.upload_previews import preview_root  # noqa: PLC0415
+
+        previewer = self._previewer
+        if previewer is None:
+            return self._fail(job, "previewer_unavailable", permanent=False)
+        outcome = self._process_copy(
+            job,
+            _CopySpec(
+                target_field="preview_key",
+                target_root=preview_root(job.tenant_id),
+                step="preview",
+                label="preview",
+                # m-25026643 review: nobody waits for the copy — a file too slow to copy
+                # in its time is not tried three times more (the editor plays the original)
+                final_on_timeout=True,
+                source_on_reuse=True,
+                strip_field="strip_key",
+            ),
+            version=previewer.version,
+            allowance=previewer.allowance,
+            make=previewer.make_preview,
+            rejects=lambda made: (
+                not fits_preview(made.width, made.height, made.rotation, made.bits)
+            ),
+        )
+        if outcome.status == STATUS_DONE and self._placement is not None:
+            self._advise_placement(job)
+        return outcome
+
+    def _advise_placement(self, job: ClaimedJob) -> None:
+        """EF-20 phase 2 (m-25026599): once the copy is settled, where the product is in
+        the video and the band the text would not cover it in — kept in this job's
+        `result` (`placement_advice`). Best effort: the job is already `done`; nothing
+        here can change it (`PlacementAdvisor.advise` never raises; this guards anyway)."""
+        placement = self._placement
+        if placement is None:
+            return
+        payload = job.payload or {}
+        try:
+            code = placement.advise(
+                tenant_id=job.tenant_id,
+                brand_id=job.brand_id,
+                job_id=job.id,
+                source_key=str(payload.get("source_key") or ""),
+                preview_key=str(payload.get("preview_key") or ""),
+                fetch=self._download,
+            )
+        except Exception as exc:  # noqa: BLE001 — never undoes the copy
+            code = f"error:{type(exc).__name__}"
+        logger.info("media_worker.placement_advice job=%s outcome=%s", job.id, code)
+
+    # -- a derived copy of an owner's file (normalize_local, upload_preview) -----------
+
+    def _process_copy(
+        self,
+        job: ClaimedJob,
+        spec: _CopySpec,
+        *,
+        version: str,
+        allowance: Callable[[float | None], timedelta],
+        make: Callable[..., None],
+        rejects: Callable[[Any], bool],
+    ) -> JobOutcome:
+        """One file of the owner's -> one derived copy at the payload's deterministic key,
+        written once (`t/` is write-once: a retry after the upload finds it and encodes
+        nothing). A file of the owner's that cannot be read fails for good; a killed or
+        timed-out encode or an R2 hiccup is retried.
+
+        ED-11b (m-25029110): with `spec.strip_field` and that key in the payload, the frame
+        strip comes out of the SAME decode (`make(..., strip_out=, layout=)`). A copy
+        already in place (a retry after its PUT, or a v1 copy whose strip was asked for
+        apart) is never encoded again: the original is decoded for the strip alone
+        (`make(source, None, …)`). Both kept → nothing decoded. A source whose header gives
+        no length gets no strip (`strip_skipped`); its copy is still made."""
+        from qualify_creative.video.source_limits import read_header  # noqa: PLC0415
+
+        from qualify_api.creative.media import owned_by  # noqa: PLC0415
+
+        payload = job.payload or {}
+        source_key = str(payload.get("source_key") or "")
+        target_key = str(payload.get(spec.target_field) or "")
+        strip_key = str(payload.get(spec.strip_field) or "") if spec.strip_field else ""
+        if (
+            not owned_by(job.tenant_id, source_key)
+            or not target_key.startswith(spec.target_root)
+            or ".." in target_key
+            or (strip_key and (not strip_key.startswith(spec.target_root) or ".." in strip_key))
+        ):
+            return self._fail(job, "payload_invalid", permanent=True, cleanup=False)
+        try:
+            already = self._gate.has_object(job.tenant_id, target_key)
+            strip_kept = bool(strip_key) and self._gate.has_object(job.tenant_id, strip_key)
+        except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry
+            return self._fail(job, f"r2_head:{type(exc).__name__}", permanent=False)
+        if already and (not strip_key or strip_kept):  # a retry after the upload(s)
+            facts: dict[str, Any] = {"reused": True}
+            if spec.source_on_reuse or strip_kept:
+                kept_head = self._source_header(job.tenant_id, source_key)
+                if kept_head is not None and spec.source_on_reuse:
+                    facts["source"] = kept_head.to_dict()
+                if strip_kept:
+                    facts.update(self._kept_strip_facts(job.tenant_id, strip_key, kept_head, spec))
+            return self._settle_copy(job, spec, target_key, version, facts)
+        with tempfile.TemporaryDirectory(prefix=f"qualify-{spec.step}-") as tmp:
+            source = Path(tmp) / "source"
+            out = Path(tmp) / "video.mp4"
+            strip_out = Path(tmp) / "strip.jpg"
+            try:
+                self._fetch_local_source(job.tenant_id, source_key, source)
+            except (ObjectNotFound, FileNotFoundError):
+                return self._fail(job, "source_missing", permanent=True, cleanup=False)
+            except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry
+                return self._fail(job, f"r2_read:{type(exc).__name__}", permanent=False)
+            try:
+                head = read_header(source)
+            except Exception:  # noqa: BLE001 — PyAV refused the owner's file
+                return self._fail(job, "unreadable", permanent=True, cleanup=False)
+            layout = strip_layout(head.duration_s) if strip_key and not strip_kept else None
+            strip_facts: dict[str, Any] = {}
+            if strip_key and not strip_kept and layout is None:
+                strip_facts["strip_skipped"] = "no_duration"
+            if strip_kept:
+                strip_facts = self._kept_strip_facts(job.tenant_id, strip_key, head, spec)
+            if already and layout is None:  # the copy is kept and no strip can be made
+                return self._settle_copy(
+                    job,
+                    spec,
+                    target_key,
+                    version,
+                    {"reused": True, "source": head.to_dict(), **strip_facts},
+                )
+            # the encode may outlast the lease: held for its whole allowance
+            if not self._renew_lease(job, until=allowance(head.duration_s)):
+                return JobOutcome(job.id, "lost_lease")
+            started = time.monotonic()
+            extra: dict[str, Any] = (
+                {"strip_out": strip_out, "layout": layout} if layout is not None else {}
+            )
+            try:
+                make(source, None if already else out, duration_s=head.duration_s, **extra)
+            except UnreadableVideo:
+                return self._fail(job, "unreadable", permanent=True, cleanup=False)
+            except TranscodeTimedOut:
+                return self._fail(
+                    job,
+                    f"{spec.label}_timeout" if spec.final_on_timeout else f"{spec.step}:timeout",
+                    permanent=spec.final_on_timeout,
+                    cleanup=False,
+                )
+            except Exception as exc:  # noqa: BLE001 — killed, timed out, out of disk: retry
+                return self._fail(job, f"{spec.step}:{type(exc).__name__}", permanent=False)
+            encode_s = round(time.monotonic() - started, 1)
+            source.unlink(missing_ok=True)
+            made_facts: dict[str, Any] = {"source": head.to_dict(), "encode_s": encode_s}
+            if already:
+                made_facts["reused"] = True
+            else:
+                try:
+                    made = read_header(out)
+                except Exception:  # noqa: BLE001 — our own output unreadable: retry
+                    return self._fail(job, f"{spec.label}_unreadable", permanent=False)
+                if rejects(made):
+                    return self._fail(
+                        job, f"{spec.label}_over_limit", permanent=True, cleanup=False
+                    )
+                made_facts.update(
+                    {
+                        spec.label: made.to_dict(),
+                        "duration_s": made.duration_s,
+                        "bytes": out.stat().st_size,
+                    }
+                )
+            made_strip = _made_strip_facts(strip_out, layout) if layout is not None else None
+            if layout is not None and made_strip is None:  # no strip written: the copy counts
+                strip_facts["strip_skipped"] = "empty"
+            if not self._renew_lease(job):  # reclaimed while encoding: not ours any more
+                return JobOutcome(job.id, "lost_lease")
+            if not already:
+                try:
+                    with out.open("rb") as fh:
+                        self._gate.put_media(job.tenant_id, target_key, fh, "video/mp4")
+                except ObjectSizeExceeded:
+                    return self._fail(job, f"{spec.label}_too_large", permanent=True, cleanup=False)
+                except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry onto the same key
+                    return self._fail(job, f"r2_write:{type(exc).__name__}", permanent=False)
+            if layout is not None and made_strip is not None:
+                # after the copy: a failed strip PUT is retried as the strip alone (the copy
+                # is found in place and never encoded again)
+                try:
+                    with strip_out.open("rb") as fh:
+                        self._gate.put_media(job.tenant_id, strip_key, fh, STRIP_CONTENT_TYPE)
+                except Exception as exc:  # noqa: BLE001 — R2 hiccup (or too big): retry
+                    return self._fail(job, f"r2_write_strip:{type(exc).__name__}", permanent=False)
+                strip_facts = {"strip_key": strip_key, "strip": made_strip}
+        return self._settle_copy(job, spec, target_key, version, {**made_facts, **strip_facts})
+
+    def _source_header(self, tenant_id: UUID, source_key: str) -> Any | None:
+        """The original's header (`SourceHeader`) for a copy found already written —
+        never encoded, but the whole original is downloaded to read it (up to the 200 MB
+        upload cap; a rare path: a retried job that finds its copy in place). None when it
+        cannot be read: the job still settles (the copy exists) and the editor keeps
+        playing the original, which needs no size."""
+        from qualify_creative.video.source_limits import read_header  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory(prefix="qualify-source-head-") as tmp:
+            source = Path(tmp) / "source"
+            try:
+                self._fetch_local_source(tenant_id, source_key, source)
+                return read_header(source)
+            except Exception as exc:  # noqa: BLE001 — the copy is kept either way
+                logger.warning("source header not read on reuse: %s", type(exc).__name__)
+                return None
+
+    def _kept_strip_facts(
+        self, tenant_id: UUID, strip_key: str, head: Any | None, spec: _CopySpec
+    ) -> dict[str, Any]:
+        """The result's strip facts for a strip found already written (a retry after its
+        PUT): the layout from the original's length, the tile size from the kept JPEG's
+        own header (a few KB read back). `strip_skipped` when either cannot be read — the
+        timeline then shows no frames, never misplaced ones."""
+        layout = strip_layout(getattr(head, "duration_s", None))
+        if layout is None:
+            return {"strip_skipped": "no_duration"}
+        with tempfile.TemporaryDirectory(prefix=f"qualify-{spec.step}-strip-") as tmp:
+            kept = Path(tmp) / "strip.jpg"
+            try:
+                self._download(tenant_id, strip_key, kept)
+            except Exception as exc:  # noqa: BLE001 — the copy is kept either way
+                logger.warning("kept strip not read: %s", type(exc).__name__)
+                return {"strip_skipped": "unread"}
+            made = _made_strip_facts(kept, layout)
+        if made is None:
+            return {"strip_skipped": "unread"}
+        return {"strip_key": strip_key, "strip": {**made, "reused": True}}
+
+    def _fetch_local_source(self, tenant_id: UUID, key: str, target: Path) -> None:
+        """The owner's file into `target`: from R2 (`t/…`, `gallery/…`), or an old local
+        `uploads/…` key through the CM-9 key map, else from the volume."""
+        from qualify_shared.objects.keys import is_object_store_key  # noqa: PLC0415
+
+        if not is_object_store_key(key):
+            from qualify_api.creative.owner_uploads import resolve_moved_key  # noqa: PLC0415
+
+            moved = resolve_moved_key(tenant_id, key)
+            if moved is None:
+                local = self._root / key
+                if not local.is_file():
+                    raise FileNotFoundError(key)
+                shutil.copyfile(local, target)
+                return
+            key = moved
+        self._download(tenant_id, key, target)
+
+    def _settle_copy(
+        self, job: ClaimedJob, spec: _CopySpec, key: str, version: str, facts: dict[str, Any]
+    ) -> JobOutcome:
+        now = self._clock()
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
+                return JobOutcome(job.id, "lost_lease")
+            row.status = STATUS_DONE
+            row.lease_until = None
+            row.updated_at = now
+            row.finished_at = now
+            row.last_error_code = None
+            # ED-11b review: the result's version is the JOB's (what was asked for and what
+            # the readers match on), the encoder's own is kept beside it — a job settled by
+            # a worker of another version is then told apart (`upload_previews._fold`)
+            payload = job.payload or {}
+            row.result = {
+                **facts,
+                "source_key": payload.get("source_key"),
+                spec.target_field: key,
+                "version": str(
+                    payload.get("version") or getattr(row, "pipeline_version", None) or version
+                ),
+                "made_with": version,
+                "cost_usd": "0.00",
+                "worker": worker_id(),
+            }
+        return JobOutcome(job.id, STATUS_DONE)
 
     # -- seasonal_media (m-24976892) ---------------------------------------------------
 
@@ -619,14 +1083,15 @@ class MediaJobRunner:
                 self._forget(job.tenant_id, media_id)
         return outcome
 
-    def _renew_lease(self, job: ClaimedJob) -> bool:
-        """Extend the lease before the R2 upload, if the job is still this worker's."""
+    def _renew_lease(self, job: ClaimedJob, *, until: timedelta | None = None) -> bool:
+        """Extend the lease (by `until`, else the usual lease) before a long step or the
+        R2 upload, if the job is still this worker's."""
         now = self._clock()
         with tenant_session(job.tenant_id) as session:
             row = session.get(GalleryJob, job.id, with_for_update=True)
             if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
                 return False
-            row.lease_until = now + self._lease
+            row.lease_until = now + max(self._lease, until or self._lease)
             row.updated_at = now
         return True
 
@@ -837,6 +1302,28 @@ class MediaJobRunner:
         if count_folder or deleted.objects:
             report.folders += 1
         return True
+
+
+def _made_strip_facts(path: Path, layout: StripLayout) -> dict[str, Any] | None:
+    """What the result records of a strip JPEG at `path` (ED-11b): its layout, the tile's
+    size in pixels (the image's over `columns` × `rows`: the `tile` filter adds no margin)
+    and its bytes. None when there is no image or its size does not split into the grid."""
+    from PIL import Image  # noqa: PLC0415
+
+    try:
+        size = path.stat().st_size
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:  # noqa: BLE001 — absent or not an image
+        return None
+    if size <= 0 or width % layout.columns or height % layout.rows:
+        return None
+    return {
+        **layout.to_dict(),
+        "tile_width": width // layout.columns,
+        "tile_height": height // layout.rows,
+        "bytes": size,
+    }
 
 
 def _claimed(job: GalleryJob) -> ClaimedJob:
@@ -1052,11 +1539,19 @@ def run_loop(
 def production_runner() -> MediaJobRunner:
     from qualify_creative.video.business import FfmpegBusinessVideoNormalizer  # noqa: PLC0415
     from qualify_creative.video.business_cut import FfmpegBusinessVideoCutter  # noqa: PLC0415
+    from qualify_creative.video.local_normalize import (  # noqa: PLC0415
+        FfmpegLocalSourceNormalizer,
+    )
+    from qualify_creative.video.upload_preview import FfmpegUploadPreviewer  # noqa: PLC0415
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
     from qualify_api.creative.composition import media_root  # noqa: PLC0415
+    from qualify_api.creative.placement_advice import (  # noqa: PLC0415
+        production_placement_advisor,
+    )
+    from qualify_api.creative.placement_ai import placement_enabled  # noqa: PLC0415
     from qualify_api.creative.seasonal_job import production_seasonal_handler  # noqa: PLC0415
 
     gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
@@ -1066,6 +1561,10 @@ def production_runner() -> MediaJobRunner:
         normalizer=FfmpegBusinessVideoNormalizer(),
         cutter=FfmpegBusinessVideoCutter(),
         seasonal=production_seasonal_handler(gate),
+        local_normalizer=FfmpegLocalSourceNormalizer(),
+        previewer=FfmpegUploadPreviewer(),
+        # EF-20 phase 2 (m-25026599): only behind its switch (off by default)
+        placement=production_placement_advisor() if placement_enabled() else None,
     )
 
 

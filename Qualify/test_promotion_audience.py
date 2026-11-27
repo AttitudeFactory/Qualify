@@ -159,7 +159,7 @@ async def test_late_estimate_does_not_replace_new_audience_or_its_loading_state(
 ) -> None:
     context = AudienceContext()
 
-    def estimate(scope: dict, form: object) -> AudienceReachVM:
+    def estimate(scope: dict, form: object, brand: str = "") -> AudienceReachVM:
         assert current_acting_login() == LOGIN
         context._audience_revision = "new-audience"
         context.audience_reach = AudienceReachVM(label="new count")
@@ -181,7 +181,7 @@ async def test_saved_audience_restores_then_refreshes_estimate_without_stuck_bus
     )
     monkeypatch.setattr(state_module, "read_saved_audience", lambda scope: (changes, 3))
     monkeypatch.setattr(
-        state_module, "read_reach", lambda scope, form: AudienceReachVM(label="ready")
+        state_module, "read_reach", lambda scope, form, brand="": AudienceReachVM(label="ready")
     )
     await context._persist_audience(save=False)
     assert context._audience_version == 3 and context.form.location_key == "789"
@@ -228,7 +228,7 @@ async def test_restore_empty_explains_next_step_without_overwriting_current_choi
     context = AudienceContext()
     before = context.form
     monkeypatch.setattr(state_module, "read_saved_audience", lambda scope: None)
-    monkeypatch.setattr(state_module, "read_reach", lambda scope, form: AudienceReachVM())
+    monkeypatch.setattr(state_module, "read_reach", lambda scope, form, brand="": AudienceReachVM())
     await context._persist_audience(save=False)
     assert context.form == before and "Todavía no guardaste" in context.audience_notice
     assert not context.busy

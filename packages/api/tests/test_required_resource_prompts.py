@@ -119,7 +119,8 @@ def test_impossible_capacity_fails_before_copy_or_selector() -> None:
             )
         }
     )
-    with pytest.raises(BrandReferenceError, match="demasiadas referencias"):
+    # m-25078714: a clip's brand images are counted with its photos and named in the text
+    with pytest.raises(BrandReferenceError, match="Quita .* de tus fotos o imágenes de tu marca"):
         producer.prepare_brand_references(
             tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit()
         )

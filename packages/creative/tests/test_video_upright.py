@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -288,15 +289,17 @@ def test_fit_and_fit_reference_refuse_a_rotation_that_is_not_a_right_angle() -> 
 
 #: What origin/main (b7fbff73, before EF-01) produced from `video-portrait-2s.mp4` with
 #: PyAV 19.0.1, computed before the change: the poster's SHA-256 (Pillow's JPEG of the
-#: graph's first frame — stable), and the MP4's shape. The MP4's own bytes are NOT pinned:
-#: they are the same run after run in a fresh process, but inside the whole `creative`
-#: suite libx264 wrote other bytes for the same frames (2026-11-14, twice, reproducible;
-#: same posters, same graph), so the encoded stream is compared decoded, with a tolerance.
+#: graph's first frame — stable), and the MP4's shape. The MP4's bytes are compared only
+#: under the `reproducible_x264` fixture (conftest.py): with production's x264 settings
+#: libx264 writes other bytes for the same frames as the process ages (m-25029128: 18
+#: distinct MP4s in 200 encodes of one process — the SIMD macroblock-tree propagation in
+#: its lookahead), so a hash without the fixture would be flaky, not wrong.
+#: Posters changed by m-25029127: BT.709 matrix (the fixture is untagged SD, read as BT.601).
 UNTURNED_POSTER_SHA256 = {
-    "fit": "8cf9ef35936ad06054a0c42f8a8394595c495c914ead7f78a5a280f240deecf1",
-    "fit_reference": "1e24eda1c967afb450f784e4ebb8ba87a9edbd11d9220ee526f038fa6417584a",
-    "fit_reference_small": "3ab83121aee471acd6a213daa0acb898b5f527faa2bccff333b181101a84b29c",
-    "subtitle": "1e24eda1c967afb450f784e4ebb8ba87a9edbd11d9220ee526f038fa6417584a",
+    "fit": "ff367919a0b7f290ebd0839ffc402b90faf7fdba2d067edaa5ab8f9432ffea40",
+    "fit_reference": "d9627c6437cb15f44d96d0b6684be4d8a71779a0546c72ad0e1706c4c20d58bc",
+    "fit_reference_small": "5a85ddf7919e0fedfb34c8f716e82193abcdbf33b71dd133fec82110bc1c1a10",
+    "subtitle": "d9627c6437cb15f44d96d0b6684be4d8a71779a0546c72ad0e1706c4c20d58bc",
 }
 #: (width, height, frames) of each output on origin/main
 UNTURNED_SHAPE = {
@@ -333,15 +336,41 @@ def _contents(data: bytes) -> tuple[tuple[int, int], list[int | None], np.ndarra
     return size, [frame.pts for frame in frames], pixels
 
 
-def _assert_same_video(got: bytes, want: bytes) -> None:
-    """Same size, same frames at the same times, the same pictures up to the encoder's
-    noise (identical bytes pass trivially)."""
-    got_size, got_pts, got_pixels = _contents(got)
-    want_size, want_pts, want_pixels = _contents(want)
-    assert got_size == want_size
-    assert got_pts == want_pts
-    difference = np.abs(got_pixels.astype(int) - want_pixels.astype(int))
-    assert difference.mean() <= 1.0, difference.mean()
+def _reproducible_fitter_tables(reproducible_x264: Callable[..., None]) -> None:
+    """Every x264 table `_unturned_outputs` encodes with, made byte-reproducible."""
+    from qualify_creative.video import fit as fit_module  # noqa: PLC0415
+
+    reproducible_x264(fit_module.SLIDE_X264, fit_module.REFERENCE_X264, fit_module.DETAIL_X264)
+
+
+#: The SHA-256 of `fit_reference(video-portrait-2s.mp4, short_side=90)`'s MP4 under
+#: `reproducible_x264` with PyAV 19.0.1 (its bundled FFmpeg/x264). Measured 2026-11-20
+#: (m-25029128): the same on Windows (60/60 in one process) and on Linux x86_64
+#: (python:3.12-slim, 40/40 on 8 cores and 60/60 on 2), so it is not pinned to a platform.
+#: Changed by m-25029127 (BT.709 matrix and tags); measured with the fixture, 2026-11-20.
+REFERENCE_SMALL_SHA256 = "50af79a9ab2863c73ec01b78dbde7f3fe296735a6208a2e092f08e63e92042cd"
+
+
+def _reference_small() -> bytes:
+    return PyAvVideoFitter().fit_reference(PORTRAIT.read_bytes(), short_side=90).data
+
+
+def test_a_reference_encode_is_the_same_bytes_run_after_run(
+    reproducible_x264: Callable[..., None],
+) -> None:
+    """Any platform and PyAV: under `reproducible_x264` two encodes of the same source in
+    one process are the same MP4, byte for byte."""
+    _reproducible_fitter_tables(reproducible_x264)
+    assert _reference_small() == _reference_small()
+
+
+@pytest.mark.skipif(
+    av.__version__ != "19.0.1",
+    reason="hash pinned with PyAV 19.0.1's x264; the run-to-run check above is version-free",
+)
+def test_a_reference_encode_has_the_pinned_hash(reproducible_x264: Callable[..., None]) -> None:
+    _reproducible_fitter_tables(reproducible_x264)
+    assert _sha(_reference_small()) == REFERENCE_SMALL_SHA256
 
 
 @pytest.mark.skipif(
@@ -360,13 +389,16 @@ def test_a_video_without_a_turn_keeps_its_size_and_length() -> None:
         assert len(pts) == 24, name  # 2 s at 12 fps, every frame kept
 
 
-def test_without_a_turn_the_straightener_changes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_a_turn_the_straightener_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, reproducible_x264: Callable[..., None]
+) -> None:
     """Any platform: the fitter's output for a video without a turn is its output with
     EF-01's hooks taken out — the rotation never read and no turning filter in the graph,
-    which is what the code before EF-01 did: the same posters byte for byte, the same
-    video decoded (see `UNTURNED_POSTER_SHA256` on why not the MP4's bytes)."""
+    which is what the code before EF-01 did: the same posters and the same MP4s, byte for
+    byte (x264 made reproducible: see `UNTURNED_POSTER_SHA256`)."""
     from qualify_creative.video import fit as fit_module  # noqa: PLC0415
 
+    _reproducible_fitter_tables(reproducible_x264)
     with_hooks = _unturned_outputs()
     with monkeypatch.context() as patched:
         patched.setattr(fit_module, "_source_rotation", lambda data: 0)
@@ -375,7 +407,7 @@ def test_without_a_turn_the_straightener_changes_nothing(monkeypatch: pytest.Mon
     for name, out in with_hooks.items():
         assert out.poster == without_hooks[name].poster, name
         assert (out.width, out.height) == (without_hooks[name].width, without_hooks[name].height)
-        _assert_same_video(out.data, without_hooks[name].data)
+        assert out.data == without_hooks[name].data, name
 
 
 def test_without_a_turn_the_graph_is_the_one_before_ef01(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -416,7 +448,11 @@ def test_without_a_turn_the_graph_is_the_one_before_ef01(monkeypatch: pytest.Mon
         nodes: list[tuple[str, object]] = [
             ("buffer", ("VideoStream", {})),
             crop(width, height),
-            ("scale", f"{width}:{height}"),
+            (
+                "scale",
+                f"{width}:{height}:in_color_matrix=bt601:in_range=tv:out_color_matrix=bt709"
+                ":out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int",
+            ),
             ("format", "yuv420p"),
             ("buffersink", None),
         ]

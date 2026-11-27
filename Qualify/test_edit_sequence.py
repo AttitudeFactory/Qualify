@@ -111,6 +111,10 @@ def test_json_is_what_the_script_reads() -> None:
         "speed": 1.0,
         "rotate": 0,
         "dur": 2.0,
+        # m-25114465: a cut into it (no transition)
+        "join": "",
+        "join_s": 0.0,
+        "join_dir": "",
     }
     assert data["texts"][0]["start"] == 2.0 and data["texts"][0]["end"] == 5.0
 

@@ -45,7 +45,7 @@ Qualify is a multi-tenant marketing CRM (Reflex UI + FastAPI-backed modular mono
 
 - `.env.example` is the config reference (copy to `.env`, gitignored). Without DSN vars, code defaults to localhost `qualify`. `QUALIFY_AUTH_FAKE=1` / `QUALIFY_SIGNUP_OPEN=1` are dev/test only.
 - Production is a Hetzner VPS behind a shared edge Caddy: `just deploy <ssh-target> [ref]`, `just deploy-status`, `just deploy-logs`, `just env-push <target> KEY...` (copies secrets from local `.env` without printing them). Details: `docs/despliegue-hetzner.md` and the `qualify-prod-ops` skill.
-- `graphify-out/` holds a knowledge graph of the repo; `graphify query "<question>"` answers codebase questions, `graphify update .` refreshes it after changes.
+- `graphify-out/` holds a knowledge graph of `main`, built by CI (`code-graph.yml`) and synced at session start; `graphify query "<question>"` answers codebase questions (files your branch changed: read them directly). Never run `graphify update` locally (minutes, and it would overwrite the shared copy with branch code); if the graph is missing, `just graph-sync`.
 
 ## Client capabilities
 

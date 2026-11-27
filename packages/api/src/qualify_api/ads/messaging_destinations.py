@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+import httpx
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_attribution import _digits
 from qualify_api.ads.wizard import WizardUnavailable
@@ -168,8 +170,8 @@ async def check_messaging_destinations(
                 {"fields": "id,has_whatsapp_number,whatsapp_number"},
             )
         linked = page_phone_link(payload, page_id=page, phone=phone_number)
-    except (AdAccountUnavailable, ValueError):
-        pass
+    except (AdAccountUnavailable, MarketingError, httpx.HTTPError, ValueError):
+        pass  # Any failed read leaves the link unknown: the owner sees UNKNOWN and retries.
     finally:
         if client is not None and hasattr(client, "aclose"):
             await client.aclose()

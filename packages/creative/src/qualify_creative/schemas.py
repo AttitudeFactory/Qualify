@@ -16,7 +16,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Literal, NamedTuple, get_args
+from typing import Annotated, Any, Literal, NamedTuple, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -24,10 +24,12 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -80,6 +82,13 @@ MAX_PRODUCT_IMAGES = 10
 #: Brand Kit elements (not the logo) one piece may draw on (§ request 2026-10-06).
 MAX_BRAND_ELEMENTS = 6
 AVATAR_PROMPT_MAX = 600
+#: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
+#: «Hombre» are a described synthetic person, with this description — what «Crear pieza»
+#: and «Publicación del mes» (m-25121346) send as `avatar_prompt`.
+PRESENTER_DESCRIPTIONS: dict[str, str] = {
+    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
+    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
+}
 #: The scene an advertising image asks the image model for ("a hand holding the glass,
 #: the bar blurred behind").
 SCENE_PROMPT_MAX = 600
@@ -693,7 +702,7 @@ RecipeRefusal = Literal[
     "too_many_ai_effects",  # more than one `seedance_prompt` effect in one part
     "too_many_of_effect",  # the same effect more times than its `max_per_part`
     "effect_needs_own_video",  # an effect that works on the owner's video, without one
-    "transition_on_clip",  # a transition in a normal Clip (only between parts)
+    "transition_on_clip",  # a transition in a normal Clip outside a block's `transition_in`
     "transition_in_effects",  # a transition among a part's effects, not `transition_in`
     "transition_not_a_transition",  # `transition_in` names an effect that is not one
     "transition_on_first_part",  # the first part has no part before it to blend with
@@ -715,6 +724,41 @@ RecipeRefusal = Literal[
     "photo_with_speed",  # a still photo played at a speed other than 1
     "photo_length_out_of_range",  # a still photo shown under 1 s or over 5 s
     "photo_not_from_start",  # a still photo's stretch does not start at 0
+    # m-25042483: appended, never reordered
+    "segment_source_too_long",  # a video stretch takes over `SEGMENT_SOURCE_MAX_S` of source
+    # EF-16 (m-25026594): appended, never reordered
+    "transitions_longer_than_part",  # a part shorter than the transitions eating into it
+    # m-25026592 (decision 2026-11-23): appended, never reordered
+    "text_bottom_with_subtitles",  # a Clip's subtitles on and an owner's text at the bottom
+    # ED-13 (m-25029108): appended, never reordered
+    "unknown_text_motion",  # a text's entrance or exit animation is not one of the closed ones
+    "typewriter_text_too_long",  # «Letra por letra» on a text over the typewriter's limit
+    # ED-13 (m-25029108): appended, never reordered
+    "bad_text_box_color",  # a text's background colour is not a `#RRGGBB` hex in capitals
+    # ED-13 round 3 (m-25029108): appended, never reordered
+    "bad_text_color",  # a text's letters colour is not a `#RRGGBB` hex in capitals
+    # ED-13 round 4 (m-25029108): appended, never reordered
+    "unknown_text_size",  # a text's size is not «Pequeña», «Mediana» or «Grande»
+    "text_too_long_for_large",  # «Grande» on a text over `VIDEO_TEXT_LARGE_MAX_CHARS`
+    # m-25114465: appended, never reordered
+    "transition_on_first_block",  # a Clip's first block has no block before it to blend with
+    "transitions_longer_than_block",  # a Clip's block shorter than the transitions eating it
+    # m-25129405 (ADR 50 §13.2, the «parte con IA» block): appended, never reordered
+    "switched_off",  # an AI block while `QUALIFY_CLIP_AI_PARTS` is off
+    "too_many_blocks",  # more than `SEGMENTS_MAX` blocks, own and AI together
+    "too_many_ai_children",  # more than `PARTS_MAX` AI parts and character scenes together
+    "extend_needs_block_before",  # «Sigue a la anterior» with no video or AI part right before
+    "edit_needs_reel_window",  # «Igual al original» without the reel's cuts it copies
+    "ai_part_with_speed",  # an AI block played at a speed other than 1
+    "own_media_too_short",  # AI blocks with scenes or avatars and under 3 s of own material
+    "ai_parts_mismatch",  # an AI block and the `ai_parts` entries do not match one to one
+    "ai_part_length_mismatch",  # an AI block that does not last its entry's `seconds`
+    "ai_part_outside_clip",  # an AI block outside a Clip made of blocks (`local`)
+    "ai_part_local",  # an entry of `ai_parts` in mode `local`: that is own blocks
+    "ai_part_own_recipe",  # an entry with its own effects, texts, stretches or join
+    "ai_part_guide_type",  # «Video o audio tuyo» that is not an MP4/MOV video or MP3/WAV audio
+    "extend_after_own_media",  # «Sigue a la anterior» right after the owner's video or photo
+    "extend_not_same_moment",  # «Sigue a la anterior» not split from the same take as before
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -735,11 +779,89 @@ VIDEO_TEXT_FADE_DEFAULT_S = 0.5
 #: ED-15 (D-T1): a still photo among the stretches lasts 1 to 5 s of the video.
 PHOTO_SECONDS_MIN = 1.0
 PHOTO_SECONDS_MAX = 5.0
-#: What a stretch is made from: a stretch of a video, or a still photo held on screen.
-SegmentKind = Literal["video", "photo"]
-SEGMENT_KINDS: tuple[str, ...] = get_args(SegmentKind)
+#: What a stretch is made from: a stretch of a video, or a still photo held on screen —
+#: the owner's own material (`SEGMENT_KINDS`: the kinds the Clip editor writes today).
+#: m-25129405 (ADR 50 §13.2): or `ai_part`, a block made by AI — see `SourceSegment`.
+SegmentKind = Literal["video", "photo", "ai_part"]
+SEGMENT_KINDS: tuple[str, ...] = ("video", "photo")
+AI_PART_KIND = "ai_part"
+#: m-25129405: an `ai_part` block's `key` names its entry of `MediaInputs.ai_parts` —
+#: `ai_part:<n>`, `n` its position in that tuple from 0 (`ai_part_key`). Never a file.
+AI_PART_KEY_PREFIX = "ai_part:"
+_AI_PART_KEY = re.compile(r"^ai_part:([0-9])$")
+
+
+def ai_part_key(at: int) -> str:
+    """The `key` of the `ai_part` block that points to `MediaInputs.ai_parts[at]`."""
+    return f"{AI_PART_KEY_PREFIX}{at}"
+
+
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
+#: ED-13 (m-25029108; Deivid, 2026-11-23): the backgrounds a video text is drawn on — the
+#: SAME text block in all four, only what is behind it changes (ADR 50 D1, amended):
+#: `scrim` «Sombra» (the default, None), `band` «Franja» (a full-width strip hugging the
+#: text, the fixed dark neutral `VIDEO_TEXT_BAND_COLOR`), `brand_fill` «Recuadro de tu
+#: color» (a rounded box just behind the letters, `palette.accent`) and `shadow`
+#: «Sin fondo» (clean white letters: no shadow, no outline — Deivid, 2026-11-23).
+#: `shadow` is not an ADR 49 design: it names the catalog version like the other three.
+VideoTextLayoutId = LayoutId | Literal["shadow"]
+VIDEO_TEXT_LAYOUTS: tuple[str, ...] = ("scrim", "band", "brand_fill", "shadow")
+#: `band`/`brand_fill`: the margin around the text block, px of the 1080-wide canvas, and the
+#: box's corner radius (`brand_fill` only).
+VIDEO_TEXT_BOX_PAD_PX = 48
+VIDEO_TEXT_BOX_RADIUS_PX = 24
+#: ED-13: how a text enters («Aparece», «Sube», «Crece», «Letra por letra») and leaves
+#: («Desaparece», «Baja», «Se encoge», «De golpe»). The type's defaults are what a text
+#: stored before them looks like (fades in, cut at the end); the editor writes `fade`/`fade`.
+VideoTextMotionIn = Literal["fade", "slide", "zoom", "typewriter"]
+VideoTextMotionOut = Literal["none", "fade", "slide", "zoom"]
+VIDEO_TEXT_MOTIONS_IN: tuple[str, ...] = get_args(VideoTextMotionIn)
+VIDEO_TEXT_MOTIONS_OUT: tuple[str, ...] = get_args(VideoTextMotionOut)
+#: `slide`: how far the text travels, as a fraction of the 1920-high canvas (96 px) — it
+#: enters from below rising and leaves going down, wherever it is.
+VIDEO_TEXT_SLIDE_FRACTION = 0.05
+#: `zoom`: the scale it enters from (and leaves to), centred on the text block.
+VIDEO_TEXT_ZOOM_FROM = 0.9
+#: `typewriter` («Letra por letra», entrance only): texts up to this many characters, each
+#: character appearing after this many seconds (the whole text within a third of its time).
+VIDEO_TEXT_TYPEWRITER_MAX_CHARS = 40
+VIDEO_TEXT_TYPEWRITER_S_PER_CHAR = 0.06
+#: Each animation takes at most this share of the text's time on screen.
+VIDEO_TEXT_MOTION_MAX_SHARE = 1 / 3
+#: `band` («Franja»; Deivid, 2026-11-23: «oscura y neutra»): a FIXED near-black strip with
+#: white letters, whatever the brand — never `palette.surface`, which is white on brands
+#: like Polette (the strip came out white). White on #111111 is 18.9:1 (≥ 4.5).
+VIDEO_TEXT_BAND_COLOR = "#111111"
+VIDEO_TEXT_BAND_INK = "#FFFFFF"
+#: ED-13 (Deivid, 2026-11-23): the owner may pick the colour of «Franja» and «Recuadro de tu
+#: color» (`VideoTextLayer.box_color`, a `#RRGGBB` hex in capitals; None = the default,
+#: `VIDEO_TEXT_BAND_COLOR` / `palette.accent`). Only those two backgrounds take it.
+VIDEO_TEXT_BOX_COLOR_PATTERN = r"^#[0-9A-F]{6}$"
+_BOX_COLOR = re.compile(VIDEO_TEXT_BOX_COLOR_PATTERN)
+VIDEO_TEXT_BOX_COLOR_LAYOUTS: tuple[str, ...] = ("band", "brand_fill")
+#: ED-13 round 3 (Deivid, 2026-11-23): with «Sin fondo» the owner picks the letters' colour
+#: (`VideoTextLayer.text_color`, the same `#RRGGBB` in capitals; None = white). Only
+#: `shadow` takes it: the other backgrounds choose their letters for contrast.
+VIDEO_TEXT_TEXT_COLOR_PATTERN = VIDEO_TEXT_BOX_COLOR_PATTERN
+VIDEO_TEXT_TEXT_COLOR_LAYOUTS: tuple[str, ...] = ("shadow",)
+#: On a colour the owner picked, the letters are white or near-black, whichever contrasts
+#: more (the render's `layout.ts` `boxInk`, mirrored by the screen's
+#: `editor_preview_contract.box_ink`; both read `packages/render/server/box-ink-vectors.json`).
+VIDEO_TEXT_INK_LIGHT = "#FFFFFF"
+VIDEO_TEXT_INK_DARK = "#111111"
+#: ED-13 round 4 (Deivid, 2026-11-23: «3 tamaños»): the letters' size the owner picks —
+#: «Pequeña», «Mediana» (the default: every text stored before it) and «Grande». Each one
+#: scales the catalog's 9:16 title range (112 → 76 px) by its factor; the safe zone, the
+#: width and the lines allowed do not change. The render's `layout.ts` `SIZE_SCALE` and the
+#: screen's `editor_preview_contract` copy these, pinned by the parity test.
+VideoTextSize = Literal["small", "medium", "large"]
+VIDEO_TEXT_SIZES: tuple[str, ...] = get_args(VideoTextSize)
+VIDEO_TEXT_SIZE_SCALE: dict[str, float] = {"small": 0.75, "medium": 1.0, "large": 1.25}
+#: «Grande» takes texts up to this many characters (Deivid, 2026-11-23, option A: longer,
+#: «Grande» is off and says why) — measured with the render's own layout on the widest
+#: bold faces, three places, four backgrounds (ADR 50 §2.3).
+VIDEO_TEXT_LARGE_MAX_CHARS = 40
 #: How fast a stretch plays (D-T3: «Cámara rápida» is this speed): 1 = as recorded, up
 #: to 30×. The SAME bounds as `qualify_creative.video.speed.MIN_SPEED`/`MAX_SPEED`, which
 #: applies it (EF-04) — copied, not imported: importing `video` pulls PyAV and the whole
@@ -752,9 +874,17 @@ SEGMENT_SPEED_MAX = 30.0
 #: test).
 LOCAL_TOTAL_MIN_S = 3.0
 LOCAL_TOTAL_MAX_S = 60.0
+#: m-25042483 (Deivid, 2026-11-17: «Bajarlos a 4K 8 bits»): one video stretch takes at
+#: most this many seconds of its SOURCE (`end_s - start_s`, before its speed) — what the
+#: local assembly's memory and time were measured for (`docs/armado-local-medicion.md`).
+#: At ×30, 60 s of output could otherwise read 30 minutes of a 4K video.
+SEGMENT_SOURCE_MAX_S = 60.0
 SegmentRotation = Literal[0, 90, 180, 270]
 #: An effect id as the library writes it (`effects_data/vN.json`).
 EFFECT_ID_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+#: The library's hard cut (`corte`): no transition at all — a block's `transition_in`
+#: naming it reads as None (m-25114465).
+CUT_EFFECT_ID = "corte"
 EffectParamValue = bool | int | float | str
 
 
@@ -844,13 +974,93 @@ class VideoTextLayer(BaseModel):
     place: VideoTextPlace = "bottom"
     start_s: float = Field(default=0.0, ge=0)
     end_s: float | None = Field(default=None, gt=0)
-    layout_id: LayoutId | None = None
+    #: ED-13: `VideoTextLayoutId` — an ADR 49 design or `shadow` («Sin fondo»).
+    layout_id: VideoTextLayoutId | None = None
     layout_version: int | None = Field(default=None, ge=1)
     #: EF-05: the fade in the owner chose (`VIDEO_TEXT_FADE_MIN_S`-`VIDEO_TEXT_FADE_MAX_S`);
-    #: a stored text without it reads as `VIDEO_TEXT_FADE_DEFAULT_S`.
+    #: a stored text without it reads as `VIDEO_TEXT_FADE_DEFAULT_S`. ED-13: how long its
+    #: entrance and its exit take («Tarda en entrar y salir»; «Letra por letra» times its own).
     fade_s: float = Field(
         default=VIDEO_TEXT_FADE_DEFAULT_S, ge=VIDEO_TEXT_FADE_MIN_S, le=VIDEO_TEXT_FADE_MAX_S
     )
+    #: ED-13 (m-25029108): how it enters and leaves. Defaults = a text stored before them.
+    motion_in: VideoTextMotionIn = "fade"
+    motion_out: VideoTextMotionOut = "none"
+    #: ED-13 (m-25029108; Deivid, 2026-11-23): the colour the owner picked for «Franja» /
+    #: «Recuadro de tu color» (`VIDEO_TEXT_BOX_COLOR_PATTERN`); None = that background's
+    #: default. Ignored with `scrim`/`shadow`. Not serialized while None, so a stored text
+    #: keeps its shape (and every digest over it).
+    box_color: str | None = None
+    #: ED-13 round 3 (Deivid, 2026-11-23): the letters' colour the owner picked for «Sin
+    #: fondo» (`VIDEO_TEXT_TEXT_COLOR_PATTERN`); None = white. Ignored with the other
+    #: backgrounds. Not serialized while None, as `box_color`.
+    text_color: str | None = None
+    #: ED-13 round 4 (Deivid, 2026-11-23): the letters' size (`VIDEO_TEXT_SIZES`); «Mediana»
+    #: is what every text looked like before. Not serialized while `medium`, as `box_color`.
+    text_size: VideoTextSize = "medium"
+
+    @field_validator("text_size", mode="before")
+    @classmethod
+    def _known_size(cls, value: object) -> object:
+        if value not in VIDEO_TEXT_SIZES:
+            raise PydanticCustomError(
+                "unknown_text_size", "a text's size is one of {known}", {"known": VIDEO_TEXT_SIZES}
+            )
+        return value
+
+    @field_validator("box_color", mode="before")
+    @classmethod
+    def _box_color_hex(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not _BOX_COLOR.match(value):
+            raise PydanticCustomError(
+                "bad_text_box_color", "a text's background colour is a #RRGGBB hex in capitals"
+            )
+        return value
+
+    @field_validator("text_color", mode="before")
+    @classmethod
+    def _text_color_hex(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not _BOX_COLOR.match(value):
+            raise PydanticCustomError(
+                "bad_text_color", "a text's letters colour is a #RRGGBB hex in capitals"
+            )
+        return value
+
+    @model_serializer(mode="wrap")
+    def _without_unset_box_color(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict):
+            if self.box_color is None:
+                data.pop("box_color", None)
+            if self.text_color is None:
+                data.pop("text_color", None)
+            if self.text_size == "medium":
+                data.pop("text_size", None)
+        return data
+
+    @property
+    def effective_box_color(self) -> str | None:
+        """`box_color` where it counts (`band`, `brand_fill`); None elsewhere."""
+        return self.box_color if self.layout_id in VIDEO_TEXT_BOX_COLOR_LAYOUTS else None
+
+    @property
+    def effective_text_color(self) -> str | None:
+        """`text_color` where it counts (`shadow`, «Sin fondo»); None elsewhere."""
+        return self.text_color if self.layout_id in VIDEO_TEXT_TEXT_COLOR_LAYOUTS else None
+
+    @field_validator("motion_in", "motion_out", mode="before")
+    @classmethod
+    def _known_motion(cls, value: object, info: ValidationInfo) -> object:
+        known = VIDEO_TEXT_MOTIONS_IN if info.field_name == "motion_in" else VIDEO_TEXT_MOTIONS_OUT
+        if value not in known:
+            raise PydanticCustomError(
+                "unknown_text_motion", "a text moves in one of {known}", {"known": known}
+            )
+        return value
 
     @model_validator(mode="after")
     def _coherent(self) -> VideoTextLayer:
@@ -860,6 +1070,21 @@ class VideoTextLayer(BaseModel):
             raise ValueError("a video text's design names its layout and its version")
         if self.end_s is not None and self.end_s <= self.start_s:
             raise ValueError("a video's text disappears after it appears")
+        if (
+            self.motion_in == "typewriter"
+            and len(self.text.strip()) > VIDEO_TEXT_TYPEWRITER_MAX_CHARS
+        ):
+            raise PydanticCustomError(
+                "typewriter_text_too_long",
+                "«Letra por letra» takes texts up to {limit} characters",
+                {"limit": VIDEO_TEXT_TYPEWRITER_MAX_CHARS},
+            )
+        if self.text_size == "large" and len(self.text.strip()) > VIDEO_TEXT_LARGE_MAX_CHARS:
+            raise PydanticCustomError(
+                "text_too_long_for_large",
+                "«Grande» takes texts up to {limit} characters",
+                {"limit": VIDEO_TEXT_LARGE_MAX_CHARS},
+            )
         return self
 
 
@@ -875,7 +1100,22 @@ class SourceSegment(BaseModel):
     tuple, in the same order as the videos — no type of its own —, from `start_s` 0 to
     `end_s` = how long it shows (`PHOTO_SECONDS_MIN`-`PHOTO_SECONDS_MAX`), at `speed` 1,
     `rotate` allowed. Those rules need no library and never change, so the type checks
-    them, each with its `RecipeRefusal` code as the error's `type`."""
+    them, each with its `RecipeRefusal` code as the error's `type`.
+
+    m-25114465 (ADR 50 §10, proposed): `transition_in` is how this block blends with the
+    block BEFORE it in a normal Clip — a `transition` effect of the library (`fundido`,
+    `barrido`) with no span of its own. None is the hard cut (`corte`), and a `corte`
+    given explicitly is read as None: a cut is the absence of a transition, so a Clip
+    whose joins are all cuts serializes — and digests — exactly as before the field
+    existed (`transition_in` None is never dumped). Whether it is offered, built, not on
+    the first block and short enough for its blocks is `validate_recipe`'s.
+
+    m-25129405 (ADR 50 §13.2): `kind="ai_part"` is a block made by AI — a «parte con
+    IA», a child Clip made by Seedance. Its `key` is not a file but `ai_part:<n>`
+    (`ai_part_key`), the entry `n` (from 0) of `MediaInputs.ai_parts` that says how it is
+    made (a `VideoPartPlan`, unchanged). It lasts `end_s` from `start_s` 0, upright; its
+    `transition_in` is its join as any block's. Every other rule (×1, its length = its
+    entry's `seconds`, the switch) is `validate_recipe`'s, each with its code."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -885,16 +1125,40 @@ class SourceSegment(BaseModel):
     speed: float = Field(default=1.0, ge=SEGMENT_SPEED_MIN, le=SEGMENT_SPEED_MAX)
     rotate: SegmentRotation = 0
     kind: SegmentKind = "video"
+    transition_in: EffectUse | None = None
+
+    @field_validator("transition_in", mode="after")
+    @classmethod
+    def _a_cut_is_no_transition(cls, value: EffectUse | None) -> EffectUse | None:
+        return None if value is not None and value.effect_id == CUT_EFFECT_ID else value
+
+    @model_serializer(mode="wrap")
+    def _without_a_cut(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict) and self.transition_in is None:
+            data.pop("transition_in", None)
+        return data
 
     @property
     def output_seconds(self) -> float:
         """How long the stretch lasts in the video, at its speed (derived, never stored)."""
         return (self.end_s - self.start_s) / self.speed
 
+    @property
+    def ai_part_at(self) -> int | None:
+        """m-25129405: the entry of `MediaInputs.ai_parts` an `ai_part` block points to
+        (from 0); None for the owner's own video or photo."""
+        found = _AI_PART_KEY.match(self.key) if self.kind == AI_PART_KIND else None
+        return int(found.group(1)) if found else None
+
     @model_validator(mode="after")
     def _coherent(self) -> SourceSegment:
         if self.end_s <= self.start_s:
             raise ValueError("a stretch of video ends after it starts")
+        if self.kind == AI_PART_KIND and (
+            self.ai_part_at is None or self.start_s != 0 or self.rotate != 0
+        ):
+            raise ValueError("an AI block names its entry (ai_part:<n>) and starts at 0, upright")
         if self.kind == "photo":
             if self.start_s != 0:
                 raise PydanticCustomError(
@@ -908,6 +1172,10 @@ class SourceSegment(BaseModel):
                     "a photo shows {low} to {high} seconds",
                     {"low": PHOTO_SECONDS_MIN, "high": PHOTO_SECONDS_MAX},
                 )
+        if self.transition_in is not None and (
+            self.transition_in.start_s is not None or self.transition_in.end_s is not None
+        ):
+            raise ValueError("a transition between blocks has no span of its own")
         return self
 
 
@@ -1181,6 +1449,9 @@ PartsRefusal = Literal[
     "local_length_out_of_range",  # a `local` part lasting under 3 s or over 60 s
     # EF-15 (m-25026575): appended, never reordered
     "local_daily_cap_reached",  # today's local builds of the business are spent
+    # m-25042483: appended, never reordered
+    "segment_source_too_long",  # a video stretch of a `local` part takes over 60 s of source
+    "transitions_longer_than_part",  # EF-16: a part shorter than its transitions
 ]
 PARTS_REFUSALS: tuple[str, ...] = get_args(PartsRefusal)
 
@@ -1349,6 +1620,38 @@ def refit_video_recipe(recipe: VideoRecipe, parts: Sequence[PartRecipe]) -> Refi
     return RefitVideoRecipe(refit, tuple(dropped_texts), tuple(dropped_effects))
 
 
+#: m-25119867: a refusal code a plan entry may carry (`ClipAvatarSlot.refused`).
+_PLAN_REFUSAL = r"^[a-z0-9_]*$"
+
+
+class ClipAvatarSlot(BaseModel):
+    """m-25119867 (option B of m-25112920): one avatar block a `local` Clip waits for,
+    chosen at its first «Crear». `slot` is the block's `part_index` under the Clip (1 to
+    `PARTS_MAX`, migration 0119's range); `at` the index of the owner's stretch it goes
+    BEFORE (`len(segments)` = at the end; equal `at` keep slot order); `seconds_estimate`
+    its script read aloud, the length the screen drew it with. `refused` is the server's
+    code when the block cannot go into the Clip as it came out (`clip_too_long`): the
+    owner retries or removes it (m-25119867 PR 2). Pure data, server-owned, in
+    `content_briefs.media`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    slot: int = Field(ge=1, le=PARTS_MAX)
+    at: int = Field(ge=0, le=SEGMENTS_MAX)
+    seconds_estimate: int = Field(ge=1, le=int(LOCAL_TOTAL_MAX_S))
+    refused: str | None = Field(default=None, max_length=40, pattern=_PLAN_REFUSAL)
+    #: When the server first saw this block failed (or refused it): the Clip waits for the
+    #: owner `CLIP_AVATAR_OWNER_WAIT` (72 h, ADR 50 §11 P2) from the latest one. None while
+    #: the block is fine; a retry clears it.
+    failed_at: datetime | None = None
+
+
+def _plan_slots_unique(plan: tuple[ClipAvatarSlot, ...]) -> tuple[ClipAvatarSlot, ...]:
+    if len({entry.slot for entry in plan}) != len(plan):
+        raise ValueError("each avatar block of a Clip has its own slot")
+    return plan
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -1492,6 +1795,30 @@ class MediaInputs(BaseModel):
     #: EF-06 —, produced byte for byte by today's `_clip`; ≥ 1 delegates to
     #: `qualify_api.creative.video_pipeline`. `create_draft` resets what a caller sends.
     effects_pipeline_version: int = Field(default=0, ge=0)
+    #: Server-owned (m-25112920, ADR 50 amendment [PROPUESTO]): this avatar brief is a
+    #: BLOCK of a Clip — a child `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` draft under the
+    #: Clip (`parent_draft_id`), whose talking video enters the Clip's recipe as a video
+    #: stretch. Only `qualify_api.creative.clip_avatar` sets it; `create_draft` refuses a
+    #: brief that carries it (`check_part_link`: a block never exists loose). Kept in
+    #: `content_briefs.media` (no migration); False for
+    #: every brief stored before it, which reads exactly as it did.
+    clip_avatar_block: bool = False
+    #: Server-owned (m-25119867, option B): the avatar blocks a `local` Clip chosen at
+    #: its first «Crear» waits for, before it is assembled once
+    #: (`qualify_api.creative.clip_avatar.create_clip_with_blocks`). Only that service sets
+    #: it; `create_draft` refuses a brief that carries it. When every block is made, the
+    #: Clip gets a new brief with their videos as stretches and this plan empty. Empty on
+    #: every brief stored before it, which reads exactly as it did.
+    clip_avatar_plan: Annotated[tuple[ClipAvatarSlot, ...], AfterValidator(_plan_slots_unique)] = (
+        Field(default=(), max_length=PARTS_MAX)
+    )
+    #: Server-owned (m-25119867, provenance): the brief the owner sent that the server
+    #: derived this one from (`content_briefs.id`) — a Clip's brief with its avatar blocks'
+    #: videos put in its recipe (option B, `ContentService._replace_clip_brief`) or with a
+    #: block placed (option A, `ClipAvatarService.place_block`); a brief derived from a
+    #: derived one keeps pointing to the owner's. `create_draft` clears it. None on every
+    #: brief the owner sent and on every one stored before it.
+    derived_from_brief_id: UUID | None = None
     #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
     #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
     #: default; read only by the edit-clip prompt compiler 1 (`prompt_compiler_version`).
@@ -1543,6 +1870,12 @@ class MediaInputs(BaseModel):
     #: Video by parts, a CHILD (a `CLIP` draft with `parent_draft_id`): its place in the
     #: parent's plan. Its `duration_seconds` is then the part's `generation_seconds`.
     part: PartRef | None = None
+    #: m-25129405 (ADR 50 §13.2): a normal `local` Clip's «partes con IA» — what each
+    #: `ai_part` block of `segments` is made from (its `key` is `ai_part:<n>`, `n` the
+    #: position here from 0), one entry per block, each a `VideoPartPlan` unchanged. Its
+    #: join is the block's `transition_in`, never the entry's. Empty on every other brief
+    #: and on every one stored before it. Checked by `validate_recipe`.
+    ai_parts: tuple[VideoPartPlan, ...] = Field(default=(), max_length=PARTS_MAX)
     #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
     #: when the plan came from a reel or the owner built it himself.
     parts_provenance: PartsProvenance | None = None
@@ -1984,6 +2317,13 @@ class ContentBrief(BaseModel):
             raise PydanticCustomError(
                 "effects_not_for_kind", "effects and stretches of video are for a video"
             )
+        if media.clip_avatar_plan and (
+            self.kind is not ContentKind.CLIP
+            or media.part is not None
+            or media.clip_reference_mode != "local"
+        ):
+            # m-25119867: only a Clip of the owner's own photos and videos waits for blocks
+            raise ValueError("avatar blocks are planned only in a local Clip")
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`

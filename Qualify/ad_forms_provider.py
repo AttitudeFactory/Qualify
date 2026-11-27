@@ -118,7 +118,8 @@ def publish_form(tenant_id: UUID, form_id: UUID, revision: int) -> AdFormVM:
     )
 
 
-def sync_form(tenant_id: UUID, form_id: UUID) -> int:
+def sync_form(tenant_id: UUID, form_id: UUID) -> tuple[int, int]:
+    """(saved, skipped) contacts of the backup sync."""
     return asyncio.run(sync_lead_form(tenant_id=tenant_id, form_id=form_id))
 
 

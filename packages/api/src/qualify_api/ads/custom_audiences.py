@@ -64,8 +64,9 @@ class CustomAudienceRequest:
         audience_name(self.name)
         if not isinstance(self.kind, str) or self.kind not in KINDS:
             raise AudienceUnavailable("Elige personas que interactuaron, escribieron o similares.")
-        if type(self.retention_days) is not int or not 1 <= self.retention_days <= 730:
-            raise AudienceUnavailable("Elige un periodo entre uno y setecientos treinta días.")
+        # Meta caps Instagram/Page engagement audiences at 365 days of retention.
+        if type(self.retention_days) is not int or not 1 <= self.retention_days <= 365:
+            raise AudienceUnavailable("Elige un periodo de 1 a 365 días.")
         if self.kind == "lookalike":
             try:
                 UUID(self.seed_id)

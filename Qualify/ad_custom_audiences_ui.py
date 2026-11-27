@@ -134,7 +134,6 @@ def _create_form() -> rx.Component:
                         "90": "90 días",
                         "180": "180 días",
                         "365": "365 días",
-                        "730": "730 días",
                     },
                 ),
             ),

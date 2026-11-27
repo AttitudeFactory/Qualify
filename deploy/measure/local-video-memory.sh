@@ -33,6 +33,9 @@ LIMIT="${MEM_LIMIT:-$(awk '/^  creative-worker:/{f=1} f&&/mem_limit:/{print $2; 
   "$ROOT/deploy/docker-compose.prod.yml")}"
 ON=()
 [[ -n "${PLATFORM:-}" ]] && ON=(--platform "$PLATFORM")
+# m-25114465: CPUS=1 caps the run's CPU as the worker's (`--cpus`); unset = no cap
+CPU=()
+[[ -n "${CPUS:-}" ]] && CPU=(--cpus "$CPUS")
 NAME="ef15-run-$$"
 trap 'docker rm -f "$NAME" "ef15-make-$$" >/dev/null 2>&1 || true' EXIT
 PY=(-e PYTHONPATH=/app/packages/api/src:/app/packages/shared/src:/app/packages/creative/src
@@ -53,9 +56,9 @@ case "$STEP" in
       CASES=("$@")
     fi
     for c in "${CASES[@]}"; do
-      echo "==> $c: mem_limit=$LIMIT memswap_limit=$LIMIT platform=${PLATFORM:-native}"
+      echo "==> $c: mem_limit=$LIMIT memswap_limit=$LIMIT cpus=${CPUS:-none} platform=${PLATFORM:-native}"
       set +e
-      docker run --rm "${ON[@]}" --name "$NAME" --network none \
+      docker run --rm "${ON[@]}" "${CPU[@]}" --name "$NAME" --network none \
         --memory "$LIMIT" --memory-swap "$LIMIT" -v "$VOL:/clips:ro" "${PY[@]}" \
         "$IMAGE" python /measure/local_video_memory.py run /clips "$c"
       status=$?

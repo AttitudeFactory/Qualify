@@ -412,3 +412,52 @@ def test_an_aria_disabled_button_wears_the_disabled_greys() -> None:
     for token in ("background: var(--gray-a3)", "color: var(--gray-a8)", "transform: none"):
         assert token in rule and token in primary
     assert "cursor: not-allowed" in rule
+
+
+# ---------------------------------------------------------------------------------------
+# m-25078650: the light/dark toggle is in the step head, as in `page_header`
+# ---------------------------------------------------------------------------------------
+
+
+def test_step_head_carries_the_theme_toggle_at_the_end_of_the_exit_row() -> None:
+    from Qualify.ui.primitives import THEME_TOGGLE_LABEL
+
+    head = steps.step_head(
+        "T", step=1, total=3, back_label="Tus publicaciones", back_href="/publicaciones"
+    )
+    row, bar, *_ = head.children
+    rendered_row = str(row.render())
+    assert "q-theme-toggle" in rendered_row and _has(rendered_row, THEME_TOGGLE_LABEL)
+    # After «‹ destino» and after «Paso N de M», in the group that never shrinks.
+    assert rendered_row.index("q-step-exit") < rendered_row.index("q-step-count")
+    assert rendered_row.index("q-step-count") < rendered_row.index("q-theme-toggle")
+    end = row.children[-1]
+    assert "q-step-head-end" in str(end.render()) and "q-theme-toggle" in str(end.render())
+    # Ghost and gray, never a solid action competing with the step's primary.
+    toggle = str(end.children[-1].render())
+    assert "q-theme-toggle" in toggle and '"ghost"' in toggle and '"gray"' in toggle
+    assert "q-theme-toggle" not in str(bar.render())
+    assert str(head.render()).count("q-theme-toggle") == 1
+
+
+def test_step_head_keeps_the_toggle_while_loading_without_progress() -> None:
+    head = str(
+        steps.step_head(
+            "Tu marca", step=5, total=5, back_label="Inicio", back_href="/", show_progress=False
+        ).render()
+    )
+    assert "q-theme-toggle" in head and "Paso 5 de 5" not in head
+
+
+def test_page_header_and_step_head_share_the_same_named_toggle() -> None:
+    from Qualify.ui.layout import page_header
+    from Qualify.ui.primitives import THEME_TOGGLE_LABEL
+
+    rendered = str(page_header("Inicio").render())
+    assert "q-theme-toggle" in rendered and _has(rendered, THEME_TOGGLE_LABEL)
+
+
+def test_theme_toggle_is_a_thumb_target_and_never_squeezed_on_a_phone() -> None:
+    assert ".rt-IconButton.q-theme-toggle { min-width: 44px; min-height: 44px; margin: 0; }" in _CSS
+    assert ".q-step-head-end { flex-shrink: 0; margin-left: auto; }" in _CSS
+    assert ".q-step-exit > span { overflow: hidden; text-overflow: ellipsis; }" in _CSS

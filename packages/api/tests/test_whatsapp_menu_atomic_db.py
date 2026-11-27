@@ -193,7 +193,10 @@ def _state(business: dict[str, Any], thread_id: UUID) -> WhatsAppThreadState | N
 def _outbox(business: dict[str, Any], thread_id: UUID) -> list[dict[str, Any]]:
     with tenant_session(business["tenant"]) as session:
         rows = session.scalars(
-            select(WhatsAppOutboxItem).where(WhatsAppOutboxItem.thread_id == thread_id)
+            select(WhatsAppOutboxItem)
+            .where(WhatsAppOutboxItem.thread_id == thread_id)
+            # The order the sender claims in (m-25049598): a step's rows tie on created_at.
+            .order_by(WhatsAppOutboxItem.created_at, WhatsAppOutboxItem.seq)
         ).all()
         return [dict(row.payload) for row in rows]
 

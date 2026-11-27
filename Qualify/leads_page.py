@@ -30,13 +30,10 @@ from .leads_vm import (
     WRITE_LABEL,
 )
 from .ui import (
-    app_shell,
     callout,
     card,
     empty_state,
     mono,
-    page_body,
-    page_header,
     signal_pill,
     skeleton_rows,
     tag,
@@ -46,21 +43,6 @@ from .ui.layout import RESPOND_ROUTE
 
 #: N12: every tap target on this screen is at least this tall.
 _TARGET = "44px"
-
-
-def _topbar() -> rx.Component:
-    return page_header(
-        "Clientes interesados",
-        INTRO,
-        # The count badge of docs/design-system.md §5.3: soft, neutral — a figure
-        # about the page, never a state.
-        badge=rx.badge(
-            LeadsState.lead_count.to_string(),
-            variant="soft",
-            size="2",
-            **T.tone_scheme("neutral"),
-        ),
-    )
 
 
 def _status(lead: LeadVM) -> rx.Component:
@@ -257,7 +239,3 @@ def leads_tab() -> rx.Component:
         spacing="3",
         width="100%",
     )
-
-
-def leads_index() -> rx.Component:
-    return app_shell(_topbar(), page_body(_body()))

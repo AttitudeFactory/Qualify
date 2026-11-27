@@ -79,6 +79,11 @@ REQUEST_SHOT_VIDEO = "shot_video"
 #: own video, with no vendor: no creation, no vista previa, no video second. Its charge
 #: row (weight 0) still records that it was made.
 REQUEST_LOCAL_VIDEO = "local_video"
+#: m-25112920: an avatar block of a Clip (OmniHuman 1.5) uses nothing when it is made —
+#: its seconds are counted from the month's video when the Clip is APPROVED (Deivid,
+#: 2026-11-24), like a Seedance clip's; the block's creation is refused beforehand when
+#: the month cannot pay them (`qualify_api.creative.clip_avatar`).
+REQUEST_CLIP_AVATAR_BLOCK = "clip_avatar_block"
 
 #: How fast a presenter reads the operator's own script — the same estimate the media
 #: producer uses before the voice exists (`media._CHARS_PER_SECOND`).
@@ -476,8 +481,12 @@ def _generated_video_price(table: CreationWeights, seconds: int) -> CreationPric
 def weight_for(
     brief: ContentBrief, *, redo: bool = False, weights: CreationWeights | None = None
 ) -> CreationPrice:
-    """`weight_for_request` read off a stored brief — what the service charges."""
+    """`weight_for_request` read off a stored brief — what the service charges. An
+    avatar block of a Clip (`media.clip_avatar_block`) uses nothing here: its seconds
+    are charged with the Clip's approval (m-25112920)."""
     media = brief.media
+    if media.clip_avatar_block:
+        return CreationPrice(REQUEST_CLIP_AVATAR_BLOCK, 0, videos=0, video_seconds=0)
     kind = brief.kind
     carousel_images = (
         max(len(media.product_keys), 1)
@@ -512,6 +521,7 @@ __all__ = [
     "CHARS_PER_SECOND",
     "CREATIONS_WEIGHTS_VERSION",
     "REQUEST_CAROUSEL",
+    "REQUEST_CLIP_AVATAR_BLOCK",
     "REQUEST_GENERATED_VIDEO",
     "REQUEST_IMAGE",
     "REQUEST_IMAGE_REDO",

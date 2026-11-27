@@ -111,7 +111,7 @@ def setup():
 async def test_fake_full_lifecycle_paused_preview_then_explicit_charge_active() -> None:
     wizard, client, _, source, args, authors = setup()
     preview = await wizard.prepare(**args)
-    assert preview.status == "paused" and "$150,00 COP" in preview.charge_notice
+    assert preview.status == "paused" and "$150 COP" in preview.charge_notice
     assert all(client.objects[k]["status"] == "PAUSED" for k in ("1", "2", "4"))
     creative = client.objects["3"]
     assert creative["source_instagram_media_id"] == source.source_media_id
@@ -410,7 +410,7 @@ async def test_public_production_seams_require_authenticated_actor(monkeypatch) 
         {"link_url": "http://example.org"},
         {"link_url": "https://u:p@example.org"},
         {"budget_minor": True},
-        {"currency": "USD"},
+        {"currency": "VES"},
         {"radius_km": 0},
         {"age_min": 17},
         {"city_name": ""},
@@ -469,7 +469,6 @@ async def test_lead_campaign_uses_published_form_paused_then_explicit_activation
         ({"connection_id": uuid4()}, "SIGN_UP"),
         ({"page_id": "78"}, "SIGN_UP"),
         ({"brand_id": uuid4()}, "SIGN_UP"),
-        ({"credential_version": 2}, "SIGN_UP"),
         ({}, "SHOP_NOW"),
         ({}, ""),
     ],
@@ -482,6 +481,17 @@ async def test_lead_form_of_another_account_or_unsupported_button_never_creates(
     with pytest.raises(WizardUnavailable):
         await wizard.prepare(**args)
     assert not client.calls and not client.objects
+
+
+@pytest.mark.asyncio
+async def test_published_form_survives_a_token_renewal_of_the_same_account() -> None:
+    # m-25072366: the form keeps its own credential_version as provenance.
+    wizard, client, source, args, target = lead_setup()
+    wizard.sources.source = replace(source, credential_version=2)
+    preview = await wizard.prepare(**args)
+    stored = wizard.creation.repository.get(args["tenant_id"], preview.promotion_id)
+    assert stored.request["lead_form_snapshot"]["credential_version"] == 1
+    assert client.objects["4"]["status"] == "PAUSED"
 
 
 # --- The website promotion's button (m-24828976) ---
@@ -572,3 +582,19 @@ async def test_a_website_button_never_rides_a_lead_ad() -> None:
     with pytest.raises(WizardUnavailable, match="botón"):
         await wizard.prepare(**{**args, "form": replace(args["form"], cta_type="SHOP_NOW")})
     assert not client.calls and not client.objects
+
+
+@pytest.mark.asyncio
+async def test_meta_rejecting_a_creation_step_explains_and_the_same_request_retries() -> None:
+    """m-25077974: a definite 4xx frees the step; preparing again finishes the promotion."""
+    wizard, client, _, _, args, _ = setup()
+    client.failures.append(
+        MarketingError("Meta está recibiendo muchas solicitudes.", http_status=400, code=17)
+    )
+    with pytest.raises(
+        WizardUnavailable, match="^No se activó ningún anuncio. Meta está recibiendo"
+    ):
+        await wizard.prepare(**args)
+    assert client.objects == {}
+    preview = await wizard.prepare(**args)
+    assert preview.status == "paused" and len(client.objects) == 4

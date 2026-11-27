@@ -1,8 +1,7 @@
-"""Strict Meta observation parsing and exact paid-edit consent, entirely offline."""
+"""Strict Meta observation parsing, entirely offline."""
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -10,12 +9,9 @@ from uuid import uuid4
 import pytest
 
 from qualify_api.ads.fake import FakeMarketingClient
-from qualify_api.ads.promotions import fingerprint
 from qualify_api.ads.results import ResultsUnavailable, nonnegative, parse_insight, review_reason
-from qualify_api.ads.results_management import PromotionEdit, VerifiedEditApproval, edit_scope_hash
 from qualify_api.ads.results_service import ResultScope, _verify_delivery
 from qualify_api.connections.ad_accounts import AdConnection
-from qualify_api.tenancy.acting import acting_login
 
 
 @pytest.mark.parametrize(
@@ -152,69 +148,3 @@ async def test_delivery_client_requests_verified_fields_readonly():
     await api.delivery("3")
     assert api.calls[0][0:2] == ("GET", "3")
     assert "ad_review_feedback" in api.calls[0][2]["fields"]
-
-
-def approval(target, edit, login, now):
-    return VerifiedEditApproval(
-        target.tenant_id,
-        target.promotion_id,
-        target.account_id,
-        target.connection.version,
-        login,
-        fingerprint({"action": edit.action, "payload": edit.payload()}),
-        now + timedelta(seconds=30),
-        True,
-        True,
-        True,
-        "lifetime",
-        100,
-        500,
-        now - timedelta(days=1),
-        "fixture-only-v1",
-        edit_scope_hash(target),
-    )
-
-
-def test_verified_edit_budget_consent_expiry_currency_units_and_spent_floor():
-    now, login, target = datetime.now(UTC), uuid4(), scope()
-    edit = PromotionEdit("budget", "lifetime", 1000)
-    verified = approval(target, edit, login, now)
-    with acting_login(login):
-        verified.validate(target, edit, now)
-        for changed in (
-            replace(verified, confirmed=False),
-            replace(verified, eligible=False),
-            replace(verified, billing_ready=False),
-            replace(verified, spend_minor=2000),
-            replace(verified, minimum_budget_minor=2000),
-            replace(verified, credential_version=2),
-            replace(verified, account_id=uuid4()),
-            replace(verified, expires_at=now),
-            replace(verified, intent_hash="other"),
-        ):
-            with pytest.raises(ResultsUnavailable):
-                changed.validate(target, edit, now)
-        with pytest.raises(ResultsUnavailable):
-            verified.validate(target, replace(edit, budget_minor=2000), now)
-
-
-@pytest.mark.parametrize(
-    "edit",
-    [
-        PromotionEdit("budget", "lifetime", -1),
-        PromotionEdit("budget", "daily", True),
-        PromotionEdit("bad"),
-        PromotionEdit("end_time", end_time=datetime(2026, 1, 1)),
-        PromotionEdit("resume", budget_minor=100),
-    ],
-)
-def test_edit_rejects_unsupported_or_unconfirmed_structures(edit):
-    with pytest.raises(ResultsUnavailable):
-        edit.payload()
-
-
-def test_end_edit_must_be_future_after_current_start():
-    now, login, target = datetime.now(UTC), uuid4(), scope()
-    edit = PromotionEdit("end_time", end_time=now - timedelta(seconds=1))
-    with acting_login(login), pytest.raises(ResultsUnavailable):
-        approval(target, edit, login, now).validate(target, edit, now)

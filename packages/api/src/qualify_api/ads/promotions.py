@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -13,12 +15,15 @@ from uuid import UUID, uuid4
 
 from qualify_api.ads.client import MarketingAPI, Resource, _validate
 from qualify_api.ads.errors import MarketingError
+from qualify_api.ads.money import META_CURRENCY_OFFSETS
 
 STEPS: tuple[Resource, ...] = ("campaigns", "adsets", "adcreatives", "ads")
 ID_COLUMNS = dict(
     zip(STEPS, ("meta_campaign_id", "meta_adset_id", "meta_creative_id", "meta_ad_id"))
 )
 ADAPTER_VERSION = "ad-promotions-v1"
+TRANSIENT_CODES = frozenset({1, 2})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,8 @@ class PromotionRequest:
     lead_form_snapshot: dict[str, Any] = field(default_factory=dict)
     # The owner's chat greeting (m-24828980); only a messaging promotion carries one.
     greeting_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Extra approved HTTPS destinations: a catalog carousel's per-card links (m-25113484).
+    card_links: tuple[str, ...] = ()
 
     def snapshot(self) -> dict[str, Any]:
         from qualify_api.ads.enhancements import validate_request_policy
@@ -92,8 +99,7 @@ class PromotionRequest:
             raise ValueError("invalid budget or currency")
         if self.meta_currency_offset is not None and (
             type(self.meta_currency_offset) is not int
-            or self.meta_currency_offset != 1
-            or self.currency != "COP"
+            or self.meta_currency_offset != META_CURRENCY_OFFSETS.get(self.currency)
             or self.budget_minor * self.meta_currency_offset % 100
         ):
             raise ValueError("unrepresentable verified Meta currency amount")
@@ -115,6 +121,10 @@ class PromotionRequest:
             )
         ):
             raise ValueError("objective, CTA and HTTPS destination are required")
+        if any(
+            not isinstance(link, str) or not link.startswith("https://") for link in self.card_links
+        ):
+            raise ValueError("card links must be HTTPS destinations")
         if not (self.content_draft_id or self.publish_attempt_id or self.source_media_id):
             raise ValueError("promotion provenance is required")
         reserved = {
@@ -146,7 +156,12 @@ class PromotionRequest:
                     ):
                         raise ValueError("creative CTA differs from approved metadata")
                     # A chat CTA carries Meta's fixed chat link; MessagingTarget checked it.
-                    if key == "link" and child != self.link_url and not self.messaging_snapshot:
+                    if (
+                        key == "link"
+                        and child != self.link_url
+                        and child not in self.card_links
+                        and not self.messaging_snapshot
+                    ):
                         raise ValueError("creative link differs from approved metadata")
                     if key == "page_welcome_message":
                         continue  # A JSON string by contract (SDK type), checked exactly above.
@@ -172,6 +187,8 @@ class PromotionRequest:
             snapshot.pop("greeting_snapshot", None)
         if self.meta_currency_offset is None:
             snapshot.pop("meta_currency_offset", None)
+        if not self.card_links:
+            snapshot.pop("card_links", None)
         return snapshot
 
 
@@ -185,6 +202,22 @@ def fingerprint(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def definite_rejection(error: MarketingError) -> bool:
+    """True only when Meta's answer proves it created nothing (a 4xx that is not transient).
+
+    Codes 1/2 are Meta's transient/unknown errors and an error inside a 2xx body is
+    ambiguous: both stay in flight for recovery. `is_transient` is not exposed by
+    MarketingError, so transient answers are recognised by these codes only.
+    """
+    status = error.http_status
+    return (
+        not error.outcome_unknown
+        and status is not None
+        and 400 <= status < 500
+        and error.code not in TRANSIENT_CODES
+    )
 
 
 @dataclass(frozen=True)
@@ -223,6 +256,9 @@ class PromotionRepository(Protocol):
     def complete(
         self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID, meta_id: str
     ) -> bool: ...
+    def fail(self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID) -> bool:
+        """Release an in-flight claim nothing created in Meta (state 'failed', reclaimable)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -255,6 +291,8 @@ def step_payload(promotion: Promotion, resource: Resource) -> dict[str, Any]:
             "status": "PAUSED",
             "objective": request["objective"],
             "special_ad_categories": request["special_ad_categories"],
+            # Required since v24.0 when the budget lives on the ad set (m-25091386).
+            "is_adset_budget_sharing_enabled": False,
         }
     if resource == "adsets":
         return {
@@ -338,7 +376,7 @@ class PromotionService:
                 continue
             access = await self._access(promotion)
             existing = self.repository.step(tenant_id, promotion_id, resource)
-            if existing is not None:
+            if existing is not None and existing.state != "failed":
                 # Never reset an in-flight claim to create-ready, even after a crash.
                 found = await self._recover(access.client, existing)
                 if found is None:
@@ -356,20 +394,49 @@ class PromotionService:
                 return self.repository.get(tenant_id, promotion_id) or promotion
             # claim() must COMMIT independently before this call; cancellation or
             # persistence failure leaves a durable claim, which only recovery can finish.
+            # `sent` turns true once the last local check passed and the POST may leave.
+            sent = before_write is None
+
+            async def guarded(check: Callable[[], Awaitable[None] | None]) -> None:
+                nonlocal sent
+                checked = check()
+                if inspect.isawaitable(checked):
+                    await checked
+                sent = True
+
             try:
                 if before_write is None:
                     identifier = await access.client.create(resource, params=payload)
                 else:
                     identifier = await access.client.create(
-                        resource, params=payload, before_write=before_write
+                        resource, params=payload, before_write=lambda: guarded(before_write)
                     )
-            except MarketingError:
-                return self.repository.get(tenant_id, promotion_id) or promotion
+            except MarketingError as error:
+                if sent and not definite_rejection(error):
+                    # The POST may have reached Meta: only _recover may settle this claim.
+                    return self.repository.get(tenant_id, promotion_id) or promotion
+                # Meta answered a definite rejection, or nothing left: the owner may retry.
+                self._release(tenant_id, promotion_id, resource, token)
+                raise
+            except BaseException:
+                if not sent:
+                    self._release(tenant_id, promotion_id, resource, token)
+                raise
             if not self.repository.complete(tenant_id, promotion_id, resource, token, identifier):
                 return self.repository.get(tenant_id, promotion_id) or promotion
         result = self.repository.get(tenant_id, promotion_id)
         assert result is not None
         return result
+
+    def _release(
+        self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID
+    ) -> None:
+        # Called while another exception propagates: that one must win. A failed release
+        # leaves the step in_flight, which is safe (recovery only, never a duplicate).
+        try:
+            self.repository.fail(tenant_id, promotion_id, resource, token)
+        except Exception:
+            logger.exception("ads.promotion.release_failed resource=%s", resource)
 
     async def _recover(self, client: MarketingAPI, step: CreationStep) -> str | None:
         # Enumerate the bound account, never GET an arbitrary caller-provided id.

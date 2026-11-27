@@ -23,6 +23,7 @@ from qualify_api.creative.final_deadline import (
     FinalDeadlineExpired,
     final_deadline_passed,
 )
+from qualify_api.creative.heavy_video import LocalVideoWait, held, hold, joining
 from qualify_api.creative.image_pipeline.compose_run import RenderWait
 from qualify_api.creative.part_final import JOIN_FINAL_PHASE, run_join_final
 from qualify_api.creative.part_join import JOIN_PHASE, run_join
@@ -580,6 +581,15 @@ class BackgroundJoins:
                     with preparing(run), lease_kept(self.store, run, halt=self._halt):
                         work(run)
                     completed = True
+                except LocalVideoWait as wait:
+                    # m-25103284: a part's final composed off the loop waits for a local
+                    # assembly holding the heavy-video gate — made on a later pass
+                    hold(run.draft_id, wait.retry_after_s)
+                    logger.info(
+                        "creative.pipeline.local_waits draft_id=%s reason=%s",
+                        run.draft_id,
+                        type(wait).__name__,
+                    )
                 except Exception as exc:
                     logger.error(
                         "creative.pipeline.preparation_failed draft_id=%s error_type=%s",
@@ -660,6 +670,9 @@ class PipelinePreparation:
                 )
         else:
             tenants = self.tenant_ids
+        # m-25042483: a local video waiting for its sources' normalization is held out
+        # of the pass for a while — it never takes the turn of the pieces behind it
+        waiting = [str(draft_id) for draft_id in held()]
         for tenant_id in tenants:
             with tenant_session(tenant_id) as session:
                 runs = (
@@ -667,8 +680,10 @@ class PipelinePreparation:
                         text("""
                     SELECT draft_id,revision,phase FROM creative_pipeline_runs
                     WHERE dirty_version > prepared_version
+                      AND draft_id <> ALL(CAST(:waiting AS uuid[]))
                     ORDER BY draft_id,revision,phase LIMIT 20
-                """)
+                """),
+                        {"waiting": waiting},
                     )
                     .mappings()
                     .all()
@@ -676,6 +691,16 @@ class PipelinePreparation:
             for item in runs:
                 if item["phase"] in _JOIN_PHASES and self.joins is not None and self.joins.busy():
                     continue  # one join at a time: this one waits for the next pass
+                queued_asset = _final_asset(item["phase"])
+                if (
+                    queued_asset is not None
+                    and self.joins is not None
+                    and self.joins.busy()
+                    and self._final_composes(tenant_id, item["draft_id"], queued_asset)
+                ):
+                    # m-25103284: one heavy job at a time — a part's composed final waits
+                    # for the next pass without being claimed (an ordinary final goes on)
+                    continue
                 run = self.store.acquire(
                     tenant_id, item["draft_id"], item["revision"], item["phase"]
                 )
@@ -706,6 +731,17 @@ class PipelinePreparation:
                         # the thread owns the run (and its release) from here on
                         handed = self.joins.start(run, self._join_run)
                         continue
+                    if (
+                        asset_id is not None
+                        and self.joins is not None
+                        and self._final_composes(run.tenant_id, run.draft_id, asset_id)
+                    ):
+                        # m-25103284: a part's final composed again takes minutes (10-bit
+                        # H.265): off the loop, one heavy job at a time, its lease kept —
+                        # so `claim_round`, `recover` and the heartbeat keep running. Busy:
+                        # released not done, taken on a later pass
+                        handed = self.joins.start(run, self._final_run)
+                        continue
                     with preparing(run):
                         if run.phase == "generation":
                             self.service.run_generation(tenant_id=tenant_id, draft_id=run.draft_id)
@@ -733,6 +769,17 @@ class PipelinePreparation:
                     # m-25040499: the piece waits for the render service (logged there at
                     # WARNING, once a minute): not a failed preparation, retried next pass
                     pass
+                except LocalVideoWait as wait:
+                    hold(run.draft_id, wait.retry_after_s)
+                    # m-25042483: a local video waits — for the part join in flight
+                    # (`LocalAssemblyWait`) or for its sources' normalization on the
+                    # media-worker (`LocalSourceNormalizing`): not a failed preparation,
+                    # made on a later pass, nothing said to the owner
+                    logger.info(
+                        "creative.pipeline.local_waits draft_id=%s reason=%s",
+                        run.draft_id,
+                        type(wait).__name__,
+                    )
                 except Exception as exc:
                     logger.error(
                         "creative.pipeline.preparation_failed draft_id=%s error_type=%s",
@@ -777,10 +824,30 @@ class PipelinePreparation:
     def _join_run(self, run: Any) -> None:
         """The join of `run`: its own tenant and parent, bound from the run (never from
         the loop's variables) — the preview (`join`) or the 1080p final (`join_final`)."""
-        if run.phase == JOIN_FINAL_PHASE:
-            run_join_final(self.service._media, run.tenant_id, run.draft_id)
-        else:
-            self._join(run.tenant_id, run.draft_id)
+        # m-25042483: never alongside a local assembly (it waits for this one to end)
+        with joining():
+            if run.phase == JOIN_FINAL_PHASE:
+                run_join_final(self.service._media, run.tenant_id, run.draft_id)
+            else:
+                self._join(run.tenant_id, run.draft_id)
+
+    def _final_composes(self, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> bool:
+        """Whether a queued final is a part's raw 1080p composed again (m-25103284)."""
+        check = getattr(self.service, "queued_final_composes", None)
+        if not callable(check):
+            return False
+        return bool(check(tenant_id=tenant_id, draft_id=draft_id, asset_id=asset_id))
+
+    def _final_run(self, run: Any) -> None:
+        """A queued final made on the background thread (m-25103284): its own tenant,
+        draft and asset, bound from the run, as the inline path makes it."""
+        asset_id = _final_asset(run.phase)
+        if asset_id is None:
+            return
+        self.service.run_queued_final(
+            tenant_id=run.tenant_id, draft_id=run.draft_id, asset_id=asset_id
+        )
+        self._settle_local(run)
 
     def _settle_local(self, run: Any) -> None:
         """Image/copy-only jobs finish in preparation; videos are settled by executors."""

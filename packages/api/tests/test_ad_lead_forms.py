@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -11,7 +15,12 @@ import httpx
 import pytest
 
 from qualify_api.ads import lead_forms_service as service
-from qualify_api.ads.lead_forms import LeadFormDraft, LeadFormQuestion, LeadFormUnavailable
+from qualify_api.ads.lead_forms import (
+    LeadFormDraft,
+    LeadFormQuestion,
+    LeadFormUnavailable,
+    LeadNotVerifiable,
+)
 from qualify_api.ads.lead_forms_client import LeadFormsClient
 from qualify_api.ads.lead_forms_webhook import leadgen_handler
 from qualify_api.webhooks.repository import ClaimedEvent
@@ -78,7 +87,6 @@ def test_invalid_editor_values_fail_before_remote_write(changes: dict) -> None:
         {"field_data": [{"name": "email", "values": "one"}]},
         {"field_data": [{"name": "email", "values": ["a"]}, {"name": "email", "values": ["b"]}]},
         {"field_data": [{"name": "email", "values": [True]}]},
-        {"ad_id": "https://evil.invalid"},
     ],
 )
 def test_off_contract_lead_does_not_enter_crm(changes: dict) -> None:
@@ -266,3 +274,171 @@ async def test_webhook_entry_page_mismatch_is_dead() -> None:
     )
     result = await leadgen_handler(event)
     assert result.status == "dead" and result.error == "leadgen_page_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "definite"),
+    [
+        (400, {"error": {"code": 100, "error_subcode": 33}}, True),
+        (400, {"error": {"code": 100}}, False),
+        (400, {"error": {"code": 17}}, False),
+        (429, {"error": {"code": 4}}, False),
+        (500, {"error": {"code": 1}}, False),
+        (200, {"error": {"code": 100, "error_subcode": 33}}, True),
+    ],
+)
+async def test_only_a_missing_ad_is_definite_when_verifying_a_lead(
+    status: int, body: dict, definite: bool
+) -> None:
+    """m-25072672: rate limits and outages must not make a backup skip a lead forever."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+    client = LeadFormsClient(AsyncMock(), ad_client=httpx.AsyncClient(transport=transport))
+    with pytest.raises(LeadFormUnavailable) as raised:
+        await client.read_ad("5", fields="id")
+    assert isinstance(raised.value, LeadNotVerifiable) is definite
+
+
+def test_genuine_lead_text_is_normalized_not_refused() -> None:
+    """m-25072672: CR line breaks, long answers, clock skew and odd ad ids keep the contact."""
+    from datetime import UTC, datetime, timedelta
+
+    soon = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    parsed = service.parse_lead(
+        raw_lead(
+            created_time=soon,
+            ad_id="https://evil.invalid",
+            field_data=[
+                {"name": "email", "values": ["synthetic@example.invalid"]},
+                {"name": "notes", "values": ["a\r\nb\rc", "x" * 600]},
+                {"name": "empty", "values": []},
+                {"name": "q" * 120 + "a", "values": ["first"]},
+                {"name": "q" * 120 + "b", "values": ["second"]},
+            ],
+        ),
+        form_id="800",
+    )
+    first, long = parsed["answers"]["notes"].split("; ")
+    assert first == "a\nb\nc" and len(long) == 500 and long.endswith("…")
+    assert parsed["answers"]["empty"] == "" and parsed["meta_ad_id"] is None
+    # The ad id was there but unusable: the contact is kept and marked unverified.
+    assert parsed["pipeline"] == service.UNATTRIBUTED_PIPELINE
+    # Two long names cut to the same prefix both keep their answers.
+    assert parsed["answers"]["q" * 99 + "…"] == "first"
+    assert parsed["answers"]["q" * 96 + " (2)"] == "second"
+    assert "pipeline" not in service.parse_lead(raw_lead(), form_id="800")
+    assert parsed["created"] <= datetime.now(UTC)
+    too_far = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
+    with pytest.raises(LeadFormUnavailable):
+        service.parse_lead(raw_lead(created_time=too_far), form_id="800")
+    with pytest.raises(LeadFormUnavailable):
+        service.parse_lead(["not", "an", "object"], form_id="800")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "dropped,ok", [(None, True), ("leads_retrieval", False), ("pages_manage_ads", False)]
+)
+def test_lead_access_reason_requires_the_current_grant_to_keep_lead_scopes(
+    monkeypatch, dropped, ok
+) -> None:
+    # m-25072366: a renewal that drops a lead scope blocks new lead ads, as intake does.
+    from qualify_api.connections.ad_accounts import AdConnection
+
+    scopes = tuple(s for s in (*service.LEAD_FORM_SCOPES, "ads_management") if s != dropped)
+    grant = AdConnection(uuid4(), uuid4(), "1", 2, "active", scopes, None, True)
+    monkeypatch.setattr(service, "_connection", lambda session, cid: grant)
+    reason = service.lead_access_reason(None, grant.connection_id)
+    assert (reason == "") is ok
+    assert ok or "actualiza el acceso con Meta" in reason
+
+
+class _AdReadsClient:
+    """Fake Meta client for a backup sync: one page of leads, counts `read_ad` calls."""
+
+    def __init__(self, rows: list[dict], failures: dict[str, Exception]) -> None:
+        self.rows, self.failures, self.reads = rows, failures, []
+
+    async def leads(self, form_id: str, *, since: int, after: str | None) -> object:
+        return SimpleNamespace(rows=self.rows, after=None)
+
+    async def read_ad(self, ad_id: str, *, fields: str) -> dict:
+        self.reads.append(ad_id)
+        if ad_id in self.failures:
+            raise self.failures[ad_id]
+        cta = {"value": {"lead_gen_form_id": "800"}}
+        spec = {"page_id": "700", "link_data": {"call_to_action": cta}}
+        return {"id": ad_id, "creative": {"object_story_spec": spec}}
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _sync_run(monkeypatch: pytest.MonkeyPatch, client: _AdReadsClient) -> list[dict]:
+    form = {
+        "status": "published",
+        "page_id": "700",
+        "meta_form_id": "800",
+        "credential_version": 1,
+        "backup_since": None,
+        "backup_started_at": None,
+        "backup_after": None,
+        "last_synced_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "approved_at": None,
+    }
+    saved: list[dict] = []
+
+    @contextmanager
+    def session(_tenant: object) -> Iterator[SimpleNamespace]:
+        yield SimpleNamespace(execute=lambda *_: SimpleNamespace(rowcount=1))
+
+    monkeypatch.setattr(service, "_member", lambda *_: None)
+    monkeypatch.setattr(service, "_form_guard", lambda *_: {"current_credential_version": 1})
+    monkeypatch.setattr(service.repository, "get_form", lambda *_: form)
+    monkeypatch.setattr(service, "_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(service, "_page_access", AsyncMock())
+    monkeypatch.setattr(service, "_remote_form", AsyncMock())
+    monkeypatch.setattr(service, "tenant_session", session)
+    monkeypatch.setattr(service, "_persist", lambda _t, _f, data, **_: saved.append(data) or True)
+    return saved
+
+
+def _leads_from(*ads: str) -> list[dict]:
+    return [raw_lead(id=str(901 + n), ad_id=ad) for n, ad in enumerate(ads)]
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_reads_each_ad_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AdReadsClient(_leads_from("11", "11", "22", "11"), {})
+    saved = _sync_run(monkeypatch, client)
+    assert await service.sync_lead_form(tenant_id=uuid4(), form_id=uuid4()) == (4, 0)
+    assert sorted(client.reads) == ["11", "22"]
+    assert [d["meta_ad_id"] for d in saved] == ["11", "11", "22", "11"]
+    assert all("pipeline" not in d for d in saved)
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_caches_a_definite_unverifiable_ad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AdReadsClient(_leads_from("11", "22", "11"), {"11": LeadNotVerifiable("x")})
+    saved = _sync_run(monkeypatch, client)
+    assert await service.sync_lead_form(tenant_id=uuid4(), form_id=uuid4()) == (3, 0)
+    assert client.reads == ["11", "22"]
+    assert [(d["meta_ad_id"], d.get("pipeline")) for d in saved] == [
+        (None, service.UNATTRIBUTED_PIPELINE),
+        ("22", None),
+        (None, service.UNATTRIBUTED_PIPELINE),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_never_caches_a_transient_ad_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AdReadsClient(_leads_from("11", "11"), {"11": LeadFormUnavailable("x")})
+    saved = _sync_run(monkeypatch, client)
+    for _ in range(2):
+        with pytest.raises(LeadFormUnavailable):
+            await service.sync_lead_form(tenant_id=uuid4(), form_id=uuid4())
+    assert client.reads == ["11", "11"]  # Aborted at the first lead each run, read again.
+    assert saved == []

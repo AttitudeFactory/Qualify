@@ -110,7 +110,7 @@ if (process.argv.includes('--probe-upstream')) {
   for (const path of ['/api/probe.css', '/public/media/probe.png',
     '/public/catalog-media/probe/probe/probe.jpg', '/_event/probe.js',
     '/_upload/probe.js', '/r2media/probe.png', '/avatar/probe.png',
-    '/r2seasonal/probe.webp', '/piece-download/probe.zip']) {
+    '/r2seasonal/probe.webp', '/piece-download/probe.zip', '/r2effects/probe/v1']) {
     const response = await get(path)
     assert.equal(response.status, 200, path)
     assert.equal(response.headers['cache-control'], 'private, no-store', path)

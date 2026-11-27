@@ -13,6 +13,7 @@ import reflex as rx
 
 from .catalog_choose_page import choice_grid, product_choice_group
 from .catalog_choose_vm import GROUP_BUSINESS, GROUP_PRODUCTS
+from .creative_state import MEDIA_DRAWER_CLIP
 from .gen_gallery_pick_state import GenGalleryPickState
 from .gen_gallery_pick_vm import COUNT_ID, EMPTY
 from .ui import callout, section, skeleton_rows
@@ -58,6 +59,15 @@ def gallery_tab(*, inline: str = "") -> rx.Component:
     )
     if not inline:
         return body
+    if inline == MEDIA_DRAWER_CLIP:
+        # ED-03: the Clip editor's panel adds on the tap — no «Agregar»; what went wrong
+        # still shows
+        return rx.vstack(
+            body,
+            rx.cond(S.error != "", rx.box(callout(S.error, "warn"), role="alert", width="100%")),
+            spacing="3",
+            width="100%",
+        )
     return rx.vstack(
         body,
         # in line, only once something is chosen (there is no drawer to close: «Listo»

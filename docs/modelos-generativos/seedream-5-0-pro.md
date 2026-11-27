@@ -1,5 +1,14 @@
 # Seedream 5.0 pro — transferir colores y aplicar textura (m-24849234) · BORRADOR
 
+## Prueba AVFOTO-001 — personaje desde la foto de una persona real — 2026-11-26 (m-25129385)
+
+Seedream 5.0 pro aceptó las 3 fotos de personas reales (con permiso escrito) y dibujó los 6
+personajes pedidos (imagen a imagen, la foto como única referencia, 1080×1920, prompt
+`personaje-desde-foto-v1`): US$0,045 cada uno, 26 a 38 s, ningún rechazo del filtro. Pero
+Seedance 2.5 rechazó esos dibujos como persona real, así que el camino no sirve para el Clip.
+Detalle y conclusión en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVFOTO-001») y
+[`pruebas.md`](pruebas.md#avfoto-001).
+
 ## Verificación acotada — 2026-11-10
 
 Una generación directa de imagen sintética a 1K con la llave local

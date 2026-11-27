@@ -29,6 +29,8 @@ just ci-lint      # the lint steps of the CI `test` job (ruff check + format --c
 just ci-test      # the offline-tests step of the CI `test` job: offline tests + coverage per package
 just audit        # pip-audit over the lock + npm audit (packages/render) — informational
 just down         # docker compose down -v — DROPS the pgdata volume
+just graph-sync   # link this worktree to the CI-built code graph and download it if main moved (never `graphify update` locally)
+just graph-build [true]  # dispatch code-graph.yml now over REST (true = rebuild even if current; ~6 Actions min)
 just calendar-tick --tenant <uuid>     # QUA-111: one Planificador tick — PUBLISHES FOR REAL
 just calendar-worker --tenant <uuid>   # QUA-111: a tick every 60 s until Ctrl+C
 just whatsapp-tick --tenant <uuid>     # WA-08: one pass of the WhatsApp outbox sender — SENDS FOR REAL

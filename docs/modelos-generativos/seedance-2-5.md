@@ -239,3 +239,401 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
 - **Logo de otra cadena al fondo:** lo tiene que ver el control de marca antes de que la pieza
   llegue al dueño.
 - `QUALIFY_PARTS_EXTEND` sigue en `off`; encenderlo (`draft`) es una decisión aparte.
+
+## Prueba EF11-001 — cuadro preparado como «Image 1» en una parte «Nueva» con fotos (prompt de parte v6) — 2026-11-20/21 (m-25078702)
+
+- **Qué se mide:** EF-11 (m-25026585, PR #768) dejó detrás de
+  `QUALIFY_PARTS_PREPARED_FRAME_REFS` (apagado) el camino de una parte `reference` («Nueva»)
+  que lleva tramos del video propio del dueño **y** fotos de producto. ModelArk no acepta
+  `first_frame` junto a referencias, así que el primer cuadro del tramo, ya preparado (derecho
+  y 9:16), va como primera `reference_image` y el prompt de la parte pasa a la versión 6
+  (`PART_PREPARED_FRAME_PROMPT_VERSION`, `part_reference_prompt(opening_frame=True)`): agrega
+  «The opening frame is Image 1: the shot starts on it and brings it to life.» y numera las
+  fotos desde la 2.
+- **Línea base:** la misma parte **sin** tramos propios, lo que hace hoy `main` con el
+  interruptor apagado: solo las fotos, prompt de parte versión 3 (compilador 6).
+- **Montaje:** `packages/api/evals/prompt_v6_partes/run_experiment.py`. Llama al
+  `MediaProducer.produce` real y al `SeedanceVideoAdapter` real (nada de la lógica duplicada);
+  el interruptor se enciende **solo dentro del proceso** de la variante v6. Almacén en memoria,
+  nada escrito en la base ni en R2. Salidas fuera del repositorio (`%TEMP%/m-25078702/`).
+- **Ajustes, iguales en las dos variantes:** `dreamina-seedance-2-5-260628`, borrador
+  (`draft: true`) a 480p, 4 s (el mínimo de una parte), `ratio: 9:16`,
+  `omni_reference_task_type: reference`, con audio (lo que pide el brief por omisión), misma
+  descripción de la parte, mismo producto y misma marca ficticia.
+- **Material real de un negocio nuestro (decisión de Deivid, 2026-11-20: «llave de app +
+  material real»):** una hamburguesería del catálogo de desarrollo, leído solo con la puerta
+  `tenant_session` de su negocio en una transacción de solo lectura y del volumen local de
+  subidas por las mismas llaves de la app; nada escrito, cambiado ni borrado. Fotos: la foto
+  principal de dos productos del catálogo (una smash triple sostenida en la mano y una smash
+  doble sobre papel). «Video propio»: el único video que subió el negocio, un clip de 4,8 s de
+  una hamburguesa de pan con ajonjolí sobre fondo negro que gira despacio (un clip de banco de
+  imágenes que el dueño subió como referencia, no su propio producto); tramo 0,0–2,4 s en el
+  caso A y 2,4–4,8 s en el B. Marca: paleta y tipografías del Brand Kit del negocio. El
+  material se descargó a `%TEMP%\m-25078702\` (fuera del repositorio) y los casos se pasan
+  al script con `--cases`; no entra al repositorio. Sin `--cases`, el script usa
+  las fotos de muestra y los videos de efectos del repositorio.
+- **Tope de gasto:** US$2,00 en total (Deivid, 2026-11-20, vía «creacion de tickets»). Cada
+  tarea se cotiza con la fórmula del adaptador y la tabla `v8` antes de enviarse, se reserva
+  con 10 % de margen en un `SpendLedger` con techo de US$2 y se liquida con los tokens que
+  cobra ModelArk. Sin Claude: el texto es fijo (el prompt de una parte no lo usa).
+- **Plan cotizado (corrida en seco, sin gasto):** 2 casos × 2 variantes = 4 tareas de 4 s a
+  480p, 38.430 tokens estimados cada una (480×854×24×4/1024), US$0,411201 cada una a 10,70/M,
+  **US$1,644804** en total; reservado con margen, US$1,81 ≤ US$2. Un tercer par (US$2,47)
+  no cabía.
+- **Horario y llave:** llave de la app (no hay `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` en el
+  `.env` local), huella `sha256:3c54154d`. La ventana de 23:00–05:00 (hora de Bogotá) es una
+  regla del repositorio (m-24852161, `byteplus_eval_guard.py`), no del proveedor ni del precio;
+  el script trae `--allow-daytime`, que pasa `allow_daytime` al guardia y queda registrado en el
+  informe (`daytime_override`).
+
+- **Corrida:** 2026-11-21, 02:08:33–02:12:47 UTC (21:08–21:12 en Bogotá), **4 min 14 s** para
+  las 4 tareas, una a la vez. Fuera de la ventana de 23:00–05:00, con `--allow-daytime`, por
+  decisión de Deivid con el visto bueno del fundador (2026-11-20, escrita en la sesión
+  coordinadora); la lanzó esa sesión tras comprobar que Seedance tenía **0 tareas** en cola o
+  corriendo.
+
+| Caso | Variante | Tarea | Prompt de parte | Tokens cobrados | Costo |
+|---|---|---|---|---|---|
+| A, «Super smash» | Línea base | `cgt-20261121100843-gf972` | v3 | 38.830 | US$0,415481 |
+| A, «Super smash» | v6 | `cgt-20261121100946-bog2f` | v6 | 38.830 | US$0,415481 |
+| B, «Smash doble» | Línea base | `cgt-20261121101050-jdxjq` | v3 | 38.830 | US$0,415481 |
+| B, «Smash doble» | v6 | `cgt-20261121101150-kp6py` | v6 | 38.830 | US$0,415481 |
+| | **Total** | | | 155.320 | **US$1,661924** |
+
+- **Costo:** cotizado US$1,644804, cobrado **US$1,661924** (+400 tokens, +1,04 %: 38.830 frente a
+  38.430 de la fórmula). **US$0,415 por pieza** de 4 s a 480p, igual con y sin el cuadro
+  preparado: la imagen de más no se cobra. Reservado con margen US$1,8096, por debajo del tope
+  de US$2. Sin Claude.
+- **Cómo se revisó:** tres cuadros por video (primero, del medio y último, 480×854) puestos al
+  lado del cuadro de apertura enviado y de la foto del producto, mirados uno por uno. Además,
+  la diferencia media por píxel (0–255, a 90×160) entre el primer cuadro de cada video y el
+  cuadro de apertura preparado: cerca de 0, el video arranca en ese cuadro.
+
+**Resultado por caso**
+
+| Caso | Continuidad con el cuadro de apertura | Fidelidad al producto |
+|---|---|---|
+| A — v6 | **No.** Diferencia 52,0 (la línea base, que no lo recibe, da 44,9). Arranca en otra toma: pan con ajonjolí sobre una piedra oscura, queso chorreando, sin la lechuga ni la mesa clara del cuadro. | **Mezcla.** Toma el pan con ajonjolí del cuadro de apertura y la carne smash, el queso y la cebolla morada de la foto. La «Super smash» de la foto tiene pan liso y tres carnes; aquí el pan es otro y se ve una sola carne gruesa. Queso exagerado. |
+| A — base | (no recibe cuadro) | **Buena.** Pan liso, carnes smash apiladas y cebolla morada como en la foto. Agrega pepinillos que la foto no muestra y exagera el queso hacia el final. |
+| B — v6 | **Sí.** Diferencia 12,1: el primer cuadro es casi el de apertura y el video lo anima (la cámara gira y el queso se derrite). | **Mala.** Se queda con la hamburguesa del clip (pan con ajonjolí, lechuga, una carne). La «Smash doble» (pan liso, dos carnes, cheddar) no aparece. |
+| B — base | (no recibe cuadro) | **Buena.** Pan liso, dos carnes, cheddar derretido como en la foto. Fondo oscuro con luz roja, de los colores de la marca. |
+
+**Veredicto: v6 NO queda apto para encender `QUALIFY_PARTS_PREPARED_FRAME_REFS`.** En los dos
+casos el cuadro de apertura y la foto del producto se contradicen, y Seedance resuelve el
+choque de forma distinta cada vez: en A ignora el cuadro y mezcla los dos productos; en B
+sigue el cuadro y pierde el producto del cliente. En ninguno se consiguen las dos cosas a la
+vez, y en los dos la línea base es más fiel al producto. El interruptor sigue apagado.
+
+**Limitaciones y qué falta:**
+
+- **n = 2**, un solo negocio, un solo «video propio».
+- **El «video propio» no muestra el producto:** es un clip de banco de imágenes que subió el
+  negocio, de otra hamburguesa. El caso para el que se hizo EF-11 es el contrario: el dueño
+  graba su propio producto, y el cuadro y las fotos coinciden. Esta corrida mide el peor caso
+  (cuadro y foto contradictorios), no el caso normal. Para decidir sobre el caso normal hay
+  que repetirla con un video propio de verdad que muestre el mismo producto de las fotos.
+- Aun así, el riesgo existe en producción: nada impide que el tramo elegido muestre otra cosa
+  que las fotos. Si se enciende algún día, conviene avisar al dueño o quitar las fotos cuando
+  el tramo no muestre el producto.
+- Borradores 480p de 4 s; no se midió el final 1080p.
+- Corrida sin repetición: con la misma entrada Seedance puede dar otro resultado.
+- El material real se descargó a `%TEMP%` y se borró al terminar, con todas las salidas. No
+  quedó nada en el repositorio.
+
+## Avatar como personaje en su escena, camino A: banco y corrida AVESC-001 (2026-11-26, m-25112921)
+
+- **Qué mide.** Decisión de Deivid del 2026-11-26: el avatar del Clip es un **personaje** que
+  actúa y habla dentro de la escena (toma el producto, lo muestra, lo come y dice su línea).
+  Camino A: una sola tarea omni de Seedance 2.5 con tres imágenes de referencia (personaje
+  dibujado por Seedream 5.0 pro, foto del producto, fondo) y la línea entre comillas
+  (`dialogue`, que el adaptador agrega como `Dice a cámara: "…"`). El camino B (OmniHuman +
+  Seed Speech) no se puede medir: no hay llaves.
+- **Montaje.** `qualify_api/evals/avatar_scene_bench.py` (matriz, prompts `avatar-escena-v1`,
+  costo, guardias, planilla) y `packages/api/evals/avatar_escena/run_experiment.py`
+  (`just eval-avatar-escena plan | dibujar | escenas | planilla`). Usa los adaptadores reales
+  (`SeedreamImageAdapter`, `SeedanceVideoAdapter`) y la tabla `v10`. Salidas y material en
+  `%TEMP%/avatar-escena-seedance/`, nunca en el repositorio.
+- **Matriz.** 2 personajes (realista y animado: 2.x suele rechazar caras que parecen reales;
+  la doc admite salidas propias de Seedream de menos de 30 días sin modificar, por eso el
+  dibujo viaja byte a byte) × 3 escenas (5, 8 y 10 s) sobre el fondo dibujado = 6 tareas;
+  más la escena 1 sobre la foto real del local por personaje (2 tareas) **cuando exista esa
+  foto**. Hoy no hay foto del local de nibbles: esa rama queda fuera.
+- **Costo estimado (tabla `v10`, sin llamadas).** Dibujos: 2 opciones × (2 personajes + 1
+  fondo) × US$0,045 = **US$0,27**. Escenas en borrador 480p 9:16: 5 s US$0,514, 8 s US$0,822,
+  10 s US$1,028; 2 personajes = **US$4,73**. Total **US$5,00** (con 10 % de margen US$5,50).
+  Con la foto del local, +US$1,03 (total US$6,03; con margen US$6,63). **Tope propuesto:
+  US$8** (el código no acepta más de US$10).
+- **Guardias.** `--dry-run` o `--i-have-spend-authorization` (uno de los dos, obligatorio);
+  `--max-usd`, con la fase entera cotizada con margen antes de la primera llamada y cada
+  llamada reservada antes de enviarse (`SpendLedger`), acumulado entre fases en `gasto.json`;
+  escenas solo de 23:00 a 05:00 en Bogotá salvo `--allow-daytime`; una tarea a la vez; la
+  prueba en seco corre con la red bloqueada (`network_guard`).
+- **Métricas.** Automáticas por escena: acepta o rechaza la referencia (y el error),
+  segundos reales y costo real (tokens × tabla). Juicio de Deivid y Herwin en
+  `juicio-<juez>.csv`: personaje igual, producto reconocible, acción cumplida, voz en español
+  bien, labios sincronizados, sin letras, creíble 1-3.
+- **Activación de Seedance 2.5, verificada sin generar (2026-11-26).** Con la llave de API,
+  ModelArk no tiene endpoint de saldo (el de facturación pide AK/SK, que no están en el
+  `.env`). Se leyó la lista de tareas (`GET /contents/generations/tasks`: solo lectura, no
+  crea ni cobra): 21 tareas de `dreamina-seedance-2-5-260628` en la ventana de la lista
+  (19 `succeeded`, 2 `failed`), la última del 2026-11-21. El modelo está activado: la
+  exigencia de más de US$30 de saldo era del 2026-10-07 y quedó atrás el 2026-10-23. El
+  saldo actual no se pudo leer.
+- **Resultados:** corrida `20261126-125745`, en la sección siguiente.
+
+### Prueba AVESC-001 — camino A en vivo: 2 personajes × 3 escenas en borrador — 2026-11-26 (m-25112921)
+
+- **Corrida:** `20261126-125745`, con el OK de Deivid escrito en la sesión. Material en
+  `%TEMP%/avatar-escena-seedance/corridas/20261126-125745/` (`videos/`, `dibujos/`,
+  `resultados.json`, `gasto.json`, `dibujos.json`, `juicio-deivid.csv`, `juicio-herwin.csv`).
+  Producto: `%TEMP%/avatar-escena-seedance/material/producto-super-smash.jpg`, una foto del
+  catálogo de nibbles (producto `fde5a706`, idéntica byte a byte a una de las fotos de la «smash
+  doble») que se usó como super smash por decisión de Deivid; no se confirmó que muestre el
+  producto real. La fidelidad al producto se mide contra esa foto. La revisión de cuadros y las transcripciones quedaron en
+  `%TEMP%/avatar-escena-revision/` (con una hoja de contacto de los 6 videos). Nada de eso se
+  copia al repositorio.
+- **Modelos y ajustes:** dibujos con `dola-seedream-5-0-pro-260628` (1080×1920; se usó la opción 1
+  del personaje realista, del animado y del fondo dibujado; las opciones 2 se pagaron y no se
+  usaron). Escenas con `dreamina-seedance-2-5-260628`, borrador 480p (480×854, 24 cps), 9:16, con
+  audio, prompt `avatar-escena-v1`, tabla de precios `v10`, una tarea a la vez.
+
+**Costo y tiempo reales**
+
+| Llamada | Segundos pedidos | Cotizado (US$) | Tokens cobrados | Cobrado (US$) | Tiempo (s) |
+|---|---|---|---|---|---|
+| 6 dibujos Seedream 5.0 pro | — | 0,27 | — | **0,27** (0,045 c/u) | 27,5 a 58,4 |
+| realista e1 | 5 | 0,514 | 48.437 | **0,518** | 68,5 |
+| realista e2 | 8 | 0,822 | 77.260 | **0,827** | 67,6 |
+| realista e3 | 10 | 1,028 | 96.475 | **1,032** | 74,4 |
+| animado e1 | 5 | 0,514 | 48.437 | **0,518** | 67,4 |
+| animado e2 | 8 | 0,822 | 77.260 | **0,827** | 78,4 |
+| animado e3 | 10 | 1,028 | 96.475 | **1,032** | 74,6 |
+| **Total** | | 5,00 | | **5,02** (escenas 4,75) | |
+
+- Cobrado = tokens × US$10,70/M (480p sin video de entrada). La cotización de `v10` se quedó
+  corta en un 0,4 a 0,8 % por escena (≈ 9.650 a 9.690 tokens por segundo cobrados frente a
+  ≈ 9.610 cotizados), como en SD25-001/002: dentro del margen del 10 % del libro de gasto. El tope
+  de US$8 no se tocó. Una escena cuesta ≈ US$0,10 por segundo en borrador; el final a 1080p de
+  esas mismas escenas costaría aparte ≈ US$0,57 por segundo (SD25-002), no medido aquí.
+- Una escena tarda de 67 a 78 s, sin relación clara con su largo (la de 5 s tardó lo mismo que la
+  de 8 s).
+
+**Aceptación de las referencias.** Las 6 tareas terminaron bien con las tres imágenes (personaje,
+producto, fondo); ninguna rechazó una referencia. **La cara realista dibujada por Seedream 5.0 pro
+pasó** (el dibujo viajó byte a byte). Eso no prueba que pase una foto real de una persona: esa
+rama no se midió.
+
+**Audio.** Los 6 videos traen una pista AAC estéreo de 32 kHz que dura lo mismo que el video
+(4,96 / 7,97 / 9,95 s). Transcripción local con faster-whisper en CPU, idioma `es`, con dos
+modelos (`small` y `large-v3-turbo`); donde no coinciden se dice. La voz del personaje animado
+sale más baja (RMS ≈ 0,045 frente a ≈ 0,08 del realista, unos 5 dB menos).
+
+| Video | Línea esperada | Transcripción | Habla entre |
+|---|---|---|---|
+| realista e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién hecha!» (los dos) | 2,0 y 4,7 s |
+| realista e2 | Mmm, crujiente por fuera y jugosa por dentro. | «Mmm, crujiente por fuera y jugosa por dentro.» (`small`; turbo omite el «Mmm») | 4,6 y 7,8 s |
+| realista e3 | Esta es la super smash de Nibbles. Ven hoy por la tuya. | «Esta es la Super **Splash** de **Nibles**. Ven hoy por la tuya.» (los dos) | 5,9 y 9,7 s |
+| animado e1 | ¡Mira esta super smash, recién hecha! | «Mira esta Super Smash recién **hacha**.» (los dos) | 2,2 y 4,7 s |
+| animado e2 | Mmm, crujiente por fuera y jugosa por dentro. | «Mmm, **cruyente** por fuera y jugosa por dentro.» (`small`; turbo «cruguiente») | 4,1 y 7,8 s |
+| animado e3 | Esta es la super smash de Nibbles. Ven hoy por la tuya. | «Esta es la Super Smash de Nibbles. Ven hoy por la tuya.» (los dos) | 4,9 y 9,1 s |
+
+Las seis dicen la frase completa, en español y dentro del video. Lo que va en negrita es donde los
+dos modelos oyen lo mismo, distinto de la línea: puede ser pronunciación (la marca en inglés,
+«hecha», la «j») o error de la transcripción. **Para juicio humano.**
+
+**Juicio preliminar por cuadros** (6 cuadros por video más 9 recortes de la cara durante el habla;
+sin oír). **Es preliminar: lo reemplaza la planilla de Deivid y Herwin** (la de Deivid, abajo).
+Labios: en los seis la
+boca cambia de forma mientras hay voz y está quieta o sonriendo antes; la sincronía fina, el acento
+y la calidad de la voz quedan **para juicio humano**. La columna «Producto» compara con la foto
+de catálogo usada como super smash, no con el producto real.
+
+| Video | Personaje igual | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
+|---|---|---|---|---|---|---|
+| realista e1 | sí (rizos, camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador y la acerca a cámara | ninguno inventado; el menú del fondo trae seudoletras borrosas que ya estaban en el dibujo del fondo | mancha de grasa en el mostrador donde estaba (verosímil) | 3 |
+| realista e2 | sí | sí; mordida visible en el pan | sí: muerde, mastica con los ojos cerrados, baja un poco y habla | igual que e1 | la mordida solo marca el pan de arriba | 3 |
+| realista e3 | sí | sí | sí: la muestra en una mano, señala con la otra e invita | igual que e1 | ninguno visto; habla recién desde el segundo 5,9 | 3 (voz pendiente: «Splash», «Nibles») |
+| animado e1 | sí (gorra roja, coleta, delantal) | sí, pero **enorme**: tan ancha como su torso, ya sobre el mostrador | sí | igual que e1 | escala del producto | 2 |
+| animado e2 | sí | sí; mordida visible | sí | igual que e1 | ninguno visto | 3 (voz pendiente: «cruyente») |
+| animado e3 | sí | sí, salvo una grieta en el pan hacia el segundo 2 | sí: la sostiene en la palma y la señala | igual que e1 | grieta del pan; la hamburguesa se sostiene en una palma abierta | 3 |
+
+**Juicio humano de Deivid (2026-11-26).** Labios bien en las escenas (Deivid): «los labios van
+bien con las escenas». Dos defectos, en sus palabras:
+
+- La saturación se exagera en el momento de masticar (e2).
+- En el animado la mano no gira con la hamburguesa, solo gira la hamburguesa. No dijo en qué
+  escena lo vio.
+
+Lo demás (personaje igual, producto, acción, voz en español, letras, creíble) no lo juzgó: queda
+vacío en `juicio-deivid.csv`. **El juicio de Herwin sigue pendiente.**
+
+**Conclusión provisional (falta el juicio de Herwin).** El camino A sirve para un borrador: una
+sola tarea de 5 a 10 s pone al personaje dentro del local, con el producto reconocible, cumpliendo
+la acción (también comer) y diciendo la línea entera en español, con labios bien en las escenas
+(Deivid), por ≈ US$0,10 el segundo y en poco más de un minuto. Las 6 se aceptan en lo
+visual; 3 tienen una duda de pronunciación que solo se resuelve oyendo. Riesgos:
+
+1. **La voz no se controla:** cada tarea inventa la suya. El mismo personaje puede sonar distinto
+   de una parte a otra del Clip, y el dueño no puede elegirla ni clonarla (eso era el camino B,
+   Seed Speech). Hay que oír e1, e2 y e3 seguidas.
+2. **Pronunciación de nombres propios y palabras en inglés** («super smash», «Nibbles») y de algún
+   fonema («hecha», «crujiente»): 3 de 6 con dudas según la transcripción.
+3. **Escala y forma del producto** cambian (animado e1, grieta en animado e3): la fidelidad al
+   producto necesita una revisión humana por escena.
+4. **El momento de la línea no se controla:** en las de 10 s el personaje habla en la segunda
+   mitad (desde 4,9 y 5,9 s); en las de 5 s la línea entra justa (termina a 4,7 s).
+5. **Seudoletras del fondo:** vienen del dibujo del fondo; un fondo sin cartel las evita.
+6. **Una muestra por casilla:** no se sabe cuánto varía si se repite.
+7. **Sin probar:** una foto real de una persona (cara real), la foto real del local y el final a
+   1080p (≈ US$0,57 por segundo más, según SD25-002).
+8. **Datos del cliente:** la foto del producto viajó al id del modelo; antes de llevarlo a clientes
+   hay que confirmar que esa vía no es una de las que ceden datos a BytePlus (regla del
+   generador).
+9. **Saturación al masticar** (Deivid): «la saturación se exagera en el momento de masticar» (e2).
+10. **La mano y el producto** (Deivid): «en el animado la mano no gira con la hamburguesa, solo
+    gira la hamburguesa».
+
+## Prueba AVFOTO-001 — personaje dibujado por Seedream desde la foto de una persona real — 2026-11-26 (m-25129385, ADR 50 §12.12) · Seedance rechazó los 3 dibujos
+
+- **Qué mide.** La opción de ADR 50 §12.12: el dueño sube la foto de una persona real que dio
+  su permiso por escrito, Seedream 5.0 pro dibuja el personaje a partir de esa foto (imagen a
+  imagen) y **solo ese dibujo** va a Seedance 2.5 como personaje. Tres preguntas: si Seedream
+  acepta la foto, si Seedance acepta el dibujo (la clave: `docs/byteplus-datos-de-clientes.md`
+  §1.4 nombra salidas de Seedream de **texto a imagen**) y cuánto se parece a la persona.
+- **Montaje.** `qualify_api/evals/avatar_photo_bench.py` y
+  `packages/api/evals/avatar_escena/personaje_foto.py` (`just eval-avatar-foto`), sobre las
+  salvaguardas de AVESC-001. El material lista cada persona con `permiso_escrito: true`; sin
+  él no se manda nada. Las fotos, los dibujos y la planilla están en
+  `%TEMP%/avatar-foto-real/`, nunca en el repositorio.
+- **Corrida:** `20261126-161128`, con el OK de Deivid escrito en la sesión coordinadora
+  («OK US$3, ahora»), tope US$3. 3 personas (`p1`, `p2`, `p3`) con permiso escrito.
+- **Modelos y ajustes:**
+  - dibujos con `dola-seedream-5-0-pro-260628`, 1080×1920, la foto como única referencia,
+    prompt `personaje-desde-foto-v1`, 2 opciones por foto;
+  - escenas con `dreamina-seedance-2-5-260628`, la escena e1 de AVESC-001 (5 s, borrador 480p,
+    9:16, con audio, prompt `avatar-escena-v1`), con la opción 1 de cada persona como
+    «Image 1», la foto del producto y el fondo dibujado de AVESC-001;
+  - tabla de precios `v10`.
+
+**Resultado**
+
+| Paso | Pedidos | Aceptados | Error | Costo (US$) | Tiempo |
+|---|---|---|---|---|---|
+| Seedream 5.0 pro, dibujo desde la foto | 6 (3 fotos × 2) | **6** | — | **0,27** (0,045 c/u) | 26 a 38 s |
+| Seedance 2.5, escena con el dibujo | 3 | **0** | `HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation: The request failed because the input image 'content[1]' may contain real person` | **0** (rechazo al crear la tarea, no se cobra) | ≈ 5 s |
+| **Total** | | | | **0,27** | |
+
+- `content[1]` es la primera imagen de referencia del cuerpo que arma `SeedanceVideoAdapter`
+  (`content[0]` es el texto): **el dibujo del personaje**, no el producto ni el fondo.
+- Request ids de los tres rechazos (no identifican a nadie):
+  `02179572409229945c07e4ff35b1f55227084b3d76e9a8042e77d` (p1),
+  `0217957240976109ded32e803badef81244c2c5f5c7f1be339226` (p2),
+  `02179572410267116e812ea4822a09eb3d0e01cc9319ecd7bbb9e` (p3).
+- Los dibujos viajaron byte a byte (sin recortar ni recomprimir), igual que en AVESC-001, y
+  tenían minutos de hechos en la misma cuenta.
+
+**Conclusión.** El camino «foto real → dibujo de Seedream (imagen a imagen) → Seedance» **no
+funciona tal como se planteó**: Seedance no trata ese dibujo como «salida propia de
+Seedream» y lo rechaza como persona real. En AVESC-001, un rostro igual de realista dibujado
+por Seedream **desde texto** sí pasó. Que la diferencia sea el origen imagen a imagen (o el
+parecido con una persona real de la foto) es **[inferencia]**: BytePlus no publica cómo lo
+detecta.
+
+**Qué lo reabriría** (nada de esto está medido):
+
+1. **La verificación de identidad de BytePlus** para personas reales: la persona verifica su
+   identidad con su propia cuenta y sube sus activos de retrato
+   (`docs/byteplus-datos-de-clientes.md` §1.4, `upload-real-person-portrait-assets`). Cambia
+   el flujo: la persona, no el dueño, tiene que hacer el trámite. Antes de construir hay que
+   leer qué pide y si sirve para una cuenta como la nuestra (ver «Platform Customer», §1.5).
+2. **Hipótesis: un dibujo estilizado o animado desde la foto** (por ejemplo, el estilo del
+   personaje animado de AVESC-001, que pasó desde texto) podría no leerse como persona real.
+   No estaba medido al escribir esto; cuanto menos se parezca, menos sirve la opción, así que
+   la medición tendría que juzgar el parecido junto con la aceptación. **Medido después en
+   AVFOTO-002: pasa 3 de 3.**
+
+**Pendiente:** Deivid califica el parecido de los 6 dibujos (1 a 3) en
+`%TEMP%/avatar-foto-real/corridas/20261126-161128/juicio-deivid.csv`; las columnas del video
+quedan vacías. Observación sin juicio de parecido: en las 2 opciones de `p3`, Seedream
+inventó letras rojas en el delantal pese a «No text» en el prompt; las otras 4 salieron sin
+letras.
+
+## Prueba AVFOTO-002 — personaje ANIMADO dibujado por Seedream desde la foto de una persona real — 2026-11-26 (m-25129385, ADR 50 §12.12) · Seedance aceptó los 3 dibujos
+
+- **Qué mide.** La hipótesis que dejó AVFOTO-001: un personaje **3D animado** dibujado desde la
+  misma foto real no se lee como persona real y Seedance lo acepta como «Image 1».
+- **Corrida:** `20261126-162258`, con el OK de Deivid escrito en la sesión coordinadora («OK
+  US$2, ahora»), tope US$2. Las mismas 3 personas con permiso escrito (`p1`, `p2`, `p3`) y el
+  mismo `material.json` que AVFOTO-001. Material, videos y revisión solo en
+  `%TEMP%/avatar-foto-real/` (corrida y `revision-20261126-162258/`); nada se copia al
+  repositorio.
+- **Modelos y ajustes:**
+  - dibujos con `dola-seedream-5-0-pro-260628`, imagen a imagen, la foto como única
+    referencia, 1080×1920, prompt `personaje-desde-foto-animado-v1`, **1 opción por foto**
+    (`--estilo animado`);
+  - escenas con `dreamina-seedance-2-5-260628`, la escena e1 de AVESC-001 (5 s, borrador 480p,
+    9:16, con audio, prompt `avatar-escena-v1`), con el dibujo, la foto del producto y el fondo
+    dibujado de AVESC-001;
+  - tabla de precios `v10`, una tarea a la vez.
+
+**Costo y tiempo reales**
+
+| Llamada | Cotizado (US$) | Tokens cobrados | Cobrado (US$) | Tiempo (s) | Tarea |
+|---|---|---|---|---|---|
+| 3 dibujos Seedream 5.0 pro | 0,135 | — | **0,135** (0,045 c/u) | 33 a 34 | — |
+| p1 e1 | 0,514 | 48.437 | **0,518** | 66,5 | `cgt-20261127042453-ct8kh` |
+| p2 e1 | 0,514 | 48.437 | **0,518** | 61,4 | `cgt-20261127042559-278u7` |
+| p3 e1 | 0,514 | 48.437 | **0,518** | 66,8 | `cgt-20261127042701-xbecn` |
+| **Total** | 1,677 | | **1,690** | | |
+
+La cotización quedó corta en un 0,8 % por escena, igual que en AVESC-001, dentro del margen del
+10 %. El tope de US$2 no se tocó.
+
+**Aceptación.** Las 3 tareas terminaron bien con las tres imágenes. **Ningún rechazo** del
+filtro de persona real, cuando en AVFOTO-001 los 3 dibujos realistas de las mismas fotos se
+rechazaron al crear la tarea.
+
+**Video y audio.** Los 3 videos son 480×854 a 24 cps, 5,0 s (121 cuadros), con una pista AAC
+estéreo de 32 kHz de 4,96 s. Transcripción local con faster-whisper en CPU, idioma `es`, con
+`small` y `large-v3-turbo` (audio decodificado con PyAV):
+
+| Video | Línea esperada | `small` | `large-v3-turbo` | Habla entre |
+|---|---|---|---|---|
+| p1 e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién **hacha**!» | «Mira esta Super Smash recién **hacha**.» | 2,0 y 4,8 s |
+| p2 e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash recién **hacha**!» | «Mira esta Super Smash recién **hacha**.» | 1,9 y 4,6 s |
+| p3 e1 | ¡Mira esta super smash, recién hecha! | «¡Mira esta Super Smash, recién **a techa**!» | «Mira esta Super Smash, recién **atecha**.» | 1,5 y 4,7 s |
+
+Las tres dicen la frase completa en español. «hecha» se oye como «hacha» en los dos modelos, como
+en el animado e1 de AVESC-001; puede ser pronunciación o error de la transcripción. **Para juicio
+humano.** Volumen (RMS): p1 0,050, p2 0,083, p3 0,052.
+
+**Juicio preliminar por cuadros** (6 cuadros por video y 9 recortes de la cara durante el habla,
+sin oír). **Es preliminar: lo reemplaza la planilla de Deivid.** El parecido con la persona **no
+se juzga aquí**: es de Deivid. Labios: en los tres la boca está cerrada o sonriendo antes de la
+voz y cambia de forma mientras habla; la sincronía fina queda para juicio humano.
+
+| Video | Personaje igual al dibujo | Producto | Acción | Letras o logos | Defectos | Creíble (1-3) |
+|---|---|---|---|---|---|---|
+| p1 e1 | sí (camiseta crema, delantal verde) | sí: dos carnes, queso, salsa de tomate, pepinillo, pan brillante | sí: la toma del mostrador con las dos manos y la acerca a cámara | ninguno inventado; el menú del fondo trae las seudoletras borrosas del dibujo del fondo | queda una gota de salsa en el mostrador (verosímil) | 3 |
+| p2 e1 | sí (camiseta crema, delantal verde) | sí; el queso gotea al acercarla | sí | igual que p1 | ninguno visto | 3 |
+| p3 e1 | sí (camiseta crema, delantal verde) | sí | sí | **mancha roja en el delantal** (una forma, sin letras), que ya traía el dibujo de Seedream pese a «no letters, no logos» | la mancha del delantal | 2 |
+
+En los tres, la hamburguesa llena el cuadro al final: es la cámara que se acerca, no un problema
+de escala como el del animado e1 de AVESC-001.
+
+**Conclusión.** **El personaje animado hecho desde la foto de una persona real, con su permiso,
+sí pasa en Seedance 2.5** (3 de 3; muestra de 3, una escena de 5 s), mientras que el realista
+desde las mismas fotos no pasa (AVFOTO-001, 0 de 3). La opción de ADR 50 §12.12 en su versión
+animada queda **en pausa por decisión de Deivid (2026-11-26)**, sin enmienda al §12: los avatares
+y personajes no se encienden para los usuarios hasta que cada empresa tenga su propio avatar
+funcionando junto con su sistema visual (design system); mientras tanto, en la app quedan como
+«Próximamente» y solo se encienden en los servidores de prueba. El juicio de parecido de Deivid
+sigue pendiente (si no se reconoce a la persona, la opción pierde su razón de ser). Siguen
+abiertos: muestra de 3 con
+una sola escena de 5 s; no se midió la permanencia en escenas más largas ni en varias partes; el
+dibujo intermedio debe tener menos de 30 días (R7); y lo que dice §12.12 sobre el permiso
+escrito, el envío de la foto a BytePlus y la casilla de consentimiento sigue igual.
+
+**Pendiente:** Deivid califica el parecido (1 a 3) del dibujo y del video en
+`%TEMP%/avatar-foto-real/corridas/20261126-162258/juicio-deivid.csv`, más labios y voz en la
+nota.

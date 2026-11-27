@@ -38,6 +38,7 @@ from uuid import UUID
 
 from qualify_shared.objects.keys import (
     TenantPrefixViolation,
+    business_character_key,
     gallery_media_key,
     gallery_media_prefix,
     gallery_root,
@@ -285,6 +286,57 @@ class ObjectGate:
             self._require_seasonal(tenant_id, brand_id, key)
         for start in range(0, len(keys), DELETE_BATCH):
             self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
+    def put_business_character(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        character_id: UUID,
+        fileobj: IO[bytes],
+        content_type: str,
+    ) -> str:
+        """Write one business character's image (m-25129385) at
+        `seasonal/{tenant}/{brand}/personajes-negocio/{character_id}.jpg` — the key is built
+        HERE from the UUIDs, outside `t/` and outside `PURGEABLE_ROOTS`. Same single PUT and
+        size ceiling as `put_media`. Returns the key it wrote."""
+        key = business_character_key(tenant_id, brand_id, character_id)
+        self._put(key, fileobj, content_type)
+        return key
+
+    def open_business_character(
+        self, tenant_id: UUID, brand_id: UUID, object_key: str
+    ) -> IO[bytes]:
+        """Read one business character's image — bounded to THIS business and to the exact
+        key shape `put_business_character` writes."""
+        self._require_business_character(tenant_id, brand_id, object_key)
+        return self._store.open(object_key)
+
+    def delete_business_characters(
+        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
+    ) -> None:
+        """Delete explicit character images of ONE business (an option the owner did not
+        keep, a character the owner deleted), validating ALL keys before touching the
+        store."""
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            self._require_business_character(tenant_id, brand_id, key)
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
+    def _require_business_character(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
+        import re
+
+        prefix = seasonal_brand_prefix(tenant_id, brand_id)
+        shape = re.compile(
+            r"personajes-negocio/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
+            r"-[0-9a-f]{12}\.jpg"
+        )
+        if (
+            not isinstance(object_key, str)
+            or not object_key.startswith(prefix)
+            or not shape.fullmatch(object_key[len(prefix) :])
+        ):
+            raise TenantPrefixViolation("object is not this business's character image")
 
     def put_gallery_media(
         self,

@@ -1,26 +1,41 @@
 """The owner's text over a video, drawn by Remotion (EF-05, m-25026573; D1 of ADR 50).
 
 The Python half of the `video_text` template (``packages/render/templates/video_text``): one
-text (what it says, its place, its ADR 49 design) and the brand kit become ONE render job whose
-only output is a transparent 1080×1920 PNG — the layer that
-``qualify_creative.video.text_overlay`` lays over the frames. Remotion never encodes the
-video; PyAV does.
+text (what it says, its place, its background) and the brand kit become ONE render job whose
+outputs are transparent 1080×1920 PNGs — the layer that ``qualify_creative.video.text_overlay``
+lays over the frames. Remotion never encodes the video; PyAV does.
 
-The layer is ADR 49's ``scrim`` drawn by ``layer_still``'s own engine and components (CONTRACT
-§1, `video_text` v1): the same text in the same design looks the same in a 9:16 image and in a
-video. Nothing here imports Pillow or draws anything.
+The layer is ADR 49's ``scrim`` text block drawn by ``layer_still``'s own engine and components
+(CONTRACT §1, `video_text`): the same text in the same design looks the same in a 9:16 image
+and in a video. Nothing here imports Pillow or draws anything.
+
+Versions (ED-13, m-25029108). **v1** draws the scrim only, left-aligned, from the brand's font
+families; it stays published for the jobs it made, but nothing asks it any more: every text is
+drawn by **v2**, which centres it (Deivid 2026-11-24) — so a plain text has a new job id.
+**v2** draws the same text block on any of the four backgrounds (``SUPPORTED_LAYOUTS``), in
+the Brand Kit's own font file when it has one (uploaded as an asset, ``brand.fontFiles``),
+and for «Letra por letra» the background and the letters apart (ports ``backdrop`` and
+``letters``, whose report carries every character's box) besides the whole ``overlay``.
+Before a v2 job the service's ``/health`` must list ``video_text`` v2: a service not yet
+deployed with it answers as a service down (503), never as our bug.
 
 Keys: the **job id** is ``uuid5`` over the template version, BOTH pixel revisions (the shared
 engine's ``layer_catalog.engine_revision`` and this template's ``video_text.overlay_revision``),
-the layout and its catalog version, the place, the text and the brand's fonts and palette. Same
-inputs → same job (a retry is idempotent on the service, and the PNG is the same); any change
-→ a new job, never «same key, different pixels».
+a digest of the manifest's ``video_text`` block, the layout and its catalog version, the place,
+the text and the brand's fonts (the font file's sha256 included) and palette — and, for v2's
+«Letra por letra», the ports; and the colour the owner picked for ``band``/``brand_fill``
+(``box_color``, only when there is one: a text on its default keeps its job id), and the
+letters' colour picked for ``shadow`` (``text_color``, likewise only when it counts), and the
+letters' size when it is not «Mediana» (``text_size``, ED-13 round 4). Same
+inputs → same job (a retry is idempotent on the service, and the PNGs are the same); any
+change → a new job, never «same key, different pixels».
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -33,6 +48,7 @@ from qualify_creative.render.client import (
     RenderJob,
     RenderServiceError,
 )
+from qualify_creative.render.font_asset import TextFont, font_type
 from qualify_creative.render.layer_compose import (
     TEMPLATE_ID as LAYER_TEMPLATE_ID,
 )
@@ -42,46 +58,65 @@ from qualify_creative.render.layer_compose import (
 from qualify_creative.render.layer_compose import engine_revision
 
 TEMPLATE_ID = "video_text"
+#: The version a text that asks for nothing new is rendered with (the scrim, the brand's font
+#: families, no «Letra por letra»): v1, kept so its job ids and pixels never change.
 TEMPLATE_VERSION = 1
+#: ED-13: the version that draws the four backgrounds, a font file and the letters apart.
+TEMPLATE_VERSION_V2 = 2
 PORT = "overlay"
+#: v2's «Letra por letra» ports: only the background, only the letters (same layout).
+BACKDROP_PORT = "backdrop"
+LETTERS_PORT = "letters"
 #: The canvas of the layer: a 9:16 Reel.
 CANVAS = (1080, 1920)
 MODEL_ID = "remotion_selfhost"
-#: The design a text without one is drawn with (`VideoTextLayer.layout_id` None): the scrim,
-#: the only one the editor offers and the only one a video text supports in v1.
+#: The design a text without one is drawn with (`VideoTextLayer.layout_id` None): the scrim.
 DEFAULT_LAYOUT_ID = "scrim"
-#: The designs `video_text` v1 draws (its manifest's `layout_id` enum).
-SUPPORTED_LAYOUTS: tuple[str, ...] = ("scrim",)
+#: The backgrounds `video_text` draws (v2's `layout_id` enum; v1 draws only the scrim) — the
+#: SAME tuple as `schemas.VIDEO_TEXT_LAYOUTS` (pinned by a test).
+SUPPORTED_LAYOUTS: tuple[str, ...] = ("scrim", "band", "brand_fill", "shadow")
+#: The backgrounds v1 draws.
+V1_LAYOUTS: tuple[str, ...] = ("scrim",)
+#: ED-13: the backgrounds whose colour the owner may pick (`schemas.VIDEO_TEXT_BOX_COLOR_LAYOUTS`).
+BOX_COLOR_LAYOUTS: tuple[str, ...] = ("band", "brand_fill")
+_BOX_COLOR = re.compile(r"^#[0-9A-F]{6}$")
+#: ED-13 round 3: the background whose letters' colour the owner may pick
+#: (`schemas.VIDEO_TEXT_TEXT_COLOR_LAYOUTS`).
+TEXT_COLOR_LAYOUTS: tuple[str, ...] = ("shadow",)
+#: ED-13 round 4: the letters' sizes (`schemas.VIDEO_TEXT_SIZES`); `medium` is v1's.
+TEXT_SIZES: tuple[str, ...] = ("small", "medium", "large")
 
 #: Fixed namespace of the job ids (never change it: ids would stop matching).
 _JOB_NAMESPACE = uuid.UUID("0b7f5d2e-9c41-4a8e-8e2d-5f3a7c1e6b90")
 
 
 @cache
-def _manifest_block() -> Mapping[str, Any]:
+def _manifest_block(version: int = TEMPLATE_VERSION) -> Mapping[str, Any]:
     from qualify_creative.render.registry import TemplateRegistry  # noqa: PLC0415
 
-    block = TemplateRegistry.from_dir().get(TEMPLATE_ID, TEMPLATE_VERSION).video_text or {}
+    block = TemplateRegistry.from_dir().get(TEMPLATE_ID, version).video_text or {}
     if not block:
-        raise ValueError("video_text manifest has no video_text block")
+        raise ValueError(f"video_text v{version} manifest has no video_text block")
     return block
 
 
 @cache
-def overlay_revision() -> int:
-    """This template's own pixel revision (manifest ``video_text.overlay_revision``)."""
-    rev = _manifest_block().get("overlay_revision")
+def overlay_revision(version: int = TEMPLATE_VERSION) -> int:
+    """That version's own pixel revision (manifest ``video_text.overlay_revision``)."""
+    rev = _manifest_block(version).get("overlay_revision")
     if not isinstance(rev, int) or isinstance(rev, bool) or rev < 1:
         raise ValueError("video_text manifest has no overlay_revision")
     return rev
 
 
 @cache
-def config_digest() -> str:
-    """A digest of the manifest's ``video_text`` block (title lines, scrim heights, the centre
-    of «middle»…): it moves pixels, so it is part of the job id — a change to it is a new job
-    even if nobody bumped ``overlay_revision``."""
-    return hashlib.sha256(_canonical(dict(_manifest_block())).encode("utf-8")).hexdigest()[:16]
+def config_digest(version: int = TEMPLATE_VERSION) -> str:
+    """A digest of that version's manifest ``video_text`` block (title lines, scrim heights,
+    the centre of «middle», v2's backgrounds…): it moves pixels, so it is part of the job id —
+    a change to it is a new job even if nobody bumped ``overlay_revision``."""
+    return hashlib.sha256(_canonical(dict(_manifest_block(version))).encode("utf-8")).hexdigest()[
+        :16
+    ]
 
 
 @cache
@@ -104,59 +139,154 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def brand_props(brand: Any) -> dict[str, Any]:
+@dataclass(frozen=True)
+class BrandText:
+    """ED-13: a Brand Kit together with the font file its texts are drawn in — what the
+    producer hands the compose step when the kit holds a usable file (`font`), or when it
+    holds one FreeType cannot draw (`font_rejected`: its family draws instead, recorded).
+    Reads as the kit for everything else (``brand_id``, ``typeface``, ``palette_rgb``…)."""
+
+    kit: Any
+    font: TextFont | None = None
+    font_rejected: bool = False
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("kit", "font", "font_rejected"):  # not set yet (copy, unpickle)
+            raise AttributeError(name)
+        return getattr(self.kit, name)
+
+
+def heading_font_of(brand: Any) -> TextFont | None:
+    """The font file a brand's texts are drawn in (`BrandText.font`), or None."""
+    font = getattr(brand, "font", None) if isinstance(brand, BrandText) else None
+    return font if isinstance(font, TextFont) else None
+
+
+def brand_props(brand: Any, font: TextFont | None = None) -> dict[str, Any]:
     """The CONTRACT §2 ``brand`` of a video text from a ``BrandKit`` (``typeface`` as the
     heading face — the SAME resolved face the images use, see ``layer_compose`` —, the body
     face or that one, the palette) or from a mapping already in that shape. No logo: the
-    layer is only the scrim and the letters."""
+    layer is only the background and the letters.
+
+    ED-13: with a font file (`font`, or a `BrandText`'s) the brand names it as
+    ``fontFiles.heading`` = ``asset://<sha256>`` — the bytes are uploaded by
+    `render_video_text`; the family stays as its label. Without one the mapping is exactly
+    as before ED-13."""
+    font = font or heading_font_of(brand)
+    if isinstance(brand, BrandText):
+        brand = brand.kit
     if isinstance(brand, Mapping):
         fonts = dict(brand.get("fonts") or {})
-        return {
+        out: dict[str, Any] = {
             "name": str(brand.get("name") or ""),
             "palette": [str(c) for c in brand.get("palette") or ()],
             "fonts": {k: str(v) for k, v in fonts.items() if v},
             "logo": None,
         }
-    heading = str(getattr(brand, "typeface", "") or "")
-    body = str(getattr(brand, "font_body", "") or "").strip() or heading
-    fonts = {k: v for k, v in (("heading", heading), ("body", body)) if v}
-    return {
-        "name": "",
-        "palette": [str(c) for c in getattr(brand, "palette_rgb", ()) or ()],
-        "fonts": fonts,
-        "logo": None,
-    }
+    else:
+        heading = str(getattr(brand, "typeface", "") or "")
+        body = str(getattr(brand, "font_body", "") or "").strip() or heading
+        out = {
+            "name": "",
+            "palette": [str(c) for c in getattr(brand, "palette_rgb", ()) or ()],
+            "fonts": {k: v for k, v in (("heading", heading), ("body", body)) if v},
+            "logo": None,
+        }
+    if font is not None:
+        out["fontFiles"] = {"heading": font.ref}
+    return out
 
 
 @dataclass(frozen=True)
 class VideoTextRequest:
     """One text to draw. ``layout_id``/``layout_version`` None = the default design
-    (``DEFAULT_LAYOUT_ID`` at the current catalog version)."""
+    (``DEFAULT_LAYOUT_ID`` at the current catalog version). ``font``: the brand's own font
+    file, uploaded before the job (its ``asset://`` ref must be the brand's
+    ``fontFiles.heading``). ``letters``: draw the background and the letters apart too
+    («Letra por letra», v2's ``backdrop``/``letters`` ports)."""
 
     text: str
     place: str
     brand: Mapping[str, Any]
     layout_id: str | None = None
     layout_version: int | None = None
+    font: TextFont | None = None
+    letters: bool = False
+    #: ED-13: the colour the owner picked for ``band``/``brand_fill`` (``#RRGGBB``); None =
+    #: the default, and ignored on the other backgrounds (``effective_box_color``).
+    box_color: str | None = None
+    #: ED-13 round 3: the letters' colour the owner picked for ``shadow`` («Sin fondo»,
+    #: ``#RRGGBB``); None = white, and ignored on the other backgrounds.
+    text_color: str | None = None
+    #: ED-13 round 4: the letters' size (``TEXT_SIZES``); ``medium`` = what v1 draws.
+    text_size: str = "medium"
 
     @property
     def layout(self) -> str:
         return self.layout_id or DEFAULT_LAYOUT_ID
 
     @property
+    def effective_box_color(self) -> str | None:
+        """ED-13: the picked colour where it counts (``BOX_COLOR_LAYOUTS``), else None."""
+        return self.box_color if self.box_color and self.layout in BOX_COLOR_LAYOUTS else None
+
+    @property
+    def effective_text_color(self) -> str | None:
+        """ED-13 round 3: the letters' colour where it counts (``TEXT_COLOR_LAYOUTS``)."""
+        if self.text_color and self.layout in TEXT_COLOR_LAYOUTS:
+            return self.text_color
+        return None
+
+    @property
     def version(self) -> int:
         return self.layout_version if self.layout_version is not None else layout_version()
 
+    @property
+    def font_ref(self) -> str | None:
+        files = self.brand.get("fontFiles") or {}
+        ref = files.get("heading") if isinstance(files, Mapping) else None
+        return str(ref) if ref else None
+
+    @property
+    def template_version(self) -> int:
+        """Always v2 (ED-13, Deivid 2026-11-24 «que siempre esté centrado»): v2 centres every
+        line, v1 aligns them left — so every text, the plain «Sombra» too, is drawn by v2 (a
+        new job id: the old left-aligned image is never served again). v1 stays published for
+        the jobs it already made."""
+        return TEMPLATE_VERSION_V2
+
+    @property
+    def ports(self) -> tuple[str, ...]:
+        return (PORT, BACKDROP_PORT, LETTERS_PORT) if self.letters else (PORT,)
+
+    @property
+    def font_source(self) -> str:
+        """Which face draws the letters: the kit's ``file``, its Google ``family``, or the
+        render's ``fallback`` (no family named)."""
+        if self.font_ref is not None:
+            return "file"
+        return "family" if (self.brand.get("fonts") or {}).get("heading") else "fallback"
+
+    def _texts(self) -> dict[str, Any]:
+        texts: dict[str, Any] = {
+            "text": self.text.strip(),
+            "place": self.place,
+            "layout_id": self.layout,
+            "layout_version": self.version,
+        }
+        if self.effective_box_color is not None:  # only then: a default keeps its digest
+            texts["box_color"] = self.effective_box_color
+        if self.effective_text_color is not None:  # likewise: white keeps its digest
+            texts["text_color"] = self.effective_text_color
+        if self.text_size != "medium":  # likewise: «Mediana» keeps its digest
+            texts["text_size"] = self.text_size
+        return texts
+
     def props(self) -> dict[str, Any]:
         return {
-            "meta": {"templateId": TEMPLATE_ID, "version": TEMPLATE_VERSION, "port": PORT},
+            "meta": {"templateId": TEMPLATE_ID, "version": self.template_version, "port": PORT},
             "brand": dict(self.brand),
-            "texts": {
-                "text": self.text.strip(),
-                "place": self.place,
-                "layout_id": self.layout,
-                "layout_version": self.version,
-            },
+            "texts": self._texts(),
             "photos": [],
             "video": None,
             "products": [],
@@ -164,17 +294,14 @@ class VideoTextRequest:
 
     def pixel_digest(self) -> str:
         """A digest of everything that changes the layer's pixels."""
-        brand = {"palette": self.brand.get("palette") or [], "fonts": self.brand.get("fonts") or {}}
+        brand: dict[str, Any] = {
+            "palette": self.brand.get("palette") or [],
+            "fonts": self.brand.get("fonts") or {},
+        }
+        if self.font_ref is not None:  # only then: a v1 text keeps its digest
+            brand["fontFiles"] = {"heading": self.font_ref}
         return hashlib.sha256(
-            _canonical(
-                {
-                    "text": self.text.strip(),
-                    "place": self.place,
-                    "layout_id": self.layout,
-                    "layout_version": self.version,
-                    "brand": brand,
-                }
-            ).encode("utf-8")
+            _canonical({**self._texts(), "brand": brand}).encode("utf-8")
         ).hexdigest()
 
     def attempt_job_id(self, attempt: int) -> str:
@@ -188,22 +315,30 @@ class VideoTextRequest:
         return str(uuid.uuid5(uuid.UUID(base), f"attempt-{attempt}"))
 
     def job_id(self) -> str:
-        name = "|".join(
-            [
-                f"{TEMPLATE_ID}@{TEMPLATE_VERSION}",
-                f"engine{engine_revision()}",
-                f"overlay{overlay_revision()}",
-                f"config{config_digest()}",
-                self.pixel_digest(),
-            ]
-        )
-        return str(uuid.uuid5(_JOB_NAMESPACE, name))
+        version = self.template_version
+        parts = [
+            f"{TEMPLATE_ID}@{version}",
+            f"engine{engine_revision()}",
+            f"overlay{overlay_revision(version)}",
+            f"config{config_digest(version)}",
+            self.pixel_digest(),
+        ]
+        if self.letters:
+            parts.append("ports:" + ",".join(self.ports))
+        return str(uuid.uuid5(_JOB_NAMESPACE, "|".join(parts)))
 
 
 #: How many derived job ids a render may walk past (each one a job the service still holds
 #: as failed or cancelled from an earlier try) before it gives up.
 MAX_RENDER_ATTEMPTS = 5
 _STALE = (JobStatus.FAILED, JobStatus.CANCELLED)
+
+
+def _refusal_of(job: RenderJob) -> Mapping[str, Any] | None:
+    for state in job.outputs.values():
+        if state is not None and state.refusal:
+            return state.refusal
+    return None
 
 
 def _submit(
@@ -221,12 +356,11 @@ def _submit(
         job = client.render(
             job_id=job_id,
             template_id=TEMPLATE_ID,
-            version=TEMPLATE_VERSION,
+            version=request.template_version,
             props=props,
-            outputs=[PORT],
+            outputs=list(request.ports),
         )
-        state = job.outputs.get(PORT)
-        stale = job.status in _STALE and not (state is not None and state.refusal)
+        stale = job.status in _STALE and _refusal_of(job) is None
         if stale:
             continue
         if not job.status.terminal:
@@ -251,6 +385,10 @@ class VideoTextRefused(RenderServiceError):
 
 @dataclass(frozen=True)
 class VideoTextImage:
+    """A drawn text: ``png`` the whole layer (background and letters). For «Letra por letra»
+    also ``backdrop_png`` and ``letters_png`` (the same layer apart) and, in ``report``,
+    ``letter_boxes`` (every character's box, px of the 1080×1920 canvas, in reading order)."""
+
     job_id: str
     png: bytes
     width: int | None
@@ -258,30 +396,103 @@ class VideoTextImage:
     report: Mapping[str, Any]
     warnings: tuple[str, ...] = ()
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    backdrop_png: bytes | None = None
+    letters_png: bytes | None = None
+
+
+def _check_ready(client: Any, version: int) -> None:
+    """Before a v2 job: the service must list ``video_text`` at that version. A service not
+    yet deployed with it is a service down (503, the compose waits and retries as for an
+    outage), never «invalid parameters». A client without ``health`` (a test double) is
+    trusted; a transport error is raised as it is (the caller reads it as unreachable)."""
+    health_of = getattr(client, "health", None)
+    if not callable(health_of):
+        return
+    health = health_of()
+    try:
+        ready = bool(health.get("ok")) and bool(health.get("bundleReady"))
+        has = any(
+            t.get("id") == TEMPLATE_ID and int(t.get("version") or 0) >= version
+            for t in health.get("templates") or ()
+            if isinstance(t, Mapping)
+        )
+    except Exception:  # noqa: BLE001 — an odd /health body is «not ready», never a crash
+        ready, has = False, False
+    if not ready or not has:
+        raise RenderServiceError(
+            "unavailable",
+            503,
+            f"the render service is not ready or has no {TEMPLATE_ID} v{version}",
+        )
 
 
 def render_video_text(
     client: RemotionRenderClient, request: VideoTextRequest, *, timeout_seconds: float = 180.0
 ) -> VideoTextImage:
-    """Submit the one-port job, wait, download the transparent PNG. A failed render raises
+    """Submit the job, wait, download its PNGs. A failed render raises
     ``RenderServiceError`` with the service's typed reason — ``VideoTextRefused`` (a subclass)
     when the text cannot be drawn in its place. An unreachable service raises whatever the
     HTTP client raises (``httpx.TransportError``); the caller treats both alike."""
-    if request.layout not in SUPPORTED_LAYOUTS:
+    if request.layout not in SUPPORTED_LAYOUTS or (
+        request.template_version == TEMPLATE_VERSION and request.layout not in V1_LAYOUTS
+    ):
         raise RenderServiceError(
             "invalid_parameters",
             422,
-            f"video_text v1 draws {SUPPORTED_LAYOUTS}, not {request.layout!r}",
+            f"video_text draws {SUPPORTED_LAYOUTS}, not {request.layout!r}",
         )
+    box_color = request.effective_box_color
+    if box_color is not None and not _BOX_COLOR.match(box_color):
+        raise RenderServiceError(
+            "invalid_parameters", 422, f"a text's box colour is #RRGGBB, not {box_color!r}"
+        )
+    text_color = request.effective_text_color
+    if text_color is not None and not _BOX_COLOR.match(text_color):
+        raise RenderServiceError(
+            "invalid_parameters", 422, f"a text's letters colour is #RRGGBB, not {text_color!r}"
+        )
+    if request.text_size not in TEXT_SIZES:
+        raise RenderServiceError(
+            "invalid_parameters",
+            422,
+            f"a text's size is one of {TEXT_SIZES}, not {request.text_size!r}",
+        )
+    if (request.font is None) != (request.font_ref is None) or (
+        request.font is not None and request.font.ref != request.font_ref
+    ):
+        raise RenderServiceError(
+            "invalid_parameters", 422, "the brand's font file and its bytes disagree"
+        )
+    version = request.template_version
+    if version >= TEMPLATE_VERSION_V2:
+        _check_ready(client, version)
+    if request.font is not None:
+        uploaded = client.upload_asset(
+            request.font.data, filename="heading-font", content_type=font_type(request.font.data)
+        )
+        if uploaded.ref != request.font_ref:
+            raise RenderServiceError(
+                "internal_error", 500, "the service stored the font under another id"
+            )
     job_id, attempt, job = _submit(client, request, timeout_seconds)
-    state = job.outputs.get(PORT)
-    if state is None or state.status is not JobStatus.COMPLETED:
-        code = (state.failure_reason if state else None) or job.status.value
-        message = (state.error_message if state else None) or f"video text job {job_id} failed"
-        if state is not None and state.refusal:
-            raise VideoTextRefused(state.refusal, message)
-        raise RenderServiceError(code, 500, message)
-    report = dict(state.report or {})
+    states = {port: job.outputs.get(port) for port in request.ports}
+    refusal = _refusal_of(job)
+    if refusal is not None:
+        message = next(
+            (s.error_message for s in states.values() if s is not None and s.error_message),
+            f"video text job {job_id} refused",
+        )
+        raise VideoTextRefused(refusal, message or "")
+    for port, state in states.items():
+        if state is None or state.status is not JobStatus.COMPLETED:
+            code = (state.failure_reason if state else None) or job.status.value
+            message = (
+                state.error_message if state else None
+            ) or f"video text job {job_id} failed ({port})"
+            raise RenderServiceError(code, 500, message)
+    main = states[LETTERS_PORT if request.letters else PORT]
+    assert main is not None
+    report = dict(main.report or {})
     if report.get("layout_rendered") != request.layout or report.get("place") != request.place:
         raise RenderServiceError(
             "internal_error",
@@ -289,44 +500,74 @@ def render_video_text(
             f"video text job {job_id} reports {report.get('layout_rendered')!r}/"
             f"{report.get('place')!r}, asked {request.layout!r}/{request.place!r}",
         )
-    png, _mime = client.download(job_id, PORT)
+    if request.letters and not isinstance(report.get("letter_boxes"), list):
+        raise RenderServiceError(
+            "internal_error", 500, f"video text job {job_id} reports no letter boxes"
+        )
+    pngs = {port: client.download(job_id, port)[0] for port in request.ports}
+    overlay = states[PORT]
+    assert overlay is not None
     return VideoTextImage(
         job_id=job_id,
-        png=png,
-        width=state.width,
-        height=state.height,
+        png=pngs[PORT],
+        width=overlay.width,
+        height=overlay.height,
         report=report,
         warnings=tuple(job.warnings),
         provenance={
             "provider": "remotion",
             "model_id": MODEL_ID,
-            "template": f"{TEMPLATE_ID}@{TEMPLATE_VERSION}",
+            "template": f"{TEMPLATE_ID}@{version}",
             "layout_id": request.layout,
             "layout_version": request.version,
             "engine_revision": report.get("engine_revision", engine_revision()),
-            "overlay_revision": report.get("overlay_revision", overlay_revision()),
+            "overlay_revision": report.get("overlay_revision", overlay_revision(version)),
             "job_id": job_id,
             "render_attempt": attempt,
-            "config_digest": config_digest(),
+            "config_digest": config_digest(version),
+            "font_source": request.font_source,
+            "font_sha256": request.font.sha256 if request.font is not None else None,
             "cost_usd": "0",
+            # ED-13: the colour the owner picked (only when there is one: a default keeps
+            # the record it had)
+            **(
+                {"box_color": request.effective_box_color}
+                if request.effective_box_color is not None
+                else {}
+            ),
+            **(
+                {"text_color": request.effective_text_color}
+                if request.effective_text_color is not None
+                else {}
+            ),
+            **({"text_size": request.text_size} if request.text_size != "medium" else {}),
         },
+        backdrop_png=pngs.get(BACKDROP_PORT),
+        letters_png=pngs.get(LETTERS_PORT),
     )
 
 
 __all__ = [
+    "BACKDROP_PORT",
     "CANVAS",
     "DEFAULT_LAYOUT_ID",
+    "LETTERS_PORT",
     "MAX_RENDER_ATTEMPTS",
     "MODEL_ID",
     "PORT",
     "SUPPORTED_LAYOUTS",
     "TEMPLATE_ID",
     "TEMPLATE_VERSION",
+    "TEMPLATE_VERSION_V2",
+    "V1_LAYOUTS",
+    "BrandText",
+    "TextFont",
     "VideoTextImage",
     "VideoTextRefused",
     "VideoTextRequest",
     "brand_props",
     "config_digest",
+    "heading_font_of",
     "layout_version",
     "overlay_revision",
     "render_video_text",

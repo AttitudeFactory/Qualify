@@ -18,10 +18,20 @@ The steps, per stretch in the recipe's order:
    (`R2ReadingMediaStore.copy_to_file` → `qualify_shared.objects.ObjectGate`), after
    `validate_recipe(…, tenant_id=…)` and `owned_by` refused any key that is not this
    business's — another business's stretch is never read;
-2. a video is «Preparado» (EF-03: upright, 9:16, its `[start_s, end_s)`); a photo is held
-   still for its `end_s` seconds (`video.photo_hold`, D-T1) at the prepared size;
+2. a video is «Preparado» (EF-03: upright, 9:16, its `[start_s, end_s)`) and its SOUND
+   kept beside it, cut to the same instants (m-25049580, `prepare(keep_audio=True)`: a
+   16-bit WAV sidecar, none when the file has no sound); a photo is held still for its
+   `end_s` seconds (`video.photo_hold`, D-T1) at the prepared size;
 3. «Cámara rápida» (EF-04) lays every stretch end to end at its `speed` (a photo at 1), 30
-   fps, hard cuts, no gaps: the video lasts the sum of the stretches at their speed;
+   fps, hard cuts, no gaps: the video lasts the sum of the stretches at their speed. Its
+   sound (m-25049580, `render_speed(resolve_audio=…)`) is ONE AAC-LC 48 kHz stereo 128
+   kbps track for the whole video — `join`'s format: a ×1 stretch keeps its original sound,
+   trimmed to its picture; a sped-up stretch, a photo or a file without sound is silence of
+   its length; 80 ms fades at the cuts. The layers and the texts (4, 5) copy that track as
+   it is; m-25114465: a block with a `transition_in` (`fundido`, `barrido`) is then
+   blended with the block before it (`block_join`, EF-16's own segment join) — the blocks
+   overlap, so the Clip lasts its blocks minus each transition; with only cuts nothing
+   changes;
 4. «Humo», «Brasas», «Vapor» (EF-08, `qualify_creative.video.layer_overlay`): each use of
    a library layer in the part's `effects` (its entry at its version, through
    `TimedEffectLayer.from_entry` and the read-only `effects.layer_loop_file`; its params, or
@@ -34,17 +44,29 @@ The steps, per stretch in the recipe's order:
    `text_layers` drawn by our own render service (Remotion, cost 0, in the Brand Kit's
    typeface and palette) and laid over the built video with each text's own fade
    (`fade_s`); skipped when there is no text;
-6. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried).
+6. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried);
+7. its contact sheet (EF-18, `contact_sheet.keep_contact_sheet`): six frames of the
+   composed video kept beside it, in `params["contact_sheet"]` — best effort, still
+   inside the heavy-video gate.
 
 Provenance (rule 6) in the asset's `params.local`: the recipe contract, the effects
 pipeline version, the pricing table (`LOCAL_PRICING_VERSION`, where `local_video` costs
-0.00 a second), the steps' versions, the speed step's own `SpeedResult.params()` and, when
+0.00 a second), the steps' versions, the speed step's own `SpeedResult.params()` (its
+`sound`: format and stretches with their own sound), `sound` (per stretch of the recipe,
+whether it carries its original sound and why not), and, when
 there are texts, the compose step's own `params["text_layers"]`, and, when there are
 layers, `effect_layers` (each use's `TimedEffectLayer.params()`: effect, version,
 intensity, zone, span, the loop's sha256, cost 0) with `steps["layer_compose"]`. The
 asset carries no `draft` block (there is no Seedance final to order: it is publishable
-as it is) and `ai_generated=False` — Instagram's «hecho con IA» is read from what was
-made, not from the kind.
+as it is). Instagram's «hecho con IA» is read from what was made, not from the kind
+(m-25112920, ADR 50 §9, Deivid 2026-11-24): the video is `ai_generated=True` as soon as
+ONE stretch's file is AI imagery — a Seedance or Seedream piece of the generator the
+owner chose, an avatar block OmniHuman made —, read from the asset that made it
+(`clip_avatar.asset_is_ai`; a generator file with no asset row, or the brand's avatar,
+counts as AI: the label fails safe), whatever the avatar switches say; each such stretch is in
+`params.local.ai_sources`. Only the owner's own photos and videos: `ai_generated=False`.
+An avatar block (`clip_avatar`) is also in `params.local.avatar_blocks`, and its
+stretch must be its own Clip's and play at ×1 (its voice), else nothing is read.
 
 Idempotent: a retried preparation renders again into the same revision's keys and the
 service rewrites the same revision's assets; the charge is one zero row per revision.
@@ -55,7 +77,7 @@ from __future__ import annotations
 import io
 import logging
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -67,6 +89,19 @@ from qualify_creative.enums import ContentKind, FailureReason
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSegment
 
+from qualify_api.creative.clip_avatar import (
+    AVATAR_EFFECT_TEXT,
+    AVATAR_JOIN_TEXT,
+    ai_stretches,
+    avatar_effect_problems,
+    avatar_join_problems,
+    block_stretches,
+    block_windows,
+    stretch_problem,
+)
+from qualify_api.creative.contact_sheet import CONTACT_SHEET_PARAMS_KEY, keep_contact_sheet
+from qualify_api.creative.heartbeat import beating
+from qualify_api.creative.heavy_video import assembling
 from qualify_api.creative.media import (
     JPEG,
     MP4,
@@ -75,6 +110,7 @@ from qualify_api.creative.media import (
     MediaWrite,
     owned_by,
 )
+from qualify_api.creative.video_pipeline.local_sources import LocalSources, with_provenance
 from qualify_api.creative.video_pipeline.recipe import (
     is_built_layer,
     recipe_of,
@@ -91,8 +127,9 @@ LOCAL_PRICING_VERSION = "v10"
 LOCAL_MODEL_ID = "local_video"
 LOCAL_PROVIDER = "local"
 LOCAL_UNIT = "per_second"
-#: Version of this module's recipe (the order of the steps) — provenance.
-LOCAL_RECIPE_VERSION = "local-v1"
+#: Version of this module's recipe (the order of the steps) — provenance. v2
+#: (m-25049580): the ×1 stretches keep their original sound.
+LOCAL_RECIPE_VERSION = "local-v2"
 #: The recipe contract the stretches were read with (ED-15, m-25029105: v2).
 RECIPE_CONTRACT_VERSION = 2
 #: The temporary folder's prefix (one per run, removed when it ends).
@@ -146,16 +183,41 @@ LOCAL_PART_LAYER_FAILED_TEXT = (
     "No pudimos poner el efecto en esta parte por un problema nuestro. No se descontó de tus "
     "creaciones. Inténtalo de nuevo en unos minutos o quita el efecto para terminarlo ya."
 )
+#: m-25114465: the transitions between the blocks could not be made for a reason of ours
+#: (`block_join`, `JoinError`): the way out is a cut at those joins.
+LOCAL_TRANSITION_FAILED_TEXT = (
+    "No pudimos hacer las uniones de tu video por un problema nuestro. No se descontó "
+    "de tus creaciones. Inténtalo de nuevo en unos minutos o deja las uniones con «Corte» "
+    "para terminarlo ya."
+)
+#: m-25042483: a video stretch takes over `SEGMENT_SOURCE_MAX_S` (60 s) of its video —
+#: the owner's to fix (refused before anything is created, `segment_source_too_long`;
+#: this is the worker's backstop and the words the editor shows in «Cortar»). Reviewed
+#: by ux-designer 2026-11-17: «tomar … aunque lo aceleres» (the reel may last 9 s), «1
+#: minuto» (not compared with the reel's seconds), both ways out.
+LOCAL_SOURCE_TOO_LONG_TEXT = (
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear el video."
+)
+LOCAL_PART_SOURCE_TOO_LONG_TEXT = (
+    "Cada bloque puede tomar hasta 1 minuto de tu video, aunque lo aceleres. Acorta el "
+    "bloque más largo o pártelo en dos con «Cortar», y vuelve a crear esta parte."
+)
 #: A part says «esta parte» where the whole piece says «tu video».
 _PART_TEXTS = {
     LOCAL_SOURCE_FAILED_TEXT: LOCAL_PART_FAILED_TEXT,
     LOCAL_SAVE_FAILED_TEXT: LOCAL_PART_SAVE_FAILED_TEXT,
     LOCAL_COMPOSE_FAILED_TEXT: LOCAL_PART_COMPOSE_FAILED_TEXT,
     LOCAL_LAYER_FAILED_TEXT: LOCAL_PART_LAYER_FAILED_TEXT,
+    LOCAL_SOURCE_TOO_LONG_TEXT: LOCAL_PART_SOURCE_TOO_LONG_TEXT,
 }
 #: How often the preparation's lease is renewed while the video is made (None =
 #: `lease_kept`'s own, a third of the lease). Tests shorten it.
 LEASE_RENEW_EVERY_S: float | None = None
+#: m-25119832: how often the draft's progress stamp (`beat`) is renewed while a step of
+#: the assembly runs (prepare, photo hold, speed, layers, texts) — well under the
+#: reaper's 20 min, as the parts' join. Tests shorten it.
+LOCAL_HEARTBEAT_EVERY_S = 60.0
 
 
 class LocalVideoFailed(Exception):
@@ -185,8 +247,17 @@ def is_local_recipe(brief: ContentBrief) -> bool:
 
 def effects_version_for(brief: ContentBrief) -> int:
     """The `effects_pipeline_version` the server stamps on a NEW brief: this module's for
-    a `local` recipe with stretches, 0 (made as before EF-06) for anything else. Pure."""
-    return LOCAL_EFFECTS_PIPELINE_VERSION if is_local_recipe(brief) else 0
+    a `local` recipe with stretches, EF-14's for a Clip made by Seedance with texts or
+    layers to compose (`recompose.composes_over_seedance`), 0 (made as before EF-06) for
+    anything else. Pure."""
+    from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+        SEEDANCE_COMPOSE_EFFECTS_VERSION,
+        composes_over_seedance,
+    )
+
+    if is_local_recipe(brief):
+        return LOCAL_EFFECTS_PIPELINE_VERSION
+    return SEEDANCE_COMPOSE_EFFECTS_VERSION if composes_over_seedance(brief) else 0
 
 
 def local_price(seconds: float) -> Decimal:
@@ -216,6 +287,14 @@ class LocalRender:
     #: The layer step's provenance (`compose_version` and each use's `params()`), None
     #: when the part has no layer (the step did not run).
     effect_layers: dict[str, Any] | None = None
+    #: m-25042483: the video stretches' files as read (`local_sources.LocalSources`): each
+    #: one's original key, normalized copy and normalizer version for the provenance.
+    sources: Any = None
+    #: m-25049580: the sound's provenance (`_sound_provenance`), None for a silent render.
+    sound: dict[str, Any] | None = None
+    #: m-25114465: the blocks' transitions as blended (`block_join.BlockJoins.params`),
+    #: None when every join is a cut (the step did not run).
+    transitions: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -274,6 +353,8 @@ def render_local_part(
     beat: Callable[[], None] | None = None,
     brand: Any = None,
     render_client: Any = None,
+    draft_id: UUID | None = None,
+    source_jobs: Any = None,
 ) -> LocalRender:
     """Make `part`'s video in `root` (see the module): prepared stretches and held photos,
     sped up and laid end to end, then the part's texts over it. Raises `LocalVideoFailed`;
@@ -283,8 +364,47 @@ def render_local_part(
     `brand` is the tenant's `BrandKit` (its typeface and palette draw the texts) and
     `render_client` the render service's `RemotionRenderClient` (or a callable that builds
     one): both used only when the part has a text. Without a client a text fails as the
-    service being down — never a video without the texts the owner chose."""
+    service being down — never a video without the texts the owner chose.
+
+    m-25119832: `beat` is also called every `LOCAL_HEARTBEAT_EVERY_S` on a side thread
+    for the whole assembly — the speed step alone measured 867 s without returning (8
+    stretches, 60 s, 768m and 1 CPU), and the reaper fails a draft after 20 min without a
+    stamp. The thread is stopped and waited for before this returns or raises."""
+    alive = (
+        beating(beat, LOCAL_HEARTBEAT_EVERY_S, name="creative-local-beat")
+        if beat is not None
+        else nullcontext()
+    )
+    with alive:
+        return _render_local_part(
+            part,
+            tenant_id=tenant_id,
+            store=store,
+            root=root,
+            beat=beat,
+            brand=brand,
+            render_client=render_client,
+            draft_id=draft_id,
+            source_jobs=source_jobs,
+        )
+
+
+def _render_local_part(
+    part: PartRecipe,
+    *,
+    tenant_id: UUID,
+    store: Any,
+    root: Path,
+    beat: Callable[[], None] | None,
+    brand: Any,
+    render_client: Any,
+    draft_id: UUID | None,
+    source_jobs: Any,
+) -> LocalRender:
+    """`render_local_part`'s steps, with a beat at the end of each long one (the side
+    thread covers the time inside them)."""
     from qualify_creative.video._source import VideoSourceError  # noqa: PLC0415
+    from qualify_creative.video.memory import release_memory  # noqa: PLC0415
     from qualify_creative.video.photo_hold import HOLD_VERSION, render_photo_hold  # noqa: PLC0415
     from qualify_creative.video.prepare import (  # noqa: PLC0415
         PREPARE_VERSION,
@@ -294,18 +414,35 @@ def render_local_part(
         plan_prepare,
         read_source,
     )
+    from qualify_creative.video.sound import SOUND_VERSION  # noqa: PLC0415
     from qualify_creative.video.speed import SpeedSegment, plan_speed, render_speed  # noqa: PLC0415
 
     files: dict[str, str] = {}
     lengths: dict[str, float] = {}
+    # m-25049580: each video stretch's sound sidecar (None: the file has no sound)
+    sounds: dict[str, str | None] = {}
     warnings: list[dict[str, Any]] = []
-    size: tuple[int, int] | None = None
+    # m-25041163: every local part comes out 1080×1920 — `prepare` never enlarges (its file
+    # is an intermediate), the photos are held at it, and `render_speed` enlarges a smaller
+    # stretch bicubic in the ONE encode at that size (not a second one in `prepare`)
+    size = TARGET_SIZE
+    # m-25042483: only ever a source of at most 4K 8 bits is decoded — a bigger or 10-bit
+    # file is read as its normalized copy, or the video waits for the media-worker to make
+    # it (`LocalSourceNormalizing`, before anything is decoded); see `local_sources`
+    sources = LocalSources.open(
+        part,
+        tenant_id=tenant_id,
+        fetch_file=lambda key, path: _fetch(store, tenant_id, key, path),
+        jobs=source_jobs,
+        draft_id=draft_id,
+        brand_id=getattr(brand, "brand_id", None),
+    )
     try:
         for index, segment in enumerate(part.segments):
             if segment.kind != "video":
                 continue
             source = root / f"source-{index}"
-            _fetch(store, tenant_id, segment.key, source)
+            sources.fetch(segment.key, source)
             info = read_source(source)
             plan = plan_prepare(
                 info.width,
@@ -320,16 +457,17 @@ def render_local_part(
                 info.duration_s,
                 index=index,
             )
-            prepared = apply_prepare(source, plan, root / f"prepared-{index}.mp4")
+            prepared = apply_prepare(source, plan, root / f"prepared-{index}.mp4", keep_audio=True)
             source.unlink(missing_ok=True)  # the original is not needed any more
             reference = _reference(index, segment)
             files[reference] = prepared.path
+            sounds[reference] = prepared.audio_path
             lengths[reference] = prepared.duration_s
             warnings.extend({"segment": index, **w.to_dict()} for w in prepared.warnings)
-            size = size or (prepared.width, prepared.height)
             if beat is not None:
                 beat()
-        size = size or TARGET_SIZE
+        # m-25042483: each step starts from what is in use, not what the last one freed
+        release_memory()
         photos = False
         for index, segment in enumerate(part.segments):
             if segment.kind != "photo":
@@ -357,7 +495,17 @@ def render_local_part(
             for index, segment in enumerate(part.segments)
         ]
         # a total outside 3-60 s is refused here as today (`speed_duration_out_of_range`)
-        result = render_speed(plan_speed(stretches), root / "local.mp4", resolve=files.__getitem__)
+        # m-25049580: always one sound track — a ×1 stretch's own sound, silence elsewhere
+        result = render_speed(
+            plan_speed(stretches),
+            root / "local.mp4",
+            resolve=files.__getitem__,
+            size=size,
+            resolve_audio=sounds.get,
+        )
+        for sidecar in sounds.values():  # read into the AAC track: not needed any more
+            if sidecar is not None:
+                Path(sidecar).unlink(missing_ok=True)
     except VideoSourceError as exc:
         raise LocalVideoFailed(
             FailureReason.INVALID_PARAMETERS.value,
@@ -379,10 +527,15 @@ def render_local_part(
             raw=f"{type(exc).__name__}: {exc}",
             code="unreadable",
         ) from exc
+    release_memory()  # the speed step's decoder and encoder, before the layers and texts
+    # m-25114465: the blocks' transitions, before the layers and the texts (their clock)
+    joins = _blend_blocks(part, result, root, beat, draft_id)
+    if joins is not None:
+        warnings.extend(joins.warnings)  # a join made a cut instead of its transition
     # EF-08: the library's layers (smoke, embers, steam) BEFORE the texts, so the words
     # stay on top; same clock as the texts (seconds of THIS part's output, from 0)
     # — with texts too, ONE pass (one encode): the layers under the texts, in the compose
-    video = result.path
+    video = joins.path if joins is not None else result.path
     effect_layers = _effect_layers(part)
     layered: tuple[Path, dict[str, Any]] | None = None
     if effect_layers and not part.text_layers:
@@ -402,27 +555,103 @@ def render_local_part(
         if beat is not None:
             # the render and the second encode can take minutes: mark the draft alive again
             beat()
-    steps: dict[str, Any] = {"prepare": PREPARE_VERSION, "speed": result.version}
+    steps: dict[str, Any] = {
+        "prepare": PREPARE_VERSION,
+        "speed": result.recipe_version,
+        "sound": SOUND_VERSION,
+    }
     if photos:
         steps["photo_hold"] = HOLD_VERSION
+    if joins is not None:
+        steps["block_join"] = joins.params["version"]
     if layered is not None:
         steps["layer_compose"] = layered[1]["compose_version"]
     text_params: dict[str, Any] | None = None
     if composed.composed:
         text_params = dict(composed.params["text_layers"])
         steps["compose"] = text_params["compose_version"]
+    release_memory()  # the compose's, before the poster and the save
     return LocalRender(
         path=composed.path,
         width=result.width,
         height=result.height,
-        seconds=result.duration_s,
-        frames=result.frames,
+        seconds=joins.seconds if joins is not None else result.duration_s,
+        frames=joins.frames if joins is not None else result.frames,
         speed=result.params(),
         steps=steps,
         warnings=tuple(warnings),
         text_layers=text_params,
         effect_layers=layered[1] if layered is not None else None,
+        sources=sources,
+        sound=_sound_provenance(part, result.sound),
+        transitions=joins.params if joins is not None else None,
     )
+
+
+def _blend_blocks(
+    part: PartRecipe, result: Any, root: Path, beat: Any, draft_id: UUID | None
+) -> Any:
+    """m-25114465: `result` (the speed step's) with its blocks' transitions blended
+    (`block_join.blend_block_joins`), the speed step's file removed once replaced; None
+    when every join is a cut (nothing re-encoded). A join that cannot be made for a
+    reason of ours (`JoinError`, the disk) is `LocalVideoFailed` with
+    `LOCAL_TRANSITION_FAILED_TEXT`: never charged, the way out offered."""
+    from qualify_creative.video.join import JoinError  # noqa: PLC0415
+    from qualify_creative.video.memory import release_memory  # noqa: PLC0415
+
+    from qualify_api.creative.video_pipeline.block_join import blend_block_joins  # noqa: PLC0415
+
+    try:
+        joins = blend_block_joins(
+            part,
+            result.path,
+            [planned.frames for planned in result.plan.segments],
+            size=(result.width, result.height),
+            rate=result.fps,
+            root=root,
+            beat=beat,
+            draft_id=draft_id,
+        )
+    except (JoinError, OSError) as exc:
+        raise LocalVideoFailed(
+            FailureReason.RENDER_ERROR.value,
+            LOCAL_TRANSITION_FAILED_TEXT,
+            raw=f"{type(exc).__name__}: {exc}",
+            code="block_join_failed",
+        ) from exc
+    if joins is not None and joins.blended:
+        Path(result.path).unlink(missing_ok=True)  # never two large files without need
+        release_memory()
+    return joins
+
+
+def _sound_provenance(
+    part: PartRecipe, speed_sound: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """m-25049580: the track's format and, per stretch of the recipe (its index), whether it
+    carries its original sound — `kept` — or is silence and why: `sped_up` (faster than ×1, no
+    time-stretching), `photo`, `no_audio` (the file has no sound track or it could not be
+    decoded). None when the render had no sound track."""
+    if speed_sound is None:
+        return None
+    kept = set(speed_sound.get("original_sound", ()))
+    stretches = []
+    for index, segment in enumerate(part.segments):
+        if index in kept:
+            why = "kept"
+        elif segment.kind != "video":
+            why = "photo"
+        elif segment.speed != 1.0:
+            why = "sped_up"
+        else:
+            why = "no_audio"
+        stretches.append({"segment": index, "original_sound": why == "kept", "why": why})
+    return {
+        "version": speed_sound["version"],
+        "format": {key: speed_sound[key] for key in ("codec", "sample_rate", "layout", "bit_rate")},
+        "crossfade_s": speed_sound["crossfade_s"],
+        "segments": stretches,
+    }
 
 
 def _layer_failed(exc: BaseException) -> LocalVideoFailed:
@@ -586,6 +815,27 @@ def _poster(path: Path) -> bytes | None:
     return None
 
 
+def _contact_sheet(save: Any, path: Path, key: str) -> dict[str, Any] | None:
+    """EF-18: the composed video's contact sheet kept in the revision's folder beside it
+    (`save.optional`: a refused file leaves the sheet out, never the piece), or None."""
+    optional = getattr(save, "optional", None)
+    if not callable(optional):
+        return None
+    try:
+        return keep_contact_sheet(
+            path,
+            lambda name, data: optional(name, data, JPEG),
+            source={
+                "stage": "local",
+                "object_key": key,
+                "revision": getattr(save, "revision", None),
+            },
+        )
+    except Exception:  # noqa: BLE001 — never the piece: it goes on without its sheet
+        logger.warning("local video contact sheet failed: left out", exc_info=True)
+        return None
+
+
 def _keep_video(save: Any, store: Any, tenant_id: UUID, path: Path) -> str:
     """Keep the MP4 under the draft's revision: streamed from disk when the store can
     (`keep_file`: retried, an existing key is reused), else through `save` (retried)."""
@@ -647,6 +897,7 @@ def produce_local(
     lease_store: Any = None,
     brand: Any = None,
     render_client: Any = None,
+    generated_sources: Mapping[str, Any] | None = None,
 ) -> MediaOutcome:
     """The `local` Clip of `brief` as the producer's outcome — never raises for the
     owner's files: the outcome carries the failure. `allowed` is False outside the
@@ -657,7 +908,12 @@ def produce_local(
     preparing and speeding up a minute of 1080×1920 can outlast it, and a lost lease
     would throw the video away at the final write and make it again on every pass.
     `lease_store` is the `PipelineStore` (a test's double). `brand` and `render_client`
-    draw the recipe's texts (`render_local_part`), inside the same kept lease."""
+    draw the recipe's texts (`render_local_part`), inside the same kept lease.
+
+    `generated_sources` (m-25112920) maps the recipe's stretch keys that are files of
+    the generator to their `clip_avatar.GeneratedSource` (the caller's lookup,
+    `MediaProducer`): which are AI imagery, which are avatar blocks. None or empty: only
+    the owner's own files."""
     part_ref = brief.media.part
     in_part = part_ref is not None
     failed_text = LOCAL_PART_FAILED_TEXT if in_part else LOCAL_SOURCE_FAILED_TEXT
@@ -679,16 +935,62 @@ def produce_local(
             ", ".join(p.code for p in problems),
         )
         foreign = any(p.code in ("foreign_key", "malformed_key") for p in problems)
+        too_long = any(p.code == "segment_source_too_long" for p in problems)
         return MediaOutcome(
             failure=(
                 FailureReason.ROUTE_BLOCKED_BY_POLICY.value
                 if foreign
                 else FailureReason.INVALID_PARAMETERS.value
             ),
-            detail=failed_text,
+            # m-25042483: a stretch over 60 s of its video says so, «esta parte» in a part
+            detail=(
+                (LOCAL_PART_SOURCE_TOO_LONG_TEXT if in_part else LOCAL_SOURCE_TOO_LONG_TEXT)
+                if too_long and not foreign
+                else failed_text
+            ),
         )
+    # m-25112920: the avatar blocks the recipe plays — each its own Clip's (a part, or
+    # another Clip, never takes one) and at ×1, so its voice is heard; refused before
+    # anything is read
+    blocks = block_stretches(part.segments, generated_sources or {})
+    for stretch in blocks:
+        problem = stretch_problem(stretch, draft_id)
+        if problem is not None:
+            code, owner_text = problem
+            logger.warning(
+                "draft %s: avatar block %s refused before any read: %s",
+                draft_id,
+                stretch.source.block_id,
+                code,
+            )
+            return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
+    # m-25119867 (Deivid, 2026-11-25): a join next to an avatar block is only «Corte»,
+    # whatever path put it there — never a blend into its voice
+    if avatar_join_problems(part.segments, [stretch.index for stretch in blocks]):
+        logger.warning("draft %s: a blending join next to an avatar block, refused", draft_id)
+        return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_JOIN_TEXT)
+    # m-25119867 (ADR 50 §11, «Textos sí, efectos no»): no smoke, embers or steam layer
+    # over an avatar block, whatever path put it there
+    windows = block_windows(
+        [segment.output_seconds for segment in part.segments],
+        [stretch.index for stretch in blocks],
+    )
+    if avatar_effect_problems(part.effects, windows):
+        logger.warning("draft %s: an effect over an avatar block, refused", draft_id)
+        return MediaOutcome(
+            failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_EFFECT_TEXT
+        )
+    # ADR 50 §9 (Deivid, 2026-11-24): «hecho con IA» read from what was made — ONE
+    # stretch whose file is AI imagery (Seedance, Seedream, OmniHuman) makes the whole
+    # video AI, with the avatar switches on or off; a generator file with no asset row and
+    # the brand's avatar count as AI too (fail safe, `clip_avatar.ai_stretches`)
+    made_by_ai = ai_stretches(part.segments, generated_sources or {}, tenant_id=tenant_id)
+    ai_generated = bool(made_by_ai)
     try:
         with (
+            # m-25042483: never alongside a part join — with one in flight this raises
+            # `LocalAssemblyWait` before anything is read: the next pass makes the video
+            assembling(),
             _lease(run, lease_store),
             tempfile.TemporaryDirectory(prefix=_WORKDIR_PREFIX) as folder,
         ):
@@ -700,6 +1002,7 @@ def produce_local(
                 beat=beat,
                 brand=brand,
                 render_client=render_client,
+                draft_id=draft_id,
             )
             cost = local_price(made.seconds)
             if cost != 0:  # the price guard: a local video never pays a vendor
@@ -711,6 +1014,8 @@ def produce_local(
                 )
             key = _keep_video(save, store, tenant_id, made.path)
             poster = _poster(made.path)
+            # EF-18: the composed video's contact sheet, still inside the gate
+            sheet = _contact_sheet(save, made.path, key)
         poster_key = save.optional("first-frame.jpg", poster, JPEG) if poster else None
     except LocalVideoFailed as exc:
         logger.warning("draft %s: local video not made: %s", draft_id, exc.raw or exc.detail)
@@ -721,7 +1026,7 @@ def produce_local(
         "duration_seconds": round(made.seconds, 3),
         "resolution": f"{made.height}p",
         "reference_mode": "local",
-        "ai_generated": False,
+        "ai_generated": ai_generated,
         "local": {
             "recipe_version": LOCAL_RECIPE_VERSION,
             "recipe_contract": RECIPE_CONTRACT_VERSION,
@@ -732,14 +1037,29 @@ def produce_local(
             "steps": made.steps,
             "effect_version": made.speed["effect_version"],
             "speed": made.speed,
-            "segments": [segment.model_dump(mode="json") for segment in part.segments],
+            # m-25042483: each video stretch with its file's provenance (original key,
+            # normalized copy, normalizer version)
+            "segments": with_provenance(part.segments, made.sources),
+            # m-25049580: which stretches keep their original sound, and the track's format
+            "sound": made.sound,
             "frames": made.frames,
             "warnings": list(made.warnings),
         },
     }
+    if sheet is not None:
+        params[CONTACT_SHEET_PARAMS_KEY] = sheet
+    if made.transitions is not None:
+        # m-25114465: each join blended (block, effect, version, kind, duration, frames)
+        params["local"]["transitions"] = made.transitions
     if made.effect_layers is not None:
         # EF-08's provenance: each layer laid, its loop's sha256, the compose version
         params["local"]["effect_layers"] = made.effect_layers
+    if made_by_ai:
+        # m-25112920: the label's evidence — each AI stretch's asset, provider and model
+        params["local"]["ai_sources"] = [s.source.ai_provenance(s.index) for s in made_by_ai]
+    if blocks:
+        # m-25112920: each block played — its draft, revision, asset, model and length
+        params["local"]["avatar_blocks"] = [s.source.provenance(s.index) for s in blocks]
     if made.text_layers is not None:
         # EF-05's provenance: design, pixel revisions, fade chosen and applied, hashes
         params["local"]["text_layers"] = made.text_layers
@@ -756,7 +1076,7 @@ def produce_local(
         model_id=LOCAL_MODEL_ID,
         provider=LOCAL_PROVIDER,
         content_type=MP4,
-        ai_generated=False,
+        ai_generated=ai_generated,
         params=params,
     )
     usage = MediaUsage(
@@ -774,6 +1094,9 @@ __all__ = [
     "LOCAL_COMPOSE_FAILED_TEXT",
     "LOCAL_LAYER_FAILED_TEXT",
     "LOCAL_PART_LAYER_FAILED_TEXT",
+    "LOCAL_PART_SOURCE_TOO_LONG_TEXT",
+    "LOCAL_SOURCE_TOO_LONG_TEXT",
+    "LOCAL_TRANSITION_FAILED_TEXT",
     "LOCAL_EFFECTS_PIPELINE_VERSION",
     "LOCAL_PART_COMPOSE_FAILED_TEXT",
     "LOCAL_MODEL_ID",

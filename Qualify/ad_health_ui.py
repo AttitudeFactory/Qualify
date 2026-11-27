@@ -25,6 +25,7 @@ def billing_link(health: AccountHealthVM) -> rx.Component:
             health.action_label,
             href=health.action_url,
             is_external=True,
+            aria_label=health.action_label + " (se abre en una pestaña nueva)",
             min_height="44px",
             display="inline-flex",
             align_items="center",

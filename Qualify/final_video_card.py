@@ -17,7 +17,9 @@ from __future__ import annotations
 import reflex as rx
 from qualify_creative.schemas import PART_DESCRIPTION_MAX
 
+from . import contact_sheet_vm
 from . import part_review_vm as RV
+from .contact_sheet_panel import contact_sheet_panel
 from .creative_pages import (
     APPROVED_BODY,
     APPROVED_NOT_READY_BODY,
@@ -874,6 +876,17 @@ def _decisions(layout: str) -> rx.Component:
         # m-24921083: a «Me gusta así» that did not go through (the tile went back)
         rx.cond(P.like_error != "", _note(P.like_error, "warn")),
         rx.cond(_changing(), _change_panel()),
+        # EF-18 (m-25026598): the joined video's frames, right before «Aprobar»
+        rx.cond(
+            S.card.approve_visible & (S.video_key != ""),
+            contact_sheet_panel(
+                S.parent_id,
+                S.video_key,
+                heading="h4",
+                # «Cambiar esta» on a part → «Crear otra versión», while a part can change
+                fix=rx.cond(S.card.change_part_visible, contact_sheet_vm.FIX_PARTS, ""),
+            ),
+        ),
         rx.cond(S.card.approve_visible, _approve_texts()),
         _actions(),  # «Aprobar» is always last (Deivid, 2026-11-09)
         spacing="4",

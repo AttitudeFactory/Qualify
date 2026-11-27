@@ -45,7 +45,7 @@ from typing import Any, Literal
 import reflex as rx
 
 from . import tokens as T
-from .primitives import loading_spinner
+from .primitives import loading_spinner, theme_toggle
 from .steps_vm import (
     BACK_LABEL,
     DIR_BACK,
@@ -153,7 +153,8 @@ def step_head(
 ) -> rx.Component:
     """The frame's fixed head, in place of `page_header`: «‹ ``back_label``» (to
     ``back_href``, or the ``on_exit`` event when leaving needs a handler — on every
-    step, it is the way out), «Paso ``step`` de ``total``» with its bar, and ``title``
+    step, it is the way out), «Paso ``step`` de ``total``» with its bar, the light/dark
+    toggle `page_header` carries too (`theme_toggle`, closing the first row), and ``title``
     — the step's name in the owner's words — as the page's one ``h1``. ``below`` is an
     optional desktop-only extra under the title (a `stepper()` when the steps can be
     walked out of order); on a phone the bar replaces it."""
@@ -167,9 +168,17 @@ def step_head(
     return rx.vstack(
         # «‹ destino» and «Paso N de M» share a row; the bar gets a line of its own, so
         # a long destination never squeezes it (§4.5 mockup).
+        # The light/dark toggle closes the row, after the counter (m-25078650): the same
+        # ghost control `page_header` carries, so a step-by-step screen never loses it.
         rx.hstack(
             _exit(back_label, back_href, on_exit),
-            count,
+            rx.hstack(
+                count,
+                theme_toggle(),
+                align="center",
+                spacing="2",
+                class_name="q-step-head-end",
+            ),
             align="center",
             justify="between",
             spacing="3",

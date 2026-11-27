@@ -476,6 +476,27 @@ def load_avatar_inputs(tenant_id: UUID, brand_id: UUID) -> AvatarInputs | None:
     )
 
 
+def brand_character(tenant_id: UUID, brand_id: UUID) -> dict[str, str]:
+    """The «Avatar animado»'s character, from the Brand Kit (§ request 2026-10-20: no
+    picker any more): the brand's own drawn avatar when the kit has a ready one (an image
+    Qualify made for the brand, so its rights are the brand's), else a mascot described
+    from the kit — name, business, colours, tone. `{}` without a kit. Read by «Crear
+    pieza» and by «Publicación del mes» (m-25121346).
+
+    `{source: "image", key, name}` or `{source: "ai", prompt, name}`."""
+    avatar = load_brand_avatar(tenant_id, brand_id)
+    if avatar is not None and avatar.status is AvatarStatus.READY and avatar.object_key:
+        return {"source": "image", "key": avatar.object_key, "name": "El avatar de tu marca"}
+    inputs = load_avatar_inputs(tenant_id, brand_id)
+    if inputs is None:
+        return {}
+    return {
+        "source": "ai",
+        "prompt": describe_character(inputs),
+        "name": "La mascota de tu marca, creada con tu Brand Kit",
+    }
+
+
 # ---------------------------------------------------------------------------------------
 # Production wiring — TODO(keys): never run against BytePlus yet
 

@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from qualify_api.ads.client import MarketingAPI, MarketingClient
 from qualify_api.ads.errors import MarketingError
+from qualify_api.ads.money import META_CURRENCY_OFFSETS
 from qualify_api.ads.results import (
     MANAGEMENT_REASON,
     PIPELINE_VERSION,
@@ -45,6 +46,14 @@ UNAVAILABLE = (
     "No pudimos consultar esta promoción. Revisa la cuenta publicitaria e inténtalo de nuevo."
 )
 UNCERTAIN = "No pudimos confirmar la pausa. Actualiza el estado antes de intentar otro cambio."
+PAUSING = "Ya estamos pausando este anuncio. Actualiza el estado en unos segundos para confirmarlo."
+PAUSE_RETRY = (
+    "Meta pidió esperar un momento y el anuncio sigue activo. Espera unos segundos, "
+    "actualiza el estado y toca «Pausar anuncio» otra vez."
+)
+# Graph codes/subcode that mean "too many requests / too soon after another edit".
+_RATE_CODES = {17, 613, 80004}
+_EDIT_TOO_SOON = 4841018
 POLL_INTERVAL = timedelta(minutes=25)
 
 
@@ -102,14 +111,20 @@ def _scope(tenant: UUID, promotion: UUID, *, system: bool = False) -> ResultScop
               SELECT p.id,p.meta_ad_account_id,p.meta_ad_id,p.meta_adset_id,p.meta_campaign_id,
                      p.currency,a.id AS account_id,a.connection_id,a.timezone_name
               FROM ad_promotions p JOIN ad_unpublished_sources u
-                ON u.promotion_id=p.id AND u.tenant_id=p.tenant_id
-                AND u.draft_id=p.content_draft_id AND u.brand_id=p.brand_id
+                ON u.promotion_id=p.id AND u.tenant_id=p.tenant_id AND u.brand_id=p.brand_id
+                AND (
+                  (u.draft_id=p.content_draft_id AND p.source_media_id IS NULL)
+                  -- m-25113484: a catalog carousel has no piece; its approval is the source.
+                  OR (u.draft_id IS NULL AND p.content_draft_id IS NULL
+                    AND u.pipeline_version='ad-catalog-carousel-v1'
+                    AND p.source_media_id='catalog-carousel:' || u.id::text)
+                )
               JOIN ad_accounts a ON a.id=u.ad_account_id AND a.tenant_id=u.tenant_id
                 AND a.brand_id=u.brand_id AND a.ad_account_id=p.meta_ad_account_id
                 AND a.currency=p.currency AND a.connection_id=u.connection_id
               JOIN social_connections c ON c.id=u.connection_id AND c.tenant_id=u.tenant_id
                 AND c.brand_id=u.brand_id
-              WHERE p.id=:id AND p.publish_attempt_id IS NULL AND p.source_media_id IS NULL
+              WHERE p.id=:id AND p.publish_attempt_id IS NULL
                 AND a.selected AND a.available AND c.status='active'
                 AND a.credential_version=c.current_credential_version
                 AND c.purged_at IS NULL AND c.purge_started_at IS NULL
@@ -195,8 +210,9 @@ def _summary(row: Any) -> PromotionResultSummary:
             and not row["outstanding"]
             and row["status"] == "active"
             and row.get("activation_confirmed", False)
-            and effective.request.get("currency") == "COP"
-            and effective.request.get("meta_currency_offset") == 1
+            and effective.request.get("meta_currency_offset") is not None
+            and effective.request.get("meta_currency_offset")
+            == META_CURRENCY_OFFSETS.get(effective.request.get("currency"))
             and effective.request.get("budget_kind") == "lifetime"
             and row.get("publish_attempt_id") is not None
         )
@@ -228,7 +244,8 @@ def _summary(row: Any) -> PromotionResultSummary:
         can_pause=bool(
             not stale
             and row["can_read"]
-            and not row["outstanding"]
+            # m-25072681: an unresolved edit never hides the brake; only a pause on its way.
+            and not row.get("pause_in_flight", row["outstanding"])
             and status
             in {
                 "ACTIVE",
@@ -254,6 +271,10 @@ _SUMMARY_SQL = """
        AND c.purge_started_at IS NULL) AS cache_current,
       EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
              AND x.state IN ('in_flight','unknown')) AS outstanding,
+      EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
+             AND x.action='pause' AND x.state='in_flight'
+             -- A claim older than five minutes can no longer dispatch: the brake comes back.
+             AND x.created_at > now() - interval '5 minutes') AS pause_in_flight,
       EXISTS(SELECT 1 FROM ad_promotion_activations x WHERE x.promotion_id=p.id
         AND x.tenant_id=p.tenant_id AND x.state='active' AND x.confirmed_by IS NOT NULL
         AND x.confirmed_at IS NOT NULL) AS activation_confirmed,
@@ -693,13 +714,35 @@ def _claim_pause(
 
             if revision(operations(s, scope.promotion_id)) != expected_revision:
                 raise ResultsUnavailable("El historial cambió. Vuelve a revisar el cambio.")
-        recent = s.execute(
-            text("""SELECT id FROM ad_promotion_operations WHERE promotion_id=:id
+        if action == "pause":
+            # m-25072681: the pause is the brake. An unresolved edit or the 30 s pacing never
+            # blocks it; only a pause still on its way answers instead (a repeated PAUSED after
+            # a finished one is harmless and covers a late resume that re-activated the ad).
+            # A claim older than five minutes can no longer dispatch (`_dispatch`): settle it.
+            s.execute(
+                text("""UPDATE ad_promotion_operations SET finished_at=:now,
+              state=CASE WHEN dispatched_at IS NULL THEN 'failed' ELSE 'unknown' END
+              WHERE promotion_id=:id AND action='pause' AND state='in_flight'
+                AND created_at <= :stale"""),
+                {"id": scope.promotion_id, "now": now, "stale": now - timedelta(minutes=5)},
+            )
+            current = s.execute(
+                text("""SELECT id,state FROM ad_promotion_operations
+              WHERE promotion_id=:id AND action='pause' AND state='in_flight'
+              ORDER BY created_at DESC LIMIT 1"""),
+                {"id": scope.promotion_id},
+            ).first()
+            if current:
+                return current[0], current[1]
+            recent = None
+        else:
+            recent = s.execute(
+                text("""SELECT id FROM ad_promotion_operations WHERE promotion_id=:id
           AND (state IN ('in_flight','unknown') OR
                GREATEST(created_at,COALESCE(dispatched_at,created_at),
                         COALESCE(finished_at,created_at)) > :cutoff) LIMIT 1"""),
-            {"id": scope.promotion_id, "cutoff": now - timedelta(seconds=30)},
-        ).first()
+                {"id": scope.promotion_id, "cutoff": now - timedelta(seconds=30)},
+            ).first()
         if recent:
             raise ResultsUnavailable(
                 "Espera treinta segundos y actualiza el estado antes de otro cambio."
@@ -744,19 +787,38 @@ def _finish_pause(scope: ResultScope, operation: UUID, state: str) -> None:
 def _dispatch(scope: ResultScope, operation: UUID) -> None:
     """A cancelled/reconciled or expired claim may never dispatch after cooldown."""
     with tenant_session(scope.tenant_id, independent=True) as s:
-        claimed = s.execute(
-            text("""UPDATE ad_promotion_operations SET dispatched_at=:now
-            WHERE id=:operation AND promotion_id=:id AND state='in_flight'
-              AND dispatched_at IS NULL AND created_at > :deadline RETURNING id"""),
-            {
-                "now": datetime.now(UTC),
-                "deadline": datetime.now(UTC) - timedelta(minutes=5),
-                "operation": operation,
-                "id": scope.promotion_id,
-            },
+        # Same lock as the claim: a pause claimed after this edit is always seen here.
+        s.execute(
+            text("SELECT id FROM ad_promotions WHERE id=:id FOR UPDATE"), {"id": scope.promotion_id}
+        ).one()
+        # m-25072681: a later pause wins. An edit claimed before it never reaches Meta.
+        superseded = s.execute(
+            text("""UPDATE ad_promotion_operations o SET state='failed',finished_at=:now
+            WHERE o.id=:operation AND o.promotion_id=:id AND o.state='in_flight'
+              AND o.action<>'pause' AND o.dispatched_at IS NULL
+              AND EXISTS (SELECT 1 FROM ad_promotion_operations p
+                WHERE p.promotion_id=o.promotion_id AND p.action='pause'
+                  AND p.created_at > o.created_at) RETURNING o.id"""),
+            {"now": datetime.now(UTC), "operation": operation, "id": scope.promotion_id},
         ).scalar()
-        if claimed is None:
-            raise ResultsUnavailable("La confirmación venció o cambió. Actualiza la promoción.")
+        claimed = None
+        if superseded is None:
+            claimed = s.execute(
+                text("""UPDATE ad_promotion_operations SET dispatched_at=:now
+                WHERE id=:operation AND promotion_id=:id AND state='in_flight'
+                  AND dispatched_at IS NULL AND created_at > :deadline RETURNING id"""),
+                {
+                    "now": datetime.now(UTC),
+                    "deadline": datetime.now(UTC) - timedelta(minutes=5),
+                    "operation": operation,
+                    "id": scope.promotion_id,
+                },
+            ).scalar()
+    # Outside the transaction: the superseded edit stays marked failed.
+    if superseded is not None:
+        raise ResultsUnavailable("La promoción se pausó. Actualiza el estado.")
+    if claimed is None:
+        raise ResultsUnavailable("La confirmación venció o cambió. Actualiza la promoción.")
 
 
 async def _pause(
@@ -795,7 +857,7 @@ async def _pause(
             operation = None  # Repeated intents cannot finish another dispatch.
             if state in {"completed", "reconciled"}:
                 return _load(tenant_id, promotion_id)
-            raise ResultsUnavailable(UNCERTAIN)
+            raise ResultsUnavailable(PAUSING if state == "in_flight" else UNCERTAIN)
 
         def guard() -> None:
             nonlocal dispatched
@@ -819,6 +881,16 @@ async def _pause(
         _same(scope)
         return _load(tenant_id, promotion_id)
     except (MarketingError, AdAccountUnavailable) as exc:
+        too_soon = (
+            action == "pause"
+            and isinstance(exc, MarketingError)
+            and not exc.outcome_unknown
+            and (exc.code in _RATE_CODES or exc.subcode == _EDIT_TOO_SOON)
+        )
+        if operation is not None and too_soon:
+            # Meta answered and refused: nothing was paused, and a new pause may be sent.
+            _finish_pause(scope, operation, "failed")
+            raise ResultsUnavailable(PAUSE_RETRY) from None
         if operation is not None:
             _finish_pause(
                 scope,
@@ -854,6 +926,7 @@ async def poll_promotion_results(*, tenant_id: UUID, limit: int = 100) -> dict[s
     """Readonly system tick. Production scheduling is a separate deployment step."""
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError("limit must be between one and five hundred")
+    now = datetime.now(UTC)
     with tenant_session(tenant_id) as s:
         ids = s.scalars(
             text("""SELECT p.id FROM ad_promotions p
@@ -861,8 +934,13 @@ async def poll_promotion_results(*, tenant_id: UUID, limit: int = 100) -> dict[s
           WHERE p.meta_ad_id IS NOT NULL
             AND (o.refresh_started_at IS NULL OR o.refresh_started_at < :due)
             AND (o.effective_status IS NULL OR o.effective_status NOT IN ('ARCHIVED','DELETED'))
+            -- Abandoned (never activated, preview expired): paused forever, nothing to read.
+            -- Assumes every activated promotion has an activation row (all do since 0118).
+            AND EXISTS(SELECT 1 FROM ad_promotion_activations a
+              WHERE a.promotion_id=p.id AND a.tenant_id=p.tenant_id
+                AND (a.state<>'ready' OR a.expires_at>:now))
           ORDER BY o.refresh_started_at NULLS FIRST,p.created_at LIMIT :limit"""),
-            {"due": datetime.now(UTC) - POLL_INTERVAL, "limit": limit},
+            {"due": now - POLL_INTERVAL, "now": now, "limit": limit},
         ).all()
     counts = {"checked": 0, "unavailable": 0}
     for promotion_id in ids:

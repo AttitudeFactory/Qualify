@@ -40,7 +40,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 
-from qualify_creative.video._source import frame_rotation
+from qualify_creative.video._source import frame_rotation, source_colour
 from qualify_creative.video.upright import upright_filters, upright_size
 
 #: Instagram plays a carousel video of up to 60 s.
@@ -66,6 +66,24 @@ DETAIL_X264 = {"crf": "18", "preset": "fast"}
 REFERENCE_SHORT_SIDE = 720
 REFERENCE_MAX_FPS = 30
 REFERENCE_X264 = {"crf": "23", "preset": "veryfast"}
+#: m-25029127: every output is BT.709, limited range, and says so. The `scale` filter is
+#: told the source's matrix and range and the output's: left to itself it wrote BT.601 YUV
+#: (swscale's default) into an untagged file, which a player reads as BT.709 — a phone's
+#: green [39,168,89] came out [25,149,85], darker and off in hue.
+_SCALE_MATRICES = {
+    "ITU709": "bt709",
+    "ITU601": "bt601",
+    "FCC": "fcc",
+    "SMPTE240M": "smpte240m",
+    "BT2020": "bt2020",
+}
+_SCALE_RANGES = {"MPEG": "tv", "JPEG": "pc"}
+#: The `scale` flags of a matrix or range CONVERSION (`_scale_colour`): bicubic as the
+#: filter's default, plus exact rounding and full-resolution chroma.
+_CONVERT_FLAGS = "bicubic+accurate_rnd+full_chroma_int"
+#: AVCOL_* code 1 is BT.709 for primaries, transfer and matrix alike; range 1 is limited.
+_BT709 = 1
+_LIMITED_RANGE = 1
 
 
 @dataclass(frozen=True)
@@ -131,7 +149,9 @@ def reference_size(
 
 
 class PyAvVideoFitter:
-    """H.264 `yuv420p` MP4 at `size`, `+faststart`; no audio unless `keep_audio`."""
+    """H.264 `yuv420p` MP4 at `size`, `+faststart`; no audio unless `keep_audio`. The
+    picture is BT.709 limited range and tagged so, whatever the source's matrix
+    (m-25029127)."""
 
     def available(self) -> bool:
         try:
@@ -300,11 +320,12 @@ def _encode_still(
         encoder.pix_fmt = "yuv420p"
         encoder.options = {"crf": "20", "preset": "veryfast"}
         encoder.codec_context.time_base = tick
+        _tag_bt709(encoder.codec_context)
         for index in range(total):
             box = _push_in_box(index / max(total - 1, 1), size)
             frame = av.VideoFrame.from_image(
                 still.resize(size, Image.Resampling.BICUBIC, box=box)
-            ).reformat(format="yuv420p")
+            ).reformat(format="yuv420p", dst_colorspace="ITU709", dst_color_range="MPEG")
             # stamped by hand, one tick per frame (see `_encode`: no pts = time 0)
             frame.pts = index
             frame.time_base = tick
@@ -313,6 +334,39 @@ def _encode_still(
         for packet in encoder.encode():
             sink.mux(packet)
     return total, poster.getvalue()
+
+
+def _tag_bt709(context: Any) -> None:
+    """Tags an encoder's output BT.709 (primaries, transfer, matrix), limited range — what
+    its frames hold (m-25029127), so no player has to guess."""
+    context.color_range = _LIMITED_RANGE
+    context.colorspace = _BT709
+    context.color_primaries = _BT709
+    context.color_trc = _BT709
+
+
+def _scale_colour(stream: Any) -> str:
+    """The `scale` filter's colour options for `stream`: read with its own matrix and range
+    (`_source.source_colour`, the same policy as `prepare`, an untagged one by its size),
+    written BT.709 limited range. A source that is already that (every phone) is only
+    resized; any other is converted with swscale's exact rounding and full-resolution
+    chroma (`_CONVERT_FLAGS`) — without them a BT.601 green [37,166,86] came out
+    [35,164,83], with them [39,167,88], at ~2.5× the scale's cost on that rarer path."""
+    context = stream.codec_context
+    matrix, colour_range = source_colour(
+        context.colorspace,
+        context.color_range,
+        context.format.name if context.format is not None else "",
+        context.width,
+        context.height,
+    )
+    options = (
+        f"in_color_matrix={_SCALE_MATRICES[matrix]}:in_range={_SCALE_RANGES[colour_range]}"
+        ":out_color_matrix=bt709:out_range=tv"
+    )
+    if (matrix, colour_range) != ("ITU709", "MPEG"):
+        options += f":flags={_CONVERT_FLAGS}"
+    return options
 
 
 def _source_rotation(data: bytes) -> int:
@@ -425,6 +479,7 @@ def _encode(
             encoder.width, encoder.height = width, height
             encoder.pix_fmt = "yuv420p"
             encoder.options = dict(x264)
+            _tag_bt709(encoder.codec_context)
             # every frame is stamped by hand: a frame handed to the encoder with no pts
             # is written at time 0, and 120 such frames make a 0.04 s file (seen
             # 2026-10-09 on the first real carousel — "videos de cero segundos")
@@ -434,7 +489,7 @@ def _encode(
             graph = av.filter.Graph()
             video_in = graph.add_buffer(template=stream)
             crop = graph.add("crop", _cover_crop(width, height))
-            scale = graph.add("scale", f"{width}:{height}")
+            scale = graph.add("scale", f"{width}:{height}:{_scale_colour(stream)}")
             to_yuv = graph.add("format", "yuv420p")
             frames_out = graph.add("buffersink")
             head = video_in

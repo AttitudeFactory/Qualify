@@ -456,7 +456,7 @@ SAVED = ("7.893907", "-72.50782")
 
 def no_reach(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        state_module, "read_reach", lambda scope, form: AudienceReachVM(label="ready")
+        state_module, "read_reach", lambda scope, form, brand="": AudienceReachVM(label="ready")
     )
 
 

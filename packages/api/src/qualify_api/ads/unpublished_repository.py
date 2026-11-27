@@ -10,6 +10,7 @@ from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.keys import require_tenant_object
 from sqlalchemy import text
 
+from qualify_api.ads.carousel import CARD_COUNT, MAX_CARDS, CarouselCard, CarouselSource
 from qualify_api.ads.client import MarketingSettings
 from qualify_api.ads.unpublished import (
     UPLOAD_UNCERTAIN,
@@ -20,7 +21,10 @@ from qualify_api.ads.unpublished import (
     VideoSelection,
     recipe_hash,
 )
+from qualify_api.catalog.models import MEDIA_TYPE_IMAGE
+from qualify_api.catalog.service import CatalogService, UnknownProduct
 from qualify_api.connections.ad_accounts import _connection, _permission_reason
+from qualify_api.creative.media import LocalMediaStore, owned_by
 from qualify_api.tenancy.acting import require_acting_member
 
 CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
@@ -146,15 +150,107 @@ def load_image_source(
             *selections,
         )
         source.snapshot()
-        if source.currency != "COP" or any(
-            not isinstance(value, str) or not value.isascii() or not value.isdigit()
-            for value in (source.meta_account_id, source.instagram_id, source.page_id)
-        ):
-            raise UnpublishedUnavailable(
-                "Revisa la cuenta y la página conectadas. "
-                "Por ahora, estos anuncios solo admiten pesos colombianos."
-            )
+        _require_cop(source)
         return source
+
+
+def load_carousel_source(
+    tenant: UUID, account: UUID, cards: tuple[tuple[UUID, str], ...]
+) -> CarouselSource:
+    """`cards` = (product id, HTTPS link) in the owner's order. Each product is read through
+    the Catálogo's own door under the tenant's RLS and must be an active product of the
+    ad account's brand with a photo; its primary photo, name and price come from there."""
+    require_acting_member(tenant)
+    if not isinstance(cards, tuple) or len(cards) > MAX_CARDS:
+        raise UnpublishedUnavailable(CARD_COUNT)
+    with tenant_session(tenant, independent=True) as session:
+        row = (
+            session.execute(
+                text("""SELECT a.brand_id,a.connection_id,a.ad_account_id,a.currency,
+              a.timezone_name,a.credential_version,c.external_account_id,c.linked_page_id
+            FROM ad_accounts a JOIN social_connections c ON c.id=a.connection_id
+              AND c.tenant_id=a.tenant_id AND c.brand_id=a.brand_id
+            WHERE a.id=:account AND a.selected AND a.available
+              AND a.credential_version=c.current_credential_version AND c.status='active'
+              AND c.purged_at IS NULL AND c.purge_started_at IS NULL"""),
+                {"account": account},
+            )
+            .mappings()
+            .first()
+        )
+        if row is None or _permission_reason(_connection(session, row["connection_id"])):
+            raise UnpublishedUnavailable(CHANGED)
+    # The store is never touched by `get_product`; the Catálogo only needs one to exist.
+    catalog = CatalogService(store=LocalMediaStore(_media_root()))
+    loaded: list[CarouselCard] = []
+    for product_id, link in cards:
+        try:
+            product = catalog.get_product(tenant_id=tenant, product_id=product_id)
+        except UnknownProduct:
+            product = None
+        if product is None or product.brand_id != row["brand_id"] or not product.is_active:
+            raise UnpublishedUnavailable(
+                "Uno de los productos ya no está en tu Catálogo. Vuelve a elegirlos."
+            )
+        photos = [m for m in product.media if m.media_type == MEDIA_TYPE_IMAGE]
+        photo = next((m for m in photos if m.is_primary), photos[0] if photos else None)
+        if photo is None:
+            raise UnpublishedUnavailable(
+                f"«{product.name}» no tiene foto. Agrégale una en tu Catálogo."
+            )
+        if not owned_by(tenant, photo.object_key):
+            raise UnpublishedUnavailable(CHANGED)
+        loaded.append(
+            CarouselCard(
+                product.id,
+                product.name,
+                product.price_label,
+                link,
+                ImageSelection(
+                    photo.id, photo.object_key, photo.content_type, photo.width, photo.height
+                ),
+            )
+        )
+    source = CarouselSource(
+        tenant,
+        row["brand_id"],
+        account,
+        row["connection_id"],
+        row["credential_version"],
+        row["ad_account_id"],
+        row["external_account_id"],
+        row["linked_page_id"],
+        row["currency"],
+        row["timezone_name"],
+        tuple(loaded),
+    )
+    source.snapshot()
+    _require_cop(source)
+    return source
+
+
+def carousel_cards(source: CarouselSource | dict) -> tuple[tuple[UUID, str], ...]:
+    """The (product, link) inputs of a source or of its stored snapshot."""
+    if isinstance(source, CarouselSource):
+        return tuple((card.product_id, card.link_url) for card in source.cards)
+    return tuple((UUID(card["product_id"]), card["link_url"]) for card in source["cards"])
+
+
+def _media_root() -> Any:
+    from qualify_api.creative.composition import media_root  # noqa: PLC0415 - heavy module
+
+    return media_root()
+
+
+def _require_cop(source: ImageSource | CarouselSource) -> None:
+    if source.currency != "COP" or any(
+        not isinstance(value, str) or not value.isascii() or not value.isdigit()
+        for value in (source.meta_account_id, source.instagram_id, source.page_id)
+    ):
+        raise UnpublishedUnavailable(
+            "Revisa la cuenta y la página conectadas. "
+            "Por ahora, estos anuncios solo admiten pesos colombianos."
+        )
 
 
 def thumbnails(source: ImageSource | dict) -> tuple[UUID | None, UUID | None]:
@@ -172,7 +268,13 @@ def thumbnails(source: ImageSource | dict) -> tuple[UUID | None, UUID | None]:
     return feed, vertical
 
 
-def guard_source(source: ImageSource) -> None:
+def guard_source(source: ImageSource | CarouselSource) -> None:
+    if isinstance(source, CarouselSource):
+        if load_carousel_source(source.tenant_id, source.account_id, carousel_cards(source)) != (
+            source
+        ):
+            raise UnpublishedUnavailable(CHANGED)
+        return
     current = load_image_source(
         source.tenant_id,
         source.draft_id,
@@ -186,7 +288,9 @@ def guard_source(source: ImageSource) -> None:
 
 
 class UnpublishedRepository:
-    def approve(self, source: ImageSource, form: ImageAdForm, actor: UUID, key: UUID) -> dict:
+    def approve(
+        self, source: ImageSource | CarouselSource, form: ImageAdForm, actor: UUID, key: UUID
+    ) -> dict:
         guard_source(source)
         digest = recipe_hash(source, form, actor)
         with tenant_session(source.tenant_id, independent=True) as session:
@@ -248,7 +352,7 @@ class UnpublishedRepository:
                 raise UnpublishedUnavailable(CHANGED)
 
     def claim_upload(
-        self, source: ImageSource, asset: ImageSelection, digest: str
+        self, source: ImageSource | CarouselSource, asset: ImageSelection, digest: str
     ) -> tuple[dict, bool]:
         claim = uuid4()
         params = {
