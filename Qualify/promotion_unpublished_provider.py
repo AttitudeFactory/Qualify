@@ -230,7 +230,7 @@ def unpublished_sources(
         kinds = []
         if feed_videos and vertical_videos and feed_images and vertical_images:
             kinds.append("videos")
-        if feed_images and vertical_images:
+        if feed_images and _own(vertical_images):
             kinds.append("images")
     if not kinds or not accounts:
         return []

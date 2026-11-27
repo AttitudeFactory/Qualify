@@ -51,12 +51,14 @@ _JPEG_QUALITY = 92
 
 #: A piece's files plus the automatic covers of its videos, as 9:16 image rows: a drop-in
 #: for `FROM image_assets` in the story ad's readers (same name, same columns they read).
-#: A failed cover has no key and is left out by their `object_key IS NOT NULL`.
+#: A failed cover has no key and is left out by their `object_key IS NOT NULL`; so is the
+#: cover of a video whose file was replaced in place (a re-join keeps the row).
 #: `auto_cover`: the wizard offers such a frame only as its video's cover, never as a photo.
 PIECE_FILES = """(SELECT id,draft_id,version_id,object_key,content_type,media_type,width,height,
   position,false AS auto_cover FROM image_assets
-  UNION ALL SELECT id,draft_id,version_id,object_key,content_type,'image',width,height,1000,true
-  FROM piece_story_covers) AS image_assets"""
+  UNION ALL SELECT c.id,c.draft_id,c.version_id,c.object_key,c.content_type,'image',c.width,
+  c.height,1000,true FROM piece_story_covers c JOIN image_assets v ON v.id=c.source_asset_id
+    AND v.tenant_id=c.tenant_id AND v.object_key=c.source_object_key) AS image_assets"""
 
 _CANDIDATES = """SELECT a.tenant_id,a.id AS asset_id,a.draft_id,a.version_id,a.object_key,
   a.width,a.height
@@ -66,6 +68,7 @@ WHERE d.status='approved' AND d.approved_revision=d.revision AND d.parent_draft_
   AND d.part_removed_at IS NULL AND d.media_purged_at IS NULL
   AND a.media_type='video' AND a.content_type='video/mp4' AND a.object_key IS NOT NULL
   AND a.width>0 AND a.width*16=a.height*9
+  AND a.object_key LIKE 't/' || a.tenant_id::text || '/%' AND position('..' in a.object_key)=0
   AND (d.category='story' OR NOT EXISTS (SELECT 1 FROM image_assets o
     WHERE o.tenant_id=d.tenant_id AND o.draft_id=d.id AND o.version_id=d.active_version_id
       AND o.output_port IS DISTINCT FROM 'story'))
@@ -74,23 +77,24 @@ WHERE d.status='approved' AND d.approved_revision=d.revision AND d.parent_draft_
       AND i.media_type='image' AND i.content_type IN ('image/jpeg','image/png')
       AND i.object_key IS NOT NULL AND i.width>0 AND i.width*16=i.height*9)
   AND NOT EXISTS (SELECT 1 FROM piece_story_covers c
-    WHERE c.tenant_id=a.tenant_id AND c.source_asset_id=a.id)"""
+    WHERE c.tenant_id=a.tenant_id AND c.source_asset_id=a.id
+      AND c.source_object_key=a.object_key)"""
 _TENANTS = text(f"SELECT DISTINCT tenant_id FROM ({_CANDIDATES}) AS c ORDER BY tenant_id")
 _WORK = text(f"{_CANDIDATES} ORDER BY d.approved_at DESC NULLS LAST,a.id LIMIT :limit")
 _INSERT = text("""INSERT INTO piece_story_covers (tenant_id,draft_id,version_id,source_asset_id,
-  state,object_key,content_type,width,height,pipeline_version,failure_reason)
-VALUES (:tenant,:draft,:version,:asset,:state,:key,:type,:width,:height,:pipeline,:reason)
-ON CONFLICT (tenant_id,source_asset_id) DO NOTHING""")
+  source_object_key,state,object_key,content_type,width,height,pipeline_version,failure_reason)
+VALUES (:tenant,:draft,:version,:asset,:source,:state,:key,:type,:width,:height,:pipeline,
+  :reason)
+ON CONFLICT (tenant_id,source_asset_id,source_object_key) DO NOTHING""")
 
 Grab = Callable[..., bytes]
 
 
-def cover_key(tenant_id: UUID, video_key: str, asset_id: UUID) -> str:
-    """Next to the video (it shares the video's retention), under the tenant's `t/`."""
-    name = f"story-cover-{uuid5(_NAMESPACE, f'{COVER_VERSION}:{asset_id}')}.jpg"
-    root = f"t/{tenant_id}/"
-    folder = video_key.rsplit("/", 1)[0] if video_key.startswith(root) else f"{root}story-covers"
-    return f"{folder}/{name}"
+def cover_key(video_key: str, asset_id: UUID) -> str:
+    """Next to the video, so it shares the video's retention (only videos under the
+    tenant's `t/` are candidates); a new file of the same row gets a new key."""
+    name = uuid5(_NAMESPACE, f"{COVER_VERSION}:{asset_id}:{video_key}")
+    return f"{video_key.rsplit('/', 1)[0]}/story-cover-{name}.jpg"
 
 
 def vertical_jpeg(jpeg: bytes) -> tuple[bytes, int, int]:
@@ -118,7 +122,7 @@ def vertical_jpeg(jpeg: bytes) -> tuple[bytes, int, int]:
 
 def make_cover(gate: Any, work: Mapping[str, Any], grab: Grab | None = None) -> bool:
     """The cover of one video, stored and recorded; False when the video gave no frame
-    (recorded `failed`). R2 and database errors propagate: nothing is recorded and the
+    (recorded `failed`). R2, database and timeout errors propagate: nothing is recorded and the
     next pass tries again."""
     from qualify_creative.video.still import (  # noqa: PLC0415 — worker only
         POSTER_PREFERRED_SECONDS,
@@ -132,6 +136,7 @@ def make_cover(gate: Any, work: Mapping[str, Any], grab: Grab | None = None) -> 
         "draft": work["draft_id"],
         "version": work["version_id"],
         "asset": asset,
+        "source": work["object_key"],
         "pipeline": COVER_VERSION,
         "state": "stored",
         "key": None,
@@ -155,10 +160,14 @@ def make_cover(gate: Any, work: Mapping[str, Any], grab: Grab | None = None) -> 
         except ObjectNotFound:  # the video's own file is gone: no frame to take, ever
             values |= {"state": "failed", "reason": "source_missing"}
         except VideoStillError as exc:
+            # shortcut: a timeout is told apart by its text (still.py has no type for it);
+            # it is the machine's, so the next pass tries again instead of recording it
+            if "timed out" in str(exc):
+                raise
             logger.info("story_cover.no_frame error_type=%s", type(exc).__name__)
             values |= {"state": "failed", "reason": "no_frame"}
     if values["state"] == "stored":
-        key = cover_key(tenant, work["object_key"], asset)
+        key = cover_key(work["object_key"], asset)
         if not gate.has_object(tenant, key):  # `t/` is write-once: a retry reuses it
             gate.put_media(tenant, key, io.BytesIO(jpeg), "image/jpeg")
         values |= {"key": key, "type": "image/jpeg", "width": width, "height": height}
@@ -184,11 +193,15 @@ def pending(tenant_id: UUID, limit: int = PER_PASS) -> list[dict[str, Any]]:
 def sweep(
     tenant_ids: Iterable[UUID], gate: Any, limit: int = PER_PASS, grab: Grab | None = None
 ) -> int:
-    """At most `limit` covers over these businesses; how many were stored."""
+    """At most `limit` attempts over these businesses; how many covers were stored. A video
+    that fails (R2, database, timeout) is logged and skipped, never the rest of the pass."""
     made = 0
     for tenant in tenant_ids:
         for work in pending(tenant, limit):
-            made += make_cover(gate, work, grab)
+            try:
+                made += make_cover(gate, work, grab)
+            except Exception as exc:  # noqa: BLE001 — retried next pass; the others go on
+                logger.warning("story_cover.failed error_type=%s", type(exc).__name__)
             limit -= 1
             if limit <= 0:
                 return made

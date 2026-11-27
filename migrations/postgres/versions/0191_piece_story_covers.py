@@ -25,8 +25,11 @@ in (`creative.story_covers.PIECE_FILES`).
   tenant_id)`, `source_asset_id` → `image_assets (id, tenant_id)` (the video the frame was
   taken from), all `ON DELETE CASCADE`: a regeneration that replaces the video's row takes
   its cover with it, and the new video gets its own.
-- `UNIQUE (tenant_id, source_asset_id)`: one cover per video file — the worker inserts
-  `ON CONFLICT DO NOTHING`, so a second pass never makes a duplicate.
+- `source_object_key`: the video's file the frame came from. Some steps (a re-join) put a
+  new file in the same `image_assets` row; the old cover then stops matching and the new
+  file gets its own.
+- `UNIQUE (tenant_id, source_asset_id, source_object_key)`: one cover per video file — the
+  worker inserts `ON CONFLICT DO NOTHING`, so a second pass never makes a duplicate.
 - `state`: `stored` (with `object_key`, `content_type`, `width`, `height`) or `failed` (the
   video gave no frame; `failure_reason`): a failed file is not tried again every minute.
 - `pipeline_version`: provenance (which step, which frame, how encoded). No model, no
@@ -54,6 +57,7 @@ def upgrade() -> None:
         draft_id uuid NOT NULL,
         version_id uuid NOT NULL,
         source_asset_id uuid NOT NULL,
+        source_object_key text NOT NULL CHECK (char_length(source_object_key) BETWEEN 1 AND 1024),
         state text NOT NULL CHECK (state IN ('stored', 'failed')),
         object_key text,
         content_type text CHECK (content_type = 'image/jpeg'),
@@ -62,7 +66,8 @@ def upgrade() -> None:
         pipeline_version text NOT NULL CHECK (char_length(pipeline_version) BETWEEN 1 AND 64),
         failure_reason text CHECK (char_length(failure_reason) <= 200),
         created_at timestamptz NOT NULL DEFAULT now(),
-        CONSTRAINT uq_piece_story_covers_source UNIQUE (tenant_id, source_asset_id),
+        CONSTRAINT uq_piece_story_covers_source
+            UNIQUE (tenant_id, source_asset_id, source_object_key),
         CONSTRAINT fk_piece_story_covers_draft FOREIGN KEY (draft_id, tenant_id)
             REFERENCES content_drafts(id, tenant_id) ON DELETE CASCADE,
         CONSTRAINT fk_piece_story_covers_version FOREIGN KEY (version_id, tenant_id)

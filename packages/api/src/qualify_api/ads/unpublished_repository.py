@@ -83,7 +83,7 @@ def load_image_source(
         if row is None or _permission_reason(_connection(session, row["connection_id"])):
             raise UnpublishedUnavailable(CHANGED)
 
-        def asset(asset_id: UUID, media_type: str) -> dict:
+        def asset(asset_id: UUID, media_type: str, as_cover: bool = False) -> dict:
             values = {
                 "id": asset_id,
                 "draft": draft,
@@ -100,15 +100,18 @@ def load_image_source(
                 .mappings()
                 .first()
             )
-            if found is None and media_type == "image":
-                # N1 (m-25142900): the automatic cover of one of the version's videos. Never
-                # updated, and deleted only with its video, whose row is already FOR SHARE
+            if found is None and as_cover:
+                # N1 (m-25142900): the automatic cover of one of the version's videos, only
+                # as a video's cover and only while that video keeps the file it came from.
+                # Never updated, deleted only with its video, whose row is already FOR SHARE
                 # (qualify_app has no UPDATE here, which FOR SHARE would need).
                 found = (
                     session.execute(
-                        text("""SELECT id,object_key,content_type,width,height
-                      FROM piece_story_covers WHERE id=:id AND draft_id=:draft
-                        AND version_id=:version AND object_key IS NOT NULL"""),
+                        text("""SELECT c.id,c.object_key,c.content_type,c.width,c.height
+                      FROM piece_story_covers c JOIN image_assets v ON v.id=c.source_asset_id
+                        AND v.tenant_id=c.tenant_id AND v.object_key=c.source_object_key
+                      WHERE c.id=:id AND c.draft_id=:draft AND c.version_id=:version
+                        AND c.object_key IS NOT NULL"""),
                         values,
                     )
                     .mappings()
@@ -121,8 +124,8 @@ def load_image_source(
             require_tenant_object(tenant, found["object_key"])
             return dict(found)
 
-        def image(asset_id: UUID) -> ImageSelection:
-            found = asset(asset_id, "image")
+        def image(asset_id: UUID, as_cover: bool = False) -> ImageSelection:
+            found = asset(asset_id, "image", as_cover)
             return ImageSelection(
                 asset_id,
                 found["object_key"],
@@ -154,7 +157,7 @@ def load_image_source(
                         found["content_type"],
                         found["width"],
                         found["height"],
-                        None if cover is None else image(cover),
+                        None if cover is None else image(cover, as_cover=True),
                     )
                 )
             elif cover is not None:

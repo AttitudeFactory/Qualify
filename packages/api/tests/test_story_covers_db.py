@@ -135,11 +135,57 @@ def test_a_failed_r2_write_leaves_nothing_and_the_next_pass_retries(gate, monkey
         raise RuntimeError("R2 down")
 
     monkeypatch.setattr(gate, "put_media", refuse)
-    with pytest.raises(RuntimeError):
-        sweep([mine.tenant_id], gate, grab=_frame)
+    assert sweep([mine.tenant_id], gate, grab=_frame) == 0  # logged, never raised
     assert _covers(mine.tenant_id) == [] and len(pending(mine.tenant_id)) == 1
     monkeypatch.undo()
     assert sweep([mine.tenant_id], gate, grab=_frame) == 1
+
+
+def test_one_failing_video_never_stops_the_others(gate) -> None:
+    broken, _ = _video_historia(gate)
+    fine, login = _video_historia(gate)
+    with tenant_session(broken.tenant_id) as session:  # its file is not where the row says
+        session.execute(
+            text("UPDATE image_assets SET object_key=object_key || '.lost' WHERE id=:id"),
+            {"id": broken.vertical.asset_id},
+        )
+    timeouts = {"count": 0}
+
+    def slow_once(*args, **kwargs) -> bytes:
+        if not timeouts["count"]:
+            timeouts["count"] += 1
+            raise VideoStillError("ffmpeg timed out after 30 s")
+        return _frame()
+
+    # the lost file is recorded once; the timeout is the machine's: not recorded, retried
+    assert sweep([broken.tenant_id, fine.tenant_id], gate, grab=slow_once) == 0
+    assert [c["failure_reason"] for c in _covers(broken.tenant_id)] == ["source_missing"]
+    assert _covers(fine.tenant_id) == [] and len(pending(fine.tenant_id)) == 1
+    assert sweep([broken.tenant_id, fine.tenant_id], gate, grab=slow_once) == 1
+    with acting_login(login):
+        assert story_block(fine.tenant_id, fine.draft_id) is None
+
+
+def test_a_new_file_in_the_same_row_gets_its_own_cover(gate) -> None:
+    """A re-join writes a new file into the video's row: the old frame no longer counts."""
+    mine, login = _video_historia(gate)
+    sweep([mine.tenant_id], gate, grab=_frame)
+    new_key = f"t/{mine.tenant_id}/generated/{mine.draft_id}/r2/video.mp4"
+    gate.put_media(mine.tenant_id, new_key, io.BytesIO(b"new mp4"), "video/mp4")
+    with tenant_session(mine.tenant_id) as session:
+        session.execute(
+            text("UPDATE image_assets SET object_key=:key WHERE id=:id"),
+            {"key": new_key, "id": mine.vertical.asset_id},
+        )
+    with acting_login(login):
+        assert story_block(mine.tenant_id, mine.draft_id) == StoryBlock.VIDEO_WITHOUT_COVER
+    assert sweep([mine.tenant_id], gate, grab=_frame) == 1
+    newest = _covers(mine.tenant_id)[-1]
+    assert newest["source_object_key"] == new_key and newest["object_key"].startswith(
+        f"t/{mine.tenant_id}/generated/{mine.draft_id}/r2/"
+    )
+    with acting_login(login):
+        assert story_block(mine.tenant_id, mine.draft_id) is None
 
 
 def test_discovery_lists_only_businesses_with_work(gate) -> None:

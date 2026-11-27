@@ -42,11 +42,11 @@ def test_an_unusable_frame_is_refused(frame: bytes) -> None:
 def test_the_cover_sits_next_to_its_video_and_is_stable() -> None:
     tenant, draft, asset = uuid4(), uuid4(), uuid4()
     video = f"t/{tenant}/generated/{draft}/r1/video.mp4"
-    key = cover_key(tenant, video, asset)
+    key = cover_key(video, asset)
     assert key.startswith(f"t/{tenant}/generated/{draft}/r1/story-cover-") and key.endswith(".jpg")
-    assert cover_key(tenant, video, asset) == key != cover_key(tenant, video, uuid4())
-    # a video outside the tenant's `t/` still gets a cover under it, never elsewhere
-    assert cover_key(tenant, f"gallery/{tenant}/x/video.mp4", asset).startswith(f"t/{tenant}/")
+    assert cover_key(video, asset) == key != cover_key(video, uuid4())
+    # a new file in the same row (a re-join) gets its own cover, never the old one's key
+    assert cover_key(f"t/{tenant}/generated/{draft}/r2/video.mp4", asset) != key
 
 
 def test_the_story_readers_keep_the_name_and_columns_they_filter_on() -> None:
