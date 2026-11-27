@@ -1732,6 +1732,9 @@ def test_the_editor_has_no_deshacer_button_and_shows_the_hint() -> None:
     rendered = str(clip_editor_view._timeline().render())
     assert "undo_clip_edit" not in rendered and "Deshacer" not in rendered
     assert "clip_trim_hint" in rendered
+    # m-25026636: the bar is its own box now — no «Deshacer» there either
+    bar = str(clip_editor_view._timeline_bar().render())
+    assert "undo_clip_edit" not in bar and "Deshacer" not in bar
 
 
 # -- review ED-03 (2026-11-19) ------------------------------------------------------------------

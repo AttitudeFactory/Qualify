@@ -898,7 +898,8 @@ async def _read_reel_wait(
         except Exception as exc:  # noqa: BLE001 — the list of always, never a wait failure
             logger.warning("reel plan as blocks unreadable: %s", type(exc).__name__)
             laid = None
-    return reel_wait_vm.ready(len(entries)), entries, list(laid or [])
+    # as it came: `reel_blocks`' ops carry how much of the reel they follow (m-25143223)
+    return reel_wait_vm.ready(len(entries)), entries, laid or []
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -1991,6 +1992,9 @@ class CreativeState(rx.State):
     #: reel's plan is on «Arma tu video»'s timeline as blocks (`plan_blocks`), under the
     #: «Video de inspiración» card, instead of «Orden del clip»'s list.
     clip_reel_blocks: bool = False
+    #: m-25143223: the card's «Usamos 44 s de los 63 del reel.» when the laid plan stops
+    #: before the reel's end ("" when it covers it whole, or no plan is laid).
+    clip_reel_cut: str = ""
     #: ED-06 (design D21): the general panel («¿De qué trata tu video?») is open as the
     #: thing chosen; any block, join or side panel chosen closes it.
     clip_general_open: bool = False
@@ -4433,6 +4437,7 @@ class CreativeState(rx.State):
         self._parts_provenance = None
         # ED-06: a reel's plan laid as blocks goes with its analysis
         self.clip_reel_blocks = False
+        self.clip_reel_cut = ""
         self.parts_piece += 1
         self._show_reel_wait(reel_wait_vm.IDLE)
         self._reel_poll_token += 1
@@ -5627,6 +5632,7 @@ class CreativeState(rx.State):
         self.clip_refs = []  # m-25142725: …nor references for one
         self._clip_ref_spans = {}
         self.clip_reel_blocks = False  # ED-06: its plan comes as blocks once it is read
+        self.clip_reel_cut = ""
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
         # m-25026509: a fresh clip — the last piece's answer never rides on
@@ -7154,7 +7160,10 @@ class CreativeState(rx.State):
         self.clip_reel_blocks = True
         self.clip_edit_block = ""
         ai, own = self._clip_put_ops(ops)
-        self._clip_say(editor_idea_vm.reel_line(ai, own))
+        # m-25143223: a plan that stops before the reel's end says how much it follows
+        cut = getattr(ops, "cut", None)
+        self.clip_reel_cut = editor_idea_vm.reel_cut_card(cut)
+        self._clip_say(editor_idea_vm.reel_line(ai, own, cut))
         return True
 
     def _clip_idea_track(self) -> ClipBlocks:
@@ -7214,15 +7223,21 @@ class CreativeState(rx.State):
 
     def _clip_idea_off_reason(self) -> str:
         """Why «Pedir una idea» cannot put a part now ("" = it can), said BEFORE Claude is
-        asked: the switches off, an own video still being read (UX review), or the caps
-        «Parte con IA» says before the choque — 8 blocks, 6 AI parts, 60 s (design D22)."""
+        asked: the switches off, an own video still being read (UX review), the caps
+        «Parte con IA» says before the choque — 8 blocks, 6 AI parts, 60 s (design D22) —,
+        or nothing written yet about what the video is about (m-25026636: the button was
+        left on with «Cuéntanos de qué trata…» under it)."""
         if not self._clip_ai_on():
             return ai_block_vm.refusal_text("switched_off")
         try:
             self._clip_idea_track()
         except ValidationError:
             return editor_idea_vm.TRACK_NOT_READY
-        return ai_block_vm.add_reason(self._clip_ai_segments())
+        cap = ai_block_vm.add_reason(self._clip_ai_segments())
+        if cap:
+            return cap
+        # the same test the proposal applies to what it sends (`clean_story`)
+        return "" if parts_start_vm.clean_story(self.brief_topic) else editor_idea_vm.STORY_MISSING
 
     @rx.var
     def clip_idea_off(self) -> str:
@@ -9543,6 +9558,7 @@ class CreativeState(rx.State):
         self._clip_ref_target = ""
         # ED-06: and so do the reel's plan laid as blocks and the last idea's provenance
         self.clip_reel_blocks = False
+        self.clip_reel_cut = ""
         self._clip_idea_provenance = None
         self.clip_general_open = False
         self.clip_ai_merge_error = ""

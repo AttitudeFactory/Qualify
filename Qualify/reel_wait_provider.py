@@ -19,9 +19,10 @@ from uuid import UUID
 
 from qualify_api.creative.parts import ExtendTooShort, plan_from_analysis
 from qualify_api.creative.parts_plan import PartsPlanRefused
-from qualify_api.creative.plan_blocks import PlanBlocksRefused, blocks_from_analysis
+from qualify_api.creative.plan_blocks import PlanBlocksRefused, blocks_from_plan
 from qualify_api.referentes import reel_analysis
 from qualify_api.referentes.reel_analysis_types import AnalysisStatus, ReelAnalysis
+from qualify_creative.schemas import PARTS_MAX, VideoPartPlan
 
 from . import editor_idea_vm, reel_parts_vm
 from .avatar_proxy import part_source_path, part_thumbnail_path
@@ -131,18 +132,71 @@ def reel_blocks(
     `plan_from_analysis` then `blocks_from_plan`, pure; `editor_idea_vm.editor_ops`):
     a `local` part as its own blocks, any other as an AI part, each join on its block.
     None when the analysis is not `ok` (any more) or the plan does not hold or fit in a
-    Clip (the screen then lists the parts as today). One read, no model call."""
+    Clip (the screen then lists the parts as today). One read, no model call.
+    m-25143223: the ops carry `cut` (`editor_idea_vm.ReelOps`) — how much of the reel the
+    plan follows when it stops before its end (`reel_cut`), from the same read."""
     analysis = reel_analysis.get_analysis(tenant_id, analysis_id)
     if analysis is None:
         return None
+    named = tuple(p for p in products if p)
     try:
-        blocks = blocks_from_analysis(analysis, products=tuple(p for p in products if p))
+        # one plan for the blocks and for what they cover (`blocks_from_analysis` is
+        # these two steps)
+        plan = plan_from_analysis(analysis, products=named)
+        blocks = blocks_from_plan(plan, analysis)
     except (PlanBlocksRefused, PartsPlanRefused, ExtendTooShort) as exc:
         logger.info("reel plan as blocks refused: %s", type(exc).__name__)
         return None
     if blocks.seconds > LOCAL_MAX_SECONDS + 1e-6:
         return None  # past the Clip's 60 s: the list of today, never a video cut short
-    return editor_idea_vm.editor_ops(blocks) or None
+    ops = editor_idea_vm.editor_ops(blocks)
+    if not ops:
+        return None
+    return editor_idea_vm.ReelOps(ops, cut=reel_cut(analysis, plan))
+
+
+#: A plan that ends less than this short of the reel's end covers it whole (the shot
+#: detector's edges and the parts' whole seconds are not a cut the owner should hear of).
+REEL_CUT_SLACK_S = 1.0
+
+
+def reel_cut(
+    analysis: ReelAnalysis, plan: Sequence[VideoPartPlan]
+) -> editor_idea_vm.ReelCut | None:
+    """m-25143223: how much of the reel `plan` follows when it stops before the reel's
+    end (`ReelCut`: whole seconds of the plan's stretch, from the first cut's start, and
+    of the reel, `source_seconds`); None when it covers the reel whole (within
+    `REEL_CUT_SLACK_S`) or nothing can be said. `capped` only when cuts of the reel were
+    really left out at the parts' cap (`plan_from_analysis` keeps the first `PARTS_MAX`):
+    the last cut used is not the analysis' last, or a long cut was split and only its
+    first parts kept. Six parts that hold every cut of an analysis that stopped short of
+    the reel are not capped. Pure."""
+    shots = sorted(analysis.shots, key=lambda s: s.shot_index)
+    reel_s = float(analysis.source_seconds or 0.0)
+    if not plan or not shots or reel_s <= 0:
+        return None
+    last = plan[-1]
+    cuts = [shot for shot in shots if shot.shot_index in set(last.shot_indexes)]
+    if not cuts:
+        return None
+    end = max(shot.end_s for shot in cuts)
+    split_short = False
+    if len(cuts) == 1:
+        # a long cut becomes parts of at most 10 s: the plan may keep only the first ones
+        split = sum(p.seconds for p in plan if tuple(p.shot_indexes) == (cuts[0].shot_index,))
+        if split < cuts[0].seconds - REEL_CUT_SLACK_S:
+            end = cuts[0].start_s + split
+            split_short = True
+    if reel_s - end <= REEL_CUT_SLACK_S:
+        return None
+    used = round(end - shots[0].start_s)
+    reel = round(reel_s)
+    if used >= reel:
+        return None
+    left_out = max(cut.shot_index for cut in cuts) != shots[-1].shot_index or split_short
+    return editor_idea_vm.ReelCut(
+        used_s=used, reel_s=reel, capped=len(plan) >= PARTS_MAX and left_out
+    )
 
 
 def part_stretch(analysis: ReelAnalysis, shot_indexes: Sequence[int]) -> tuple[float, float] | None:
@@ -160,9 +214,11 @@ def part_stretch(analysis: ReelAnalysis, shot_indexes: Sequence[int]) -> tuple[f
 
 __all__ = [
     "FLEET_CACHE_SECONDS",
+    "REEL_CUT_SLACK_S",
     "analysis_status",
     "part_stretch",
     "plan_parts",
     "reel_blocks",
+    "reel_cut",
     "reel_plan",
 ]

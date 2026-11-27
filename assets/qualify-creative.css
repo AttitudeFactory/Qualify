@@ -923,7 +923,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-edit--timeline > .q-edit__main,
 .q-edit--timeline > .q-edit__main * {
   scroll-margin-top: calc(
-    var(--q-sticky-header-height, 0px) + var(--q-edit-preview-h, 0px) + var(--space-2)
+    var(--q-sticky-header-height, 0px) + var(--q-edit-preview-h, 0px)
+      + var(--q-edit-bar-h, 0px) + var(--space-2)
   );
 }
 .q-edit__main {
@@ -958,6 +959,19 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 /* a field of the editor with the focus (the keyboard is up on a phone): the frame
    shrinks and the note hides, only while stacked */
 @container edit-host (max-width: 45.99rem) {
+  /* m-25026636 (live test): the timeline's bar («Agregar», or the chosen block's
+     actions) slid half under the pinned preview while the panel scrolled — the top of
+     the «+» hidden and untappable. It is the editor's own grid child (`_timeline_bar`),
+     pinned right under the preview (`--q-edit-preview-h`, `assets/edit-room.js`), over
+     the tracks that scroll under it (z 3, solid like the preview): what shows is what
+     takes the tap. On a wide step the preview scrolls with the page: so does the bar. */
+  .q-edit--timeline > .q-edit__bar {
+    position: sticky;
+    top: calc(var(--q-sticky-header-height, 0px) + var(--q-edit-preview-h, 0px));
+    z-index: 3;
+    padding-bottom: var(--space-2);
+    background: var(--color-panel-solid);
+  }
   .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-preview__frame {
     height: 20svh;
   }
@@ -2037,7 +2051,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    block chosen it gives room to its panel (30svh). Wide step (Deivid, 2026-11-16): the
    same column, the preview centred and min(62svh, 40rem) tall whatever is chosen; what
    «Agregar» opens goes in the side panel (`ui.drawer`), never beside the preview. */
-.q-edit--timeline { grid-template-areas: "preview" "timeline" "main" "parts"; }
+.q-edit--timeline { grid-template-areas: "preview" "timeline" "bar" "main" "parts"; }
+.q-edit--timeline > .q-edit__bar { grid-area: bar; min-width: 0; }
 /* ED-12 (m-25029107): files of the computer dragged over «Fotos y videos» — the line
    marks the gap they land in (`assets/timeline-insert.js`); no animation, so reduced
    motion needs nothing. */

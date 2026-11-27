@@ -31,7 +31,8 @@ never copied.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from qualify_api.creative.parts import ExtendTooShort
@@ -230,16 +231,54 @@ def _count(n: int, one: str, many: str) -> str:
     return f"1 {one}" if n == 1 else f"{n} {many}"
 
 
-def reel_line(ai: int, own: int) -> str:
+@dataclass(frozen=True)
+class ReelCut:
+    """m-25143223: the reel's plan does not reach the reel's end — it follows `used_s`
+    of its `reel_s` seconds (whole seconds). `capped`: cuts of the reel were left out
+    because the plan reached the parts' cap (`PARTS_MAX`); False when the plan holds
+    every cut the analysis read and the analysis itself stopped short of the reel."""
+
+    used_s: int
+    reel_s: int
+    capped: bool = False
+
+
+class ReelOps(list[dict[str, Any]]):
+    """The reel's plan as the editor's ops (`editor_ops`), carrying `cut` (a `ReelCut`;
+    None when the plan covers the whole reel) from the one read that made them."""
+
+    def __init__(self, ops: Iterable[dict[str, Any]], *, cut: ReelCut | None = None) -> None:
+        super().__init__(ops)
+        self.cut = cut
+
+
+#: The «Video de inspiración» card's line when the plan is cut (m-25143223).
+REEL_CUT_CARD = "Usamos {used} s de los {reel} del reel."
+
+
+def reel_cut_card(cut: ReelCut | None) -> str:
+    """The card's short line for a cut plan, «Usamos 44 s de los 63 del reel.» ("" for a
+    plan that covers the reel)."""
+    return REEL_CUT_CARD.format(used=cut.used_s, reel=cut.reel_s) if cut else ""
+
+
+def reel_line(ai: int, own: int, cut: ReelCut | None = None) -> str:
     """The live line once the reel's plan is on the track (design D20): «Te armamos tu
     video como el reel: 3 partes con IA y 2 tuyas. Revisa cada una; hasta «Crear» no
-    gastas nada.» — one part: «Revísala»; only own parts: «2 partes tuyas»."""
+    gastas nada.» — one part: «Revísala»; only own parts: «2 partes tuyas». m-25143223:
+    a plan that stops before the reel's end says so — «…: 6 partes con IA (el máximo por
+    video), con 44 s de los 63 del reel. Revisa…». The bracket only when the cap of AI
+    parts cut it: with own parts among them the cap was of parts, not of AI ones."""
     if ai and own:
         said = f"{_count(ai, 'parte con IA', 'partes con IA')} y {_count(own, 'tuya', 'tuyas')}"
     elif ai:
         said = _count(ai, "parte con IA", "partes con IA")
     else:
         said = _count(own, "parte tuya", "partes tuyas")
+    if cut is not None:
+        if cut.capped and ai and not own:
+            said += " (el máximo por video)"
+        said += f", con {cut.used_s} s de los {cut.reel_s} del reel"
     review = "Revísala" if ai + own == 1 else "Revisa cada una"
     return f"Te armamos tu video como el reel: {said}. {review}; hasta «Crear» no gastas nada."
 
@@ -252,8 +291,11 @@ PROPOSE_NOTE = (
     "Proponer es gratis. Las partes se suman al final de tu video y las revisas antes de "
     "crear nada."
 )
-#: Why «Proponerme las partes» waits: the context is what Claude reads.
-STORY_MISSING = parts_start_vm.STORY_MISSING_TEXT
+#: Why «Proponerme las partes» waits: the context is what Claude reads. m-25026636 (UX
+#: review): it says where to write it — the field under the tab's own heading.
+STORY_MISSING = (
+    f"Escribe de qué trata tu video, arriba en «{TOPIC_QUESTION}», y te proponemos las partes."
+)
 #: The button's id, for its reason (`aria-describedby`).
 PROPOSE_WHY_ID = "clip-idea-why"
 #: An own video on the track is still being read (no length yet): said BEFORE the call…
@@ -432,7 +474,10 @@ __all__ = [
     "PROPOSE_LABEL",
     "PROPOSE_NOTE",
     "PROPOSE_WHY_ID",
+    "REEL_CUT_CARD",
     "REEL_FALLBACK_LINE",
+    "ReelCut",
+    "ReelOps",
     "ROW_BUTTON_ID",
     "RULES_ADD_ID",
     "RULES_FIELDS_BY_VIEW",
@@ -455,6 +500,7 @@ __all__ = [
     "focus_script",
     "idea_line",
     "plans_of",
+    "reel_cut_card",
     "reel_line",
     "release_address_script",
     "replace_with_step_script",
