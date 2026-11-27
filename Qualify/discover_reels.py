@@ -168,10 +168,13 @@ class DiscoverReelsState(rx.State):
     filter_kind: str = ""
     filter_duration: str = ""
     filter_accounts: list[str] = []
-    #: RF-02b (m-25119463): «Región» (an ISO-2 code, "" = «Todas»), and the brand's rubro
-    #: as the fixed «Nicho: …» line ("" none: the line is not drawn).
+    #: RF-02b (m-25119463): «País» (axis `region`; an ISO-2 code, "" = «Todos»), and the
+    #: brand's rubro as the fixed «Tu rubro: …» line ("" none: the line is not drawn).
     filter_region: str = ""
     niche: str = ""
+    #: «País»'s options, the business's own country first (`reels_filters_vm.region_options`;
+    #: the usual order until the business's country is read).
+    region_options: list[dict[str, str]] = reels_filters_vm.region_options()
     #: The accounts «Cuenta» offers (`reels_filters_vm.account_options`) and their kinds.
     account_options: list[dict[str, str]] = []
     _accounts: dict[str, str] = {}
@@ -239,6 +242,7 @@ class DiscoverReelsState(rx.State):
             # another business: its filters, accounts and reels are not this one's
             self._set_choice(reels_filters_vm.NO_CHOICE)
             self.niche = ""
+            self.region_options = reels_filters_vm.region_options()
             self.account_options = []
             self._accounts = {}
             self.more_reels = []
@@ -618,8 +622,10 @@ class DiscoverReelsState(rx.State):
             )
             rivals = await _competitor_rows(tenant_id, brand_id)
             search = await _search_state(tenant_id, brand_id)
-            # RF-02b: «Nicho: …» from the Brand Kit (never raises: "" hides the line)
+            # RF-02b: «Tu rubro: …» from the Brand Kit (never raises: "" hides the line)
             niche = await asyncio.to_thread(reels_discovery.brand_niche_line, tenant_id, brand_id)
+            # «País»: the business's own country first (one PK read; "" keeps the order)
+            home = await asyncio.to_thread(reels_discovery.business_country, tenant_id)
         except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
             logger.warning("stored reel ideas unreadable: %s: %s", type(exc).__name__, exc)
             async with self:
@@ -637,6 +643,7 @@ class DiscoverReelsState(rx.State):
                 self._brand_id = str(brand_id)
                 self._show(shown)
                 self.niche = niche
+                self.region_options = reels_filters_vm.region_options(home)
                 if rivals is not None:
                     self.competitor_rows = rivals
                 # RF-14: a search of today still running keeps the button busy. Only ever
@@ -1574,10 +1581,34 @@ def _options(*rows: rx.Component, role: str, label: str) -> rx.Component:
     )
 
 
+def _region_row(
+    option: rx.Var[dict[str, str]], current: rx.Var[str], *, close: bool
+) -> rx.Component:
+    """One «País» option (a state row: «Todos», the business's country, the other two)."""
+    value = option["value"].to(str)
+    row = _option_row(
+        option["label"].to(str),
+        current == value,
+        DiscoverReelsState.set_filter(AXIS_REGION, value),
+        role="radio",
+    )
+    return rx.popover.close(row) if close else row
+
+
 def _single_options(axis: str, *, close: bool) -> rx.Component:
     """«Todos» and the axis' options. `close`: each option also closes the desktop
     dropdown it sits in (the phone's sheet closes from the state)."""
     current = _STATE_VALUE[axis]()
+    if axis == AXIS_REGION:
+        # «País»: its order is the business's (its own country first), so it is state
+        return _options(
+            rx.foreach(
+                DiscoverReelsState.region_options,
+                lambda option: _region_row(option, current, close=close),
+            ),
+            role="radiogroup",
+            label=AXIS_LABELS[axis],
+        )
     rows = []
     for option in reels_filters_vm.single_options(axis):
         row = _option_row(
@@ -1625,8 +1656,8 @@ def _account_options() -> rx.Component:
 
 
 def _niche_note() -> rx.Component:
-    """RF-02b (m-25119463): «Nicho: Comida y bebida», the brand's rubro — words, never a
-    filter nor a button — closing the «Región» group: under its options, past a hairline,
+    """RF-02b (m-25119463): «Tu rubro: Comida y bebida», the brand's rubro — words, never a
+    filter nor a button — closing the «País» group: under its options, past a hairline,
     in the desktop dropdown and in the phone's sheet alike (`_axis_options`). Never a chip
     or a line of its own in the bar (Deivid, 2026-11-26: nothing alone on a line, no
     wasted room). Not drawn while the brand has no rubro (`DiscoverReelsState.niche`)."""
@@ -1647,7 +1678,7 @@ def _niche_note() -> rx.Component:
 
 def _axis_options(axis: str, *, close: bool) -> rx.Component:
     """An axis' options, in its desktop dropdown (`close`) or its group of the sheet:
-    «Cuenta» picks several; «Región» ends with «Nicho: …» (`_niche_note`)."""
+    «Cuenta» picks several; «País» ends with «Tu rubro: …» (`_niche_note`)."""
     if axis == AXIS_ACCOUNT:
         return _account_options()
     options = _single_options(axis, close=close)
@@ -1824,8 +1855,9 @@ def _search_button(*, icon_only: bool) -> rx.Component:
     words (only its icon while the bar is under `SEARCH_WORDS_FROM_PX`, so the line never
     wraps); on the
     narrow bar a third button of only its icon, the 44 px square, with the words as its
-    accessible name and `title`. The icon is `search` (ux-designer: `refresh-cw` read as
-    «Intentar de nuevo»). While the search runs it is busy — the spinner in place of its
+    accessible name and `title`. The icon is `radar` (Deivid, 2026-11-26: it looks for new
+    reels, and a magnifier read as a field to type in; ux-designer before that: `refresh-cw`
+    read as «Intentar de nuevo»). While the search runs it is busy — the spinner in place of its
     icon, hidden from screen readers (the screen's one `role="status"` says it), «Buscando…»
     as its words and its name, a press ignored — and never dead otherwise: once the day's
     search was made, a press reads the list again and says so (`reels_search_vm`)."""
@@ -1835,7 +1867,7 @@ def _search_button(*, icon_only: bool) -> rx.Component:
         busy,
         # the spinner's own `role="status"` hidden: one live region on screen, not two
         rx.box(loading_spinner("sm"), aria_hidden="true", display="inline-flex"),
-        rx.icon("search", size=T.ICON_SM, aria_hidden="true"),
+        rx.icon("radar", size=T.ICON_SM, aria_hidden="true"),
     )
     common: dict[str, Any] = {
         "type": "button",
@@ -1872,7 +1904,7 @@ def _search_button(*, icon_only: bool) -> rx.Component:
 
 def _sheet_group(axis: str) -> rx.Component:
     """One axis in the «Filtros» sheet: its full name over its options (the same rows as
-    the desktop dropdowns; «Cuenta» picks several; «Región» ends with «Nicho: …»)."""
+    the desktop dropdowns; «Cuenta» picks several; «País» ends with «Tu rubro: …»)."""
     options = _axis_options(axis, close=False)
     return rx.vstack(
         rx.text(AXIS_LABELS[axis], size="2", weight="medium", as_="div", padding_x="0.75rem"),
@@ -1885,7 +1917,7 @@ def _sheet_group(axis: str) -> rx.Component:
 
 def _sheet(*, bottom: bool) -> rx.Component:
     """The «Filtros» panel of the narrow bar (RF-13, Deivid 2026-11-26): every axis —
-    Canal, Tipo de cuenta, Cuenta (several), Duración and Región (RF-02b, with «Nicho: …»
+    Canal, Tipo de cuenta, Cuenta (several), Duración and Región (RF-02b, with «Tu rubro: …»
     under its options) — each under its name, with the long words; each choice applies
     at once and the panel stays open. Its foot: «Quitar filtros» while a filter is on,
     and «Listo». The body scrolls when it is long. However it closes, the focus goes back
@@ -1934,7 +1966,7 @@ def _sheet(*, bottom: bool) -> rx.Component:
 
 def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
-    «Cuenta», «Duración», «Región» (RF-02b) and «Quitar filtros». On a wide bar, chips
+    «Cuenta», «Duración», «País» (RF-02b) and «Quitar filtros». On a wide bar, chips
     that open a dropdown; on a narrow bar (under `WIDE_FROM_PX`), «Filtros» +
     «Competidores», «Filtros» opening one panel with every axis (from the bottom on a
     phone, from the right on a wider window). Every change is one more read of what is

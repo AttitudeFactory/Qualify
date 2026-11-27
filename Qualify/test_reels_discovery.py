@@ -382,10 +382,12 @@ class _World:
         self.reads: list[bool] = []
         self.paid: list[str] = []
         self.analyses: Any = None
-        #: RF-02b: what the Brand Kit's rubro gives as «Nicho: …» ("" = none), and the
+        #: RF-02b: what the Brand Kit's rubro gives as «Tu rubro: …» ("" = none), and the
         #: (tenant, brand) pairs it was read for.
         self.niche = ""
         self.niche_reads: list[tuple[UUID, UUID]] = []
+        #: The business's country as `tenants.country` gives it ("" = none known).
+        self.home = ""
 
     def ok_run(self, *, finished: datetime = MONDAY, ideas: int = 2) -> UUID:
         """What the worker leaves after a weekly run: reels, verdicts, ideas, `ok`."""
@@ -484,6 +486,8 @@ def world(store: Any, monkeypatch: pytest.MonkeyPatch) -> _World:
         return world.niche
 
     monkeypatch.setattr(rd, "brand_niche_line", niche_line)
+    # «País»: the business's own country (`tenants.country`), offline ("" = unknown)
+    monkeypatch.setattr(rd, "business_country", lambda tenant: world.home)
     # UI-1: the reels' shared analyses (global tables) in memory
     from qualify_api.referentes import reel_analysis
     from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
@@ -1025,7 +1029,7 @@ async def test_filtering_reads_what_is_stored_and_never_pays(world: _World) -> N
         "kind": "Todos",
         "account": "Todas",
         "duration": "Todas",
-        "region": "Todas",
+        "region": "Todos",
     }
     opened, writes = list(world.opened), world.runs.writes
 
@@ -1245,12 +1249,18 @@ def test_the_bar_has_every_filter_in_plain_spanish() -> None:
         "Ver más",
         "La imagen ya no está disponible",
         # RF-02b (m-25119463)
-        "Región",
+        "País",
+    ):
+        assert shown(text), text
+    # «País»'s countries are state (the business's own first): its default, the usual order
+    from .discover_reels import DiscoverReelsState
+
+    assert [o["label"] for o in DiscoverReelsState().region_options] == [
+        "Todos",
         "Colombia",
         "Venezuela",
         "Uruguay",
-    ):
-        assert shown(text), text
+    ]
     assert '"search"' in rendered and "radiogroup" in rendered  # labelled, focusable
     assert "q-drawer--bottom" in rendered  # the phone's sheet from the bottom
     for gone in ("Ordenar", "Detractor", "Últimos", "Objetivo"):
@@ -1446,7 +1456,7 @@ def test_a_chip_shows_one_word_and_names_itself_in_full() -> None:
         "kind": "Tipo",
         "account": "Cuenta",
         "duration": "Duración",
-        "region": "Región",
+        "region": "País",
     }
     face = inspect.getsource(discover_reels._chip_face)
     # the face is the state's `chip_texts` (`reels_filters_vm.phone_chip`, tested there)
@@ -1592,14 +1602,19 @@ async def test_the_filtros_sheet_stays_open_while_choosing(world: _World) -> Non
 
 
 def test_the_search_button_sits_after_competitors_with_one_live_region() -> None:
-    """RF-14, ux-designer (Deivid, 2026-11-26): `search` icon, before «Quitar filtros» so it
+    """RF-14, ux-designer (Deivid, 2026-11-26): `radar` icon, before «Quitar filtros» so it
     never moves, «Buscando…» as words and name, one `role="status"` always mounted."""
     import inspect
 
     from . import discover_reels
 
     button = inspect.getsource(discover_reels._search_button)
-    assert 'rx.icon("search"' in button and 'rx.icon("refresh-cw"' not in button
+    # Deivid, 2026-11-26: `radar` on both faces (with words and icon-only), never the
+    # magnifier of a field to type in, nor `refresh-cw` («Intentar de nuevo»)
+    assert button.count('rx.icon("radar"') == 1  # one icon, shared by both faces
+    assert 'rx.icon("search"' not in button and 'rx.icon("refresh-cw"' not in button
+    rendered = str(discover_reels.discover_view().render())
+    assert rendered.count("LucideRadar") == 2  # the wide bar's button and the narrow one
     assert 'aria_hidden="true", display="inline-flex"' in button  # the spinner's role hidden
     assert "S.search_label" in button
     bar = inspect.getsource(discover_reels._filter_bar)
@@ -1611,7 +1626,7 @@ def test_the_search_button_sits_after_competitors_with_one_live_region() -> None
 
 
 # --------------------------------------------------------------------------------------
-# RF-02b (m-25119463): «Región» and «Nicho: …»
+# RF-02b (m-25119463): «País» and «Tu rubro: …»
 # --------------------------------------------------------------------------------------
 
 
@@ -1646,7 +1661,7 @@ async def test_region_narrows_what_is_stored_and_todas_keeps_the_unknown(
     await _open(proxy)
     assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
     assert {c["key"] for c in state.more_reels} == {"instagram:M2", "tiktok:T1"}
-    assert state.filter_values["region"] == "Todas"
+    assert state.filter_values["region"] == "Todos"
     opened, writes = list(world.opened), world.runs.writes
 
     await _filter(proxy, state.set_filter("region", "VE"))
@@ -1655,7 +1670,7 @@ async def test_region_narrows_what_is_stored_and_todas_keeps_the_unknown(
     assert [c["key"] for c in state.more_reels] == ["instagram:M2"]
     assert state.filter_values["region"] == "Venezuela"
     assert state.chip_texts["region"] == "Venezuela"
-    assert state.chip_texts["region_name"] == "Región: Venezuela"
+    assert state.chip_texts["region_name"] == "País: Venezuela"
     assert state.filters_texts == {"face": "Filtros · 1", "name": "Filtros: 1 activo"}
     assert state.no_ideas_filtered and not state.no_ideas_left
 
@@ -1669,7 +1684,7 @@ async def test_region_narrows_what_is_stored_and_todas_keeps_the_unknown(
     assert [c["key"] for c in state.more_reels] == ["tiktok:T1"]
     await _filter(proxy, state.reset_filters())
     assert state.filter_region == "" and not state.filters_on
-    assert state.filter_values["region"] == "Todas"
+    assert state.filter_values["region"] == "Todos"
     assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
 
     assert world.paid == [] and world.first_runs == [] and world.opened == opened
@@ -1677,7 +1692,7 @@ async def test_region_narrows_what_is_stored_and_todas_keeps_the_unknown(
 
 
 async def test_ver_mas_keeps_the_region(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
-    """«Ver más» reads the next page with the same «Región»."""
+    """«Ver más» reads the next page with the same «País»."""
     from .discover_reels import DiscoverReelsState
 
     library = _library_with_facts(world, monkeypatch)
@@ -1699,15 +1714,15 @@ async def test_ver_mas_keeps_the_region(world: _World, monkeypatch: pytest.Monke
 async def test_the_niche_line_is_the_brands_and_goes_with_the_business(
     world: _World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """«Nicho: …» comes from the session's own brand; another business in the same tab
+    """«Tu rubro: …» comes from the session's own brand; another business in the same tab
     never keeps it, and a brand with no rubro shows no line."""
     from . import discover_reels
 
     world.ok_run()
-    world.niche = "Nicho: Comida y bebida"
+    world.niche = "Tu rubro: Comida y bebida"
     state, proxy = _screen_state()
     await _open(proxy)
-    assert state.niche == "Nicho: Comida y bebida"
+    assert state.niche == "Tu rubro: Comida y bebida"
     assert world.niche_reads == [(TENANT, world.brand)]
     other = UUID("b0000000-0000-4000-8000-000000000002")
     other_brand = uuid4()
@@ -1722,7 +1737,7 @@ async def test_the_niche_line_is_the_brands_and_goes_with_the_business(
     await _open(proxy)
     assert state.niche == ""
     assert world.niche_reads[-1] == (other, other_brand)
-    state.niche = "Nicho: Comida y bebida"
+    state.niche = "Tu rubro: Comida y bebida"
     state._claim_cards("another-tenant")
     assert state.niche == ""  # never carried over to another business
     assert world.paid == []
@@ -1738,7 +1753,7 @@ def test_the_niche_reads_the_brand_kit_through_its_own_door() -> None:
         seen.append((t, b))
         return {"sector": "food_drink"}
 
-    assert rd.brand_niche_line(tenant, brand, connect=connect) == "Nicho: Comida y bebida"
+    assert rd.brand_niche_line(tenant, brand, connect=connect) == "Tu rubro: Comida y bebida"
     assert seen == [(tenant, brand)]
 
     def broken(_t: UUID, _b: UUID) -> dict[str, str]:
@@ -1748,16 +1763,19 @@ def test_the_niche_reads_the_brand_kit_through_its_own_door() -> None:
 
 
 def test_region_is_a_chip_on_the_wide_bar_and_a_group_in_the_sheet() -> None:
-    """«Región» is the bar's fifth chip and the sheet's fifth group, with the radio rows
-    of Canal and Duración; «Nicho: …» closes that group in both — words in a group, never
+    """«País» is the bar's fifth chip and the sheet's fifth group, with the radio rows
+    of Canal and Duración; «Tu rubro: …» closes that group in both — words in a group, never
     a chip nor a line of its own in the bar."""
     import inspect
 
     from . import discover_reels
 
     rendered = str(discover_reels.discover_view().render())
-    assert rendered.count("Venezuela") >= 2  # the dropdown and the sheet
+    # the dropdown and the two panels (bottom, right) each list «País» from the state
+    assert rendered.count("region_options") >= 3
     assert reels_filters_vm.AXIS_REGION in discover_reels._STATE_VALUE
+    single = inspect.getsource(discover_reels._single_options)
+    assert "DiscoverReelsState.region_options" in single and "_region_row(" in single
     options = inspect.getsource(discover_reels._axis_options)
     assert "axis == AXIS_REGION" in options and "_niche_note()" in options
     note = inspect.getsource(discover_reels._niche_note)
@@ -1870,3 +1888,62 @@ async def test_competidores_follows_the_same_640px_rule_on_both_bars(world: _Wor
     state.open_competitors(True)  # a phone
     assert state.competitors_open and state.competitors_bottom
     assert world.paid == []
+
+
+async def test_pais_lists_the_business_country_first(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deivid, 2026-11-26: «País» — «Todos», the business's own country, then the other
+    two in the usual order; a business with no country keeps the usual order; another
+    business in the same tab never keeps the first one's order."""
+    from . import discover_reels
+
+    world.ok_run()
+    world.home = "UY"
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert [o["label"] for o in state.region_options] == [
+        "Todos",
+        "Uruguay",
+        "Colombia",
+        "Venezuela",
+    ]
+    other = UUID("b0000000-0000-4000-8000-000000000002")
+    other_brand = uuid4()
+    world.repo.add_brand(tenant_id=other, brand_id=other_brand)
+    monkeypatch.setattr(
+        discover_reels,
+        "default_brand_id",
+        lambda tenant: world.brand if tenant == TENANT else other_brand,
+    )
+    world.home = ""  # no country saved
+    proxy.auth.session_tenant_id = str(other)
+    await _open(proxy)
+    assert [o["value"] for o in state.region_options] == ["", "CO", "VE", "UY"]
+    assert world.paid == []
+
+
+def test_the_business_country_is_one_read_that_never_breaks_the_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`business_country` reads `tenants.country` through the locale door
+    (`tenant_session`); unreadable, it gives "" and «País» keeps the usual order."""
+    from qualify_api.tenancy import locale
+
+    seen: list[UUID] = []
+    tenant = uuid4()
+
+    def read(t: UUID) -> Any:
+        seen.append(t)
+        return locale.BusinessLocale(country="ve", timezone="America/Caracas", currency="USD")
+
+    monkeypatch.setattr(locale, "read_business_locale", read)
+    assert rd.business_country(tenant) == "VE" and seen == [tenant]
+    monkeypatch.setattr(locale, "read_business_locale", lambda t: None)
+    assert rd.business_country(tenant) == ""
+
+    def broken(_t: UUID) -> Any:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(locale, "read_business_locale", broken)
+    assert rd.business_country(tenant) == ""

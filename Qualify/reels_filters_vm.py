@@ -6,9 +6,9 @@ network — so every label, every option and every empty message is tested offli
 What the owner narrows, as TikTok Creative Center's Top Ads bar does: «Canal» (Instagram /
 TikTok), «Tipo de cuenta» (inspiradores = `referente`, competidores = `competencia`),
 «Cuenta» (one or several, from the accounts the brand labelled — `ReviewedReels.accounts`),
-«Duración» (four buckets) and — RF-02b, m-25119463 — «Región» (the business's three
+«Duración» (four buckets) and — RF-02b, m-25119463 — «País» (the business's three
 markets, `reviewed_reels.REGION_OPTIONS`), plus «Restablecer filtros». Default: nothing
-narrowed. «Nicho: …» is the brand's rubro as a fixed, read-only line, never a filter
+narrowed. «Tu rubro: …» is the brand's rubro as a fixed, read-only line, never a filter
 (`niche_line`).
 
 Filtering only reads what is stored (`reviewed_reels.reviewed_reels`, RF-01): it never
@@ -33,8 +33,6 @@ from qualify_api.referentes.reviewed_reels import (
     KIND_COMPETENCIA,
     KIND_REFERENTE,
     NETWORKS,
-    REGION_ALL_LABEL,
-    REGION_TITLE,
     NicheOption,
     ReelFilters,
 )
@@ -56,7 +54,9 @@ NETWORK_LABEL = "Canal"
 KIND_LABEL = "Tipo de cuenta"
 ACCOUNT_LABEL = "Cuenta"
 DURATION_LABEL = "Duración"
-REGION_LABEL = REGION_TITLE  # «Región», exact (ticket m-25119463)
+#: Deivid, 2026-11-26: the chip and the group say «País» (the ticket's «Región» stays the
+#: backend's `REGION_TITLE`; the axis keeps its `region` name inside the code).
+REGION_LABEL = "País"
 AXIS_LABELS = {
     AXIS_NETWORK: NETWORK_LABEL,
     AXIS_KIND: KIND_LABEL,
@@ -89,7 +89,7 @@ ALL_LABELS = {
     AXIS_KIND: ALL_MASCULINE,
     AXIS_ACCOUNT: ALL_FEMININE,
     AXIS_DURATION: ALL_FEMININE,
-    AXIS_REGION: REGION_ALL_LABEL,  # «Todas», the backend's own word
+    AXIS_REGION: ALL_MASCULINE,  # «Todos»: it agrees with «País» (Deivid, 2026-11-26)
 }
 
 NETWORK_OPTIONS: tuple[tuple[str, str], ...] = (("instagram", "Instagram"), ("tiktok", "TikTok"))
@@ -242,7 +242,7 @@ class FilterChoice:
         return bool(self.network or self.kind or self.duration or self.accounts or self.region)
 
     def to_filters(self) -> ReelFilters:
-        """RF-01's validated filters; empty axes narrow nothing. With «Todas» in «Región»
+        """RF-01's validated filters; empty axes narrow nothing. With «Todos» in «País»
         the reels of accounts with no known country still show; with a country, only the
         accounts known to be in it (RF-02b's backend, `reviewed_reels`)."""
         pairs = [pair for pair in (parse_account_key(a) for a in self.accounts) if pair]
@@ -338,6 +338,18 @@ def single_options(axis: str) -> list[dict[str, str]]:
     return [{"value": "", "label": ALL_LABELS[axis]}] + [
         {"value": value, "label": label} for value, label in options
     ]
+
+
+def region_options(home: str = "") -> list[dict[str, str]]:
+    """«País»'s options (Deivid, 2026-11-26): «Todos», then the business's own country
+    (`home`, the ISO-2 code of `tenants.country`), then the other two in the usual order
+    (Colombia, Venezuela, Uruguay). With no known country — or one outside the three
+    markets — the usual order: «Todos», Colombia, Venezuela, Uruguay."""
+    rows = single_options(AXIS_REGION)
+    code = (home or "").strip().upper()
+    mine = [row for row in rows[1:] if row["value"] == code]
+    rest = [row for row in rows[1:] if row["value"] != code]
+    return [rows[0], *mine, *rest]
 
 
 def value_label(axis: str, choice: FilterChoice, options: Sequence[dict[str, str]] = ()) -> str:
@@ -456,17 +468,31 @@ def phone_chip(
 
 
 # --------------------------------------------------------------------------------------
-# «Nicho: …» (RF-02b) — the brand's rubro, read-only
+# «Tu rubro: …» (RF-02b) — the brand's rubro, read-only
 # --------------------------------------------------------------------------------------
 
 
+#: The line's words (Deivid, 2026-11-26: «Tu rubro: », not the ticket's «Nicho: » — the
+#: backend's `NicheOption.text` keeps «Nicho: » for its own callers; the screen says this).
+NICHE_LINE_PREFIX = "Tu rubro: "
+#: How the screen names a rubro whose shared label is not plain Spanish (Deivid,
+#: 2026-11-26). Display only: the stored key, the shared catalog
+#: (`discovery_seed.NICHE_LABELS`, also read by RF-09's badges) and the account-review
+#: prompt keep «Fitness y salud»; only what the owner reads changes.
+NICHE_DISPLAY: dict[str, str] = {"fitness_health": "Ejercicio y salud"}
+_NICHE_DISPLAY_BY_LABEL = {"Fitness y salud": "Ejercicio y salud"}
+
+
 def niche_line(niche: NicheOption) -> str:
-    """«Nicho: Comida y bebida» (exact, ticket m-25119463): the brand's rubro, never a
-    filter. "" when the Brand Kit has no rubro yet — then no line is drawn. It goes under
-    the «Región» options, in the desktop dropdown and in the phone's sheet alike: words in
-    a group that is already there, never a chip nor a line of its own in the bar (Deivid,
-    2026-11-26: no element alone on a line, no wasted room)."""
-    return niche.text
+    """«Tu rubro: Comida y bebida» (ticket m-25119463, words by Deivid 2026-11-26): the
+    brand's rubro, never a filter. "" when the Brand Kit has no rubro yet — then no line is
+    drawn. It goes under the «País» options, in the desktop dropdown and in the phone's
+    sheet alike: words in a group that is already there, never a chip nor a line of its
+    own in the bar (Deivid, 2026-11-26: no element alone on a line, no wasted room)."""
+    if not niche.label:
+        return ""
+    label = NICHE_DISPLAY.get(niche.key) or _NICHE_DISPLAY_BY_LABEL.get(niche.label, niche.label)
+    return f"{NICHE_LINE_PREFIX}{label}"
 
 
 # --------------------------------------------------------------------------------------
@@ -597,6 +623,8 @@ __all__ = [
     "NO_IDEAS_FILTERED",
     "NO_IDEAS_LEFT",
     "NO_IDEAS_LEFT_ACTION",
+    "NICHE_DISPLAY",
+    "NICHE_LINE_PREFIX",
     "REGION_LABEL",
     "REGION_OPTIONS",
     "RESET_LABEL",
@@ -624,6 +652,7 @@ __all__ = [
     "niche_line",
     "only_competitors",
     "parse_account_key",
+    "region_options",
     "set_axis",
     "single_options",
     "toggle_account",

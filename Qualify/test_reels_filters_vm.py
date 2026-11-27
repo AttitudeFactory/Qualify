@@ -5,6 +5,7 @@ read, and the message that replaces an empty list."""
 from __future__ import annotations
 
 import re
+from uuid import uuid4
 
 import pytest
 from qualify_api.referentes.reviewed_reels import NO_FILTERS, ReelFilters
@@ -24,7 +25,7 @@ def test_the_bar_says_exactly_what_the_ticket_says() -> None:
         "Tipo de cuenta",
         "Cuenta",
         "Duración",
-        "Región",  # RF-02b (m-25119463), last so RF-02's four keep their places
+        "País",  # RF-02b (the ticket's «Región», renamed by Deivid), last
     ]
     assert [label for _, label in vm.NETWORK_OPTIONS] == ["Instagram", "TikTok"]
     assert [label for _, label in vm.KIND_OPTIONS] == ["Inspiradores", "Competidores"]
@@ -147,7 +148,7 @@ def test_by_default_nothing_is_narrowed() -> None:
         "Todos",
         "Todas",
         "Todas",
-        "Todas",
+        "Todos",
     ]
     assert all(c["on"] == "" for c in vm.chips(vm.NO_CHOICE))
 
@@ -189,7 +190,7 @@ def test_axes_change_one_at_a_time_and_accounts_toggle() -> None:
     assert vm.clear_accounts(choice).accounts == ()
     assert vm.set_axis(choice, vm.AXIS_NETWORK, "").network == ""
     assert vm.set_axis(choice, "objective", "sell") == choice  # RF-11's, not here
-    # RF-02b: «Región» is one more single-choice axis; the others stay as they were
+    # RF-02b: «País» is one more single-choice axis; the others stay as they were
     in_ve = vm.set_axis(choice, vm.AXIS_REGION, "VE")
     assert (in_ve.region, in_ve.network, in_ve.duration, in_ve.accounts) == (
         "VE",
@@ -211,7 +212,7 @@ def test_the_chips_say_what_each_axis_is_set_to() -> None:
         "kind": "Inspiradores",
         "account": "@abc",
         "duration": "Todas",
-        "region": "Todas",
+        "region": "Todos",
     }
     two = vm.toggle_account(one, "instagram:foodie")
     assert vm.value_label(vm.AXIS_ACCOUNT, two, options) == "2 cuentas"
@@ -265,17 +266,17 @@ def test_other_filters_that_leave_nothing_say_the_tickets_sentence() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# RF-02b (m-25119463): «Región» and «Nicho: …»
+# RF-02b (m-25119463): «País» and «Tu rubro: …»
 # --------------------------------------------------------------------------------------
 
 
-def test_region_says_exactly_what_the_ticket_says() -> None:
-    """«Región» with «Colombia», «Venezuela», «Uruguay» and «Todas» — «Todas» first, as
+def test_pais_says_exactly_what_deivid_decided() -> None:
+    """«País» with «Colombia», «Venezuela», «Uruguay» and «Todos» — «Todos» first, as
     on every other axis of the bar (the sheet and the dropdowns share the pattern)."""
-    assert vm.AXIS_LABELS[vm.AXIS_REGION] == "Región"
-    assert vm.CHIP_LABELS[vm.AXIS_REGION] == "Región"
+    assert vm.AXIS_LABELS[vm.AXIS_REGION] == "País"
+    assert vm.CHIP_LABELS[vm.AXIS_REGION] == "País"
     assert vm.single_options(vm.AXIS_REGION) == [
-        {"value": "", "label": "Todas"},
+        {"value": "", "label": "Todos"},
         {"value": "CO", "label": "Colombia"},
         {"value": "VE", "label": "Venezuela"},
         {"value": "UY", "label": "Uruguay"},
@@ -295,16 +296,16 @@ def test_a_region_narrows_rf01s_read_and_todas_narrows_nothing() -> None:
 
 
 def test_restablecer_also_puts_region_back_to_todas() -> None:
-    """«Restablecer filtros» is `NO_CHOICE`: «Región» back to «Todas» too."""
+    """«Restablecer filtros» is `NO_CHOICE`: «País» back to «Todos» too."""
     assert vm.NO_CHOICE.region == ""
-    assert vm.value_label(vm.AXIS_REGION, vm.NO_CHOICE) == "Todas"
+    assert vm.value_label(vm.AXIS_REGION, vm.NO_CHOICE) == "Todos"
 
 
 def test_the_region_chip_and_the_filters_count() -> None:
     in_ve = vm.FilterChoice.of(region="VE")
     assert vm.value_label(vm.AXIS_REGION, in_ve) == "Venezuela"
-    assert vm.phone_chip(vm.AXIS_REGION, vm.NO_CHOICE) == ("Región", "Región: Todas")
-    assert vm.phone_chip(vm.AXIS_REGION, in_ve) == ("Venezuela", "Región: Venezuela")
+    assert vm.phone_chip(vm.AXIS_REGION, vm.NO_CHOICE) == ("País", "País: Todos")
+    assert vm.phone_chip(vm.AXIS_REGION, in_ve) == ("Venezuela", "País: Venezuela")
     assert [c["on"] for c in vm.chips(in_ve)] == ["", "", "", "", "1"]
     assert vm.filters_button(in_ve) == ("Filtros · 1", "Filtros: 1 activo")
     every = vm.FilterChoice.of(
@@ -318,14 +319,48 @@ def test_the_region_chip_and_the_filters_count() -> None:
 
 
 def test_the_niche_is_a_fixed_line_never_a_filter() -> None:
-    """«Nicho: » and the brand's rubro, exact; nothing when the Brand Kit has none — and
+    """«Tu rubro: » and the brand's rubro, exact; nothing when the Brand Kit has none — and
     no niche axis in the bar (out of scope: «Nicho como filtro elegible»)."""
     from qualify_api.referentes.reviewed_reels import NO_NICHE, NicheOption
 
-    assert vm.niche_line(NicheOption("food_drink", "Comida y bebida")) == ("Nicho: Comida y bebida")
-    assert vm.niche_line(NicheOption("", "Venta de empanadas")) == "Nicho: Venta de empanadas"
+    assert vm.niche_line(NicheOption("food_drink", "Comida y bebida")) == (
+        "Tu rubro: Comida y bebida"
+    )
+    assert vm.niche_line(NicheOption("", "Venta de empanadas")) == "Tu rubro: Venta de empanadas"
     assert vm.niche_line(NO_NICHE) == ""
     assert "niche" not in vm.AXES and not vm.FilterChoice().to_filters().niches
+
+
+def test_fitness_reads_ejercicio_y_salud_on_screen_only() -> None:
+    """Deivid, 2026-11-26: the owner reads «Ejercicio y salud»; the stored key and the
+    shared catalog (also RF-09's) keep «Fitness y salud»."""
+    from qualify_api.referentes.discovery_seed import NICHE_LABELS
+    from qualify_api.referentes.reviewed_reels import NicheOption, brand_niche
+
+    assert NICHE_LABELS["fitness_health"] == "Fitness y salud"  # untouched
+    kit = brand_niche(uuid4(), uuid4(), connect=lambda _t, _b: {"sector": "fitness_health"})
+    assert kit == NicheOption("fitness_health", "Fitness y salud")
+    assert vm.niche_line(kit) == "Tu rubro: Ejercicio y salud"
+    # the same words typed as the owner's own (`rubro_text`), with no catalog key
+    assert vm.niche_line(NicheOption("", "Fitness y salud")) == "Tu rubro: Ejercicio y salud"
+    assert "Fitness" not in vm.niche_line(kit)
+
+
+def test_pais_lists_the_business_country_first() -> None:
+    """Deivid, 2026-11-26: «Todos», the business's own country, then the other two in the
+    usual order; with no country (or an unknown one) the usual order."""
+    usual = ["", "CO", "VE", "UY"]
+    assert [o["value"] for o in vm.region_options()] == usual
+    assert [o["value"] for o in vm.region_options("")] == usual
+    assert [o["value"] for o in vm.region_options("AR")] == usual
+    assert [o["value"] for o in vm.region_options("VE")] == ["", "VE", "CO", "UY"]
+    assert [o["value"] for o in vm.region_options("uy")] == ["", "UY", "CO", "VE"]
+    assert [o["label"] for o in vm.region_options("CO")] == [
+        "Todos",
+        "Colombia",
+        "Venezuela",
+        "Uruguay",
+    ]
 
 
 #: Words a client must not read (`qualify-copy-es`, `qualify-ux`'s banned list).

@@ -157,7 +157,8 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   Una búsqueda `manual` que termina mal no pone «No pudimos traer ideas nuevas» sobre las
   ideas guardadas.
 - **Barra:** en la versión ancha, el botón va después de «Competidores» y antes de «Quitar
-  filtros», para que no cambie de lugar cuando aparece ese botón. El ícono es `search`;
+  filtros», para que no cambie de lugar cuando aparece ese botón. El ícono es `radar`
+  (Deivid, 2026-11-26, en RF-02b; antes era la lupa `search`);
   mientras busca, el texto y el nombre accesible dicen «Buscando…», y el aviso «Estamos
   buscando…» es un `callout` informativo dentro de la única región `role="status"`. Desde
   1000 px de barra lleva texto; entre 760 y 1000 px solo el ícono, para que la fila no se
@@ -180,23 +181,32 @@ un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para l
 por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
 
 **RF-02b pantalla (2026-11-26, m-25119463, rama `feat/m-25119463-region-nicho-ui`):**
-- **«Región»** es el quinto filtro, después de «Duración» (los cuatro de RF-02 no cambian de
-  lugar). Opciones: «Todas» (primera, como en los demás filtros), «Colombia», «Venezuela» y
-  «Uruguay». En la barra ancha es un chip más («Región» sin filtro, «Venezuela» con él); en
-  la hoja «Filtros» del celular es un grupo más, con las mismas filas de radio que Canal y
-  Duración, de 44 px. «Restablecer filtros» la deja en «Todas». Con «Todas» siguen las cuentas
-  sin país conocido; con un país, solo las de ese país (la regla del backend). Cambiar la
-  región es otra lectura de lo guardado, igual que los demás filtros: cero llamadas pagadas.
-- **«Nicho: …»** es una línea de solo lectura con el rubro del Brand Kit
-  (`reels_discovery.brand_niche_line` → `reviewed_reels.brand_niche`, con `tenant_session`).
-  Va al final del grupo «Región», debajo de sus opciones y tras una línea fina, en el
-  desplegable y en la hoja por igual. No es un chip ni una línea propia en la barra (regla de
-  Deivid: nada solo en una fila). Se lee al abrir la pantalla; sin rubro, no se dibuja; otro
-  negocio en la misma pestaña empieza sin ella.
+- **«País»** (el ticket decía «Región»; Deivid, 2026-11-26) es el quinto filtro, después de
+  «Duración» (los cuatro de RF-02 no cambian de lugar). Opciones: «Todos» primero, después el
+  país del negocio y después los otros dos en el orden de siempre (Colombia, Venezuela,
+  Uruguay). El país del negocio sale de `tenants.country`, el que se elige al registrarse:
+  `reels_discovery.business_country` → `tenancy.locale.read_business_locale`, una lectura por
+  clave primaria con `tenant_session`. Sin país guardado (o si no se puede leer), queda el
+  orden de siempre. En la barra ancha es un chip más («País» sin filtro, «Venezuela» con él);
+  en el panel «Filtros» es un grupo más, con las mismas filas de radio que Canal y Duración,
+  de 44 px. «Restablecer filtros» lo deja en «Todos». Con «Todos» siguen las cuentas sin país
+  conocido; con un país, solo las de ese país (la regla del backend). Cambiar el país es
+  otra lectura de lo guardado, igual que los demás filtros: cero llamadas pagadas. En el
+  código el eje sigue llamándose `region`, y el backend sigue diciendo «Región».
+- **«Tu rubro: …»** (el ticket decía «Nicho: »; Deivid, 2026-11-26) es una línea de solo
+  lectura con el rubro del Brand Kit (`reels_discovery.brand_niche_line` →
+  `reviewed_reels.brand_niche`, con `tenant_session`; las palabras las pone
+  `reels_filters_vm.niche_line`). «Fitness y salud» se muestra «Ejercicio y salud»
+  (`reels_filters_vm.NICHE_DISPLAY`): es solo lo que se ve. La clave guardada, el catálogo
+  compartido `discovery_seed.NICHE_LABELS` (que también lee RF-09) y el prompt
+  `referentes-review-3` no cambian. Va al final del grupo «País», debajo de sus opciones y
+  tras una línea fina, en el desplegable y en el panel por igual. No es un chip ni una
+  línea propia en la barra (regla de Deivid: nada solo en una fila). Se lee al abrir la
+  pantalla; sin rubro, no se dibuja; otro negocio en la misma pestaña empieza sin ella.
 - **Opciones B + C de Deivid (2026-11-26):**
   - **B.** En la barra ancha, «Quitar filtros» es un botón de solo ícono de 44 px
     (`rotate-ccw`, «Quitar filtros» en `aria-label` y `title`), al final de la fila, después
-    de la lupa. En el pie del panel de la barra angosta sigue con sus palabras.
+    del botón de búsqueda (ícono `radar`). En el pie del panel de la barra angosta sigue con sus palabras.
   - **C.** En la barra angosta, «Filtros» le pregunta al navegador al tocarlo si la ventana
     es de teléfono (640 px o menos, `matchMedia`). En el teléfono abre la hoja desde abajo;
     en una ventana más ancha, el mismo panel entra desde la derecha, como «Tus
