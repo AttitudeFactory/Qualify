@@ -7,6 +7,7 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -314,6 +315,10 @@ def live(monkeypatch):
         approved_by=actor,
         request_key="principal-live-test",
     )
+    from qualify_api.ads import live_management
+
+    # The 4-per-hour count reads Postgres; offline, no edit was claimed in the last hour.
+    monkeypatch.setattr(live_management, "_budget_edits_last_hour", lambda scope: 0)
     return dict(
         remote=remote,
         args=args,
@@ -521,14 +526,23 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("spent", "budget_minor", "allowed"),
-    [(0, 300_000, True), (0, 290_000, False), (7000, 1_000_000, True), (7000, 990_000, False)],
+    ("spent", "budget_minor", "allowed", "min_daily"),
+    [
+        (0, 300_000, True, 1500),
+        (0, 290_000, False, 1500),
+        (7000, 1_000_000, True, 1500),
+        (7000, 990_000, False, 1500),
+        # m-25091390: with 15.000 spent and a small daily minimum (501 × 2 days left), Meta's
+        # «at least 10 % above spent» is the floor: 16.500, not 15.000 + 1.002.
+        (15000, 1_650_000, True, 501),
+        (15000, 1_640_000, False, 501),
+    ],
 )
 async def test_budget_decrease_floors_on_spent_and_meta_daily_minimum(
-    live, monkeypatch, spent, budget_minor, allowed
+    live, monkeypatch, spent, budget_minor, allowed, min_daily
 ):
     """Never below what the ad set already spent plus Meta's daily minimum for the days
-    left; refused before any validate or write reaches Meta."""
+    left, nor below spent + 10 %; refused before any validate or write reaches Meta."""
     from types import SimpleNamespace
 
     from qualify_api.ads import live_management as management
@@ -545,6 +559,7 @@ async def test_budget_decrease_floors_on_spent_and_meta_daily_minimum(
         live["remote"].objects[promotion.ids["adsets"]]["lifetime_budget"] = "20000"
         promotion = replace(promotion, request=promotion.request | {"budget_minor": 2_000_000})
     live["remote"].spent = spent
+    live["remote"].min_daily = min_daily
     scope = SimpleNamespace(
         tenant_id=tenant,
         promotion_id=promotion.id,
@@ -579,6 +594,84 @@ async def test_budget_decrease_floors_on_spent_and_meta_daily_minimum(
         posts = [c for c in live["remote"].calls[start:] if c[0] == "POST"]
         assert bool(posts) is allowed
         assert all(c[2].get("execution_options") == ["validate_only"] for c in posts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["prepare", "confirm"])
+async def test_fifth_budget_change_in_an_hour_is_refused_before_any_meta_call(
+    live, monkeypatch, stage
+):
+    """m-25091390: Meta allows 4 budget changes per hour per ad set; the fifth is refused
+    from our own audit before any read, validation or write reaches Meta."""
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+    from qualify_api.ads.results import ResultsUnavailable
+
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    edits = [0 if stage == "confirm" else 4]
+    monkeypatch.setattr(management, "_budget_edits_last_hour", lambda scope: edits[0])
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "_actor", lambda *args: actor)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(management, "PostgresPromotionRepository", lambda: live["repo"])
+    monkeypatch.setattr(
+        management,
+        "tenant_session",
+        lambda *a, **k: _NoReplay(),
+    )
+    claims = []
+    monkeypatch.setattr(management, "_claim_pause", lambda *a, **k: claims.append(k))
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        monkeypatch.setattr(management, "_local", lambda *args: None)
+        call = dict(tenant_id=tenant, promotion_id=promotion.id, request_key="fifth")
+        start = len(live["remote"].calls)
+        if stage == "prepare":
+            with pytest.raises(ResultsUnavailable, match="última hora"):
+                await management.prepare_promotion_edit(
+                    **call, action="budget", budget_minor=2_000_000
+                )
+        else:
+            review = await management.prepare_promotion_edit(
+                **call, action="budget", budget_minor=2_000_000
+            )
+            edits[0] = 4  # four other changes landed while the owner read the review
+            start = len(live["remote"].calls)
+            with pytest.raises(ResultsUnavailable, match="última hora"):
+                await management.confirm_promotion_edit(
+                    **call, approval_token=review.approval_token, confirm_change=True
+                )
+    assert live["remote"].calls[start:] == [] and claims == []
+
+
+class _NoReplay:
+    """A tenant session with no earlier operation for the request key."""
+
+    def __enter__(self):
+        return SimpleNamespace(
+            execute=lambda *a, **k: SimpleNamespace(
+                mappings=lambda: SimpleNamespace(first=lambda: None)
+            )
+        )
+
+    def __exit__(self, *exc):
+        return False
 
 
 @pytest.mark.asyncio

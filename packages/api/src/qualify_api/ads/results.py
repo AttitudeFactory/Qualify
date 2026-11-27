@@ -7,8 +7,11 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from qualify_api.ads.traffic_light import Advice
 
 PIPELINE_VERSION = "ad-results-v1"
 MANAGEMENT_REASON = (
@@ -90,6 +93,8 @@ class PromotionResults:
     insights_stale: bool = True
     insights_refresh_failed: bool = False
     observed_conversations: int | None = None
+    # m-25091390: the traffic light of the same read, only with QUALIFY_ADS_TRAFFIC_LIGHT.
+    advice: Advice | None = None
 
 
 def nonnegative(value: Any, *, integer: bool = False) -> Decimal | int | None:

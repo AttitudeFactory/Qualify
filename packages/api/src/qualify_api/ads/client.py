@@ -92,6 +92,7 @@ class MarketingAPI(Protocol):
     async def insights(
         self, object_id: str | None = None, *, params: Payload | None = None
     ) -> MarketingPage: ...
+    async def recommendations(self) -> MarketingPage: ...
 
 
 def _id(value: str) -> str:
@@ -558,3 +559,8 @@ class MarketingClient:
     ) -> MarketingPage:
         node = _id(object_id) if object_id is not None else self._account
         return _page(await self._request("GET", f"{node}/insights", params or {}))
+
+    async def recommendations(self) -> MarketingPage:
+        """Read-only `GET act_<id>/recommendations` (discovery §7). Qualify never POSTs this
+        edge: a suggestion is applied, with consent, as our own budget edit."""
+        return _page(await self._request("GET", f"{self._account}/recommendations", {}))
