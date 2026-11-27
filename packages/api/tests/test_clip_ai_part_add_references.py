@@ -8,14 +8,17 @@ Offline only: the doubles of `test_clip_ai_parts` — no vendor, no database, no
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from qualify_creative.schemas import ContentBrief
 
+from qualify_api.creative import clip_ai_part_actions as act
+from qualify_api.creative import clip_ai_parts as cap
 from qualify_api.creative.composition import SEEDANCE_REFERENCE_MODEL_ENV
 from qualify_api.creative.fsm import DRAFTING, GENERATED
 
-from .test_clip_ai_part_actions import _actions, _fail
+from .test_clip_ai_part_actions import _actions, _fail, _Snapshot
 from .test_clip_ai_parts import (
     World,
     _brief_of,
@@ -130,3 +133,49 @@ def test_make_new_on_the_tracks_keeps_the_parts_photo_and_origin_never_the_track
     assert [p.image_key for p in child.source_pins] == [pinned.key]
     # the reel window of «Igual al original» never becomes a guide of «Nueva»
     assert WINDOW not in child.clip_video_keys
+
+
+def test_an_added_part_with_files_of_its_own_on_the_tracks_is_refused() -> None:
+    """Review of the merge: its own photo would be dropped for the tracks' and its vista
+    previa charged anyway — refused before anything, as «Crear» refuses it."""
+    photo = _ref("photo", 4.0, 9.0, "arepa.png")
+    world = _world()
+    made = _made_on_tracks(world, _on_tracks(_clip(), photo))
+    snap = _Snapshot(world)
+    with pytest.raises(cap.ClipAiPartsRefused) as refused:
+        _actions(world).add_part(
+            tenant_id=TENANT_ID,
+            user_id=USER_ID,
+            clip_id=made.clip_id,
+            entry=_entry(5, clip_image_keys=(f"uploads/{TENANT_ID}/mia.jpg",)),
+            position=4,
+        )
+    assert refused.value.code == "references_and_old_fields"
+    assert refused.value.owner_message == act.ADD_ON_TRACKS_TEXT
+    assert snap.same(world)
+
+
+def test_make_new_on_a_part_added_to_a_made_clip_keeps_what_it_took() -> None:
+    """Review of the merge: on a MADE Clip the tracks are gone (the assembly drops them);
+    «Hacerla nueva» keeps what the part took (`PartRef.references`, its pin), never
+    re-reading the tracks — the reason `_in_mode` keeps PR B's path."""
+    pinned = _ref("photo", 4.0, 9.0, "pin.png")
+    world = _world()
+    made = _made_on_tracks(world, _on_tracks(_clip(), pinned, source_pins=(_pin(pinned.key),)))
+    edit = _entry(5, mode="edit", analysis_id=uuid4(), shot_indexes=(1,), original_mode="edit")
+    new = _actions(world).add_part(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=made.clip_id, entry=edit, position=1
+    )
+    took = _brief_of(world, new).media
+    assert took.part is not None and took.part.mode == "edit"
+    assert took.part.references == (pinned,)
+    _fail(world, new, reason="refused_face")
+    _actions(world).make_part_new(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=made.clip_id, part_id=new
+    )
+    child = _brief_of(world, new).media
+    assert child.part is not None and child.part.mode == "reference"
+    assert child.clip_references == () and child.references_version == 0
+    assert child.clip_image_keys == (pinned.key,)
+    assert child.part.references == (pinned,)
+    assert [p.image_key for p in child.source_pins] == [pinned.key]

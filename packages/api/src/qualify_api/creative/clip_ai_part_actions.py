@@ -184,6 +184,12 @@ NO_PLACE_LEFT_TEXT = (
     "Ya usaste las 6 partes con IA de este video, contando las que quitaste o no salieron. "
     "Crea un video nuevo para agregar más."
 )
+#: m-25142982 (m-25142725): a new part with files of its own in a video whose parts take
+#: their photos, videos and audios from the reference tracks.
+ADD_ON_TRACKS_TEXT = (
+    "En este video, cada parte toma sus fotos y videos de las pistas de referencias. "
+    "Quita los archivos de esta parte y agrégala de nuevo."
+)
 #: m-25142982: a new part with nothing to make it from.
 ADD_NEEDS_DESCRIPTION_TEXT = "Cuéntanos qué se ve en esta parte con IA antes de agregarla."
 #: m-25142982: the Clip has its 8 blocks already.
@@ -959,7 +965,18 @@ class ClipAiPartActions(ClipAiPartsService):
             # takes the tracks' items under its block (`part_references`), as «Crear» gave
             # each part, recorded on `PartRef.references` with the Pinterest origins of
             # the photos it took; it never inherits the Clip's tracks (version 0). Over
-            # its model's caps: `RecipeRefused`, before anything is written
+            # its model's caps: `RecipeRefused`, before anything is written. Files of its
+            # own on the entry would be dropped for the tracks' (review of the merge):
+            # refused instead, as «Crear» refuses them on the tracks
+            # (`references_and_old_fields`) — the reel window of «Igual al original» aside
+            if (
+                entry.clip_image_keys
+                or entry.clip_audio_keys
+                or (entry.clip_video_keys and entry.mode != "edit")
+            ):
+                raise ClipAiPartsRefused(
+                    "references_and_old_fields", ADD_ON_TRACKS_TEXT, block=position
+                )
             made = child_brief(on_tracks, planned, part_references(on_tracks, 0))
         part = made.media.part
         if part is not None and part.extend_own is not None:
@@ -1805,6 +1822,7 @@ def _plan_of(brief: ContentBrief) -> VideoPartPlan:
 __all__ = [
     "ADD_MAX_PARTS_TEXT",
     "ADD_NEEDS_DESCRIPTION_TEXT",
+    "ADD_ON_TRACKS_TEXT",
     "ADD_TOO_MANY_BLOCKS_TEXT",
     "ADD_UNAVAILABLE_TEXT",
     "AI_PART_ADDED_TEXT",
