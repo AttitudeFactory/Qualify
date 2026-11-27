@@ -60,6 +60,14 @@ logger = logging.getLogger(__name__)
 #: `switched_off`; `on` lets the contract's rules run. Turning it on needs §13.8 and
 #: Deivid's OK. The screen also needs `QUALIFY_CLIP_EDITOR` on; the server reads only this.
 CLIP_AI_PARTS_SWITCH = "QUALIFY_CLIP_AI_PARTS"
+#: m-25129406 (Deivid, 2026-11-26: «Construirlo ya en el PR2»): «Sigue a la anterior» right
+#: after the owner's OWN video continues that video (`PartRef.extend_own`). Off (the
+#: default, every environment) until a paid measurement Deivid approves in session
+#: (`just eval-extender-propio`): `extend_after_own_media` stays as in PR 1.
+CLIP_EXTEND_OWN_VIDEO_SWITCH = "QUALIFY_CLIP_EXTEND_OWN_VIDEO"
+#: What Seedance continues at least (ModelArk takes a 2-30 s source, `part_extend`): the
+#: owner's video right before must last this long at ×1.
+EXTEND_OWN_MIN_S = 2.0
 #: §13.2 (Deivid, 2026-11-26, answer 4): AI parts and character scenes share the child
 #: places `part_index` 1-6 — at most this many in one Clip, without a migration.
 AI_CHILDREN_MAX = PARTS_MAX
@@ -133,6 +141,11 @@ AI_PART_TEXTS: dict[str, str] = {
         "«Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento "
         "del video de inspiración. Elige «Nueva»."
     ),
+    # m-25129406: only with `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on
+    "extend_own_video_unfit": (
+        "Para que «Sigue a la anterior» continúe tu video, ese video tiene que ir a velocidad "
+        "normal y durar al menos 2 segundos. Cámbialo o elige «Nueva»."
+    ),
 }
 
 
@@ -151,6 +164,33 @@ def clip_ai_parts_on() -> bool:
         return True
     logger.error("%s must be off or on, not %r: read as off", CLIP_AI_PARTS_SWITCH, value)
     return False
+
+
+def clip_extend_own_video_on() -> bool:
+    """Whether `QUALIFY_CLIP_EXTEND_OWN_VIDEO` is `on` (m-25129406). As the other switch:
+    anything but `off`/empty/`on` is logged and read as off."""
+    value = os.environ.get(CLIP_EXTEND_OWN_VIDEO_SWITCH, "off").strip().lower()
+    if value in ("", "off"):
+        return False
+    if value == "on":
+        return True
+    logger.error("%s must be off or on, not %r: read as off", CLIP_EXTEND_OWN_VIDEO_SWITCH, value)
+    return False
+
+
+def ai_part_slots(segments: Sequence[SourceSegment]) -> dict[int, int]:
+    """m-25129406: each `ai_parts` entry's child place (`part_index`, 1-6), by the order
+    of its block on the Clip's timeline: the first AI block is 1, the next 2… So the part
+    «Sigue a la anterior» continues — the AI block right before it (§3.2) — is always the
+    child with the place just below, as the producer looks it up today
+    (`part_extend.pick_previous`). `{entry_at: slot}`; a block naming no entry, or one
+    already named, is left out (`ai_parts_mismatch` refuses it). Pure."""
+    slots: dict[int, int] = {}
+    for segment in segments:
+        entry_at = segment.ai_part_at
+        if entry_at is not None and entry_at not in slots:
+            slots[entry_at] = len(slots) + 1
+    return slots
 
 
 def ai_part_blocks(segments: Sequence[SourceSegment]) -> tuple[int, ...]:
@@ -249,8 +289,15 @@ def _extend_problems(
     before = segments[at - 1]
     previous_at = before.ai_part_at
     if previous_at is None or previous_at >= len(ai_parts):
-        code = "extend_after_own_media" if before.kind != AI_PART_KIND else None
-        return (RecipeProblem(code=code, part=None, field=field),) if code else ()
+        if before.kind == AI_PART_KIND:
+            return ()  # a block naming no entry: `ai_parts_mismatch` says it
+        if before.kind == "video" and clip_extend_own_video_on():
+            # m-25129406: the owner's own video, continued as it plays — at ×1 and long
+            # enough for ModelArk's source (2 s); a photo is never continued
+            if before.speed != 1 or before.output_seconds < EXTEND_OWN_MIN_S:
+                return (RecipeProblem(code="extend_own_video_unfit", part=None, field=field),)
+            return ()
+        return (RecipeProblem(code="extend_after_own_media", part=None, field=field),)
     entry, previous = ai_parts[entry_at], ai_parts[previous_at]
     same_moment = (
         entry.original_mode == "extend"
@@ -342,6 +389,8 @@ __all__ = [
     "AI_CHILDREN_MAX",
     "AI_PART_TEXTS",
     "CLIP_AI_PARTS_SWITCH",
+    "CLIP_EXTEND_OWN_VIDEO_SWITCH",
+    "EXTEND_OWN_MIN_S",
     "GUIDE_AUDIO_SUFFIXES",
     "GUIDE_VIDEO_SUFFIXES",
     "OWN_MEDIA_MIN_S",
@@ -349,8 +398,10 @@ __all__ = [
     "ai_children_of",
     "ai_part_blocks",
     "ai_part_problems",
+    "ai_part_slots",
     "ai_part_text",
     "clip_ai_parts_on",
+    "clip_extend_own_video_on",
     "own_seconds",
     "switched_off_problems",
 ]

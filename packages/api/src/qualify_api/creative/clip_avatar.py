@@ -576,6 +576,13 @@ class GeneratedSource:
     #: A block whose seconds a Clip's approval already took (its own charge row, at its
     #: revision, has videos): never charged again, whatever Clip version is approved.
     charged: bool = False
+    #: m-25129406 (ADR 50 §13): the file is a «parte con IA» of a Clip — its child's
+    #: `media.part` as stored (mode, seconds, reel, `mode_reason`…); None otherwise.
+    ai_part: Mapping[str, Any] | None = None
+    #: The part's prompt version, its vendor task and what its revision cost (usage rows).
+    prompt_version: str | None = None
+    task_id: str | None = None
+    cost_usd: str | None = None
 
     def ai_provenance(self, segment: int) -> dict[str, Any]:
         """The Clip asset's record of an AI stretch: the label's evidence."""
@@ -589,6 +596,34 @@ class GeneratedSource:
             "provider": self.provider,
             "model_id": self.model_id,
             "avatar_block": self.block,
+            "ai_part": self.ai_part is not None,
+        }
+
+    def part_provenance(self, segment: int, played_s: float) -> dict[str, Any]:
+        """m-25129406 (§13.4): the Clip asset's record of a «parte con IA» it plays — the
+        part's draft, revision and asset, vendor, model and prompt version, its mode and
+        why, the reel and its cuts, the seconds asked and played, its task and cost."""
+        part = self.ai_part or {}
+        return {
+            "segment": segment,
+            "draft_id": str(self.block_id),
+            "revision": self.revision,
+            "asset_id": str(self.asset_id),
+            "provider": self.provider,
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "prompt_version": self.prompt_version,
+            "pipeline_version": self.pipeline_version,
+            "mode": part.get("mode"),
+            "mode_reason": part.get("mode_reason"),
+            "analysis_id": part.get("analysis_id"),
+            "shot_indexes": list(part.get("shot_indexes") or ()),
+            "extend_own": part.get("extend_own") is not None,
+            "seconds_asked": part.get("seconds"),
+            "seconds_made": round(self.seconds, 3),
+            "seconds_played": round(played_s, 3),
+            "task_id": self.task_id,
+            "cost_usd": self.cost_usd,
         }
 
     def provenance(self, segment: int) -> dict[str, Any]:
@@ -857,10 +892,20 @@ class PostgresClipAvatarStore:
                        COALESCE((b.media->>'clip_avatar_block')::boolean, false) AS block,
                        EXISTS (SELECT 1 FROM creation_charges c
                                WHERE c.draft_id = d.id AND c.revision = d.revision
-                                 AND c.videos > 0) AS charged
+                                 AND c.videos > 0) AS charged,
+                       -- m-25129406: a «parte con IA» of a Clip (a part under a CLIP)
+                       CASE WHEN pb.kind = 'clip' AND jsonb_typeof(b.media->'part') = 'object'
+                            THEN b.media->'part' END AS ai_part,
+                       COALESCE(a.params->'part'->>'part_prompt_version',
+                                a.params->>'prompt_version') AS prompt_version,
+                       COALESCE(a.params->'draft'->>'task_id', a.params->>'task_id') AS task_id,
+                       (SELECT sum(u.cost_usd) FROM creative_usage_events u
+                        WHERE u.draft_id = d.id) AS cost_usd
                 FROM image_assets a
                 JOIN content_drafts d ON d.id = a.draft_id
                 JOIN content_briefs b ON b.id = d.brief_id
+                LEFT JOIN content_drafts p ON p.id = d.parent_draft_id
+                LEFT JOIN content_briefs pb ON pb.id = p.brief_id
                 WHERE a.object_key IN :keys
                 ORDER BY a.created_at
             """).bindparams(bindparam("keys", expanding=True)),
@@ -898,6 +943,10 @@ class PostgresClipAvatarStore:
                 block=block,
                 ai_generated=ai,
                 charged=bool(row.charged),
+                ai_part=row.ai_part if isinstance(row.ai_part, Mapping) else None,
+                prompt_version=row.prompt_version,
+                task_id=row.task_id,
+                cost_usd=None if row.cost_usd is None else str(row.cost_usd),
             )
         return found
 

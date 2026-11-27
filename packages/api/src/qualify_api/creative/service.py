@@ -2443,8 +2443,12 @@ class ContentService:
         clip_avatar_store: Any = None,
         clip_avatar_clock: Callable[[], datetime] | None = None,
         clip_failure_outbox: Any = None,
+        clip_ai_parts_store: Any = None,
     ) -> None:
         self._media = media
+        #: m-25129406: the AI parts a Clip waits for (`clip_ai_parts.AiPartsStore`;
+        #: `PostgresAiPartsStore` on Postgres when None).
+        self._clip_ai_parts_store = clip_ai_parts_store
         #: m-25120319: where the email of a failed avatar is staged, in the same write as
         #: its `failed_at` (`clip_avatar_mail.AvatarFailureOutbox`; Postgres when None on a
         #: Postgres repository; none at all on an in-memory one unless injected).
@@ -3166,6 +3170,61 @@ class ContentService:
             beat()
         raise ClipBlocksWait(f"clip {draft.id} waits for its avatar blocks ({verdict.reason})")
 
+    def _clip_ai_parts_ready(
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+    ) -> tuple[DraftRecord, ContentBrief] | None:
+        """m-25129406 (ADR 50 §13): a Clip with «parte con IA» blocks. Every part made →
+        the Clip gets ONE new brief with their videos as stretches (×1, the interval the
+        join keeps; texts and effects moved to the real lengths) and is made from it, once.
+        Otherwise it waits: its sign of life is stamped and `ClipBlocksWait` leaves the
+        worker's run not done — nothing written or paid. A part that failed keeps it
+        waiting `CLIP_AVATAR_OWNER_WAIT` (72 h, as §11) from the part's failure; then the
+        Clip fails (`ai_part_failed`) and None is returned — the run gives its creations
+        back. The wait and the assembly after it write no charge row: they never count in
+        the day's local cap (§13.5)."""
+        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
+            AI_PART_FAILED,
+            AI_PART_FAILED_TEXT,
+            AiPartsExpired,
+            AiPartsReady,
+            PostgresAiPartsStore,
+            ai_parts_gate,
+        )
+        from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
+
+        store = self._clip_ai_parts_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                raise RuntimeError("a Clip waiting for its AI parts needs the parts' store")
+            store = PostgresAiPartsStore()
+        verdict = ai_parts_gate(
+            tenant_id=tenant_id,
+            clip_id=draft.id,
+            brief=brief,
+            store=store,
+            now=self._clip_avatar_clock(),
+        )
+        if isinstance(verdict, AiPartsExpired):
+            self._fail_waiting_clip(
+                tenant_id, draft, reason=AI_PART_FAILED, detail=AI_PART_FAILED_TEXT
+            )
+            logger.info("clip %s: an AI part failed and its time ran out; failed", draft.id)
+            return None
+        if isinstance(verdict, AiPartsReady):
+            fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
+            logger.info(
+                "clip %s: its %d AI part(s) are made; assembled now (%d moved, %d dropped)",
+                draft.id,
+                verdict.parts,
+                verdict.moved,
+                verdict.dropped,
+            )
+            return fresh, made_from
+        beat = self._heartbeat(tenant_id, draft.id)
+        if beat is not None:
+            beat()
+        raise ClipBlocksWait(f"clip {draft.id} waits for its AI parts ({verdict.reason})")
+
     def _fail_waiting_clip(
         self, tenant_id: UUID, draft: DraftRecord, *, reason: str, detail: str
     ) -> None:
@@ -3318,6 +3377,16 @@ class ContentService:
             ready = self._clip_plan_ready(tenant_id, draft, brief)
             if ready is None:
                 return  # the owner's time ran out: failed, its creations given back
+            draft, brief = ready
+        from qualify_api.creative.clip_ai_parts import has_ai_part_blocks  # noqa: PLC0415
+
+        if has_ai_part_blocks(brief):
+            # m-25129406 (ADR 50 §13): a Clip waits for its AI parts (`ClipBlocksWait`,
+            # before any read or paid call of its own), then is made ONCE from a brief with
+            # their videos as stretches
+            ready = self._clip_ai_parts_ready(tenant_id, draft, brief)
+            if ready is None:
+                return  # a part failed and its time ran out: failed, creations given back
             draft, brief = ready
         # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
         # draft is the session, so its regenerations sit together; every vendor call the
@@ -3598,6 +3667,11 @@ class ContentService:
             return None
         return attempt
 
+    def _is_clip(self, tenant_id: UUID, parent: DraftRecord) -> bool:
+        """Whether a child's parent is a Clip (ADR 50 §13), not a video by parts."""
+        parent_brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=parent.brief_id)
+        return parent_brief is not None and parent_brief.kind is ContentKind.CLIP
+
     def _inherited_copy(
         self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief | None = None
     ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
@@ -3625,6 +3699,29 @@ class ContentService:
                     "hard_failures": [],
                     "inherited_from": None,
                     "clip_avatar_block_without_text": True,
+                },
+                model_id="none",
+                model_revision=None,
+            )
+            return [empty], [], Decimal(0), True
+        if (
+            chosen is None
+            and brief is not None
+            and brief.media.part is not None
+            and parent is not None
+            and self._is_clip(tenant_id, parent)
+        ):
+            # m-25129406 (ADR 50 §13): a «parte con IA» of a Clip is made before its Clip
+            # has a text, and is never published alone — the Clip carries the text. It
+            # takes an empty one: no vendor call, cost 0.
+            empty = VariantWrite(
+                ordinal=0,
+                copy={"hook": "", "caption": "", "script": ""},
+                fidelity={
+                    "passed": True,
+                    "hard_failures": [],
+                    "inherited_from": None,
+                    "clip_ai_part_without_text": True,
                 },
                 model_id="none",
                 model_revision=None,
@@ -4459,6 +4556,7 @@ class ContentService:
             from qualify_api.creative.part_final import ApproveWholeVideo
 
             raise ApproveWholeVideo()
+        self._refuse_ai_parts_approval(tenant_id, record)
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
@@ -4805,6 +4903,32 @@ class ContentService:
         except CreationNotOffered:
             return 0, 0
         return price.videos, price.video_seconds
+
+    def _refuse_ai_parts_approval(self, tenant_id: UUID, record: DraftRecord) -> None:
+        """m-25129406: a top-level Clip with «parte con IA» children is not approved until
+        PR 4 (§13.4) charges their seconds and asks their finals — refused with nothing
+        written. One read, only for a Clip; nothing for any other piece."""
+        if record.parent_draft_id is not None:
+            return
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if callable(kind_of):
+            kind = kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
+        else:
+            brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+            kind = None if brief is None else brief.kind.value
+        if kind != ContentKind.CLIP.value:
+            return
+        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
+            PostgresAiPartsStore,
+            refuse_ai_parts_approval,
+        )
+
+        store = self._clip_ai_parts_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return
+            store = PostgresAiPartsStore()
+        refuse_ai_parts_approval(store, tenant_id=tenant_id, clip_id=record.id)
 
     def _clip_avatar_charges(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
         """m-25112920: the `VideoCharge` of each avatar block of this Clip its recipe
