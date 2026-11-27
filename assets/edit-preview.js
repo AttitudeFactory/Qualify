@@ -802,8 +802,10 @@
         photo.setAttribute("data-on", "");
       } else photo.removeAttribute("data-on");
     }
+    var aiMark = host.querySelector("[data-edit-seq-ai]");
     if (card) {
-      var label = block ? block.label || "" : "";
+      // m-25026638: an AI part's name is in its mark, never big over the ▶ too
+      var label = c.cardLabel(block, !!aiMark);
       if (card.textContent !== label) card.textContent = label;
       card.toggleAttribute("data-on", mode === "card");
     }
@@ -812,11 +814,21 @@
     }
     // ED-07 (m-25026638): a «parte con IA» not made yet — its poster (or its card) and
     // the mark «Parte con IA 1 · se crea al tocar «Crear»» (`block.mark`) over it
-    var aiMark = host.querySelector("[data-edit-seq-ai]");
     if (aiMark) {
       var said = c.aiMark(st.seq, st.idx);
-      var words = aiMark.querySelector("[data-edit-seq-ai-text]");
-      if (words && words.textContent !== said) words.textContent = said;
+      // its name and the rest apart: a narrow frame shows the name alone (CSS)
+      var parts = c.aiMarkParts(said);
+      var name = aiMark.querySelector("[data-edit-seq-ai-name]");
+      var rest = aiMark.querySelector("[data-edit-seq-ai-rest]");
+      if (name && name.textContent !== parts.name) name.textContent = parts.name;
+      if (rest && rest.textContent !== parts.rest) rest.textContent = parts.rest;
+      // the capsule shows at most two lines, cut with «…» (CSS): its full words stay
+      // in its accessible name
+      if (said) {
+        if (aiMark.getAttribute("aria-label") !== said) aiMark.setAttribute("aria-label", said);
+      } else {
+        aiMark.removeAttribute("aria-label");
+      }
       aiMark.toggleAttribute("data-on", said !== "");
     }
     host.setAttribute("data-edit-state", st.playing ? "playing" : "idle");

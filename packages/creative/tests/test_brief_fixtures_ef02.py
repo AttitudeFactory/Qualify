@@ -43,6 +43,9 @@ _MEDIA_DEFAULTS = {
     # m-25128784: the «Personajes» track of a Clip, empty before it
     "character_scenes": [],
     "derived_from_brief_id": None,
+    # m-25142725: a Clip's reference tracks, empty (and version 0) before them
+    "clip_references": [],
+    "references_version": 0,
 }
 _PLAN_DEFAULTS = {**_RECIPE_DEFAULTS, "transition_in": None}
 #: Brief fields main added after the fixtures were taken (`awareness_level`, 94fa4556).
@@ -62,6 +65,8 @@ def _as_before(dumped: dict[str, Any]) -> dict[str, Any]:
     media["parts_removed"] = [_without(_PLAN_DEFAULTS, p) for p in media["parts_removed"]]
     if media["part"] is not None:
         media["part"] = _without(_RECIPE_DEFAULTS, media["part"])
+        # m-25129406: the owner's video an «extend» part of a Clip continues, None before
+        media["part"] = _without({"extend_own": None}, media["part"])
     if media.get("parts_request") is not None:
         # EF-06 (option A): the refused part's length, None on every older ask
         media["parts_request"] = _without({"duration_s": None}, media["parts_request"])

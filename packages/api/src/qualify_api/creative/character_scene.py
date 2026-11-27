@@ -3,8 +3,9 @@ Deivid on 2026-11-26): the brand's saved character acts and speaks INSIDE a scen
 the business's product and place, and that scene replaces a window of the owner's own
 Clip.
 
-What this module holds (the first of the ticket's PRs — the recipe, its checks and the
-480p draft; the Clip's wait and assembly, the 1080p final and its charge come next):
+What this module holds (PR 1 of the ticket: the recipe, its checks and the 480p draft;
+PR 2: the Clip's wait, its assembly with the scenes and the failure email; the 1080p
+final and its charge are PR 3):
 
 - **The switch.** `QUALIFY_CLIP_CHARACTER_SCENE`, off in every environment. Off, the
   server refuses the scene before anything is read (`switched_off`). It also covers the
@@ -36,6 +37,26 @@ What this module holds (the first of the ticket's PRs — the recipe, its checks
   record) and leaves its usage with its cost; the kept video records its provenance
   (provider, model, prompt version `personaje-escena-v1`, the character's own, the
   inputs and the request digest).
+
+- **The Clip's wait** (`scenes_gate`, PR 2): the Clip waits in `drafting` while a scene
+  is being made; once every scene is made it is assembled ONCE, with each scene's video
+  laid over its window (`qualify_creative.video.scene_overlay`, in the local assembly —
+  the Clip keeps its length, the scene's sound replaces the owner's there and its voice
+  is brought to one level, R3). A scene seen failed for the first time is stamped
+  (`failed_at` on the Clip's own item, in a new brief) and its failure email
+  (m-25120319) is staged in that same write; the Clip then waits for the owner
+  `CLIP_AVATAR_OWNER_WAIT` (72 h) from the latest failure and fails after it
+  (`character_scene_failed`), its creations given back by the run's refund. A scene
+  that was never created, or made with no video, fails the Clip at once.
+- **After a failure** (PR 3, `character_scene_actions`): the owner chooses per scene,
+  with the words the failure email names — «Intentar de nuevo» (a new attempt of the
+  scene: 1 vista previa, one more scene of the day) or «Quitar escena» (the scene leaves
+  the Clip's «Personajes» track and the Clip is made without it).
+- **Approval** (PR 3, with m-25129408: ONE path for scenes and «parte con IA»,
+  `clip_final`): approving the Clip charges every scene's requested seconds on its own
+  row, all or nothing, orders its 1080p final from its draft and assembles the Clip again
+  with the finals. A final that fails gives its seconds back and the Clip waits for
+  «Intentar de nuevo».
 
 Tenant isolation: every read goes through `tenant_session` (RLS) or the content
 repository; every file of a scene is checked with `owned_by` before anything is written,
@@ -189,7 +210,7 @@ NOT_LOCAL_TEXT = (
 UNAVAILABLE_TEXT = (
     "Por ahora no podemos crear esta escena. Inténtalo más tarde. No se gastó nada de tu plan."
 )
-#: The Clip waits for its scenes (this PR builds no assembly with them yet).
+#: The Clip waits for its scenes (`scenes_gate`); the screen (m-25112921) shows it.
 WAITING_TEXT = (
     "Estamos creando las escenas con tu personaje. Puede tardar varios minutos. Puedes "
     "salir: tu video te espera en Por aprobar."
@@ -453,7 +474,8 @@ def scene_problems(
     found: list[SceneProblem] = []
     for number, scene in enumerate(scenes):
         if scene.transition_in is not None:
-            # until the assembly (PR 2 of m-25128784) draws a scene's way in, only a cut
+            # PR 2's assembly (`scene_overlay`) draws a scene's way in as a cut; another
+            # transition into it (§12.6 allows any) waits for a later step: refused until then
             found.append(
                 SceneProblem(
                     TRANSITION_UNAVAILABLE, transition_unavailable_text(number + 1), number
@@ -482,10 +504,12 @@ def scene_problems(
             break
     for number, scene in enumerate(scenes):
         exit_at = scene.end
-        # Deliberately strict (review of cbbfbe77): ANY blend whose window starts at or
-        # before the scene's end and runs past it is refused, even where the overlay may
-        # end up hiding part of it — until PR 2's assembly decides exactly what plays at
-        # a scene's exit, the voice's last word is never put at risk.
+        # §12.6 (Deivid, P1): a scene leaves only with «Corte». PR 2's assembly
+        # (`scene_overlay`) now draws every exit as a cut — the scene's picture and voice
+        # play to its last frame, then the owner's video comes back — so a blend of the
+        # owner's stretches can no longer eat the last word. The rule stays as decided:
+        # ANY blend whose window starts at or before the scene's end and runs past it is
+        # refused, since after the cut it would show as half a blend.
         if any(j.start <= exit_at + _EPSILON and j.end > exit_at + _EPSILON for j in joins):
             found.append(SceneProblem(EXIT_CUT_ONLY, exit_cut_text(number + 1), number, CUT_ACTION))
     return tuple(found)
@@ -514,7 +538,10 @@ def scene_brief(clip: ContentBrief, item: CharacterSceneItem) -> ContentBrief:
             # the nearest bucket the brief allows — a label, never read for the scene's
             # real length: `character_scenes[0].duration` and the task's params carry it
             "duration_seconds": item.duration if item.duration in (5, 10) else 10,
-            "character_scenes": (item.model_dump(mode="json"),),
+            # the Clip's failure stamp (PR 2) is the Clip's, never the scene's
+            "character_scenes": (
+                item.model_copy(update={"failed_at": None}).model_dump(mode="json"),
+            ),
         }
     )
     return ContentBrief.model_validate(
@@ -847,6 +874,336 @@ def scene_provenance(
     }
 
 
+# -- the Clip's wait for its scenes, and what its assembly reads (PR 2) ---------------------
+
+#: The Clip's failure once the owner's 72 h ran out after a scene failed (a typed code, as
+#: `clip_avatar.AVATAR_BLOCK_FAILED`; the screen m-25112921 reads `failure_detail`).
+SCENE_FAILED = "character_scene_failed"
+#: Every scene's seconds are only taken at the Clip's approval, which never came; the
+#: vista previa of a scene the vendor did not deliver was already given back by its run.
+SCENE_FAILED_TEXT = (
+    "Descartamos tu video porque una escena con tu personaje no se pudo crear y pasaron "
+    "3 días sin que eligieras qué hacer. No se descontaron segundos de video de tu plan. "
+    "Créalo de nuevo cuando quieras."
+)
+#: Ours (a scene never created, made without its video, or not the Clip's): the Clip
+#: fails at once — there is nothing the owner could choose. No «cuando quieras»: those
+#: scenes paid, so they count in today's cap (`SCENE_DAILY_CAP`).
+SCENE_BROKEN = "character_scene_broken"
+SCENE_BROKEN_TEXT = (
+    "No pudimos armar tu video con las escenas de tu personaje. No se descontaron "
+    "segundos de video de tu plan. Puedes crearlo de nuevo."
+)
+#: A scene child that is made (its video kept): the statuses a draft can leave
+#: `drafting` for with its media (`clip_avatar._READY_STATUSES`).
+_MADE = frozenset({"generated", "rejected", "approved", "staged", "published"})
+
+
+@dataclass(frozen=True)
+class SceneRow:
+    """One scene child of a Clip as the wait and the assembly read it: its draft, its
+    own scene (the child brief's only item), and — when made — its kept video (the
+    active version's) with that asset's params (the scene's provenance)."""
+
+    id: UUID
+    slot: int
+    status: str
+    revision: int
+    item: CharacterSceneItem | None
+    removed: bool = False
+    failure_reason: str | None = None
+    failure_detail: str | None = None
+    asset_id: UUID | None = None
+    object_key: str | None = None
+    params: Mapping[str, Any] = field(default_factory=dict)
+    model_id: str | None = None
+    provider: str | None = None
+
+    @property
+    def made(self) -> bool:
+        return self.status in _MADE
+
+    @property
+    def failed(self) -> bool:
+        return self.status == "failed"
+
+
+class SceneRowsStore(Protocol):
+    def scene_rows(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[SceneRow, ...]: ...
+
+
+@dataclass(frozen=True)
+class PlacedScene:
+    """One scene of the Clip, its child and its slot (1-based, by start)."""
+
+    index: int  # its place in the Clip's `character_scenes`
+    slot: int
+    item: CharacterSceneItem
+    row: SceneRow | None
+
+
+@dataclass(frozen=True)
+class ScenesWait:
+    reason: str
+    wait_until: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ScenesReady:
+    """Every scene made: the Clip is assembled from these (by slot)."""
+
+    scenes: tuple[PlacedScene, ...]
+
+
+@dataclass(frozen=True)
+class ScenesSeen:
+    """Scenes seen failed for the first time: the Clip's new brief stamps them
+    (`failed_at`), and `failures` are their emails, staged in that same write."""
+
+    brief: ContentBrief
+    failures: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class ScenesExpired:
+    """The owner's 72 h ran out: the Clip fails. `give_back`: (draft, revision) of the
+    scenes the vendor never delivered (a failed one — its run gave it back already, the
+    ledger skips it — or one still being made, stopped with the Clip): their vistas
+    previas come back (P2). A made scene keeps its own."""
+
+    deadline: datetime
+    give_back: tuple[tuple[UUID, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class ScenesBroken:
+    """Ours: the Clip fails at once and EVERY scene's vista previa comes back (the owner
+    gets no video and could choose nothing)."""
+
+    reason: str
+    give_back: tuple[tuple[UUID, int], ...] = ()
+
+
+def placed_scenes(
+    scenes: Sequence[CharacterSceneItem], rows: Iterable[SceneRow]
+) -> tuple[PlacedScene, ...]:
+    """The Clip's scenes with their children: the `n`-th scene by start is the `n`-th
+    child by slot (how `create_clip_with_scenes` numbered them) among the children its
+    owner did NOT remove — «Quitar escena» (PR 3) takes the scene out of the Clip's track
+    and marks its child removed in the same write, so the others keep their own child. A
+    scene with no child left reads `row=None` (broken). Pure."""
+    live = sorted((row for row in rows if not row.removed), key=lambda row: row.slot)
+    order = sorted(range(len(scenes)), key=lambda i: scenes[i].start)
+    placed: list[PlacedScene] = []
+    for number, index in enumerate(order):
+        row = live[number] if number < len(live) else None
+        slot = row.slot if row is not None else number + 1
+        placed.append(PlacedScene(index=index, slot=slot, item=scenes[index], row=row))
+    return tuple(placed)
+
+
+def _same_scene(placed: PlacedScene) -> bool:
+    """The child is the scene the Clip asked for: same inputs and same place."""
+    row = placed.row
+    if row is None or row.item is None:
+        return False
+    return (
+        scene_digest(row.item) == scene_digest(placed.item)
+        and abs(row.item.start - placed.item.start) < _EPSILON
+    )
+
+
+def scene_owner_deadline(scenes: Sequence[PlacedScene]) -> datetime | None:
+    """When the owner's time runs out: 72 h after the latest failure seen among the
+    Clip's failed scenes; None with none seen."""
+    from qualify_api.creative.clip_avatar import CLIP_AVATAR_OWNER_WAIT  # noqa: PLC0415
+
+    seen = [
+        p.item.failed_at
+        for p in scenes
+        if p.row is not None and p.row.failed and p.item.failed_at is not None
+    ]
+    return max(seen) + CLIP_AVATAR_OWNER_WAIT if seen else None
+
+
+def scenes_gate(
+    *,
+    tenant_id: UUID,
+    clip_id: UUID,
+    brief: ContentBrief,
+    store: SceneRowsStore,
+    now: datetime,
+    env: Mapping[str, str] | None = None,
+) -> ScenesWait | ScenesReady | ScenesSeen | ScenesExpired | ScenesBroken:
+    """What a Clip with a «Personajes» track does on this pass. Reads the scenes once,
+    writes nothing:
+
+    - a scene never created, not the scene the Clip asked for, or made with no video:
+      `ScenesBroken` (the Clip fails at once — ours, nothing for the owner to choose);
+    - a scene seen failed for the first time: `ScenesSeen`, the brief with its stamp
+      and its email (m-25120319) — the Clip keeps waiting for the owner;
+    - a failed scene whose 72 h ran out: `ScenesExpired`;
+    - a scene still being made, or a failed one within its 72 h: `ScenesWait`;
+    - every scene made: `ScenesReady`."""
+    rows = store.scene_rows(tenant_id=tenant_id, clip_id=clip_id)
+    placed = placed_scenes(brief.media.character_scenes, rows)
+    every = tuple((row.id, row.revision) for row in rows)
+    for scene in placed:
+        if scene.row is None or scene.row.removed or not _same_scene(scene):
+            logger.error("clip %s: scene slot %d is missing or not its own", clip_id, scene.slot)
+            return ScenesBroken("scene_missing", every)
+    unseen = [p for p in placed if p.row is not None and p.row.failed and p.item.failed_at is None]
+    if unseen:
+        stamped = {p.index for p in unseen}
+        items = tuple(
+            item.model_copy(update={"failed_at": now}) if index in stamped else item
+            for index, item in enumerate(brief.media.character_scenes)
+        )
+        new = brief.model_copy(
+            update={"media": brief.media.model_copy(update={"character_scenes": items})}
+        )
+        return ScenesSeen(new, mailable_scene_failures(unseen, now, env))
+    failed = [p for p in placed if p.row is not None and p.row.failed]
+    if failed:
+        deadline = scene_owner_deadline(placed)
+        assert deadline is not None
+        if now >= deadline:
+            undelivered = tuple(
+                (p.row.id, p.row.revision) for p in placed if p.row is not None and not p.row.made
+            )
+            return ScenesExpired(deadline, undelivered)
+        return ScenesWait("scene_failed", wait_until=deadline)
+    if any(p.row is not None and not p.row.made for p in placed):
+        return ScenesWait("creating")
+    for scene in placed:
+        assert scene.row is not None
+        if not scene.row.object_key or scene.row.asset_id is None:
+            logger.error("clip %s: scene %s is made but has no video", clip_id, scene.row.id)
+            return ScenesBroken("scene_without_video", every)
+    return ScenesReady(placed)
+
+
+def mailable_scene_failures(
+    scenes: Sequence[PlacedScene], failed_at: datetime, env: Mapping[str, str] | None = None
+) -> tuple[Any, ...]:
+    """The failure emails (m-25120319) of scenes stamped on this pass — none while the
+    scene switch is off, nor for a `switched_off` «failure» (nothing failed: the server
+    stopped it). One email per Clip and pass (`clip_avatar_mail.mail_groups`)."""
+    from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
+        SCENE_MAIL_KIND,
+        AvatarFailure,
+    )
+
+    if not scene_enabled(env):
+        return ()
+    return tuple(
+        AvatarFailure(
+            block_id=p.row.id,
+            slot=p.slot,
+            block_kind=SCENE_MAIL_KIND,
+            code=p.row.failure_reason or "failed",
+            failed_at=failed_at,
+        )
+        for p in scenes
+        if p.row is not None and p.row.failure_reason != SWITCHED_OFF
+    )
+
+
+@dataclass(frozen=True)
+class SceneSource:
+    """One made scene as the Clip's assembly lays it: its kept video, its window, and
+    what the Clip's asset records of it (§12.7)."""
+
+    slot: int
+    draft_id: UUID
+    revision: int
+    asset_id: UUID
+    object_key: str
+    start_s: float
+    duration_s: int
+    provider: str | None
+    model_id: str | None
+    params: Mapping[str, Any]
+
+    def provenance(self, laid: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """`params.local.character_scenes[n]`: the scene's own provenance (provider,
+        model, prompt version, character, product, place, line, seconds, draft task and
+        cost) with its draft, revision and asset, plus how it was laid."""
+        own = self.params.get("character_scene")
+        record: dict[str, Any] = dict(own) if isinstance(own, Mapping) else {}
+        record.update(
+            {
+                "slot": self.slot,
+                "draft_id": str(self.draft_id),
+                "revision": self.revision,
+                "asset_id": str(self.asset_id),
+                "object_key": self.object_key,
+                "start_s": self.start_s,
+                "seconds_requested": self.duration_s,
+                "provider": record.get("provider") or self.provider,
+                "model_id": record.get("model_id") or self.model_id,
+                "prompt_version": record.get("prompt_version") or self.params.get("prompt_version"),
+                "resolution": self.params.get("resolution"),
+            }
+        )
+        if laid is not None:
+            record["laid"] = dict(laid)
+        return record
+
+    def ai_provenance(self) -> dict[str, Any]:
+        """`params.local.ai_sources`: «hecho con IA» read from what was made (§9)."""
+        return {
+            "kind": "character_scene",
+            "slot": self.slot,
+            "draft_id": str(self.draft_id),
+            "asset_id": str(self.asset_id),
+            "object_key": self.object_key,
+            "provider": self.provider,
+            "model_id": self.model_id,
+        }
+
+
+def scene_sources(ready: ScenesReady) -> tuple[SceneSource, ...]:
+    """The made scenes as the assembly lays them, by start."""
+    out: list[SceneSource] = []
+    for placed in ready.scenes:
+        row = placed.row
+        assert row is not None and row.asset_id is not None and row.object_key
+        out.append(
+            SceneSource(
+                slot=placed.slot,
+                draft_id=row.id,
+                revision=row.revision,
+                asset_id=row.asset_id,
+                object_key=row.object_key,
+                start_s=float(placed.item.start),
+                duration_s=int(placed.item.duration),
+                provider=row.provider,
+                model_id=row.model_id,
+                params=row.params,
+            )
+        )
+    return tuple(out)
+
+
+def clip_scene_sources(
+    store: SceneRowsStore, *, tenant_id: UUID, clip_id: UUID, brief: ContentBrief
+) -> tuple[SceneSource, ...] | None:
+    """What the assembly lays (the producer's lookup): every scene made with its video,
+    or None when the Clip is not ready for them (it never is when its wait let it run —
+    a race or a broken row: never assembled without them)."""
+    verdict = scenes_gate(
+        tenant_id=tenant_id,
+        clip_id=clip_id,
+        brief=brief,
+        store=store,
+        now=datetime.now(UTC),
+    )
+    if not isinstance(verdict, ScenesReady):
+        return None
+    return scene_sources(verdict)
+
+
 # -- the store: what the daily cap and the month read ----------------------------------------
 
 
@@ -860,6 +1217,61 @@ class CharacterSceneStore(Protocol):
 
 class PostgresCharacterSceneStore:
     """Every read through `tenant_session` (RLS)."""
+
+    def scene_rows(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[SceneRow, ...]:
+        """The Clip's scene children by slot, each with its own scene and, when made, its
+        kept video of the active version (PR 2: the wait and the assembly)."""
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text("""
+                SELECT d.id, d.part_index, d.status, d.revision,
+                       d.part_removed_at IS NOT NULL AS removed,
+                       d.failure_reason, d.failure_detail,
+                       b.media->'character_scenes'->0 AS item,
+                       a.id AS asset_id, a.object_key, a.params, a.model_id, a.provider
+                FROM content_drafts d
+                JOIN content_briefs b ON b.id = d.brief_id
+                LEFT JOIN LATERAL (
+                    SELECT x.id, x.object_key, x.params, x.model_id, x.provider
+                    FROM image_assets x
+                    WHERE x.draft_id = d.id AND x.media_type = 'video'
+                      AND x.object_key IS NOT NULL
+                      AND x.version_id IS NOT DISTINCT FROM d.active_version_id
+                    ORDER BY x.position, x.created_at DESC
+                    LIMIT 1
+                ) a ON true
+                WHERE d.parent_draft_id = :c AND b.kind = 'character_scene'
+                ORDER BY d.part_index
+            """),
+                {"c": clip_id},
+            ).all()
+        found: list[SceneRow] = []
+        for row in rows:
+            try:
+                item = CharacterSceneItem.model_validate(row.item) if row.item else None
+            except ValueError:
+                item = None  # a child that is not a scene any more: broken, never laid
+            found.append(
+                SceneRow(
+                    id=row.id,
+                    slot=int(row.part_index),
+                    status=str(row.status),
+                    revision=int(row.revision),
+                    item=item,
+                    removed=bool(row.removed),
+                    failure_reason=row.failure_reason,
+                    failure_detail=row.failure_detail,
+                    asset_id=row.asset_id,
+                    object_key=row.object_key,
+                    params=row.params if isinstance(row.params, Mapping) else {},
+                    model_id=row.model_id,
+                    provider=row.provider,
+                )
+            )
+        return tuple(found)
 
     def scenes_of(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[UUID, ...]:
         """The Clip's scenes, by slot."""
@@ -981,6 +1393,20 @@ class CharacterSceneService:
             raise ValueError("brief.brand_id does not match brand_id")
         if media.clip_avatar_plan or media.clip_avatar_block:
             raise ValueError("a Clip with character scenes has no avatar plan")
+        if any(item.failed_at is not None for item in scenes):
+            raise ValueError("a scene's failed_at is the server's, never sent")
+        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
+            WITH_SCENES_CODE,
+            WITH_SCENES_TEXT,
+            ClipAiPartsRefused,
+            has_ai_part_blocks,
+        )
+
+        if has_ai_part_blocks(brief):
+            # m-25129408: approving takes both kinds of child on one path, but creating
+            # one Clip with both does not exist (their slots, waits and actions are
+            # each their own): still refused before anything is written or paid
+            raise ClipAiPartsRefused(WITH_SCENES_CODE, WITH_SCENES_TEXT)
         if media.part is not None or not is_local_recipe(brief):
             raise ClipAvatarRefused(NOT_LOCAL, NOT_LOCAL_TEXT)
         refuse_scene_problems(timeline_problems(brief))

@@ -1038,6 +1038,14 @@ elegir queda enfocable (`aria-disabled`) con su razón en ámbar, como `q-button
 
 **Marca en la vista previa** (`.q-ai-mark`): mientras el cabezal está sobre una parte con IA sin
 crear, la vista previa muestra su póster con «✦ Parte con IA 1 · se crea al tocar «Crear»».
+Es una cápsula en la esquina superior izquierda del cuadro (8 px de arriba y de la izquierda,
+como `.preview__ai` del mockup), de 1 o 2 renglones como mucho: si no cabe, el texto termina en
+«…» y el texto completo queda en su nombre accesible (`aria-label`). Nunca tapa el botón de
+reproducir ni los controles (m-25026638, prueba en vivo). Con un renglón se ve como píldora: su
+radio de `0.75rem` pasa la mitad de su alto (~20 px); con dos renglones quedan esquinas de
+`0.75rem`. En un cuadro de menos de 9rem de ancho (el celular, ~81 px) muestra solo el nombre,
+«✦ Parte con IA 1», nunca una forma corta nueva. Con un campo del editor enfocado se esconde,
+como la nota.
 
 **«Revisa y crea» con dos gastos** (D12, `04-crear.html`). El paso 3 separa **cuándo** se gasta
 cada cosa, porque la confusión más probable es entre vistas previas y segundos (las cifras son

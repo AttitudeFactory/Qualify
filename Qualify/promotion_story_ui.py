@@ -9,6 +9,7 @@ are the unpublished wizard's own (`promotion_unpublished_ui`)."""
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.ads.unpublished import STORY_DUPLICATE
 
 from .promotion_state import PromotionState as S
 from .promotion_unpublished_ui import (
@@ -27,13 +28,16 @@ from .promotion_vm import (
     STORY_AUTO_CHANGES,
     STORY_AUTO_CHANGES_LABEL,
     STORY_BACK_TO_PIECE,
-    STORY_EMPTY,
+    STORY_CREATE_ANOTHER,
     STORY_LEFT_WEEK,
     STORY_NO_CHARGE,
     STORY_PLACEMENT,
+    STORY_POR_APROBAR,
     STORY_SAFE_BOTTOM,
     STORY_SAFE_HINT,
     STORY_SAFE_TOP,
+    STORY_SEE_ALL,
+    STORY_SEE_EXISTING,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
 )
@@ -324,6 +328,47 @@ def story_review() -> rx.Component:
     )
 
 
+def story_duplicate() -> rx.Component:
+    """N3 (m-25142902): the piece already has a story ad (another tab, a reload, another
+    phone). Nothing more is prepared until the owner chooses: see it, or make another."""
+    return rx.cond(
+        S.story_existing != "",
+        rx.vstack(
+            callout(STORY_DUPLICATE, "warn"),
+            rx.flex(
+                rx.link(
+                    rx.button(
+                        rx.cond(
+                            S.story_existing_href == "/promotions",
+                            STORY_SEE_ALL,
+                            STORY_SEE_EXISTING,
+                        ),
+                        size="3",
+                        min_height="44px",
+                        width="100%",
+                    ),
+                    href=S.story_existing_href,
+                    width=["100%", "auto"],
+                ),
+                rx.button(
+                    STORY_CREATE_ANOTHER,
+                    on_click=S.create_another_story_ad,
+                    disabled=S.busy,
+                    variant="outline",
+                    size="3",
+                    min_height="44px",
+                    width=["100%", "auto"],
+                ),
+                direction=rx.breakpoints(initial="column", sm="row"),
+                gap="3",
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+        ),
+    )
+
+
 def story_empty() -> rx.Component:
     """No story ad can be made from this piece: no step counter, no dead «Siguiente»,
     just why and the way back to the piece."""
@@ -345,11 +390,26 @@ def story_empty() -> rx.Component:
                             spacing="3",
                             align_items="start",
                         ),
-                        callout(STORY_EMPTY, "info"),
+                        callout(S.story_block, "warn"),
                     ),
-                    rx.link(
-                        rx.button(STORY_BACK_TO_PIECE, size="3", min_height="44px"),
-                        href=S.piece_href,
+                    rx.cond(
+                        S.story_block_href != "",
+                        rx.link(
+                            rx.button(S.story_block_action, size="3", min_height="44px"),
+                            href=S.story_block_href,
+                        ),
+                    ),
+                    rx.cond(
+                        S.story_block_href != STORY_POR_APROBAR[1],  # a missing piece: no way back
+                        rx.link(
+                            rx.button(
+                                STORY_BACK_TO_PIECE,
+                                size="3",
+                                min_height="44px",
+                                variant=rx.cond(S.story_block_href != "", "outline", "solid"),
+                            ),
+                            href=S.piece_href,
+                        ),
                     ),
                     spacing="4",
                     align_items="start",

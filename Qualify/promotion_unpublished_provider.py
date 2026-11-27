@@ -16,7 +16,9 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.ads.unpublished import ImageAdForm
+from qualify_api.ads.unpublished_repository import NOT_PUBLISHED_BY_QUALIFY
 from qualify_api.ads.wizard import _saved_ad_destination
+from qualify_api.creative.story_covers import PIECE_FILES
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -26,6 +28,7 @@ from .ad_health_provider import account_health_for, refresh_health
 from .catalog_provider import list_products
 from .promotion_vm import (
     CAROUSEL_MIN,
+    STORY_COP_ONLY,
     AdMediaVM,
     CarouselProductVM,
     PromotionDraftVM,
@@ -46,13 +49,13 @@ ENHANCEMENTS_ON = (
 )
 FEED, VERTICAL = (4, 5), (9, 16)
 
-_PIECE = text("""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
+_PIECE = text(f"""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
 FROM content_drafts d JOIN piece_versions pv ON pv.id=d.active_version_id
   AND pv.tenant_id=d.tenant_id AND pv.draft_id=d.id AND pv.status='active'
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
   AND v.draft_id=d.id
 WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
-  AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+  AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
   AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
   AND d.part_removed_at IS NULL""")
 # The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).
@@ -70,8 +73,9 @@ WHERE a.brand_id=:brand AND a.selected AND a.available
   AND a.credential_version=c.current_credential_version AND c.status='active'
   AND c.purged_at IS NULL AND c.purge_started_at IS NULL
 ORDER BY a.id""")
-_ASSETS = text("""SELECT id,object_key,content_type,media_type,width,height
-FROM image_assets WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
+# N1 (m-25142900): with the automatic covers of the piece's videos, offered as covers.
+_ASSETS = text(f"""SELECT id,object_key,content_type,media_type,width,height,auto_cover
+FROM {PIECE_FILES} WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
 ORDER BY position NULLS LAST,id""")
 
 
@@ -104,10 +108,13 @@ def _pick(rows: list[dict], kind: str, ratio: tuple[int, int]) -> list[dict]:
     ]
 
 
-def _read(tenant_id: UUID, draft_id: UUID) -> tuple[dict | None, list[dict], list[dict]]:
-    """The approved, unpublished piece, its brand's selected ad accounts and its files."""
+def _read(
+    tenant_id: UUID, draft_id: UUID, story: bool = False
+) -> tuple[dict | None, list[dict], list[dict]]:
+    """The approved piece (unpublished, unless `story`), its brand's selected ad accounts and
+    its files."""
     with tenant_session(tenant_id) as session:
-        piece = session.execute(_PIECE, {"draft": draft_id}).mappings().first()
+        piece = session.execute(_PIECE, {"draft": draft_id, "story": story}).mappings().first()
         if piece is None:
             return None, [], []
         accounts = [
@@ -147,14 +154,80 @@ def story_kinds(assets: list[dict]) -> list[str]:
     vertical_images = _pick(assets, "image", VERTICAL)
     if not vertical_images:
         return []
-    return ["videos", "images"] if _pick(assets, "video", VERTICAL) else ["images"]
+    photos = ["images"] if _own(vertical_images) else []  # N1: an automatic frame is no photo
+    return ["videos", *photos] if _pick(assets, "video", VERTICAL) else photos
+
+
+def _own(rows: list[dict]) -> list[dict]:
+    """The piece's own files: without the automatic covers of its videos (m-25142900)."""
+    return [row for row in rows if not row.get("auto_cover")]
 
 
 def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
     """«Agregar un botón con enlace» is offered only when the wizard will have a source:
-    approved, unpublished, a 9:16 file (with its cover for a video), an ad account."""
-    piece, accounts, assets = _read(tenant_id, draft_id)
+    approved, a 9:16 file (with its cover for a video), an ad account. Already published by
+    Qualify is fine: a story ad is always a new 9:16 creative (m-25130283, epic D1)."""
+    piece, accounts, assets = _read(tenant_id, draft_id, True)
     return piece is not None and bool(accounts) and bool(story_kinds(assets))
+
+
+# HIS-1 (m-25130281): `_PIECE`/`_ASSETS` for many pieces at once, built FROM them so the
+# card's check and the wizard can never disagree on what qualifies.
+_PIECES = text(
+    _PIECE.text.replace("SELECT d.brand_id", "SELECT d.id,d.brand_id", 1).replace(
+        "WHERE d.id=:draft", "WHERE d.id=ANY(:drafts)", 1
+    )
+)
+assert "ANY(:drafts)" in _PIECES.text and "SELECT d.id," in _PIECES.text
+_ASSETS_MANY = text(
+    _ASSETS.text.replace("SELECT id,", "SELECT draft_id,version_id,id,", 1).replace(
+        "WHERE draft_id=:draft AND version_id=:version", "WHERE draft_id=ANY(:drafts)", 1
+    )
+)
+assert "ANY(:drafts)" in _ASSETS_MANY.text and "version_id," in _ASSETS_MANY.text
+
+
+def story_ads_ready(tenant_id: UUID, draft_ids: list[UUID]) -> set[UUID]:
+    """`story_ad_ready` for a whole gallery in one session: the pieces the story-only ad
+    can be made from. Two reads plus one per brand, whatever the number of pieces."""
+    if not draft_ids:
+        return set()
+    with tenant_session(tenant_id) as session:
+        pieces = list(session.execute(_PIECES, {"drafts": draft_ids, "story": True}).mappings())
+        if not pieces:
+            return set()
+        brands = {piece["brand_id"] for piece in pieces}
+        with_accounts = {
+            brand for brand in brands if session.execute(_ACCOUNTS, {"brand": brand}).first()
+        }
+        assets: dict[tuple[UUID, UUID], list[dict]] = {}
+        ids = [piece["id"] for piece in pieces]
+        for row in session.execute(_ASSETS_MANY, {"drafts": ids}).mappings():
+            assets.setdefault((row["draft_id"], row["version_id"]), []).append(dict(row))
+    return {
+        piece["id"]
+        for piece in pieces
+        if piece["brand_id"] in with_accounts
+        and story_kinds(assets.get((piece["id"], piece["active_version_id"]), []))
+    }
+
+
+def existing_story_ad(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
+    """N3 (m-25142902): (newest story ad of the piece, where to see it) or ("", ""). Only a
+    warning: a failed read shows none, and the backend still refuses a duplicate."""
+    from qualify_api.ads.unpublished_repository import story_ads  # noqa: PLC0415
+
+    try:
+        found = story_ads(tenant_id, [draft_id]).get(draft_id)
+    except Exception as exc:  # noqa: BLE001 — the preparation re-checks under a lock
+        logger.warning("story ad lookup failed: %s", type(exc).__name__)
+        return "", ""
+    return ("", "") if found is None else (str(found[0]), promotion_href(found[1]))
+
+
+def promotion_href(promotion_id: UUID | None) -> str:
+    """A story ad still being prepared has no campaign yet: the whole «Anuncios» list."""
+    return f"/promotions/{promotion_id}" if promotion_id else "/promotions"
 
 
 def unpublished_sources(
@@ -163,7 +236,7 @@ def unpublished_sources(
     """One source per selected ad account and kind (two images, or two videos with
     their covers) of the active approved version; [] when the piece does not qualify.
     `story` (m-25026350): only the 9:16 file (and its cover) — a story-only ad."""
-    piece, accounts, assets = _read(tenant_id, draft_id)
+    piece, accounts, assets = _read(tenant_id, draft_id, story)
     if piece is None:
         return []
     feed_images, vertical_images = _pick(assets, "image", FEED), _pick(assets, "image", VERTICAL)
@@ -175,7 +248,7 @@ def unpublished_sources(
         kinds = []
         if feed_videos and vertical_videos and feed_images and vertical_images:
             kinds.append("videos")
-        if feed_images and vertical_images:
+        if feed_images and _own(vertical_images):
             kinds.append("images")
     if not kinds or not accounts:
         return []
@@ -220,6 +293,8 @@ def unpublished_sources(
                     timezone_name=account["timezone_name"],
                     unavailable_reason=blocked
                     if account["currency"] == "COP"
+                    else STORY_COP_ONLY
+                    if story  # HIS-2: a story ad cannot be «published first»
                     else UNPUBLISHED_COP_ONLY,
                     health=health,
                     ad_account_id=str(account["id"]),
@@ -231,7 +306,7 @@ def unpublished_sources(
                     else media(feed_videos if video else feed_images, "Opción"),
                     vertical_media=[]
                     if carousel
-                    else media(vertical_videos if video else vertical_images, "Opción"),
+                    else media(vertical_videos if video else _own(vertical_images), "Opción"),
                     feed_covers=media(feed_images, "Portada") if video else [],
                     vertical_covers=media(vertical_images, "Portada") if video else [],
                     products=products if carousel else [],
@@ -269,10 +344,12 @@ def prepare_unpublished(
     source: PromotionSourceVM,
     timezone_name: str,
     request_key: str,
+    seen: tuple[str, ...] = (),
 ) -> PromotionReviewVM:
     """Creates the ad paused and returns its two previews (one, 9:16, for a story ad).
     While Meta processes a video this raises; the caller repeats it with the SAME
-    `request_key` (never a re-upload)."""
+    `request_key` (never a re-upload). `seen` (N3): the story ads of this piece the owner
+    chose to repeat and this session's own request keys; a newer one raises `StoryAdExists`."""
     from .promotion_provider import safe_preview_url  # noqa: PLC0415
 
     if form.media_kind == "carousel":
@@ -291,6 +368,7 @@ def prepare_unpublished(
             actor=actor,
             request_key=UUID(request_key),
             confirm_preparation=True,
+            seen_story_ads=tuple(UUID(value) for value in seen) if form.story else (),
         )
     )
     vertical = safe_preview_url(preview.vertical_html)

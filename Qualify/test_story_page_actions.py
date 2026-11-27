@@ -6,6 +6,7 @@ variant of `/drafts/<id>` (single piece, template package, video by parts)."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -341,7 +342,7 @@ async def test_the_state_carries_the_template_historias_actions(
     assert state.story_ready and state.share_url == "/r2media/img-token"
 
 
-# -- 2. no «Promocionar» on a historia -------------------------------------------------
+# -- 2. «Promocionar como anuncio» on a historia (HIS-1, m-25130281) -------------------
 
 
 def _card(category: str, used: int) -> Any:
@@ -369,18 +370,87 @@ def test_a_historia_card_is_one_the_old_guard_let_through() -> None:
     assert not plain.is_story and plain.used_count > 0
 
 
-def test_both_cards_render_the_promote_link_behind_is_story() -> None:
-    """Rendered trees: the link's condition reads `is_story`, never `kind`."""
+def _cards() -> tuple[str, str]:
     from .gallery_state import GalleryState
 
     gallery = _render(rx.foreach(GalleryState.visible, creative_pages._gallery_card))
     planner_card = _render(
         rx.foreach(GalleryState.visible, lambda p: post_card.post_card(p, actions=rx.fragment()))
     )
-    for tree in (gallery, planner_card):
-        promote = tree[: tree.index("/promote")]
-        cond = promote[promote.rindex("used_count") :]
-        assert "is_story" in cond and "kind" not in cond
+    return gallery, planner_card
+
+
+def test_both_cards_send_a_historia_to_the_story_ad() -> None:
+    """Rendered trees: a historia with a story ad source opens `?formato=historia` with
+    its own label; any other POST keeps the plain link behind `used_count`; `kind`
+    decides nothing."""
+    for tree in _cards():
+        story = tree.index('"/promote")+"?formato=historia"')
+        cond = tree[:story][tree[:story].rindex("is_story") :]
+        assert "story_ad_ready" in cond and "kind" not in cond
+        assert "Promocionar como anuncio" in tree[story:]
+        rest = tree[story:][tree[story:].index("used_count") :]
+        assert '"/promote")' in rest and "kind" not in rest[: rest.index('"/promote")')]
+
+
+def test_the_story_link_is_the_wizards_story_path() -> None:
+    from .promotion_vm import STORY_FORMAT, STORY_PROMOTE, story_ad_href
+
+    assert STORY_PROMOTE == "Promocionar como anuncio"
+    assert story_ad_href("p") == f"/drafts/p/promote?formato={STORY_FORMAT}"
+
+
+def test_the_wizard_says_it_is_a_paid_story_ad_on_the_story_path_only() -> None:
+    from . import promotion_page
+    from .promotion_vm import STORY_PAID_NOTE
+
+    assert STORY_PAID_NOTE == (
+        "Esto crea un anuncio pagado que se muestra entre las historias de otras cuentas. "
+        "Tu historia no cambia."
+    )
+    tree = _render(promotion_page._wizard(rx.fragment(), rx.fragment()))
+    note = tree.index(STORY_PAID_NOTE)
+    assert "story_entry" in tree[:note][-400:]
+
+
+def test_only_a_historia_the_story_ad_can_use_gets_the_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A historia without a 9:16 source keeps the link hidden; ONE read asks for the
+    approved historias only, never for other publications."""
+    ready, unready = _card("story", used=0), _card("story", used=0)
+    plain = _card("galeria", used=2)
+    pending = replace(_card("story", used=0), is_approved=False)
+    asked: list[list[str]] = []
+
+    def story_ads_ready(tenant_id: UUID, ids: list[UUID]) -> set[UUID]:
+        asked.append([str(i) for i in ids])
+        return {UUID(ready.post_id)}
+
+    monkeypatch.setattr(planner, "story_ads_ready", story_ads_ready)
+    marked = planner._with_story_ads(uuid4(), [ready, unready, plain, pending])
+    assert [o.story_ad_ready for o in marked] == [True, False, False, False]
+    assert asked == [[ready.post_id, unready.post_id]]
+    assert marked[1] is unready and marked[2] is plain and marked[3] is pending
+
+
+def test_a_failed_readiness_read_hides_every_story_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(tenant_id: UUID, ids: list[UUID]) -> set[UUID]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(planner, "story_ads_ready", broken)
+    marked = planner._with_story_ads(uuid4(), [_card("story", used=0)])
+    assert not marked[0].story_ad_ready
+
+
+def test_the_batched_read_is_the_wizards_own_rule() -> None:
+    """Same conditions as `_PIECE`/`_ASSETS`, only for many ids at once."""
+    from . import promotion_unpublished_provider as pup
+
+    rule = pup._PIECE.text.split("WHERE d.id=:draft", 1)[1]
+    assert pup._PIECES.text.endswith(rule) and "d.id=ANY(:drafts)" in pup._PIECES.text
+    assert pup._ASSETS_MANY.text.endswith(pup._ASSETS.text.split(":version", 1)[1])
+    assert pup.story_ads_ready(uuid4(), []) == set()
 
 
 # -- 3. «Ver en Tu semana» from the blocked switch -------------------------------------

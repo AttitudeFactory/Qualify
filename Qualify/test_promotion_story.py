@@ -250,9 +250,14 @@ def test_an_unpublished_piece_on_a_dollar_account_says_why_instead_of_failing(
 ) -> None:
     """m-25091394: unpublished ads stay in pesos in the backend; say so up front."""
     mod = promotion_unpublished_provider
-    _fake_piece(monkeypatch, [_asset("image", 1080, 1920)], currency="USD")
+    pair_files = [_asset("image", 1080, 1920), _asset("image", 1080, 1350)]
+    _fake_piece(monkeypatch, pair_files, currency="USD")
+    monkeypatch.setattr(mod, "carousel_products", lambda *a: [])
     (row,) = mod.unpublished_sources(uuid4(), uuid4(), story=True)
-    assert row.unavailable_reason == mod.UNPUBLISHED_COP_ONLY
+    # HIS-2: a story ad cannot be «published first»; the pair keeps that way out.
+    assert row.unavailable_reason == mod.STORY_COP_ONLY and "Publica" not in row.unavailable_reason
+    (pair,) = mod.unpublished_sources(uuid4(), uuid4())
+    assert pair.unavailable_reason == mod.UNPUBLISHED_COP_ONLY
 
 
 def test_the_story_link_keeps_the_way_back_to_the_week() -> None:
@@ -305,6 +310,7 @@ async def test_a_cached_wizard_is_never_reused_across_formats(
         return [], ZONE
 
     monkeypatch.setattr(promotion_state, "load_sources", load)
+    monkeypatch.setattr(promotion_state, "story_block_view", lambda *a: ("", "", ""))
     context.read_step = lambda: None
     _ = [event async for event in PromotionState.load.fn(context)]
     assert seen == [wanted] and context.story_entry is wanted
@@ -393,7 +399,7 @@ def test_an_ineligible_piece_is_never_offered_and_keeps_its_plan() -> None:
     assert state.story_ad_post == ""
     state._mark_story_ad(piece, True)
     state.ask_story_ad(piece)
-    # it stopped qualifying before «Hacer anuncio pagado» (e.g. published meanwhile)
+    # it stopped qualifying before «Promocionar como anuncio» (e.g. published meanwhile)
     assert state._leave_for_story_ad(piece, False) == []
     assert state.story_ad_post == "" and piece not in state.story_ad_ready
     assert state.form_open and len(state.plan_items) == 1  # the historia is still planned
@@ -428,7 +434,7 @@ def test_the_notice_says_it_is_paid_before_the_wizard() -> None:
     rendered = repr(_story_ad_choice(SimpleNamespace(post_id="p"), True).render())
     # repr escapes accents: match the plain-ASCII part of each string
     assert "entre las historias de otras cuentas" in rendered
-    assert "Hacer anuncio pagado" in rendered and "Dejar la historia sin bot" in rendered
+    assert "Promocionar como anuncio" in rendered and "Dejar la historia sin bot" in rendered
     assert "Continuar" not in rendered  # never a second «Continuar» next to the drawer's
     assert "story_ad_ready" in repr(_story_ad_offer(SimpleNamespace(post_id="p")).render())
     # checked from the step container, never from inside the per-row foreach (whose row

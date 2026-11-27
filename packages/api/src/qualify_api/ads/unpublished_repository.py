@@ -13,10 +13,13 @@ from sqlalchemy import text
 from qualify_api.ads.carousel import CARD_COUNT, MAX_CARDS, CarouselCard, CarouselSource
 from qualify_api.ads.client import MarketingSettings
 from qualify_api.ads.unpublished import (
+    STORY_PIPELINE,
+    STORY_VIDEO_PIPELINE,
     UPLOAD_UNCERTAIN,
     ImageAdForm,
     ImageSelection,
     ImageSource,
+    StoryAdExists,
     UnpublishedUnavailable,
     VideoSelection,
     recipe_hash,
@@ -31,6 +34,44 @@ CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
 # A send claim idle this long lost its process (crash between claim and settle): it becomes
 # `unknown`, never re-sent. Must match the 0161 trigger.
 STALE_CLAIM_MINUTES = 30
+# m-25130283: «publicada» = Qualify has a published Instagram attempt for this piece
+# (`content_drafts.published_media_id` is never written). Its media id is not required: a
+# confirmed publish whose id lookup failed is still live (QUA-111). Expects the piece
+# as `d` and a boolean `:story` bind: a story ad is always a new 9:16 creative (epic D1), so
+# the story path skips the check. A story uploaded by hand («Abrir en Instagram») leaves no
+# attempt: unpublished.
+NOT_PUBLISHED_BY_QUALIFY = """(CAST(:story AS boolean) OR NOT EXISTS (SELECT 1
+  FROM calendar_events pe
+  JOIN publish_attempts pa ON pa.id=pe.publish_attempt_id AND pa.tenant_id=pe.tenant_id
+  JOIN social_connections pc ON pc.id=pa.connection_id AND pc.tenant_id=pa.tenant_id
+    AND pc.platform='instagram'
+  WHERE pe.post_id=d.id AND pe.tenant_id=d.tenant_id
+    AND pa.status='published'))"""
+
+# N3 (m-25142902): a story ad of a piece = its story recipes. The newest per piece, with
+# the paused campaign it led to (None while still being prepared).
+STORY_PIPELINES = [STORY_PIPELINE, STORY_VIDEO_PIPELINE]
+# Founder/coordinator 2026-11-27: an attempt counts only if it left something at Meta (a
+# campaign step sent or created). One still being prepared counts during its preview window,
+# so two phones at once still meet; a failed one that created nothing stops counting then.
+PREPARING_MINUTES = 10
+STORY_AD_COUNTS = f"""(EXISTS(SELECT 1 FROM ad_promotion_steps s
+    WHERE s.promotion_id=u.promotion_id AND s.tenant_id=u.tenant_id
+      AND s.state IN ('in_flight','completed'))
+  OR u.approved_at > now() - interval '{PREPARING_MINUTES} minutes')"""
+_STORY_ADS = text(f"""SELECT DISTINCT ON (draft_id) draft_id,id,promotion_id
+FROM ad_unpublished_sources u WHERE draft_id=ANY(:drafts) AND source->>'pipeline'=ANY(:pipelines)
+  AND {STORY_AD_COUNTS}
+ORDER BY draft_id,approved_at DESC,id DESC""")
+
+
+def story_ads(tenant: UUID, draft_ids: list[UUID]) -> dict[UUID, tuple[UUID, UUID | None]]:
+    """{piece: (newest story recipe, its promotion or None)} for the pieces that have one."""
+    if not draft_ids:
+        return {}
+    with tenant_session(tenant) as session:
+        rows = session.execute(_STORY_ADS, {"drafts": draft_ids, "pipelines": STORY_PIPELINES})
+        return {row.draft_id: (row.id, row.promotion_id) for row in rows}
 
 
 def load_image_source(
@@ -47,7 +88,7 @@ def load_image_source(
     with tenant_session(tenant, independent=True) as session:
         row = (
             session.execute(
-                text("""SELECT d.id,d.brand_id,d.active_version_id,d.revision,
+                text(f"""SELECT d.id,d.brand_id,d.active_version_id,d.revision,
               a.connection_id,a.ad_account_id,a.currency,a.timezone_name,a.credential_version,
               c.external_account_id,c.linked_page_id
             FROM content_drafts d JOIN piece_versions v ON v.id=d.active_version_id
@@ -59,10 +100,10 @@ def load_image_source(
               AND a.credential_version=c.current_credential_version AND c.status='active'
               AND c.purged_at IS NULL AND c.purge_started_at IS NULL
               AND d.status='approved' AND d.approved_revision=d.revision
-              AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+              AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
               AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
               AND d.part_removed_at IS NULL FOR SHARE OF d,v,a,c"""),
-                {"draft": draft, "account": account},
+                {"draft": draft, "account": account, "story": feed_asset is None},
             )
             .mappings()
             .first()
@@ -70,22 +111,40 @@ def load_image_source(
         if row is None or _permission_reason(_connection(session, row["connection_id"])):
             raise UnpublishedUnavailable(CHANGED)
 
-        def asset(asset_id: UUID, media_type: str) -> dict:
+        def asset(asset_id: UUID, media_type: str, as_cover: bool = False) -> dict:
+            values = {
+                "id": asset_id,
+                "draft": draft,
+                "version": row["active_version_id"],
+                "media": media_type,
+            }
             found = (
                 session.execute(
                     text("""SELECT id,object_key,content_type,width,height FROM image_assets
                   WHERE id=:id AND draft_id=:draft AND version_id=:version
                     AND media_type=:media AND object_key IS NOT NULL FOR SHARE"""),
-                    {
-                        "id": asset_id,
-                        "draft": draft,
-                        "version": row["active_version_id"],
-                        "media": media_type,
-                    },
+                    values,
                 )
                 .mappings()
                 .first()
             )
+            if found is None and as_cover:
+                # N1 (m-25142900): the automatic cover of one of the version's videos, only
+                # as a video's cover and only while that video keeps the file it came from.
+                # Never updated, deleted only with its video, whose row is already FOR SHARE
+                # (qualify_app has no UPDATE here, which FOR SHARE would need).
+                found = (
+                    session.execute(
+                        text("""SELECT c.id,c.object_key,c.content_type,c.width,c.height
+                      FROM piece_story_covers c JOIN image_assets v ON v.id=c.source_asset_id
+                        AND v.tenant_id=c.tenant_id AND v.object_key=c.source_object_key
+                      WHERE c.id=:id AND c.draft_id=:draft AND c.version_id=:version
+                        AND c.object_key IS NOT NULL"""),
+                        values,
+                    )
+                    .mappings()
+                    .first()
+                )
             if found is None:
                 raise UnpublishedUnavailable(
                     "Elige archivos finales de la versión actual de la pieza."
@@ -93,8 +152,8 @@ def load_image_source(
             require_tenant_object(tenant, found["object_key"])
             return dict(found)
 
-        def image(asset_id: UUID) -> ImageSelection:
-            found = asset(asset_id, "image")
+        def image(asset_id: UUID, as_cover: bool = False) -> ImageSelection:
+            found = asset(asset_id, "image", as_cover)
             return ImageSelection(
                 asset_id,
                 found["object_key"],
@@ -126,7 +185,7 @@ def load_image_source(
                         found["content_type"],
                         found["width"],
                         found["height"],
-                        None if cover is None else image(cover),
+                        None if cover is None else image(cover, as_cover=True),
                     )
                 )
             elif cover is not None:
@@ -287,13 +346,50 @@ def guard_source(source: ImageSource | CarouselSource) -> None:
         raise UnpublishedUnavailable(CHANGED)
 
 
+def _refuse_duplicate_story(session: Any, draft: UUID, key: UUID, seen: tuple[UUID, ...]) -> None:
+    """Race-safe (two phones at once): the piece's lock is held until this transaction
+    commits its recipe, so the second caller sees the first one's. A retry of the same
+    request key (a video Meta is still processing) is never a duplicate. `seen`: recipe ids
+    the owner was warned about and request keys of their own session; only a story recipe
+    newer than all of them is a duplicate."""
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock, 0))"),
+        {"lock": f"ad-story:{draft}"},
+    )
+    newer = (
+        session.execute(
+            text(f"""SELECT id,promotion_id FROM ad_unpublished_sources u
+          WHERE draft_id=:draft AND source->>'pipeline'=ANY(:pipelines) AND {STORY_AD_COUNTS}
+            AND NOT EXISTS(SELECT 1 FROM ad_unpublished_sources WHERE request_key=:key)
+            AND approved_at > COALESCE((SELECT max(approved_at) FROM ad_unpublished_sources
+              WHERE draft_id=:draft AND (id=ANY(CAST(:seen AS uuid[]))
+                OR request_key=ANY(CAST(:seen AS uuid[])))), '-infinity')
+          ORDER BY approved_at DESC,id DESC LIMIT 1"""),
+            {"draft": draft, "pipelines": STORY_PIPELINES, "key": key, "seen": list(seen)},
+        )
+        .mappings()
+        .first()
+    )
+    if newer is not None:
+        raise StoryAdExists(newer["id"], newer["promotion_id"])
+
+
 class UnpublishedRepository:
     def approve(
-        self, source: ImageSource | CarouselSource, form: ImageAdForm, actor: UUID, key: UUID
+        self,
+        source: ImageSource | CarouselSource,
+        form: ImageAdForm,
+        actor: UUID,
+        key: UUID,
+        seen: tuple[UUID, ...] = (),
     ) -> dict:
+        """`seen` (story ads only): what the owner already knows of — see
+        `_refuse_duplicate_story`."""
         guard_source(source)
         digest = recipe_hash(source, form, actor)
         with tenant_session(source.tenant_id, independent=True) as session:
+            if isinstance(source, ImageSource) and source.is_story:
+                _refuse_duplicate_story(session, source.draft_id, key, seen)
             session.execute(
                 text("""INSERT INTO ad_unpublished_sources
               (tenant_id,brand_id,connection_id,ad_account_id,draft_id,request_key,request_hash,

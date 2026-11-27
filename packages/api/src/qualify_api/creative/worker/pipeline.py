@@ -18,6 +18,7 @@ from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.clip_final import CLIP_FINAL_PHASE
 from qualify_api.creative.final_deadline import (
     FINAL_EXPIRED_TEXT,
     FinalDeadlineExpired,
@@ -715,6 +716,7 @@ class PipelinePreparation:
                     asset_id = _final_asset(run.phase)
                     if (
                         run.phase != "generation"
+                        and run.phase != CLIP_FINAL_PHASE
                         and run.phase not in _JOIN_PHASES
                         and asset_id is None
                     ):
@@ -745,6 +747,16 @@ class PipelinePreparation:
                     with preparing(run):
                         if run.phase == "generation":
                             self.service.run_generation(tenant_id=tenant_id, draft_id=run.draft_id)
+                        elif run.phase == CLIP_FINAL_PHASE:
+                            # m-25129408: an approved Clip assembled again with its AI
+                            # children's finals — a local assembly (cost 0) on this loop,
+                            # as a local Clip's generation is: it takes the heavy-video
+                            # gate itself (`assembling`, it waits for a part join in
+                            # flight) and its lease is kept alive while it encodes
+                            with lease_kept(self.store, run):
+                                self.service.run_clip_final(
+                                    tenant_id=tenant_id, clip_id=run.draft_id
+                                )
                         elif run.phase in _JOIN_PHASES:
                             # VE-10a/VE-10b: the parent of a video by parts joins its parts'
                             # previews or raw finals (local, cost 0); it has no job of its
@@ -755,7 +767,7 @@ class PipelinePreparation:
                             self.service.run_queued_final(
                                 tenant_id=tenant_id, draft_id=run.draft_id, asset_id=asset_id
                             )
-                    if run.phase not in _JOIN_PHASES:
+                    if run.phase not in _JOIN_PHASES and run.phase != CLIP_FINAL_PHASE:
                         self._settle_local(run)
                     if run.phase == "generation":
                         # m-24921081: a video by parts whose owner asked for its parts

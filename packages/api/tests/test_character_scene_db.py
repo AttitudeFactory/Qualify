@@ -162,3 +162,75 @@ def test_the_stored_brief_names_the_character_where_the_in_use_check_reads_it(
             {"c": world["clip"], "character": named},
         ).scalar_one()
     assert named and found is True
+
+
+def test_the_wait_reads_each_scene_with_its_kept_video_and_only_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR 2: `scene_rows` gives each scene child by slot with its own scene and, once
+    made, the active version's video — the gate's and the assembly's one read (RLS); the
+    failure email's view of the Clip reads them too."""
+    from datetime import UTC, datetime
+
+    from qualify_api.creative.clip_avatar_mail import PostgresAvatarFailureOutbox
+
+    world = _world(monkeypatch)
+    tenant, clip = world["tenant"], world["clip"]
+    first, second = world["scenes"]
+    key = f"t/{tenant}/generated/{first}/scene.mp4"
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET status = 'generated' WHERE id = :d"), {"d": first}
+        )
+        session.execute(
+            text(
+                "UPDATE content_drafts SET status = 'failed', failure_reason = 'provider_error' "
+                "WHERE id = :d"
+            ),
+            {"d": second},
+        )
+        session.execute(
+            text(
+                "INSERT INTO image_assets (tenant_id, draft_id, media_url, object_key, "
+                "content_type, width, height, aspect_ratio, model_id, provider, params, "
+                "media_type, position) VALUES (:t, :d, :k, :k, 'video/mp4', 480, 854, "
+                "'9:16', :m, 'seedance', CAST(:p AS jsonb), 'video', 0)"
+            ),
+            {
+                "t": tenant,
+                "d": first,
+                "k": key,
+                "m": cs.SCENE_MODEL,
+                "p": '{"duration_seconds": 5, "character_scene": {"line": "¡Mira esto!"}}',
+            },
+        )
+    store = cs.PostgresCharacterSceneStore()
+    rows = store.scene_rows(tenant_id=tenant, clip_id=clip)
+    assert [(r.id, r.slot, r.status) for r in rows] == [
+        (first, 1, "generated"),
+        (second, 2, "failed"),
+    ]
+    made, failed = rows
+    assert made.object_key == key and made.model_id == cs.SCENE_MODEL
+    assert made.params["character_scene"]["line"] == "¡Mira esto!"
+    assert made.item is not None and made.item.start == 0.0
+    assert failed.object_key is None and failed.failure_reason == "provider_error"
+    repo = PostgresContentRepository()
+    record = repo.get_draft(tenant_id=tenant, draft_id=clip)
+    assert record is not None
+    clip_brief = repo.get_brief(tenant_id=tenant, brief_id=record.brief_id)
+    assert clip_brief is not None
+    verdict = cs.scenes_gate(
+        tenant_id=tenant,
+        clip_id=clip,
+        brief=clip_brief,
+        store=store,
+        now=datetime.now(UTC),
+        env={cs.SCENE_SWITCH: "on"},
+    )
+    assert isinstance(verdict, cs.ScenesSeen) and len(verdict.failures) == 1
+    view = PostgresAvatarFailureOutbox().clip_view(tenant, clip)
+    assert view is not None and len(view.scene_items) == 2 and len(view.scene_rows) == 2
+    # another business reads none of them (RLS)
+    other = _world(monkeypatch)
+    assert store.scene_rows(tenant_id=other["tenant"], clip_id=clip) == ()
