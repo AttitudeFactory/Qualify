@@ -360,12 +360,19 @@
       var height = 0;
       scope.querySelectorAll(selector).forEach(function (head) {
         if (head.closest(scopeSelector) !== scope) return;
-        active.add(head);
-        if (!watched.has(head)) {
-          watched.add(head);
-          if (resize) resize.observe(head);
-        }
-        if (head.getClientRects().length) height += head.getBoundingClientRect().height;
+        // m-25142793: on a phone the page header's sheet has no box (`display:
+        // contents`) and only its bar is pinned — that is what covers the content.
+        var bar = head.getClientRects().length ? null : head.querySelector('.q-page-head-bar');
+        [head, bar].forEach(function (node) {
+          if (!node) return;
+          active.add(node);
+          if (!watched.has(node)) {
+            watched.add(node);
+            if (resize) resize.observe(node);
+          }
+        });
+        var pinned = bar || head;
+        if (pinned.getClientRects().length) height += pinned.getBoundingClientRect().height;
       });
       if (height > 0) scope.style.setProperty('--q-sticky-header-height', Math.ceil(height) + 'px');
       else scope.style.removeProperty('--q-sticky-header-height');

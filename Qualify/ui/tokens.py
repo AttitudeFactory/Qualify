@@ -27,6 +27,19 @@ PAGE_X = "var(--q-page-x)"
 SCROLL_MARGIN_TOP = "var(--q-sticky-header-height, 8rem)"
 """Measured sticky header height of the nearest page or drawer; safe before JS loads."""
 
+
+def pinned_header_js(root: str) -> str:
+    """A JS expression: the part of the page header in ``root`` (a JS expression for an
+    element, may be null) that stays pinned while the panel scrolls — the whole
+    `.q-page-header` sheet, or on a phone only its bar (m-25142793: the sheet has no box
+    there, so its rect is empty). Null when ``root`` has no page header."""
+    return (
+        "((h) => h && h.getClientRects && !h.getClientRects().length"
+        " ? h.querySelector('.q-page-head-bar') : h)"
+        f"({root}?.querySelector('.q-page-header'))"
+    )
+
+
 GAP = "var(--q-gap)"
 """Air between the floating blocks — sidebar islands, main panel, page edge."""
 

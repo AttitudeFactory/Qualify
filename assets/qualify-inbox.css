@@ -736,22 +736,31 @@ textarea.q-reply-field::placeholder,
     position: static;
     padding-block: 0.25rem;
   }
-  /* the title block: out of sight, still read (one h1 per page, §8) */
-  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header > :first-child {
+  /* m-25142793: on a phone the sheet has no box (`display: contents`) and the bar is
+     the pinned line — here it stops being pinned too, and keeps only its controls */
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-head-bar {
+    position: relative;
+    /* the toggle (44 px, out of the flow) still fits when no action is left */
+    min-height: calc(44px + 0.5rem);
+    padding-block: 0.25rem;
+  }
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-head-toggle { top: 0.25rem; }
+  /* the chip, the kicker (its back link is the chat header's twin) and the subtitle */
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) :is(.q-page-head-top, .q-page-head-sub) {
+    display: none;
+  }
+  /* the title: out of sight, still read (one h1 per page, §8) */
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-head-title {
     position: absolute;
     width: 1px;
     height: 1px;
+    min-height: 0;
     margin: -1px;
     padding: 0;
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
     border: 0;
-  }
-  /* …but nothing focusable hides in it: its back link is the chat header's twin */
-  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header > :first-child button,
-  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header > :first-child a {
-    display: none;
   }
   .q-wa-chats--open .q-chat-head__top {
     position: sticky;

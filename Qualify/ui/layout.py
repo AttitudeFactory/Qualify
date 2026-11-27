@@ -978,6 +978,10 @@ def page_header(
     """Title row of a business page.
 
     ``actions`` render right-aligned, in the order given, before the colour-mode toggle.
+    On a phone (≤ 640 px) only the line with the title, the badge, the actions and the
+    toggle stays pinned; the business chip, the kicker and the subtitle scroll away
+    (m-25142793). Actions that do not fit beside the title wrap to a second row of that
+    pinned line; the title ends in «…» before it ever pushes the toggle down.
     ``badge`` sits next to the title — for a state that describes the whole page ("demo",
     a count), never for an action. ``show_session`` is accepted for compatibility and
     ignored: the session lives in the sidebar.
@@ -993,40 +997,49 @@ def page_header(
     macOS-Setup-Assistant-style flow uses. Still exactly one ``h1`` per page (`as_="h1"`
     unconditionally below), so §8's accessibility rule holds regardless of size.
     """
+    # m-25142793: one DOM for every width, laid out by `assets/qualify.css`
+    # («Encabezado de página»). In reading order: what scrolls away on a phone (the
+    # business chip, the kicker), the BAR (title + badge, the actions, the colour
+    # toggle), then the subtitle (scrolls away too).
+    # · > 640 px: `.q-page-header` is the sticky glass sheet, a grid that places the
+    #   pieces exactly where the old row put them (title column left, actions and
+    #   toggle on the right, centred against the whole title block).
+    # · ≤ 640 px: the sheet becomes `display: contents` and only `.q-page-head-bar` is
+    #   pinned, as the same glass — one line, the toggle in its top-right corner.
+    # Layout lives in the stylesheet, not in props: a prop would outrank the media query.
+    top = rx.box(
+        # ADR 43 A9: the active business — on a phone only (m-24976899); above it,
+        # the sidebar's top row is always on screen.
+        business_chip(),
+        *([rx.box(kicker, class_name="q-page-head-kicker")] if kicker is not None else []),
+        class_name="q-page-head-top",
+    )
     title_row = rx.hstack(
         rx.heading(title, size=title_size, as_="h1"),
         *([badge] if badge is not None else []),
         align="center",
         spacing="2",
+        class_name="q-page-head-title",
     )
-    title_block = rx.vstack(
-        # ADR 43 A9: the active business — on a phone only (m-24976899); above it,
-        # the sidebar's top row is always on screen.
-        business_chip(),
-        *([kicker] if kicker is not None else []),
-        title_row,
-        *([rx.text(subtitle, size="2", color=T.TEXT_MUTED)] if subtitle is not None else []),
-        spacing="1",
-        align_items="start",
-        # Never wider than the header: a long business name in the chip ends in «…»
-        # instead of pushing the page sideways at 360 px (ADR 43 S3).
-        min_width="0",
-        max_width="100%",
-    )
-    return rx.hstack(
-        title_block,
-        rx.spacer(),
-        *actions,
+    end = rx.box(
+        *([rx.box(*actions, class_name="q-page-head-actions")] if actions else []),
         # Ghost: the toggle is a page control, never the page's one solid action (P3).
-        theme_toggle(),
-        width="100%",
-        padding=T.PAD_HEADER,
-        align="center",
-        spacing="3",
-        wrap="wrap",
+        rx.box(theme_toggle(), class_name="q-page-head-toggle"),
+        class_name="q-page-head-end",
+    )
+    return rx.box(
+        top,
+        rx.box(title_row, end, class_name="q-page-head-bar"),
+        *(
+            [rx.text(subtitle, size="2", color=T.TEXT_MUTED, class_name="q-page-head-sub")]
+            if subtitle is not None
+            else []
+        ),
         # A sheet of glass pinned to the top of the panel (`.q-page-header`,
         # assets/qualify.css): the panel is the scroll container, so `sticky` works.
-        class_name="q-page-header",
+        # `.q-page-head` scopes the m-25142793 layout (the wizard's `step_head` shares
+        # `.q-page-header` but not this structure).
+        class_name="q-page-header q-page-head",
     )
 
 
