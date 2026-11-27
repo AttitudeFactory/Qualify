@@ -227,10 +227,13 @@ def main(
 
         morning = _chain(morning, failure_mail_chore(scope_ids))
     mail_runner: BackgroundChore | None = None
+    covers_runner: BackgroundChore | None = None
 
     def maintenance() -> None:
         if mail_runner is not None:
             mail_runner.schedule()
+        if covers_runner is not None:
+            covers_runner.schedule()
         if original_recovery is not None:
             try:
                 original_recovery()
@@ -261,6 +264,11 @@ def main(
     )
     if morning is not None:
         mail_runner = BackgroundChore(morning, worker.stop)
+    if store is None and executors is None:
+        # N1 (m-25142900): the covers of video historias, off the loop's thread
+        from qualify_api.creative.story_covers import cover_chore  # noqa: PLC0415
+
+        covers_runner = BackgroundChore(cover_chore(scope_ids), worker.stop)
     if install_signals:
         _stop_on_signals(worker.stop)
     logger.info(
