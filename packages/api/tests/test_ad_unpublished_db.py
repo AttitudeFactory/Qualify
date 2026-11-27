@@ -513,3 +513,76 @@ def test_a_second_story_ad_of_a_piece_is_refused_until_the_owner_chooses_it(unpu
         )
         repo.approve(other_story, other_form, other_actor, uuid4())
     assert set(story_ads(other.tenant_id, [source.draft_id, other.draft_id])) == {other.draft_id}
+
+
+def _story_of(world):
+    source, form, login, actor = world
+    with acting_login(login):
+        story = load_image_source(
+            source.tenant_id, source.draft_id, source.account_id, None, source.vertical.asset_id
+        )
+    return story, form, login, actor
+
+
+def _past_attempt(recipe_id, draft, promotion=None):
+    """An earlier story attempt of `draft`, an hour old (the approval row is immutable)."""
+    with tenant_session(draft[0]) as session:
+        return session.scalar(
+            text("""INSERT INTO ad_unpublished_sources SELECT (jsonb_populate_record(
+              NULL::ad_unpublished_sources, to_jsonb(u) || jsonb_build_object(
+                'id',gen_random_uuid(),'request_key',gen_random_uuid(),
+                'draft_id',CAST(:draft AS text),'approved_at',now()-interval '1 hour',
+                'promotion_id',CAST(:promotion AS text)))).*
+            FROM ad_unpublished_sources u WHERE id=:id RETURNING id"""),
+            {"id": recipe_id, "draft": draft[1], "promotion": promotion},
+        )
+
+
+def test_a_story_attempt_counts_only_if_it_left_something_at_meta(audience_world):
+    """Decision 2026-11-27 (N3): a failed attempt that created nothing at Meta is no ad and
+    warns of nothing; one that sent or created a campaign step still counts."""
+    story, form, login, actor = _story_of(make_unpublished_world(audience_world))
+    repo = UnpublishedRepository()
+    tenant = story.tenant_id
+    with acting_login(login):
+        recipe = repo.approve(story, form, actor, uuid4())
+    # Nothing at Meta: an hour later it neither shows nor warns.
+    empty, _, _, _ = _story_of(make_unpublished_world(audience_world))
+    _past_attempt(recipe["id"], (tenant, empty.draft_id))
+    assert story_ads(tenant, [empty.draft_id]) == {}
+    with acting_login(login):
+        repo.approve(empty, form, actor, uuid4())
+    # A campaign step sent to Meta (left behind paused or unknown): still counts.
+    left, _, _, _ = _story_of(make_unpublished_world(audience_world))
+    promotions = PostgresPromotionRepository()
+    promotion = promotions.create_or_get(
+        compose_brand_policy(
+            PromotionRequest(
+                tenant,
+                left.brand_id,
+                str(uuid4()),
+                left.meta_account_id,
+                "OUTCOME_TRAFFIC",
+                "LEARN_MORE",
+                form.link_url,
+                "lifetime",
+                form.budget_minor,
+                "COP",
+                form.start_time,
+                form.end_time,
+                actor,
+                recipe["approved_at"],
+                content_draft_id=left.draft_id,
+                creative=creative_payload(left, form, ("hash1",)),
+            ),
+            BrandEnhancementSettings(tenant, left.brand_id),
+        )
+    )
+    assert promotions.claim(
+        tenant, promotion.id, "campaigns", step_payload(promotion, "campaigns"), uuid4()
+    )
+    attempt = _past_attempt(recipe["id"], (tenant, left.draft_id), promotion.id)
+    assert story_ads(tenant, [left.draft_id]) == {left.draft_id: (attempt, promotion.id)}
+    with acting_login(login), pytest.raises(StoryAdExists) as refused:
+        repo.approve(left, form, actor, uuid4())
+    assert refused.value.recipe_id == attempt

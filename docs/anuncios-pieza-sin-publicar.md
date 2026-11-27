@@ -209,8 +209,12 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
 ### Un solo anuncio de historia por pieza, salvo que el dueño elija otro (N3, m-25142902)
 
 - **Qué es «ya tiene un anuncio en historias»:** cualquier fila de `ad_unpublished_sources` de
-  la pieza con `source->>'pipeline'` `ad-story-image-v1` / `ad-story-video-v1`, tenga o no ya
-  campaña en pausa (`promotion_id`). Sin migración: se reutiliza la aprobación guardada.
+  la pieza con `source->>'pipeline'` `ad-story-image-v1` / `ad-story-video-v1` que **dejó algo
+  en Meta** (un paso de campaña enviado o creado en `ad_promotion_steps`, `in_flight` o
+  `completed`) o que se aprobó hace menos de 10 minutos (todavía preparándose: así dos teléfonos
+  a la vez se siguen encontrando). Un intento fallido que no creó nada en Meta deja de contar
+  pasados esos minutos: no avisa ni sale en la tarjeta (decisión del 2026-11-27). Sin migración:
+  se reutiliza la aprobación guardada.
 - **Del lado del servidor y sin carreras:** `UnpublishedRepository.approve` toma
   `pg_advisory_xact_lock('ad-story:<pieza>')` en la misma transacción que guarda la aprobación,
   antes de cualquier llamada a Meta. Si hay otra aprobación de historia de la pieza (otra clave

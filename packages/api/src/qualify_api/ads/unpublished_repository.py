@@ -51,8 +51,17 @@ NOT_PUBLISHED_BY_QUALIFY = """(CAST(:story AS boolean) OR NOT EXISTS (SELECT 1
 # N3 (m-25142902): a story ad of a piece = its story recipes. The newest per piece, with
 # the paused campaign it led to (None while still being prepared).
 STORY_PIPELINES = [STORY_PIPELINE, STORY_VIDEO_PIPELINE]
-_STORY_ADS = text("""SELECT DISTINCT ON (draft_id) draft_id,id,promotion_id
-FROM ad_unpublished_sources WHERE draft_id=ANY(:drafts) AND source->>'pipeline'=ANY(:pipelines)
+# Founder/coordinator 2026-11-27: an attempt counts only if it left something at Meta (a
+# campaign step sent or created). One still being prepared counts during its preview window,
+# so two phones at once still meet; a failed one that created nothing stops counting then.
+PREPARING_MINUTES = 10
+STORY_AD_COUNTS = f"""(EXISTS(SELECT 1 FROM ad_promotion_steps s
+    WHERE s.promotion_id=u.promotion_id AND s.tenant_id=u.tenant_id
+      AND s.state IN ('in_flight','completed'))
+  OR u.approved_at > now() - interval '{PREPARING_MINUTES} minutes')"""
+_STORY_ADS = text(f"""SELECT DISTINCT ON (draft_id) draft_id,id,promotion_id
+FROM ad_unpublished_sources u WHERE draft_id=ANY(:drafts) AND source->>'pipeline'=ANY(:pipelines)
+  AND {STORY_AD_COUNTS}
 ORDER BY draft_id,approved_at DESC,id DESC""")
 
 
@@ -349,8 +358,8 @@ def _refuse_duplicate_story(session: Any, draft: UUID, key: UUID, seen: tuple[UU
     )
     newer = (
         session.execute(
-            text("""SELECT id,promotion_id FROM ad_unpublished_sources
-          WHERE draft_id=:draft AND source->>'pipeline'=ANY(:pipelines)
+            text(f"""SELECT id,promotion_id FROM ad_unpublished_sources u
+          WHERE draft_id=:draft AND source->>'pipeline'=ANY(:pipelines) AND {STORY_AD_COUNTS}
             AND NOT EXISTS(SELECT 1 FROM ad_unpublished_sources WHERE request_key=:key)
             AND approved_at > COALESCE((SELECT max(approved_at) FROM ad_unpublished_sources
               WHERE draft_id=:draft AND (id=ANY(CAST(:seen AS uuid[]))
