@@ -558,6 +558,10 @@
 .q-reply-tools {
   flex-wrap: wrap;
   width: 100%;
+  /* m-25143240: the upload zones' 1x1 file inputs are position:absolute; a positioned
+     row keeps them inside its own clipping (it scrolls on phones), so they never widen
+     the panel and make the open chat scroll sideways */
+  position: relative;
 }
 .q-reply-tool {
   flex-shrink: 0;
