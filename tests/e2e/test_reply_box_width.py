@@ -34,10 +34,12 @@ _LAST_TOOL_REACHABLE = """
   if (!row) return null;
   const tools = row.querySelectorAll('.q-reply-tool');
   const last = tools[tools.length - 1];
+  const start = row.scrollLeft;
   row.scrollLeft = row.scrollWidth;
   const r = row.getBoundingClientRect();
   const t = last.getBoundingClientRect();
-  return {inside: t.left >= r.left - 1 && t.right <= r.right + 1, w: t.width, h: t.height};
+  return {start, inside: t.left >= r.left - 1 && t.right <= r.right + 1,
+          w: Math.round(t.width), h: Math.round(t.height)};
 }
 """
 
@@ -51,13 +53,25 @@ def test_open_chat_never_scrolls_sideways(chats_page, channel: str) -> None:  # 
         if channel == "instagram"
         else _whatsapp(ids, "whatsapp_open")
     )
+    failures: list[str] = []
     for width, height in WIDTHS:
         page.set_viewport_size({"width": width, "height": height})
         _open(page, path)
         expect(page.locator(".q-chat-thread .q-reply-tool").first).to_be_visible()
+        where = f"{channel} at {width} px"
         overflow = page.evaluate(_OVERFLOW)
-        assert overflow["panel"] <= 1, f"{channel} at {width} px: panel {overflow}"
-        assert overflow["page"] <= 1, f"{channel} at {width} px: page {overflow}"
+        if overflow["panel"] > 1:
+            failures.append(f"{where}: the panel scrolls sideways {overflow}")
+        if overflow["page"] > 1:
+            failures.append(f"{where}: the page scrolls sideways {overflow}")
         last = page.evaluate(_LAST_TOOL_REACHABLE)
-        assert last is not None and last["inside"], f"{channel} at {width} px: {last}"
-        assert last["h"] >= 44, f"{channel} at {width} px: last tool {last}"
+        if last is None:
+            failures.append(f"{where}: no tool row")
+            continue
+        if last["start"] != 0:
+            failures.append(f"{where}: the tool row opens scrolled {last}")
+        if not last["inside"]:
+            failures.append(f"{where}: the last tool cannot be scrolled into view {last}")
+        if last["h"] < 44:
+            failures.append(f"{where}: the last tool is under 44 px {last}")
+    assert not failures, "\n".join(failures)
