@@ -31,6 +31,19 @@ CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
 # A send claim idle this long lost its process (crash between claim and settle): it becomes
 # `unknown`, never re-sent. Must match the 0161 trigger.
 STALE_CLAIM_MINUTES = 30
+# m-25130283: «publicada» = Qualify has a published Instagram attempt for this piece
+# (`content_drafts.published_media_id` is never written). Its media id is not required: a
+# confirmed publish whose id lookup failed is still live (QUA-111). Expects the piece
+# as `d` and a boolean `:story` bind: a story ad is always a new 9:16 creative (epic D1), so
+# the story path skips the check. A story uploaded by hand («Abrir en Instagram») leaves no
+# attempt: unpublished.
+NOT_PUBLISHED_BY_QUALIFY = """(CAST(:story AS boolean) OR NOT EXISTS (SELECT 1
+  FROM calendar_events pe
+  JOIN publish_attempts pa ON pa.id=pe.publish_attempt_id AND pa.tenant_id=pe.tenant_id
+  JOIN social_connections pc ON pc.id=pa.connection_id AND pc.tenant_id=pa.tenant_id
+    AND pc.platform='instagram'
+  WHERE pe.post_id=d.id AND pe.tenant_id=d.tenant_id
+    AND pa.status='published'))"""
 
 
 def load_image_source(
@@ -47,7 +60,7 @@ def load_image_source(
     with tenant_session(tenant, independent=True) as session:
         row = (
             session.execute(
-                text("""SELECT d.id,d.brand_id,d.active_version_id,d.revision,
+                text(f"""SELECT d.id,d.brand_id,d.active_version_id,d.revision,
               a.connection_id,a.ad_account_id,a.currency,a.timezone_name,a.credential_version,
               c.external_account_id,c.linked_page_id
             FROM content_drafts d JOIN piece_versions v ON v.id=d.active_version_id
@@ -59,10 +72,10 @@ def load_image_source(
               AND a.credential_version=c.current_credential_version AND c.status='active'
               AND c.purged_at IS NULL AND c.purge_started_at IS NULL
               AND d.status='approved' AND d.approved_revision=d.revision
-              AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+              AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
               AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
               AND d.part_removed_at IS NULL FOR SHARE OF d,v,a,c"""),
-                {"draft": draft, "account": account},
+                {"draft": draft, "account": account, "story": feed_asset is None},
             )
             .mappings()
             .first()

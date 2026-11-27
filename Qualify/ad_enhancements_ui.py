@@ -49,7 +49,13 @@ def _permission_choices() -> rx.Component:
 def ad_enhancement_permissions() -> rx.Component:
     return card(
         rx.vstack(
-            rx.heading("Qué puede cambiar Meta en tus anuncios", size="4", as_="h2"),
+            # HIS-2 (m-25130282): the story ad's «Ir a Tu marca» lands here.
+            rx.heading(
+                "Qué puede cambiar Meta en tus anuncios",
+                size="4",
+                as_="h2",
+                id="permisos-de-meta",
+            ),
             rx.text(
                 "Tú decides si Meta puede modificar la imagen, el texto o el botón. "
                 "Estos cuatro permisos empiezan apagados.",

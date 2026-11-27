@@ -16,6 +16,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.ads.unpublished import ImageAdForm
+from qualify_api.ads.unpublished_repository import NOT_PUBLISHED_BY_QUALIFY
 from qualify_api.ads.wizard import _saved_ad_destination
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
@@ -26,6 +27,7 @@ from .ad_health_provider import account_health_for, refresh_health
 from .catalog_provider import list_products
 from .promotion_vm import (
     CAROUSEL_MIN,
+    STORY_COP_ONLY,
     AdMediaVM,
     CarouselProductVM,
     PromotionDraftVM,
@@ -46,13 +48,13 @@ ENHANCEMENTS_ON = (
 )
 FEED, VERTICAL = (4, 5), (9, 16)
 
-_PIECE = text("""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
+_PIECE = text(f"""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
 FROM content_drafts d JOIN piece_versions pv ON pv.id=d.active_version_id
   AND pv.tenant_id=d.tenant_id AND pv.draft_id=d.id AND pv.status='active'
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
   AND v.draft_id=d.id
 WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
-  AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+  AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
   AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
   AND d.part_removed_at IS NULL""")
 # The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).
@@ -104,10 +106,13 @@ def _pick(rows: list[dict], kind: str, ratio: tuple[int, int]) -> list[dict]:
     ]
 
 
-def _read(tenant_id: UUID, draft_id: UUID) -> tuple[dict | None, list[dict], list[dict]]:
-    """The approved, unpublished piece, its brand's selected ad accounts and its files."""
+def _read(
+    tenant_id: UUID, draft_id: UUID, story: bool = False
+) -> tuple[dict | None, list[dict], list[dict]]:
+    """The approved piece (unpublished, unless `story`), its brand's selected ad accounts and
+    its files."""
     with tenant_session(tenant_id) as session:
-        piece = session.execute(_PIECE, {"draft": draft_id}).mappings().first()
+        piece = session.execute(_PIECE, {"draft": draft_id, "story": story}).mappings().first()
         if piece is None:
             return None, [], []
         accounts = [
@@ -152,9 +157,51 @@ def story_kinds(assets: list[dict]) -> list[str]:
 
 def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
     """«Agregar un botón con enlace» is offered only when the wizard will have a source:
-    approved, unpublished, a 9:16 file (with its cover for a video), an ad account."""
-    piece, accounts, assets = _read(tenant_id, draft_id)
+    approved, a 9:16 file (with its cover for a video), an ad account. Already published by
+    Qualify is fine: a story ad is always a new 9:16 creative (m-25130283, epic D1)."""
+    piece, accounts, assets = _read(tenant_id, draft_id, True)
     return piece is not None and bool(accounts) and bool(story_kinds(assets))
+
+
+# HIS-1 (m-25130281): `_PIECE`/`_ASSETS` for many pieces at once, built FROM them so the
+# card's check and the wizard can never disagree on what qualifies.
+_PIECES = text(
+    _PIECE.text.replace("SELECT d.brand_id", "SELECT d.id,d.brand_id", 1).replace(
+        "WHERE d.id=:draft", "WHERE d.id=ANY(:drafts)", 1
+    )
+)
+assert "ANY(:drafts)" in _PIECES.text and "SELECT d.id," in _PIECES.text
+_ASSETS_MANY = text(
+    _ASSETS.text.replace("SELECT id,", "SELECT draft_id,version_id,id,", 1).replace(
+        "WHERE draft_id=:draft AND version_id=:version", "WHERE draft_id=ANY(:drafts)", 1
+    )
+)
+assert "ANY(:drafts)" in _ASSETS_MANY.text and "version_id," in _ASSETS_MANY.text
+
+
+def story_ads_ready(tenant_id: UUID, draft_ids: list[UUID]) -> set[UUID]:
+    """`story_ad_ready` for a whole gallery in one session: the pieces the story-only ad
+    can be made from. Two reads plus one per brand, whatever the number of pieces."""
+    if not draft_ids:
+        return set()
+    with tenant_session(tenant_id) as session:
+        pieces = list(session.execute(_PIECES, {"drafts": draft_ids, "story": True}).mappings())
+        if not pieces:
+            return set()
+        brands = {piece["brand_id"] for piece in pieces}
+        with_accounts = {
+            brand for brand in brands if session.execute(_ACCOUNTS, {"brand": brand}).first()
+        }
+        assets: dict[tuple[UUID, UUID], list[dict]] = {}
+        ids = [piece["id"] for piece in pieces]
+        for row in session.execute(_ASSETS_MANY, {"drafts": ids}).mappings():
+            assets.setdefault((row["draft_id"], row["version_id"]), []).append(dict(row))
+    return {
+        piece["id"]
+        for piece in pieces
+        if piece["brand_id"] in with_accounts
+        and story_kinds(assets.get((piece["id"], piece["active_version_id"]), []))
+    }
 
 
 def unpublished_sources(
@@ -163,7 +210,7 @@ def unpublished_sources(
     """One source per selected ad account and kind (two images, or two videos with
     their covers) of the active approved version; [] when the piece does not qualify.
     `story` (m-25026350): only the 9:16 file (and its cover) — a story-only ad."""
-    piece, accounts, assets = _read(tenant_id, draft_id)
+    piece, accounts, assets = _read(tenant_id, draft_id, story)
     if piece is None:
         return []
     feed_images, vertical_images = _pick(assets, "image", FEED), _pick(assets, "image", VERTICAL)
@@ -220,6 +267,8 @@ def unpublished_sources(
                     timezone_name=account["timezone_name"],
                     unavailable_reason=blocked
                     if account["currency"] == "COP"
+                    else STORY_COP_ONLY
+                    if story  # HIS-2: a story ad cannot be «published first»
                     else UNPUBLISHED_COP_ONLY,
                     health=health,
                     ad_account_id=str(account["id"]),

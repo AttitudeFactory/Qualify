@@ -1240,6 +1240,9 @@ class PostOptionVM:
     #: The one file «Abrir en Instagram» hands to the phone (`story_share_source`): an
     #: approved historia's own image or video; "" when it is not offered.
     story_share_url: str = ""
+    #: HIS-1 (m-25130281): the story-only ad wizard will have a source for this historia
+    #: (`promotion_unpublished_provider.story_ad_ready`) — only then the card offers it.
+    story_ad_ready: bool = False
     #: The gallery card's media line: `media_label`, minus «Historia» on a historia —
     #: the card already says it in its label («Imagen · 9:16»). Other screens keep
     #: `media_label`, which names the format.

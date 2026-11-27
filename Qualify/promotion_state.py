@@ -90,6 +90,8 @@ from .promotion_provider import (
     recheck_enhancement_permissions,
     recheck_messaging_destinations,
     store_greeting,
+    story_block_text,
+    story_block_view,
 )
 from .promotion_unpublished_provider import confirm_unpublished, prepare_unpublished
 from .promotion_vm import (
@@ -192,6 +194,10 @@ class PromotionState(rx.State):
     # m-25026350: opened as «Agregar un botón con enlace» (`?formato=historia`).
     story_entry: bool = False
     story_cta_open: bool = False
+    # HIS-2 (m-25130282): why this historia cannot be a story ad, and where to fix it.
+    story_block: str = ""
+    story_block_action: str = ""
+    story_block_href: str = ""
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -2085,6 +2091,7 @@ class PromotionState(rx.State):
             week = back_to_week_href(params)
             self.story_entry = story
             self.story_cta_open = False
+            self.story_block = self.story_block_action = self.story_block_href = ""
             self.back_href = week or f"/drafts/{piece}"
             self.back_label = (
                 "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
@@ -2092,9 +2099,18 @@ class PromotionState(rx.State):
             event_id = tenant_uuid(str(params.get("evento", "")))
         try:
             with acting_login(UUID(context[1])):
-                rows, zone = await asyncio.to_thread(
-                    load_sources, UUID(context[0]), piece, event_id, True, story=story
+                block = ("", "", "")
+                if story:
+                    block = await asyncio.to_thread(story_block_view, UUID(context[0]), piece)
+                rows, zone = (
+                    ([], "")
+                    if block[0]
+                    else await asyncio.to_thread(
+                        load_sources, UUID(context[0]), piece, event_id, True, story=story
+                    )
                 )
+                if story and not rows and not block[0]:
+                    block = story_block_text("missing")  # e.g. it changed between reads
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
             async with self:
@@ -2105,6 +2121,7 @@ class PromotionState(rx.State):
                 if context != await self._session() or operation != self._operation:
                     return
                 self.sources = rows
+                self.story_block, self.story_block_action, self.story_block_href = block
                 if rows and rows[0].media_kind and self.back_label != "Tu semana":
                     self.back_label = "Revisar pieza"  # never published: one name, «pieza»
                 self.covers_open = False

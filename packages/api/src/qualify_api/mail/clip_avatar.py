@@ -79,7 +79,48 @@ LONG_WAIT = (
     "de nuevo. Si quitas el avatar, armamos tu video sin él y tú lo apruebas antes de "
     "publicar."
 )
+
+# -- m-25128784 PR 2 (ADR 50 §12.1): a character's scene of a Clip that could not be made
+# sends this same email, in the scene's words. Its own template version: the avatar's
+# words above are unchanged. A scene is never refused as too long (5 to 10 s, checked at
+# «Crear»), so only `block_failed`. The owner chooses per scene: «Intentar de nuevo» and
+# «Quitar escena» (the screen of m-25112921 offers them).
+SCENE_TEMPLATE_VERSION = "clip-scene-failed-v1"
+SCENE_SUBJECT = "{business}: una escena con tu personaje no se pudo crear"
+SCENE_HEADING = "Una escena con tu personaje no se pudo crear"
+SCENE_LEAD = (
+    "Tu video de {business} está esperando en Por aprobar. "
+    "Elige «Intentar de nuevo» o «Quitar escena»."
+)
+SCENE_WAIT = (
+    "Tienes hasta el {deadline} (hora de {business}). Si no eliges antes, el video se "
+    "descarta y habría que crearlo de nuevo. Si quitas la escena, en esos segundos se ven "
+    "tus propias fotos y videos, y tú apruebas el video antes de publicar."
+)
+SCENE_SUBJECT_MANY = "{business}: algunas escenas con tu personaje no se pudieron crear"
+SCENE_HEADING_MANY = "Algunas escenas con tu personaje no se pudieron crear"
+SCENE_LEAD_MANY = (
+    "Tu video de {business} está esperando en Por aprobar. "
+    "Con cada escena, elige «Intentar de nuevo» o «Quitar escena»."
+)
+SCENE_WAIT_MANY = (
+    "Tienes hasta el {deadline} (hora de {business}). Si no eliges antes, el video se "
+    "descarta y habría que crearlo de nuevo. Si quitas una escena, en esos segundos se ven "
+    "tus propias fotos y videos, y tú apruebas el video antes de publicar."
+)
+SCENE_FOOTER = (
+    "Recibes este aviso porque hay un video con tu personaje de {business} esperando en Qualify."
+)
 TEXTS = (
+    SCENE_SUBJECT,
+    SCENE_HEADING,
+    SCENE_LEAD,
+    SCENE_WAIT,
+    SCENE_SUBJECT_MANY,
+    SCENE_HEADING_MANY,
+    SCENE_LEAD_MANY,
+    SCENE_WAIT_MANY,
+    SCENE_FOOTER,
     SUBJECT,
     HEADING,
     PREHEADER,
@@ -108,8 +149,17 @@ class Words:
     wait: str
 
 
-def words_for(kind: str, count: int = 1) -> Words:
-    """The words of one email: by its kind, and for `block_failed` how many avatars."""
+def words_for(kind: str, count: int = 1, *, scene: bool = False) -> Words:
+    """The words of one email: by its kind, and for `block_failed` how many avatars (or,
+    with `scene`, how many character scenes — m-25128784)."""
+    if scene:
+        if kind != BLOCK_FAILED:
+            raise ValueError(kind)
+        if count > 1:
+            return Words(
+                SCENE_SUBJECT_MANY, SCENE_HEADING_MANY, PREHEADER, SCENE_LEAD_MANY, SCENE_WAIT_MANY
+            )
+        return Words(SCENE_SUBJECT, SCENE_HEADING, PREHEADER, SCENE_LEAD, SCENE_WAIT)
     if kind == CLIP_TOO_LONG:
         return Words(LONG_SUBJECT, LONG_HEADING, LONG_PREHEADER, LONG_LEAD, LONG_WAIT)
     if kind != BLOCK_FAILED:
@@ -171,8 +221,9 @@ def failure_mail(
     idempotency_key: str,
     kind: str = BLOCK_FAILED,
     count: int = 1,
+    scene: bool = False,
 ) -> OutgoingMail:
-    words = words_for(kind, count)
+    words = words_for(kind, count, scene=scene)
     deadline = spanish_deadline(wait_until, business_zone(timezone))
     url = video_url(base_url, clip_id)
     subject = words.subject.format(business=business)
@@ -180,7 +231,7 @@ def failure_mail(
     preheader = words.preheader.format(deadline=deadline)
     lead = words.lead.format(business=business)
     wait = words.wait.format(business=business, deadline=deadline)
-    footer = FOOTER.format(business=business)
+    footer = (SCENE_FOOTER if scene else FOOTER).format(business=business)
     href = escape(url, quote=True)
     logo = escape(base_url.rstrip("/") + "/qualify-icon-email.png", quote=True)
     html = (
@@ -223,6 +274,7 @@ __all__ = [
     "HEADING",
     "LEAD",
     "PREHEADER",
+    "SCENE_TEMPLATE_VERSION",
     "SUBJECT",
     "TEMPLATE_VERSION",
     "TEXTS",
