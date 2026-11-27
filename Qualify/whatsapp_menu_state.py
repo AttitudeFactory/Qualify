@@ -130,6 +130,7 @@ from .whatsapp_menu_vm import (
     EMPTY_GUIDED,
     EMPTY_IMPORT,
     EMPTY_MENU,
+    EMPTY_PICKER,
     FACT_PENDING,
     FACT_SENTENCE,
     FACT_SKIPPED,
@@ -169,7 +170,14 @@ from .whatsapp_menu_vm import (
     SUGGEST_GREETING,
     SUGGEST_NO_DATA,
     SUGGEST_STALE,
+    SWITCH_DISCARD,
+    SWITCH_DISCARD_VERSION,
+    SWITCH_GONE,
     SWITCH_TEXT,
+    SWITCH_TITLE,
+    SWITCH_TITLE_VERSION,
+    SWITCH_YES,
+    SWITCH_YES_VERSION,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
     AnswersVM,
@@ -183,6 +191,7 @@ from .whatsapp_menu_vm import (
     KeywordForm,
     MenuCardVM,
     MenuForm,
+    MenuPickerVM,
     MenuSummaryVM,
     MenuVersionVM,
     NodeChoiceVM,
@@ -204,6 +213,7 @@ from .whatsapp_menu_vm import (
     apply_fact,
     apply_sentences,
     build_menu_cards,
+    build_menu_picker,
     button_swap,
     button_swap_text,
     can_publish,
@@ -214,7 +224,6 @@ from .whatsapp_menu_vm import (
     catalog_rows,
     catalog_sections,
     change_kind,
-    chosen_menu_id,
     definition_to_form,
     drag_help,
     edited_kind,
@@ -249,6 +258,7 @@ from .whatsapp_menu_vm import (
     node_choices,
     order_lines,
     order_menu_cards,
+    picker_target,
     preview_turn,
     product_rows,
     publish_confirm_lines,
@@ -281,18 +291,17 @@ _ANSWERS_UNDO_MS = 6000
 #: «Ajustes de chats › Formas de pago» (m-24955648; its own page since m-25027373).
 PAYMENTS_HREF = SETTINGS_PAYMENTS_ROUTE
 
-#: The open menu's bar: «Editar» on a card scrolls there (m-24955645).
+#: «Tu menú de bienvenida» (m-25142807): the preview's «Listo, ir a publicar» scrolls there.
 TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
 
-#: What a card is doing, in `card_busy_action` (m-24955645).
+#: `card_busy_action` while the card's version is being published (m-24955645): the only
+#: card action whose button shows its own spinner.
 CARD_PUBLISH = "publish"
-CARD_PAUSE = "pause"
-CARD_DELETE = "delete"  # m-24986800 «Eliminar»
 
-#: The picker of «Menús de este número» (m-24986800): focus comes back to it after
-#: «Eliminar» (the deleted card, which opened the dialog, is gone).
+#: «Menú y versión» (m-24986800, m-25142807): focus comes back to it after «Eliminar»
+#: (the «⋯» that opened the dialog belongs to the deleted menu).
 MENU_PICK_ID = "whatsapp-menu-pick"
-#: The section's heading, focused instead when no picker is left (one menu or none).
+#: The card's heading, focused instead when no menu is left.
 MENUS_HEADING_ID = "whatsapp-menus-heading"
 
 
@@ -353,6 +362,7 @@ _PUBLISH_GAPS = (
     "Esta versión tiene datos por completar. Complétalos o quita esas respuestas y vuelve a "
     "publicar. Si los corchetes son a propósito, cámbialos por paréntesis ( )."
 )
+_SAVED_NOT_PUBLISHED = "Guardamos tus cambios, pero todavía no se publicaron. Vuelve a publicar."
 _PAUSE_FAILED = "No se pudo cambiar la pausa del menú. Vuelve a intentarlo en un momento."
 _MENU_GONE = "Ese menú ya no está en este número. Actualizamos la lista."
 _NAME_TAKEN = "Ya hay un menú con ese nombre en este número."
@@ -360,7 +370,7 @@ _SAVED = (
     "Versión {n} guardada sin publicar. Tu WhatsApp aún no responde con ella: toca "
     "«Publicar en mi WhatsApp» cuando quieras."
 )
-_PAUSED = "Menú en pausa: tu WhatsApp no responde con el menú hasta que lo reactives."
+_PAUSED = "Tu menú está en pausa. Para que vuelva a responder, enciende «Responder en tu WhatsApp»."
 _RESUMED = "Menú reactivado: tu WhatsApp vuelve a responder con el menú que escribiste."
 _CARD_TOAST_MS = 8000
 _CARD_LIST_CHANGED = "La lista cambió. Elige la versión otra vez."
@@ -369,7 +379,6 @@ _CARD_PUBLISHED_PAUSED = (
     "Publicamos la versión {n} de «{name}». Sigue en pausa: tus clientes la verán cuando "
     "lo reanudes."
 )
-_DRAFT_EMPTY = "Menú nuevo: escribe el primer paso y publícalo en tu WhatsApp."
 _SUGGEST_NEEDS_NAME = "Ponle primero un nombre a esta respuesta y lo escribimos con tu estilo."
 
 _ENTRY_TABLES: dict[str, frozenset[str]] = {
@@ -477,13 +486,20 @@ class WhatsAppMenuState(rx.State):
     # -- «Menús de este número»: one card per menu (m-24955645) ------------------------
     menu_cards: list[MenuCardVM] = []
     card_busy: str = ""  # the menu whose card is publishing or pausing ("" = none)
-    card_busy_action: str = ""  # CARD_PUBLISH / CARD_PAUSE / CARD_DELETE
-    #: m-24986800: the menu picked in «Menú» while it opens ("" = none pending).
-    menu_pick: str = ""
-    #: The menu the owner wants to switch to while the editor has unsaved changes: the
-    #: «¿Cambiar de menú?» dialog is open while this is set.
+    card_busy_action: str = ""  # CARD_PUBLISH while the card publishes, else ""
+    #: m-25142807: «Tu menú de bienvenida» — one select over every menu's versions; what
+    #: is picked is what the editor holds (`build_menu_picker`).
+    picker: MenuPickerVM = EMPTY_PICKER
+    #: The option picked in «Menú y versión» while its menu opens ("" = none pending).
+    pick_pending: str = ""
+    #: The option the owner wants to open while the editor has unsaved changes: the
+    #: «¿Cambiar de menú?» / «¿Abrir otra versión?» dialog is open while this is set.
     switch_to: str = ""
-    #: «No pudimos eliminar el menú…», above the card.
+    #: «Pausar «…»» — the switch asks first; resuming is one tap.
+    pause_confirm_open: bool = False
+    #: «¿Eliminar este menú?», opened from «⋯».
+    delete_confirm_open: bool = False
+    #: «No pudimos eliminar el menú…», in the card.
     delete_error: str = ""
 
     # -- «Nuevo menú» dialog --------------------------------------------------------------
@@ -496,7 +512,6 @@ class WhatsAppMenuState(rx.State):
     # -- the open menu ------------------------------------------------------------------
     menu: MenuSummaryVM = EMPTY_MENU
     versions: list[MenuVersionVM] = []
-    editing_from: str = ""  # «Editando a partir de la versión 3» — pre-formatted
     opening: bool = False
     saving: bool = False
     publishing: bool = False
@@ -593,7 +608,6 @@ class WhatsAppMenuState(rx.State):
     # Backend-only (underscore): never serialized to the browser.
     _scope: dict[str, str] = {}
     _cards: list[Any] = []  # `MenuCardInput` per menu, in the list's order
-    _card_choice: dict[str, str] = {}  # menu id → the version picked in «Versión»
     _zone: str = "UTC"  # the business's own zone (`inbox_provider.tenant_zone`)
     _catalog: list[dict[str, Any]] = []
     _payloads: dict[str, dict[str, Any]] = {}
@@ -828,6 +842,8 @@ class WhatsAppMenuState(rx.State):
             and not self.saving
             and self.has_menu
             and not self.card_busy
+            # m-25142807: not while another menu opens (what is typed is being replaced).
+            and not self.opening
         )
 
     @rx.var
@@ -839,7 +855,9 @@ class WhatsAppMenuState(rx.State):
                 error_count=self.error_count,
                 dirty=self.dirty,
                 editing_version_id=self.editing_version_id,
-                busy=self.saving or self.publishing or bool(self.card_busy),
+                # m-25142807: not while another menu opens — the editor would still hold
+                # this menu's form under the other menu's name.
+                busy=self.saving or self.publishing or bool(self.card_busy) or self.opening,
             )
             and self.gap_count == 0
             and not self.answers.blocking
@@ -997,15 +1015,13 @@ class WhatsAppMenuState(rx.State):
         self.publish_gaps = publish_gaps(annotated, gaps, strip_leaves_gaps=leaves)
         self._refresh_import()
 
-    def _load_definition(
-        self, definition: MenuDefinition | None, label: str, version_id: str = ""
-    ) -> None:
+    def _load_definition(self, definition: MenuDefinition | None, version_id: str = "") -> None:
         form = definition_to_form(definition) if definition is not None else empty_form()
         self.selected_node = 0
         self._apply(form, edited=False)
         self.dirty = False
-        self.editing_from = label
         self.editing_version_id = version_id
+        self._rebuild_cards()  # the select always shows what the editor holds
         self.just_published = False
         self._restart_preview()
         self.guided_step = 1
@@ -1026,14 +1042,17 @@ class WhatsAppMenuState(rx.State):
             return ZoneInfo("UTC")
 
     def _rebuild_cards(self) -> None:
-        """«Menús de este número» from the cards' input, the owner's picks and the
-        business's own clock (m-24955645)."""
+        """The number's menus and «Menú y versión» from the cards' input, what the editor
+        holds and the business's own clock (m-24955645, m-25142807)."""
         zone = self._zone_info()
-        self.menu_cards = build_menu_cards(
-            order_menu_cards(self._cards),
+        ordered = order_menu_cards(self._cards)
+        self.menu_cards = build_menu_cards(ordered)
+        self.picker = build_menu_picker(
+            ordered,
+            open_menu_id=self.menu.menu_id,
+            editing_version_id=self.editing_version_id,
             zone=zone,
             today=datetime.now(zone).date(),
-            chosen=self._card_choice,
         )
 
     def _absorb_detail(self, detail: MenuDetail) -> None:
@@ -1071,19 +1090,14 @@ class WhatsAppMenuState(rx.State):
 
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
         if load_form:
-            self.menu_pick = ""  # the editor now holds the menu the card shows
+            self.pick_pending = ""  # the editor now holds the menu the select shows
         self.menu = detail.summary
         self.versions = detail.versions
         self._payloads = detail.payloads
         self._absorb_detail(detail)
         if load_form:
-            label = (
-                f"Editando a partir de la {detail.versions[0].label.lower()}"
-                if detail.versions
-                else _DRAFT_EMPTY
-            )
             newest = detail.versions[0].version_id if detail.versions else ""
-            self._load_definition(detail.latest, label, newest)
+            self._load_definition(detail.latest, newest)
 
     def _reset_number_scoped(self) -> None:
         self.flow_ready = False
@@ -1093,19 +1107,20 @@ class WhatsAppMenuState(rx.State):
         self.menu = EMPTY_MENU
         self.versions = []
         self.banner = ""
-        self.editing_from = ""
         self.editing_version_id = ""
         self.just_published = False
         self.dirty = False
         self._scope = {}
         self.menu_cards = []
+        self.picker = EMPTY_PICKER
         self.card_busy = ""
         self.card_busy_action = ""
-        self.menu_pick = ""
+        self.pick_pending = ""
         self.switch_to = ""
+        self.pause_confirm_open = False
+        self.delete_confirm_open = False
         self.delete_error = ""
         self._cards = []
-        self._card_choice = {}
         self._zone = "UTC"
         self._catalog = []
         self.catalog = []
@@ -1200,9 +1215,6 @@ class WhatsAppMenuState(rx.State):
             self.menus = menus
             self._cards = list(cards)
             self._zone = getattr(zone, "key", "UTC") or "UTC"
-            self._card_choice = {
-                k: v for k, v in self._card_choice.items() if k in {c.menu_id for c in cards}
-            }
             self._rebuild_cards()
             self.loaded_for = connection_id
             self.loading_for = ""
@@ -1222,7 +1234,9 @@ class WhatsAppMenuState(rx.State):
             yield WhatsAppMenuState.open_menu(target)
 
     @rx.event(background=True)
-    async def open_menu(self, menu_id: str) -> None:
+    async def open_menu(self, menu_id: str, version_id: str = "") -> None:
+        """Open a menu in the editor: its newest saved version, or `version_id` when it
+        is one of that menu's versions (m-25142807: picked in «Menú y versión»)."""
         async with self:
             if menu_id not in {m.menu_id for m in self.menus} or self.opening:
                 return  # arrived over the wire; only menus on screen can be opened
@@ -1234,7 +1248,7 @@ class WhatsAppMenuState(rx.State):
         if tenant_id is None:
             async with self:
                 self.opening = False
-                self.menu_pick = ""
+                self.pick_pending = ""
             return
         try:
             detail = await asyncio.to_thread(menu_detail, tenant_id, scope, UUID(menu_id))
@@ -1242,13 +1256,36 @@ class WhatsAppMenuState(rx.State):
             logger.error("whatsapp menu open failed: %s", type(exc).__name__)
             async with self:
                 self.opening = False
-                self.menu_pick = ""
+                self.pick_pending = ""
                 self.banner, self.banner_tone = _MENU_GONE, "warn"
             return
         async with self:
             self.opening = False
             self.banner = ""
             self._show_detail(detail, load_form=True)
+            if isinstance(version_id, str) and version_id and version_id != self.editing_version_id:
+                self._open_version(version_id)
+
+    def _open_version(self, version_id: str) -> bool:
+        """Load one saved version of the open menu into the editor and the preview
+        (option A: what is picked is what is seen). Editing it and saving makes the next
+        version; the old one is never changed. The owner stays on the step they were on.
+        False when `version_id` is not one of the open menu's versions."""
+        payload = self._payloads.get(version_id)
+        version = next((v for v in self.versions if v.version_id == version_id), None)
+        if payload is None or version is None:
+            return False
+        try:
+            definition = MenuDefinition.model_validate(payload)
+        except ValidationError:
+            logger.error("whatsapp menu version unreadable: %s", version_id)
+            self.banner, self.banner_tone = _MENU_GONE, "warn"
+            return False
+        # The owner stays where they are: same step, same view («Más opciones» or not).
+        kept = (self.guided_step, self.guided_direction, self.advanced_open, self.flow_ready)
+        self._load_definition(definition, version_id)
+        self.guided_step, self.guided_direction, self.advanced_open, self.flow_ready = kept
+        return True
 
     # ==================================================================================
     # «Nuevo menú»
@@ -2680,7 +2717,7 @@ class WhatsAppMenuState(rx.State):
             self._show_detail(detail, load_form=False)
             newest = detail.versions[0] if detail.versions else None
             self.editing_version_id = newest.version_id if newest else ""
-            self.editing_from = f"Editando a partir de la {newest.label.lower()}" if newest else ""
+            self._rebuild_cards()  # the select moves to the version just saved
         return detail
 
     @rx.event(background=True)
@@ -2762,7 +2799,7 @@ class WhatsAppMenuState(rx.State):
     async def _save_now(self) -> bool:
         """Save the editor as the menu's next version; True when it is on disk."""
         async with self:
-            if not self.can_save or self.publishing:
+            if not self.can_save or self.publishing or self.opening:
                 return False
             scope = self._scope_value()
             if scope is None:
@@ -2820,6 +2857,12 @@ class WhatsAppMenuState(rx.State):
                     self.publishing = False
                 return
             version_id = detail.versions[0].version_id
+        async with self:
+            # The editor must still hold what was confirmed (no other menu opened meanwhile).
+            if self.opening or self.menu.menu_id != menu_id:
+                self.publishing = False
+                self.banner, self.banner_tone = _SAVED_NOT_PUBLISHED, "warn"
+                return
         try:
             user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
             outcome = await publish_version(
@@ -2843,8 +2886,6 @@ class WhatsAppMenuState(rx.State):
             return
         async with self:
             self.publishing = False
-            # The card starts on what customers get now (m-24955645).
-            self._card_choice.pop(outcome.detail.summary.menu_id, None)
             # Also demotes the number's other menus (`_absorb_detail`).
             self._show_detail(outcome.detail, load_form=False)
             # A clean publish says «listo» right where the owner tapped (the toolbar)
@@ -2905,27 +2946,6 @@ class WhatsAppMenuState(rx.State):
     def _card(self, menu_id: str) -> MenuCardVM | None:
         return next((c for c in self.menu_cards if c.menu_id == menu_id), None)
 
-    @rx.event
-    def choose_card_version(self, menu_id: str, version_id: str) -> None:
-        """«Versión» on a card: only one of that card's published versions (the values
-        arrive over the wire)."""
-        card = self._card(menu_id)
-        if card is None or version_id not in {o.version_id for o in card.options}:
-            return
-        self._card_choice = {**self._card_choice, menu_id: version_id}
-        self._rebuild_cards()
-
-    @rx.event
-    def edit_menu(self, menu_id: str) -> list[rx.event.EventSpec] | rx.event.EventSpec | None:
-        """«Editar»: open the menu in the editor — its newest saved version, which is the
-        draft when there is one (`menu_detail.latest`). The menu already open keeps what
-        is typed in it: the page only goes to its bar."""
-        if menu_id not in {m.menu_id for m in self.menus}:
-            return None
-        if menu_id == self.menu.menu_id:
-            return rx.scroll_to(TOOLBAR_ELEMENT_ID)
-        return [WhatsAppMenuState.open_menu(menu_id), rx.scroll_to(TOOLBAR_ELEMENT_ID)]
-
     def _card_blocked(self) -> bool:
         return bool(self.card_busy) or self.publishing or self.pausing or self.saving
 
@@ -2943,26 +2963,28 @@ class WhatsAppMenuState(rx.State):
         self, menu_id: str, version_id: str
     ) -> AsyncIterator[rx.event.EventSpec]:
         """«Publicar esta versión» / «Volver a la versión n», after its confirmation: the
-        version the dialog named goes live through the provider's `publish_version` (the
-        same path as the editor: the database first, then WhatsApp's shortcuts). The
-        confirmation carries that version; if the card's pick is no longer it (the list
-        was re-read meanwhile), nothing is published and the owner picks again. The
-        version customers already get is never re-published from a card."""
+        saved version the editor holds goes live through the provider's `publish_version`
+        (the same path as the editor: the database first, then WhatsApp's shortcuts). The
+        confirmation carries that version; if the editor no longer holds it, nothing is
+        published and the owner picks again. Never with unsaved changes (what would go
+        out is not what is on screen — the editor's «Publicar en mi WhatsApp» saves
+        first), and the version customers already get is never re-published from here."""
         async with self:
-            card = self._card(menu_id)
-            if card is None or not card.selected_version_id or self._card_blocked():
+            picked = self.picker
+            if not version_id or menu_id != picked.menu_id or self._card_blocked():
                 return
-            if version_id != card.selected_version_id:
+            if self.dirty or self.opening:
+                return
+            if version_id != picked.version_id:
                 self.banner, self.banner_tone = _CARD_LIST_CHANGED, "warn"
                 return
-            if card.selected_is_active:
+            if not picked.can_publish_version:
                 return
             scope = self._scope_value()
             if scope is None:
                 return
-            version_id = card.selected_version_id
-            number = card.selected_number
-            name = card.name
+            number = picked.number
+            name = picked.name
             self.card_busy, self.card_busy_action = menu_id, CARD_PUBLISH
             self.banner = ""
             connection_id = await self._connection_id()
@@ -2999,7 +3021,6 @@ class WhatsAppMenuState(rx.State):
             settled = await self._card_settles(connection_id)
             if settled:
                 self.card_busy = self.card_busy_action = ""
-                self._card_choice.pop(menu_id, None)
                 self._absorb_detail(outcome.detail)
                 if not outcome.graph_ok:
                     self.banner, self.banner_tone = outcome.notice, outcome.tone
@@ -3014,9 +3035,9 @@ class WhatsAppMenuState(rx.State):
 
     @rx.event(background=True)
     async def pause_card(self, menu_id: str, paused: bool) -> AsyncIterator[rx.event.EventSpec]:
-        """«Pausar» (after its confirmation) / «Reanudar» (one tap; the toast offers
-        «Pausar» back) on a card, through the provider's `set_paused`. Only the menu that
-        is published on its number can be paused."""
+        """The switch «Responde en tu WhatsApp»: pausing (after its confirmation) /
+        resuming (one tap; the toast offers «Pausar» back), through the provider's
+        `set_paused`. Only the menu that is published on its number can be paused."""
         async with self:
             card = self._card(menu_id)
             if card is None or not card.is_live or self._card_blocked():
@@ -3026,7 +3047,7 @@ class WhatsAppMenuState(rx.State):
             scope = self._scope_value()
             if scope is None:
                 return
-            self.card_busy, self.card_busy_action = menu_id, CARD_PAUSE
+            self.card_busy, self.card_busy_action = menu_id, ""
             self.banner = ""
             connection_id = await self._connection_id()
             _tenant, tenant_id, _email = await self._session()
@@ -3064,78 +3085,139 @@ class WhatsAppMenuState(rx.State):
             )
 
     # ==================================================================================
-    # «Menú»: one card at a time, and «Eliminar» (m-24986800)
+    # «Menú y versión», the pause switch and «Eliminar» (m-24986800, m-25142807)
     # ==================================================================================
 
-    @rx.var
-    def chosen_menu(self) -> str:
-        """The menu whose card is on screen (`whatsapp_menu_vm.chosen_menu_id`)."""
-        return chosen_menu_id(self.menu_cards, picked=self.menu_pick, open_id=self.menu.menu_id)
+    @rx.event
+    def set_answering(self, value: bool) -> rx.event.EventSpec | None:
+        """The switch on the menu that is live on the number: off asks first
+        («Pausar «…»»), on resumes at once."""
+        live = self.picker
+        if not live.has_live or self._card_blocked() or self.opening:
+            return None
+        answering = bool(value)
+        if answering == (not live.live_paused):
+            return None  # already so (a stale screen)
+        if answering:
+            return WhatsAppMenuState.pause_card(live.live_menu_id, False)
+        self.pause_confirm_open = True
+        return None
+
+    @rx.event
+    def set_pause_confirm_open(self, value: bool) -> None:
+        self.pause_confirm_open = bool(value) and self.picker.has_live
+
+    @rx.event
+    def confirm_pause(self) -> rx.event.EventSpec | None:
+        """«Sí, pausar»."""
+        self.pause_confirm_open = False
+        if not self.picker.has_live or self.picker.live_paused:
+            return None
+        return WhatsAppMenuState.pause_card(self.picker.live_menu_id, True)
+
+    @rx.event
+    def set_delete_confirm_open(self, value: bool) -> None:
+        self.delete_confirm_open = bool(value) and self.picker.can_delete
 
     @rx.var
-    def chosen_cards(self) -> list[MenuCardVM]:
-        """The chosen menu's card alone (a list, for `rx.foreach`)."""
-        chosen = chosen_menu_id(self.menu_cards, picked=self.menu_pick, open_id=self.menu.menu_id)
-        return [c for c in self.menu_cards if c.menu_id == chosen]
+    def picker_value(self) -> str:
+        """What the select shows: the owner's pick while its menu opens, else what the
+        editor holds."""
+        return self.pick_pending or self.picker.value
 
     @rx.var
     def switch_open(self) -> bool:
         return self.switch_to != ""
 
     @rx.var
+    def switch_title(self) -> str:
+        """«¿Abrir otra versión?» inside the open menu, «¿Cambiar de menú?» otherwise."""
+        target = picker_target(self.picker, self.switch_to) if self.switch_to else None
+        same = target is not None and target[0] == self.menu.menu_id
+        return SWITCH_TITLE_VERSION if same else SWITCH_TITLE
+
+    @rx.var
     def switch_text(self) -> str:
         return SWITCH_TEXT.format(name=self.menu.name)
 
+    @rx.var
+    def switch_yes(self) -> str:
+        return SWITCH_YES_VERSION if self.switch_title == SWITCH_TITLE_VERSION else SWITCH_YES
+
+    @rx.var
+    def switch_discard(self) -> str:
+        same = self.switch_title == SWITCH_TITLE_VERSION
+        return SWITCH_DISCARD_VERSION if same else SWITCH_DISCARD
+
     @rx.event
-    def choose_menu(self, menu_id: str | list[str]) -> list[rx.event.EventSpec] | None:
-        """«Menú»: choosing is opening (`edit_menu`), so the card and the editor never show
-        different menus. With unsaved changes in the editor it asks first
-        (`open_menu` loads the other menu's newest version: what is typed would be lost)."""
-        if not isinstance(menu_id, str) or menu_id not in {c.menu_id for c in self.menu_cards}:
+    def choose_version(self, value: str | list[str]) -> list[rx.event.EventSpec] | None:
+        """«Menú y versión»: choosing is opening (option A) — another menu opens on the
+        picked version, the open menu loads it. Only an option on screen is accepted
+        (the value arrives over the wire). With unsaved changes in the editor it asks
+        first: what is typed would be replaced."""
+        if not isinstance(value, str) or picker_target(self.picker, value) is None:
             return None
-        if menu_id == self.menu.menu_id:
-            self.menu_pick = ""
+        if value == self.picker.value:
+            self.pick_pending = ""
             return None
         if self.opening or self._card_blocked():
             return None
         if self.dirty:
-            self.switch_to = menu_id
+            self.switch_to = value
             return None
-        return self._switch(menu_id)
+        return self._switch(value) or None
 
-    def _switch(self, menu_id: str) -> list[rx.event.EventSpec]:
-        self.menu_pick = menu_id
+    def _switch(self, value: str) -> list[rx.event.EventSpec] | None:
+        """Open the option `value`: [] when it was loaded in place, the events that open
+        it otherwise, None when it is no longer in the select. The form and
+        `editing_version_id` always change together: when the open menu's saved copy of
+        that version is missing (the list was re-read), the menu is read again and opened
+        on it, and what is typed stays on screen (and `dirty`) until then."""
+        target = picker_target(self.picker, value)
+        if target is None:
+            return None
+        menu_id, version_id = target
         self.delete_error = ""
-        return [WhatsAppMenuState.open_menu(menu_id)]
+        if menu_id == self.menu.menu_id and version_id and self._open_version(version_id):
+            self.pick_pending = ""
+            return []
+        self.pick_pending = value
+        return [WhatsAppMenuState.open_menu(menu_id, version_id)]
 
     @rx.event
     def set_switch_open(self, value: bool) -> None:
-        """«Cancelar» (or Esc) on «¿Cambiar de menú?»: the picker stays where it was."""
+        """«Cancelar» (or Esc) on the dialog: the select stays where it was."""
         if not value:
             self.switch_to = ""
 
     @rx.event
     def discard_and_switch(self) -> list[rx.event.EventSpec] | None:
-        """«Cambiar sin guardar»: what is typed in the open menu is dropped (its saved
-        versions stay) and the chosen menu opens."""
+        """«Cambiar sin guardar»: what is typed is dropped (the saved versions stay) and
+        the picked option opens."""
         target = self.switch_to
         self.switch_to = ""
-        if not target or target not in {c.menu_id for c in self.menu_cards}:
+        if not target:
+            return None
+        if picker_target(self.picker, target) is None:
+            self.banner, self.banner_tone = SWITCH_GONE, "warn"
             return None
         if self.opening or self._card_blocked():
             return None
-        self.dirty = False
-        return self._switch(target)
+        # `dirty` is cleared by the load itself (`_load_definition`), never before it.
+        return self._switch(target) or None
 
     @rx.event(background=True)
     async def save_and_switch(self) -> AsyncIterator[rx.event.EventSpec]:
         """«Guardar y cambiar»: the editor's changes become the open menu's next version,
-        then the chosen menu opens. With something to fix nothing is saved and the owner
+        then the picked option opens. With something to fix nothing is saved and the owner
         stays on the open menu — the banner says what to do."""
         async with self:
             target = self.switch_to
             self.switch_to = ""
-            if not target or target not in {c.menu_id for c in self.menu_cards}:
+            if not target:
+                return
+            if picker_target(self.picker, target) is None:
+                self.banner, self.banner_tone = SWITCH_GONE, "warn"
                 return
             if self.dirty and self.error_count > 0:
                 self.banner, self.banner_tone = SAVE_NEEDS_FIX, "warn"
@@ -3144,9 +3226,11 @@ class WhatsAppMenuState(rx.State):
         if needs_save and not await self._save_now():
             return
         async with self:
-            if target not in {c.menu_id for c in self.menu_cards}:
-                return
             events = self._switch(target)
+            if events is None:
+                # Saved; the picked option left the select meanwhile: say so.
+                self.banner, self.banner_tone = SWITCH_GONE, "warn"
+                events = []
         for event in events:
             yield event
 
@@ -3162,9 +3246,10 @@ class WhatsAppMenuState(rx.State):
             scope = self._scope_value()
             if scope is None:
                 return
-            self.card_busy, self.card_busy_action = menu_id, CARD_DELETE
+            self.card_busy, self.card_busy_action = menu_id, ""
             self.banner = ""
             self.delete_error = ""
+            self.delete_confirm_open = False
             connection_id = await self._connection_id()
             _tenant, tenant_id, _email = await self._session()
         if tenant_id is None:
@@ -3201,11 +3286,8 @@ class WhatsAppMenuState(rx.State):
             self.card_busy = self.card_busy_action = ""
             self.menus = list(outcome.summaries)
             self._cards = list(outcome.cards)
-            self._card_choice = {
-                k: v for k, v in self._card_choice.items() if k in {c.menu_id for c in self._cards}
-            }
-            if self.menu_pick == menu_id:
-                self.menu_pick = ""
+            if (picker_target(self.picker, self.pick_pending) or ("",))[0] == menu_id:
+                self.pick_pending = ""
             self._rebuild_cards()
             target = ""
             if self.menu.menu_id == outcome.menu_id or not self.menu.menu_id:
@@ -3224,7 +3306,6 @@ class WhatsAppMenuState(rx.State):
         self.versions = []
         self._payloads = {}
         self.dirty = False
-        self.editing_from = ""
         self.editing_version_id = ""
         self.just_published = False
         self.publish_confirm_open = False
@@ -3234,6 +3315,7 @@ class WhatsAppMenuState(rx.State):
         self._answers_undo = {}
         self._drop_all_suggestions()
         self._restart_preview()
+        self._rebuild_cards()
 
     # ==================================================================================
     # Preview

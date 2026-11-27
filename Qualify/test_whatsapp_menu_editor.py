@@ -549,13 +549,12 @@ def test_the_menu_tab_renders_its_sections() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Tus menús de bienvenida",
+        "Tu menú de bienvenida",
         "Nuevo menú",
         "Con lo que ya sabemos de tu negocio",
         "Publicar en mi WhatsApp",
         "Guardar sin publicar",
         "Probar el menú",
-        "Pausar el menú en tu WhatsApp",
         "Listo, ir a publicar",
         "Sí, publicar",
         "Responder al primer mensaje",
@@ -564,18 +563,26 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Lo que tu cliente puede tocar al abrir el chat",
         "Comandos",
         "Pasos",
-        # m-24955645: one card per menu replaces the separate versions list.
-        "Versión",
-        "Editar",
-        "Pausar",
-        "Reanudar",
+        # m-25142807: one card, one select over every menu and version, one switch.
+        "Menú y versión",
         "Sí, pausar",
-        "Tienes cambios sin publicar · ábrelos en «Editar»",
-        "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?",
+        "Eliminar este menú",
+        "Responder en tu WhatsApp",
+        "Cambios sin guardar",
+        "¿Eliminar este menú?",
+        "Tus clientes dejarán de recibir este menú hasta que lo reanudes. Sus mensajes te "
+        "llegarán a «Por responder». ¿Pausar?",
         "Vista previa",
         "Reiniciar",
     ):
         assert present(text), text
-    assert not present("Ver versiones anteriores")
+    for gone in (
+        "Ver versiones anteriores",
+        "Pausar el menú en tu WhatsApp",  # the old bar's switch
+        "Elige qué menú ver",  # the old «Menú» select
+        "Tienes cambios sin publicar · ábrelos en «Editar»",
+        "Responde en tu WhatsApp",  # the switch's label is fixed: «Responder en tu WhatsApp»
+    ):
+        assert not present(gone), gone
     source = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()
     assert "whatsapp_menu_provider" not in source and "qualify_api" not in source

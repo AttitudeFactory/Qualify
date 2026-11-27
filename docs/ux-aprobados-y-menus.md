@@ -26,6 +26,17 @@ Base: `docs/perfil-cliente-pyme.md`, `docs/design-system.md` (§5.6 segmented, �
 
 ## 1. Menús de WhatsApp: un desplegable y «Eliminar» (pista A)
 
+> **Reemplazado por m-25142807 (2026-11-27, opción A).** Ya no hay desplegable «Menú» ni
+> tarjeta por menú, ni «Editar», ni la barra del menú abierto. Hoy es **una sola tarjeta**
+> «Tu menú de bienvenida» (`_menus_card` en `whatsapp_tab_menu.py`): un solo desplegable
+> «Menú y versión» (cada menú es un grupo y cada versión una opción; lo elegido es lo que
+> muestran el editor y la vista previa), un solo interruptor «Responder en tu WhatsApp» sobre
+> el menú activo, y «⋯ › Eliminar este menú». En el estado: `choose_version` (antes
+> `choose_menu` / `choose_card_version` / `edit_menu`), `picker` (`build_menu_picker`, antes
+> `chosen_menu_id` / `chosen_cards`), `set_answering` + `confirm_pause`, y
+> `set_delete_confirm_open` + `delete_card`. Lo que sigue queda como registro de la versión
+> anterior.
+
 **Hoy** (`whatsapp_tab_menu.py:615` `_menus_card`): una tarjeta por menú en rejilla; con tres
 menús, en el celular hay que bajar tres tarjetas para llegar al editor. No se puede eliminar.
 
@@ -106,7 +117,8 @@ existe). Teclado: el select de Radix ya abre con Enter/Espacio y flechas.
    de opciones en `menu_cards_for(...)`.
 4. `whatsapp_menu_state.py`: `chosen_menu_id` (computado: elegido o el valor inicial),
    `choose_menu(menu_id)` (→ `edit_menu` con la guarda de cambios), `delete_card(menu_id)` en
-   segundo plano con `card_busy_action = CARD_DELETE`.
+   segundo plano. *(Desde m-25142807: `choose_version`, `picker` y `delete_card`; ya no existen
+   `chosen_menu_id`, `choose_menu`, `edit_menu` ni `CARD_DELETE`.)*
 5. `whatsapp_tab_menu.py`: `_menus_card` → select + `rx.foreach` filtrado a una tarjeta (o
    `chosen_card` computado); `_menu_card` + botón/diálogo «Eliminar» o la línea bloqueada.
 6. Pruebas: `test_whatsapp_menu_cards.py` (orden, valor inicial, `can_delete` falso en el que

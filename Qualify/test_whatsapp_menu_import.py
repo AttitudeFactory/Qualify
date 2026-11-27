@@ -357,7 +357,7 @@ async def test_a_late_result_after_switching_menu_or_cancelling_is_discarded(
     box: list[WhatsAppMenuState] = []
 
     def switch(source: ImportSource, **_payer: object) -> ImportProposal:
-        box[0]._load_definition(None, "Otro menú")  # another menu / number meanwhile
+        box[0]._load_definition(None)  # another menu / number meanwhile
         assert box[0].suggest_busy == "import"  # the slot is still held
         return _proposal((HOURS,))
 
