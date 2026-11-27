@@ -38,8 +38,8 @@ the call in one `tenant_session` under the business's and the scene's transactio
   `suggestion_repeated` and the model is NOT called;
 - at most `SCENE_DAILY_SUGGESTIONS` (10) a scene and `BUSINESS_DAILY_SUGGESTIONS` (30) a
   business per day of the business (`tenants.timezone`, empty → UTC) — the business cap
-  (Deivid's decision Q2, 2026-11-27) stops made-up scene keys from getting past the
-  scene's;
+  (the coordinator's decision, 2026-11-27, for Deivid to review) stops made-up scene
+  keys from getting past the scene's;
 - the brand's monthly dollar cap (`creative_engine_config`, hard stop) must hold the
   reservation (`LINE_MAX_USD`), which is added to its spend at once.
 
@@ -120,7 +120,8 @@ MAX_TOKENS: Final = 2048
 #: a ~1.5K-token prompt and the whole `MAX_TOKENS` cost about US$0.0012).
 LINE_MAX_USD: Final = Decimal("0.01")
 SCENE_DAILY_SUGGESTIONS: Final = 10
-#: Deivid's decision Q2 (2026-11-27): so made-up scene keys cannot pass the scene's cap.
+#: The coordinator's decision (2026-11-27, for Deivid to review): so made-up scene keys
+#: cannot pass the scene's cap.
 BUSINESS_DAILY_SUGGESTIONS: Final = 30
 #: `creative_usage_events.unit` of one suggestion.
 USAGE_UNIT: Final = "character_line"
