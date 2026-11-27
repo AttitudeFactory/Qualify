@@ -435,6 +435,7 @@ def _details(conn: ConnectionVM) -> rx.Component:
     """«Más detalles»: dates, permissions and the full list — for whoever wants them,
     out of the owner's first read (m-24842969)."""
     from .whatsapp_page import number_card_details  # noqa: PLC0415 — see `connection_card`
+    from .whatsapp_state import WhatsAppState  # noqa: PLC0415
 
     return rx.vstack(
         _detail_row("building-2", "Negocio: ", conn.brand),
@@ -442,8 +443,9 @@ def _details(conn: ConnectionVM) -> rx.Component:
         _detail_row("refresh-cw", "Última comprobación: ", conn.last_health_checked_at),
         # m-25027373: a WhatsApp number's facts and its «Verificar ahora» (which also
         # covers «Comprobar ahora»), from what was «Tu número › Estado».
+        # Review C5: a card whose number could not be read keeps its own check.
         rx.cond(
-            conn.platform == "whatsapp",
+            (conn.platform == "whatsapp") & WhatsAppState.number_ids.contains(conn.id),
             number_card_details(conn.id),
             rx.cond(conn.status == "active", verify_now_button(conn), rx.fragment()),
         ),
@@ -1067,6 +1069,9 @@ def _connections_body() -> rx.Component:
 
 
 def _loaded_body() -> rx.Component:
+    from .whatsapp_page import whatsapp_invite_card  # noqa: PLC0415 — see `connection_card`
+    from .whatsapp_state import WhatsAppState  # noqa: PLC0415
+
     return rx.cond(
         ConnectionsState.is_loading,
         rx.vstack(skeleton_card(), skeleton_card(), spacing="4", width="100%"),
@@ -1075,6 +1080,8 @@ def _loaded_body() -> rx.Component:
         rx.vstack(
             rx.cond(ConnectionsState.show_instagram_invite, _instagram_invite_card()),
             rx.foreach(ConnectionsState.connections, connection_card),
+            # m-25027373 (UX review U1): without a WhatsApp number, the way to ask for one.
+            rx.cond(WhatsAppState.show_connect_invite, whatsapp_invite_card()),
             spacing="4",
             width="100%",
         ),

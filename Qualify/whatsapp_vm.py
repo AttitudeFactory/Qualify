@@ -599,7 +599,6 @@ HEALTH_LOW_QUALITY = (
     "Varios clientes marcaron tus mensajes como no deseados. Envía menos promociones "
     "por unos días y escribe solo a quien aceptó recibirlas."
 )
-DETAILS_TOGGLE = "Ver detalles"
 
 
 def health_display(

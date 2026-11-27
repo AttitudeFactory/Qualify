@@ -350,7 +350,7 @@ app.add_page(
         TikTokConnectionsState.load,
         PinterestState.load,
         # m-25027373 (BU-A10): «Tu número › Estado» is each WhatsApp number's card here.
-        WhatsAppState.load_numbers,
+        WhatsAppState.enter_connections,
     ],
     title="Qualify · Tus redes",
 )

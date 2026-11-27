@@ -41,7 +41,8 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
     "/inbox": "Revisa los comentarios y las respuestas pendientes de tu negocio en Qualify.",
     "/conversations": "Revisa las conversaciones y las consultas de tu negocio en Qualify.",
     "/leads": "Revisa las consultas de personas interesadas en comprar a tu negocio.",
-    "/whatsapp": "Gestiona el número de WhatsApp de tu negocio en Qualify.",
+    # m-25027373: only redirects (to «Tus redes» and «Ajustes de chats»).
+    "/whatsapp": "Revisa el número de WhatsApp de tu negocio en Tus redes.",
     "/connections/whatsapp/actividad": "Mira cómo le va al número de WhatsApp de tu negocio.",
     "/whatsapp/promociones": "Envía promociones por WhatsApp a quienes aceptaron recibirlas.",
     "/chats/ajustes": "Prepara una vez lo que tus clientes ven al escribirte por chat.",

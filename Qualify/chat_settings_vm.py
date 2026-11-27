@@ -157,9 +157,9 @@ WHATSAPP_ROWS: Final[tuple[SettingRowVM, ...]] = (
 
 NO_WHATSAPP: Final = "Todavía no tienes tu número de WhatsApp conectado."
 NO_WHATSAPP_ACTION: Final = "Ver cómo conectarlo"
-#: The no-number state, with its «Pedir que conecten mi WhatsApp», is also on the menu's
-#: page — so this hub never depends on `/whatsapp` (whose Chats tab is leaving, BU-A11).
-NO_WHATSAPP_HREF: Final = SETTINGS_WHATSAPP_ROUTE
+#: m-25027373 (UX review U1): «Tus redes» has a WhatsApp card with «Pedir que conecten
+#: mi WhatsApp» when the business has no number — where every other network connects.
+NO_WHATSAPP_HREF: Final = CONNECTIONS_HREF
 NO_INSTAGRAM: Final = "Todavía no tienes una cuenta de Instagram conectada."
 NO_INSTAGRAM_ACTION: Final = "Conectar en Tus redes"
 CONNECTIONS_NOTE: Final = "¿Tu WhatsApp o tu Instagram dejó de funcionar?"

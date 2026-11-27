@@ -198,6 +198,17 @@ class WhatsAppState(rx.State):
     # Backend-only: Meta returns a code's PNG on create only; keep it for this session.
     _qr_images: dict[str, str] = {}
 
+    # -- m-25027373: what the page on screen asked for -----------------------------------
+    # Backend-only. The number its address names (`?cuenta=`, a canonical UUID), read from
+    # the browser's own address by `enter_history` (the router data of an event can still
+    # be the previous page's), and whether the page is one of this state's panel pages:
+    # «Tus redes» only reads the numbers, never a panel's leftover loads.
+    _requested_number: str = ""
+    _panel_page: bool = False
+    #: The numbers were read at least once for this session (U1: «Tus redes» offers to
+    #: connect WhatsApp only once it KNOWS there is no number, never while loading).
+    numbers_loaded: bool = False
+
     # ==================================================================================
     # Computed vars
     # ==================================================================================
@@ -209,6 +220,23 @@ class WhatsAppState(rx.State):
     @rx.var
     def has_many_numbers(self) -> bool:
         return len(self.numbers) > 1
+
+    @rx.var
+    def number_ids(self) -> list[str]:
+        """m-25027373 (review C5): the numbers read, so a «Tus redes» card without its
+        number (the read failed) keeps the card's own check instead of losing it."""
+        return [n.connection_id for n in self.numbers]
+
+    @rx.var
+    def show_connect_invite(self) -> bool:
+        """U1: «Tus redes» offers to connect WhatsApp once the numbers were read and
+        there is none (never while loading, never after a failed read)."""
+        return (
+            self.numbers_loaded
+            and not self.is_loading
+            and not self.load_error
+            and len(self.numbers) == 0
+        )
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -308,14 +336,28 @@ class WhatsAppState(rx.State):
         path, params = self._address(href)
         if path == PROMOTIONS_ROUTE:
             self.active_tab = promotions_panel(str(params.get(SUB_PARAM, "") or ""))
+            self._enter_panel_page(params)
             return None
         panel = PAGE_PANELS.get(path)
         if panel is not None:
             self.active_tab = panel
+            self._enter_panel_page(params)
             return None
         if path == WHATSAPP_ROUTE:
             return legacy_panel_target(params)
         return None
+
+    def _enter_panel_page(self, params: Mapping[str, object]) -> None:
+        self._panel_page = True
+        self._requested_number = uuid_param(params, "cuenta")
+
+    @rx.event
+    def enter_connections(self) -> rx.event.EventHandler:
+        """m-25027373: on_load of «Tus redes», where each number has its card: read the
+        numbers only — no panel's flow or list is restored there."""
+        self._panel_page = False
+        self._requested_number = ""
+        return WhatsAppState.load_numbers
 
     @rx.event
     def enter_page(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
@@ -498,6 +540,7 @@ class WhatsAppState(rx.State):
         if connection_id not in {n.connection_id for n in self.numbers}:
             return  # arrived over the wire; refuse an id the list does not hold
         self.selected_connection_id = connection_id
+        self._requested_number = connection_id  # a later re-read keeps the owner's pick
         self._reset_number_scoped()
         return rx.call_script(push_url_script(self._panel_address(self.active_tab)))
 
@@ -511,6 +554,7 @@ class WhatsAppState(rx.State):
             return False
         if connection_id != self.selected_connection_id:
             self.selected_connection_id = connection_id
+            self._requested_number = connection_id
             self._reset_number_scoped()
             self.connect_request_notice = ""
             self.connect_request_error = ""
@@ -572,8 +616,11 @@ class WhatsAppState(rx.State):
                 return  # a logout/login raced this load
             self.numbers = data
             self.is_loading = False
+            self.numbers_loaded = True
             ids = {n.connection_id for n in data}
-            requested = uuid_param(self.router.url.query_parameters, "cuenta")
+            # m-25027373: what the page asked for (`_enter_panel_page`), never the
+            # router data of this event, which can still be the previous page's.
+            requested = self._requested_number
             if requested in ids and requested != self.selected_connection_id:
                 self.selected_connection_id = requested
                 self._reset_number_scoped()
@@ -583,6 +630,9 @@ class WhatsAppState(rx.State):
 
         # m-25029798: Chats is only the number's list here; a chat (and its drawers)
         # opens in «Por responder» — an old chat address was redirected there already.
+        # m-25027373: only on a panel page — «Tus redes» reads the numbers alone.
+        if not self._panel_page:
+            return
         if self.active_tab == "menu":
             from .whatsapp_menu_state import WhatsAppMenuState
 
@@ -628,6 +678,7 @@ class WhatsAppState(rx.State):
                 self.verifying = False
                 self.connection_banner, self.connection_banner_tone = message, tone
             yield WhatsAppState.load_numbers
+            yield WhatsAppState.refresh_connection_cards
             return
         except _INFRA_ERRORS as exc:
             logger.error("whatsapp verify failed: %s", type(exc).__name__)
@@ -642,6 +693,16 @@ class WhatsAppState(rx.State):
             else:
                 self.connection_banner, self.connection_banner_tone = _VERIFY_DEGRADED, "warn"
         yield WhatsAppState.load_numbers
+        yield WhatsAppState.refresh_connection_cards
+
+    @rx.event
+    def refresh_connection_cards(self) -> rx.event.EventHandler:
+        """m-25027373 (review C1): «Verificar ahora» on a card of «Tus redes» can degrade
+        the connection; the card's own badge, notice and «Última comprobación» come from
+        `ConnectionsState`, so re-read them too (a no-op cost elsewhere: one query)."""
+        from .connections_state import ConnectionsState  # noqa: PLC0415 — import cycle
+
+        return ConnectionsState.load_connections
 
     # ==================================================================================
     # Perfil

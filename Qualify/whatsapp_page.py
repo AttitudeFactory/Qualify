@@ -54,6 +54,7 @@ from .ui import (
     mono,
     page_body,
     page_header,
+    platform_badge,
     signal_pill,
     skeleton_card,
     skeleton_rows,
@@ -339,6 +340,46 @@ def _no_numbers_state() -> rx.Component:
     )
 
 
+def whatsapp_invite_card() -> rx.Component:
+    """No WhatsApp number yet (UX review U1, m-25027373): one more card in «Tus redes»,
+    read like the Instagram invite — the network, what the owner gains, the one way to
+    get it. The texts and the request are the no-number state's own (WhatsApp numbers
+    are connected by the Qualify team, WA-05). Soft, never the page's one solid (P3)."""
+    return card(
+        rx.vstack(
+            platform_badge("whatsapp"),
+            rx.heading(NO_NUMBER_TITLE, size="4", as_="h2"),
+            rx.text("Con tu número conectado:", size="2"),
+            rx.vstack(*[_gain(text) for text in NO_NUMBER_GAINS], spacing="2", width="100%"),
+            rx.text(NO_NUMBER_NEXT, size="2", color=T.TEXT_MUTED),
+            rx.cond(
+                WhatsAppState.connect_request_notice != "",
+                callout(WhatsAppState.connect_request_notice, "ok"),
+                rx.button(
+                    rx.icon("send", size=16),
+                    NO_NUMBER_ACTION,
+                    on_click=WhatsAppState.request_connection,
+                    loading=WhatsAppState.connect_request_sending,
+                    variant="soft",
+                    size="3",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                    **_TAP,
+                ),
+            ),
+            rx.cond(
+                WhatsAppState.connect_request_error != "",
+                callout(WhatsAppState.connect_request_error, "error"),
+                rx.fragment(),
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        padding="1.25rem",
+        custom_attrs={"data-invite": "whatsapp"},
+    )
+
+
 def _on_promotions_page() -> rx.Var[bool]:
     """Whether the panel in the shared state is one of «Promociones por WhatsApp»."""
     return WhatsAppState.active_section == SECTION_PROMOTIONS
@@ -449,13 +490,16 @@ def back_to_connections() -> rx.Component:
     return _back_link(CONNECTIONS_TITLE, CONNECTIONS_ROUTE)
 
 
-def _panel_page(panel: str, title: str, subtitle: str, back: rx.Component) -> rx.Component:
-    """m-25027373: one of «Tu número»'s old panels on its own page — the same panel,
-    state, number selector (with two or more numbers) and loading, error and no-number
-    states as before; only the header and the way back are the page's."""
+def _panel_page(
+    panel: str, title: str, subtitle: str, back: rx.Component, *, selector: bool = True
+) -> rx.Component:
+    """m-25027373: one of the number's old panels on its own page — the same panel,
+    state, number selector (with two or more numbers; not where `selector` is False)
+    and loading, error and no-number states as before; only the header and the way
+    back are the page's."""
     return app_shell(
         _history(),
-        page_header(title, subtitle, number_selector(), kicker=back),
+        page_header(title, subtitle, *([number_selector()] if selector else []), kicker=back),
         _whatsapp_body(mine=_on_panel(panel)),
     )
 
@@ -474,7 +518,11 @@ def whatsapp_qr_index() -> rx.Component:
 def whatsapp_payments_index() -> rx.Component:
     """`/chats/ajustes/formas-de-pago`: the row «Formas de pago» of «Para todos tus
     chats» opens the editor itself (before, a pointer to `/whatsapp`)."""
-    return _panel_page(TAB_PAYMENTS, PAYMENTS_TITLE, PAYMENTS_HELP, back_to_chat_settings())
+    # UX review U4: no number selector — the methods are the same for every number
+    # (`SAME_FOR_ALL`, said on the page).
+    return _panel_page(
+        TAB_PAYMENTS, PAYMENTS_TITLE, PAYMENTS_HELP, back_to_chat_settings(), selector=False
+    )
 
 
 def whatsapp_activity_index() -> rx.Component:
@@ -567,8 +615,8 @@ def _kv_pill(label: str, value: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
 
 
 def number_facts(number: rx.Var) -> rx.Component:
-    """The ten Meta facts of «Tu número › Estado» (m-24842998); in «Tus redes» they sit
-    behind the card's own «Más detalles» (m-25027373)."""
+    """The Meta facts of what was «Tu número › Estado» (m-24842998); in «Tus redes»
+    they sit behind the card's own «Más detalles» (m-25027373)."""
     return rx.grid(
         rx.vstack(
             kv("Número", number.display_phone_number, mono=True),
@@ -586,7 +634,8 @@ def number_facts(number: rx.Var) -> rx.Component:
                 number.platform_status_tone,
             ),
             kv("Marca", number.brand),
-            kv("Última verificación", number.last_health_checked_at),
+            # «Última verificación» is not repeated here: the card already says
+            # «Última comprobación» (review C4).
             kv("Datos de WhatsApp al día", number.last_synced_at),
             kv("Último mensaje recibido", number.last_inbound_at),
             spacing="3",
@@ -649,24 +698,45 @@ def _for_number(connection_id: rx.Var[str], build: object) -> rx.Component:
     )
 
 
-def _card_status(number: WhatsAppNumberVM) -> rx.Component:
-    """What the owner reads first on the number's card: what «Verificar ahora» found,
-    the number's line when it says something the card's «Conectada» does not (a number
-    still connecting, paused by WhatsApp or marked as unwanted) and, when the owner
-    cannot fix it alone, «Avisar al equipo de Qualify». A disconnected number's card
-    already carries its own notice and help button (`connections_page`)."""
-    active = number.status == "active"
+def _troubled(number: WhatsAppNumberVM) -> rx.Var[bool]:
+    """A connected number whose line warns (marked as unwanted) or fails (paused by
+    WhatsApp): its «Verificar ahora» moves up, next to the line (UX review U3)."""
+    return (number.status == "active") & (
+        (number.health_tone == "warn") | (number.health_tone == "error")
+    )
+
+
+def _verify_block(number: WhatsAppNumberVM) -> rx.Component:
+    """«Verificar ahora», what it found right under it (UX review U2: never far from
+    the button) and its note."""
     return rx.vstack(
+        verify_button(number),
         rx.cond(
             _is_shown(number),
             banner(WhatsAppState.connection_banner, WhatsAppState.connection_banner_tone),
             rx.fragment(),
         ),
+        rx.text(VERIFY_NOTE, size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _card_status(number: WhatsAppNumberVM) -> rx.Component:
+    """What the owner reads first on the number's card: the number's line when it says
+    something the card's «Conectada» does not (a number still connecting, paused by
+    WhatsApp or marked as unwanted) and, then, «Verificar ahora» and — when the owner
+    cannot fix it alone — «Avisar al equipo de Qualify». A disconnected number's card
+    already carries its own notice and help button (`connections_page`)."""
+    active = number.status == "active"
+    return rx.vstack(
         rx.cond(
             (active | (number.status == "pending")) & (number.health_tone != "ok"),
             banner(number.health_label, number.health_tone),
             rx.fragment(),
         ),
+        rx.cond(_troubled(number), _verify_block(number), rx.fragment()),
         rx.cond(
             active & (number.health_tone == "error"),
             _review_block(
@@ -681,17 +751,12 @@ def _card_status(number: WhatsAppNumberVM) -> rx.Component:
 
 
 def _card_details(number: WhatsAppNumberVM) -> rx.Component:
+    """The facts and — unless it is already above (U3) — «Verificar ahora»."""
     return rx.vstack(
         number_facts(number),
         rx.cond(
-            number.status == "active",
-            rx.vstack(
-                verify_button(number),
-                rx.text(VERIFY_NOTE, size="1", color=T.TEXT_MUTED),
-                spacing="2",
-                align_items="start",
-                width="100%",
-            ),
+            (number.status == "active") & ~_troubled(number),
+            _verify_block(number),
             rx.fragment(),
         ),
         spacing="3",

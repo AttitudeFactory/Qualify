@@ -639,13 +639,16 @@ def test_a_failing_number_offers_the_review_request() -> None:
     assert needs_help(_number(status="revoked").health_label)
     assert needs_help(_number(status="degraded").health_label)
     assert not needs_help(_number().health_label)
-    source = (_HERE / "whatsapp_page.py").read_text()
-    # m-25027373: on the number's card in «Tus redes» (a disconnected number's card has
-    # its own help button) and above every other panel of the number.
-    assert 'active & (number.health_tone == "error")' in source
-    assert "WhatsAppState.request_review(number.connection_id)" in source
-    assert "WhatsAppState.number_needs_help" in source and "_review_request()" in source
     assert REVIEW_ACTION == "Avisar al equipo de Qualify"
+    # m-25027373: on the number's card in «Tus redes», bound to THAT number (a
+    # disconnected number's card has its own help button)…
+    number = rx.Var.create(_number(status="active", platform_status="BANNED"))
+    status = str(whatsapp_page._card_status(number).render())  # noqa: SLF001
+    assert _present(status, REVIEW_ACTION) and "request_review" in status
+    assert "connection_id" in status.split("request_review", 1)[1][:400]
+    # …and above every other panel of the number, through the shared state.
+    body = str(whatsapp_page.whatsapp_qr_index().render())
+    assert _present(body, REVIEW_ACTION) and "number_needs_help" in body
 
 
 def test_number_vm_carries_its_line() -> None:
@@ -853,8 +856,14 @@ def test_the_number_card_of_tus_redes_carries_estado() -> None:
         assert _present(rendered, text), text
     for text in ("Verificar ahora", "Nombre verificado", "Calidad", "Límite de mensajes"):
         assert _present(details, text), text
+    # Each action is the number's own event, with the card's id.
     assert "verify_number" in details and "request_review" in rendered
     assert ACTIVITY_ROUTE in rendered
+    # Review C4: one «last check» line, the card's own.
+    assert _present(details, "Última comprobación: ")
+    assert not _present(details, "Última verificación")
+    # Review C5: with no number read for the card, the card's own check stays.
+    assert "Comprobar ahora" in details and "number_ids" in details
 
 
 def test_the_page_never_imports_the_provider() -> None:
@@ -896,7 +905,7 @@ def test_tus_redes_loads_the_numbers() -> None:
     source = (_HERE / "Qualify.py").read_text()
     start = source.index("    connections_index,\n    route=")
     block = source[start : source.index("title=", start)]
-    assert "WhatsAppState.load_numbers" in block
+    assert "WhatsAppState.enter_connections" in block
 
 
 def test_no_whatsapp_entry_in_the_menu() -> None:
@@ -1217,3 +1226,143 @@ async def test_the_history_handler_reads_the_browsers_address(
         assert state.active_tab == TAB_TEMPLATES
     if not href and router == "/chats/ajustes":
         assert state.active_tab == TAB_MENU  # untouched
+
+
+# --- review fixes (m-25027373) ------------------------------------------------------------
+
+
+class _Lock:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+def _loadable(monkeypatch: pytest.MonkeyPatch, *ids: str) -> None:
+    """`load_numbers` on a bare state: the business has these numbers."""
+    from . import whatsapp_state
+
+    monkeypatch.setattr(
+        whatsapp_state, "numbers_for", lambda _t: [_number(connection_id=i) for i in ids]
+    )
+    _signed_in(monkeypatch, "00000000-0000-4000-8000-000000000001")
+    monkeypatch.setattr(WhatsAppState, "__aenter__", lambda self: _Lock().__aenter__())
+    monkeypatch.setattr(WhatsAppState, "__aexit__", lambda self, *a: _Lock().__aexit__())
+
+
+async def _drain_load(state: WhatsAppState) -> list:
+    return [event async for event in WhatsAppState.load_numbers.fn(state)]  # type: ignore[attr-defined]
+
+
+async def test_the_number_comes_from_the_browsers_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review C2: the page's history handler reads `?cuenta=` from the browser's own
+    address; the numbers' load selects it even when the event's router data is still the
+    previous page's (here «Tus redes», without `cuenta`)."""
+    _loadable(monkeypatch, _C, _T)
+    state = _visit("/connections")
+    await WhatsAppState.enter_history.fn(  # type: ignore[attr-defined]
+        state, {"visit": "v", "href": f"http://x/connections/whatsapp/actividad?cuenta={_T}"}
+    )
+    await _drain_load(state)
+    assert state.active_tab == TAB_ACTIVITY and state.selected_connection_id == _T
+    # A foreign or junk id selects nothing of it: the business's first number.
+    for junk in ("00000000-0000-4000-8000-0000000000ff", "<script>"):
+        state = _visit("/connections")
+        state.selected_connection_id = ""
+        await WhatsAppState.enter_history.fn(  # type: ignore[attr-defined]
+            state, {"visit": "v", "href": f"http://x/chats/ajustes/whatsapp/perfil?cuenta={junk}"}
+        )
+        await _drain_load(state)
+        assert state.selected_connection_id == _C, junk
+
+
+async def test_the_owners_pick_survives_a_re_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    _loadable(monkeypatch, _C, _T)
+    state = _visit(f"/connections/whatsapp/actividad?cuenta={_C}")
+    WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
+    await _drain_load(state)
+    assert state.selected_connection_id == _C
+    WhatsAppState.select_connection.fn(state, _T)  # type: ignore[attr-defined]
+    await _drain_load(state)  # e.g. after «Verificar ahora»
+    assert state.selected_connection_id == _T
+
+
+async def test_tus_redes_reads_the_numbers_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review C3: no panel's leftover load (the menu's flow, the promotions' lists) on
+    «Tus redes», whatever page the shared state saw last."""
+    _loadable(monkeypatch, _C)
+    for leftover in (TAB_MENU, TAB_CAMPAIGNS, TAB_TEMPLATES):
+        state = _visit("/connections")
+        state.active_tab = leftover
+        state._panel_page = True  # noqa: SLF001 — the last page was a panel page
+        assert WhatsAppState.enter_connections.fn(state) is WhatsAppState.load_numbers  # type: ignore[attr-defined]
+        assert await _drain_load(state) == [], leftover
+        assert state.numbers_loaded
+    # On the panel's own page the load still restores it.
+    state = _visit("/chats/ajustes/whatsapp")
+    WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
+    assert len(await _drain_load(state)) == 1
+
+
+async def test_verifying_also_refreshes_the_connection_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review C1: a check that degraded the connection updates the card's badge, notice
+    and «Última comprobación» (`ConnectionsState`), not only the number."""
+    from . import whatsapp_state
+    from .connections_state import ConnectionsState
+
+    async def unhealthy(*_a: object, **_k: object) -> bool:
+        return False
+
+    monkeypatch.setattr(whatsapp_state, "verify_number", unhealthy)
+    _loadable(monkeypatch, _C)
+    state = _with_numbers(_C)
+    events = [e async for e in WhatsAppState.verify_now.fn(state)]  # type: ignore[attr-defined]
+    assert WhatsAppState.refresh_connection_cards in events
+    assert WhatsAppState.load_numbers in events
+    assert (
+        WhatsAppState.refresh_connection_cards.fn(state)  # type: ignore[attr-defined]
+        is ConnectionsState.load_connections
+    )
+
+
+def test_without_a_number_tus_redes_offers_to_connect_it() -> None:
+    """UX review U1: the invite card, with the no-number state's own texts and request,
+    only once the numbers were read and there is none; the hub and Resultados lead there."""
+    from . import connections_page
+    from .chat_settings_vm import NO_WHATSAPP_HREF
+    from .results_vm import WHATSAPP_MODULE_URL
+
+    rendered = str(whatsapp_page.whatsapp_invite_card().render())
+    for text in (NO_NUMBER_TITLE, NO_NUMBER_ACTION, *NO_NUMBER_GAINS):
+        assert _present(rendered, text), text
+    assert "request_connection" in rendered
+    assert "show_connect_invite" in str(connections_page._loaded_body().render())  # noqa: SLF001
+    assert NO_WHATSAPP_HREF == WHATSAPP_MODULE_URL == "/connections"
+    state = WhatsAppState()
+    assert not state.show_connect_invite  # not read yet: no invite
+    state.numbers_loaded = True
+    assert state.show_connect_invite
+    state.numbers = [_number(connection_id=_C)]
+    assert not state.show_connect_invite
+
+
+def test_verificar_ahora_and_what_it_found_sit_together() -> None:
+    """UX review U2/U3: the result right under the button; for a number in trouble the
+    button is above the card's divider (with «Avisar…») and not repeated in the details."""
+    troubled = rx.Var.create(_number(status="active", quality_rating="RED"))
+    status = str(whatsapp_page._card_status(troubled).render())  # noqa: SLF001
+    details = str(whatsapp_page._card_details(troubled).render())  # noqa: SLF001
+    block = str(whatsapp_page._verify_block(troubled).render())  # noqa: SLF001
+    assert _present(block, "Verificar ahora") and "connection_banner" in block
+    assert block.index("Verificar ahora") < block.index("connection_banner")
+    for part in (status, details):
+        assert _present(part, "Verificar ahora")  # each behind its own condition
+
+
+def test_payments_page_has_no_number_selector() -> None:
+    """UX review U4: the methods are the same for every number."""
+    assert "select_connection" not in str(whatsapp_page.whatsapp_payments_index().render())
+    assert "select_connection" in str(whatsapp_page.whatsapp_qr_index().render())
