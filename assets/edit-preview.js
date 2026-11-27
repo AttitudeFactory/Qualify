@@ -810,6 +810,15 @@
     if (brokenText) {
       brokenText.toggleAttribute("data-on", !!(block && st.broken[block.key]));
     }
+    // ED-07 (m-25026638): a «parte con IA» not made yet — its poster (or its card) and
+    // the mark «Parte con IA 1 · se crea al tocar «Crear»» (`block.mark`) over it
+    var aiMark = host.querySelector("[data-edit-seq-ai]");
+    if (aiMark) {
+      var said = c.aiMark(st.seq, st.idx);
+      var words = aiMark.querySelector("[data-edit-seq-ai-text]");
+      if (words && words.textContent !== said) words.textContent = said;
+      aiMark.toggleAttribute("data-on", said !== "");
+    }
     host.setAttribute("data-edit-state", st.playing ? "playing" : "idle");
     // only while playing: paused, some phones never fetch (Low Power, Data Saver)
     seqWait(host, st.playing && mode === "video" ? block.url : "");

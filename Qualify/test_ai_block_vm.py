@@ -1007,3 +1007,111 @@ def test_preflight_checks_the_guide() -> None:
     assert [(p["code"], p["field"]) for p in problems] == [
         ("foreign_key", "ai_parts[0].clip_video_keys[0]")
     ]
+
+
+# -- on the Clip's timeline (the state's shapes) ---------------------------------------------
+
+
+def _media(*keys: str) -> list[dict[str, Any]]:
+    return [{"id": k, "key": k, "kind": "photo", "dur": 2.0} for k in keys]
+
+
+def test_merge_order_keeps_each_part_before_its_anchor() -> None:
+    a, b = vm.token("p1"), vm.token("p2")
+    assert vm.merge_order(["x", "y"], ["x", a, "y"], []) == ["x", "y"]  # nothing AI
+    assert vm.merge_order(["x", "y"], ["x", a, "y", b], [a, b]) == ["x", a, "y", b]
+    # «x» moved after «y» in the strip: the part stays before its anchor «y»
+    assert vm.merge_order(["y", "x"], ["x", a, "y"], [a]) == [a, "y", "x"]
+    # its anchor gone: last; a part the order does not know yet: at the very end
+    assert vm.merge_order(["x"], ["x", a, "y"], [a, b]) == ["x", a, b]
+    # a token of a part that no longer exists is dropped
+    assert vm.merge_order(["x"], [a, "x"], []) == ["x"]
+
+
+def test_timeline_items_lays_each_part_as_a_block() -> None:
+    a, b = vm.token("p1"), vm.token("p2")
+    parts = [{"uid": "p2", "plan": entry(3)}, {"uid": "p1", "plan": entry(4)}]
+    items = vm.timeline_items(_media("x", "y"), ["x", a, "y", b], parts)
+    assert [i["id"] for i in items] == ["x", a, "y", b]
+    first, second = items[1], items[3]
+    # `entry` is the place in `media.ai_parts` (the state's order), `ai_n` the track's
+    assert (first["entry"], first["ai_n"], first["src_end"]) == (1, 1, 4.0)
+    assert (second["entry"], second["ai_n"], second["src_end"]) == (0, 2, 3.0)
+    assert first["kind"] == "ai" and first["speed"] == 1.0
+    assert vm.timeline_items(_media("x"), ["x"], []) == _media("x")
+
+
+def test_place_token_never_splits_the_own_videos_pieces() -> None:
+    a = vm.token("p1")
+    media = [
+        {"id": "v", "key": "v"},
+        {"id": "v#parte-2", "key": "v"},
+        {"id": "f", "key": "f"},
+    ]
+    assert vm.place_token(["v", "f"], media, 1, a) == ["v", a, "f"]
+    assert vm.place_token(["v", "f"], media, 0, a) == [a, "v", "f"]
+    assert vm.place_token(["v", "f"], media, 9, a) == ["v", "f", a]
+
+
+def test_add_options_and_owner_mode() -> None:
+    base = (("media", "image-plus", "Foto o video"), ("text", "type", "Texto"))
+    assert vm.add_options(base, on=False) == base
+    assert [k for k, _i, _t in vm.add_options(base, on=True)] == ["media", "text", "ai_part"]
+    plan = {"mode": "reference", "mode_rule_version": 1, "mode_reason": "reel_no_people"}
+    changed = vm.with_owner_mode(plan, "reference")
+    assert changed["mode_changed_by_owner"] is True  # the rule proposed «edit»
+    assert vm.with_owner_mode(plan, "edit")["mode_changed_by_owner"] is False
+    assert vm.with_photos(entry(), ["k", "k", ""]) == {
+        **entry(),
+        "clip_image_keys": ["k"],
+        "clip_image_roles": ["product"],
+    }
+    assert vm.with_seconds(entry(), 14)["seconds"] == 10
+
+
+def test_problems_of_one_part_and_merge_shown() -> None:
+    problems = [
+        {"code": "a", "field": "ai_parts[0].mode", "text": "uno"},
+        {"code": "b", "field": "segments[1].speed", "text": "dos"},
+        {"code": "c", "field": "segments", "text": "tres"},
+        {"code": "d", "field": "ai_parts[1]", "text": "cuatro"},
+    ]
+    assert vm.problems_of(problems, 0, 1) == ["uno", "dos"]
+    assert vm.merge_shown(entry(3, analysis_id=REEL))
+    assert not vm.merge_shown(entry(3)) and not vm.merge_shown(entry(4, analysis_id=REEL))
+
+
+def test_the_new_words_are_spanish_and_say_what_to_do() -> None:
+    for text in (
+        vm.CREATE_OFF_LINE,
+        vm.TRY_OFF_LINE,
+        vm.ADDED_LINE,
+        vm.GUIDE_FULL,
+        vm.MERGE_NEXT_PHOTO,
+        vm.MERGE_NEXT_VIDEO,
+        vm.MERGE_NEXT_NONE,
+        vm.CREATE_OFF_SHORT,
+        vm.DESCRIPTION_EXAMPLE,
+        vm.GUIDE_HELP,
+        vm.PHOTOS_NONE,
+        vm.SECONDS_HELP,
+    ):
+        assert "bloque" not in text.lower(), text
+        assert text.endswith("."), text
+    assert vm.removed_line(2) == "Quitaste la parte con IA 2."
+    assert vm.mode_line(1, "edit") == (
+        "Cambiaste cómo se hace la parte con IA 1: «Igual al original»."
+    )
+    assert vm.merged_line(2, 6) == "Juntaste las partes con IA 2 y 3: ahora son una de 6 s."
+    assert vm.merge_needs_ai_next("photo") == vm.MERGE_NEXT_PHOTO
+    assert vm.merge_needs_ai_next("video") == vm.MERGE_NEXT_VIDEO
+    assert vm.merge_needs_ai_next(None) == vm.MERGE_NEXT_NONE
+    assert vm.merge_needs_ai_next("ai") == ""
+    assert vm.guide_line("audio", 1, added=True) == "Agregaste tu audio a la parte con IA 1."
+    assert vm.guide_line("video", 2, added=False) == "Quitaste tu video de la parte con IA 2."
+    assert (vm.guide_kind("a/b.MOV"), vm.guide_kind("a/b.wav"), vm.guide_kind("a/b.txt")) == (
+        "video",
+        "audio",
+        "",
+    )
+    assert vm.mode_fact(has_product=False) == "Creamos una parte nueva con tu marca."

@@ -836,6 +836,8 @@ TRIM_FREE_NOTE = (
 )
 
 #: «Revisa y crea» (design D12, 04A): the two spends, each with when it happens.
+#: Its heading (design 04A).
+REVIEW_TITLE = "Lo que usa de tu mes"
 NOW_HEAD = "Ahora, al crear"
 LATER_HEAD = "Después, al aprobar"
 NOT_COUNTED_LINE = "Si una parte no sale, no se descuenta su vista previa."
@@ -1110,6 +1112,419 @@ def ai_numbers(segments: Sequence[Mapping[str, Any]]) -> dict[int, int]:
         if is_ai_block(segment):
             out[at] = len(out) + 1
     return out
+
+
+# -- on the Clip's timeline (ED-07: the state's shapes) ---------------------------------
+#
+# The state keeps each AI part as ``{"uid": …, "plan": <VideoPartPlan as JSON>}`` in
+# `CreativeState.clip_ai_parts` — in that order they are `media.ai_parts`, so the block of
+# entry `n` is `ai_part:<n>` — and its place in the Clip's order of files
+# (`clip_sequence`) as a token ``ai:<uid>``: not a file key, so `_clip_strip` skips it,
+# and stable while blocks move (the block's id on the timeline). An AI part goes before
+# the file that followed it in that order (its «anchor»), or last.
+
+#: The token of an AI part in the Clip's order, and its block's id on the timeline.
+AI_TOKEN: Final = "ai:"
+#: The timeline's kind of an AI block (`data-tl-block="ai"`).
+TL_KIND: Final = clip_editor_vm.AI_BLOCK_KIND
+#: The mode's icon (lucide) beside its word (docs/design-system.md §5.10.1).
+MODE_ICONS: Final[Mapping[str, str]] = {
+    "reference": "wand-sparkles",
+    "edit": "copy",
+    "extend": "corner-down-right",
+}
+#: The state's mark before its word, an icon with a shape where a narrow block may hide
+#: the word (errors and warnings); the rest the dot (`.q-tl__state-dot`, "").
+STATE_ICONS: Final[Mapping[str, str]] = {
+    "queued": "clock",
+    "ready": "check",
+    "failed": "circle-x",
+    "refused": "triangle-alert",
+    "redo": "triangle-alert",
+    "expired": "triangle-alert",
+}
+#: «Agregar»'s option (≤ 16 characters, the orbit's pill) — its key and icon.
+ADD_KEY: Final = "ai_part"
+ADD_LABEL = "Parte con IA"
+ADD_ICON: Final = "sparkles"  # the ✦ of «hecho con IA» (`T.AI_ICON`, design notas §4)
+
+
+#: The panel's description field (design D10: the focus goes there once it is put).
+DESCRIPTION_FIELD_ID: Final = "q-ai-part-description"
+
+
+def focus_description_script() -> str:
+    """The focus on «¿Qué pasa en esta parte?» as soon as the panel has rendered it: it
+    tries again each frame, for up to ~2 s, until the field exists (never a fixed wait
+    that a slow phone outlasts)."""
+    return (
+        "(function () { var tries = 0; (function go() {"
+        f" var el = document.getElementById('{DESCRIPTION_FIELD_ID}');"
+        " if (el) { el.focus(); return; }"
+        " if (++tries < 120) window.requestAnimationFrame(go); })(); })()"
+    )
+
+
+def add_options(
+    base: Sequence[tuple[str, str, str]], *, on: bool
+) -> tuple[tuple[str, str, str], ...]:
+    """«Agregar»'s options with «Parte con IA» last — only `on`: off, `base` exactly. Last
+    (review): the other options keep their places, and so their `--q-orbit-i`, as on
+    `main` while the option is not drawn."""
+    return (*base, (ADD_KEY, ADD_ICON, ADD_LABEL)) if on else tuple(base)
+
+
+def switch_on() -> bool:
+    """`QUALIFY_CLIP_AI_PARTS` read as the server reads it (`ai_parts.clip_ai_parts_on`,
+    contract §1): only «on» turns it on. The screen also needs `QUALIFY_CLIP_EDITOR`."""
+    return contract_ai.clip_ai_parts_on()
+
+
+def token(uid: str) -> str:
+    """The order's token and the timeline id of the AI part `uid`."""
+    return f"{AI_TOKEN}{uid}"
+
+
+def is_token(key: str) -> bool:
+    return str(key or "").startswith(AI_TOKEN)
+
+
+def uid_of(block_id: str) -> str:
+    """The AI part a block id names ("" = not an AI block)."""
+    return block_id[len(AI_TOKEN) :] if is_token(block_id) else ""
+
+
+def new_uid(parts: Sequence[Mapping[str, Any]]) -> str:
+    """A uid none of `parts` has («p1», «p2»…): one per AI part, never reused while on."""
+    taken = {str(p.get("uid") or "") for p in parts}
+    n = len(taken) + 1
+    while f"p{n}" in taken:
+        n += 1
+    return f"p{n}"
+
+
+def plans(parts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """`media.ai_parts`: each part's entry, in the state's order — its description
+    trimmed (the field keeps it as typed)."""
+    out = []
+    for part in parts:
+        plan = dict(part.get("plan") or {})
+        plan["description"] = str(plan.get("description") or "").strip()
+        out.append(plan)
+    return out
+
+
+def merge_order(files: Sequence[str], sequence: Sequence[str], tokens: Sequence[str]) -> list[str]:
+    """The Clip's whole order: its files as `_clip_strip` orders them (`files`) with each
+    AI part's token (`tokens`, the parts that exist) before its anchor — the next file
+    after it in the order kept (`sequence`) —, last when no file follows it there, and
+    those the order does not know yet at the very end. Without tokens: `files` as they
+    are (nothing changes for a Clip with no AI part)."""
+    if not tokens:
+        return list(files)
+    known = set(files)
+    live = set(tokens)
+    anchors: dict[str, list[str]] = {}
+    last: list[str] = []
+    seen: set[str] = set()
+    for at, key in enumerate(sequence):
+        if key not in live or key in seen:
+            continue
+        seen.add(key)
+        anchor = next((k for k in sequence[at + 1 :] if k in known), None)
+        if anchor is None:
+            last.append(key)
+        else:
+            anchors.setdefault(anchor, []).append(key)
+    out: list[str] = []
+    for key in files:
+        out.extend(anchors.get(key, ()))
+        out.append(key)
+    out.extend(last)
+    out.extend(t for t in tokens if t not in seen)
+    return out
+
+
+def timeline_items(
+    media: Sequence[Mapping[str, object]],
+    order: Sequence[str],
+    parts: Sequence[Mapping[str, Any]],
+) -> list[dict[str, object]]:
+    """«Fotos y videos» with the AI parts in their places (`order`, `merge_order`'s):
+    each AI block a stretch of the timeline's own shape — ``kind`` «ai», from 0 to its
+    whole seconds at ×1, ``entry`` its place in `media.ai_parts`, ``ai_n`` its number
+    among the AI parts — so every reader (the rows, the joins, the preview, the recipe:
+    `clip_editor_vm.timeline_segments`) lays it like any block. No AI part: `media`
+    unchanged."""
+    if not parts:
+        return [dict(item) for item in media]
+    by_uid = {str(p.get("uid") or ""): (n, p) for n, p in enumerate(parts)}
+    pool: dict[str, list[dict[str, object]]] = {}
+    for item in media:
+        pool.setdefault(str(item.get("key") or ""), []).append(dict(item))
+    out: list[dict[str, object]] = []
+    count = 0
+    for key in order:
+        if not is_token(key):
+            out.extend(pool.pop(key, []))
+            continue
+        found = by_uid.get(uid_of(key))
+        if found is None:
+            continue
+        entry_at, part = found
+        count += 1
+        seconds = float(clamp_seconds((part.get("plan") or {}).get("seconds")))
+        out.append(
+            {
+                "id": key,
+                "key": key,
+                "kind": TL_KIND,
+                "src_start": 0.0,
+                "src_end": seconds,
+                "src_len": seconds,
+                "speed": 1.0,
+                "rotate": 0,
+                "entry": entry_at,
+                "ai_n": count,
+            }
+        )
+    for rest in pool.values():
+        out.extend(rest)
+    return out
+
+
+def place_token(
+    order: Sequence[str], media: Sequence[Mapping[str, object]], at: int, tok: str
+) -> list[str]:
+    """The order with `tok` put at block `at` of the timeline (`media`, AI blocks
+    included): before the file (or AI part) there — never between two pieces of the own
+    video, which stay side by side: such a place goes after the last piece —, last past
+    the end."""
+    at = min(max(int(at), 0), len(media))
+    while 0 < at < len(media) and media[at].get("key") == media[at - 1].get("key"):
+        at += 1
+    out = [key for key in order if key != tok]
+    if at >= len(media):
+        out.append(tok)
+        return out
+    anchor = str(media[at].get("key") or "")
+    out.insert(out.index(anchor) if anchor in out else len(out), tok)
+    return out
+
+
+def row_fields(
+    item: Mapping[str, object],
+    plan: Mapping[str, Any],
+    *,
+    start_s: float,
+    poster: str = "",
+    has_product: bool = True,
+) -> dict[str, str]:
+    """What an AI block's row of the track adds to `timeline_vm.media_blocks`' row: its
+    name and panel title, its accessible name (`track_block`'s `aria`), its badge and
+    the mode's icon, its second line, its state and mark, its poster (`thumb`), and no
+    handles before «Crear» (its whole seconds change in its panel: `seconds_control`)."""
+    n = int(item.get("ai_n") or 1)  # type: ignore[call-overload]
+    block = track_block(n, plan, start_s=start_s, poster=poster, has_product=has_product)
+    mode = str(plan.get("mode") or "reference")
+    return {
+        "label": block["name"],
+        "name": block["aria"],
+        "panel": f"{block['name']} · {seconds_text(int(block['seconds']))}",
+        "thumb": block["picture"],
+        "secs": "",
+        "speed_tag": "",
+        "handles": "",
+        "ai_badge": block["badge"],
+        "ai_mode_icon": MODE_ICONS.get(mode, MODE_ICONS["reference"]),
+        "ai_line": block["line"],
+        "ai_secs": seconds_text(int(block["seconds"])),
+        "ai_state": block["state"],
+        "ai_state_word": block["state_word"],
+        "ai_state_icon": STATE_ICONS.get(block["state"], ""),
+        "ai_tone": block["tone"],
+    }
+
+
+#: The live lines of the AI parts on the timeline (ED-07).
+REMOVED_LINE = "Quitaste la parte con IA {n}."
+SECONDS_LINE = "La parte con IA {n} ahora dura {s} s."
+MODE_LINE = "Cambiaste cómo se hace la parte con IA {n}: «{mode}»."
+DESCRIPTION_LINE = "Guardamos lo que contaste de la parte con IA {n}."
+PHOTOS_LINE = "Cambiaste las fotos de la parte con IA {n}."
+#: «Video o audio tuyo» put or taken out (`guide_line`).
+GUIDE_ADDED = {
+    "video": "Agregaste tu video a la parte con IA {n}.",
+    "audio": "Agregaste tu audio a la parte con IA {n}.",
+}
+GUIDE_REMOVED = {
+    "video": "Quitaste tu video de la parte con IA {n}.",
+    "audio": "Quitaste tu audio de la parte con IA {n}.",
+}
+GUIDE_FULL = "Esta parte ya tiene 3 {what} tuyos, el máximo. Quita uno para agregar otro."
+MERGED_LINE = "Juntaste las partes con IA {n} y {m}: ahora son una de {s} s."
+#: «Juntar con la siguiente» (`part_editor_vm`'s words): only for a short part of a reel
+#: with another AI part right after it — as today's sheet (`reel_merge_shown`). Why not,
+#: by what follows it (`merge_needs_ai_next`).
+MERGE_LABEL = "Juntar con la siguiente"
+_MERGE_ONLY_AI = "solo se juntan dos partes con IA seguidas."
+MERGE_NEXT_PHOTO = f"La siguiente es una foto tuya: {_MERGE_ONLY_AI}"
+MERGE_NEXT_VIDEO = f"La siguiente es un video tuyo: {_MERGE_ONLY_AI}"
+MERGE_NEXT_NONE = f"No hay otra parte después: {_MERGE_ONLY_AI}"
+#: The panel's words (design 02).
+MODE_TITLE = "¿Cómo la hacemos?"
+DESCRIPTION_TITLE = "¿Qué pasa en esta parte?"
+#: Under the field, its example only (in the help, never as a placeholder).
+DESCRIPTION_EXAMPLE = "Ej.: «Una mano acerca el vaso»."
+#: Without a reel the way is a fact, not a question (ux review): the badge, this line
+#: (with or without a product) and `NO_REEL_MODE_TEXT`.
+NO_REEL_FACT = "Creamos una parte nueva con tu producto y tu marca."
+NO_REEL_FACT_BRAND = "Creamos una parte nueva con tu marca."
+PHOTOS_TITLE = "Fotos de tu producto"
+#: No photo in the Clip yet: a photo chosen in «Foto o video» goes on the track too.
+PHOTOS_NONE = (
+    "Todavía no hay fotos en tu video. Toca «Agregar» y elige «Foto o video»: la parte con "
+    "IA la usa para mostrar tu producto, y la foto también queda en tu video."
+)
+GUIDE_HELP = (
+    "La parte con IA copia el movimiento de tu video o sigue el ritmo de tu audio. "
+    "Sirven MP4, MOV, MP3 o WAV, hasta 3 de cada uno."
+)
+
+#: Until PR 2 (m-25129406, `create_clip_with_ai_parts`) is on `main`, the server refuses
+#: a Clip with AI parts (`create_draft` → `recipe_unavailable`): «Crear» and «Probar esta
+#: parte» stay off, saying why. Flipped by the PR that wires that call — never by itself.
+AI_CREATE_BUILT: Final = False
+#: The body's words (under the editor and on «Revisa y crea», once) …
+CREATE_OFF_LINE = (
+    "Todavía no podemos crear videos con partes con IA. Si lo quieres hoy, quítalas: con tus "
+    "fotos y videos se crea igual."
+)
+#: … and the short line beside «Crear».
+CREATE_OFF_SHORT = "Para crear hoy, quita las partes con IA."
+TRY_OFF_LINE = (
+    "Todavía no podemos crear partes con IA, ni para probarlas. Por ahora, tu video se crea "
+    "solo con tus fotos y videos."
+)
+
+
+def no_business_problem() -> dict[str, str]:
+    """Review: the session's business is not known yet, so its files cannot be checked —
+    said as the contract's `ai_parts_mismatch`, never skipped in silence."""
+    return _problem("ai_parts_mismatch", "ai_parts")
+
+
+def guide_line(kind: str, n: int, *, added: bool) -> str:
+    """«Agregaste tu video a la parte con IA 1.» / «Quitaste tu audio de …»."""
+    words = GUIDE_ADDED if added else GUIDE_REMOVED
+    return words.get(kind, words["video"]).format(n=n)
+
+
+def guide_kind(key: str) -> str:
+    """`video` / `audio` by the file's type ("" = neither: not a guide)."""
+    lower = str(key or "").lower()
+    if lower.endswith(GUIDE_VIDEO_SUFFIXES):
+        return "video"
+    return "audio" if lower.endswith(GUIDE_AUDIO_SUFFIXES) else ""
+
+
+def merged_line(n: int, seconds: int) -> str:
+    return MERGED_LINE.format(n=n, m=n + 1, s=seconds)
+
+
+def merge_needs_ai_next(following_kind: str | None) -> str:
+    """Why «Juntar con la siguiente» cannot join, by what follows ("" = an AI part)."""
+    if following_kind is None:
+        return MERGE_NEXT_NONE
+    if following_kind == TL_KIND:
+        return ""
+    return MERGE_NEXT_PHOTO if following_kind == "photo" else MERGE_NEXT_VIDEO
+
+
+def mode_fact(*, has_product: bool) -> str:
+    return NO_REEL_FACT if has_product else NO_REEL_FACT_BRAND
+
+
+def removed_line(n: int) -> str:
+    return REMOVED_LINE.format(n=n)
+
+
+def seconds_line(n: int, seconds: int) -> str:
+    return SECONDS_LINE.format(n=n, s=seconds)
+
+
+def mode_line(n: int, mode: str) -> str:
+    return MODE_LINE.format(n=n, mode=MODE_SHORT.get(mode, MODE_SHORT["reference"]))
+
+
+def merge_shown(plan: Mapping[str, Any]) -> bool:
+    """«Juntar con la siguiente» shows as on today's sheet: a part of a reel under 4 s."""
+    return bool(plan.get("analysis_id")) and clamp_seconds(plan.get("seconds")) < 4
+
+
+def with_seconds(plan: Mapping[str, Any], seconds: int) -> dict[str, Any]:
+    """The entry with whole `seconds` (1-10, clamped)."""
+    return {**plan, "seconds": clamp_seconds(seconds)}
+
+
+def with_owner_mode(plan: Mapping[str, Any], mode: str) -> dict[str, Any]:
+    """The owner's choice of mode: `with_mode` plus whether it is not the rule's
+    proposal (`mode_changed_by_owner`, the golden set's label; back to the proposal, it
+    is the rule's again)."""
+    out = with_mode(plan, mode)
+    proposed = proposal_of(plan)
+    out["mode_changed_by_owner"] = bool(proposed) and proposed != mode
+    return out
+
+
+def with_photos(plan: Mapping[str, Any], keys: Sequence[str]) -> dict[str, Any]:
+    """The entry's own photos (at most the type's 9), each «Producto»."""
+    chosen = list(dict.fromkeys(str(k) for k in keys if k))[: schemas.CLIP_MAX_IMAGES]
+    return {**plan, "clip_image_keys": chosen, "clip_image_roles": ["product"] * len(chosen)}
+
+
+def with_guide(plan: Mapping[str, Any], key: str) -> tuple[dict[str, Any], str]:
+    """«Video o audio tuyo»: `key` added as a guide video or audio by its type — (the
+    entry, "") — or the entry unchanged and why not: not «Nueva» (`GUIDE_NEEDS_NEW`), a
+    file of another type (the contract's `ai_part_guide_type`), 3 of its kind already
+    (`GUIDE_FULL`)."""
+    if str(plan.get("mode") or "reference") != "reference":
+        return dict(plan), GUIDE_NEEDS_NEW
+    lower = key.lower()
+    if lower.endswith(GUIDE_VIDEO_SUFFIXES):
+        name, most = "clip_video_keys", schemas.CLIP_MAX_VIDEOS
+    elif lower.endswith(GUIDE_AUDIO_SUFFIXES):
+        name, most = "clip_audio_keys", schemas.CLIP_MAX_AUDIOS
+    else:
+        return dict(plan), refusal_text("ai_part_guide_type")
+    held = [str(k) for k in plan.get(name) or ()]
+    if key in held:
+        return dict(plan), ""
+    if len(held) >= most:
+        return dict(plan), GUIDE_FULL.format(
+            what="videos" if name == "clip_video_keys" else "audios"
+        )
+    return {**plan, name: [*held, key]}, ""
+
+
+def without_guide(plan: Mapping[str, Any], key: str) -> dict[str, Any]:
+    return {
+        **plan,
+        "clip_video_keys": [k for k in plan.get("clip_video_keys") or () if k != key],
+        "clip_audio_keys": [k for k in plan.get("clip_audio_keys") or () if k != key],
+    }
+
+
+def problems_of(problems: Sequence[Mapping[str, str]], entry_at: int, block_at: int) -> list[str]:
+    """The words of `preflight_problems` that are about ONE AI part — its entry
+    (`ai_parts[n]…`) or its block (`segments[i]…`) —, once each, in order."""
+    mine = (f"ai_parts[{entry_at}]", f"segments[{block_at}]")
+    said: list[str] = []
+    for problem in problems:
+        field = str(problem.get("field") or "")
+        if field.startswith(mine) and problem["text"] not in said:
+            said.append(problem["text"])
+    return said
 
 
 __all__ = [

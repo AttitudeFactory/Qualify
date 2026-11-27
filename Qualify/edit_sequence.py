@@ -39,6 +39,11 @@ from . import editor_preview_contract as contract
 
 _PHOTO = "photo"
 _VIDEO = "video"
+#: ED-07 (m-25026638): a «parte con IA» on the timeline (`ui.timeline_vm.AI_KIND`), timed
+#: like a video at ×1 from 0 to its seconds; its name and its mark (design 01).
+_AI = "ai"
+_AI_NAME = "Parte con IA {n}"
+_AI_MARK = "{name} · se crea al tocar «Crear»"
 _DECIMALS = 3
 
 
@@ -72,6 +77,9 @@ class PreviewBlock:
     join: str = ""
     join_s: float = 0.0
     join_dir: str = ""
+    #: ED-07 (m-25026638): a «parte con IA» not made yet shows its poster with this mark
+    #: («Parte con IA 1 · se crea al tocar «Crear»», `.q-ai-mark`); "" on every other block.
+    mark: str = ""
 
     @property
     def seconds(self) -> float:
@@ -149,7 +157,7 @@ class PreviewSequence:
         return {
             "total": _r(self.total),
             "slower": self.slower,
-            "blocks": [asdict(b) for b in self.blocks],
+            "blocks": [_block_dict(b) for b in self.blocks],
             "texts": [asdict(o) for o in self.texts],
             "effects": [asdict(o) for o in self.effects],
         }
@@ -157,6 +165,16 @@ class PreviewSequence:
     def to_json(self) -> str:
         """What the preview's `data-edit-seq` attribute carries."""
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
+
+
+def _block_dict(block: PreviewBlock) -> dict[str, Any]:
+    """A block as the script reads it. ED-07 review: `mark` only on a «parte con IA» not
+    made yet — a sequence with none (every one with `QUALIFY_CLIP_AI_PARTS` off) is the
+    same JSON as before."""
+    data = asdict(block)
+    if not data["mark"]:
+        del data["mark"]
+    return data
 
 
 # -- building ---------------------------------------------------------------------------
@@ -209,6 +227,7 @@ def _lay_out(raw: Sequence[dict[str, Any]]) -> tuple[PreviewBlock, ...]:
                 url=str(item.get("url") or ""),
                 poster=str(item.get("poster") or ""),
                 label=str(item.get("label") or ""),
+                mark=str(item.get("mark") or ""),
                 **extra,
             )
         )
@@ -330,15 +349,24 @@ def from_timeline(
     `effect_id` too (ED-04: several blocks of one effect); its row's `opacity` is the
     layer's (1 when absent)."""
     raw: list[dict[str, Any]] = []
+    ai = 0
     for n, item in enumerate(media, start=1):
         key = str(item.get("key") or item["id"])
         noun = "Foto" if item["kind"] == _PHOTO else "Video"
+        label, mark = f"{noun} {n}", ""
+        if item["kind"] == _AI:
+            # ED-07: a «parte con IA» is not made yet: its poster (or its name on the
+            # card) and the mark that says when it is made — never a playable address
+            ai += 1
+            label = _AI_NAME.format(n=ai)
+            mark = _AI_MARK.format(name=label)
         row: dict[str, Any] = {
             "key": key,
             "kind": item["kind"],
-            "url": _url(key, sources),
+            "url": "" if item["kind"] == _AI else _url(key, sources),
             "poster": str(item.get("thumb") or ""),
-            "label": f"{noun} {n}",
+            "label": label,
+            "mark": mark,
             # m-25114465: its transition in, and the one into the next block
             "tail_s": item.get("tail_s", 0.0),
             "join": item.get("join_drawn", ""),

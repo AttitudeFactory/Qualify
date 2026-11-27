@@ -911,6 +911,12 @@ def _inside(span: Sequence[float], total: float | None) -> tuple[float, float] |
     return (start, end) if end > start else None
 
 
+#: ED-07 (m-25026638): a «parte con IA» on «Fotos y videos» (`data-tl-block="ai"`,
+#: docs/design-system.md §5.10.1) — the timeline's kind; its recipe stretch is
+#: `contract.AI_PART_KIND` (`ai_block_vm.timeline_items` builds it).
+AI_BLOCK_KIND = "ai"
+
+
 def timeline_segments(media: Sequence[Mapping[str, object]]) -> tuple[contract.SourceSegment, ...]:
     """B6 (m-25048789): the recipe's stretches from the timeline's blocks
     (`timeline_media`), in their order — a photo is a still stretch (`kind` photo, from 0
@@ -920,6 +926,24 @@ def timeline_segments(media: Sequence[Mapping[str, object]]) -> tuple[contract.S
     for item in media:
         key = str(item.get("key") or "")
         if not key:
+            continue
+        if item.get("kind") == AI_BLOCK_KIND:
+            # ED-07 (m-25026638): a «parte con IA» — its entry of `media.ai_parts`
+            # (`entry`), from 0 to its whole seconds, upright, at ×1 (contract §2)
+            seconds = round(float(item.get("src_end") or 0.0), 2)  # type: ignore[arg-type]
+            entry = int(item.get("entry") or 0)  # type: ignore[call-overload]
+            if seconds > 0:
+                out.append(
+                    contract.SourceSegment(
+                        f"{contract.AI_PART_KIND}:{entry}",
+                        0.0,
+                        seconds,
+                        1.0,
+                        0,
+                        contract.AI_PART_KIND,
+                        _joined_in(item, bool(out)),
+                    )
+                )
             continue
         if item.get("kind") == "photo":
             seconds = round(float(item.get("dur") or 0.0), 2)  # type: ignore[arg-type]
@@ -1038,7 +1062,7 @@ def speed_facts(
     faster than recorded; a video stretch «Velocidad» could make faster — none when no
     speed is on for the own video (`speed_offered` False, e.g. under 6 s)."""
     fast = any(float(s.speed or 1.0) > 1.0 + 1e-6 for s in segments)
-    video = speed_offered and any(s.kind != "photo" for s in segments)
+    video = speed_offered and any(s.kind == "video" for s in segments)  # ED-07: not an AI one
     return fast, video
 
 
@@ -1173,6 +1197,8 @@ EDITOR_ACTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "photo": ((ROTATE, "rotate-cw"), (REMOVE, "trash-2")),
     "text": ((TEXT_EDIT, "pencil"), (REMOVE, "trash-2")),
     "effect": ((REMOVE, "trash-2"),),
+    # ED-07: a «parte con IA» — its panel holds the rest (mode, words, seconds…)
+    AI_BLOCK_KIND: ((REMOVE, "trash-2"),),
 }
 #: «Velocidad» of the editor's video: «Normal» or one of «Cámara rápida»'s speeds.
 SPEED_NORMAL = "1"
@@ -1656,8 +1682,15 @@ def block_slug(
     block_id: str,
 ) -> str:
     """The address's word for a block (`video-2`, `foto-1`, `texto-1`, `efecto-1`): its
-    kind and its number as the owner reads it («Video 2 de 3» is `video-2`)."""
+    kind and its number as the owner reads it («Video 2 de 3» is `video-2`). ED-07: a
+    «parte con IA» is `parte-ia-1`, counted among the AI parts only, as its name."""
+    ai = 0
     for n, item in enumerate(media, start=1):
+        if item.get("kind") == AI_BLOCK_KIND:
+            ai += 1
+            if item.get("id") == block_id:
+                return f"parte-ia-{ai}"
+            continue
         if item.get("id") == block_id:
             return f"{'foto' if item.get('kind') == 'photo' else 'video'}-{n}"
     counts = {"text": 0, "effect": 0}
