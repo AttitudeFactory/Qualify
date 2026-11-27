@@ -468,3 +468,60 @@ def test_sigue_a_la_anterior_without_the_part_right_before_or_from_another_momen
         _refused(world, made.clip_id, entry=_follower(analysis, shot=3), position=2)
         == "extend_not_same_moment"
     )
+
+
+def test_sigue_a_la_anterior_after_a_part_whose_redo_failed_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of m-25142982: its old file still plays, but the producer only continues a
+    made part — a follower would wait for ever."""
+    monkeypatch.setenv(EXTEND_SWITCH, "draft")
+    _split_cuts_checked(monkeypatch)
+    world = _world()
+    made, analysis = _split_made(world)
+    part = made.part_ids[0]
+    _actions(world).redo_part(
+        tenant_id=TENANT_ID, user_id=USER_ID, clip_id=made.clip_id, part_id=part
+    )
+    _fail(world, part)
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == GENERATED
+    assert (
+        _refused(world, made.clip_id, entry=_follower(analysis), position=2)
+        == "extend_needs_block_before"
+    )
+
+
+def test_a_part_left_out_offers_nothing_and_holds_no_part_of_the_six() -> None:
+    """Review of m-25142982: an added part whose owner's time ran out is not in the video.
+    While a second added part is awaited, only that one can be retried or removed — never
+    a vista previa for the one left out — and it does not count in the 6."""
+    world = _world()
+    made, _ = _made_clip(world)
+    left_out = _add(world, made.clip_id)
+    _fail(world, left_out)
+    world.clock[0] += cap.CLIP_AI_PART_OWNER_WAIT + timedelta(minutes=1)
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == GENERATED
+    view = _actions(world).parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and view.can_add_part
+    assert next(p for p in view.parts if p.part_id == left_out).actions == ()
+    second = _add(world, made.clip_id)
+    assert world.repo.parents[second] == (made.clip_id, 4)
+    _fail(world, second)
+    view = _actions(world).parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and view.needs_attention
+    actions = {p.part_id: p.actions for p in view.parts}
+    assert actions[left_out] == () and "retry" in actions[second]
+    for act_on in (_actions(world).retry_part, _actions(world).remove_part):
+        snap = _Snapshot(world)
+        with pytest.raises(cap.ClipAiPartsRefused) as refused:
+            act_on(tenant_id=TENANT_ID, user_id=USER_ID, clip_id=made.clip_id, part_id=left_out)
+        assert refused.value.code == "part_not_in_video"
+        assert snap.same(world)
+
+
+def test_a_position_off_the_timeline_is_a_moved_clip() -> None:
+    world = _world()
+    made, _ = _made_clip(world)
+    assert _refused(world, made.clip_id, position=9) == "clip_moved"

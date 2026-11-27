@@ -352,7 +352,15 @@ def is_added_part_brief(brief: ContentBrief) -> bool:
     """m-25142982: a MADE Clip's brief with an AI block added by its owner
     (`clip_ai_part_actions.add_part`) — AI blocks in a brief the server derived
     (`derived_from_brief_id`, which «Crear» always clears). Pure."""
-    return has_ai_part_blocks(brief) and brief.media.derived_from_brief_id is not None
+    media = brief.media
+    return (
+        has_ai_part_blocks(brief)
+        and media.derived_from_brief_id is not None
+        # review of m-25142982: never a Clip of another path the server derived
+        and not media.clip_avatar_plan
+        and not media.clip_avatar_block
+        and not media.character_scenes
+    )
 
 
 def entry_slots(brief: ContentBrief, rows: Sequence[AiPartRow] = ()) -> dict[int, int]:

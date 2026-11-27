@@ -450,11 +450,12 @@ class ClipAiPartActions(ClipAiPartsService):
         waiting = clip.status == DRAFTING and has_ai_part_blocks(brief)
         made = clip.status in _MADE
         played = set(self._played(tenant_id, clip_id, brief).values()) if made else set()
+        waited = _waited_slots(brief, rows) if waiting else None
         views = []
         for row in rows:
             state = part_state(row)
             actions: tuple[str, ...] = ()
-            if waiting and state == "failed":
+            if waiting and state == "failed" and (waited is None or row.slot in waited):
                 actions = (*_failed_actions(row), "change_mode")
                 follower = next((r for r in rows if r.slot > row.slot and not r.removed), None)
                 if not (follower and follower.mode == "extend" and follower.status == DRAFTING):
@@ -482,7 +483,9 @@ class ClipAiPartActions(ClipAiPartsService):
                     notice_text=FOLLOWS_OLD_VERSION_TEXT if stale else None,
                 )
             )
-        failed = [r for r in rows if part_state(r) == "failed"]
+        failed = [
+            r for r in rows if part_state(r) == "failed" and (waited is None or r.slot in waited)
+        ]
         return ClipAiPartsView(
             clip_id=clip_id,
             clip_status=clip.status,
@@ -639,6 +642,7 @@ class ClipAiPartActions(ClipAiPartsService):
             return False
         if seen.phase != "waiting":
             raise ClipAiPartsRefused("clip_not_waiting", CLIP_NOT_WAITING_TEXT)
+        _refuse_unless_waited(seen)
         state = part_state(seen.row)
         if state == "creating":
             raise ClipAiPartsRefused("part_being_made", PART_BEING_MADE_TEXT)
@@ -793,8 +797,9 @@ class ClipAiPartActions(ClipAiPartsService):
         rows = self._parts.parts_of(tenant_id=tenant_id, clip_id=clip_id)
         if any(r.status == DRAFTING and not r.removed for r in rows):
             return False
+        out = self._out_of_video(tenant_id, clip_id, brief, rows)
         return (
-            self._place_problem(self._child_places(tenant_id, clip_id)) is None
+            self._place_problem(self._child_places(tenant_id, clip_id), out) is None
             and len(brief.media.segments) < SEGMENTS_MAX
         )
 
@@ -888,9 +893,12 @@ class ClipAiPartActions(ClipAiPartsService):
             # a part being made again, or the finals of an approval: nothing changes now
             raise ClipAiPartsRefused("clip_busy", CLIP_BUSY_TEXT)
         places = self._child_places(tenant_id, clip_id)
-        problem = self._place_problem(places)
+        problem = self._place_problem(places, self._out_of_video(tenant_id, clip_id, current, rows))
         if problem is not None:
             raise ClipAiPartsRefused(*problem)
+        if not 0 <= position <= len(current.media.segments):
+            # the owner's screen showed another timeline (the Clip moved meanwhile)
+            raise ClipAiPartsRefused("clip_moved", CLIP_MOVED_TEXT, raw=f"position {position}")
         slot = max((place for place, _ in places), default=0) + 1
         if len(current.media.segments) >= SEGMENTS_MAX:
             raise ClipAiPartsRefused("too_many_blocks", ADD_TOO_MANY_BLOCKS_TEXT)
@@ -929,7 +937,9 @@ class ClipAiPartActions(ClipAiPartsService):
         if entry.mode == "extend":
             if not extend_available():
                 raise PartsExtendUnavailable()
-            previous = self._plan_right_before(tenant_id, clip_id, current, rows, position)
+            previous = self._plan_right_before(
+                tenant_id, clip_id, current, rows, position, places=places, slot=slot
+            )
             refused = extend_problem(entry, previous)
             if refused is not None:
                 raise ClipAiPartsRefused(*refused, block=position)
@@ -1105,16 +1115,30 @@ class ClipAiPartActions(ClipAiPartsService):
             )
         )
 
+    def _out_of_video(
+        self, tenant_id: UUID, clip_id: UUID, brief: ContentBrief, rows: Sequence[AiPartRow]
+    ) -> frozenset[int]:
+        """The places of the made Clip's AI parts that failed and that it does not play —
+        an added part whose owner's time ran out (the Clip was assembled without it):
+        they hold no part of the 6 in the video (review of m-25142982), though they keep
+        their place."""
+        played = set(self._played(tenant_id, clip_id, brief).values())
+        return frozenset(r.slot for r in rows if part_state(r) == "failed" and r.id not in played)
+
     @staticmethod
-    def _place_problem(places: Sequence[tuple[int, bool]]) -> tuple[str, str] | None:
-        """`(code, owner text)` when no child can be added: 6 kept AI children already
-        (parts and scenes together, §13.2), or every place 1-6 taken (a removed part keeps
-        its place: its charges and versions stay). Pure."""
+    def _place_problem(
+        places: Sequence[tuple[int, bool]], out_of_video: frozenset[int] = frozenset()
+    ) -> tuple[str, str] | None:
+        """`(code, owner text)` when no child can be added: 6 kept AI children already in
+        the video (parts and scenes together, §13.2; `out_of_video` not counted), or every
+        place 1-6 taken (a removed or left-out part keeps its place: its charges and
+        versions stay). Pure."""
         from qualify_api.creative.video_pipeline.ai_parts import (  # noqa: PLC0415
             AI_CHILDREN_MAX,
         )
 
-        if sum(1 for _, removed in places if not removed) >= AI_CHILDREN_MAX:
+        kept = sum(1 for place, removed in places if not removed and place not in out_of_video)
+        if kept >= AI_CHILDREN_MAX:
             return "too_many_ai_children", ADD_MAX_PARTS_TEXT
         if max((place for place, _ in places), default=0) >= AI_CHILDREN_MAX:
             return "no_place_left", NO_PLACE_LEFT_TEXT
@@ -1127,15 +1151,27 @@ class ClipAiPartActions(ClipAiPartsService):
         brief: ContentBrief,
         rows: Sequence[AiPartRow],
         position: int,
+        *,
+        places: Sequence[tuple[int, bool]],
+        slot: int,
     ) -> VideoPartPlan | None:
         """For a part added at `position`: the plan of the AI part it would continue —
         the kept part with the highest place (the one `part_extend.pick_previous` gives
         the new, highest place), and ONLY when the block right before `position` plays
-        that part's file (the rule of «Rehacer», review of m-25129407). None otherwise."""
+        that part's file (the rule of «Rehacer», review of m-25129407). Review of
+        m-25142982: that part is made now (a failed «Rehacer» leaves nothing the producer
+        continues: `pick_previous` would wait for ever), and it IS the kept child right
+        below the new place (`slot`) — no other child (a scene, an avatar block) between.
+        None otherwise."""
         kept = [r for r in rows if not r.removed]
         if position == 0 or not kept:
             return None
         previous = max(kept, key=lambda r: r.slot)
+        if part_state(previous) != "ready":
+            return None
+        below = [place for place, removed in places if not removed and place < slot]
+        if not below or max(below) != previous.slot:
+            return None
         before = brief.media.segments[position - 1]
         if self._played(tenant_id, clip_id, brief).get(before.key) != previous.id:
             return None
@@ -1212,6 +1248,8 @@ class ClipAiPartActions(ClipAiPartsService):
                 )
             )
         made = seen.phase == "made"
+        if not made:
+            _refuse_unless_waited(seen)
         state = part_state(seen.row)
         if not made and state != "failed":
             raise ClipAiPartsRefused("part_not_failed", PART_NOT_FAILED_TEXT)
@@ -1658,6 +1696,26 @@ class ClipAiPartActions(ClipAiPartsService):
             }
         )
         repo.replace_brief(tenant_id=tenant_id, draft_id=part_id, user_id=user_id, brief=fresh)
+
+
+def _waited_slots(brief: ContentBrief, rows: Sequence[AiPartRow]) -> frozenset[int] | None:
+    """m-25142982 (review): the places a made Clip waiting for a part its owner added
+    waits for (that part's); None for a Clip waiting for its first «Crear» (all its
+    parts). Its other parts — one left out when the owner's time ran out, one whose
+    «Rehacer» did not come out — offer nothing while it waits. Pure."""
+    from qualify_api.creative.clip_ai_parts import is_added_part_brief  # noqa: PLC0415
+
+    if not is_added_part_brief(brief):
+        return None
+    return frozenset(entry_slots(brief, rows).values())
+
+
+def _refuse_unless_waited(seen: _Seen) -> None:
+    """A part the waiting Clip does not wait for (`_waited_slots`): `part_not_in_video`,
+    nothing written — never a vista previa for something the video will not play."""
+    waited = _waited_slots(seen.brief, seen.rows)
+    if waited is not None and seen.row.slot not in waited:
+        raise ClipAiPartsRefused("part_not_in_video", PART_NOT_IN_VIDEO_TEXT)
 
 
 def _failed_actions(row: AiPartRow) -> tuple[str, ...]:
