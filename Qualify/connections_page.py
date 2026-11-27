@@ -1081,7 +1081,12 @@ def _loaded_body() -> rx.Component:
             rx.cond(ConnectionsState.show_instagram_invite, _instagram_invite_card()),
             rx.foreach(ConnectionsState.connections, connection_card),
             # m-25027373 (UX review U1): without a WhatsApp number, the way to ask for one.
-            rx.cond(WhatsAppState.show_connect_invite, whatsapp_invite_card()),
+            rx.cond(
+                WhatsAppState.show_connect_invite
+                & ~ConnectionsState.is_loading
+                & ~ConnectionsState.has_whatsapp,
+                whatsapp_invite_card(),
+            ),
             spacing="4",
             width="100%",
         ),

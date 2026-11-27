@@ -1366,3 +1366,59 @@ def test_payments_page_has_no_number_selector() -> None:
     """UX review U4: the methods are the same for every number."""
     assert "select_connection" not in str(whatsapp_page.whatsapp_payments_index().render())
     assert "select_connection" in str(whatsapp_page.whatsapp_qr_index().render())
+
+
+async def test_a_new_load_hides_the_invite_until_it_lands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review N1: after a switch from a business without a number, «Tus redes» does not
+    offer to connect WhatsApp while the new business's numbers are being read."""
+    from . import whatsapp_state
+
+    seen: list[bool] = []
+
+    def numbers(_tenant: object) -> list:
+        seen.append(state.show_connect_invite)
+        return [_number(connection_id=_C)]
+
+    _loadable(monkeypatch, _C)
+    monkeypatch.setattr(whatsapp_state, "numbers_for", numbers)
+    state = _visit("/connections")
+    state.numbers_loaded = True  # the previous business had no number
+    await _drain_load(state)
+    assert seen == [False] and state.numbers_loaded and not state.show_connect_invite
+
+
+def test_a_whatsapp_card_never_sits_beside_the_invite() -> None:
+    """Review N1: a WhatsApp connection without its phone row has its card; the invite
+    also needs no WhatsApp connection on screen."""
+    from . import connections_page
+    from .connections_state import ConnectionsState
+    from .connections_vm import ConnectionVM
+
+    body = str(connections_page._loaded_body().render())  # noqa: SLF001
+    assert "show_connect_invite" in body and "has_whatsapp" in body
+    state = ConnectionsState()
+    assert not state.has_whatsapp
+    blank = {f.name: [] if "list" in str(f.type) else "" for f in dataclasses.fields(ConnectionVM)}
+    state.connections = [ConnectionVM(**{**blank, "platform": "instagram"})]  # type: ignore[arg-type]
+    assert not state.has_whatsapp
+    state.connections = [ConnectionVM(**{**blank, "platform": "whatsapp"})]  # type: ignore[arg-type]
+    assert state.has_whatsapp
+
+
+async def test_a_raced_load_frees_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review N2: a logout/login during the read leaves `is_loading` clear, so the next
+    load runs (and the invite can show)."""
+    from . import whatsapp_state
+
+    _loadable(monkeypatch, _C)
+    first, second = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+    tenants = iter([first])  # the session at the start; then another one logged in
+
+    async def get_state(self: WhatsAppState, cls: type) -> object:
+        return SimpleNamespace(session_tenant_id=next(tenants, second))
+
+    monkeypatch.setattr(WhatsAppState, "get_state", get_state)
+    monkeypatch.setattr(whatsapp_state, "tenant_uuid", lambda t: t)
+    state = _visit("/connections")
+    await _drain_load(state)
+    assert state.is_loading is False and state.numbers == []

@@ -595,6 +595,9 @@ class WhatsAppState(rx.State):
             if self.is_loading:
                 return
             self.is_loading = True
+            # Re-read for whoever is in session now (a business switch keeps this
+            # state): until it lands, «Tus redes» offers nothing (review N1).
+            self.numbers_loaded = False
             self.load_error = ""
             session_tenant_id, tenant_id = await self._session_tenant()
         if tenant_id is None:
@@ -613,7 +616,9 @@ class WhatsAppState(rx.State):
         async with self:
             auth = await self.get_state(AuthState)
             if session_tenant_id != auth.session_tenant_id:
-                return  # a logout/login raced this load
+                # a logout/login raced this load; free the guard so the next one runs
+                self.is_loading = False
+                return
             self.numbers = data
             self.is_loading = False
             self.numbers_loaded = True
