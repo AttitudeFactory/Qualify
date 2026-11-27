@@ -2519,10 +2519,17 @@ class MediaProducer:
         #: m-25128784: the saved characters (m-25129385's `character_reference`), byte for
         #: byte. None = a character scene fails before any spend («no disponible»).
         character_references: Any = None,
+        #: m-25128784 PR 2: a Clip's made scenes as its assembly lays them
+        #: (`character_scene.clip_scene_sources` over the scenes' store): given (tenant,
+        #: clip, brief), the scenes or None when they are not all made. None = no lookup:
+        #: a Clip with scenes fails closed (never assembled without them).
+        character_scene_videos: Callable[[UUID, UUID, ContentBrief], Sequence[Any] | None]
+        | None = None,
     ) -> None:
         self._store = store
         self._clip_avatar_sources = clip_avatar_sources
         self._character_references = character_references
+        self._character_scene_videos = character_scene_videos
         self._render_client = render_client
         self._clip_composer = clip_composer
         self._part_windows = part_windows
@@ -5820,6 +5827,16 @@ class MediaProducer:
             return MediaOutcome(
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=LOCAL_SOURCE_FAILED_TEXT
             )
+        scenes = self._clip_scenes(tenant_id, draft_id, brief)
+        if scenes is None:
+            # m-25128784: a Clip with a «Personajes» track is never assembled without its
+            # scenes (no lookup wired, or not all made) — fails closed, nothing read
+            from qualify_api.creative.character_scene import SCENE_BROKEN_TEXT  # noqa: PLC0415
+
+            logger.warning("draft %s: its character scenes cannot be laid here", draft_id)
+            return MediaOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value, detail=SCENE_BROKEN_TEXT
+            )
         save = _Saver(self._store, tenant_id, draft_id, revision, heartbeat)
         return produce_local(
             tenant_id=tenant_id,
@@ -5835,7 +5852,23 @@ class MediaProducer:
             brand=self._video_text_brand(tenant_id, brief, kit),
             render_client=self._render_client,
             generated_sources=blocks,
+            scenes=scenes,
         )
+
+    def _clip_scenes(
+        self, tenant_id: UUID, draft_id: UUID, brief: ContentBrief
+    ) -> tuple[Any, ...] | None:
+        """m-25128784 PR 2: the Clip's made scenes to lay (`character_scene.SceneSource`),
+        () for a Clip without a «Personajes» track (nothing looked up), None when it has
+        one and they cannot be read here or are not all made."""
+        if not brief.media.character_scenes:
+            return ()
+        lookup = self._character_scene_videos
+        if lookup is None:
+            return None
+        # a database error goes up as it is: the run is tried again, never made without
+        found = lookup(tenant_id, draft_id, brief)
+        return tuple(found) if found is not None else None
 
     def _generated_sources(self, tenant_id: UUID, brief: ContentBrief) -> Mapping[str, Any] | None:
         """m-25112920: the recipe's stretches (videos and photos) that are files of the

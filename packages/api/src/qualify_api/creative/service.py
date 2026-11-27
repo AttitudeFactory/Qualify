@@ -2451,8 +2451,13 @@ class ContentService:
         clip_avatar_clock: Callable[[], datetime] | None = None,
         clip_failure_outbox: Any = None,
         clip_ai_parts_store: Any = None,
+        character_scene_store: Any = None,
     ) -> None:
         self._media = media
+        #: m-25128784 PR 2: the character scenes a Clip waits for
+        #: (`character_scene.SceneRowsStore`; `PostgresCharacterSceneStore` on Postgres
+        #: when None).
+        self._character_scene_store = character_scene_store
         #: m-25129406: the AI parts a Clip waits for (`clip_ai_parts.AiPartsStore`;
         #: `PostgresAiPartsStore` on Postgres when None).
         self._clip_ai_parts_store = clip_ai_parts_store
@@ -3451,6 +3456,80 @@ class ContentService:
             raise UnknownDraft(str(draft.id))
         return fresh, brief
 
+    def _clip_scenes_ready(
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+    ) -> tuple[DraftRecord, ContentBrief] | None:
+        """m-25128784 PR 2 (ADR 50 §12): a Clip with a «Personajes» track
+        (`character_scene.scenes_gate`). Every scene made → the Clip is made from the
+        SAME brief, once: the local assembly lays each scene over its window. Otherwise
+        it waits (`ClipBlocksWait`, its sign of life stamped, nothing read past the scenes,
+        written or paid) — a scene seen failed for the first time is stamped on a new
+        brief with its failure email in the same fenced write (m-25120319). The owner's
+        72 h out, or a scene that is ours to blame (never created, made without its video),
+        fail the Clip (None): its creations come back with the run's refund, and the
+        vistas previas of the scenes the vendor never delivered (all of them when ours) in
+        the same write as the failure."""
+        from qualify_api.creative.character_scene import (  # noqa: PLC0415
+            SCENE_BROKEN,
+            SCENE_BROKEN_TEXT,
+            SCENE_FAILED,
+            SCENE_FAILED_TEXT,
+            PostgresCharacterSceneStore,
+            ScenesBroken,
+            ScenesExpired,
+            ScenesReady,
+            ScenesSeen,
+            scenes_gate,
+        )
+        from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
+
+        store = self._character_scene_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                raise RuntimeError("a Clip waiting for its character scenes needs their store")
+            store = PostgresCharacterSceneStore()
+        verdict = scenes_gate(
+            tenant_id=tenant_id,
+            clip_id=draft.id,
+            brief=brief,
+            store=store,
+            now=self._clip_avatar_clock(),
+        )
+        if isinstance(verdict, ScenesReady):
+            logger.info(
+                "clip %s: its %d scene(s) are made; assembled now", draft.id, len(verdict.scenes)
+            )
+            return draft, brief
+        if isinstance(verdict, ScenesExpired | ScenesBroken):
+            reason, detail = (
+                (SCENE_FAILED, SCENE_FAILED_TEXT)
+                if isinstance(verdict, ScenesExpired)
+                else (SCENE_BROKEN, SCENE_BROKEN_TEXT)
+            )
+            try:
+                self._fail_waiting_clip(
+                    tenant_id,
+                    draft,
+                    reason=reason,
+                    detail=detail,
+                    give_back=list(verdict.give_back),
+                    stop_children=True,
+                )
+            except CheckpointError:
+                raise
+            except Exception as exc:
+                # the failure and its give-backs are ONE write: rolled back together
+                raise CheckpointError("the Clip's failure and its give-backs") from exc
+            logger.info("clip %s: failed waiting for its character scenes (%s)", draft.id, reason)
+            return None
+        if isinstance(verdict, ScenesSeen):
+            self._replace_clip_brief(tenant_id, draft, verdict.brief, failures=verdict.failures)
+            logger.info("clip %s: a character scene failed; waits for its owner", draft.id)
+        beat = self._heartbeat(tenant_id, draft.id)
+        if beat is not None:
+            beat()
+        raise ClipBlocksWait(f"clip {draft.id} waits for its character scenes")
+
     def _generate(self, *, tenant_id: UUID, draft: DraftRecord) -> None:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
@@ -3464,15 +3543,13 @@ class ContentService:
                 return  # the owner's time ran out: failed, its creations given back
             draft, brief = ready
         if brief.kind is ContentKind.CLIP and brief.media.character_scenes:
-            # m-25128784 (ADR 50 §12): a Clip with a «Personajes» track is never assembled
-            # without its scenes. Until the scenes' wait and assembly land (the next PR of
-            # the ticket) it waits — its sign of life stamped, nothing read nor paid
-            from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
-
-            beat = self._heartbeat(tenant_id, draft.id)
-            if beat is not None:
-                beat()
-            raise ClipBlocksWait(f"clip {draft.id} waits for its character scenes")
+            # m-25128784 (ADR 50 §12): a Clip with a «Personajes» track waits for its
+            # scenes (`ClipBlocksWait`, before any read or paid call of its own), then is
+            # made ONCE from the same brief with each scene laid over its window
+            ready = self._clip_scenes_ready(tenant_id, draft, brief)
+            if ready is None:
+                return  # failed waiting: its creations and undelivered vistas given back
+            draft, brief = ready
         from qualify_api.creative.clip_ai_parts import has_ai_part_blocks  # noqa: PLC0415
 
         if has_ai_part_blocks(brief):
@@ -4670,6 +4747,7 @@ class ContentService:
 
             raise ApproveWholeVideo()
         self._refuse_ai_parts_approval(tenant_id, record)
+        self._refuse_scenes_approval(tenant_id, record)
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
@@ -5016,6 +5094,25 @@ class ContentService:
         except CreationNotOffered:
             return 0, 0
         return price.videos, price.video_seconds
+
+    def _refuse_scenes_approval(self, tenant_id: UUID, record: DraftRecord) -> None:
+        """m-25128784 PR 2: a top-level Clip with character scenes is not approved until
+        PR 3 charges their seconds and asks their 1080p finals — refused with nothing
+        written. Reads only a Clip's own brief: nothing for any other piece."""
+        if record.parent_draft_id is not None:
+            return
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None or brief.kind is not ContentKind.CLIP:
+            return
+        if not brief.media.character_scenes:
+            return
+        from qualify_api.creative.character_scene import (  # noqa: PLC0415
+            APPROVE_UNAVAILABLE,
+            APPROVE_UNAVAILABLE_TEXT,
+        )
+        from qualify_api.creative.clip_avatar import ClipAvatarRefused  # noqa: PLC0415
+
+        raise ClipAvatarRefused(APPROVE_UNAVAILABLE, APPROVE_UNAVAILABLE_TEXT)
 
     def _refuse_ai_parts_approval(self, tenant_id: UUID, record: DraftRecord) -> None:
         """m-25129406: a top-level Clip with «parte con IA» children is not approved until
