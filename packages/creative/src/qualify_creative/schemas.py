@@ -743,6 +743,22 @@ RecipeRefusal = Literal[
     # m-25114465: appended, never reordered
     "transition_on_first_block",  # a Clip's first block has no block before it to blend with
     "transitions_longer_than_block",  # a Clip's block shorter than the transitions eating it
+    # m-25129405 (ADR 50 §13.2, the «parte con IA» block): appended, never reordered
+    "switched_off",  # an AI block while `QUALIFY_CLIP_AI_PARTS` is off
+    "too_many_blocks",  # more than `SEGMENTS_MAX` blocks, own and AI together
+    "too_many_ai_children",  # more than `PARTS_MAX` AI parts and character scenes together
+    "extend_needs_block_before",  # «Sigue a la anterior» with no video or AI part right before
+    "edit_needs_reel_window",  # «Igual al original» without the reel's cuts it copies
+    "ai_part_with_speed",  # an AI block played at a speed other than 1
+    "own_media_too_short",  # AI blocks with scenes or avatars and under 3 s of own material
+    "ai_parts_mismatch",  # an AI block and the `ai_parts` entries do not match one to one
+    "ai_part_length_mismatch",  # an AI block that does not last its entry's `seconds`
+    "ai_part_outside_clip",  # an AI block outside a Clip made of blocks (`local`)
+    "ai_part_local",  # an entry of `ai_parts` in mode `local`: that is own blocks
+    "ai_part_own_recipe",  # an entry with its own effects, texts, stretches or join
+    "ai_part_guide_type",  # «Video o audio tuyo» that is not an MP4/MOV video or MP3/WAV audio
+    "extend_after_own_media",  # «Sigue a la anterior» right after the owner's video or photo
+    "extend_not_same_moment",  # «Sigue a la anterior» not split from the same take as before
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -763,9 +779,23 @@ VIDEO_TEXT_FADE_DEFAULT_S = 0.5
 #: ED-15 (D-T1): a still photo among the stretches lasts 1 to 5 s of the video.
 PHOTO_SECONDS_MIN = 1.0
 PHOTO_SECONDS_MAX = 5.0
-#: What a stretch is made from: a stretch of a video, or a still photo held on screen.
-SegmentKind = Literal["video", "photo"]
-SEGMENT_KINDS: tuple[str, ...] = get_args(SegmentKind)
+#: What a stretch is made from: a stretch of a video, or a still photo held on screen —
+#: the owner's own material (`SEGMENT_KINDS`: the kinds the Clip editor writes today).
+#: m-25129405 (ADR 50 §13.2): or `ai_part`, a block made by AI — see `SourceSegment`.
+SegmentKind = Literal["video", "photo", "ai_part"]
+SEGMENT_KINDS: tuple[str, ...] = ("video", "photo")
+AI_PART_KIND = "ai_part"
+#: m-25129405: an `ai_part` block's `key` names its entry of `MediaInputs.ai_parts` —
+#: `ai_part:<n>`, `n` its position in that tuple from 0 (`ai_part_key`). Never a file.
+AI_PART_KEY_PREFIX = "ai_part:"
+_AI_PART_KEY = re.compile(r"^ai_part:([0-9])$")
+
+
+def ai_part_key(at: int) -> str:
+    """The `key` of the `ai_part` block that points to `MediaInputs.ai_parts[at]`."""
+    return f"{AI_PART_KEY_PREFIX}{at}"
+
+
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
 #: ED-13 (m-25029108; Deivid, 2026-11-23): the backgrounds a video text is drawn on — the
@@ -1078,7 +1108,14 @@ class SourceSegment(BaseModel):
     given explicitly is read as None: a cut is the absence of a transition, so a Clip
     whose joins are all cuts serializes — and digests — exactly as before the field
     existed (`transition_in` None is never dumped). Whether it is offered, built, not on
-    the first block and short enough for its blocks is `validate_recipe`'s."""
+    the first block and short enough for its blocks is `validate_recipe`'s.
+
+    m-25129405 (ADR 50 §13.2): `kind="ai_part"` is a block made by AI — a «parte con
+    IA», a child Clip made by Seedance. Its `key` is not a file but `ai_part:<n>`
+    (`ai_part_key`), the entry `n` (from 0) of `MediaInputs.ai_parts` that says how it is
+    made (a `VideoPartPlan`, unchanged). It lasts `end_s` from `start_s` 0, upright; its
+    `transition_in` is its join as any block's. Every other rule (×1, its length = its
+    entry's `seconds`, the switch) is `validate_recipe`'s, each with its code."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1107,10 +1144,21 @@ class SourceSegment(BaseModel):
         """How long the stretch lasts in the video, at its speed (derived, never stored)."""
         return (self.end_s - self.start_s) / self.speed
 
+    @property
+    def ai_part_at(self) -> int | None:
+        """m-25129405: the entry of `MediaInputs.ai_parts` an `ai_part` block points to
+        (from 0); None for the owner's own video or photo."""
+        found = _AI_PART_KEY.match(self.key) if self.kind == AI_PART_KIND else None
+        return int(found.group(1)) if found else None
+
     @model_validator(mode="after")
     def _coherent(self) -> SourceSegment:
         if self.end_s <= self.start_s:
             raise ValueError("a stretch of video ends after it starts")
+        if self.kind == AI_PART_KIND and (
+            self.ai_part_at is None or self.start_s != 0 or self.rotate != 0
+        ):
+            raise ValueError("an AI block names its entry (ai_part:<n>) and starts at 0, upright")
         if self.kind == "photo":
             if self.start_s != 0:
                 raise PydanticCustomError(
@@ -1949,6 +1997,12 @@ class MediaInputs(BaseModel):
     #: Video by parts, a CHILD (a `CLIP` draft with `parent_draft_id`): its place in the
     #: parent's plan. Its `duration_seconds` is then the part's `generation_seconds`.
     part: PartRef | None = None
+    #: m-25129405 (ADR 50 §13.2): a normal `local` Clip's «partes con IA» — what each
+    #: `ai_part` block of `segments` is made from (its `key` is `ai_part:<n>`, `n` the
+    #: position here from 0), one entry per block, each a `VideoPartPlan` unchanged. Its
+    #: join is the block's `transition_in`, never the entry's. Empty on every other brief
+    #: and on every one stored before it. Checked by `validate_recipe`.
+    ai_parts: tuple[VideoPartPlan, ...] = Field(default=(), max_length=PARTS_MAX)
     #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
     #: when the plan came from a reel or the owner built it himself.
     parts_provenance: PartsProvenance | None = None

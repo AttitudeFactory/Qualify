@@ -164,7 +164,7 @@ REFUSAL_TEXT: Final[dict[str, str]] = {
     STYLE_UNKNOWN: "Elige cómo quieres a tu personaje: dibujo animado o realista.",
     DESCRIPTION_SHORT: "Cuéntanos un poco más cómo es tu personaje.",
     DESCRIPTION_LONG: (f"Tu descripción es muy larga. Déjala en {DESCRIPTION_MAX} letras o menos."),
-    NAME_INVALID: f"Ponle a tu personaje un nombre de hasta {NAME_MAX} letras.",
+    NAME_INVALID: f"Ponle un nombre a tu personaje, de 1 a {NAME_MAX} letras.",
     NAME_TAKEN: "Ya tienes un personaje con ese nombre. Elige otro.",
     NOT_FOUND: "No encontramos ese personaje. Puede que ya lo hayas borrado.",
     NOT_READY: "Ese dibujo todavía se está haciendo. Espera un momento y elígelo de nuevo.",
@@ -196,9 +196,7 @@ FAILURE_TEXT: Final[dict[str, str]] = {
 #: The whole round failed (`DrawingRound.failure_text`); a round that paid something counts
 #: for the day (`rounds_today`), and then the owner is told.
 ROUND_FAILED_TEXT: Final = "Ningún dibujo salió. Puedes volver a pedirlos."
-ROUND_FAILED_COUNTED_TEXT: Final = (
-    f"Esta vez cuenta como uno de tus {DAILY_ROUNDS} pedidos del día."
-)
+ROUND_FAILED_COUNTED_TEXT: Final = f"Esta vez cuenta como uno de tus {DAILY_ROUNDS} pedidos de hoy."
 
 
 def failure_text(reason: str | None) -> str:

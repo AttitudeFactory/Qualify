@@ -461,6 +461,7 @@ def test_names_are_unique_per_business_and_bounded() -> None:
         with pytest.raises(bc.CharacterRefused) as refused:
             service.rename_character(TENANT, BRAND, second.id, name=bad)
         assert refused.value.code == bc.NAME_INVALID
+        assert refused.value.text == "Ponle un nombre a tu personaje, de 1 a 40 letras."
     renamed = service.rename_character(TENANT, BRAND, second.id, name="Don Pepe")
     assert renamed.name == "Don Pepe" and first.name == "Personaje 0"
 
@@ -702,7 +703,7 @@ def test_a_round_whose_three_options_dropped_the_connection_counts_for_the_day()
     assert failed.status == bc.ROUND_FAILED and failed.counts_for_the_day
     assert failed.failure_text == (
         "Ningún dibujo salió. Puedes volver a pedirlos. "
-        "Esta vez cuenta como uno de tus 2 pedidos del día."
+        "Esta vez cuenta como uno de tus 2 pedidos de hoy."
     )
     assert service.list_characters(TENANT, BRAND).rounds_left_today == 1
 

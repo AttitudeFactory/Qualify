@@ -39,7 +39,14 @@ from uuid import UUID
 
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as shared_brief
-from qualify_api.referentes import competitors, reel_analysis, reel_runs, reels, reviewed_reels
+from qualify_api.referentes import (
+    competitors,
+    manual_search,
+    reel_analysis,
+    reel_runs,
+    reels,
+    reviewed_reels,
+)
 from qualify_api.referentes.reel_analysis_types import AnalysisRef, ReelSource
 from qualify_api.referentes.reel_store import ReelRunStore
 from qualify_api.referentes.reviewed_reels import ReelFilters, ReviewedReelsStore
@@ -372,6 +379,27 @@ def read_competitor_now(
     return reels_competitors_vm.read_state(answer)
 
 
+# --------------------------------------------------------------------------------------
+# RF-14 (m-25129383): «Buscar reels nuevos»
+# --------------------------------------------------------------------------------------
+
+
+def search_state(
+    tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None
+) -> manual_search.SearchNow:
+    """Today's «Buscar reels nuevos» of the brand (`manual_search.search_state`): whether it
+    is running, for the button. Postgres only — never queues, never pays."""
+    return manual_search.search_state(tenant_id, brand_id, store=store)
+
+
+def search_reels_now(
+    tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None
+) -> manual_search.SearchNow:
+    """«Buscar reels nuevos» (`manual_search.search_now`): queues the brand's search of
+    today — once — inside the business's cap. Never pays here: the reels-worker does."""
+    return manual_search.search_now(tenant_id, brand_id, store=store)
+
+
 __all__ = [
     "BRIEF_HASHTAGS",
     "brand_brief",
@@ -379,6 +407,8 @@ __all__ = [
     "competitor_rows",
     "cover_path",
     "read_competitor_now",
+    "search_reels_now",
+    "search_state",
     "ensure_first_run",
     "has_brief",
     "load_ideas",

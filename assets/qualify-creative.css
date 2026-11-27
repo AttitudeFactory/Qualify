@@ -700,6 +700,19 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-reels-bar .q-reels-bar__wide { display: flex; }
   .q-reels-bar .q-reels-bar__narrow { display: none; }
 }
+/* The option rows of the «Filtros» sheet, the dropdowns and «Tus competidores» (Deivid,
+   2026-11-26): mark, name and second line («Instagram · Te inspira») on the left edge, at
+   the group name's indent (both 0.75rem), not centred as Radix's base button does. */
+.q-reels-option.rt-Button { justify-content: flex-start; text-align: start; }
+.q-reels-option.rt-Button > .rt-Flex { align-items: flex-start; text-align: start; }
+/* RF-14 (m-25129383): «Buscar reels nuevos» goes after «Competidores», before «Quitar
+   filtros». Its words show from 1000 px of bar; between 760 and 1000 px it is its icon only
+   (44 px, its words in `aria-label` and `title`), so the line never wraps (measured live at
+   ~780 px: the chips keep 92-117 px). */
+.q-reels-bar .q-reels-bar__search-words { display: none; }
+@container (min-width: 1000px) {
+  .q-reels-bar .q-reels-bar__search-words { display: inline; }
+}
 /* Stock on the product screen (plan-integracion-stock R2, 2026-10-16): the bank's name
    over each thumbnail, the author under it (one line, ellipsis) and the credit line the
    banks ask for wherever their results show. */
