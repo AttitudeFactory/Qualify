@@ -65,7 +65,10 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   - Los logos anchos (el del negocio 1 es una palabra) quedan chicos en cajas pensadas para logos cuadrados.
   - Sin anglicismos ni precios inventados.
 - **Recorte de la foto:** ver `docs/spike-sistema-visual-marca.md` §7.4.
-- **Memoria del render:** ver §7.5 del mismo documento.
+- **Memoria del render** (imagen de producción, 1536m, concurrencia 1):
+  - la pieza más pesada (producto de Bianki, 9:16) tiene un pico de 327 MB y tarda 0,8 s (2,1 s en frío);
+  - una historia de SISVIS-002 tiene un pico de 237 MB y tarda 1,2–1,6 s;
+  - detalle en `docs/spike-sistema-visual-marca.md` §7.5.
 - **Métricas anónimas:** `packages/api/evals/sistema_visual/sisvis002_metrics.json`.
 - **Hojas de contacto:** solo en disco local, bajo `/Users/herwin/dev/qualify-eval-out/sistema-visual/sisvis-002/`.
 

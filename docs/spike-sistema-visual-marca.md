@@ -357,4 +357,28 @@ un tope de US$15. Detalle de las llamadas en
 
 ### 7.5 Memoria y tiempo de `brand_still` en la imagen de render de producción
 
-(se completa con la medida)
+**Cómo se midió:**
+
+- Imagen construida desde la rama con `packages/render/Dockerfile` (arm64, igual que el servidor),
+  corriendo con `--memory 1536m --memory-swap 1536m` y `RENDER_CONCURRENCY=1`, como el `mem_limit`
+  de `deploy/docker-compose.prod.yml`.
+- Las piezas pasan por la API HTTP real: `POST /assets`, `POST /render` y consulta de
+  `GET /jobs/{id}` (`packages/api/evals/sistema_visual/render_memprobe.py`).
+- La memoria es el `memory.peak` del cgroup del contenedor: Node + Chromium + el bundle cargado.
+
+| Pieza | Tiempo por imagen (3 corridas) | Pico de memoria del contenedor |
+|---|---|---|
+| Bianki, producto (9:16: foto del local de 650 KB, recorte de 1600 px, 2 fuentes propias) | 2,07 s en frío; 0,83 y 0,78 s después | **327 MB** |
+| SISVIS-002, historia (9:16: foto de teléfono 1080×1440, fuentes de Google por red) | 1,29 / 1,17 / 1,57 s | **237 MB** (contenedor recién iniciado; 58 MB antes de la primera pieza) |
+| SISVIS-002, producto (4:5) | 1,15 / 1,12 / 1,03 s | menos de 327 MB (el pico no subió) |
+
+- En reposo: 79–103 MB.
+- **Margen:** la pieza más pesada usa el 21 % del límite de 1536 MB y tarda menos de 2,1 s, contra
+  los 10 minutos que aguanta la cola. La condición 3 del criterio de la épica se cumple con holgura.
+
+**Hallazgo en la construcción:** con el Dockerfile tal cual, el paso `npx remotion bundle` se quedó
+sin memoria de Node (`JavaScript heap out of memory`) en la VM de Docker Desktop (8 GB). Pasó dándole
+4 GB de heap a ese paso, en una copia local del Dockerfile que no se publicó. No se sabe si pasa en
+CI ni si `brand_still` lo empeora: hay que mirar el job `docker-render` cuando esta rama se proponga.
+Si hace falta, es una línea (`NODE_OPTIONS=--max-old-space-size=4096` en ese paso) y solo afecta la
+construcción, no el límite de 1536 MB en marcha.
