@@ -1732,6 +1732,38 @@ class _Saver:
         return key
 
 
+class _FinalSaver(_Saver):
+    """m-25129408: a `_Saver` whose names start with `final-` (an approved Clip assembled
+    again with its children's finals never takes its preview's key) and that records the
+    sha256 of each file it keeps (`digests`, by key: the final's review hash)."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.digests: dict[str, str] = {}
+
+    def __call__(self, name: str, data: bytes, content_type: str) -> str:
+        key = super().__call__(f"final-{name}", data, content_type)
+        self.digests[key] = hashlib.sha256(data).hexdigest()
+        return key
+
+    def key_for(self, name: str) -> str:
+        return super().key_for(f"final-{name}")
+
+
+def _with_keys(brief: ContentBrief, aliases: Mapping[str, str]) -> ContentBrief:
+    """`brief` with each video stretch whose file is a key of `aliases` playing its value
+    instead (m-25129408: a child's final read as its preview, for provenance only)."""
+    if not aliases:
+        return brief
+    segments = tuple(
+        s.model_copy(update={"key": aliases[s.key]})
+        if s.kind == "video" and s.key in aliases
+        else s
+        for s in brief.media.segments
+    )
+    return brief.model_copy(update={"media": brief.media.model_copy(update={"segments": segments})})
+
+
 class VoiceResolver(Protocol):
     """Which voice reads a brand's script (`voice_access.BrandVoiceResolver`)."""
 
@@ -5856,6 +5888,82 @@ class MediaProducer:
             generated_sources=blocks,
             scenes=scenes,
         )
+
+    def assemble_clip_final(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        revision: int,
+        heartbeat: Callable[[], None] | None,
+        aliases: Mapping[str, str],
+    ) -> tuple[MediaOutcome, str | None]:
+        """m-25129408 (ADR 50 §13.4): an approved Clip assembled again with its AI
+        children's 1080p finals (`clip_final.final_brief`) by the same local assembly as
+        its preview — no vendor, cost 0, only in the creative worker. Its files are kept
+        under `final-*` names of the Clip's revision, so the preview's file is never
+        overwritten (the owner keeps it if this fails). `aliases`: each final's file → the
+        preview file of the same child, so «hecho con IA» and each part's provenance are
+        read from the child's own asset row. Returns the outcome and the video's sha256."""
+        from qualify_api.creative.queue_dispatch import queue_enabled  # noqa: PLC0415
+        from qualify_api.creative.video_pipeline.local import produce_local  # noqa: PLC0415
+
+        run = current_preparation()
+        try:
+            allowed = run is not None or queue_enabled()
+        except ValueError:  # a malformed switch: fail closed
+            allowed = False
+        found = self._generated_sources(tenant_id, _with_keys(brief, aliases))
+        if found is None:
+            from qualify_api.creative.video_pipeline.local import (  # noqa: PLC0415
+                LOCAL_SOURCE_FAILED_TEXT,
+            )
+
+            return (
+                MediaOutcome(
+                    failure=FailureReason.INVALID_PARAMETERS.value,
+                    detail=LOCAL_SOURCE_FAILED_TEXT,
+                ),
+                None,
+            )
+        by_preview = dict(found)
+        blocks = {
+            **by_preview,
+            **{
+                final: by_preview[preview]
+                for final, preview in aliases.items()
+                if preview in by_preview
+            },
+        }
+        scenes = self._clip_scenes(tenant_id, draft_id, brief)
+        if scenes is None:
+            from qualify_api.creative.character_scene import SCENE_BROKEN_TEXT  # noqa: PLC0415
+
+            return (
+                MediaOutcome(
+                    failure=FailureReason.INVALID_PARAMETERS.value, detail=SCENE_BROKEN_TEXT
+                ),
+                None,
+            )
+        save = _FinalSaver(self._store, tenant_id, draft_id, revision, heartbeat)
+        outcome = produce_local(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brief=brief,
+            store=self._store,
+            save=save,
+            beat=heartbeat,
+            allowed=allowed,
+            run=run,
+            brand=self._video_text_brand(tenant_id, brief, kit),
+            render_client=self._render_client,
+            generated_sources=blocks,
+            scenes=scenes,
+        )
+        key = outcome.media[0].object_key if outcome.media else None
+        return outcome, save.digests.get(key) if key else None
 
     def _clip_scenes(
         self, tenant_id: UUID, draft_id: UUID, brief: ContentBrief

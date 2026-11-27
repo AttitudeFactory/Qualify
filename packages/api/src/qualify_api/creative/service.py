@@ -2096,10 +2096,26 @@ class PostgresContentRepository:
             row.updated_at = datetime.now(UTC)
             session.flush()
             draft = session.get(orm.ContentDraft, draft_id)
+            kept_status = (media.params.get("draft") or {}).get("status")
+            clip_parent = None
             if (
                 draft is not None
                 and draft.parent_draft_id is not None
-                and (media.params.get("draft") or {}).get("status") == "part_final"
+                and kept_status in ("part_final", "final_ready", "final")
+            ):
+                from qualify_api.creative.clip_final import clip_parent_of, open_clip_final
+
+                clip_parent = clip_parent_of(session, draft_id)
+                if clip_parent is not None:
+                    # m-25129408: an AI child's 1080p is kept — its approved Clip is
+                    # assembled again once EVERY child's is (same transaction as the
+                    # child's own write); never a video by parts' join
+                    open_clip_final(session, clip_parent)
+            if (
+                draft is not None
+                and draft.parent_draft_id is not None
+                and clip_parent is None
+                and kept_status == "part_final"
             ):
                 from qualify_api.creative.parts import mark_parent_dirty, open_parent_join_final
 
@@ -2452,8 +2468,12 @@ class ContentService:
         clip_failure_outbox: Any = None,
         clip_ai_parts_store: Any = None,
         character_scene_store: Any = None,
+        clip_final_store: Any = None,
     ) -> None:
         self._media = media
+        #: m-25129408: where an approved Clip's final with its AI children's 1080p goes
+        #: (`clip_final.ClipFinalStore`; `PostgresClipFinalStore` on Postgres when None).
+        self._clip_final_store = clip_final_store
         #: m-25128784 PR 2: the character scenes a Clip waits for
         #: (`character_scene.SceneRowsStore`; `PostgresCharacterSceneStore` on Postgres
         #: when None).
@@ -4779,8 +4799,13 @@ class ContentService:
             from qualify_api.creative.part_final import ApproveWholeVideo
 
             raise ApproveWholeVideo()
-        self._refuse_ai_parts_approval(tenant_id, record)
-        self._refuse_scenes_approval(tenant_id, record)
+        # m-25129408 (ADR 50 §13.4 with §12.4): a Clip with AI children (parts and/or
+        # character scenes) is approved on ONE path — their seconds, their finals and the
+        # Clip assembled again with them
+        if self._clip_ai_children(tenant_id, record):
+            return self._approve_clip_children(
+                tenant_id=tenant_id, clip_id=draft_id, variant_id=variant_id, user_id=user_id
+            )
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
@@ -5128,50 +5153,529 @@ class ContentService:
             return 0, 0
         return price.videos, price.video_seconds
 
-    def _refuse_scenes_approval(self, tenant_id: UUID, record: DraftRecord) -> None:
-        """m-25128784 PR 2: a top-level Clip with character scenes is not approved until
-        PR 3 charges their seconds and asks their 1080p finals — refused with nothing
-        written. Reads only a Clip's own brief: nothing for any other piece."""
-        if record.parent_draft_id is not None:
-            return
-        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
-        if brief is None or brief.kind is not ContentKind.CLIP:
-            return
-        if not brief.media.character_scenes:
-            return
-        from qualify_api.creative.character_scene import (  # noqa: PLC0415
-            APPROVE_UNAVAILABLE,
-            APPROVE_UNAVAILABLE_TEXT,
-        )
-        from qualify_api.creative.clip_avatar import ClipAvatarRefused  # noqa: PLC0415
+    # -- a Clip with AI children, approved on ONE path (m-25129408, ADR 50 §13.4) -------
 
-        raise ClipAvatarRefused(APPROVE_UNAVAILABLE, APPROVE_UNAVAILABLE_TEXT)
-
-    def _refuse_ai_parts_approval(self, tenant_id: UUID, record: DraftRecord) -> None:
-        """m-25129406: a top-level Clip with «parte con IA» children is not approved until
-        PR 4 (§13.4) charges their seconds and asks their finals — refused with nothing
-        written. One read, only for a Clip; nothing for any other piece."""
+    def _clip_ai_children(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
+        """The AI children of a top-level Clip — its «parte con IA» children and its
+        character scenes (`clip_final.ClipChild`), by slot; () for anything else, for a
+        Clip without them, and without the children its owner removed. An avatar block is
+        not one (its seconds go with `_charge_clip_blocks`). Fails closed: a Clip that
+        may have AI children on a repository that cannot list them raises."""
         if record.parent_draft_id is not None:
-            return
+            return ()
         kind_of = getattr(self._repo, "brief_kind", None)
+        brief: ContentBrief | None = None
         if callable(kind_of):
             kind = kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
         else:
             brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
             kind = None if brief is None else brief.kind.value
         if kind != ContentKind.CLIP.value:
-            return
-        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
-            PostgresAiPartsStore,
-            refuse_ai_parts_approval,
+            return ()
+        from qualify_api.creative.clip_final import ClipChild, child_kind  # noqa: PLC0415
+
+        parts_of = getattr(self._repo, "parts_of", None)
+        if not callable(parts_of):
+            from qualify_api.creative.clip_ai_parts import has_ai_part_blocks  # noqa: PLC0415
+
+            brief = brief or self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+            store = self._clip_ai_parts_store
+            if brief is not None and (
+                brief.media.character_scenes
+                or has_ai_part_blocks(brief)
+                or (store is not None and store.parts_of(tenant_id=tenant_id, clip_id=record.id))
+            ):
+                # never approved (nor charged) without reading the children it plays
+                raise RuntimeError("a Clip with AI children needs a repository that lists them")
+            return ()
+        found: list[Any] = []
+        for child in parts_of(tenant_id=tenant_id, parent_id=record.id):
+            child_brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=child.brief_id)
+            what = child_kind(child_brief)
+            if what is not None and child_brief is not None:
+                found.append(ClipChild(child, what, child_brief))
+        return tuple(found)
+
+    def _clip_video(self, tenant_id: UUID, record: DraftRecord) -> ImageRecord | None:
+        """The Clip's assembled video (its active version's)."""
+        videos = [
+            m
+            for m in self._repo.media_for(tenant_id=tenant_id, draft_id=record.id)
+            if m.media_type == "video"
+        ]
+        return min(videos, key=lambda m: m.position) if videos else None
+
+    def _videos_only(self, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
+        media = self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id)
+        return tuple(
+            sorted((m for m in media if m.media_type == "video"), key=lambda m: m.position)
         )
 
-        store = self._clip_ai_parts_store
-        if store is None:
-            if not isinstance(self._repo, PostgresContentRepository):
-                return
-            store = PostgresAiPartsStore()
-        refuse_ai_parts_approval(store, tenant_id=tenant_id, clip_id=record.id)
+    def _final_store(self) -> Any:
+        store = self._clip_final_store
+        if store is None and isinstance(self._repo, PostgresContentRepository):
+            from qualify_api.creative.clip_final import PostgresClipFinalStore  # noqa: PLC0415
+
+            store = PostgresClipFinalStore()
+        return store
+
+    def _open_clip_final(self, tenant_id: UUID, clip_id: UUID) -> None:
+        store = self._final_store()
+        if store is not None:
+            store.open(tenant_id=tenant_id, clip_id=clip_id)
+
+    def _clip_plays_children(
+        self, tenant_id: UUID, brief: ContentBrief, video: ImageRecord, children: Sequence[Any]
+    ) -> bool:
+        """Whether the Clip the owner saw plays each child as it is now: an AI part's file
+        (its preview, or its kept 1080p) is a stretch of the Clip's recipe; a scene's video
+        row is the one the assembly laid (`params.local.character_scenes`). A child that
+        is not in the video is never charged with it."""
+        from qualify_api.creative.clip_final import child_final_key  # noqa: PLC0415
+
+        keys = {s.key for s in brief.media.segments if s.kind == "video"}
+        local = (video.params or {}).get("local")
+        laid = (
+            {
+                str(entry.get("draft_id")): str(entry.get("asset_id"))
+                for entry in local.get("character_scenes") or ()
+                if isinstance(entry, Mapping)
+            }
+            if isinstance(local, Mapping)
+            else {}
+        )
+        for child in children:
+            # a child made without a vendor draft (no `params.draft`) plays its own file
+            assets = self._repo.draft_videos_for(
+                tenant_id=tenant_id, draft_id=child.id
+            ) or self._videos_only(tenant_id, child.id)
+            if not assets:
+                return False
+            asset = assets[0]
+            if child.kind == "ai_part":
+                files = {asset.object_key, child_final_key(asset.params, asset.object_key)}
+                if not keys & {f for f in files if f}:
+                    return False
+            elif laid.get(str(child.id)) != str(asset.id):
+                return False
+        return True
+
+    def _approve_clip_children(
+        self, *, tenant_id: UUID, clip_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> DraftDetail:
+        """HITL #2 for a Clip with AI children (§13.4): approved once, its children's
+        seconds charged, their 1080p finals ordered and the Clip assembled again with
+        them (`clip_final`). Under the Clip's row lock on Postgres, so a double tap waits
+        and then finds it approved — nothing charged or ordered twice."""
+        if isinstance(self._repo, PostgresContentRepository):
+            with tenant_unit_of_work(tenant_id) as session:
+                session.execute(
+                    text("SELECT id FROM content_drafts WHERE id = :c FOR UPDATE"), {"c": clip_id}
+                )
+                scored = self._approve_clip_children_locked(tenant_id, clip_id, variant_id, user_id)
+        else:
+            scored = self._approve_clip_children_locked(tenant_id, clip_id, variant_id, user_id)
+        if scored is not None:
+            # the operator's verdict, on the generation's trace — after the lock is let go
+            variant, revision = scored
+            review.score_approval(
+                draft_id=clip_id,
+                revision=revision,
+                ordinal=variant.ordinal,
+                copy=variant.copy,
+                edited_copy=variant.edited_copy,
+            )
+        return self._require_detail(tenant_id=tenant_id, draft_id=clip_id)
+
+    def _approve_clip_children_locked(
+        self, tenant_id: UUID, clip_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> tuple[VariantRecord, int] | None:
+        """Refused with NOTHING written nor charged: the variant is not the Clip's, the
+        copy fails the approval guard, the Clip is not waiting for approval
+        (`InvalidTransition`), a child is not made (`clip_children_not_ready`) or is not
+        the one the Clip plays (`clip_children_changed`), a child's draft expired
+        (`DraftExpired`), or the month cannot pay EVERY child's requested seconds
+        (`NotEnoughCreations`, all or nothing). Otherwise, in one transaction: the
+        seconds of every child not charged yet on its own row at its generation's revision
+        (`charged_videos_many`, with the Clip's own videos and avatar blocks), the Clip and
+        its children approved through the state machine, the Clip's video marked
+        `clip_final_pending`, each child's final ordered (the queue's outbox commits with
+        it) and the Clip's `clip_final` run opened. Idempotent: the same approval again
+        charges, writes and orders nothing (None). The variant and revision approved, for
+        the verdict on its trace."""
+        from qualify_api.creative.clip_avatar import ClipAvatarRefused  # noqa: PLC0415
+        from qualify_api.creative.clip_final import (  # noqa: PLC0415
+            CHILDREN_CHANGED,
+            CHILDREN_CHANGED_TEXT,
+            CHILDREN_NOT_READY,
+            CHILDREN_NOT_READY_TEXT,
+            CLIP_FINAL_PENDING,
+            FINISH_CLIP_FINAL,
+            expired_children,
+        )
+        from qualify_api.creative.creations import VideoCharge  # noqa: PLC0415
+
+        # read again under the lock: a double tap finds what the first one wrote
+        record = self._require_draft(tenant_id=tenant_id, draft_id=clip_id)
+        variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
+        if variant is None or variant.draft_id != clip_id:
+            raise UnknownVariant(str(variant_id))
+        children = self._clip_ai_children(tenant_id, record)
+        video = self._clip_video(tenant_id, record)
+        if record.status == APPROVED and record.selected_variant_id == variant_id:
+            # a double tap, another tab: what the first approval did stands
+            logger.info("clip %s is approved already: nothing charged or ordered", clip_id)
+            return None
+        if self._approval_guard is not None:
+            self._approval_guard.check(
+                tenant_id=tenant_id, draft_id=clip_id, copy=variant.edited_copy or variant.copy
+            )
+        new_status = apply_transition(
+            record.status, DraftTrigger.APPROVE, selected_variant_id=variant_id
+        )
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if video is None or brief is None:
+            raise ClipAvatarRefused(
+                CHILDREN_NOT_READY, CHILDREN_NOT_READY_TEXT, raw="the Clip has no video"
+            )
+        for child in children:
+            if child.record.status not in (GENERATED, APPROVED):
+                raise ClipAvatarRefused(
+                    CHILDREN_NOT_READY,
+                    CHILDREN_NOT_READY_TEXT,
+                    raw=f"child {child.id} is {child.record.status}",
+                )
+        if not self._clip_plays_children(tenant_id, brief, video, children):
+            raise ClipAvatarRefused(CHILDREN_CHANGED, CHILDREN_CHANGED_TEXT)
+        waiting = {child.id: self._waiting_drafts(tenant_id, child.id) for child in children}
+        if expired_children(waiting):
+            raise DraftExpired()
+        # §13.4.2 (D6/D29): every child's REQUESTED seconds not charged yet, on its own
+        # row at the revision of the generation the Clip plays, with the Clip's own videos
+        # and avatar blocks — ONE call, all or nothing, before any write
+        revisions = {
+            child.id: self._generation_revision(tenant_id, child.record) for child in children
+        }
+        charges: list[VideoCharge] = []
+        own_videos, own_seconds = self._videos_of(tenant_id, record)
+        if own_videos:
+            charges.append(VideoCharge(record.id, record.revision, own_videos, own_seconds))
+        for child in children:
+            videos, seconds = self._videos_of(tenant_id, child.record)
+            if videos:
+                charges.append(VideoCharge(child.id, revisions[child.id], videos, seconds))
+        charges.extend(self._clip_avatar_charges(tenant_id, record))
+        charged: list[VideoCharge] = []
+        if charges and self._creations is not None:
+            charged = list(
+                self._creations.charged_videos_many(
+                    tenant_id=tenant_id, brand_id=record.brand_id, charges=charges
+                )
+            )
+        try:
+            moment = datetime.now(UTC)
+            self._repo.set_approved(
+                tenant_id=tenant_id,
+                draft_id=clip_id,
+                new_status=new_status,
+                variant_id=variant_id,
+                user_id=user_id,
+                approved_at=moment,
+            )
+            for child in children:
+                if child.record.status == APPROVED:
+                    continue  # approved with another version of the Clip
+                inherited = self._repo.variants_for(tenant_id=tenant_id, draft_id=child.id)
+                if not inherited:
+                    raise ClipAvatarRefused(
+                        CHILDREN_NOT_READY, CHILDREN_NOT_READY_TEXT, raw=f"{child.id}: no text"
+                    )
+                chosen = min(inherited, key=lambda v: v.ordinal)
+                self._repo.set_approved(
+                    tenant_id=tenant_id,
+                    draft_id=child.id,
+                    new_status=apply_transition(
+                        child.record.status, DraftTrigger.APPROVE, selected_variant_id=chosen.id
+                    ),
+                    variant_id=chosen.id,
+                    user_id=user_id,
+                    approved_at=moment,
+                )
+            # a child made without a vendor draft is final already: with none to finish,
+            # the Clip the owner approved IS its final (as a plain local Clip)
+            needs_final = any(
+                self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+                for child in children
+            )
+            mark = getattr(self._repo, "set_video_draft", None)
+            if needs_final and not callable(mark):
+                raise RuntimeError("the Clip's final cannot be marked on this repository")
+            # out of the calendar until its final is in place and confirmed
+            # (`draft_mode.draft_pending`); never a draft a Seedance final is ordered for
+            if needs_final and callable(mark):
+                mark(
+                    tenant_id=tenant_id,
+                    asset_id=video.id,
+                    changes={
+                        "finish": FINISH_CLIP_FINAL,
+                        "status": CLIP_FINAL_PENDING,
+                        "approved_revision": record.revision,
+                        "approved_at": moment.isoformat(),
+                        "approved_by": str(user_id),
+                        "preview_object_key": video.object_key,
+                        "children": [str(child.id) for child in children],
+                        "error": None,
+                    },
+                )
+            now = time.time()
+            try:
+                for child in children:
+                    assets = waiting[child.id]
+                    if not assets:
+                        continue  # its final is kept already (or on its way)
+                    if child.record.status != APPROVED:
+                        self._order_finals(
+                            tenant_id,
+                            child.id,
+                            assets,
+                            manual=False,
+                            schedule_for=clip_id,
+                            charge_revision=revisions[child.id],
+                        )
+                    elif any(
+                        final_retryable(draft_state(a.params), now, approved=True) for a in assets
+                    ):
+                        # approved earlier and its final failed (its seconds given back,
+                        # D9): ordered again the way «Intentar de nuevo» does, never charged
+                        self.retry_final(
+                            tenant_id=tenant_id,
+                            draft_id=child.id,
+                            charge_revision=revisions[child.id],
+                        )
+            except Exception:
+                if isinstance(self.dispatcher, QueueDispatcher):
+                    raise
+                logger.exception("clip %s approved; its children's finals not ordered", clip_id)
+            # waits until every child's final is kept; a no-op pass until then
+            if needs_final:
+                self._open_clip_final(tenant_id, clip_id)
+        except Exception:
+            if not isinstance(self._repo, PostgresContentRepository) and self._creations:
+                # Postgres rolls the charge back with the unit of work
+                for item in charged:
+                    self._creations.uncharge_videos(
+                        tenant_id=tenant_id, draft_id=item.draft_id, revision=item.revision
+                    )
+            raise
+        logger.info(
+            "clip %s approved by user %s: %d AI child(ren), %d charge(s) taken",
+            clip_id,
+            user_id,
+            len(children),
+            len(charged),
+        )
+        return variant, record.revision
+
+    def _retry_clip_final(
+        self, *, tenant_id: UUID, record: DraftRecord, children: Sequence[Any]
+    ) -> DraftDetail:
+        """«Intentar de nuevo» on an approved Clip with AI children: every child whose final
+        failed (or never left) is ordered again — free: its seconds were given back (D9)
+        and are never charged again — and an assembly with the finals that failed goes
+        back to pending with its run opened (it starts from the kept finals: nothing is
+        paid to the vendor again). A child whose vendor draft expired can no longer get a
+        final: it is marked so and its seconds given back (once: the refund is per video),
+        never ordered — the others are, so one expired child never blocks them
+        (`clip_final_view` then says `expired`, with no retry)."""
+        from qualify_api.creative.clip_final import (  # noqa: PLC0415
+            CLIP_FINAL_PENDING,
+            child_final_state,
+            failed_block,
+        )
+        from qualify_api.creative.draft_mode import DRAFT_EXPIRED_TEXT  # noqa: PLC0415
+
+        if record.status != APPROVED:
+            raise InvalidTransition(f"draft {record.id} is {record.status}, not approved")
+        now = time.time()
+        for child in children:
+            if child.record.status != APPROVED:
+                continue
+            assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+            states = [(a, child_final_state(a.params, now)) for a in assets]
+            expired = [
+                a
+                for a, state in states
+                # newly expired: not marked (nor given back) yet
+                if state == "expired"
+                and (draft_state(a.params) or {}).get("error") != DRAFT_EXPIRED_TEXT
+                and final_retryable(draft_state(a.params), now, approved=True)
+            ]
+            for asset in expired:
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id,
+                    asset_id=asset.id,
+                    changes={"status": DRAFT_FAILED, "error": DRAFT_EXPIRED_TEXT},
+                )
+            if expired:
+                self._refund_final_part(
+                    tenant_id, child.id, "draft_expired", tuple(a.id for a in expired)
+                )
+            if any(state == "failed" for _, state in states):
+                self.retry_final(
+                    tenant_id=tenant_id,
+                    draft_id=child.id,
+                    charge_revision=self._generation_revision(tenant_id, child.record),
+                )
+        video = self._clip_video(tenant_id, record)
+        if video is not None and failed_block(draft_state(video.params)):
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=video.id,
+                changes={"status": CLIP_FINAL_PENDING, "error": None},
+            )
+        self._open_clip_final(tenant_id, record.id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=record.id)
+
+    def run_clip_final(self, *, tenant_id: UUID, clip_id: UUID) -> bool:
+        """The `clip_final` phase (the creative worker, m-25129408): once EVERY AI child's
+        1080p is kept, the approved Clip is assembled again from the same recipe with
+        them (`clip_final.final_brief`; the scenes laid from their rows, which read their
+        finals) and its video row takes the result in place, with each child's final in
+        its provenance. Nothing to do (False) while a child's final is on its way or
+        failed (the owner's «Intentar de nuevo»), or when the Clip moved on. An assembly
+        that fails marks the Clip's block failed and the preview stays. US$0: no vendor."""
+        from qualify_api.creative.clip_final import (  # noqa: PLC0415
+            CLIP_FINAL_FAILED_TEXT,
+            CLIP_FINAL_PENDING,
+            FINISH_CLIP_FINAL,
+            ChildFinal,
+            child_final_key,
+            child_final_state,
+            final_brief,
+            final_write,
+            preview_key_of,
+        )
+
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=clip_id)
+        if record is None or record.status != APPROVED or record.parent_draft_id is not None:
+            return False
+        video = self._clip_video(tenant_id, record)
+        block = dict(draft_state(video.params) or {}) if video is not None else {}
+        if (
+            video is None
+            or block.get("finish") != FINISH_CLIP_FINAL
+            or block.get("status") != CLIP_FINAL_PENDING
+            or block.get("approved_revision") != record.revision
+        ):
+            return False
+        children = self._clip_ai_children(tenant_id, record)
+        finals: list[ChildFinal] = []
+        now = time.time()
+        for child in children:
+            drafted = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+            # a child made without a vendor draft: its file is final already
+            assets = drafted or self._videos_only(tenant_id, child.id)
+            if not assets:
+                logger.error("clip %s: child %s has no video to finish", clip_id, child.id)
+                return False
+            for asset in assets:
+                state = child_final_state(asset.params, now) if drafted else "kept"
+                key = child_final_key(asset.params, asset.object_key)
+                preview = preview_key_of(asset)
+                if state != "kept" or key is None or preview is None:
+                    logger.info("clip %s: child %s final is %s; waits", clip_id, child.id, state)
+                    return False
+                raw = (draft_state(asset.params) or {}).get("raw_final")
+                seconds = raw.get("duration_seconds") if isinstance(raw, Mapping) else None
+                finals.append(
+                    ChildFinal(
+                        kind=child.kind,
+                        draft_id=child.id,
+                        slot=child.record.part_index,
+                        revision=self._generation_revision(tenant_id, child.record),
+                        asset_id=asset.id,
+                        preview_key=preview,
+                        final_key=key,
+                        seconds=(
+                            float(seconds)
+                            if child.kind == "ai_part"
+                            and isinstance(seconds, int | float)
+                            and not isinstance(seconds, bool)
+                            and seconds > 0
+                            else None
+                        ),
+                        params=asset.params or {},
+                    )
+                )
+        assemble = getattr(self._media, "assemble_clip_final", None)
+        store = self._final_store()
+        if not callable(assemble) or store is None:
+            logger.error("clip %s: no assembly or store for its final here", clip_id)
+            return False
+        _draft, brief, kit = self._final_context(tenant_id, clip_id)
+        swaps = {final.preview_key: final for final in finals if final.kind == "ai_part"}
+        outcome, digest = assemble(
+            tenant_id=tenant_id,
+            draft_id=clip_id,
+            brief=final_brief(brief, swaps),
+            kit=kit,
+            revision=record.revision,
+            heartbeat=self._heartbeat(tenant_id, clip_id),
+            aliases={final.final_key: final.preview_key for final in swaps.values()},
+        )
+        if outcome.failure is not None or not outcome.media:
+            logger.warning(
+                "clip %s: final assembly failed (%s); its preview stays", clip_id, outcome.failure
+            )
+            store.fail(
+                tenant_id=tenant_id,
+                clip_id=clip_id,
+                asset_id=video.id,
+                error=CLIP_FINAL_FAILED_TEXT,
+            )
+            return False
+        write = final_write(
+            outcome.media[0],
+            block=block,
+            preview=video,
+            revision=record.revision,
+            digest=digest,
+            finals=finals,
+        )
+        saved = bool(
+            store.save(
+                tenant_id=tenant_id,
+                clip_id=clip_id,
+                asset_id=video.id,
+                revision=record.revision,
+                write=write,
+            )
+        )
+        if saved:
+            logger.info("clip %s: final with %d child final(s) saved", clip_id, len(finals))
+        return saved
+
+    def clip_final_view(self, *, tenant_id: UUID, clip_id: UUID) -> Any:
+        """`clip_final.ClipFinalView` of an approved Clip with AI children (what the screen
+        shows: waiting, failed with «Intentar de nuevo», or ready to review) — None for any
+        other piece. Reads only."""
+        from qualify_api.creative.clip_final import final_view  # noqa: PLC0415
+
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=clip_id)
+        if record is None or record.status != APPROVED:
+            return None
+        video = self._clip_video(tenant_id, record)
+        if video is None:
+            return None
+        children = {
+            child.id: tuple(
+                a.params
+                for a in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+            )
+            for child in self._clip_ai_children(tenant_id, record)
+            if child.record.status == APPROVED
+        }
+        return final_view(draft_state(video.params), children)
 
     def _clip_avatar_charges(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
         """m-25112920: the `VideoCharge` of each avatar block of this Clip its recipe
@@ -5263,6 +5767,11 @@ class ContentService:
         blocks = self._clip_avatar_charges(tenant_id, record)
         videos += sum(block.videos for block in blocks)
         seconds += sum(block.seconds for block in blocks)
+        # m-25129408: and its AI children's requested seconds not charged yet, as `approve`
+        for child in self._clip_ai_children(tenant_id, record):
+            child_videos, child_seconds = self._videos_of(tenant_id, child.record)
+            videos += child_videos
+            seconds += child_seconds
         if not videos:
             return None
         balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
@@ -5361,10 +5870,14 @@ class ContentService:
         *,
         manual: bool = True,
         schedule_for: UUID | None = None,
+        charge_revision: int | None = None,
     ) -> None:
         """`schedule_for` (VE-10b): the piece whose publications set the night lane — a
         part's finals follow its video by parts' calendar, not their own (a part is
-        never on the calendar)."""
+        never on the calendar). `charge_revision` (m-25129408): the revision whose charge
+        row paid these finals when it is not the draft's current one (a Clip's child is
+        charged at the revision of the generation the Clip plays), so a failed final gives
+        its seconds back there."""
         if not assets:
             return
         from qualify_api.creative.final_review import configured_night_hours, schedule_final
@@ -5409,7 +5922,13 @@ class ContentService:
                     "final_batch_not_before": policy.not_before.isoformat(),
                     "attempt": uuid4().hex,
                     "claim": None,
-                    "charge_revision": None if ordered_by is None else ordered_by.revision,
+                    "charge_revision": (
+                        charge_revision
+                        if charge_revision is not None
+                        else None
+                        if ordered_by is None
+                        else ordered_by.revision
+                    ),
                 },
             )
         if self.dispatcher is None:
@@ -5457,7 +5976,9 @@ class ContentService:
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     @transactional_dispatch
-    def retry_final(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail:
+    def retry_final(
+        self, *, tenant_id: UUID, draft_id: UUID, charge_revision: int | None = None
+    ) -> DraftDetail:
         """Order again the finals that failed (or were left half-made by a dead process:
         `rendering` past `FINAL_STALE_SECONDS` since their own work started, or never
         ordered because ordering failed after the approval was saved) of an
@@ -5475,6 +5996,10 @@ class ContentService:
         ):
             # VE-10b: its parts' finals and its local final join, never a vendor final
             return self._retry_parts_final(tenant_id=tenant_id, record=record)
+        children = self._clip_ai_children(tenant_id, record)
+        if children:
+            # m-25129408: a Clip's AI children's finals and its assembly with them
+            return self._retry_clip_final(tenant_id=tenant_id, record=record, children=children)
         if record.status != APPROVED:
             raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
         now = time.time()
@@ -5525,9 +6050,9 @@ class ContentService:
                 )
                 if outcome == "initial":
                     initial.append(asset)
-            self._order_finals(tenant_id, draft_id, tuple(initial))
+            self._order_finals(tenant_id, draft_id, tuple(initial), charge_revision=charge_revision)
         else:
-            self._order_finals(tenant_id, draft_id, live)
+            self._order_finals(tenant_id, draft_id, live, charge_revision=charge_revision)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     def run_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
