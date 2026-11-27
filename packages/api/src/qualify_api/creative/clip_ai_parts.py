@@ -368,7 +368,10 @@ def child_brief(
             own = before.model_copy(update={"transition_in": None})
     cleared: dict[str, Any] = {"ai_parts": ()}
     if on_tracks:
-        cleared["clip_references"] = ()
+        # the child's tracks are resolved into its own keys (provenance on `PartRef`): it
+        # is a brief before the tracks, never one whose keys `references_and_old_fields`
+        # would refuse
+        cleared.update(clip_references=(), references_version=0)
     parent = clip.model_copy(update={"media": clip.media.model_copy(update=cleared)})
     made = _child_brief(parent, planned.entry, planned.slot, None, extend_own=own)
     update: dict[str, Any] = {"ai_parts": ()}
@@ -663,6 +666,8 @@ class ClipAiPartsService(ClipAvatarService):
             raise RuntimeError("a Clip's AI parts were lost while being prepared")
         prepared: list[tuple[PlannedPart, ContentBrief, int, str]] = []
         for p in planned:
+            # a part missing from `references` (v0, or no span) is worked out by
+            # `child_brief` itself: on v1 the same `references_for_parts`, no item
             child = child_brief(clip_brief, p, references.get(p.entry_at))
             stamped, voice_version, pipeline_version = self._content.prepare_new_generation(
                 tenant_id=tenant_id, brand_id=brand_id, brief=child

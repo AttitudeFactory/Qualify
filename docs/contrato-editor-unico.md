@@ -196,7 +196,7 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 - `clip_image_keys` = las fotos que le aplican, en su orden; `clip_image_roles` = `product` si su `origin` es `product`, y si no `unroled_image_role` del Clip. Si no le aplica ninguna foto, va con una tupla vacía: ya no hereda las fotos del Clip.
 - `clip_video_keys` y `clip_audio_keys` = los videos y audios que le aplican (solo en «Nueva»).
 - `PartRef.references` guarda las referencias que tomó (procedencia); `media._key_problems` revisa también esas claves antes de leer nada.
-- El hijo nunca lleva las pistas del Clip (`clip_references` vacío).
+- El hijo nunca lleva las pistas del Clip: `clip_references` vacío y `references_version` 0, porque sus pistas ya quedaron resueltas en sus propias claves.
 - Pasarse del tope rechaza la creación entera antes de escribir o cobrar nada (`too_many_references`); `child_brief` también lo rechaza si se llama sin pasar por «Crear».
 
 **Topes por modelo** (Deivid, 2026-11-27). Cada modelo declara los suyos en `qualify_creative.reference_caps.REFERENCE_CAPS_BY_MODEL`. Hoy, Seedance 2.x (todas sus familias): 9 fotos, 3 videos y 3 audios por parte. Magi-2 tendrá 10/5/5 cuando llegue (todavía no está en la tabla). Son topes del producto, no los del proveedor (la API de Seedance 2.5 acepta 30/10/10). Sin `model`, se usa el modelo de video activo (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, o su valor por defecto). Un modelo sin fila da `ValueError`: no se adivina. Cuando entre un modelo con más de 9 fotos, el PR que lo active sube también `CLIP_MAX_IMAGES` del hijo.

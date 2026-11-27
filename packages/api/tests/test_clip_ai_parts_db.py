@@ -266,5 +266,5 @@ def test_a_part_on_the_tracks_is_stored_with_the_references_it_took(
     draft = repo.get_draft(tenant_id=tenant, draft_id=made.part_ids[0])
     stored = repo.get_brief(tenant_id=tenant, brief_id=draft.brief_id)
     assert stored.media.clip_image_keys == (photo.key,)
-    assert stored.media.clip_references == ()
+    assert stored.media.clip_references == () and stored.media.references_version == 0
     assert stored.media.part is not None and stored.media.part.references == (photo,)

@@ -105,7 +105,7 @@ def test_each_part_takes_the_items_under_its_block() -> None:
 
     for child in (first, second):
         # the child never carries the Clip's tracks; its own brief round-trips as stored
-        assert child.media.clip_references == ()
+        assert child.media.clip_references == () and child.media.references_version == 0
         assert ContentBrief.model_validate_json(child.model_dump_json()) == child
     # the Clip keeps its tracks as the owner laid them
     assert _brief_of(world, made.clip_id).media.clip_references == (
