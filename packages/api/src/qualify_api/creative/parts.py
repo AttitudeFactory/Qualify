@@ -745,58 +745,104 @@ def plan_from_analysis(
     - the reel's own product («sliders de pescado») becomes the owner's (`products`) in
       the cuts that show a product (`reel_product_noun`, m-24992913).
     """
-    shots = sorted(analysis.shots, key=lambda s: s.shot_index)
-    if not shots:
-        return ()
-    editable = (
+    plan = [part for _, parts in proposed_groups(analysis, products, extend_on) for part in parts]
+    return tuple(plan[:PARTS_MAX])
+
+
+def _editable(analysis: ReelAnalysis) -> bool:
+    """The reel's cuts may be made «Igual al original» at all (source kept, 9:16)."""
+    return (
         analysis.edit_eligible
         and analysis.source_available
         and is_vertical(analysis.width, analysis.height)
     )
-    reel_product = reel_product_noun(analysis)
-    context = ModeContext(
+
+
+def _mode_context(analysis: ReelAnalysis, extend_on: bool | None) -> ModeContext:
+    return ModeContext(
         source="reel",
         source_available=analysis.source_available,
         edit_eligible=analysis.edit_eligible,
         vertical=is_vertical(analysis.width, analysis.height),
         extend_on=extend_available() if extend_on is None else extend_on,
     )
-    plan: list[VideoPartPlan] = []
-    for group in _groups(shots, editable):
-        unclear = any(people_unclear(shot) for shot in group)
-        description = join_unique(shot_description(s, products, reel_product) for s in group)
-        notices: list[PartNotice] = []
-        if unclear:
-            notices.append("people_unclear")
-        if not description:
-            notices.append("describe_it")
-        common: dict[str, Any] = {
-            "analysis_id": analysis.id,
-            "shot_indexes": tuple(s.shot_index for s in group),
-            "description": clip_description(description),
-            "talks_to_camera": any(_talks(s) for s in group),
-            "notices": tuple(notices),
-        }
-        lengths = (
-            _split(group[0].seconds)
-            if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS
-            else [_seconds(_group_seconds(group))]
-        )
-        for at, seconds in enumerate(lengths):
-            # the grouping decides where a part is born `extend`; the rule decides its mode
-            choice = choose_part_mode(ModePart(shots=tuple(group), split_tail=at > 0), context)
-            plan.append(
-                VideoPartPlan(
-                    mode=choice.mode,
-                    original_mode="extend" if at > 0 else choice.mode,
-                    seconds=seconds,
-                    mode_rule_version=choice.rule_version,
-                    mode_reason=choice.reason_code,
-                    mode_changed_by_owner=False,
-                    **common,
-                )
+
+
+def _parts_for_group(
+    group: Sequence[ShotAnalysis],
+    *,
+    analysis_id: UUID,
+    context: ModeContext,
+    products: Sequence[str] = (),
+    reel_product: ReelProductNoun | None = None,
+) -> tuple[VideoPartPlan, ...]:
+    """The parts one group of consecutive cuts (`_groups`) becomes, in order: one part,
+    or — a single cut over 10 s — its head and every split tail («Sigue a la anterior»,
+    `original_mode="extend"`). The one rule `plan_from_analysis` and `left_out.span_entry`
+    (m-25143223) both build a part with, so a part that comes back into the video is the
+    part the plan would have proposed. Pure."""
+    unclear = any(people_unclear(shot) for shot in group)
+    description = join_unique(shot_description(s, products, reel_product) for s in group)
+    notices: list[PartNotice] = []
+    if unclear:
+        notices.append("people_unclear")
+    if not description:
+        notices.append("describe_it")
+    common: dict[str, Any] = {
+        "analysis_id": analysis_id,
+        "shot_indexes": tuple(s.shot_index for s in group),
+        "description": clip_description(description),
+        "talks_to_camera": any(_talks(s) for s in group),
+        "notices": tuple(notices),
+    }
+    lengths = (
+        _split(group[0].seconds)
+        if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS
+        else [_seconds(_group_seconds(group))]
+    )
+    parts: list[VideoPartPlan] = []
+    for at, seconds in enumerate(lengths):
+        # the grouping decides where a part is born `extend`; the rule decides its mode
+        choice = choose_part_mode(ModePart(shots=tuple(group), split_tail=at > 0), context)
+        parts.append(
+            VideoPartPlan(
+                mode=choice.mode,
+                original_mode="extend" if at > 0 else choice.mode,
+                seconds=seconds,
+                mode_rule_version=choice.rule_version,
+                mode_reason=choice.reason_code,
+                mode_changed_by_owner=False,
+                **common,
             )
-    return tuple(plan[:PARTS_MAX])
+        )
+    return tuple(parts)
+
+
+def proposed_groups(
+    analysis: ReelAnalysis, products: Sequence[str] = (), extend_on: bool | None = None
+) -> list[tuple[tuple[ShotAnalysis, ...], tuple[VideoPartPlan, ...]]]:
+    """Every group of cuts the reel's analysis makes, in reel order, with the parts each
+    becomes (`_parts_for_group`) — BEFORE the cap of `PARTS_MAX`: `plan_from_analysis` is
+    their parts' first six; `left_out.left_out_spans` (m-25143223) reads the rest. Pure
+    but the «Sigue a la anterior» switch when `extend_on` is None."""
+    shots = sorted(analysis.shots, key=lambda s: s.shot_index)
+    if not shots:
+        return []
+    reel_product = reel_product_noun(analysis)
+    context = _mode_context(analysis, extend_on)
+    return [
+        (
+            tuple(group),
+            _parts_for_group(
+                group,
+                analysis_id=analysis.id,
+                context=context,
+                products=products,
+                reel_product=reel_product,
+            ),
+        )
+        for group in _groups(shots, _editable(analysis))
+    ]
 
 
 def check_extend_parts(parts: Sequence[VideoPartPlan], analysis: ReelAnalysis | None) -> None:
