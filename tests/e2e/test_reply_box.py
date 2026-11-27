@@ -246,7 +246,10 @@ def test_instagram_reply_box_on_a_phone(chats_page) -> None:  # noqa: ANN001
     assert page.evaluate(_SMALL_CONTROLS, _CONTROLS) == []
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     box.get_by_role("button", name="Mensajes guardados").click()
-    expect(page.locator(".q-conv-templates").get_by_text("Mensajes guardados")).to_be_visible()
+    # exact: «Editar mensajes guardados» (m-25131413) sits in the same menu
+    expect(
+        page.locator(".q-conv-templates").get_by_text("Mensajes guardados", exact=True)
+    ).to_be_visible()
     page.keyboard.press("Escape")
     field = box.get_by_role("textbox", name="Tu respuesta")
     field.fill("Ya te paso el total")
