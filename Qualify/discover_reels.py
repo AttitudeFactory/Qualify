@@ -120,6 +120,18 @@ PREPARE_FAILED = "No pudimos preparar este video. Inténtalo de nuevo."
 #: sells (the check's brief) both live there — with «‹ Ideas de videos» to come back.
 ACCOUNTS_HREF = brand_referentes_href(IDEAS_RETURN_PATH)
 
+#: m-25142823 (Deivid, 2026-11-27): «Cambiar competidores» on the reels' competitors side
+#: leads to «Negocios parecidos al tuyo» with «Tus competidores» open (`?abrir=…`), and its
+#: way back returns to the reels on the competitors' side (`?lado=…`, read by `load`).
+SIDE_PARAM = "lado"
+COMPETITORS_SIDE = "competidores"
+OPEN_PARAM = "abrir"
+OPEN_COMPETITORS = "competidores"
+CHANGE_COMPETITORS_HREF = (
+    brand_referentes_href(f"{IDEAS_RETURN_PATH}&{SIDE_PARAM}={COMPETITORS_SIDE}")
+    + f"&{OPEN_PARAM}={OPEN_COMPETITORS}"
+)
+
 #: The «preparando» screen's browser clock asks for a new read (a database read, free)
 #: this often, only while that screen is on screen. How long it may spin is the data's
 #: (`reels_ideas_vm.PREPARING_LIMIT`, from the run's `queued_at`): a reload or a deploy
@@ -212,6 +224,10 @@ class DiscoverReelsState(rx.State):
     #: the right (the desktop button).
     competitors_open: bool = False
     competitors_bottom: bool = False
+    #: The brand page URL whose `?abrir=competidores` already opened the panel (once), and
+    #: the reels URL whose `?lado=competidores` already set the side (once).
+    _arrival_opened: str = ""
+    _side_arrival: str = ""
     #: RF-14: today's «Buscar reels nuevos» is queued or running (the button busy, the
     #: «preparando» line, the clock that reloads the list when it ends), and a press in
     #: flight (a double click is one press).
@@ -648,6 +664,17 @@ class DiscoverReelsState(rx.State):
                 if self._cards_tenant_id == session_tenant_id
                 else reels_filters_vm.NO_CHOICE
             )
+            # m-25142823: back from «Cambiar competidores» (`?lado=competidores`), the
+            # screen opens on the competitors' side — once per visit of that URL
+            try:
+                params = self.router.url.query_parameters
+                here = str(self.router.url)
+            except Exception:  # noqa: BLE001 — no router outside a request (tests)
+                params, here = {}, ""
+            if params.get(SIDE_PARAM) == COMPETITORS_SIDE and here != self._side_arrival:
+                self._side_arrival = here
+                if choice.kind != KIND_COMPETENCIA:
+                    choice = choice.but(kind=KIND_COMPETENCIA, accounts=())
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         opened: asyncio.Task[None] | None = None
         try:
@@ -690,12 +717,13 @@ class DiscoverReelsState(rx.State):
                     self.searching = False
                 self._claim_cards(str(tenant_id))
                 self._brand_id = str(brand_id)
+                # the bar shows exactly what was read: «País» back to «Todas» when not
+                # offered, the competitors' side when the URL asked for it
+                self._set_choice(choice)
                 self._show(shown)
                 self._home_country = home
                 self._home_city = city
                 self.region_options = places
-                # the bar shows what was read: «País» back to «Todas» when not offered
-                self._set_choice(reels_filters_vm.offered_region(self._choice(), places))
                 if rivals is not None:
                     self.competitor_rows = rivals
                 # RF-14: a search of today still running keeps the button busy. Only ever
@@ -723,9 +751,26 @@ class DiscoverReelsState(rx.State):
     def open_competitors(self, bottom: bool) -> Any:
         """«Tus competidores»: the drawer from the bottom when `bottom` (the browser's
         `PHONE_MEDIA` answer: a phone's window), from the right otherwise — its rows read
-        again as it opens (the board just above may have marked or unmarked some)."""
-        if not self.competitor_rows:
+        again as it opens (the board in the same section may have marked or unmarked some). It
+        opens with no competitor too: the panel offers the board's accounts to mark."""
+        self.competitors_bottom = bool(bottom)
+        self.competitors_open = True
+        self.competitor_error = ""
+        return DiscoverReelsState.load_competitors
+
+    @rx.event
+    def open_on_arrival(self, bottom: bool) -> Any:
+        """«Cambiar competidores» from the reels (`CHANGE_COMPETITORS_HREF`): the brand page
+        arrives with `?abrir=competidores`, and the section opens the panel once for that
+        visit (`bottom`: the browser's `PHONE_MEDIA` answer)."""
+        try:
+            params = self.router.url.query_parameters
+            here = str(self.router.url)
+        except Exception:  # noqa: BLE001 — no router outside a request (tests)
+            params, here = {}, ""
+        if params.get(OPEN_PARAM) != OPEN_COMPETITORS or here == self._arrival_opened:
             return None
+        self._arrival_opened = here
         self.competitors_bottom = bool(bottom)
         self.competitors_open = True
         self.competitor_error = ""
@@ -762,10 +807,8 @@ class DiscoverReelsState(rx.State):
                 self._claim_cards(str(tenant_id))
             self._brand_id = str(brand_id)
             if rivals is not None:
+                # with none left the panel stays open: it offers the board's accounts
                 self.competitor_rows = rivals
-                if not rivals:
-                    # every competitor unmarked on the board: no empty panel left open
-                    self.competitors_open = False
 
     @rx.event
     def competitors_changed(self, is_open: bool) -> None:
@@ -1000,8 +1043,13 @@ class DiscoverReelsState(rx.State):
     def leave(self) -> None:
         """The view left the page: a read still in flight never paints (and the
         «preparando» clock unmounts with the view). The next visit opens on the inspiring
-        side (Deivid, 2026-11-27), whatever side was on screen when the owner left."""
+        side (Deivid, 2026-11-27), whatever side was on screen when the owner left. The
+        «once» markers of `?lado=` / `?abrir=` start over too: every new round trip through
+        «Cambiar competidores» leaves this screen first, so it opens the panel there and
+        comes back on the competitors' side again (independent review)."""
         self._load_id += 1
+        self._side_arrival = ""
+        self._arrival_opened = ""
         if self.filter_kind != KIND_REFERENTE:
             self._set_choice(reels_filters_vm.switch_side(self._choice(), self._accounts))
         self.playing_key = ""
@@ -2214,6 +2262,32 @@ def _pager() -> rx.Component:
     )
 
 
+def _change_competitors_line() -> rx.Component:
+    """m-25142823 (Deivid, 2026-11-27): on the competitors' side, one line over the list —
+    «Estás viendo los reels de tus competidores.» and «Cambiar competidores», which leads
+    to «Negocios parecidos al tuyo» with «Tus competidores» open, and back here on this
+    side (`CHANGE_COMPETITORS_HREF`). Text and button share the line (it wraps under the
+    words on a phone), so the button is never alone; the bar keeps its chips only."""
+    return rx.flex(
+        rx.text(reels_filters_vm.COMPETITORS_NOTE, size="2", color=T.TEXT_MUTED),
+        rx.link(
+            rx.button(
+                rx.icon("swords", size=T.ICON_SM, aria_hidden="true"),
+                reels_filters_vm.CHANGE_COMPETITORS,
+                variant="soft",
+                size="2",
+                min_height=_TARGET,
+            ),
+            href=CHANGE_COMPETITORS_HREF,
+        ),
+        wrap="wrap",
+        align="center",
+        justify="between",
+        gap="0.5rem",
+        width="100%",
+    )
+
+
 def _ideas() -> rx.Component:
     """The notice of a newer run that failed — «No pudimos traer ideas nuevas», in the info
     tone (founder, 2026-11-04): the ideas below are still true and there is nothing to
@@ -2275,6 +2349,9 @@ def _ideas() -> rx.Component:
             width="100%",
         ),
         rx.cond(S.searching, _ticker(S.refresh_search)),
+        # m-25142823: on the competitors' side, what is on screen and the way to change
+        # who the competitors are — one line under the bar, never a chip of the bar
+        rx.cond(S.on_competitors, _change_competitors_line()),
         rx.box(
             lists,
             # a filtered read in flight: the list dims and takes no clicks until it lands

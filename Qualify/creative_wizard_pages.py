@@ -6315,6 +6315,31 @@ class BrandConnectState(rx.State):
         the editor's sorting never changes the wizard's step or category."""
         return BrandConnectState.sync_sort if self._move(key, bucket) else None
 
+    @rx.event
+    def unmark_account(self, key: str) -> rx.event.EventSpec | None:
+        """«Quitar» on a competitor of «Tus competidores» (m-25142823): the account goes
+        back to the board's «sin clasificar» — its label cleared, out of the ranking —
+        and it saves on its own (`sync_sort`, which writes the cleared label).
+
+        `key` is the panel's row key, the STORED identity («tiktok:rival»); the board keys
+        its cards by their labels («TikTok:@Rival», `_account_key`), so the board's own key
+        is found by identity (`referentes_provider.key_identity`)."""
+        network, _, handle = key.partition(":")
+        target = (network, handle) if network and handle else None
+        board_key = next(
+            (
+                k
+                for k in self.account_buckets
+                if k == key or referentes_provider.key_identity(k) == target
+            ),
+            None,
+        )
+        if target is None or board_key is None:
+            return None
+        self.account_buckets = {k: v for k, v in self.account_buckets.items() if k != board_key}
+        self.influence_order = [k for k in self.influence_order if k != board_key]
+        return BrandConnectState.sync_sort
+
     def _move(self, key: str, bucket: str) -> bool:
         """Every editor move — «Mover a», a card dropped on another column, the editor's
         deck — and whether anything changed. Not an event handler.
@@ -7853,7 +7878,7 @@ def _labels_lock(brand_id: UUID) -> asyncio.Lock:
 
 
 def _competitors_reread() -> Any:
-    """m-25142823: after the sort is stored, «Tus competidores» (just under the board in
+    """m-25142823: after the sort is stored, «Tus competidores» (on top of the board in
     «Negocios parecidos al tuyo») reads its rows again — a «Compite contigo» added or taken
     out shows there at once. Postgres only, free. Imported here: the reels screen's state
     module imports a lot, and this one is imported early."""

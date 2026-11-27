@@ -355,19 +355,28 @@ def test_the_panel_is_a_section_of_negocios_parecidos() -> None:
     from . import brand_kit_editor, competitors_panel
 
     section = inspect.getsource(brand_kit_editor._referentes_section)
-    assert "rx.fragment(_referentes_body(), competitors_section())" in section
+    # on top of the section, before the board (Deivid, 2026-11-27)
+    assert "rx.fragment(competitors_section(), _referentes_body())" in section
     panel = inspect.getsource(competitors_panel.competitors_section)
     for needed in (
-        "on_mount=S.load_competitors",
+        "on_mount=[S.load_competitors, rx.call_script(PHONE_MEDIA, callback=S.open_on_arrival)]",
         "_competitors_drawer(bottom=False)",
         "_competitors_drawer(bottom=True)",
         "rx.cond(S.competitors_reading, _ticker(S.refresh_competitors))",
-        "rx.cond(S.competitor_rows.length() > 0, line)",
         "competitors_opener()",
         "signal_pill(S.competitors_count",
         "reels_competitors_vm.SECTION_BODY",
+        "reels_competitors_vm.SECTION_EMPTY",  # always in view, with no competitor too
+        "border_bottom=T.BORDER",
     ):
         assert needed in panel, needed
+    assert "rx.cond(S.competitor_rows.length() > 0, line)" not in panel
+    drawer_body = inspect.getsource(competitors_panel._competitors_drawer)
+    assert "_candidates()" in drawer_body  # mark competitors inside the panel too
+    row = inspect.getsource(competitors_panel._competitor_row)
+    assert "BrandConnectState.unmark_account(key)" in row  # and unmark them
+    candidate = inspect.getsource(competitors_panel._candidate_row)
+    assert 'BrandConnectState.move_account(account["key"].to(str), "competencia")' in candidate
     opener = inspect.getsource(competitors_panel.competitors_opener)
     assert "rx.call_script(PHONE_MEDIA, callback=S.open_competitors)" in opener
     assert "id=COMPETITORS_OPENER_ID" in opener and "min_height=_TARGET" in opener
@@ -420,9 +429,9 @@ async def test_the_section_reads_its_rows_for_the_session_business(
     assert world.paid == []
 
 
-async def test_unmarking_every_competitor_closes_the_empty_panel(world: _World) -> None:
-    """Open, and the board above unmarked them all: the re-read closes the panel (never an
-    empty drawer whose opener is gone, so the focus has somewhere to go)."""
+async def test_unmarking_every_competitor_keeps_the_panel_open(world: _World) -> None:
+    """Open, and every competitor unmarked: the panel stays open (it offers the board's
+    accounts to mark again, and its opener is always in view)."""
     from .discover_reels import DiscoverReelsState
 
     world.ok_run()
@@ -432,7 +441,7 @@ async def test_unmarking_every_competitor_closes_the_empty_panel(world: _World) 
     assert state.competitors_open
     world.repo.clear_label(tenant_id=TENANT, brand_id=world.brand, network="tiktok", handle="rival")
     await DiscoverReelsState.load_competitors.fn(proxy)
-    assert state.competitor_rows == [] and not state.competitors_open
+    assert state.competitor_rows == [] and state.competitors_open
 
 
 async def test_a_read_for_a_session_that_changed_meanwhile_never_paints(
@@ -499,12 +508,12 @@ async def test_the_drawer_opens_and_closes_and_needs_competitors(world: _World) 
     state.close_competitors()  # «Listo»
     assert not state.competitors_open
     assert state.competitors_label == "Tus competidores: 1 de 6 los revisamos cada lunes"
-    # no competitor marked: no button, no drawer
+    # no competitor marked: the panel still opens — it offers the board's accounts to mark
     world.repo.clear_label(tenant_id=TENANT, brand_id=world.brand, network="tiktok", handle="rival")
     await _open(proxy)
     assert state.competitor_rows == []
     state.open_competitors(False)
-    assert not state.competitors_open
+    assert state.competitors_open  # Deivid, 2026-11-27: always reachable
     assert world.paid == []
 
 
@@ -557,3 +566,181 @@ async def test_with_the_drawer_open_the_row_says_it_and_no_toast(world: _World) 
     assert events == [DiscoverReelsState.refilter]
     row = next(r for r in state.competitor_rows if r["key"] == outside["key"])
     assert row["message"] == rivals.DONE_TEXT
+
+
+# --------------------------------------------------------------------------------------
+# Deivid's live test of 2026-11-27: always reachable, mark / unmark, from the reels too
+# --------------------------------------------------------------------------------------
+
+
+def test_unmark_takes_the_account_back_to_the_board_and_saves() -> None:
+    """«Quitar»: the account leaves «Compite contigo» for the board's «sin clasificar» (its
+    label cleared, out of the ranking) and the board saves it (`sync_sort`)."""
+    from . import creative_wizard_pages as wiz
+
+    # the board keys its cards by their LABELS (`creator_discovery.account_card`: «TikTok»,
+    # «@Rival»); the panel's row keys are the stored identity («tiktok:rival»)
+    from . import reels_competitors_vm as rc
+    from .creative_wizard_pages import _account_key
+
+    rival = _account_key({"network": "TikTok", "handle": "@Rival"})
+    foodie = _account_key({"network": "Instagram", "handle": "@foodie"})
+    assert rival == "TikTok:@Rival"
+    board = wiz.BrandConnectState()
+    board.account_buckets = {rival: "competencia", foodie: "referente"}
+    board.influence_order = [foodie, rival]
+    from qualify_api.referentes.reels import CompetitorAccount
+
+    stored = CompetitorAccount(network="tiktok", handle="rival", picked=True, weekly=True)
+    row_key = rc.rows([stored])[0]["key"]
+    assert row_key == "tiktok:rival"
+    assert board.unmark_account(row_key) is wiz.BrandConnectState.sync_sort
+    assert board.account_buckets == {foodie: "referente"}
+    assert board.influence_order == [foodie]
+    assert board.unmark_account("tiktok:nobody") is None  # not on the board: nothing saved
+    assert board.unmark_account("bad") is None
+
+
+def test_the_copy_of_the_panel_is_plain_spanish() -> None:
+    assert reels_competitors_vm.SECTION_EMPTY == (
+        "Aún no tienes competidores. Márcalos abajo con «Compite contigo» o elígelos aquí."
+    )
+    assert (reels_competitors_vm.REMOVE_LABEL, reels_competitors_vm.ADD_TITLE) == (
+        "Quitar",
+        "Agregar competidores",
+    )
+    assert reels_competitors_vm.ADD_BUTTON == "Compite contigo"  # the board's own words
+    assert reels_competitors_vm.BUCKET_WORDS == {
+        "": "Sin clasificar",
+        "referente": "Te inspira",
+        "detractor": "No va contigo",
+    }
+
+
+def test_cambiar_competidores_leads_to_the_open_panel_and_back_to_this_side() -> None:
+    """On the reels' competitors side, one line over the list says what is on screen and
+    offers «Cambiar competidores»: «Negocios parecidos al tuyo» with «Tus competidores»
+    open (`abrir=competidores`), and its way back is the reels on the competitors' side
+    (`lado=competidores`, still «‹ Ideas de videos»)."""
+    import inspect
+    from urllib.parse import parse_qs, urlsplit
+
+    from . import discover_reels, reels_filters_vm
+    from .catalog_vm import return_label_for, return_path_from_query
+
+    href = urlsplit(discover_reels.CHANGE_COMPETITORS_HREF)
+    query = parse_qs(href.query)
+    assert href.path == "/brand/kit" and query["seccion"] == ["referentes"]
+    assert query["abrir"] == ["competidores"]
+    back = return_path_from_query({"volver": query["volver"][0]})
+    assert parse_qs(urlsplit(back).query)["lado"] == ["competidores"]
+    assert return_label_for(back) == "Ideas de videos"
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "rx.cond(S.on_competitors, _change_competitors_line())" in ideas
+    line = inspect.getsource(discover_reels._change_competitors_line)
+    assert "reels_filters_vm.COMPETITORS_NOTE" in line and "CHANGE_COMPETITORS_HREF" in line
+    assert "min_height=_TARGET" in line
+    bar = inspect.getsource(discover_reels._filter_bar)
+    assert "_change_competitors_line" not in bar  # never a chip of the bar
+    assert reels_filters_vm.CHANGE_COMPETITORS == "Cambiar competidores"
+
+
+async def test_the_reels_come_back_on_the_competitors_side_once(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`?lado=competidores` (the way back from «Cambiar competidores») opens the reels on
+    the competitors' side — once for that URL: the owner can switch back to inspirations
+    and a later read keeps their choice."""
+    from types import SimpleNamespace
+
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    url = SimpleNamespace(
+        query_parameters={"modo": "ideas", "lado": "competidores"},
+        __str__=lambda self: "/create?modo=ideas&lado=competidores",
+    )
+    monkeypatch.setattr(
+        DiscoverReelsState, "router", property(lambda self: SimpleNamespace(url=url))
+    )
+    await _open(proxy)
+    assert state.filter_kind == "competencia" and state.on_competitors
+    await _filter(proxy, state.toggle_side())
+    assert state.filter_kind == "referente"
+    await _open(proxy)  # «Ver si ya están», same URL: the owner's side stays
+    assert state.filter_kind == "referente"
+    assert world.paid == []
+
+
+def test_the_panel_opens_on_arrival_only_when_asked_and_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from .discover_reels import DiscoverReelsState
+
+    state = DiscoverReelsState()
+    url = SimpleNamespace(query_parameters={"seccion": "referentes"}, __str__=lambda s: "/a")
+    monkeypatch.setattr(
+        DiscoverReelsState, "router", property(lambda self: SimpleNamespace(url=url))
+    )
+    assert state.open_on_arrival(True) is None and not state.competitors_open
+    url.query_parameters = {"seccion": "referentes", "abrir": "competidores"}
+    assert state.open_on_arrival(True) is DiscoverReelsState.load_competitors
+    assert state.competitors_open and state.competitors_bottom
+    state.competitors_changed(False)
+    assert state.open_on_arrival(False) is None and not state.competitors_open  # once
+    # a new round trip always leaves the reels first: `leave` starts the «once» over
+    state.leave()
+    assert state.open_on_arrival(False) is DiscoverReelsState.load_competitors
+    assert state.competitors_open
+
+
+async def test_two_round_trips_through_cambiar_competidores(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Independent review: «Cambiar competidores» twice in one session — each time the
+    reels come back on the competitors' side (the reels screen was left in between)."""
+    from types import SimpleNamespace
+
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    url = SimpleNamespace(query_parameters={"modo": "ideas", "lado": "competidores"})
+    monkeypatch.setattr(
+        DiscoverReelsState, "router", property(lambda self: SimpleNamespace(url=url))
+    )
+    for _ in range(2):
+        await _open(proxy)  # back from the brand page, `?lado=competidores`
+        assert state.filter_kind == "competencia"
+        state.leave()  # «Cambiar competidores» leaves the reels again
+        assert state.filter_kind == "referente"
+    assert world.paid == []
+
+
+def test_a_drawers_column_is_bounded_so_its_body_scrolls() -> None:
+    """Deivid's live test (2026-11-27, 375 px, «Filtros» open): the sheet's column grew to
+    its content, so `.q-drawer-body` never scrolled and the foot left the screen. The
+    shared rule bounds the primitive's column inside every drawer (bottom and right), the
+    body flexes and may shrink, head and foot never shrink."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    from .ui import primitives
+
+    css = (Path(__file__).resolve().parent.parent / "assets" / "qualify.css").read_text(
+        encoding="utf-8"
+    )
+    rule = re.search(r"\.rt-DialogContent\.q-drawer > \.rt-Flex \{(.*?)\}", css, re.S)
+    assert rule, "the drawer's column must be bounded"
+    for needed in ("flex: 1 1 auto;", "min-height: 0;"):
+        assert needed in rule.group(1), needed
+    assert ".q-drawer-head, .q-drawer-foot { flex-shrink: 0; }" in css
+    source = inspect.getsource(primitives.drawer)
+    # the body is the one that scrolls: it flexes and may shrink below its content
+    assert 'class_name="q-drawer-body"' in source
+    assert 'flex="1"' in source and 'min_height="0"' in source and 'overflow_y="auto"' in source
+    assert 'rx.flex(*parts, direction="column"' in source  # the column the rule bounds

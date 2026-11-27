@@ -44,6 +44,18 @@ PICKER_BODY = (
 #: line under the board — what it does, and the button that opens it.
 SECTION_BODY = "Marca hasta 6 para que cada lunes te traigamos sus reels nuevos."
 OPENER_LABEL = "Elegir competidores"
+#: The line with no competitor yet (Deivid, 2026-11-27: always in view).
+SECTION_EMPTY = "Aún no tienes competidores. Márcalos abajo con «Compite contigo» o elígelos aquí."
+#: Inside the panel: a competitor taken back to the board's «sin clasificar», and the
+#: board's other accounts, each with «Compite contigo» (the board's own words).
+REMOVE_LABEL = "Quitar"
+ADD_TITLE = "Agregar competidores"
+ADD_BUTTON = "Compite contigo"
+NO_CANDIDATES = (
+    "No hay más cuentas para elegir. Busca negocios parecidos al tuyo en esta misma sección."
+)
+#: Each candidate's place on the board, in its words.
+BUCKET_WORDS = {"": "Sin clasificar", "referente": "Te inspira", "detractor": "No va contigo"}
 #: How many are ticked: «3 de 6 marcados».
 PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY) + " marcados"
 #: The opener's `title` (m-25142823): how many are read on Monday, or that a read is on.
@@ -201,7 +213,12 @@ __all__ = [
     "BUTTON_LABEL",
     "BUTTON_LABEL_READING",
     "KEEP_ONE",
+    "ADD_BUTTON",
+    "ADD_TITLE",
+    "BUCKET_WORDS",
+    "NO_CANDIDATES",
     "OPENER_LABEL",
+    "REMOVE_LABEL",
     "PICKED_COUNT",
     "PICKER_BODY",
     "PICKER_SHORT",
@@ -210,6 +227,7 @@ __all__ = [
     "READ_NOW",
     "SAVE_FAILED",
     "SECTION_BODY",
+    "SECTION_EMPTY",
     "STATE_TONES",
     "TOAST_DONE",
     "TOAST_FAILED",

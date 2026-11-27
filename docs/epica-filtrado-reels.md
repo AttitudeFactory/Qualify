@@ -201,15 +201,35 @@ estado tras la ronda de diseño de Deivid del 2026-11-27.
   («Elegir competidores», `?seccion=referentes`, que la abre y la trae a la vista).
 
 **m-25142823 — «Tus competidores» en «Negocios parecidos al tuyo» (2026-11-27):**
-- **Dónde:** dentro de la sección «Negocios parecidos al tuyo» (`brand_kit_editor`), debajo
-  del tablero donde el dueño marca «Compite contigo», hay una línea con «Tus competidores»,
-  «Marca hasta 6 para que cada lunes te traigamos sus reels nuevos.», cuántos están
-  marcados («3 de 6 marcados») y el botón «Elegir competidores». El botón abre **el mismo
-  panel** de RF-05 (`drawer`): desde abajo en el teléfono (640 px o menos) y desde la
-  derecha en una ventana más ancha. Ahí se ve la lista, se marcan hasta 6 para el lunes,
-  se quita uno y se usa «Ver sus reels ahora». Es la misma lectura pagada que firmó Deivid,
-  con los mismos topes; no hay llamadas nuevas. Si la marca no tiene competidores, la línea
-  no aparece: el tablero de arriba es donde se marcan.
+- **Dónde:** en la página del Brand Kit (`/brand/kit`, `?seccion=referentes`), arriba de
+  la sección «Negocios parecidos al tuyo», antes del tablero (Deivid, 2026-11-27). Es una
+  línea con «Tus competidores», «Marca hasta 6 para que cada lunes te traigamos sus reels
+  nuevos.», cuántos están marcados («3 de 6 marcados») y el botón «Elegir competidores».
+  **Siempre está a la vista.** Si no hay competidores dice «Aún no tienes competidores.
+  Márcalos abajo con «Compite contigo» o elígelos aquí.». El asistente no la monta: allí el
+  tablero es el paso de marcar cuentas.
+- **El panel** (`drawer`; desde abajo en el teléfono, 640 px o menos, y desde la derecha en
+  una ventana más ancha) permite:
+  - ver la lista;
+  - marcar hasta 6 para el lunes;
+  - usar «Ver sus reels ahora»: la misma lectura pagada que firmó Deivid, con los mismos
+    topes y sin llamadas nuevas;
+  - **quitar** un competidor («Quitar»): la cuenta vuelve a «sin clasificar» en el tablero
+    (`BrandConnectState.unmark_account`);
+  - **agregar** («Agregar competidores»): las demás cuentas del tablero, cada una con
+    «Compite contigo» (`BrandConnectState.move_account`).
+
+  Las dos últimas usan los eventos del propio tablero, así que la etiqueta se guarda igual
+  que al tocar una tarjeta (`sync_sort`: `set_label` / `clear_label`). Al guardar se releen
+  las filas del panel.
+- **Desde «Ideas para tus reels»:** en el lado de competidores hay una línea sobre la lista,
+  «Estás viendo los reels de tus competidores.», con el botón «Cambiar competidores». Lleva a
+  `/brand/kit?seccion=referentes&volver=/create?modo=ideas&lado=competidores&abrir=competidores`,
+  (`volver` va codificado), con la sección a la vista y el panel ya abierto. «‹ Ideas de
+  videos» vuelve a los reels en
+  el lado de competidores (`?lado=competidores`, que se aplica una sola vez por visita).
+  Va en una línea propia con texto, no en la barra: así ningún chip queda solo y el enlace
+  aparece solo cuando tiene sentido.
 - **Por qué un botón que abre el panel, y no el panel integrado:** reusa el panel tal cual
   (la misma pieza, el mismo estado y las mismas pruebas), no alarga una sección que ya es
   larga, y en el teléfono se ve igual que antes. El cambio en `brand_kit_editor.py` es de
@@ -222,6 +242,18 @@ estado tras la ronda de diseño de Deivid del 2026-11-27.
   sección y de nuevo al abrir el panel, solo con Postgres y sin pagar. La sección monta su
   propio reloj mientras una lectura manual está en curso. La pantalla de reels conserva el
   suyo, para que una lectura empezada en la sección muestre sus reels al terminar.
+- **Scroll en teléfono y tablet (prueba en vivo de Deivid, 2026-11-27).** La hoja desde
+  abajo (`drawer(side="bottom")`) no hacía scroll: con la hoja «Filtros» abierta a 375 px,
+  su columna (cabeza, cuerpo y pie) crecía con el contenido (1479 px dentro de un panel de
+  690 px). Así, `.q-drawer-body` nunca hacía scroll y el pie quedaba fuera de la pantalla.
+  - **Causa:** el `height: 100%` de la columna no tiene contra qué medirse cuando la hoja
+    tiene `height: auto`. El cajón de la derecha funcionaba solo porque mide `100dvh`.
+  - **Arreglo** en la regla compartida (`assets/qualify.css`):
+    `.rt-DialogContent.q-drawer > .rt-Flex { flex: 1 1 auto; min-height: 0; }` y la cabeza
+    y el pie con `flex-shrink: 0`. Vale para todos los `drawer`: la hoja «Filtros», «Tus
+    competidores» y cualquier otro que use la primitiva (por ejemplo «Descubrir cuentas
+    nuevas», si la usa).
+  - Lo protege un test que fija la regla y la estructura de la primitiva.
 - **«País»** (el ticket decía «Región») tiene tres opciones. Cada una aparece solo si el
   negocio tiene ese dato. Sin país ni ciudad, no hay chip ni grupo «País».
   - «Todas»: sin filtro de lugar.

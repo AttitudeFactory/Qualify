@@ -131,6 +131,11 @@ SIDE_TO_COMPETITORS = "Competidores"
 SIDE_TO_INSPIRING = "Inspiraciones"
 SIDE_TO_COMPETITORS_NAME = "Ver reels de tus competidores"
 SIDE_TO_INSPIRING_NAME = "Volver a los reels de tus inspiraciones"
+#: m-25142823 (Deivid, 2026-11-27): on the competitors' side, one line over the list —
+#: what is on screen, and the way to change who the competitors are («Negocios parecidos
+#: al tuyo», with «Tus competidores» open).
+COMPETITORS_NOTE = "Estás viendo los reels de tus competidores."
+CHANGE_COMPETITORS = "Cambiar competidores"
 
 #: The bar's accessible name, and the phone sheet's head (drafted here, for the UX check).
 BAR_LABEL = "Filtrar reels"
@@ -643,9 +648,11 @@ __all__ = [
     "AXIS_NETWORK",
     "AXIS_REGION",
     "BAR_LABEL",
+    "CHANGE_COMPETITORS",
     "COMPETITORS_EMPTY_ACTION",
     "COMPETITORS_EMPTY_BODY",
     "COMPETITORS_EMPTY_TITLE",
+    "COMPETITORS_NOTE",
     "COVER_GONE",
     "DONE_LABEL",
     "DURATION_LABEL",

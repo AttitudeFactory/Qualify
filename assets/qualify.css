@@ -1750,6 +1750,19 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   animation: q-sheet-in var(--q-dur) var(--q-ease);
 }
 .q-drawer--bottom .q-drawer-foot { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+/* RF-02b (Deivid, live at 375 px, 2026-11-27): the primitive's column (the only child of
+   the content: head, body, foot) must be bounded by the panel, or `.q-drawer-body` grows
+   to its content and never scrolls — the sheet's `height: auto` gives its `height: 100%`
+   nothing to resolve against (the right-edge drawer worked only because it is `100dvh`).
+   As a flex item that may shrink (`min-height: 0`), the column takes the panel's height
+   (85dvh at most here, 100dvh on the right); the body (`flex: 1`, `min-height: 0`, set by
+   the primitive) then scrolls, and the head and the foot stay in view. */
+.rt-DialogContent.q-drawer > .rt-Flex {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+}
+.q-drawer-head, .q-drawer-foot { flex-shrink: 0; }
 @keyframes q-sheet-in {
   from { translate: 0 100%; }
   to { translate: 0 0; }
