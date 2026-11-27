@@ -83,6 +83,8 @@ class AdResultsState(rx.State):
     _edit_request: str = ""
     _edit_token: str = ""
     _edit_expires: str = ""
+    # The open budget edit is the traffic light's raise, untouched (m-25091390).
+    _advised: bool = False
 
     @rx.var
     def edit_unit(self) -> str:
@@ -474,11 +476,15 @@ class AdResultsState(rx.State):
     def open_edit(self, action: str) -> rx.event.EventSpec | None:
         if not self._edit_allowed(action):
             return None
+        return self._open_edit(action)
+
+    def _open_edit(self, action: str) -> rx.event.EventSpec | None:
         self.pause_open = False
         self._pause_request = ""
         self.edit_action = action
         self.edit_budget_total = self.detail.promotion.current_budget_input
         self.edit_end_local = self.detail.promotion.current_end_input
+        self._advised = False
         self._clear_edit_review()
         self._edit_request = str(uuid4())
         self.edit_open = True
@@ -487,6 +493,17 @@ class AdResultsState(rx.State):
         self.edit_warning = ""
         self.floor_label, self._floor_input = "", ""
         return AdResultsState.load_floor if action == "budget_down" else None
+
+    @rx.event
+    def open_advised_raise(self) -> None:
+        """«Subir a $X»: the ordinary budget edit with the advised amount filled in; the
+        owner still checks and confirms it."""
+        advice = self.detail.advice
+        if not advice.can_raise or not advice.raise_input or not self._edit_allowed("budget"):
+            return
+        self._open_edit("budget")
+        self.edit_budget_total = advice.raise_input
+        self._advised = True
 
     @rx.event
     def dismiss_edit(self, opened: bool = False) -> None:
@@ -501,6 +518,7 @@ class AdResultsState(rx.State):
         if self.change_pending:
             return
         self.edit_budget_total = value
+        self._advised = self._advised and value == self.detail.advice.raise_input
         self._clear_edit_review()
         self._operation = str(uuid4())
         self.busy = False
@@ -563,6 +581,11 @@ class AdResultsState(rx.State):
             self.notice = ""
             promotion = UUID(self._selected_id)
             request, action = self._edit_request, self.edit_action
+            advised = (
+                self._advised
+                and action == "budget"
+                and self.edit_budget_total == self.detail.advice.raise_input
+            )
         try:
             with acting_login(UUID(context[1])):
                 prepared = await asyncio.to_thread(
@@ -575,6 +598,7 @@ class AdResultsState(rx.State):
                     currency=row.currency,
                     budget_minor=budget,
                     end_time=end,
+                    advised=advised,
                 )
         except Exception as exc:
             logger.warning("ad edit preparation failed: %s", type(exc).__name__)

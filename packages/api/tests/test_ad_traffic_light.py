@@ -44,6 +44,7 @@ def advise(**changes) -> tl.Advice:
         max_cost_minor=20 * K,  # a client can cost $20.000; results cost $10.000
         audience_lower=100_000,
         observed_at=NOW,
+        unspent_minor=100 * K,  # nothing spent yet of a $100.000 total
     )
     return tl.advise(**(args | changes))
 
@@ -101,7 +102,13 @@ def test_no_profile_says_keep_and_asks_for_it():
     ("spend", "action", "light", "text"),
     [
         # 20 results: cost $7.000 / $14.000 / $20.000 / $21.000 against a $20.000 maximum.
-        ("140000", "raise", "green", "Súbele 20 %. Cada persona interesada te cuesta $7.000 COP"),
+        (
+            "140000",
+            "raise",
+            "green",
+            "Súbele 20 % a lo que te queda por invertir. "
+            "Cada persona interesada te cuesta $7.000 COP",
+        ),
         ("280000", "raise", "green", "Súbele 20 %"),  # 70 % of the maximum: still cheap
         ("400000", "keep", "yellow", "Mantén el presupuesto. Cada persona interesada te cuesta"),
         ("420000", "change", "red", "No subas. Cada persona interesada te cuesta $21.000 COP"),
@@ -122,16 +129,27 @@ def test_metas_cost_per_result_wins_over_our_division():
 
 
 @pytest.mark.parametrize(
-    ("current", "currency", "raised"),
+    ("current", "unspent", "currency", "raised"),
     [
-        (100 * K, "COP", 120 * K),
-        (101_500_00, "COP", 121 * K),
-        (1000, "USD", 1200),
-        (100, "USD", 200),
+        (100 * K, 100 * K, "COP", 120 * K),
+        (101_500_00, 101_500_00, "COP", 121_500_00),
+        # Nearly spent: 20 % of the 14.000 left, not of the 100.000 total.
+        (100 * K, 14 * K, "COP", 102 * K),
+        (100 * K, 0, "COP", 101 * K),  # always at least one step
+        (1000, 1000, "USD", 1200),
+        (100, 100, "USD", 200),
     ],
 )
-def test_raise_rounds_down_to_the_shown_step_and_always_raises(current, currency, raised):
-    assert tl.raised_budget(current, 20, currency) == raised
+def test_raise_is_a_percent_of_what_is_left_rounded_down_and_always_raises(
+    current, unspent, currency, raised
+):
+    assert tl.raised_budget(current, unspent, 20, currency) == raised
+
+
+def test_no_amount_without_metas_unspent_budget():
+    advice = advise(period=period(spend="140000"), unspent_minor=None)
+    assert advice.can_raise and tl.suggested_budget(advice, 100 * K, "COP") is None
+    assert tl.suggested_budget(advise(unspent_minor=101 * K), 100 * K, "COP") is None
 
 
 def test_meta_budget_suggestion_is_applicable_only_when_our_light_allows_a_raise():
@@ -142,6 +160,8 @@ def test_meta_budget_suggestion_is_applicable_only_when_our_light_allows_a_raise
     for blocked in (
         advise(learning={"status": "LEARNING"}, recommendations=scale),
         advise(period=period(spend="420000"), recommendations=scale),
+        # A full zone: more money does not reach more people.
+        advise(period=period(spend="400000", reach=80_000), recommendations=scale),
     ):
         assert not blocked.can_raise and tl.suggested_budget(blocked, 100 * K, "COP") is None
 
@@ -152,6 +172,9 @@ def test_creative_fatigue_is_a_notice_never_a_raise():
     assert advice.meta == ("CREATIVE_FATIGUE",) and not advice.can_raise
     assert tl.suggested_budget(advice, 100 * K, "COP") is None
     assert tl.meta_notices(advice) == (tl.META_TEXT["CREATIVE_FATIGUE"],)
+    # Never «haz una pieza nueva» and «Subir» on the same card, even when our rule is cheap.
+    cheap = advise(period=period(spend="140000"), recommendations=fatigue)
+    assert cheap.action == "raise" and not cheap.can_raise
 
 
 # --- Provenance ---
@@ -265,11 +288,17 @@ def test_traffic_light_is_off_unless_turned_on(monkeypatch):
 # --- Applying: prepare only, the owner confirms ---
 
 
-def _results(advice, *, stale=False, budget=100 * K):
+def _results(advice, *, stale=False, budget=100 * K, status="ACTIVE", days=3, manage=True):
     return SimpleNamespace(
         advice=advice,
         insights_stale=stale,
-        promotion=SimpleNamespace(current_budget_minor=budget, currency="COP"),
+        promotion=SimpleNamespace(
+            current_budget_minor=budget,
+            currency="COP",
+            status=status,
+            can_manage=manage,
+            end_time=datetime.now(UTC) + timedelta(days=days),
+        ),
     )
 
 
@@ -309,6 +338,10 @@ async def test_advised_raise_only_prepares_the_consented_edit(monkeypatch):
             )
         ),
         _results(advise(learning={"status": "LEARNING"})),
+        # Paused, ended or not editable: no raise, whatever the advice says.
+        _results(advise(period=period(spend="140000")), status="PAUSED"),
+        _results(advise(period=period(spend="140000")), days=-1),
+        _results(advise(period=period(spend="140000")), manage=False),
     ],
 )
 async def test_no_raise_is_prepared_without_a_current_raise(monkeypatch, results):
@@ -348,3 +381,40 @@ async def test_a_prepared_raise_never_runs_without_the_owners_confirmation(monke
     monkeypatch.setattr(management, "tenant_session", session)
     with pytest.raises(ResultsUnavailable, match="Vuelve a entrar"):
         management._actor(SimpleNamespace(tenant_id=uuid4()))
+
+
+# --- The read never breaks the results it sits beside ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["ACTIVE", "PAUSED"])
+async def test_a_failing_meta_read_or_a_paused_ad_leaves_no_advice(monkeypatch, status):
+    from qualify_api.ads.errors import MarketingError
+
+    calls = []
+
+    class Api:
+        async def read_object(self, object_id, *, fields):
+            calls.append("adset")
+            return {"id": "2", "budget_remaining": "1000"}
+
+        async def insights(self, object_id=None, *, params=None):
+            calls.append("insights")
+            return SimpleNamespace(data=())
+
+        async def recommendations(self):
+            calls.append("recommendations")
+            raise MarketingError("Meta no respondió.")
+
+    def no_db(*args, **kwargs):
+        raise AssertionError("no advice is saved")
+
+    monkeypatch.setattr(results_service, "tenant_session", no_db)
+    scope = SimpleNamespace(
+        adset_id="2", ad_id="3", campaign_id="1", meta_account_id="12", currency="COP",
+        tenant_id=uuid4(), promotion_id=uuid4(),
+    )  # fmt: skip
+    await results_service._save_advice(
+        scope, Api(), uuid4(), NOW, date(2026, 11, 1), date(2026, 11, 25), (), status
+    )
+    assert calls == ([] if status == "PAUSED" else ["adset", "insights", "recommendations"])

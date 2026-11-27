@@ -598,7 +598,7 @@ async def _refresh(
         from qualify_api.ads.traffic_light import traffic_light_on
 
         if traffic_light_on():
-            await _save_advice(scope, api, token, now, since, until, tuple(daily.values()))
+            await _save_advice(scope, api, token, now, since, until, tuple(daily.values()), status)
             _same(scope, system=system)
         if client is not None:
             from qualify_api.ads.live_management import reconcile_promotion_edit
@@ -621,11 +621,32 @@ async def _save_advice(
     since: date,
     until: date,
     daily: tuple[DailyInsight, ...],
+    status: str,
 ) -> None:
     """Read Meta's learning, whole-period and recommendation signals and keep the traffic
-    light with its provenance (m-25091390). Read-only; a failed or unexpected read leaves no
-    advice (the screen shows none) and never fails the results it sits beside."""
-    from qualify_api.ads.investment_profile import max_cost_per_client_minor
+    light with its provenance (m-25091390). Read-only. Only for an ad Meta reports ACTIVE (a
+    paused or ended one gets none); a failed or unexpected read or step leaves no advice
+    (the screen shows none) and never fails the results it sits beside."""
+    if status != "ACTIVE":
+        return
+    try:
+        await _advise(scope, api, token, now, since, until, daily)
+    except Exception:  # the light is optional: it never breaks the results read
+        return
+
+
+async def _advise(
+    scope: ResultScope,
+    api: MarketingAPI,
+    token: UUID,
+    now: datetime,
+    since: date,
+    until: date,
+    daily: tuple[DailyInsight, ...],
+) -> None:
+    from qualify_api.ads.investment_profile import shown_max_cost_minor
+    from qualify_api.ads.live_management import _whole
+    from qualify_api.ads.money import from_meta
     from qualify_api.ads.traffic_light import (
         advise,
         parse_learning,
@@ -633,38 +654,34 @@ async def _save_advice(
         parse_recommendations,
     )
 
-    try:
-        learning = parse_learning(
-            await api.read_object(scope.adset_id, fields="id,learning_stage_info"),
-            adset_id=scope.adset_id,
-        )
-        period = parse_period(
-            (
-                await api.insights(
-                    scope.ad_id,
-                    params={
-                        # No time_increment: daily reach does not add up to the period's
-                        # (discovery §6), so frequency comes from this one row.
-                        "fields": (
-                            "ad_id,account_id,account_currency,spend,reach,impressions,"
-                            "frequency,results,cost_per_result"
-                        ),
-                        "time_range": {"since": since.isoformat(), "until": until.isoformat()},
-                        "level": "ad",
-                    },
-                )
-            ).data,
-            ad_id=scope.ad_id,
-            account_id=scope.meta_account_id,
-            currency=scope.currency,
-        )
-        # shortcut: first page only; Meta returns few per account (§7). Page if that changes.
-        recommendations = parse_recommendations(
-            (await api.recommendations()).data,
-            object_ids=(scope.ad_id, scope.adset_id, scope.campaign_id),
-        )
-    except (MarketingError, ResultsUnavailable):
-        return
+    adset = await api.read_object(scope.adset_id, fields="id,learning_stage_info,budget_remaining")
+    learning = parse_learning(adset, adset_id=scope.adset_id)
+    remaining = _whole(adset.get("budget_remaining"))  # Meta's unit (whole pesos for COP)
+    period = parse_period(
+        (
+            await api.insights(
+                scope.ad_id,
+                params={
+                    # No time_increment: daily reach does not add up to the period's
+                    # (discovery §6), so frequency comes from this one row.
+                    "fields": (
+                        "ad_id,account_id,account_currency,spend,reach,impressions,"
+                        "frequency,results,cost_per_result"
+                    ),
+                    "time_range": {"since": since.isoformat(), "until": until.isoformat()},
+                    "level": "ad",
+                },
+            )
+        ).data,
+        ad_id=scope.ad_id,
+        account_id=scope.meta_account_id,
+        currency=scope.currency,
+    )
+    # shortcut: first page only; Meta returns few per account (§7). Page if that changes.
+    recommendations = parse_recommendations(
+        (await api.recommendations()).data,
+        object_ids=(scope.ad_id, scope.adset_id, scope.campaign_id),
+    )
     with tenant_session(scope.tenant_id, independent=True) as s:
         row = (
             s.execute(
@@ -687,13 +704,14 @@ async def _save_advice(
             recommendations=recommendations,
             daily=daily,
             # What a client can cost, only in the account's own currency.
-            max_cost_minor=max_cost_per_client_minor(
-                row["average_ticket_minor"], row["margin_basis_points"]
+            max_cost_minor=shown_max_cost_minor(
+                row["average_ticket_minor"], row["margin_basis_points"], scope.currency
             )
             if row["profile_currency"] == scope.currency
             else None,
             audience_lower=nonnegative(row["audience_lower"], integer=True),
             observed_at=now,
+            unspent_minor=from_meta(remaining, scope.currency) if remaining is not None else None,
         )
         s.execute(
             text(

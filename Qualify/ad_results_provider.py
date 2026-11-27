@@ -17,10 +17,13 @@ from qualify_api.ads.results_service import (
 )
 
 from .ad_results_vm import (
+    ADVICE_LABELS,
+    ADVICE_TONES,
     ALERTS_ALREADY_ON,
     ALERTS_ON,
     EDIT_ACTION_LABELS,
     EDIT_UNKNOWN,
+    AdAdviceVM,
     AdDayVM,
     AdDetailVM,
     AdEditOutcomeVM,
@@ -85,6 +88,36 @@ def summary_vm(row: PromotionResultSummary) -> AdResultVM:
     )
 
 
+def advice_vm(result: PromotionResults) -> AdAdviceVM:
+    """The stored traffic light of these results; hidden when absent or stale (the backend
+    only returns one with QUALIFY_ADS_TRAFFIC_LIGHT on)."""
+    from qualify_api.ads.traffic_light import message, meta_notices, suggested_budget
+
+    advice, row = getattr(result, "advice", None), result.promotion
+    if advice is None or result.insights_stale or result.insights_refresh_failed:
+        return AdAdviceVM()
+    current = row.current_budget_minor
+    amount = (
+        suggested_budget(advice, current, row.currency)
+        if type(current) is int and row.can_manage
+        else None
+    )
+    return AdAdviceVM(
+        shown=True,
+        tone=ADVICE_TONES[advice.light],
+        label=ADVICE_LABELS[advice.action],
+        message=message(advice, row.currency),
+        meta=list(meta_notices(advice)),
+        can_raise=amount is not None,
+        raise_label=f"Subir a {money_label(Decimal(amount) / 100, row.currency)}"
+        if amount is not None
+        else "",
+        raise_input=budget_input(amount, row.currency) if amount is not None else "",
+        new_piece=advice.action == "fatigue" or "CREATIVE_FATIGUE" in advice.meta,
+        profile_link=advice.reason == "no_profile",
+    )
+
+
 def detail_vm(result: PromotionResults) -> AdDetailVM:
     zone = result.promotion.timezone_name
     return AdDetailVM(
@@ -110,6 +143,7 @@ def detail_vm(result: PromotionResults) -> AdDetailVM:
         insights_stale=result.insights_stale,
         insights_refresh_failed=result.insights_refresh_failed,
         observed_conversations=number_label(result.observed_conversations),
+        advice=advice_vm(result),
     )
 
 
@@ -196,11 +230,19 @@ def prepare_edit(
     currency: str,
     budget_minor: int | None = None,
     end_time: datetime | None = None,
+    advised: bool = False,
 ) -> PreparedAdEdit:
+    """`advised`: the traffic light's raise (m-25091390), prepared from the stored advice so
+    its provenance travels with the owner's confirmation; it must match `budget_minor`."""
     from qualify_api.ads.results_service import prepare_promotion_edit
+    from qualify_api.ads.traffic_light import prepare_advised_raise
 
     result = asyncio.run(
-        prepare_promotion_edit(
+        prepare_advised_raise(
+            tenant_id=tenant_id, promotion_id=promotion_id, request_key=request_key
+        )
+        if advised and action == "budget"
+        else prepare_promotion_edit(
             tenant_id=tenant_id,
             promotion_id=promotion_id,
             request_key=request_key,
@@ -209,6 +251,9 @@ def prepare_edit(
             end_time=end_time,
         )
     )
+    if advised and result.new_budget_minor != budget_minor:
+        # The advice moved since the screen showed it: never confirm another amount.
+        raise ResultsUnavailable("Vuelve a comprobar este cambio antes de confirmarlo.")
     now = datetime.now(UTC)
     if (
         action not in EDIT_ACTION_LABELS

@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -222,6 +222,9 @@ class Advice:
     max_cost_minor: int | None = None
     learning_conversions: int | None = None
     learning_threshold: int | None = None
+    # What the ad set has left to spend (`budget_remaining`), in hundredths: a raise is a
+    # percent of this, not of the whole lifetime budget, which may be almost spent.
+    unspent_minor: int | None = None
     meta: tuple[str, ...] = ()
     # Provenance: the Meta data and our inputs the rules read.
     inputs: dict[str, Any] = field(default_factory=dict)
@@ -233,10 +236,13 @@ class Advice:
 
     @property
     def can_raise(self) -> bool:
-        """One raise button: our rule, or Meta's budget suggestion when our light does not
-        say wait or change (a raise while learning restarts it)."""
+        """One raise button: our rule, or Meta's budget suggestion on a «mantén». Never
+        beside a new-piece notice, nor while learning (a raise restarts it), nor on a full
+        zone (more money does not reach more people there)."""
+        if "CREATIVE_FATIGUE" in self.meta:
+            return False
         return self.action == "raise" or (
-            self.action in {"keep", "widen"} and any(m in BUDGET_SUGGESTIONS for m in self.meta)
+            self.action == "keep" and any(m in BUDGET_SUGGESTIONS for m in self.meta)
         )
 
     @property
@@ -293,6 +299,7 @@ def advise(
     max_cost_minor: int | None,
     audience_lower: int | None,
     observed_at: datetime,
+    unspent_minor: int | None = None,
     rules: Rules | None = None,
 ) -> Advice:
     rules = rules or load_rules()
@@ -308,6 +315,7 @@ def advise(
         "cost_rise": rise,
         "max_cost_minor": max_cost_minor,
         "audience_lower": audience_lower,
+        "unspent_minor": unspent_minor,
         "daily_days": len(daily),
     }
     base = {
@@ -317,6 +325,7 @@ def advise(
         "max_cost_minor": max_cost_minor,
         "learning_conversions": learning.get("conversions"),
         "learning_threshold": learning.get("conversions_threshold"),
+        "unspent_minor": unspent_minor,
         "meta": tuple(r["type"] for r in recommendations),
         "inputs": json.loads(json.dumps(inputs, default=str)),
     }
@@ -350,18 +359,20 @@ def advise(
     return pick("change", "expensive")
 
 
-def raised_budget(current_minor: int, percent: int, currency: str) -> int:
-    """`current` + `percent` %, rounded down to the shown step ($1.000 COP, the whole unit
-    elsewhere) and at least one step above the current budget."""
+def raised_budget(current_minor: int, unspent_minor: int, percent: int, currency: str) -> int:
+    """The lifetime total that adds `percent` % to what is still unspent, the extra rounded
+    down to the shown step ($1.000 COP, the whole unit elsewhere) and at least one step."""
     step = display_step_minor(currency)
-    raised = current_minor * (100 + percent) // 100 // step * step
-    return raised if raised > current_minor else current_minor + step
+    extra = unspent_minor * percent // 100 // step * step
+    return current_minor + max(extra, step)
 
 
 def suggested_budget(advice: Advice, current_minor: int, currency: str) -> int | None:
-    if not advice.can_raise:
+    """None without a raise or without Meta's unspent budget (never guessed)."""
+    unspent = advice.unspent_minor
+    if not advice.can_raise or unspent is None or unspent > current_minor:
         return None
-    return raised_budget(current_minor, load_rules().raise_percent, currency)
+    return raised_budget(current_minor, unspent, load_rules().raise_percent, currency)
 
 
 # --- What the owner reads (Spanish, qualify-copy-es) ---
@@ -404,7 +415,8 @@ def message(advice: Advice, currency: str) -> str:
             "y te diremos si conviene subir."
         ),
         "cheap": (
-            f"Súbele {advice.raise_percent} %. Cada persona interesada te cuesta {cost}, "
+            f"Súbele {advice.raise_percent} % a lo que te queda por invertir. "
+            f"Cada persona interesada te cuesta {cost}, "
             f"bastante menos de lo que puedes pagar ({top})."
         ),
         "close": (
@@ -435,9 +447,11 @@ async def prepare_advised_raise(*, tenant_id: UUID, promotion_id: UUID, request_
     from qualify_api.ads import results_service
 
     results = results_service.load_promotion_results(tenant_id=tenant_id, promotion_id=promotion_id)
-    advice = results.advice
+    advice, row = results.advice, results.promotion
     if advice is None or results.insights_stale:
         raise ResultsUnavailable(STALE)
+    if row.status != "ACTIVE" or not row.can_manage or row.end_time <= datetime.now(UTC):
+        raise ResultsUnavailable(NO_RAISE)
     current = results.promotion.current_budget_minor
     amount = (
         suggested_budget(advice, current, results.promotion.currency)

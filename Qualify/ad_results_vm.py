@@ -147,6 +147,33 @@ class AdDayVM:
     cpm: str
 
 
+# The traffic light (m-25091390): one word per action beside the colored dot.
+ADVICE_LABELS = {
+    "raise": "Va bien",
+    "keep": "Estable",
+    "wait": "En prueba",
+    "widen": "Zona casi completa",
+    "change": "No conviene subir",
+    "fatigue": "Público cansado",
+}
+ADVICE_TONES = {"green": "ok", "yellow": "warn", "red": "error"}
+ADVICE_NOTE = "Es una recomendación. Nada cambia en tu anuncio hasta que tú lo confirmes."
+
+
+@dataclass(frozen=True)
+class AdAdviceVM:
+    shown: bool = False
+    tone: str = "neutral"
+    label: str = ""
+    message: str = ""
+    meta: list[str] = field(default_factory=list)
+    can_raise: bool = False
+    raise_label: str = ""
+    raise_input: str = ""  # whole units, as the budget field takes them
+    new_piece: bool = False
+    profile_link: bool = False
+
+
 @dataclass(frozen=True)
 class AdDetailVM:
     promotion: AdResultVM = field(default_factory=AdResultVM)
@@ -156,6 +183,7 @@ class AdDetailVM:
     insights_stale: bool = True
     insights_refresh_failed: bool = False
     observed_conversations: str = "Sin datos"
+    advice: AdAdviceVM = field(default_factory=AdAdviceVM)
 
 
 def number_label(value: int | Decimal | None, *, decimals: int = 0) -> str:
