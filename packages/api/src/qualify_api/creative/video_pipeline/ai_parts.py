@@ -367,6 +367,8 @@ REFERENCE_SUFFIXES: dict[str, tuple[str, ...]] = {
 #: The old per-part reference fields a brief on the tracks (`references_version` 1) may
 #: not carry (`references_and_old_fields`).
 _OLD_ENTRY_FIELDS = ("clip_image_keys", "clip_video_keys", "clip_audio_keys")
+#: The same old fields on the Clip itself (its photos, videos and audios for its parts).
+_OLD_CLIP_FIELDS = _OLD_ENTRY_FIELDS
 
 #: What the owner should read about the tracks, without blocking «Crear» (Deivid,
 #: 2026-11-27): `reference_mode_ignored` — a video or audio under a part that is not
@@ -499,16 +501,33 @@ def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
     return max(0.0, min(a1, b1) - max(a0, b0))
 
 
+def _join_overlaps_s(segments: Sequence[SourceSegment]) -> list[float]:
+    """The seconds each block overlaps the one before it at its join (0 for the first,
+    a cut, or a join not drawn) — `recipe.block_overlaps`' frames at the speed step's
+    rate, so the tracks' seconds are those of the video that comes out."""
+    from qualify_creative.video.speed import SPEED_FPS  # noqa: PLC0415
+
+    from qualify_api.creative.video_pipeline.recipe import transition_frames  # noqa: PLC0415
+
+    return [
+        0.0 if at == 0 else transition_frames(s.transition_in, rate=SPEED_FPS) / SPEED_FPS
+        for at, s in enumerate(segments)
+    ]
+
+
 def _spans(segments: Sequence[SourceSegment]) -> tuple[list[tuple[int, int, float, float]], float]:
-    """Each AI block's `(block_at, entry_at, start_s, end_s)` on the Clip, one after the
-    other at their speed, as `clip_avatar.virtual_brief` lays the blocks out (a join's
-    overlap is not taken off), and where the Clip ends. A block naming no entry, or one
-    already named, is left out (`ai_parts_mismatch` says it)."""
+    """Each AI block's `(block_at, entry_at, start_s, end_s)` in seconds of the final
+    video, and where the Clip ends (`recipe.clip_seconds`): the blocks in order, at their
+    speed, as `clip_avatar.virtual_brief` lays them out, each starting where the one
+    before ends minus its join's overlap. A block naming no entry, or one already named,
+    is left out (`ai_parts_mismatch` says it)."""
     spans: list[tuple[int, int, float, float]] = []
     named: set[int] = set()
     clock = 0.0
+    overlaps = _join_overlaps_s(segments) if any(s.transition_in for s in segments) else ()
     for at, segment in enumerate(segments):
-        start, clock = clock, clock + segment.output_seconds
+        start = max(0.0, clock - (overlaps[at] if overlaps else 0.0))
+        clock = start + segment.output_seconds
         entry_at = segment.ai_part_at
         if entry_at is not None and entry_at not in named:
             named.add(entry_at)
@@ -648,7 +667,7 @@ def reference_problems(
 
     - `references_and_old_fields`: tracks on a brief that does not say
       `references_version` 1 (`references_version`), or a brief on the tracks that still
-      carries the old per-part keys (`clip_image_keys`, `ai_parts[n].clip_*_keys`);
+      carries the old per-part keys (the Clip's `clip_*_keys`, `ai_parts[n].clip_*_keys`);
     - per reference `i`: `reference_type` (`clip_references[i].key`), with a `tenant_id`
       `malformed_key` / `foreign_key` (same field), and `reference_out_of_clip`
       (`clip_references[i]`) when it ends past the Clip;
@@ -664,8 +683,9 @@ def reference_problems(
     if refs and media.references_version < 1:
         problem("references_and_old_fields", "references_version")
     if media.references_version >= 1:
-        if media.clip_image_keys:
-            problem("references_and_old_fields", "clip_image_keys")
+        for name in _OLD_CLIP_FIELDS:
+            if getattr(media, name):
+                problem("references_and_old_fields", name)
         for entry_at, entry in enumerate(media.ai_parts):
             for name in _OLD_ENTRY_FIELDS:
                 if getattr(entry, name):

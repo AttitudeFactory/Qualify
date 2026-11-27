@@ -25,8 +25,10 @@ from qualify_creative.schemas import (
     CharacterSceneBackground,
     CharacterSceneItem,
     CharacterSceneProduct,
+    ClipAvatarSlot,
     ClipReference,
     ContentBrief,
+    EffectUse,
     MediaInputs,
     SourceSegment,
     VideoPartPlan,
@@ -330,6 +332,32 @@ def test_unused_and_over_scene_are_notices() -> None:
     assert plan_references(media).problems == ()
 
 
+def test_the_tracks_are_seconds_of_the_video_that_comes_out() -> None:
+    """A join overlaps two blocks: the part starts earlier and the Clip ends earlier
+    (`recipe.clip_seconds`), as the screen draws them."""
+    fade = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
+    joined = SourceSegment(
+        key=ai_part_key(0), start_s=0.0, end_s=5.0, kind="ai_part", transition_in=fade
+    )
+    past = _ref("photo", 8.6, 9.0, "past.png")
+    brief = _clip((past,), segments=(_video(), joined), ai_parts=(_new(),))
+    (new,) = references_for_parts(brief)
+    assert (new.start_s, new.end_s) == (3.5, 8.5)
+    assert _codes(validate_brief_recipe(brief, tenant_id=TENANT_ID)) == [
+        ("reference_out_of_clip", "clip_references[0]")
+    ]
+
+
+def test_avatar_blocks_still_to_make_count_at_their_estimate() -> None:
+    """As `virtual_brief`: an avatar block the Clip waits for sits in its place at its
+    estimated length, so the parts after it start later."""
+    plan = (ClipAvatarSlot(slot=3, at=0, seconds_estimate=6),)
+    photo = _ref("photo", 10, 15)
+    new, same = references_for_parts(_clip((photo,), clip_avatar_plan=plan))
+    assert (new.start_s, new.end_s, same.start_s, same.end_s) == (10.0, 15.0, 15.0, 20.0)
+    assert new.photos == (photo,) and same.photos == ()
+
+
 # ---------------------------------------------------------------------------
 # the refusals
 
@@ -363,10 +391,12 @@ def test_tracks_and_old_fields_together_are_refused() -> None:
     old = _clip(
         (ref,),
         clip_image_keys=(_key("vieja.png"),),
+        clip_audio_keys=(_key("vieja.mp3"),),
         ai_parts=(_new(clip_video_keys=(_key("guia.mp4"),)), _same_as_reel()),
     )
     assert _codes(validate_brief_recipe(old, tenant_id=TENANT_ID)) == [
         ("references_and_old_fields", "clip_image_keys"),
+        ("references_and_old_fields", "clip_audio_keys"),
         ("references_and_old_fields", "ai_parts[0].clip_video_keys"),
     ]
     # a brief before the tracks (version 0, none) reads as today

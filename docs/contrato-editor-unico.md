@@ -182,7 +182,8 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 
 **Qué recibe cada parte** (`ai_parts.references_for_parts(brief, model=None)`, pura; la pantalla la puede llamar antes de «Crear»):
 
-- El tramo de la parte es el de su bloque `ai_part`, con los bloques uno tras otro a su velocidad, como los pone `clip_avatar.virtual_brief` (las uniones no se descuentan; los avatares que el Clip espera cuentan con su largo estimado).
+- El tramo de la parte es el de su bloque `ai_part`, en segundos del video que sale: los bloques en orden y a su velocidad, como los pone `clip_avatar.virtual_brief` (los avatares que el Clip espera cuentan con su largo estimado), y cada bloque empieza donde termina el anterior menos lo que se come su unión. El final del Clip es el de `recipe.clip_seconds`.
+- **Para el PR B:** las referencias de cada hijo se calculan en «Crear» sobre ese mismo `virtual_brief`. `clip_avatar.fit_plan` mueve los textos y efectos a los largos reales de los avatares, pero todavía no mueve `clip_references`: no hay que volver a calcular las referencias sobre el brief ya ajustado (o `fit_plan` las mueve con el mismo `_mapper`).
 - Una referencia aplica si se solapa con la parte más de 0,05 s (`REFERENCE_OVERLAP_MIN_S`).
 - Las fotos aplican en todos los modos. Los videos y audios, solo en «Nueva» (`reference`).
 - Orden: `(start_s, row, posición en la lista)`. La misma clave del mismo tipo cuenta una sola vez.
@@ -196,8 +197,8 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 |---|---|---|---|
 | `too_many_references` | Una parte con más fotos, videos o audios que el tope de su modelo | `ai_parts[n].references.<photo\|video\|audio>` | Esta parte con IA tiene más de {tope} fotos de referencia. Quita o acorta alguna para seguir. (Con videos y audios: «…más de {tope} videos/audios de referencia. Quita o acorta alguno para seguir.») |
 | `reference_type` | Una foto que no es JPG/PNG, un video que no es MP4/MOV o un audio que no es MP3/WAV | `clip_references[i].key` | No podemos usar ese archivo como referencia. Usa una foto JPG o PNG, un video MP4 o MOV, o un audio MP3 o WAV. |
-| `reference_out_of_clip` | Una referencia que termina después del final del Clip (con 0,05 s de margen) | `clip_references[i]` | Esta referencia queda fuera del video. Muévela o acórtala para seguir. |
-| `references_and_old_fields` | Pistas en un brief sin `references_version` 1, o un brief v1 que todavía trae `clip_image_keys` del Clip o `ai_parts[n].clip_*_keys` | `references_version`, `clip_image_keys` o `ai_parts[n].clip_*_keys` | Vuelve a abrir el editor para seguir. |
+| `reference_out_of_clip` | Una referencia que termina después del final del Clip (`clip_seconds`, ya sin lo que se comen las uniones; con 0,05 s de margen) | `clip_references[i]` | Esta referencia queda fuera del video. Muévela o acórtala para seguir. |
+| `references_and_old_fields` | Pistas en un brief sin `references_version` 1, o un brief v1 que todavía trae `clip_image_keys`, `clip_video_keys` o `clip_audio_keys` del Clip, o `ai_parts[n].clip_*_keys` | `references_version`, `clip_*_keys` o `ai_parts[n].clip_*_keys` | Vuelve a abrir el editor para seguir. |
 | `malformed_key` / `foreign_key` (de siempre) | Una clave que no es ruta del negocio, o que es de otro | `clip_references[i].key` | Los textos de siempre. `media._key_problems` también las revisa antes de leer. |
 | `ai_part_outside_clip` (de siempre) | Pistas en algo que no es un Clip normal `local` | `clip_references` | El de siempre. |
 | `switched_off` (de siempre) | Pistas con `QUALIFY_CLIP_AI_PARTS` apagado | `clip_references` | El de siempre. |
