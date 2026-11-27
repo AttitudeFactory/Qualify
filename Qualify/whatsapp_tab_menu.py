@@ -7,22 +7,29 @@ its root `on_mount` (`WhatsAppMenuState.ensure_loaded`) fires on tab entry and o
 number switch.
 
 Layout (docs/design-system.md §9.1 — tones only, the system's primitives, one solid
-action): the number's menus; then, for the open menu, a structured editor (Entrada →
-Pasos — a form, not a graph canvas, plan §5.3) next to a phone-style preview that runs
-the real engine over the brand's real catalog. Every field shows its Spanish validation
-message under it.
+action): «Tu menú de bienvenida», then, for the open menu, the four guided steps (or the
+structured editor of «Más opciones»: Entrada → Pasos — a form, not a graph canvas, plan
+§5.3) next to a phone-style preview that runs the real engine over the brand's real
+catalog. Every field shows its Spanish validation message under it.
 
-Publishing (m-24842995): the menu's bar carries the one solid action, «Publicar en mi
-WhatsApp» (saves the changes and publishes, behind a confirmation), «Guardar sin
-publicar» as the secondary, «Probar el menú» on the phone (jumps to the preview, which
-sits under the long editor there), and, after publishing, «listo» plus the next step —
-the QR for the counter (guide N3).
+«Tu menú de bienvenida» (m-25142807, option A) is ONE card: «Nuevo menú» and «⋯»
+(«Eliminar este menú», or why it cannot go yet); ONE select, «Menú y versión», with every
+menu of the number as a group and each of its versions as an option (newest first, the
+unpublished draft as «Cambios sin publicar», the version customers get marked in words);
+and, to its right (its own row on the phone), the ONE pause control — a switch on the menu
+that is live on the number. What is picked is what the editor and the preview show:
+editing an older version and saving makes the next version, never changes the old one.
+Under the select, whether customers have that version and, when they do not, the way to
+publish it — the version's own button («Volver a la versión n») for a published one, the
+editor's «Publicar en mi WhatsApp» for changes never published. Every write asks first
+(copy in `whatsapp_menu_vm.py`), except resuming (one tap, a toast offers «Pausar» back).
+The card also carries the unsaved-changes tag, the issues to fix and — while «Más
+opciones» is open — the publish area.
 
-«Menús de este número» (m-24955645) is one card per menu: its name, whether it is
-answering customers, paused or unpublished, a «Versión» selector over the published
-versions (the active one first, with its date in the business's own zone), the
-draft mark, and its actions — edit, publish the chosen version, pause / resume — each
-change behind a dialog that says what will happen (copy in `whatsapp_menu_vm.py`).
+Publishing (m-24842995): «Publicar en mi WhatsApp» (saves the changes and publishes,
+behind a confirmation), «Guardar sin publicar» as the secondary, «Probar el menú» on the
+phone (jumps to the preview, which sits under the long editor there), and, after
+publishing, «listo» plus the next step — the QR for the counter (guide N3).
 
 The menu in four steps (m-24848536) is what an owner sees first: ① ¿Cómo saludas?
 ② ¿Qué te preguntan siempre? (m-24936836: one ordered list of answers — the first ones are
@@ -67,8 +74,6 @@ from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
 from .whatsapp_menu_state import (
     ANSWER_TEXT_ID,
-    CARD_DELETE,
-    CARD_PAUSE,
     CARD_PUBLISH,
     IMPORT_REVIEW_HEADING_ID,
     MENU_PICK_ID,
@@ -90,14 +95,11 @@ from .whatsapp_menu_vm import (
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
     DELETE_BLOCKED,
-    DELETE_BUTTON,
+    DELETE_MENU_ITEM,
     DELETE_TITLE,
     DELETE_UNDO,
     DELETE_UNSAVED,
     DELETE_YES,
-    DRAFT_LINE,
-    DRAFT_LINE_OPEN,
-    EDIT_BUTTON,
     GAP_FILL_HINT,
     HANDOFF_REASONS,
     IMPORT_ADD_BUTTON,
@@ -145,28 +147,26 @@ from .whatsapp_menu_vm import (
     KIND_ORDER_SUMMARY,
     KIND_PRODUCTS,
     KIND_TEXT,
-    MENU_PICK_ARIA,
-    MENU_PICK_LABEL,
     MORE_HEADING,
     MORE_ROW_TEXT,
     MORE_ROW_TITLE,
     MOVE_DOWN,
     MOVE_TO_TOP,
     MOVE_UP,
-    NEVER_PUBLISHED,
     NEXT_STEP_QR,
     NO_PRODUCTS,
     NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
     ORDER_HINT,
-    PAUSE_BUTTON,
     PAUSE_CONFIRM,
     PAUSE_YES,
     PAYMENT_ANSWER_AUTO,
     PAYMENT_ANSWER_CHANGE,
     PAYMENTS_INVITE,
     PAYMENTS_INVITE_BUTTON,
+    PICKER_LABEL,
+    PICKER_TITLE,
     PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
@@ -174,7 +174,6 @@ from .whatsapp_menu_vm import (
     PUBLISH_VERSION_YES,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
-    RESUME_CARD_BUTTON,
     SAVE_ONLY_BUTTON,
     SUGGEST_AGAIN,
     SUGGEST_ANSWER,
@@ -186,13 +185,10 @@ from .whatsapp_menu_vm import (
     SUGGEST_UNDO,
     SUGGESTION_CUSTOM,
     SWITCH_DISCARD,
-    SWITCH_TITLE,
     SWITCH_YES,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
-    VERSION_FIELD,
     AnswerVM,
-    CardVersionOptionVM,
     CatalogRowVM,
     CatalogSectionVM,
     CommandForm,
@@ -200,10 +196,11 @@ from .whatsapp_menu_vm import (
     ImportFactVM,
     ImportProductVM,
     KeywordForm,
-    MenuCardVM,
     NodeChoiceVM,
     NodeForm,
     OptionForm,
+    PickerGroupVM,
+    PickerOptionVM,
     PreviewChoiceVM,
     PreviewMessageVM,
     SuggestionVM,
@@ -489,36 +486,63 @@ def _confirm(
     )
 
 
-def _version_option(option: CardVersionOptionVM) -> rx.Component:
-    return rx.select.item(option.label, value=option.version_id)
+def _picker_option(option: PickerOptionVM) -> rx.Component:
+    # The status in words inside the option («· Activo en tu WhatsApp»), never a colour.
+    return rx.select.item(option.label, value=option.value)
 
 
-def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
-    """«Versión»: the published versions, the active one picked first."""
+def _picker_group(group: PickerGroupVM) -> rx.Component:
+    """One menu: its name, then its versions, newest first."""
+    return rx.select.group(
+        rx.select.label(group.name),
+        rx.foreach(group.options, _picker_option),
+    )
+
+
+def _busy() -> rx.Var[bool]:
+    """One write to the number at a time (a card action, a save, a publish, a pause)."""
+    return (S.card_busy != "") | S.publishing | S.pausing | S.saving
+
+
+def _picker_select() -> rx.Component:
+    """«Menú y versión» (m-25142807): every menu of the number, each one's versions under
+    its name. What is picked is what the editor and the preview show."""
+    p = S.picker
     return rx.vstack(
-        rx.text(VERSION_FIELD, size="2", weight="medium", aria_hidden="true"),
+        rx.text(PICKER_LABEL, size="2", weight="medium", aria_hidden="true"),
         rx.select.root(
             rx.select.trigger(
+                # The closed select names the menu and the version, and — for the
+                # version customers get — its status in words, not by colour alone.
+                rx.flex(
+                    rx.text(rx.cond(S.pick_pending != "", "Abriendo…", p.trigger_label)),
+                    rx.cond(
+                        p.is_live_version & (S.pick_pending == ""),
+                        _tone_pill(p.status_label, p.status_tone),
+                        rx.fragment(),
+                    ),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                id=MENU_PICK_ID,
+                placeholder=PICKER_LABEL,
                 width="100%",
                 min_height=TARGET_MIN,
                 height="auto",
-                aria_label=menu.select_label,
-                # The date must stay readable at 375 px: wrap instead of «…».
+                aria_label=PICKER_LABEL,
+                # «prueba 2 · Versión 3» wraps at 375 px instead of «…».
                 style={
                     "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
                 },
             ),
-            rx.select.content(rx.foreach(menu.options, _version_option)),
-            value=menu.selected_version_id,
-            on_change=lambda value: S.choose_card_version(menu.menu_id, value),
-            disabled=blocked,
+            rx.select.content(rx.foreach(p.groups, _picker_group)),
+            value=S.picker_value,
+            on_change=S.choose_version,
+            disabled=_busy() | S.opening,
             size="3",
         ),
-        rx.cond(
-            menu.selected_is_active,
-            rx.text(menu.active_help, size="1", color=T.TEXT_MUTED),
-            rx.fragment(),
-        ),
+        rx.text(p.help, size="1", color=T.TEXT_MUTED),
         spacing="1",
         width="100%",
         align_items="start",
@@ -526,195 +550,245 @@ def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
     )
 
 
-def _menu_card(menu: MenuCardVM) -> rx.Component:
-    """One menu of the number (m-24955645): ONE pill for what it does now, the draft in
-    words, which version, and what can be done with it. Publishing and pausing ask
-    first; «Reanudar» is one tap (its toast offers «Pausar» back)."""
-    busy = S.card_busy == menu.menu_id
-    blocked = (S.card_busy != "") | S.publishing | S.pausing | S.saving
-    is_open = menu.menu_id == S.menu.menu_id
-    # Grows to the row: at 375 px «Editar» and «Pausar» share one full-width row.
-    grow = {"flex": "1 1 auto"}
-    publish = _confirm(
+def _publish_version_action() -> rx.Component:
+    """A published version that customers do not get: the version's own button
+    («Volver a la versión n» on the live menu), behind its confirmation."""
+    p = S.picker
+    return _confirm(
         _card_button(
             "send",
-            menu.publish_button,
-            menu.publish_label,
-            busy=busy & (S.card_busy_action == CARD_PUBLISH),
-            disabled=blocked,
+            p.publish_button,
+            p.publish_button,
+            busy=(S.card_busy_action == CARD_PUBLISH) & (S.card_busy != ""),
+            disabled=_busy() | S.opening,
             variant="soft",
-            **grow,
         ),
-        menu.publish_title,
-        menu.publish_confirm,
+        p.publish_title,
+        p.publish_confirm,
         PUBLISH_VERSION_YES,
-        S.publish_card_version(menu.menu_id, menu.selected_version_id),
+        S.publish_card_version(p.menu_id, p.version_id),
         rx.foreach(
-            menu.publish_lines,
+            p.publish_lines,
             lambda line: rx.text(line, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
         ),
     )
-    pause_busy = busy & (S.card_busy_action == CARD_PAUSE)
-    pause = rx.cond(
-        menu.is_paused,
-        _card_button(
-            "play",
-            RESUME_CARD_BUTTON,
-            menu.resume_label,
-            busy=pause_busy,
-            disabled=blocked,
-            on_click=S.pause_card(menu.menu_id, False),
-            variant="soft",
-            **grow,
-        ),
-        _confirm(
-            _card_button(
-                "pause",
-                PAUSE_BUTTON,
-                menu.pause_label,
-                busy=pause_busy,
-                disabled=blocked,
-                variant="soft",
-                **grow,
-                **T.tone_scheme("neutral"),
-            ),
-            menu.pause_title,
-            PAUSE_CONFIRM,
-            PAUSE_YES,
-            S.pause_card(menu.menu_id, True),
-        ),
-    )
-    delete = _confirm(
-        _card_button(
-            "trash-2",
-            DELETE_BUTTON,
-            menu.delete_label,
-            busy=busy & (S.card_busy_action == CARD_DELETE),
-            disabled=blocked | S.opening,
-            variant="soft",
-            **grow,
-            **T.tone_scheme("neutral"),
-        ),
-        DELETE_TITLE,
-        rx.text(
-            "Se borra ",
-            rx.text.strong(menu.name),
-            menu.delete_tail,
-            size="2",
-        ),
-        DELETE_YES,
-        S.delete_card(menu.menu_id),
-        rx.text(menu.delete_case, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
-        rx.cond(
-            is_open & S.dirty,
-            rx.text(DELETE_UNSAVED, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
-            rx.fragment(),
-        ),
-        rx.text(DELETE_UNDO, size="2", weight="medium", margin_top="0.5rem"),
-        tone="error",
-    )
-    return card(
+
+
+#: «Publicar en mi WhatsApp» in the card says why it is off, never a silent block.
+CARD_PUBLISH_REASON_ID = "whatsapp-menu-card-publish-reason"
+
+
+def _publish_draft_action() -> rx.Component:
+    """Changes customers do not have yet: the editor's own «Publicar en mi WhatsApp» (its
+    confirmation, its `can_publish`). Not in «Más opciones» nor in step 4, where the
+    same button already sits right there."""
+    blocked = S.publish_block_reason != ""
+    return rx.cond(
+        S.advanced_open | (S.guided_step == 4),
+        rx.fragment(),
         rx.vstack(
-            rx.vstack(
-                rx.heading(menu.name, size="3", as_="h3", min_width="0", word_break="break-word"),
-                _tone_pill(menu.status_label, menu.status_tone),
-                rx.cond(
-                    menu.has_draft & menu.has_options,
-                    rx.text(
-                        rx.cond(is_open, DRAFT_LINE_OPEN, DRAFT_LINE),
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.fragment(),
+            rx.button(
+                rx.icon("send", size=T.ICON_SM),
+                PUBLISH_BUTTON,
+                on_click=S.set_publish_confirm_open(True),
+                disabled=~S.can_publish,
+                loading=S.publishing,
+                size="3",
+                min_height=TARGET_MIN,
+                aria_describedby=rx.cond(blocked, CARD_PUBLISH_REASON_ID, ""),
+            ),
+            rx.cond(
+                blocked & ~S.publishing,
+                rx.text(
+                    S.publish_block_reason,
+                    id=CARD_PUBLISH_REASON_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
                 ),
-                spacing="2",
-                align_items="start",
-                width="100%",
-            ),
-            rx.cond(
-                menu.has_options,
-                _card_versions(menu, blocked),
-                rx.text(NEVER_PUBLISHED, size="2", color=T.TEXT_MUTED),
-            ),
-            # Hidden while the active version is picked: the hint under the selector
-            # already says customers have it (UX review).
-            rx.cond(
-                menu.has_options & ~menu.selected_is_active,
-                rx.flex(publish, width="100%"),
                 rx.fragment(),
             ),
-            rx.flex(
-                _card_button(
-                    "pencil",
-                    EDIT_BUTTON,
-                    menu.edit_label,
-                    on_click=S.edit_menu(menu.menu_id),
-                    disabled=S.opening,
-                    variant="soft",
-                    **grow,
-                    **T.tone_scheme("neutral"),
-                ),
-                rx.cond(menu.is_live, pause, rx.fragment()),
-                # m-24986800: never on the menu that answers — a line says why instead
-                # of a disabled button (which is not focusable and says nothing).
-                rx.cond(menu.can_delete, delete, rx.fragment()),
-                spacing="2",
-                wrap="wrap",
-                width="100%",
-            ),
-            rx.cond(
-                menu.can_delete,
-                rx.fragment(),
-                rx.text(DELETE_BLOCKED, size="2", color=T.TEXT_MUTED),
-            ),
-            spacing="3",
-            width="100%",
+            spacing="1",
             align_items="start",
         ),
-        padding="1rem 1.25rem",
-        min_width="0",
     )
 
 
-def _menu_pick_option(menu: MenuCardVM) -> rx.Component:
-    # The status in words inside the option (never only a colour).
-    return rx.select.item(menu.option_label, value=menu.menu_id)
+def _picker_action() -> rx.Component:
+    p = S.picker
+    return rx.cond(
+        S.dirty | (p.is_unpublished & (p.menu_id != "")),
+        _publish_draft_action(),
+        rx.cond(p.can_publish_version, _publish_version_action(), rx.fragment()),
+    )
 
 
-def _menu_picker() -> rx.Component:
-    """«Menú» (m-24986800): which menu's card is on screen; choosing opens it."""
-    return rx.vstack(
-        rx.text(MENU_PICK_LABEL, size="2", weight="medium", aria_hidden="true"),
-        rx.select.root(
-            rx.select.trigger(
-                id=MENU_PICK_ID,
-                width="100%",
-                min_height=TARGET_MIN,
-                height="auto",
-                aria_label=MENU_PICK_ARIA,
-                # «prueba 2 · Activo en tu WhatsApp» wraps at 375 px instead of «…».
-                style={
-                    "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
-                },
+ANSWERING_SWITCH_ID = "whatsapp-menu-answering"
+ANSWERING_HELP_ID = "whatsapp-menu-answering-help"
+
+
+def _answering_switch() -> rx.Component:
+    """The only pause control: the menu that is live on the number (even when another
+    menu is picked — then the help line names it). Off asks first; on is one tap."""
+    p = S.picker
+    return rx.cond(
+        p.has_live,
+        rx.hstack(
+            rx.switch(
+                id=ANSWERING_SWITCH_ID,
+                checked=~p.live_paused,
+                on_change=S.set_answering,
+                disabled=_busy() | S.opening,
+                size="3",
+                aria_describedby=ANSWERING_HELP_ID,
+                flex_shrink="0",
+                margin_top="0.125rem",
             ),
-            rx.select.content(rx.foreach(S.menu_cards, _menu_pick_option)),
-            value=S.chosen_menu,
-            on_change=S.choose_menu,
-            disabled=(S.card_busy != "") | S.publishing | S.pausing | S.saving | S.opening,
-            size="3",
+            rx.vstack(
+                rx.text(
+                    p.switch_label,
+                    as_="label",
+                    html_for=ANSWERING_SWITCH_ID,
+                    size="2",
+                    weight="medium",
+                ),
+                rx.text(p.switch_help, id=ANSWERING_HELP_ID, size="1", color=T.TEXT_MUTED),
+                spacing="0",
+                align_items="start",
+                min_width="0",
+            ),
+            spacing="3",
+            align="start",
+            min_height=TARGET_MIN,
+            width="100%",
         ),
-        spacing="1",
-        width="100%",
-        max_width="36rem",
-        align_items="start",
+        rx.fragment(),
+    )
+
+
+def _pause_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(S.picker.pause_title),
+            rx.alert_dialog.description(PAUSE_CONFIRM, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        PAUSE_YES,
+                        on_click=S.confirm_pause,
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.pause_confirm_open,
+        on_open_change=S.set_pause_confirm_open,
+    )
+
+
+def _delete_dialog() -> rx.Component:
+    """«¿Eliminar este menú?» — opened from «⋯» (a menu item cannot hold the dialog's
+    trigger: it unmounts when the menu closes)."""
+    p = S.picker
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(DELETE_TITLE),
+            rx.alert_dialog.description(
+                rx.text("Se borra ", rx.text.strong(p.name), p.delete_tail, size="2"),
+                size="2",
+            ),
+            rx.text(p.delete_case, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+            rx.cond(
+                S.dirty,
+                rx.text(DELETE_UNSAVED, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+                rx.fragment(),
+            ),
+            rx.text(DELETE_UNDO, size="2", weight="medium", margin_top="0.5rem"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        DELETE_YES,
+                        on_click=S.delete_card(p.menu_id),
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("error"),
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.delete_confirm_open,
+        on_open_change=S.set_delete_confirm_open,
+    )
+
+
+def _more_menu() -> rx.Component:
+    """«⋯» of the menu the editor holds: «Eliminar este menú», or why it cannot go yet."""
+    p = S.picker
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="ghost",
+                size="3",
+                type="button",
+                aria_label=p.more_label,
+                title=p.more_label,
+                min_width=TARGET_MIN,
+                min_height=TARGET_MIN,
+                disabled=_busy() | S.opening,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.menu.content(
+            rx.cond(
+                p.can_delete,
+                rx.menu.item(
+                    rx.icon("trash-2", size=T.ICON_SM),
+                    DELETE_MENU_ITEM,
+                    on_click=S.set_delete_confirm_open(True),
+                    **T.tone_scheme("error"),
+                ),
+                # m-24986800: never on the menu that answers — a line says why instead.
+                rx.menu.item(DELETE_BLOCKED, disabled=True),
+            ),
+            align="end",
+        ),
     )
 
 
 def _switch_dialog() -> rx.Component:
-    """«¿Cambiar de menú?» — only with unsaved changes in the editor."""
+    """«¿Cambiar de menú?» / «¿Abrir otra versión?» — only with unsaved changes."""
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
-            rx.alert_dialog.title(SWITCH_TITLE),
+            rx.alert_dialog.title(S.switch_title),
             rx.alert_dialog.description(S.switch_text, size="2"),
             rx.flex(
                 rx.alert_dialog.cancel(
@@ -757,49 +831,91 @@ def _switch_dialog() -> rx.Component:
 
 
 def _menus_card() -> rx.Component:
+    """«Tu menú de bienvenida» (m-25142807): ONE card, ONE select over every menu and
+    version, ONE pause switch. It also carries what the old bar of the open menu did:
+    the unsaved-changes tag, «Más opciones»'s publish area and the issues to fix."""
+    has_menus = S.menu_cards.length() > 0
     return card(
         rx.vstack(
             _section_title(
-                "Tus menús de bienvenida",
+                PICKER_TITLE,
                 _new_menu_dialog(),
+                rx.cond(has_menus & S.has_menu, _more_menu(), rx.fragment()),
                 heading_id=MENUS_HEADING_ID,
             ),
-            rx.text(
-                "Tu menú de bienvenida le muestra al cliente lo que tú escribiste: tu saludo, "
-                "tus preguntas iniciales y tu catálogo para pedir. Para cerrar la venta, el "
-                "chat te llega a ti.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
             rx.cond(
-                S.menu_cards.length() > 0,
+                has_menus,
                 rx.vstack(
-                    rx.cond(S.menu_cards.length() > 1, _menu_picker(), rx.fragment()),
                     rx.cond(
                         S.delete_error != "",
                         callout(S.delete_error, "error"),
                         rx.fragment(),
                     ),
-                    # Only the chosen menu's card (m-24986800): with three menus, the
-                    # phone no longer scrolls past three cards to reach the editor.
-                    rx.foreach(S.chosen_cards, _menu_card),
+                    # The switch sits right of the select; on the phone, its own row.
+                    rx.flex(
+                        rx.vstack(
+                            _picker_select(),
+                            _picker_action(),
+                            spacing="3",
+                            width="100%",
+                            align_items="start",
+                            min_width="0",
+                            flex="1 1 0",
+                        ),
+                        rx.box(
+                            _answering_switch(),
+                            width=rx.breakpoints(initial="100%", md="16rem"),
+                            flex_shrink="0",
+                            padding_top=rx.breakpoints(initial="0", md="1.75rem"),
+                        ),
+                        direction=rx.breakpoints(initial="column", md="row"),
+                        gap="1rem",
+                        width="100%",
+                        align="start",
+                    ),
+                    rx.cond(S.dirty, tag("Cambios sin publicar"), rx.fragment()),
+                    rx.cond(S.advanced_open & S.has_menu, _publish_area(), rx.fragment()),
+                    rx.cond(
+                        S.has_menu & (S.error_count > 0),
+                        callout(S.issues_text, "warn"),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        S.has_menu,
+                        rx.foreach(S.menu_errors, lambda message: callout(message, "warn")),
+                        rx.fragment(),
+                    ),
                     _switch_dialog(),
+                    _pause_dialog(),
+                    _delete_dialog(),
                     spacing="3",
                     width="100%",
+                    align_items="start",
                 ),
-                empty_state(
-                    "list-tree",
-                    "Todavía no tienes un menú de bienvenida",
-                    "Créalo con lo que ya sabemos de tu negocio y completa lo que falte, o "
-                    "empieza desde cero.",
-                    # N8 (m-24842961): opens the same «Crear menú» dialog.
-                    action=rx.button(
-                        rx.icon("plus", size=16),
-                        "Crear tu menú de bienvenida",
-                        on_click=S.set_new_open(True),
-                        variant="soft",
-                        size="3",
+                rx.vstack(
+                    rx.text(
+                        "Tu menú de bienvenida le muestra al cliente lo que tú escribiste: tu "
+                        "saludo, tus preguntas iniciales y tu catálogo para pedir. Para cerrar "
+                        "la venta, el chat te llega a ti.",
+                        size="2",
+                        color=T.TEXT_MUTED,
                     ),
+                    empty_state(
+                        "list-tree",
+                        "Todavía no tienes un menú de bienvenida",
+                        "Créalo con lo que ya sabemos de tu negocio y completa lo que falte, o "
+                        "empieza desde cero.",
+                        # N8 (m-24842961): opens the same «Crear menú» dialog.
+                        action=rx.button(
+                            rx.icon("plus", size=16),
+                            "Crear tu menú de bienvenida",
+                            on_click=S.set_new_open(True),
+                            variant="soft",
+                            size="3",
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
                 ),
             ),
             spacing="3",
@@ -807,11 +923,14 @@ def _menus_card() -> rx.Component:
             align_items="start",
         ),
         padding="1.25rem 1.5rem",
+        id=TOOLBAR_ELEMENT_ID,
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
+        min_width="0",
     )
 
 
 # ======================================================================================
-# Toolbar of the open menu
+# Publishing the open menu
 # ======================================================================================
 
 
@@ -821,23 +940,10 @@ PUBLISH_DETAIL_ID = "whatsapp-menu-publish-detail"
 
 
 def _publish_dialog() -> rx.Component:
-    """The one solid action of the tab: saves the changes (if any) and publishes."""
+    """The confirmation of «Publicar en mi WhatsApp»: saves the changes (if any) and
+    publishes what the editor shows. Mounted once (`_editor`) and opened from every
+    place that offers the button: «Más opciones», step 4's footer, and the card."""
     return rx.alert_dialog.root(
-        rx.alert_dialog.trigger(
-            rx.button(
-                rx.icon("send", size=T.ICON_SM),
-                PUBLISH_BUTTON,
-                display=rx.cond(S.advanced_open, "inline-flex", "none"),
-                disabled=~S.can_publish,
-                loading=S.publishing,
-                size="3",
-                aria_describedby=rx.cond(
-                    S.publish_block_reason != "",
-                    f"{PUBLISH_REASON_ID} {PUBLISH_DETAIL_ID}",
-                    "",
-                ),
-            ),
-        ),
         rx.alert_dialog.content(
             rx.alert_dialog.title(PUBLISH_BUTTON),
             rx.alert_dialog.description(PUBLISH_CONFIRM, size="2"),
@@ -871,7 +977,20 @@ def _publish_dialog() -> rx.Component:
 
 def _actions() -> rx.Component:
     return rx.flex(
-        _publish_dialog(),
+        rx.button(
+            rx.icon("send", size=T.ICON_SM),
+            PUBLISH_BUTTON,
+            on_click=S.set_publish_confirm_open(True),
+            display=rx.cond(S.advanced_open, "inline-flex", "none"),
+            disabled=~S.can_publish,
+            loading=S.publishing,
+            size="3",
+            aria_describedby=rx.cond(
+                S.publish_block_reason != "",
+                f"{PUBLISH_REASON_ID} {PUBLISH_DETAIL_ID}",
+                "",
+            ),
+        ),
         rx.button(
             rx.icon("play", size=T.ICON_SM),
             "Probar el menú",
@@ -997,74 +1116,12 @@ def _published_but_paused() -> rx.Component:
 
 def _publish_area() -> rx.Component:
     """«Publicar en mi WhatsApp» and friends, or — right after publishing — «listo» and
-    the next step. Lives in step 4, or in the toolbar of «Más opciones (avanzado)»."""
+    the next step. Lives in step 4, or in «Tu menú de bienvenida» while «Más opciones
+    (avanzado)» is open."""
     return rx.cond(
         S.just_published,
         rx.cond(S.menu.is_paused, _published_but_paused(), _next_step()),
         _actions(),
-    )
-
-
-def _toolbar() -> rx.Component:
-    return card(
-        rx.vstack(
-            rx.vstack(
-                rx.hstack(
-                    rx.heading(S.menu.name, size="4", as_="h2"),
-                    _tone_pill(S.menu.status_label, S.menu.status_tone),
-                    rx.cond(S.dirty, tag("Cambios sin publicar"), rx.fragment()),
-                    spacing="2",
-                    align="center",
-                    wrap="wrap",
-                ),
-                rx.text(S.editing_from, size="1", color=T.TEXT_MUTED),
-                spacing="1",
-                align_items="start",
-            ),
-            rx.cond(S.advanced_open, _publish_area(), rx.fragment()),
-            # One decision per step: pausing only matters once the menu is live.
-            rx.cond(S.menu.is_published | S.advanced_open, _pause_row(), rx.fragment()),
-            rx.cond(
-                S.error_count > 0,
-                callout(S.issues_text, "warn"),
-                rx.fragment(),
-            ),
-            rx.foreach(S.menu_errors, lambda message: callout(message, "warn")),
-            spacing="3",
-            width="100%",
-            align_items="start",
-        ),
-        padding="1rem 1.25rem",
-        id=TOOLBAR_ELEMENT_ID,
-        scroll_margin_top=T.SCROLL_MARGIN_TOP,
-    )
-
-
-def _pause_row() -> rx.Component:
-    return rx.hstack(
-        rx.switch(
-            checked=S.menu.is_paused,
-            on_change=S.toggle_pause,
-            disabled=S.pausing | ~S.menu.is_published | (S.card_busy != ""),
-            size="2",
-        ),
-        rx.vstack(
-            rx.text("Pausar el menú en tu WhatsApp", size="2", weight="medium"),
-            rx.text(
-                rx.cond(
-                    S.menu.is_published,
-                    "En pausa, tu menú no está activo; los mensajes te llegan a Por responder "
-                    "como siempre.",
-                    "Se puede pausar una vez publicado.",
-                ),
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        spacing="3",
-        align="center",
     )
 
 
@@ -3786,9 +3843,9 @@ def _advanced() -> rx.Component:
 def _editor() -> rx.Component:
     return rx.grid(
         rx.vstack(
-            _toolbar(),
             rx.cond(S.advanced_open, _advanced(), _guided_card()),
             _import_dialog(),
+            _publish_dialog(),
             spacing="4",
             width="100%",
             min_width="0",

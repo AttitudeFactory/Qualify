@@ -316,8 +316,8 @@ def test_the_copy_says_the_owner_wrote_the_menu_and_takes_the_chat() -> None:
     for text in (source, state_source):
         assert "responde solo" not in text and "Qualify responde" not in text
         assert "Tu WhatsApp responde" not in text and "ya responde" not in text
-    # The editor has one publish path; «Publicar esta versión» lives only on a menu's
-    # card, for a version already published (m-24955645).
+    # The editor has one publish path; «Publicar esta versión» is the VM's, shown only
+    # for a published version that customers do not get (m-24955645, m-25142807).
     assert "Publicar esta versión" not in source
 
 
