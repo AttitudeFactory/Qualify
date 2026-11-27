@@ -43,6 +43,9 @@ _MEDIA_DEFAULTS = {
     # m-25128784: the «Personajes» track of a Clip, empty before it
     "character_scenes": [],
     "derived_from_brief_id": None,
+    # m-25142725: a Clip's reference tracks, empty (and version 0) before them
+    "clip_references": [],
+    "references_version": 0,
 }
 _PLAN_DEFAULTS = {**_RECIPE_DEFAULTS, "transition_in": None}
 #: Brief fields main added after the fixtures were taken (`awareness_level`, 94fa4556).

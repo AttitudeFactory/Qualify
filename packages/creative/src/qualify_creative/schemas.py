@@ -759,6 +759,11 @@ RecipeRefusal = Literal[
     "ai_part_guide_type",  # «Video o audio tuyo» that is not an MP4/MOV video or MP3/WAV audio
     "extend_after_own_media",  # «Sigue a la anterior» right after the owner's video or photo
     "extend_not_same_moment",  # «Sigue a la anterior» not split from the same take as before
+    # m-25142725 (reference tracks of the single editor): appended, never reordered
+    "too_many_references",  # an AI part under more photos, videos or audios than its model takes
+    "reference_type",  # a reference that is no JPG/PNG photo, MP4/MOV video or MP3/WAV audio
+    "reference_out_of_clip",  # a reference whose seconds fall outside the Clip
+    "references_and_old_fields",  # reference tracks together with the old per-part keys
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -1774,6 +1779,43 @@ def _scenes_apart(scenes: tuple[CharacterSceneItem, ...]) -> tuple[CharacterScen
     return scenes
 
 
+#: m-25142725: at most this many items on the Clip's reference tracks, photos, videos
+#: and audios together.
+CLIP_REFERENCES_MAX = 40
+ReferenceKind = Literal["photo", "video", "audio"]
+REFERENCE_KINDS: tuple[str, ...] = get_args(ReferenceKind)
+ReferenceOrigin = Literal["owner", "product"]
+
+
+class ClipReference(BaseModel):
+    """m-25142725: one item of a Clip's reference tracks in the single editor — a photo,
+    video or audio the AI parts under it follow. `start_s`/`end_s` are seconds of the
+    FINAL video; `row` is only the screen's (which track line it sits on, also the
+    tie-break of the order). `origin` `product`: a photo of a Catálogo product the screen
+    put there (`product_id`); `owner`: anything the owner chose. Which part takes it is
+    `video_pipeline.ai_parts.references_for_parts`'."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: ReferenceKind
+    key: str = Field(min_length=1, max_length=500)
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    row: int = Field(default=0, ge=0, le=CLIP_REFERENCES_MAX)
+    origin: ReferenceOrigin = "owner"
+    product_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _coherent(self) -> ClipReference:
+        if self.end_s <= self.start_s:
+            raise ValueError("a reference ends after it starts")
+        if self.origin == "product" and (self.kind != "photo" or self.product_id is None):
+            raise ValueError("a product's reference is a photo of a named product")
+        if self.origin == "owner" and self.product_id is not None:
+            raise ValueError("only a product's reference names a product")
+        return self
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -2003,6 +2045,12 @@ class MediaInputs(BaseModel):
     #: join is the block's `transition_in`, never the entry's. Empty on every other brief
     #: and on every one stored before it. Checked by `validate_recipe`.
     ai_parts: tuple[VideoPartPlan, ...] = Field(default=(), max_length=PARTS_MAX)
+    #: m-25142725: a normal `local` Clip's reference tracks (`ClipReference`), in seconds
+    #: of the final video, and which contract they follow: 0 = every brief before them
+    #: (the old per-part `clip_*_keys` are read as today); 1 = the tracks, and the old
+    #: fields are refused (`references_and_old_fields`). Checked by `validate_recipe`.
+    clip_references: tuple[ClipReference, ...] = Field(default=(), max_length=CLIP_REFERENCES_MAX)
+    references_version: int = Field(default=0, ge=0, le=1)
     #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
     #: when the plan came from a reel or the owner built it himself.
     parts_provenance: PartsProvenance | None = None

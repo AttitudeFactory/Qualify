@@ -155,6 +155,11 @@ def test_recipe_refusals_are_pinned() -> None:
         "ai_part_guide_type",
         "extend_after_own_media",
         "extend_not_same_moment",
+        # m-25142725 (the reference tracks): appended, never reordered
+        "too_many_references",
+        "reference_type",
+        "reference_out_of_clip",
+        "references_and_old_fields",
     )
 
 

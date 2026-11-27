@@ -159,6 +159,70 @@ Por eso, en la v1, una entrada `extend` vale solo si:
 
 Los códigos se agregaron al final de `RecipeRefusal` (`qualify_creative.schemas.RECIPE_REFUSALS`) y no se reordenan.
 
+### 3.4 Pistas de referencias `[CONSTRUIDO EN PR A]` · m-25142725
+
+Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos del video final. Cada parte con IA toma las que quedan debajo de ella. El PR A trae solo el contrato (forma, reglas y textos), sin migración: todo va en el JSON del brief. Crear los hijos con estas referencias es el PR B (detrás de `QUALIFY_CLIP_AI_PARTS`).
+
+**Forma.** `MediaInputs.clip_references` (hasta 40, `CLIP_REFERENCES_MAX`) y `MediaInputs.references_version` (0 = brief de antes; 1 = usa pistas):
+
+```json
+"references_version": 1,
+"clip_references": [
+  {"kind": "photo", "key": "uploads/<negocio>/arepa.png", "start_s": 0, "end_s": 14, "row": 0,
+   "origin": "product", "product_id": "<uuid del producto>"},
+  {"kind": "video", "key": "uploads/<negocio>/mi-baile.mp4", "start_s": 4, "end_s": 9, "row": 1,
+   "origin": "owner", "product_id": null}
+]
+```
+
+- `kind`: `photo`, `video` o `audio`. `start_s` ≥ 0 y `end_s` > `start_s`, en segundos del video final. `row` es solo de la pantalla (y desempata el orden).
+- `origin`: `owner` (lo eligió el dueño, sin `product_id`) o `product` (una foto de un producto del Catálogo que puso la pantalla, con su `product_id`). El servidor no inyecta nada: solo revisa que la clave sea del negocio.
+- Una referencia es un elemento suelto, con sus propios segundos: nada la ata a una parte. **Cuando el dueño mueve una parte con IA, la pantalla mueve con ella las referencias que quedan enteras debajo** (Deivid, 2026-11-27); el contrato no lo impide ni lo hace.
+- La misma clave puede estar en `segments` (como bloque propio) y en `clip_references`: no hay regla de duplicados. Copiar de un lado al otro copia la cadena, nunca el archivo.
+
+**Qué recibe cada parte** (`ai_parts.references_for_parts(brief, model=None)`, pura; la pantalla la puede llamar antes de «Crear»):
+
+- El tramo de la parte es el de su bloque `ai_part`, con los bloques uno tras otro a su velocidad, como los pone `clip_avatar.virtual_brief` (las uniones no se descuentan; los avatares que el Clip espera cuentan con su largo estimado).
+- Una referencia aplica si se solapa con la parte más de 0,05 s (`REFERENCE_OVERLAP_MIN_S`).
+- Las fotos aplican en todos los modos. Los videos y audios, solo en «Nueva» (`reference`).
+- Orden: `(start_s, row, posición en la lista)`. La misma clave del mismo tipo cuenta una sola vez.
+- Devuelve un `PartReferences` por parte (`entry_at`, `block_at`, `mode`, `start_s`, `end_s`, `photos`, `videos`, `audios`, `problems`). Nunca corta a un tope: si la parte se pasa, `problems` trae su `too_many_references`, **que bloquea** («Siguiente» y «Crear» apagados con su texto).
+
+**Topes por modelo** (Deivid, 2026-11-27). Cada modelo declara los suyos en `qualify_creative.reference_caps.REFERENCE_CAPS_BY_MODEL`. Hoy, Seedance 2.x (todas sus familias): 9 fotos, 3 videos y 3 audios por parte. Magi-2 tendrá 10/5/5 cuando llegue (todavía no está en la tabla). Son topes del producto, no los del proveedor (la API de Seedance 2.5 acepta 30/10/10). Sin `model`, se usa el modelo de video activo (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, o su valor por defecto). Un modelo sin fila da `ValueError`: no se adivina. Cuando entre un modelo con más de 9 fotos, el PR que lo active sube también `CLIP_MAX_IMAGES` del hijo.
+
+**Rechazos** (`RecipeProblem`, `part=None`). Los revisa `validate_brief_recipe` y, por lo tanto, `refuse_unbuilt_recipe` en cada pedido nuevo; desde `validate_recipe` hay que pasar `media=`.
+
+| Código | Cuándo | `field` | Texto para el dueño |
+|---|---|---|---|
+| `too_many_references` | Una parte con más fotos, videos o audios que el tope de su modelo | `ai_parts[n].references.<photo\|video\|audio>` | Esta parte con IA tiene más de {tope} fotos de referencia. Quita o acorta alguna para seguir. (Con videos y audios: «…más de {tope} videos/audios de referencia. Quita o acorta alguno para seguir.») |
+| `reference_type` | Una foto que no es JPG/PNG, un video que no es MP4/MOV o un audio que no es MP3/WAV | `clip_references[i].key` | No podemos usar ese archivo como referencia. Usa una foto JPG o PNG, un video MP4 o MOV, o un audio MP3 o WAV. |
+| `reference_out_of_clip` | Una referencia que termina después del final del Clip (con 0,05 s de margen) | `clip_references[i]` | Esta referencia queda fuera del video. Muévela o acórtala para seguir. |
+| `references_and_old_fields` | Pistas en un brief sin `references_version` 1, o un brief v1 que todavía trae `clip_image_keys` del Clip o `ai_parts[n].clip_*_keys` | `references_version`, `clip_image_keys` o `ai_parts[n].clip_*_keys` | Vuelve a abrir el editor para seguir. |
+| `malformed_key` / `foreign_key` (de siempre) | Una clave que no es ruta del negocio, o que es de otro | `clip_references[i].key` | Los textos de siempre. `media._key_problems` también las revisa antes de leer. |
+| `ai_part_outside_clip` (de siempre) | Pistas en algo que no es un Clip normal `local` | `clip_references` | El de siempre. |
+| `switched_off` (de siempre) | Pistas con `QUALIFY_CLIP_AI_PARTS` apagado | `clip_references` | El de siempre. |
+
+**Avisos que no bloquean** (`ai_parts.reference_notices(brief)` → `ReferenceNote(code, field, entry_at, scene_at)`; nunca salen de `validate_recipe`):
+
+| Código | Cuándo | Texto |
+|---|---|---|
+| `reference_mode_ignored` | Un video o audio debajo de una parte que no es «Nueva»: esa parte no lo usa (`entry_at` dice cuál) | Esta parte no usa videos ni audios de referencia. |
+| `reference_unused` | Una referencia que no queda debajo de ninguna parte con IA | Esta referencia no está debajo de ninguna parte con IA. |
+| `reference_over_scene` | Una referencia sobre una escena del personaje (`scene_at`) | Se decide en el PR 4 (m-25129408); hasta entonces `reference_text` da `None`. |
+
+Para que un aviso bloquee, se agrega su código al final de `RecipeRefusal` y a `REFERENCE_NOTICES_THAT_BLOCK` (hoy vacío).
+
+**Qué llama la pantalla:**
+
+| Función | Para qué |
+|---|---|
+| `ai_parts.reference_caps(model=None)` | `{"photo": 9, "video": 3, "audio": 3}` del modelo (el activo por defecto), para mostrar el tope. |
+| `ai_parts.references_for_parts(brief, model=None)` | Qué toma cada parte y si se pasa del tope (`PartReferences.problems`). |
+| `ai_parts.reference_notices(brief, model=None)` | Los avisos. |
+| `ai_parts.reference_text(code, kind=None, model=None)` | Las palabras de cada código; `too_many_references` necesita `kind` (el final de su `field`) y dice el tope real. |
+| `ai_parts.plan_references(media, segments=None, model=None)` | Lo mismo desde un `MediaInputs`, con partes, rechazos y avisos juntos. |
+| `video_pipeline.validate_recipe(..., media=media, reference_model=None)` | Avisar en cada cambio, como el resto del §3. |
+
 ## 4. Qué llama la pantalla
 
 ### Hoy (PR 1)
