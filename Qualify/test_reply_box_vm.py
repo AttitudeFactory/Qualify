@@ -79,15 +79,22 @@ def test_whatsapp_keeps_todays_plus_rows_in_todays_order() -> None:
     ]
 
 
-def test_instagram_has_no_payments_menu_or_directions_and_never_a_disabled_row() -> None:
+def test_instagram_plus_has_payments_and_directions_never_the_menu() -> None:
+    """m-25143229: the same rows, names, icons and order as WhatsApp, minus «Tu menú»
+    (no automatic menu on Instagram) — and, until their doors land, minus «Tus
+    productos», «Tu oferta» and «Fotos y videos». `payments` (the «Pago por revisar»
+    flow) stays WhatsApp's: SENDING the business's payment data does not need it."""
     assert INSTAGRAM_DM.payments is False
-    texts = [r.text for r in plus_rows(INSTAGRAM_BOX)]
-    assert "Formas de pago" not in texts
-    assert "Tu menú" not in texts
-    assert "Cómo llegar" not in texts
-    # 2026-11-15: photo, file and voice are tools (a real tap on the file input), so
-    # Instagram has no «+» rows today, and no «+».
-    assert texts == []
+    rows = plus_rows(INSTAGRAM_BOX)
+    assert [(r.key, r.icon, r.text) for r in rows] == [
+        ("payments", "wallet", "Formas de pago"),
+        ("directions", "map-pin", "Cómo llegar"),
+    ]
+    whatsapp = {(r.key, r.icon, r.text) for r in plus_rows(WHATSAPP_BOX)}
+    assert all((r.key, r.icon, r.text) in whatsapp for r in rows)
+    assert "Tu menú" not in [r.text for r in rows]
+    assert ORBIT_MIN_ITEMS <= len(rows) <= ORBIT_MAX_ITEMS  # two rows: the «+» is drawn
+    # 2026-11-15: photo, file and voice stay tools (a real tap on the file input).
     for key in (TOOL_PHOTO, TOOL_FILE, TOOL_VOICE):
         assert draws(INSTAGRAM_BOX, key)
 
@@ -107,11 +114,12 @@ def test_a_door_is_never_drawn_where_the_descriptor_refuses() -> None:
 
 
 def test_missing_doors_name_what_the_api_allows_but_no_screen_sends() -> None:
-    # BU-A8: WhatsApp has no saved-messages library yet; BU-A15: Instagram's directions.
+    # BU-A8: WhatsApp has no saved-messages library yet; m-25143229 opened Instagram's
+    # payments and directions, its products, offer and media are still to come.
     assert TOOL_SAVED in missing_doors(WHATSAPP_BOX)
     assert "file" in missing_doors(WHATSAPP_BOX)
-    assert "directions" in missing_doors(INSTAGRAM_BOX)
-    assert "products" in missing_doors(INSTAGRAM_BOX)
+    assert missing_doors(INSTAGRAM_BOX) == ("products", "offer", "media")
+    assert "menu" not in missing_doors(INSTAGRAM_BOX)  # not allowed: not a missing door
     assert TOOL_BUTTONS not in missing_doors(INSTAGRAM_BOX)
 
 

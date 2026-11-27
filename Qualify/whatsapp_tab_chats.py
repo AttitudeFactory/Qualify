@@ -30,6 +30,14 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .chat_plus_picks import (
+    link_button,
+    pick_directions,
+    pick_grid_skeleton,
+    pick_list,
+    pick_load_error,
+    pick_payments,
+)
 from .chat_row import tone_pill as _tone_pill
 from .chat_row_vm import CHANNEL_WHATSAPP
 from .chat_thread import (
@@ -109,10 +117,6 @@ from .whatsapp_chats_vm import (
     CREATE_PIECE_LABEL,
     CREATE_PIECE_ROUTE,
     CUSTOMER_NOTE_LABEL,
-    DIRECTIONS_COMPLETE,
-    DIRECTIONS_EMPTY,
-    DIRECTIONS_NO_POINT,
-    DIRECTIONS_PUT_ON_MAP,
     DRAFTS_ROUTE,
     MAX_BUTTON_TITLE_CHARS,
     MAX_PHOTO_BYTES,
@@ -147,10 +151,7 @@ from .whatsapp_chats_vm import (
     PAYMENT_MESSAGE_LABEL,
     PAYMENT_NOT_FOUND_BUTTON,
     PAYMENT_RECEIVED_BUTTON,
-    PAYMENTS_ADD,
     PAYMENTS_CHANGE,
-    PAYMENTS_EMPTY_TEXT,
-    PAYMENTS_EMPTY_TITLE,
     PHOTO_CHANGE_LABEL,
     PHOTO_HELP,
     PHOTO_PICK_LABEL,
@@ -209,7 +210,6 @@ from .whatsapp_chats_vm import (
     MessageVM,
     OrderFieldVM,
     OrderLineVM,
-    PaymentCardVM,
     PieceCardVM,
     PreviousOrderVM,
     ProductCardVM,
@@ -1346,53 +1346,20 @@ _CAPTION_COUNT_ID = "wa-pick-caption-count"
 
 
 def _link_button(label: str, icon: str, href: str | rx.Var[str]) -> rx.Component:
-    return rx.link(
-        rx.button(
-            rx.icon(icon, size=T.ICON_SM),
-            label,
-            variant="soft",
-            size="3",
-            min_height=_TAP_MIN,
-            width="100%",
-        ),
-        href=href,
-        width=rx.breakpoints(initial="100%", sm="auto"),
-    )
+    return link_button(label, icon, href)
 
 
 def _pick_grid_skeleton() -> rx.Component:
-    return rx.grid(
-        *[skeleton_rows(1, height="10rem", radius=T.RADIUS_CARD) for _ in range(4)],
-        columns="2",
-        spacing="2",
-        width="100%",
-    )
+    return pick_grid_skeleton()
 
 
 def _pick_load_error() -> rx.Component:
-    return rx.vstack(
-        callout(S.pick_error, "error"),
-        rx.button(
-            rx.icon("refresh-cw", size=T.ICON_SM),
-            RETRY_LABEL,
-            on_click=S.retry_pick_list,
-            variant="soft",
-            size="3",
-            min_height=_TAP_MIN,
-            **T.tone_scheme("neutral"),
-        ),
-        spacing="2",
-        width="100%",
-    )
+    return pick_load_error(S)
 
 
 def _pick_list(body: rx.Component) -> rx.Component:
     """Loading (skeleton) → error («Reintentar») → the step's body."""
-    return rx.cond(
-        S.pick_loading,
-        _pick_grid_skeleton(),
-        rx.cond(S.pick_error != "", _pick_load_error(), body),
-    )
+    return pick_list(S, body)
 
 
 def _product_src(card: ProductCardVM) -> rx.Var:
@@ -1641,56 +1608,8 @@ def _pick_pieces() -> rx.Component:
     )
 
 
-def _payment_card(card_vm: PaymentCardVM) -> rx.Component:
-    return choice_card(
-        rx.hstack(
-            media_thumb(
-                card_vm.thumb_url,
-                size="48px",
-                icon="banknote",
-                alt=card_vm.alt,
-                has=card_vm.thumb_url != "",
-            ),
-            rx.vstack(
-                rx.text(card_vm.name, weight="medium", size="2"),
-                rx.cond(
-                    card_vm.currency_label != "",
-                    rx.text(card_vm.currency_label, size="1", color=T.TEXT_MUTED),
-                ),
-                rx.text(card_vm.updated_label, size="1", color=T.TEXT_MUTED),
-                spacing="0",
-                align_items="start",
-            ),
-            spacing="3",
-            align="center",
-            width="100%",
-        ),
-        selected=S.pick_selected == card_vm.id,
-        on_select=S.choose_payment(card_vm.id),
-        padding="0.5rem 0.75rem",
-        width="100%",
-        min_height=_TAP_MIN,
-    )
-
-
 def _pick_payments() -> rx.Component:
-    return _pick_list(
-        rx.cond(
-            S.pick_payments.length() > 0,
-            rx.vstack(
-                rx.foreach(S.pick_payments, _payment_card),
-                spacing="2",
-                width="100%",
-                role="radiogroup",
-            ),
-            empty_state(
-                "wallet",
-                PAYMENTS_EMPTY_TITLE,
-                PAYMENTS_EMPTY_TEXT,
-                _link_button(PAYMENTS_ADD, "plus", S.payments_change_href),
-            ),
-        )
-    )
+    return pick_payments(S)
 
 
 def _menu_bubble() -> rx.Component:
@@ -2219,71 +2138,10 @@ def _pick_offer() -> rx.Component:
     )
 
 
-def _directions_bubble() -> rx.Component:
-    d = S.pick_directions
-    return chat_bubble(
-        rx.cond(
-            d.has_point,
-            rx.hstack(
-                rx.center(
-                    rx.icon("map-pin", size=T.ICON_MD, aria_hidden="true"),
-                    width="2.75rem",
-                    height="2.75rem",
-                    min_width="2.75rem",
-                    border_radius=T.RADIUS_CONTROL,
-                    **T.tone_scheme("info"),
-                ),
-                rx.vstack(
-                    rx.cond(d.name != "", rx.text(d.name, size="2", weight="bold")),
-                    rx.cond(d.address != "", rx.text(d.address, size="2")),
-                    spacing="0",
-                    align_items="start",
-                ),
-                spacing="3",
-                align="center",
-            ),
-            rx.text(d.text, size="2", white_space="pre-wrap", word_break="break-word"),
-        ),
-        direction="out",
-        max_width="20rem",
-        align_self="flex-end",
-    )
-
-
 def _pick_directions() -> rx.Component:
     """«Cómo llegar»: one step — what goes out (the WhatsApp map pin, or the address with
     a maps link) or the empty state that leads to Tu número › Perfil."""
-    d = S.pick_directions
-    empty_title, empty_line = DIRECTIONS_EMPTY
-    return _pick_list(
-        rx.cond(
-            ~d.present,
-            skeleton_rows(rows=2, height="3rem"),
-            rx.cond(
-                d.empty,
-                empty_state(
-                    "map-pin",
-                    empty_title,
-                    empty_line,
-                    _link_button(DIRECTIONS_COMPLETE, "pencil", S.pick_profile_href),
-                ),
-                rx.vstack(
-                    _directions_bubble(),
-                    rx.cond(
-                        ~d.has_point,
-                        rx.vstack(
-                            callout(DIRECTIONS_NO_POINT, "info"),
-                            _link_button(DIRECTIONS_PUT_ON_MAP, "map-pin", S.pick_profile_href),
-                            spacing="2",
-                            width="100%",
-                        ),
-                    ),
-                    spacing="3",
-                    width="100%",
-                ),
-            ),
-        )
-    )
+    return pick_directions(S, point_hint=True)
 
 
 def _pick_body() -> rx.Component:
