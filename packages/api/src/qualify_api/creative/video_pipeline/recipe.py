@@ -77,6 +77,8 @@ from qualify_api.creative.video_pipeline.ai_parts import (
     ai_children_of,
     ai_part_blocks,
     ai_part_problems,
+    reference_problems,
+    references_switched_off,
     switched_off_problems,
 )
 
@@ -254,6 +256,8 @@ def validate_recipe(
     library: EffectsLibrary | None = None,
     ai_parts: Sequence[VideoPartPlan] = (),
     other_ai_children: int = 0,
+    media: MediaInputs | None = None,
+    reference_model: str | None = None,
 ) -> tuple[RecipeProblem, ...]:
     """Every problem of a recipe, in part order — `()` when it may be made. Pure: no
     network, no database; the library is the process's cached one unless given.
@@ -263,6 +267,12 @@ def validate_recipe(
     avatar blocks (`ai_parts.ai_children_of`). With `QUALIFY_CLIP_AI_PARTS` off, any AI
     block is only `switched_off`, before the library is even loaded; on, its rules are
     `ai_parts.ai_part_problems`'.
+
+    m-25142725: `media` — the brief's `MediaInputs`, whose reference tracks
+    (`clip_references`) are checked against the Clip's blocks
+    (`ai_parts.reference_problems`, caps of `reference_model`, the active video model by
+    default); only a normal `local` Clip may carry them (`ai_part_outside_clip` on
+    `clip_references`). None: the tracks are not checked (every caller before them).
 
     `video_by_parts`: the parts of a video by parts (a transition is allowed between
     them, never on the first) — False for a normal Clip, whose transitions go between its
@@ -278,7 +288,10 @@ def validate_recipe(
     `seconds`, a Clip's `clip_seconds`. What crosses parts (seconds of the whole video)
     belongs to the parent's recipe (`validate_video_recipe`, ED-15), not here."""
     in_clip = not video_by_parts
-    switched_off = switched_off_problems(parts, ai_parts, in_clip=in_clip)
+    switched_off = (
+        *switched_off_problems(parts, ai_parts, in_clip=in_clip),
+        *(references_switched_off(media) if media is not None else ()),
+    )
     if switched_off:
         return switched_off  # §13.6: before anything is read
     library = library or load_effects()
@@ -327,6 +340,21 @@ def validate_recipe(
         )
     if ai_parts and not (in_clip and len(parts) == 1):
         found.append(RecipeProblem(code="ai_part_outside_clip", part=None, field="ai_parts"))
+    if media is not None and (media.clip_references or media.references_version):
+        # m-25142725: the reference tracks, only on a normal `local` Clip
+        if in_clip and len(parts) == 1 and parts[0].mode == "local":
+            found.extend(
+                reference_problems(
+                    media,
+                    segments=parts[0].segments,
+                    model=reference_model,
+                    tenant_id=tenant_id,
+                )
+            )
+        elif media.clip_references:
+            found.append(
+                RecipeProblem(code="ai_part_outside_clip", part=None, field="clip_references")
+            )
     if video_by_parts:
         found.extend(transition_room_problems(parts, library))
     return tuple(found)
@@ -397,7 +425,10 @@ def _switched_off(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     if media.video_recipe is not None:
         parts = (*parts, *media.video_recipe.parts)
     in_clip = brief.kind is ContentKind.CLIP and media.part is None
-    return switched_off_problems(parts, media.ai_parts, in_clip=in_clip)
+    return (
+        *switched_off_problems(parts, media.ai_parts, in_clip=in_clip),
+        *references_switched_off(media),
+    )
 
 
 def validate_brief_recipe(
@@ -427,6 +458,7 @@ def validate_brief_recipe(
         library=library,
         ai_parts=brief.media.ai_parts,
         other_ai_children=ai_children_of(brief.media),
+        media=brief.media,
     )
     if brief.kind is ContentKind.SHOT_VIDEO:
         media = brief.media

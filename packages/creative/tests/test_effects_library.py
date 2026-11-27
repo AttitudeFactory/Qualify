@@ -158,6 +158,11 @@ def test_recipe_refusals_are_pinned() -> None:
         # m-25129406: appended, never reordered
         "extend_own_video_speed",
         "extend_own_video_short",
+        # m-25142725 (the reference tracks): appended, never reordered
+        "too_many_references",
+        "reference_type",
+        "reference_out_of_clip",
+        "references_and_old_fields",
     )
 
 

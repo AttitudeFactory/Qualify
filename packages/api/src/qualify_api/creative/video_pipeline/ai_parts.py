@@ -35,20 +35,26 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from functools import cache
+from typing import Literal
 from uuid import UUID
 
 from qualify_creative.effects import RecipeProblem
+from qualify_creative.reference_caps import ReferenceCaps, reference_caps_for
 from qualify_creative.schemas import (
     AI_PART_KIND,
     LOCAL_TOTAL_MIN_S,
     PART_TRIM_TOLERANCE_S,
     PARTS_MAX,
     SEGMENTS_MAX,
+    ClipReference,
+    ContentBrief,
     MediaInputs,
     PartRecipe,
     RecipeRefusal,
+    ReferenceKind,
     SourceSegment,
     VideoPartPlan,
 )
@@ -408,6 +414,377 @@ def ai_part_problems(
     return tuple(found)
 
 
+# ---------------------------------------------------------------------------
+# m-25142725: the reference tracks of the single editor (`MediaInputs.clip_references`)
+#
+# The owner lays photos, videos and audios on tracks under the Clip, in seconds of the
+# final video; each AI part takes the ones under it. Pure: nothing here reads a file,
+# the database or the network. Creating the children with them is PR B.
+
+#: A reference applies to an AI part when they share MORE than this many seconds.
+REFERENCE_OVERLAP_MIN_S = 0.05
+#: How far past the Clip's end a reference may reach (float noise of the screen).
+_OUT_OF_CLIP_SLACK_S = REFERENCE_OVERLAP_MIN_S
+#: The one part mode whose child follows reference videos and audios: «Nueva». Photos
+#: apply in every mode.
+_TAKES_VIDEO_AND_AUDIO = "reference"
+#: The file types each kind may be (`reference_type`): what the producer sends.
+REFERENCE_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "photo": (".jpg", ".jpeg", ".png"),
+    "video": GUIDE_VIDEO_SUFFIXES,
+    "audio": GUIDE_AUDIO_SUFFIXES,
+}
+#: The old per-part reference fields a brief on the tracks (`references_version` 1) may
+#: not carry (`references_and_old_fields`).
+_OLD_ENTRY_FIELDS = ("clip_image_keys", "clip_video_keys", "clip_audio_keys")
+#: The same old fields on the Clip itself (its photos, videos and audios for its parts).
+_OLD_CLIP_FIELDS = _OLD_ENTRY_FIELDS
+
+#: What the owner should read about the tracks, without blocking «Crear» (Deivid,
+#: 2026-11-27): `reference_mode_ignored` — a video or audio under a part that is not
+#: «Nueva», which does not use it; `reference_unused` — a reference under no AI part;
+#: `reference_over_scene` — a reference over a scene of the character.
+ReferenceNotice = Literal["reference_mode_ignored", "reference_unused", "reference_over_scene"]
+#: The notices that block instead. Empty: every notice is only a notice. To make one
+#: block, append its code to `RecipeRefusal` (never reordered) and add it here —
+#: `reference_problems` then also returns it as a `RecipeProblem`.
+REFERENCE_NOTICES_THAT_BLOCK: frozenset[str] = frozenset()
+
+#: What the owner reads for each refusal of the tracks (`qualify-copy-es`).
+#: `too_many_references` names the cap of the part's model: `reference_text`.
+REFERENCE_TEXTS: dict[str, str] = {
+    "reference_type": (
+        "No podemos usar ese archivo como referencia. Usa una foto JPG o PNG, un video MP4 "
+        "o MOV, o un audio MP3 o WAV."
+    ),
+    "reference_out_of_clip": (
+        "Esta referencia queda fuera del video. Muévela o acórtala para seguir."
+    ),
+    "references_and_old_fields": "Vuelve a abrir el editor para seguir.",
+}
+_TOO_MANY_TEXTS: dict[str, str] = {
+    "photo": (
+        "Esta parte con IA tiene más de {cap} fotos de referencia. "
+        "Quita o acorta alguna para seguir."
+    ),
+    "video": (
+        "Esta parte con IA tiene más de {cap} videos de referencia. "
+        "Quita o acorta alguno para seguir."
+    ),
+    "audio": (
+        "Esta parte con IA tiene más de {cap} audios de referencia. "
+        "Quita o acorta alguno para seguir."
+    ),
+}
+#: What the owner reads for each notice. `reference_over_scene`'s words are decided
+#: with the character scenes' PR 4 (m-25129408): until then `reference_text` gives None.
+REFERENCE_NOTICE_TEXTS: dict[str, str] = {
+    "reference_mode_ignored": "Esta parte no usa videos ni audios de referencia.",
+    "reference_unused": "Esta referencia no está debajo de ninguna parte con IA.",
+}
+
+
+def active_video_model() -> str:
+    """The video model an AI part with references runs on today: the generator's
+    `QUALIFY_SEEDANCE_REFERENCE_MODEL`, or its default (`composition`)."""
+    from qualify_api.creative.composition import (  # noqa: PLC0415 — the wiring module
+        DEFAULT_SEEDANCE_REFERENCE_MODEL,
+        SEEDANCE_REFERENCE_MODEL_ENV,
+    )
+
+    return os.environ.get(SEEDANCE_REFERENCE_MODEL_ENV) or DEFAULT_SEEDANCE_REFERENCE_MODEL
+
+
+def _caps(model: str | None) -> ReferenceCaps:
+    return reference_caps_for(model or active_video_model())
+
+
+def reference_caps(model: str | None = None) -> Mapping[str, int]:
+    """How many photos, videos and audios one AI part may take on `model` (the active
+    video model by default): `{"photo": 9, "video": 3, "audio": 3}` for Seedance. The
+    same table `references_for_parts` and `too_many_references` read
+    (`qualify_creative.reference_caps`). An unknown model raises `ValueError`."""
+    return _caps(model).as_mapping()
+
+
+def reference_text(
+    code: str, *, kind: ReferenceKind | None = None, model: str | None = None
+) -> str | None:
+    """The Spanish words for a refusal or a notice of the tracks, None for any other code
+    (and for `reference_over_scene`, whose words are not decided yet).
+    `too_many_references` needs the `kind` the part has too many of — the last piece of
+    its `field`, `ai_parts[n].references.<kind>` — and names the cap of `model`."""
+    if code == "too_many_references":
+        if kind not in _TOO_MANY_TEXTS:
+            return None
+        return _TOO_MANY_TEXTS[kind].format(cap=_caps(model).of(kind))
+    return REFERENCE_TEXTS.get(code) or REFERENCE_NOTICE_TEXTS.get(code)
+
+
+@dataclass(frozen=True)
+class ReferenceNote:
+    """A notice about the tracks (`ReferenceNotice`): never blocks. `field` is the
+    reference's (`clip_references[i]`); `entry_at` the AI part's entry it is about, for
+    `reference_mode_ignored`; `scene_at` the character scene, for `reference_over_scene`."""
+
+    code: ReferenceNotice
+    field: str
+    entry_at: int | None = None
+    scene_at: int | None = None
+
+
+@dataclass(frozen=True)
+class PartReferences:
+    """What one AI part takes from the tracks: its entry (`ai_parts[entry_at]`), its
+    block (`segments[block_at]`), its span in seconds of the final video, and the
+    references that apply to it by kind — in order of `(start_s, row, position)`, a key
+    repeated in one kind counted once. NEVER cut to the cap: over it the part is
+    refused — `problems` holds its `too_many_references`, one per kind over the cap,
+    BLOCKING (Deivid, 2026-11-27: «Siguiente» and «Crear» stay off with its words,
+    `reference_text`); `()` when the part may be made."""
+
+    entry_at: int
+    block_at: int
+    mode: str
+    start_s: float
+    end_s: float
+    photos: tuple[ClipReference, ...] = ()
+    videos: tuple[ClipReference, ...] = ()
+    audios: tuple[ClipReference, ...] = ()
+    problems: tuple[RecipeProblem, ...] = ()
+
+    def of(self, kind: ReferenceKind) -> tuple[ClipReference, ...]:
+        return {"photo": self.photos, "video": self.videos, "audio": self.audios}[kind]
+
+
+@dataclass(frozen=True)
+class ReferencesPlan:
+    """`plan_references`' answer: each AI part's references, the parts over their
+    model's caps (`too_many_references`), and the notices."""
+
+    parts: tuple[PartReferences, ...]
+    problems: tuple[RecipeProblem, ...]
+    notices: tuple[ReferenceNote, ...]
+
+
+def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+def _join_overlaps_s(segments: Sequence[SourceSegment]) -> list[float]:
+    """The seconds each block overlaps the one before it at its join (0 for the first,
+    a cut, or a join not drawn) — `recipe.block_overlaps`' frames at the speed step's
+    rate, so the tracks' seconds are those of the video that comes out."""
+    from qualify_creative.video.speed import SPEED_FPS  # noqa: PLC0415
+
+    from qualify_api.creative.video_pipeline.recipe import transition_frames  # noqa: PLC0415
+
+    return [
+        0.0 if at == 0 else transition_frames(s.transition_in, rate=SPEED_FPS) / SPEED_FPS
+        for at, s in enumerate(segments)
+    ]
+
+
+def _spans(segments: Sequence[SourceSegment]) -> tuple[list[tuple[int, int, float, float]], float]:
+    """Each AI block's `(block_at, entry_at, start_s, end_s)` in seconds of the final
+    video, and where the Clip ends (`recipe.clip_seconds`): the blocks in order, at their
+    speed, as `clip_avatar.virtual_brief` lays them out, each starting where the one
+    before ends minus its join's overlap. A block naming no entry, or one already named,
+    is left out (`ai_parts_mismatch` says it)."""
+    spans: list[tuple[int, int, float, float]] = []
+    named: set[int] = set()
+    clock = 0.0
+    overlaps = _join_overlaps_s(segments) if any(s.transition_in for s in segments) else ()
+    for at, segment in enumerate(segments):
+        start = max(0.0, clock - (overlaps[at] if overlaps else 0.0))
+        clock = start + segment.output_seconds
+        entry_at = segment.ai_part_at
+        if entry_at is not None and entry_at not in named:
+            named.add(entry_at)
+            spans.append((at, entry_at, start, clock))
+    return spans, clock
+
+
+def plan_references(
+    media: MediaInputs,
+    *,
+    segments: Sequence[SourceSegment] | None = None,
+    model: str | None = None,
+) -> ReferencesPlan:
+    """Which references each AI part of a Clip takes (m-25142725). Pure.
+
+    A part's span is its `ai_part` block's (`segments`, `media.segments` by default); a
+    reference applies when it overlaps it by more than `REFERENCE_OVERLAP_MIN_S`. Photos
+    apply in every mode; videos and audios only to «Nueva» (`reference`) — under any
+    other mode they are `reference_mode_ignored`. Order `(start_s, row, position)`; the
+    same key of the same kind counts once. Over `model`'s caps (the active video model
+    by default) the part is `too_many_references`, one problem per kind, never cut. A
+    reference under no AI part is `reference_unused`; over a character scene,
+    `reference_over_scene`."""
+    refs = media.clip_references
+    if not refs:
+        return ReferencesPlan((), (), ())
+    caps = _caps(model)
+    segments = media.segments if segments is None else segments
+    spans, _ = _spans(segments)
+    order = sorted(range(len(refs)), key=lambda i: (refs[i].start_s, refs[i].row, i))
+    under = [False] * len(refs)
+    parts: list[PartReferences] = []
+    problems: list[RecipeProblem] = []
+    notes: list[ReferenceNote] = []
+    for block_at, entry_at, start, end in spans:
+        if entry_at >= len(media.ai_parts):
+            continue  # `ai_parts_mismatch`
+        mode = media.ai_parts[entry_at].mode
+        picked: dict[str, list[ClipReference]] = {"photo": [], "video": [], "audio": []}
+        seen: set[tuple[str, str]] = set()
+        for i in order:
+            ref = refs[i]
+            if _overlap(ref.start_s, ref.end_s, start, end) <= REFERENCE_OVERLAP_MIN_S:
+                continue
+            under[i] = True
+            if ref.kind != "photo" and mode != _TAKES_VIDEO_AND_AUDIO:
+                notes.append(
+                    ReferenceNote(
+                        "reference_mode_ignored", f"clip_references[{i}]", entry_at=entry_at
+                    )
+                )
+                continue
+            if (ref.kind, ref.key) in seen:
+                continue
+            seen.add((ref.kind, ref.key))
+            picked[ref.kind].append(ref)
+        over = tuple(
+            RecipeProblem(
+                code="too_many_references",
+                part=None,
+                field=f"ai_parts[{entry_at}].references.{kind}",
+            )
+            for kind, chosen in picked.items()
+            if len(chosen) > caps.of(kind)
+        )
+        problems.extend(over)
+        parts.append(
+            PartReferences(
+                entry_at=entry_at,
+                block_at=block_at,
+                mode=mode,
+                start_s=start,
+                end_s=end,
+                photos=tuple(picked["photo"]),
+                videos=tuple(picked["video"]),
+                audios=tuple(picked["audio"]),
+                problems=over,
+            )
+        )
+    for i, ref in enumerate(refs):
+        if not under[i]:
+            notes.append(ReferenceNote("reference_unused", f"clip_references[{i}]"))
+        for scene_at, scene in enumerate(media.character_scenes):
+            if _overlap(ref.start_s, ref.end_s, scene.start, scene.end) > REFERENCE_OVERLAP_MIN_S:
+                notes.append(
+                    ReferenceNote(
+                        "reference_over_scene", f"clip_references[{i}]", scene_at=scene_at
+                    )
+                )
+    return ReferencesPlan(tuple(parts), tuple(problems), tuple(notes))
+
+
+def _timeline(brief: ContentBrief) -> tuple[SourceSegment, ...]:
+    """The Clip's blocks as the owner sees them before «Crear»: with the avatar blocks it
+    still waits for at their estimated length, in their place (`virtual_brief`)."""
+    media = brief.media
+    if not media.clip_avatar_plan:
+        return media.segments
+    from qualify_api.creative.clip_avatar import virtual_brief  # noqa: PLC0415 — cycle
+
+    # the tenant only names the placeholders' files, never read: the timing is the same
+    return virtual_brief(brief, media.clip_avatar_plan, UUID(int=0)).media.segments
+
+
+def references_for_parts(
+    brief: ContentBrief, *, model: str | None = None
+) -> tuple[PartReferences, ...]:
+    """What each AI part of `brief`'s Clip takes from the tracks (`plan_references`),
+    in the order of their blocks. The screen may call it before «Crear»; PR B builds each
+    child's references from it. Pure."""
+    return plan_references(brief.media, segments=_timeline(brief), model=model).parts
+
+
+def reference_notices(
+    brief: ContentBrief, *, model: str | None = None
+) -> tuple[ReferenceNote, ...]:
+    """The notices about `brief`'s tracks (`ReferenceNotice`), never blocking. Pure."""
+    return plan_references(brief.media, segments=_timeline(brief), model=model).notices
+
+
+def references_switched_off(media: MediaInputs) -> tuple[RecipeProblem, ...]:
+    """§13.6: the tracks feed AI parts, so with `QUALIFY_CLIP_AI_PARTS` off a brief that
+    carries them is `switched_off` on `clip_references`. `()` otherwise."""
+    if not media.clip_references or clip_ai_parts_on():
+        return ()
+    return (RecipeProblem(code="switched_off", part=None, field="clip_references"),)
+
+
+def reference_problems(
+    media: MediaInputs,
+    *,
+    segments: Sequence[SourceSegment] | None = None,
+    model: str | None = None,
+    tenant_id: UUID | None = None,
+) -> tuple[RecipeProblem, ...]:
+    """Every refusal of a normal `local` Clip's tracks (`part=None`), in this order:
+
+    - `references_and_old_fields`: tracks on a brief that does not say
+      `references_version` 1 (`references_version`), or a brief on the tracks that still
+      carries the old per-part keys (the Clip's `clip_*_keys`, `ai_parts[n].clip_*_keys`);
+    - per reference `i`: `reference_type` (`clip_references[i].key`), with a `tenant_id`
+      `malformed_key` / `foreign_key` (same field), and `reference_out_of_clip`
+      (`clip_references[i]`) when it ends past the Clip;
+    - `too_many_references` (`plan_references`).
+
+    The same key may also be a block of `segments`: no rule refuses that. Pure."""
+    refs = media.clip_references
+    found: list[RecipeProblem] = []
+
+    def problem(code: RecipeRefusal, field: str) -> None:
+        found.append(RecipeProblem(code=code, part=None, field=field))
+
+    if refs and media.references_version < 1:
+        problem("references_and_old_fields", "references_version")
+    if media.references_version >= 1:
+        for name in _OLD_CLIP_FIELDS:
+            if getattr(media, name):
+                problem("references_and_old_fields", name)
+        for entry_at, entry in enumerate(media.ai_parts):
+            for name in _OLD_ENTRY_FIELDS:
+                if getattr(entry, name):
+                    problem("references_and_old_fields", f"ai_parts[{entry_at}].{name}")
+    if not refs:
+        return tuple(found)
+    segments = media.segments if segments is None else segments
+    _, total = _spans(segments)
+    for i, ref in enumerate(refs):
+        key_field = f"clip_references[{i}].key"
+        if not ref.key.lower().endswith(REFERENCE_SUFFIXES[ref.kind]):
+            problem("reference_type", key_field)
+        if tenant_id is not None:
+            if parse_tenant_key(ref.key) is None:
+                problem("malformed_key", key_field)
+            elif not owned_by(tenant_id, ref.key):
+                problem("foreign_key", key_field)
+        if ref.end_s > total + _OUT_OF_CLIP_SLACK_S:
+            problem("reference_out_of_clip", f"clip_references[{i}]")
+    plan = plan_references(media, segments=segments, model=model)
+    found.extend(plan.problems)
+    found.extend(
+        RecipeProblem(code=note.code, part=None, field=note.field)  # type: ignore[arg-type]
+        for note in plan.notices
+        if note.code in REFERENCE_NOTICES_THAT_BLOCK
+    )
+    return tuple(found)
+
+
 __all__ = [
     "AI_CHILDREN_MAX",
     "AI_PART_TEXTS",
@@ -427,4 +804,21 @@ __all__ = [
     "clip_extend_own_video_on",
     "own_seconds",
     "switched_off_problems",
+    # m-25142725: the reference tracks
+    "REFERENCE_NOTICES_THAT_BLOCK",
+    "REFERENCE_NOTICE_TEXTS",
+    "REFERENCE_OVERLAP_MIN_S",
+    "REFERENCE_SUFFIXES",
+    "REFERENCE_TEXTS",
+    "PartReferences",
+    "ReferenceNote",
+    "ReferencesPlan",
+    "active_video_model",
+    "plan_references",
+    "reference_caps",
+    "reference_notices",
+    "reference_problems",
+    "reference_text",
+    "references_for_parts",
+    "references_switched_off",
 ]

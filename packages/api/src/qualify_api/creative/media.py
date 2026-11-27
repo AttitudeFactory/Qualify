@@ -882,6 +882,8 @@ def _key_problems(
             for scene in media.character_scenes
             for key in (scene.product.photo_key, scene.background.key)
         ),
+        # m-25142725: every item of a Clip's reference tracks
+        *(reference.key for reference in media.clip_references),
     ]
     present = [key for key in keys if key]
     malformed = [key for key in present if parse_tenant_key(key) is None]
