@@ -341,7 +341,7 @@ async def test_the_state_carries_the_template_historias_actions(
     assert state.story_ready and state.share_url == "/r2media/img-token"
 
 
-# -- 2. no «Promocionar» on a historia -------------------------------------------------
+# -- 2. «Promocionar como anuncio» on a historia (HIS-1, m-25130281) -------------------
 
 
 def _card(category: str, used: int) -> Any:
@@ -369,18 +369,45 @@ def test_a_historia_card_is_one_the_old_guard_let_through() -> None:
     assert not plain.is_story and plain.used_count > 0
 
 
-def test_both_cards_render_the_promote_link_behind_is_story() -> None:
-    """Rendered trees: the link's condition reads `is_story`, never `kind`."""
+def _cards() -> tuple[str, str]:
     from .gallery_state import GalleryState
 
     gallery = _render(rx.foreach(GalleryState.visible, creative_pages._gallery_card))
     planner_card = _render(
         rx.foreach(GalleryState.visible, lambda p: post_card.post_card(p, actions=rx.fragment()))
     )
-    for tree in (gallery, planner_card):
-        promote = tree[: tree.index("/promote")]
-        cond = promote[promote.rindex("used_count") :]
-        assert "is_story" in cond and "kind" not in cond
+    return gallery, planner_card
+
+
+def test_both_cards_send_a_historia_to_the_story_ad() -> None:
+    """Rendered trees: an approved historia opens `?formato=historia` with its own label;
+    any other POST keeps the plain link behind `used_count`; `kind` decides nothing."""
+    for tree in _cards():
+        story = tree.index('"/promote")+"?formato=historia"')
+        cond = tree[:story][tree[:story].rindex("is_story") :]
+        assert "is_approved" in cond and "kind" not in cond
+        assert "Promocionar como anuncio" in tree[story:]
+        rest = tree[story:][tree[story:].index("used_count") :]
+        assert '"/promote")' in rest and "kind" not in rest[: rest.index('"/promote")')]
+
+
+def test_the_story_link_is_the_wizards_story_path() -> None:
+    from .promotion_vm import STORY_FORMAT, STORY_PROMOTE, story_ad_href
+
+    assert STORY_PROMOTE == "Promocionar como anuncio"
+    assert story_ad_href("p") == f"/drafts/p/promote?formato={STORY_FORMAT}"
+
+
+def test_the_wizard_says_it_is_a_paid_story_ad_on_the_story_path_only() -> None:
+    from . import promotion_page
+    from .promotion_vm import STORY_PAID_NOTE
+
+    assert STORY_PAID_NOTE == (
+        "Esto crea un anuncio pagado en historias. No cambia la historia que ya publicaste."
+    )
+    tree = _render(promotion_page._wizard(rx.fragment(), rx.fragment()))
+    note = tree.index(STORY_PAID_NOTE)
+    assert "story_entry" in tree[:note][-400:]
 
 
 # -- 3. «Ver en Tu semana» from the blocked switch -------------------------------------

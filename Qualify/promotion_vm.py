@@ -99,6 +99,11 @@ STORY_AD_ONLY = (
     "apruebes el presupuesto."
 )
 STORY_AD_CONTINUE = "Hacer anuncio pagado"
+#: HIS-1 (m-25130281): a historia's card opens the story-only ad, and the wizard says so.
+STORY_PROMOTE = "Promocionar como anuncio"
+STORY_PAID_NOTE = (
+    "Esto crea un anuncio pagado en historias. No cambia la historia que ya publicaste."
+)
 STORY_AD_DECLINE = "Dejar la historia sin botón"
 #: The 9:16 safe zones Instagram covers with the account name (top) and the button (bottom).
 STORY_SAFE_TOP = "Aquí va tu nombre"

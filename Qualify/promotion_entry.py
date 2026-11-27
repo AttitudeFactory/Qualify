@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .promotion_vm import STORY_FORMAT, STORY_PROMOTE
+
 
 def promotion_event_query(query: rx.Var[str], event_id: rx.Var[str]) -> rx.Var[str]:
     """Keep a published calendar source bound while preserving the week return address."""
@@ -25,4 +27,18 @@ def promotion_link(
             min_height="44px",
         ),
         href="/drafts/" + piece_id + "/promote" + query,
+    )
+
+
+def card_promotion_link(post: rx.Var) -> rx.Component:
+    """The gallery card's and «Sin programar»'s promote link (HIS-1, m-25130281): an
+    approved historia opens the story-only ad (`?formato=historia`); any other POST,
+    once it went out, the wizard as before."""
+    return rx.cond(
+        post.is_story,
+        rx.cond(
+            post.is_approved,
+            promotion_link(post.post_id, query="?formato=" + STORY_FORMAT, label=STORY_PROMOTE),
+        ),
+        rx.cond(post.used_count > 0, promotion_link(post.post_id)),
     )
