@@ -9,7 +9,12 @@
    `--q-edit-frame-h` (`assets/qualify-creative.css` has a fallback without it). Only
    on a narrow step (the phone's layout): on a wide one the CSS sizes it. Measured in the flow
    (the page's scroll does not change it), again when a size changes. With a block
-   chosen the CSS caps it lower, so its panel shows too. */
+   chosen the CSS caps it lower, so its panel shows too.
+
+   m-25026638 (second live test): it also writes the sticky preview's own height in
+   `--q-edit-preview-h` (stacked only; on a wide step the preview scrolls with the page),
+   so a panel or a field scrolled into view stops UNDER the preview, never behind it
+   (`scroll-margin-top` in `assets/qualify-creative.css`). */
 (function () {
   "use strict";
   var MIN_PX = 144;
@@ -34,11 +39,23 @@
     return top + (window.scrollY || 0);
   }
 
+  // the sticky preview's height, for the panel's `scroll-margin-top` ("" = none)
+  function previewRoom(edit, on) {
+    var preview = on ? edit.querySelector(".q-edit__preview") : null;
+    var h = preview ? Math.ceil(preview.getBoundingClientRect().height) : 0;
+    var set = edit.style.getPropertyValue("--q-edit-preview-h");
+    if (h > 0) {
+      if (set !== h + "px") edit.style.setProperty("--q-edit-preview-h", h + "px");
+    } else if (set) edit.style.removeProperty("--q-edit-preview-h");
+  }
+
   function fit(edit) {
     if (!edit.isConnected) return;
     var frame = edit.querySelector(".q-edit__preview .q-edit-preview__frame");
     var bar = edit.querySelector(".q-tl-stack__actions");
-    if (!frame || !bar || !stacked(edit)) {
+    var narrow = stacked(edit);
+    previewRoom(edit, narrow);
+    if (!frame || !bar || !narrow) {
       edit.style.removeProperty("--q-edit-frame-h");
       return;
     }
@@ -79,6 +96,8 @@
     if (window.ResizeObserver) {
       var timeline = edit.querySelector(".q-edit__timeline");
       if (timeline) edit.__qRoom.observe(timeline);
+      var preview = edit.querySelector(".q-edit__preview");
+      if (preview) edit.__qRoom.observe(preview);
       edit.__qRoom.observe(edit);
     }
     window.addEventListener("resize", later);

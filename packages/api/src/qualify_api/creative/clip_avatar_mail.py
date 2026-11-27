@@ -33,6 +33,13 @@ changed address is closed `no_recipient`.
 checks the switches again before every attempt (`closed_reason='switched_off'`), and the
 worker's chore reads nothing while both are off. With both off no block can exist.
 
+**Character scenes** (m-25128784 PR 2, ADR 50 §12.1): a Clip's scene that could not be
+made sends this same email, in the scene's words (`mail.clip_avatar`, its own template
+version) — `block_kind` `character_scene`, `block_ids` the scenes' drafts, the stamp on
+the Clip's own scene item (`character_scene.scenes_gate`). Its switch is
+`QUALIFY_CLIP_CHARACTER_SCENE`: nothing staged nor sent while it is off, and the chore
+reads nothing while it and both avatar switches are off.
+
 **Who.** The Clip's author (`content_briefs.created_by`), while still a member of the
 business with a real seat and a confirmed address (`auth.confirmed_email`, fail closed).
 
@@ -51,8 +58,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from qualify_creative.schemas import ClipAvatarSlot
+from qualify_creative.schemas import CharacterSceneItem, ClipAvatarSlot
 
+from qualify_api.creative.character_scene import (
+    SWITCHED_OFF,
+    PostgresCharacterSceneStore,
+    SceneRow,
+    placed_scenes,
+    scene_enabled,
+    scene_owner_deadline,
+)
 from qualify_api.creative.clip_avatar import (
     BlockRow,
     PlannedBlock,
@@ -65,11 +80,16 @@ from qualify_api.mail import Mailer, MailNotConfigured, MailRejected, OutgoingMa
 from qualify_api.mail.clip_avatar import (
     BLOCK_FAILED,
     CLIP_TOO_LONG,
+    SCENE_TEMPLATE_VERSION,
     TEMPLATE_VERSION,
     failure_mail,
 )
 
 logger = logging.getLogger(__name__)
+
+#: m-25128784 PR 2: the `block_kind` of a character scene's failure. The same table, kind
+#: (`block_failed`) and identity as an avatar's; `block_ids` are the scenes' drafts.
+SCENE_MAIL_KIND = "character_scene"
 
 #: Resend keeps an idempotency key 24 h: stop retrying an uncertain send before then.
 RETRY_WINDOW = timedelta(hours=23)
@@ -131,6 +151,13 @@ class MailGroup:
     slots: tuple[int, ...]
     block_ids: tuple[UUID, ...]
     codes: tuple[str, ...]
+    #: m-25128784: the group is of character scenes (a Clip has scenes or avatar blocks,
+    #: never both): staged with the scene's template version.
+    scene: bool = False
+
+    @property
+    def template_version(self) -> str:
+        return SCENE_TEMPLATE_VERSION if self.scene else TEMPLATE_VERSION
 
 
 def mail_groups(failures: Sequence[AvatarFailure]) -> tuple[MailGroup, ...]:
@@ -145,6 +172,7 @@ def mail_groups(failures: Sequence[AvatarFailure]) -> tuple[MailGroup, ...]:
             slots=tuple(f.slot for f in items),
             block_ids=tuple(f.block_id for f in items),
             codes=tuple(f.code for f in items),
+            scene=any(f.block_kind == SCENE_MAIL_KIND for f in items),
         )
         for (kind, failed_at), items in groups.items()
     )
@@ -184,6 +212,10 @@ class ClipView:
     timezone: str
     plan: tuple[ClipAvatarSlot, ...]
     blocks: tuple[BlockRow, ...]
+    #: m-25128784: the Clip's «Personajes» track (with each scene's `failed_at` stamp) and
+    #: its scene children — empty for a Clip with avatar blocks.
+    scene_items: tuple[CharacterSceneItem, ...] = ()
+    scene_rows: tuple[SceneRow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -235,6 +267,8 @@ def _due(
     kind is switched on. Pure."""
     if clip is None or clip.status != "drafting":
         return "resolved", None, 0
+    if clip.scene_items:
+        return _scene_due(mail, clip, env)
     states = {s.entry.slot: s for s in plan_states(clip.plan, clip.blocks, env)}
     waiting = 0
     switched = False
@@ -256,6 +290,33 @@ def _due(
     if not waiting:
         return ("switched_off" if switched else "resolved"), None, 0
     return None, owner_deadline(tuple(states.values())), waiting
+
+
+def _scene_due(
+    mail: PendingMail, clip: ClipView, env: Mapping[str, str] | None
+) -> tuple[str | None, datetime | None, int]:
+    """`_due` for a Clip's character scenes (m-25128784): a scene still waits when its
+    item keeps this row's `failed_at`, its child is the same draft and still failed (not
+    a `switched_off` «failure»), and the scene switch is on. Pure."""
+    placed = {p.slot: p for p in placed_scenes(clip.scene_items, clip.scene_rows)}
+    if not scene_enabled(env):
+        return "switched_off", None, 0
+    waiting = 0
+    for slot, scene_id in zip(mail.slots, mail.block_ids, strict=True):
+        scene = placed.get(slot)
+        if (
+            scene is None
+            or scene.row is None
+            or scene.row.id != scene_id
+            or not scene.row.failed
+            or scene.item.failed_at != mail.failed_at
+            or scene.row.failure_reason == SWITCHED_OFF
+        ):
+            continue
+        waiting += 1
+    if not waiting or mail.kind != BLOCK_FAILED:
+        return "resolved", None, 0
+    return None, scene_owner_deadline(tuple(placed.values())), waiting
 
 
 def send_pending(
@@ -322,6 +383,7 @@ def send_pending(
                 idempotency_key=mail.idempotency_key,
                 kind=mail.kind,
                 count=waiting,
+                scene=bool(clip.scene_items),
             )
             if not outbox.freeze(mail, {"mail": asdict(outgoing)}, now=moment):
                 continue
@@ -403,8 +465,9 @@ def failure_mail_chore(
         from qualify_api.mail import default_mailer  # noqa: PLC0415
         from qualify_api.mail.config import public_app_url  # noqa: PLC0415
 
-        if not any_block_enabled():
-            # both switches off (every environment today): no email, not even a read
+        if not any_block_enabled() and not scene_enabled():
+            # every avatar and scene switch off (every environment today): no email, not
+            # even a read
             return 0
         box = outbox or PostgresAvatarFailureOutbox()
         tick = clock or (lambda: datetime.now(UTC))
@@ -503,7 +566,7 @@ class PostgresAvatarFailureOutbox:
                     "codes": list(group.codes),
                     "user": user_id,
                     "key": failure_key(tenant_id, clip_id, group.kind, group.failed_at),
-                    "version": TEMPLATE_VERSION,
+                    "version": group.template_version,
                 },
             ).rowcount
         return staged
@@ -577,6 +640,7 @@ class PostgresAvatarFailureOutbox:
             row = session.execute(
                 text("""
                 SELECT d.status, b.media->'clip_avatar_plan' AS plan,
+                       b.media->'character_scenes' AS scenes,
                        COALESCE(NULLIF(br.name, ''), t.name) AS business,
                        COALESCE(NULLIF(t.timezone, ''), 'UTC') AS timezone
                 FROM content_drafts d
@@ -591,12 +655,20 @@ class PostgresAvatarFailureOutbox:
             return None
         plan = tuple(ClipAvatarSlot.model_validate(entry) for entry in (row.plan or ()))
         blocks = PostgresClipAvatarStore().blocks_of(tenant_id=tenant_id, clip_id=clip_id)
+        scenes = tuple(CharacterSceneItem.model_validate(item) for item in (row.scenes or ()))
+        scene_rows: tuple[SceneRow, ...] = ()
+        if scenes:
+            scene_rows = PostgresCharacterSceneStore().scene_rows(
+                tenant_id=tenant_id, clip_id=clip_id
+            )
         return ClipView(
             status=str(row.status),
             business=str(row.business),
             timezone=str(row.timezone),
             plan=plan,
             blocks=blocks,
+            scene_items=scenes,
+            scene_rows=scene_rows,
         )
 
     def recipient(self, tenant_id: UUID, user_id: UUID) -> Recipient | None:
@@ -812,6 +884,7 @@ class MemoryAvatarFailureOutbox:
 
 
 __all__ = [
+    "SCENE_MAIL_KIND",
     "AvatarFailure",
     "AvatarFailureOutbox",
     "ClipView",

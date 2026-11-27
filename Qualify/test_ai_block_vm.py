@@ -76,6 +76,13 @@ CONTRACT_TABLE = {
     "ai_part_guide_type": (
         "No podemos usar ese archivo como guía. Sube un video MP4 o MOV, o un audio MP3 o WAV."
     ),
+    # m-25129406 (PR 2): «Sigue a la anterior» after an own video, `QUALIFY_CLIP_EXTEND_OWN_VIDEO`
+    "extend_own_video_speed": (
+        "Ese video va rápido o lento. Déjalo a velocidad normal para continuarlo."
+    ),
+    "extend_own_video_short": (
+        "Ese video dura menos de 2 segundos. Usa uno más largo o elige «Nueva»."
+    ),
 }
 
 TENANT = "11111111-1111-1111-1111-111111111111"
@@ -292,6 +299,48 @@ def test_extend_continues_only_an_ai_part_right_before() -> None:
     assert _option(not_split, "extend")["reason"] == CONTRACT_TABLE["extend_not_same_moment"]
     off = vm.mode_options(plain, [ai(0)], [entry()], 0, extend_on=False)
     assert _option(off, "extend")["reason"] == "Por ahora no está disponible. Elige otra forma."
+
+
+@pytest.mark.parametrize(
+    ("before", "code"),
+    [
+        (video(5.0), ""),  # an own video at ×1 of 2 s or more is continued
+        (video(10.0, speed=2.0), "extend_own_video_speed"),
+        (video(1.5), "extend_own_video_short"),
+        (photo(), "extend_after_own_media"),  # a photo is never continued
+    ],
+)
+def test_extend_after_an_own_video_with_the_switch_on(
+    monkeypatch: pytest.MonkeyPatch, before: dict[str, Any], code: str
+) -> None:
+    """m-25129406 (#855): with `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on, «Sigue a la anterior»
+    continues an own video at ×1 of 2 s or more — the same codes as the contract, and
+    its words read with `ai_part_text` (never copied, never an empty line)."""
+    monkeypatch.setenv(contract_ai.CLIP_EXTEND_OWN_VIDEO_SWITCH, "on")
+    segments = [before, ai(0)]
+    wanted = [vm.with_mode(entry(), "extend")]
+    assert vm.extend_code(segments, [entry()], 1, wanted[0]) == code
+    contract = [
+        p["code"] for p in vm.preflight_problems(segments, wanted) if p["field"].endswith(".mode")
+    ]
+    assert contract == ([code] if code else [])
+    reason = vm.extend_reason(segments, [entry()], 1, extend_on=True, entry=wanted[0])
+    assert reason == (contract_ai.ai_part_text(code) if code else "")
+    if code:
+        assert reason  # never an empty line
+    if code == "extend_after_own_media":
+        assert reason == contract_ai.EXTEND_AFTER_PHOTO_TEXT  # «…no puede continuar una foto»
+
+
+def test_extend_after_an_own_video_with_the_switch_off_is_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(contract_ai.CLIP_EXTEND_OWN_VIDEO_SWITCH, raising=False)
+    for before in (video(5.0), video(10.0, speed=2.0), video(1.5), photo()):
+        segments = [before, ai(0)]
+        assert vm.extend_code(segments, [entry()], 1) == "extend_after_own_media"
+        reason = vm.extend_reason(segments, [entry()], 1, extend_on=True)
+        assert reason == CONTRACT_TABLE["extend_after_own_media"] != ""
 
 
 def test_extend_same_moment_of_the_reel() -> None:

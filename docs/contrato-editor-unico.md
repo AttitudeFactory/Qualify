@@ -76,6 +76,8 @@ Todas viven en `validate_recipe` y en `validate_brief_recipe` (la que llama el s
 | `extend_needs_block_before` | Una parte «Sigue a la anterior» al principio del video, sin nada antes (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» necesita una parte con IA justo antes. Pon esta parte después de una, o elige «Nueva». |
 | `extend_after_own_media` | Una parte «Sigue a la anterior» justo después de una foto o un video del dueño: hoy no se puede continuar material propio (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» solo continúa una parte con IA, no una foto o un video tuyo. Pon una parte con IA justo antes o elige «Nueva». |
 | `extend_not_same_moment` | Una parte «Sigue a la anterior» que el plan no partió del mismo momento del reel que la parte con IA de antes (§3.2). Solo se ofrece «Nueva»: «Igual al original» no es una salida segura aquí (§3.2) | `ai_parts[n].mode` | «Sigue a la anterior» solo sirve si esta parte y la anterior salen del mismo momento del video de inspiración. Elige «Nueva». |
+| `extend_own_video_speed` | Con `QUALIFY_CLIP_EXTEND_OWN_VIDEO` encendido (PR 2): una parte «Sigue a la anterior» justo después de un video propio que no va a ×1 | `ai_parts[n].mode` | Ese video va rápido o lento. Déjalo a velocidad normal para continuarlo. |
+| `extend_own_video_short` | Con `QUALIFY_CLIP_EXTEND_OWN_VIDEO` encendido (PR 2): una parte «Sigue a la anterior» justo después de un video propio de menos de 2 s | `ai_parts[n].mode` | Ese video dura menos de 2 segundos. Usa uno más largo o elige «Nueva». |
 | `edit_needs_reel_window` | Una parte «Igual al original» sin el análisis del reel y sus cortes (`analysis_id` y `shot_indexes`) | `ai_parts[n].shot_indexes` | «Igual al original» solo sirve con partes que vienen de un video de inspiración. Elige «Nueva». |
 | `ai_part_with_speed` | Un bloque con IA a otra velocidad que ×1 | `segments[i].speed` | Las partes con IA siempre van a velocidad normal. Quita la cámara rápida de esta parte. |
 | `own_media_too_short` | El Clip lleva partes con IA **y** escenas o avatares, y menos de 3 s de fotos y videos propios. Un Clip hecho solo de partes con IA es válido | `segments` (con `duration_s`) | Con un personaje en tu video necesitas al menos 3 segundos de tus fotos o videos. Agrega más o alarga los que ya tienes. |
@@ -159,6 +161,84 @@ Por eso, en la v1, una entrada `extend` vale solo si:
 
 Los códigos se agregaron al final de `RecipeRefusal` (`qualify_creative.schemas.RECIPE_REFUSALS`) y no se reordenan.
 
+### 3.4 Pistas de referencias `[CONSTRUIDO EN PR A Y PR B]` · m-25142725
+
+Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos del video final. Cada parte con IA toma las que quedan debajo de ella. El PR A trae solo el contrato (forma, reglas y textos), sin migración: todo va en el JSON del brief. Crear los hijos con estas referencias es el PR B (detrás de `QUALIFY_CLIP_AI_PARTS`, ver «Al crear» más abajo).
+
+**Forma.** `MediaInputs.clip_references` (hasta 40, `CLIP_REFERENCES_MAX`) y `MediaInputs.references_version` (0 = brief de antes; 1 = usa pistas):
+
+```json
+"references_version": 1,
+"clip_references": [
+  {"kind": "photo", "key": "uploads/<negocio>/arepa.png", "start_s": 0, "end_s": 14, "row": 0,
+   "origin": "product", "product_id": "<uuid del producto>"},
+  {"kind": "video", "key": "uploads/<negocio>/mi-baile.mp4", "start_s": 4, "end_s": 9, "row": 1,
+   "origin": "owner", "product_id": null}
+]
+```
+
+- `kind`: `photo`, `video` o `audio`. `start_s` ≥ 0 y `end_s` > `start_s`, en segundos del video final. `row` es solo de la pantalla (y desempata el orden).
+- `origin`: `owner` (lo eligió el dueño, sin `product_id`) o `product` (una foto de un producto del Catálogo que puso la pantalla, con su `product_id`). El servidor no inyecta nada: solo revisa que la clave sea del negocio.
+- Una referencia es un elemento suelto, con sus propios segundos: nada la ata a una parte. **Cuando el dueño mueve una parte con IA, la pantalla mueve con ella las referencias que quedan enteras debajo** (Deivid, 2026-11-27); el contrato no lo impide ni lo hace.
+- La misma clave puede estar en `segments` (como bloque propio) y en `clip_references`: no hay regla de duplicados. Copiar de un lado al otro copia la cadena, nunca el archivo.
+
+**Qué recibe cada parte** (`ai_parts.references_for_parts(brief, model=None)`, pura; la pantalla la puede llamar antes de «Crear»):
+
+- El tramo de la parte es el de su bloque `ai_part`, en segundos del video que sale: los bloques en orden y a su velocidad, como los pone `clip_avatar.virtual_brief` (los avatares que el Clip espera cuentan con su largo estimado), y cada bloque empieza donde termina el anterior menos lo que se come su unión. El final del Clip es el de `recipe.clip_seconds`.
+- **Al crear (PR B):** las referencias de cada hijo se calculan una sola vez en «Crear», sobre ese mismo tramo (`references_for_parts`). `clip_avatar.fit_plan` y el armado (`clip_ai_parts.resolve`) mueven los textos y efectos a los largos reales, pero no mueven `clip_references`: las referencias nunca se vuelven a calcular sobre el brief ya ajustado. Hoy un Clip con partes con IA no lleva avatares ni escenas del personaje (se rechaza), así que el tramo es el de `segments`.
+- Una referencia aplica si se solapa con la parte más de 0,05 s (`REFERENCE_OVERLAP_MIN_S`).
+- Las fotos aplican en todos los modos. Los videos y audios, solo en «Nueva» (`reference`).
+- Orden: `(start_s, row, posición en la lista)`. La misma clave del mismo tipo cuenta una sola vez.
+- Devuelve un `PartReferences` por parte (`entry_at`, `block_at`, `mode`, `start_s`, `end_s`, `photos`, `videos`, `audios`, `problems`). Nunca corta a un tope: si la parte se pasa, `problems` trae su `too_many_references`, **que bloquea** («Siguiente» y «Crear» apagados con su texto).
+
+**Lo que recibe cada hijo al crear** (PR B, `clip_ai_parts.child_brief`). Solo en un brief con `references_version` 1; uno con 0 se crea igual que antes.
+
+- `clip_image_keys` = las fotos que le aplican, en su orden; `clip_image_roles` = `product` si su `origin` es `product`, y si no `unroled_image_role` del Clip. Si no le aplica ninguna foto, va con una tupla vacía: ya no hereda las fotos del Clip.
+- `clip_video_keys` y `clip_audio_keys` = los videos y audios que le aplican (solo en «Nueva»).
+- `PartRef.references` guarda las referencias que tomó (procedencia); `media._key_problems` revisa también esas claves antes de leer nada.
+- El hijo nunca lleva las pistas del Clip: `clip_references` vacío y `references_version` 0, porque sus pistas ya quedaron resueltas en sus propias claves.
+- **Las claves del Clip van vacías en v1.** El Clip v1 manda vacíos `clip_image_keys`, `clip_image_roles`, `clip_video_keys` y `clip_audio_keys`: sus fotos y videos propios van en `segments`, que es lo que arma `produce_local`. Nada de la creación, la espera, el armado ni la aprobación lee esas claves en un Clip `local`. `unroled_image_role` no lee los roles, solo la versión del compilador y el producto.
+- **`source_pins` en v1.** Un origen de Pinterest puede nombrar una foto de las pistas, y al crear va solo al hijo que tomó esa foto. Un origen que no nombra ninguna foto se sigue rechazando.
+- **«Igual al original» en v1.** Su entrada puede traer `clip_video_keys`, que es la ventana del reel que cambia (por ejemplo con `people_unclear`). Esa ventana es la fuente de la parte, no una referencia: el hijo la conserva y no cuenta en `PartRef.references`. En cualquier otro modo, `clip_video_keys` en la entrada sigue siendo `references_and_old_fields`.
+- **Después de «Crear».** Las pistas solo alimentan a los hijos. La receta que se revisa después (`virtual_brief`, al quitar una parte) y el Clip armado van sin pistas: `clip_references` vacío y `references_version` 0. El brief que mandó el dueño las conserva como registro.
+- **Cambiar el modo de una parte** (`clip_ai_part_actions`, con `clip_ai_parts.entry_in_mode`). La parte conserva sus fotos. Sus videos y audios de referencia se mantienen solo si sigue en «Nueva». Una referencia nunca se convierte en la fuente de «Igual al original».
+- Pasarse del tope rechaza la creación entera antes de escribir o cobrar nada (`too_many_references`); `child_brief` también lo rechaza si se llama sin pasar por «Crear».
+
+**Topes por modelo** (Deivid, 2026-11-27). Cada modelo declara los suyos en `qualify_creative.reference_caps.REFERENCE_CAPS_BY_MODEL`. Hoy, Seedance 2.x (todas sus familias): 9 fotos, 3 videos y 3 audios por parte. Magi-2 tendrá 10/5/5 cuando llegue (todavía no está en la tabla). Son topes del producto, no los del proveedor (la API de Seedance 2.5 acepta 30/10/10). Sin `model`, se usa el modelo de video activo (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, o su valor por defecto). Un modelo sin fila da `ValueError`: no se adivina. Cuando entre un modelo con más de 9 fotos, el PR que lo active sube también `CLIP_MAX_IMAGES` del hijo.
+
+**Rechazos** (`RecipeProblem`, `part=None`). Los revisa `validate_brief_recipe` y, por lo tanto, `refuse_unbuilt_recipe` en cada pedido nuevo; desde `validate_recipe` hay que pasar `media=`.
+
+| Código | Cuándo | `field` | ¿Bloquea? | Texto para el dueño |
+|---|---|---|---|---|
+|  `too_many_references` | Una parte con más fotos, videos o audios que el tope de su modelo | `ai_parts[n].references.<photo\|video\|audio>` | Sí | Esta parte con IA tiene más de {tope} fotos de referencia. Quita o acorta alguna para seguir. (Con videos y audios: «…más de {tope} videos/audios de referencia. Quita o acorta alguno para seguir.»)  |
+|  `reference_type` | Una foto que no es JPG/PNG, un video que no es MP4/MOV o un audio que no es MP3/WAV | `clip_references[i].key` | Sí | No podemos usar ese archivo como referencia. Usa una foto JPG o PNG, un video MP4 o MOV, o un audio MP3 o WAV.  |
+|  `reference_out_of_clip` | Una referencia que termina después del final del Clip (`clip_seconds`, ya sin lo que se comen las uniones; con 0,05 s de margen) | `clip_references[i]` | Sí | Esta referencia queda fuera del video. Muévela o acórtala para seguir.  |
+|  `references_and_old_fields` | Pistas en un brief sin `references_version` 1, o un brief v1 que todavía trae `clip_image_keys`, `clip_video_keys` o `clip_audio_keys` del Clip, o `ai_parts[n].clip_*_keys` (salvo `clip_video_keys` en «Igual al original», que es la ventana del reel) | `references_version`, `clip_*_keys` o `ai_parts[n].clip_*_keys` | Sí | Vuelve a abrir el editor para seguir.  |
+|  `malformed_key` / `foreign_key` (de siempre) | Una clave que no es ruta del negocio, o que es de otro | `clip_references[i].key` | Sí | Los textos de siempre. `media._key_problems` también las revisa antes de leer.  |
+|  `ai_part_outside_clip` (de siempre) | Pistas en algo que no es un Clip normal `local` | `clip_references` | Sí | El de siempre.  |
+|  `switched_off` (de siempre) | Pistas con `QUALIFY_CLIP_AI_PARTS` apagado | `clip_references` | Sí | El de siempre.  |
+
+**Avisos que no bloquean** (`ai_parts.reference_notices(brief)` → `ReferenceNote(code, field, entry_at, scene_at)`; nunca salen de `validate_recipe`):
+
+| Código | Cuándo | Texto |
+|---|---|---|
+| `reference_mode_ignored` | Un video o audio debajo de una parte que no es «Nueva»: esa parte no lo usa (`entry_at` dice cuál) | Esta parte no usa videos ni audios de referencia. |
+| `reference_unused` | Una referencia que no queda debajo de ninguna parte con IA | Esta referencia no está debajo de ninguna parte con IA. |
+| `reference_over_scene` | Una referencia sobre una escena del personaje (`scene_at`) | Se decide en el PR 4 (m-25129408); hasta entonces `reference_text` da `None`. |
+
+Para que un aviso bloquee, se agrega su código al final de `RecipeRefusal` y a `REFERENCE_NOTICES_THAT_BLOCK` (hoy vacío).
+
+**Qué llama la pantalla:**
+
+| Función | Para qué |
+|---|---|
+| `ai_parts.reference_caps(model=None)` | `{"photo": 9, "video": 3, "audio": 3}` del modelo (el activo por defecto), para mostrar el tope. |
+| `ai_parts.references_for_parts(brief, model=None)` | Qué toma cada parte y si se pasa del tope (`PartReferences.problems`). |
+| `ai_parts.reference_notices(brief, model=None)` | Los avisos. |
+| `ai_parts.reference_text(code, kind=None, model=None)` | Las palabras de cada código; `too_many_references` necesita `kind` (el final de su `field`) y dice el tope real. |
+| `ai_parts.plan_references(media, segments=None, model=None)` | Lo mismo desde un `MediaInputs`, con partes, rechazos y avisos juntos. |
+| `video_pipeline.validate_recipe(..., media=media, reference_model=None)` | Avisar en cada cambio, como el resto del §3. |
+
 ## 4. Qué llama la pantalla
 
 ### Hoy (PR 1)
@@ -175,19 +255,120 @@ Los códigos se agregaron al final de `RecipeRefusal` (`qualify_creative.schemas
 | `ai_parts.clip_ai_parts_on()` | Si mostrar «Agregar → Parte con IA». |
 | `recipe.clip_seconds(part)` | Cuánto dura el video armado, ya con los bloques con IA y sus uniones. |
 
-### PR 2 (m-25129406) · crear
+### PR 2 (m-25129406) · crear `[CONSTRUIDO]`
 
-- `create_clip_with_ai_parts(...)`: crea el Clip y un hijo `CLIP` por cada bloque con IA en una transacción. Descuenta 1 vista previa por hijo, todo o nada. Desde ahí, `refuse_unbuilt_recipe` deja de devolver `recipe_unavailable` para los bloques con IA de ese camino.
-- `produce_local` resuelve cada bloque con IA al video que guardó su hijo, a ×1 y con su recorte.
-- Los dos llamados de hoy a `validate_recipe` deben pasar `ai_parts=media.ai_parts` y `other_ai_children=ai_children_of(media)` (hallazgo del review-agent): `clip_avatar.py:2764` (`ClipAvatarService`) y `video_pipeline/local.py:930` (`produce_local`). Sin eso, un Clip con partes con IA sale `ai_parts_mismatch` en el armado (falla cerrado, nunca se arma en silencio).
-- `media._key_problems` debe recorrer también `media.ai_parts` del Clip (§3.1).
-- **«Sigue a la anterior» después de un video propio** (decisión de Deivid: «Construirlo ya en el PR2»): se construye tras una medición pagada que Deivid aprueba aparte, y se levanta `extend_after_own_media` (§3.2).
-- Firmas exactas: las fija el PR 2. Este contrato no las adelanta.
+Código: `qualify_api.creative.clip_ai_parts`. Sin migración; el interruptor sigue apagado.
 
-### PR 3 (m-25129407) · después de crear
+**Crear.** La pantalla llama:
 
-- «Rehacer esta parte» (`regenerate_part`, con padre `CLIP`), intentar de nuevo, hacerla nueva, quitar y cambiar el modo.
-- Volver a armar el Clip cuando cambian los textos, las uniones o el orden, reusando el video de los hijos.
+```python
+ClipAiPartsService(content).create_clip_with_ai_parts(
+    tenant_id=..., brand_id=..., user_id=..., brief=clip_brief, request_key=uuid,
+) -> ClipWithAiParts(clip_id, part_ids)
+```
+
+- `brief` es el Clip tal como lo armó el dueño: bloques propios y bloques `ai_part` en `media.segments`, sus entradas en `media.ai_parts` (§2). Nada más: el servidor escribe el resto.
+- Crea el Clip (`drafting`) y **un hijo `CLIP` por bloque con IA**, el mismo hijo de hoy de «Video por partes» (`media.part`, hecho por el productor de Seedance sin cambios). Todo en una transacción, bajo el candado del negocio. Se despacha después de confirmar: primero los hijos y al final el Clip.
+- **El lugar del hijo** (`part_index`, de 1 a 6) es el orden de su bloque entre los bloques con IA de la línea de tiempo (`ai_part_slots`). Así, la parte que continúa «Sigue a la anterior» es siempre el hijo de lugar anterior, como la busca hoy el productor. `part_ids` va en ese orden.
+- **Cobro:** el precio del Clip (un armado local, 0 creaciones) más **1 vista previa por hijo**, todo o nada (`charge_many`). Si no alcanzan las vistas previas para todos, no se escribe nada (`NotEnoughCreations`). Los segundos se cobran al aprobar: PR 4.
+- **Una parte sin foto propia** (`clip_image_keys=None`) usa las fotos del Clip (`parts._child_brief`, el padre ahora es el Clip).
+- `request_key`: el mismo «Crear» otra vez devuelve lo que ya hizo y no despacha nada.
+- `create_draft` sigue rechazando un Clip con bloques con IA (`recipe_unavailable`): solo este servicio lo crea.
+
+**Rechazos, todos antes de escribir y de pagar:**
+
+| Qué | Excepción · código | Texto para el dueño |
+|---|---|---|
+| Interruptor apagado y todas las reglas del §3 | `RecipeRefused` (`problems`, con los códigos del §3) | Los del §3 |
+| Una parte sin descripción y sin video de inspiración (o con el aviso `describe_it` sin descripción) | `ClipAiPartsRefused` · `ai_part_needs_description` (`block` = lugar del bloque en la pista, desde 0) | Cuéntanos qué se ve en cada parte con IA antes de crear tu video. Escríbelo en la parte que está vacía. |
+| Un Clip que no es vertical 9:16 | `ClipAiPartsRefused` · `ai_part_outside_clip` | Las partes con IA solo funcionan en videos verticales. Cambia el formato a vertical para usarlas. |
+| Partes con IA y escenas del personaje en el mismo video (hasta el PR 4, que junta los dos caminos) | `ClipAiPartsRefused` · `ai_parts_with_scenes` | Por ahora un video no puede tener partes con IA y escenas de tu personaje a la vez. Quita una de las dos para crearlo. |
+| «Sigue a la anterior» con `QUALIFY_PARTS_EXTEND` apagado | `PartsExtendUnavailable` | El de siempre |
+| Una toma del reel dividida que no se puede comprobar | `PartsSourceInvalid` | El de siempre |
+| El tope de dólares del negocio | `PartsOverBudget` | El de siempre |
+| El tope de 10 armados al día | `LocalDailyCapReached` | El de siempre |
+| Sin creaciones o vistas previas | `NotEnoughCreations` | El de siempre |
+
+**Espera y armado.**
+
+- Mientras un hijo se hace, el Clip **espera** en `drafting` (`ClipBlocksWait`, con latido cada pasada, sin leer, escribir ni pagar nada propio). Cuando termina un hijo, el Clip se despierta (`mark_parent_dirty`); además se reintenta solo cada 30 s.
+- Con todos los hijos hechos, el Clip recibe **un brief nuevo** (el que mandó el dueño queda guardado, `derived_from_brief_id`): cada bloque con IA pasa a ser un tramo de video del hijo, a ×1, con el intervalo que guarda la unión de «Video por partes» (`part_span`: el recorte, la ventana de «Igual al original», lo que repite «Sigue a la anterior»), nunca más largo que sus `seconds`, con su unión. Los textos y efectos se mueven al largo real. Se arma **una sola vez** con `produce_local` y `block_join` de siempre.
+- **El armado automático no cuenta en los 10 armados del día** (§13.5): no escribe fila de cobro. Solo cuenta el «Crear».
+- El video sale `ai_generated=True`. `params.local.ai_parts` guarda, por cada parte que se ve: borrador, revisión y asset del hijo, proveedor, modelo y versión del prompt, modo y `mode_reason`, reel y cortes, segundos pedidos, hechos y vistos, tarea y costo. `ai_sources` la marca con `ai_part: true`.
+- **Cambiado por el PR 3 (m-25129407):** un hijo que falla ya no hace fallar el Clip de inmediato; el Clip espera la elección del dueño 72 h (ver «PR 3» más abajo). Lo que sigue describe lo que construyó el PR 2. **Un hijo que falla hace fallar el Clip de inmediato** (decidido el 2026-11-26), con `ai_part_failed` («Tu video no se pudo armar porque una de sus partes con IA falló. No se descontó nada de tu plan. Vuelve a crear el video cuando quieras.»). En la misma escritura vuelven **las vistas previas de todas sus partes** (hechas, fallidas o sin empezar) y, con la devolución de siempre, las creaciones del Clip: el dueño no recibió ningún video. Devolver dos veces no devuelve nada más. La espera de 72 h del §11 vuelve con el PR 3 (m-25129407), junto con «Intentar de nuevo», «Hacerla nueva» y «Quitar». La falla se lee **antes** que la espera: una «Sigue a la anterior» que espera a una parte fallida nunca deja el Clip esperando para siempre.
+- `produce_local` nunca recibe un bloque con IA sin resolver: si llega uno, falla cerrado. Por eso los dos `validate_recipe` que nombraba el review-agent (`clip_avatar.place_block` y `produce_local`) no cambian: después de resolver, el brief ya no tiene bloques con IA ni `ai_parts`.
+- `media._key_problems` ya recorre los archivos de `media.ai_parts` y salta las claves `ai_part:<n>`.
+
+**Aprobar: todavía no.** Hasta el PR 4, un Clip con partes con IA **no se aprueba** (`ClipAiPartsRefused` · `ai_parts_approve_unavailable`: «Por ahora no se puede aprobar un video con partes con IA. Tu video queda guardado como está.»). Así no se regala ningún segundo de video.
+
+**Texto de cada hijo.** Un hijo de un Clip se hace antes de que el Clip tenga texto: lleva uno vacío, sin llamar a Claude y a costo 0 (`clip_ai_part_without_text`). El Clip lleva el texto.
+
+**«Sigue a la anterior» después de un video propio** (decisión de Deivid, 2026-11-26: «Construirlo ya en el PR2»). Construido detrás de un interruptor nuevo, `QUALIFY_CLIP_EXTEND_OWN_VIDEO`, **apagado** en `.env.example` y `deploy/.env.prod.example`:
+
+- Apagado, nada cambia: `extend_after_own_media` como en el PR 1.
+- Encendido, una parte «Sigue a la anterior» justo después de un **video** propio vale si ese video va a ×1 y dura al menos 2 s; si no, `extend_own_video_speed` («Ese video va rápido o lento. Déjalo a velocidad normal para continuarlo.») o `extend_own_video_short` («Ese video dura menos de 2 segundos. Usa uno más largo o elige «Nueva».»). Después de una **foto**, sigue `extend_after_own_media`, con el texto «"Sigue a la anterior" no puede continuar una foto. Pon una parte con IA o un video tuyo justo antes, o elige «Nueva».» (`ai_part_text` lo elige con el interruptor encendido).
+- El hijo guarda ese tramo en `media.part.extend_own`. El productor corta **los últimos segundos** de ese video (hasta 10 s, segundos enteros, derecho y sin audio, con `cut_window`), los guarda en la carpeta del hijo y Seedance los continúa (`extend`). La procedencia queda en `extend-source.json` y en `params.part.extend` con `source_kind="own_video"`.
+- **No se enciende** hasta la medición pagada que Deivid apruebe: BytePlus puede rechazar una cara real que no salió de sus propios videos. Medición preparada, sin correr: `just eval-extender-propio` (`packages/api/evals/extender_video_propio/`). Tres videos del negocio (con una persona, solo el producto, solo el local), una tarea `extend` de 5 s a 480p (borrador de Seedance 2.5) cada uno. Cotización con la guarda de precios y la tabla `v10`: US$0,92 por tarea con 10 s de entrada, **US$2,77 en total** (reserva con 10 % de margen: US$3,04; tope propuesto: US$3,10).
+
+### PR 3 (m-25129407) · después de crear `[CONSTRUIDO]`
+
+Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre `ClipAiPartsService`) y la espera en `clip_ai_parts.ai_parts_gate`. Interruptor: el mismo `QUALIFY_CLIP_AI_PARTS`, apagado. Sin migración.
+
+**La espera del §11 vuelve.** Si una parte con IA falla mientras el Clip espera su primer armado, el Clip **sigue esperando** la elección del dueño (`AiPartsWait("part_failed")`, con `wait_until`). El plazo es de **72 h desde la última falla** que vio el servidor (`CLIP_AI_PART_OWNER_WAIT`; la hora es la más reciente entre la última escritura de la fila de la parte, la devolución de su vista previa en esa revisión y el fin de su trabajo en la cola, porque una falla no siempre escribe la fila). Si se vence, el Clip falla con `ai_part_expired` («Tu video no se armó porque una de sus partes con IA no salió y pasaron 3 días sin una elección. No se descontó nada de tu plan. Créalo de nuevo cuando quieras.») y vuelven las vistas previas de todas sus partes, en su revisión actual, como en el PR 2. Una parte que nunca se creó, o hecha sin su video, sigue haciendo fallar el Clip de inmediato (`ai_part_failed`): no hay nada que el dueño pueda elegir. Por ahora no sale correo de falla (el de los avatares, m-25120319, no se extendió a las partes).
+
+| Acción | Cuándo | Qué hace | Cobro | Tope de 10 armados |
+|---|---|---|---|---|
+| `retry_part` «Intentar de nuevo» | Clip esperando, parte fallida | La misma parte otra vez | 1 vista previa | No cuenta: el «Crear» ya contó ese armado |
+| `retry_part(changes=…)` «Cambiar» | Igual | Primero su descripción o fotos | 1 vista previa | No cuenta |
+| `make_part_new` «Hacerla nueva» | Igual, solo «Igual al original» donde la regla de partes lo ofrece | Pasa a «Nueva» | 1 vista previa | No cuenta |
+| `change_part_mode` | Clip esperando (parte fallida) o Clip armado (parte hecha) | Otro modo; ver reglas abajo | 1 vista previa | Cuenta solo con el Clip armado |
+| `remove_part` «Quitar» | Clip esperando, parte fallida | Se marca quitada (`part_removed_at`), el Clip se arma sin su bloque | 0 | No cuenta |
+| `redo_part` «Rehacer esta parte» | Clip armado, parte hecha (o una versión rehecha que quedó fallida) y en el video | Otra versión de la parte (descripción o fotos; nunca el modo) y otra versión del Clip que la espera | 1 vista previa | Cuenta 1 |
+| `rearrange` | Clip armado | Orden, recortes, uniones, quitar un bloque, textos y efectos | 0 | Cuenta 1 |
+| `parts_view` | Siempre | Lo que la pantalla muestra de cada parte y qué botones ofrece | Gratis | — |
+
+**Todo se revisa antes de escribir o pagar** (criterio 1): el interruptor, las reglas de la parte (las de «Video por partes», `part_actions._refusal`: una «Nueva» rechazada por sus fotos no se vuelve a pedir con las mismas), el interruptor de «Sigue a la anterior», que las fotos nuevas sean del negocio, el tope de dólares, el tope de 10 armados y el mes (`NotEnoughCreations`). El cobro es la primera escritura y es todo o nada (`charge_many`: la parte y, con el Clip armado, la fila de armado local del Clip). Todo pasa en una transacción con el candado del negocio, después de la valla del Clip (sus eventos del calendario y su fila: una publicación en curso, programada o un Clip purgado rechazan) y de la fila de la parte; si algo cambió entretanto, se rechaza con `clip_moved` sin escribir nada. Se despacha después del commit, primero la parte y luego el Clip. Un doble toque hace un solo intento.
+
+**Reusar los hijos** (criterio 2). Después de armado, el brief del Clip toca cada parte como un tramo del archivo de su hijo. `rearrange` cambia solo ese brief: ningún hijo se vuelve a pedir, ni se cobra, ni cambia de revisión. Al armar de nuevo, `refresh_gate` revisa que cada tramo de una parte sea de su **versión activa**: si el dueño rehízo la parte, el tramo viejo se cambia por el archivo nuevo (el mismo corte donde cabe, a ×1, con su unión), y el Clip espera mientras la parte se hace. Si la versión nueva no sale, la parte conserva la anterior (la regla de siempre de la generación) y el Clip sale como antes, nunca sin su parte.
+
+**El tope** (criterio 3). Cuentan el «Crear», «Rehacer esta parte», otro modo con el Clip armado y `rearrange` (una fila `local_video` del Clip por revisión). No cuentan los armados automáticos: cuando termina un hijo, ni el que espera una parte rehecha.
+
+**Reglas de otro modo** (`mode_change_problem`): el mismo modo no (`mode_unchanged`); «Igual al original» solo para una parte que el plan hizo así desde el reel (`original_mode == "edit"`, `edit_needs_reel_window`); «Sigue a la anterior» solo si el bloque justo antes en la línea de tiempo es la parte con IA anterior (`extend_needs_block_before`; un video o foto propios en medio no se continúan) y salida de la misma toma (`extend_not_same_moment`, la regla del contrato), con los cortes del reel comprobados como en el «Crear» y su interruptor; «Nueva» siempre.
+
+**«Quitar».** No se quita lo último que queda (`last_block`), y la receta que queda se revisa como en el «Crear». Una «Sigue a la anterior» justo después pasa a «Nueva»; mientras esa parte se está haciendo, «Quitar» se rechaza (el texto de siempre de «Video por partes»).
+
+**Rechazos** (`ClipAiPartsRefused`, con `code` y `owner_message`):
+
+| Código | Texto para el dueño |
+|---|---|
+| `switched_off` | Las partes con IA no están disponibles por ahora. Tu video queda como está. |
+| `clip_not_waiting` | Ya no hace falta elegir nada para esta parte. Abre tu video de nuevo para ver cómo va. |
+| `clip_busy` / `clip_not_made` | Tu video se está armando. Cuando termine, podrás cambiarlo. |
+| `clip_failed` | Este video no se pudo armar. Créalo de nuevo cuando quieras. |
+| `clip_moved` | Tu video cambió mientras tanto. Vuelve a abrirlo y elige otra vez. |
+| `part_not_failed` | Esta parte ya salió bien. No hace falta intentarla de nuevo. |
+| `part_not_ready` | Esta parte todavía se está creando. Cuando termine, podrás rehacerla. |
+| `part_being_made` | Esta parte se está creando. Cuando termine, podrás quitarla. |
+| `part_not_in_video` | Esta parte ya no está en tu video. |
+| `last_block` | Si quitas esta parte, tu video se queda sin nada que mostrar. Intenta de nuevo o cámbiala. |
+| `mode_unchanged` | Esta parte ya está así. Elige otra opción. |
+| `edit_needs_reel_window` | «Igual al original» solo funciona en partes que salen de un momento del video de inspiración. Elige «Nueva». |
+| `extend_needs_block_before` | «Sigue a la anterior» necesita una parte con IA justo antes. Elige «Nueva». |
+| `extend_not_same_moment` | «Sigue a la anterior» solo funciona si esta parte y la anterior salen del mismo momento del video de inspiración. Elige «Nueva». |
+| `ai_part_file_not_owned` | No pudimos usar una de esas fotos. Elige otra de tus fotos o súbela de nuevo. |
+| `ai_part_added` | Por ahora no puedes agregar partes con IA a un video ya armado. Crea un video nuevo para usarlas. |
+| `stretch_not_of_clip` | Uno de los bloques de tu video ya no está disponible. Vuelve a abrir tu video e inténtalo de nuevo. |
+| `part_action_refused` | El texto de «Video por partes» (`part_actions`) |
+
+**«Sigue a la anterior» después de rehacer la parte anterior** (Deivid, 2026-11-27): la parte no se rehace sola. `parts_view` la marca con `follows_old_version: true`, el aviso `follows_old_version` y el texto «Esta parte sigue a una versión anterior. Rehazla para que continúe la nueva.». El dueño elige qué hacer. La marca se calcula cada vez con la regla de «Video por partes» (`part_extend.extend_is_stale`: el archivo que continuó ya no es el de la parte anterior), así que desaparece cuando el dueño la rehace o le cambia el modo.
+
+El texto de una parte fallida sin palabras propias (`PART_FAILED_TEXT`, en `parts_view`): «Esta parte no salió. Puedes intentarla de nuevo, cambiarla o quitarla. Tu video te espera 3 días.»
+
+Además, con sus textos de siempre: `PartChangeRefused` (programado, publicándose, purgado, la parte que sigue se está haciendo), `PartsExtendUnavailable`, `PartsSourceInvalid`, `PartsOverBudget`, `LocalDailyCapReached`, `NotEnoughCreations` y `RecipeRefused`.
+
+**Agregar una parte con IA nueva a un Clip ya armado** (m-25142982, `ClipAiPartActions.add_part`): solo en «Por aprobar» (generado o rechazado), nunca aprobado ni mientras algo del video se crea. Crea UN hijo en el lugar siguiente a todos los del Clip (`part_index`, 1-6, contando quitados y escenas) y una versión nueva del Clip con su bloque en la posición que pidió el dueño; las demás partes se reusan. 1 vista previa, todo o nada con la fila del Clip, antes de escribir; cuenta en el tope local del día; idempotente con `request_key`. Topes: 6 hijos con IA, 8 bloques, 60 s. «Sigue a la anterior» solo justo después de la parte que continúa (las reglas de «Rehacer»). Si la parte nueva falla, el Clip espera la elección del dueño (72 h) y, al vencer, se arma sin ella: nunca falla por ella. `rearrange` sigue rechazando un bloque con IA nuevo (`ai_part_added`). En un Clip pedido sobre las pistas de referencias (`references_version` 1), la parte nueva toma lo que las pistas del brief pedido tienen bajo su bloque (`part_references`), con `PartRef.references` y sus pines; el hijo queda en versión 0, sin pistas. Los tiempos de las pistas se leen sobre la línea de tiempo actual del video armado (que puede haberse corrido respecto de la de «Crear»), una aproximación aceptada. Una parte nueva con archivos propios en ese Clip se rechaza (`references_and_old_fields`), como en «Crear». «Hacerla nueva» y «Cambiar a…» conservan lo que la parte tomó (`entry_in_mode`), sin volver a leer las pistas.
+
+**Pendiente para otros PR:** el correo de falla de una parte y la pantalla (PR 8, ED-08b).
 
 ### PR 4 (m-25129408) · aprobar y finales
 
@@ -203,6 +384,7 @@ Código: `qualify_api.creative.plan_blocks`. Funciones puras: no escriben, no pa
 | `blocks_from_proposal(proposal, after=…, other_ai_children=…)` | «Pedir una idea»: lo que devolvió `propose_parts` (ya cobrado y trazado allí), con su `PartsProvenance`. |
 | `blocks_from_plan(plan, analysis, after=…, other_ai_children=…)` | Cualquier plan de partes → `ClipBlocks` (`segments`, `ai_parts`, `text_layers`, `effects`, `provenance`). |
 | `ClipBlocks.of_media(media)` | La pista que el Clip ya tiene, para pasarla en `after`. |
+| `ClipBlocks.media_fields()` | Los campos del `MediaInputs` del Clip `local`, con `parts_provenance` (modelo, versión del prompt y `proposal_id` de la idea; m-25026636): el Clip la guarda, una parte hija o un Clip que no es `local` la rechazan. |
 | `ClipBlocks.problems(other_ai_children=…, tenant_id=…)` | Lo que dice el contrato del §3 (`validate_recipe`); con el interruptor apagado, solo `switched_off`. |
 | `ClipBlocks.seconds` | Cuánto dura el video armado (`clip_seconds`). |
 

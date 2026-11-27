@@ -24,6 +24,7 @@ from . import (
     ai_block_vm,
     clip_editor_vm,
     clip_gallery_vm,
+    editor_idea_vm,
     part_editor_vm,
     reel_parts_vm,
     reel_wait_vm,
@@ -5037,6 +5038,7 @@ def _phrase_field(
     on_submit: rx.event.EventHandler,
     on_remove: object,
     placeholder: str,
+    field_id: str = "",
 ) -> rx.Component:
     """«Debe mencionar» / «Debe evitar» (CREAR-6): one phrase per «Agregar» (or the
     keyboard's Intro / «Listo»), each a chip — never a single field «separado por
@@ -5046,7 +5048,13 @@ def _phrase_field(
     return rx.vstack(
         rx.vstack(
             rx.text(label, size="2", weight="medium"),
-            rx.text(rx.cond(full, PHRASE_LIMIT_HINT, hint), size="1", color=T.TEXT_MUTED),
+            rx.text(
+                rx.cond(full, PHRASE_LIMIT_HINT, hint),
+                size="1",
+                color=T.TEXT_MUTED,
+                # ED-06: with 12 phrases the field is off — «Editar» focuses this instead
+                **({"id": f"{field_id}-help", "tab_index": -1} if field_id else {}),
+            ),
             spacing="0",
             align_items="start",
         ),
@@ -5077,6 +5085,8 @@ def _phrase_field(
                     min_width="0",
                     aria_label=label,
                     disabled=full,
+                    # ED-06: «Editar» of its own row on «Revisa y crea» focuses it
+                    **({"id": field_id} if field_id else {}),
                 ),
                 rx.button(
                     rx.icon("plus", size=T.ICON_SM),
@@ -5142,6 +5152,7 @@ def _section_rules() -> rx.Component:
                     size="2",
                     on_click=CreativeState.add_highlight,
                     disabled=CreativeState.brief_highlights.length() >= 12,
+                    id=editor_idea_vm.RULES_ADD_ID,
                 ),
                 spacing="2",
                 wrap="wrap",
@@ -5160,6 +5171,7 @@ def _section_rules() -> rx.Component:
             CreativeState.submit_must_mention,
             CreativeState.remove_must_mention,
             "Ej.: envío gratis",
+            field_id=editor_idea_vm.MENTION_FIELD_ID,
         ),
         _phrase_field(
             "Debe evitar",
@@ -5171,6 +5183,7 @@ def _section_rules() -> rx.Component:
             CreativeState.submit_must_avoid,
             CreativeState.remove_must_avoid,
             "Ej.: barato",
+            field_id=editor_idea_vm.AVOID_FIELD_ID,
         ),
         spacing="4",
         width="100%",
@@ -5957,10 +5970,113 @@ def _clip_editor_media() -> rx.Component:
     )
 
 
+_CLIP_TOPIC_HELP_ID = "clip-topic-help"
+
+
+def _clip_general() -> rx.Component:
+    """ED-06 (m-25026636, D-E4 signed): «Arma tu video»'s general panel, with nothing
+    chosen — the context of the whole video, moved here from «Qué decir» (the video walks
+    3 steps): «¿De qué trata tu video?» with its help and example (never a placeholder),
+    «Mejorar mi texto», «¿A quién le habla este video?» and «Datos clave» behind «Más
+    opciones». The same fields as step 2's: `topic` and `rules` reach the copy as before."""
+    return rx.vstack(
+        rx.el.label(
+            rx.heading(editor_idea_vm.TOPIC_QUESTION, size="4", as_="span"),
+            html_for=CONTEXT_FIELD_ID,
+        ),
+        rx.text(
+            editor_idea_vm.TOPIC_HELP + " " + editor_idea_vm.TOPIC_EXAMPLE,
+            id=_CLIP_TOPIC_HELP_ID,
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        _carried_text_notice(),
+        rx.text_area(
+            value=CreativeState.brief_topic,
+            on_change=CreativeState.set_brief_topic,
+            id=CONTEXT_FIELD_ID,
+            aria_describedby=_CLIP_TOPIC_HELP_ID,
+            width="100%",
+            rows="4",
+        ),
+        _context_ai_tools(),
+        rx.divider(),
+        # ED-06 (UX review): «¿A quién le habla?» (m-25026509, under step 2's field before)
+        # and «Datos clave» fold under ONE «Más opciones» that names them
+        _more_options(
+            CreativeState.rules_open,
+            CreativeState.toggle_rules,
+            CreativeState.rules_hint,
+            rx.vstack(
+                audience_question(editor_idea_vm.AUDIENCE_FIELD_ID, closable=True),
+                _section_rules(),
+                spacing="5",
+                width="100%",
+                align_items="start",
+            ),
+            label=editor_idea_vm.MORE_LABEL,
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+        class_name="q-edit__general",
+    )
+
+
+def _clip_inspiration() -> rx.Component:
+    """ED-06 (design D20): «Hacer uno parecido» on the editor — the reel the blocks come
+    from, in one row over the editor: «Video de inspiración», «Basado en un reel de @…»
+    and «Ir al video ↗»."""
+    href = CreativeState.reel_source_href
+    return rx.cond(
+        CreativeState.clip_reel_blocks,
+        card(
+            rx.flex(
+                rx.icon("film", size=T.ICON_SM, aria_hidden="true", flex_shrink="0"),
+                rx.vstack(
+                    rx.text(editor_idea_vm.INSPIRATION_TITLE, size="2", weight="medium"),
+                    rx.text(CreativeState.reel_based_on_text, size="1", color=T.TEXT_MUTED),
+                    spacing="0",
+                    align_items="start",
+                    flex="1",
+                    min_width="0",
+                ),
+                rx.cond(
+                    href != "",
+                    rx.link(
+                        editor_idea_vm.GO_TO_VIDEO,
+                        rx.icon("external-link", size=T.ICON_SM, aria_hidden="true"),
+                        aria_label=editor_idea_vm.GO_TO_VIDEO_ARIA,
+                        href=href,
+                        is_external=True,
+                        size="2",
+                        display="inline-flex",
+                        align_items="center",
+                        gap="0.25rem",
+                        min_height="44px",
+                    ),
+                ),
+                align="center",
+                gap="0.75rem",
+                wrap="wrap",
+                width="100%",
+            ),
+            padding="0.75rem 1rem",
+            role="region",
+            aria_label=editor_idea_vm.INSPIRATION_TITLE,
+        ),
+    )
+
+
 def _clip_editor() -> rx.Component:
     """ED-10 (m-25026648): «Arma tu video» — the preview in sequence, the timeline, its
-    bar and the chosen block's panel."""
-    return arma_tu_video(_clip_editor_media())
+    bar and the chosen block's panel. ED-06: with nothing chosen its panel is the general
+    one (`_clip_general`), and a reel's plan laid as blocks has its card on top."""
+    # a fragment: the step's own stack spaces them, the editor's layout is untouched
+    return rx.fragment(
+        _clip_inspiration(),
+        arma_tu_video(_clip_editor_media(), general=_clip_general()),
+    )
 
 
 def _step_show() -> rx.Component:
@@ -6035,13 +6151,15 @@ def _more_options(
     toggle: rx.event.EventHandler,
     hint: str | rx.Var[str],
     body: rx.Component,
+    label: str = "Más opciones",
 ) -> rx.Component:
     """«Más opciones» (N6): a step's optional fields, folded until the owner opens them,
-    with a hint of what is inside while it is closed."""
+    with a hint of what is inside while it is closed. `label`: ED-06's general panel
+    names what it folds."""
     return rx.vstack(
         rx.button(
             rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
-            "Más opciones",
+            label,
             variant="ghost",
             color_scheme="gray",
             size="3",

@@ -26,7 +26,7 @@ import os
 from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter
@@ -510,6 +510,11 @@ def production_content_service() -> ContentService:
             render_client=render_client,
             # m-25112920: which stretches of a `local` Clip are its avatar blocks' videos
             clip_avatar_sources=db_generated_sources,
+            # m-25128784: a character scene's saved character, byte for byte (m-25129385),
+            # and a Clip's made scenes for its assembly — both behind
+            # QUALIFY_CLIP_CHARACTER_SCENE (off: no scene exists, nothing is read)
+            character_references=_character_references(),
+            character_scene_videos=_character_scene_videos,
         ),
     )
     service.dispatcher = (
@@ -518,6 +523,43 @@ def production_content_service() -> ContentService:
         else InlineDispatcher(service.run_generation, service.run_finalize)
     )
     return service
+
+
+def _open_business_character(tenant_id: UUID, brand_id: UUID, key: str) -> Any:
+    """A saved character's drawing, read through the business-bounded door — R2 is opened
+    only when a scene really reads one (never at compose time)."""
+    from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+    from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+    from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+    gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
+    return gate.open_business_character(tenant_id, brand_id, key)
+
+
+def _character_references() -> Any:
+    """m-25128784: the scene's `CharacterReferenceSource` over m-25129385's saved
+    characters (`character_reference`, which refuses while the switch is off) and their
+    drawings' bytes, never re-encoded."""
+    from qualify_api.creative.business_characters import (  # noqa: PLC0415
+        production_business_character_service,
+    )
+    from qualify_api.creative.character_scene import business_character_source  # noqa: PLC0415
+
+    return business_character_source(
+        production_business_character_service(), _open_business_character
+    )
+
+
+def _character_scene_videos(tenant_id: UUID, clip_id: UUID, brief: Any) -> Any:
+    """m-25128784 PR 2: a Clip's made scenes as its assembly lays them (RLS reads)."""
+    from qualify_api.creative.character_scene import (  # noqa: PLC0415
+        PostgresCharacterSceneStore,
+        clip_scene_sources,
+    )
+
+    return clip_scene_sources(
+        PostgresCharacterSceneStore(), tenant_id=tenant_id, clip_id=clip_id, brief=brief
+    )
 
 
 def _part_windows() -> PartWindows:

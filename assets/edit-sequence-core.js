@@ -406,8 +406,31 @@
     return block && block.kind === "ai" && block.mark ? String(block.mark) : "";
   }
 
+  /* m-25026638 (UX review): the mark in two pieces — its name («Parte con IA 1») and the
+     rest («· se crea al tocar «Crear»», from the « · » on) — so a narrow frame shows the
+     name alone; the words stay the signed ones, never a new short form. */
+  function aiMarkParts(mark) {
+    var text = String(mark || "");
+    var cut = text.indexOf(" · ");
+    if (cut < 0) return { name: text, rest: "" };
+    return { name: text.slice(0, cut), rest: text.slice(cut) };
+  }
+
+  /* m-25026638 (second live test): the words of the card a block with nothing to show
+     draws. A «parte con IA» not made yet whose frame draws its mark (`marked`, the
+     `.q-ai-mark` capsule in the corner) gets none: its name is already in the capsule,
+     and the card's big name in 2–3 lines covered the ▶ button. Any other block: its
+     name, as before. */
+  function cardLabel(block, marked) {
+    if (!block) return "";
+    if (marked && block.kind === "ai" && block.mark) return "";
+    return String(block.label || "");
+  }
+
   var api = {
     aiMark: aiMark,
+    aiMarkParts: aiMarkParts,
+    cardLabel: cardLabel,
     joinFrame: joinFrame,
     joinUnder: joinUnder,
     underSourceTime: underSourceTime,

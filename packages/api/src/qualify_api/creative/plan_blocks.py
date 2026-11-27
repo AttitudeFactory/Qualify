@@ -44,6 +44,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from qualify_creative.effects import EffectsLibrary, RecipeProblem, load_effects
@@ -141,6 +142,18 @@ class ClipBlocks:
             effects=media.effects,
             provenance=media.parts_provenance,
         )
+
+    def media_fields(self) -> dict[str, Any]:
+        """The fields of a local Clip's `MediaInputs` these blocks fill, the proposal's
+        provenance included (m-25026636). Build the brief with them through validation
+        (`MediaInputs(**fields)`, or `model_validate` over the old media plus them)."""
+        return {
+            "segments": self.segments,
+            "ai_parts": self.ai_parts,
+            "text_layers": self.text_layers,
+            "effects": self.effects,
+            "parts_provenance": self.provenance,
+        }
 
     def recipe(self) -> PartRecipe:
         """The Clip's recipe, as `recipe_of` reads a `local` Clip. Needs at least one

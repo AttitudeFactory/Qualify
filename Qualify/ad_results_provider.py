@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -43,6 +44,8 @@ from .ad_results_vm import (
     status_tone,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def summary_vm(row: PromotionResultSummary) -> AdResultVM:
     current_budget = getattr(row, "current_budget_minor", None)
@@ -50,10 +53,12 @@ def summary_vm(row: PromotionResultSummary) -> AdResultVM:
     current_budget_valid = type(current_budget) is int and current_budget > 0
     current_end_valid = isinstance(current_end, datetime) and current_end.utcoffset() is not None
     operation_pending = getattr(row, "operation_pending", False) is True
+    story = getattr(row, "story", False) is True
     fresh = not row.stale and not row.refresh_failed and not operation_pending
     return AdResultVM(
         id=str(row.id),
-        title=row.caption or "Anuncio de tu publicación",
+        title=row.caption or ("Anuncio de tu historia" if story else "Anuncio de tu publicación"),
+        story=story,
         account=row.account_name or "Cuenta por comprobar",
         status=row.status,
         status_label=("Último estado: " if row.stale or row.refresh_failed else "")
@@ -187,7 +192,23 @@ def activate_alerts(tenant_id: UUID, ad_account_id: UUID) -> str:
 
 
 def load_ads(tenant_id: UUID) -> list[AdResultVM]:
-    return [summary_vm(row) for row in list_promotion_results(tenant_id=tenant_id)]
+    return [
+        replace(summary_vm(row), story_image=story_image(tenant_id, row.story_image_key))
+        if getattr(row, "story", False) is True
+        else summary_vm(row)
+        for row in list_promotion_results(tenant_id=tenant_id)
+    ]
+
+
+def story_image(tenant_id: UUID, key: str) -> str:
+    """N3: a story ad's 9:16 picture in «Anuncios»; "" (no picture) rather than a failure."""
+    from .r2_media import issue_view_path  # noqa: PLC0415
+
+    try:
+        return issue_view_path(tenant_id, key, "image") if key else ""
+    except Exception as exc:  # noqa: BLE001 — a thumbnail is not worth failing the list
+        logger.warning("story ad image not issued: %s", type(exc).__name__)
+        return ""
 
 
 def load_ad(tenant_id: UUID, promotion_id: UUID) -> AdDetailVM:

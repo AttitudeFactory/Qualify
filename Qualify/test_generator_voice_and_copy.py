@@ -1396,14 +1396,16 @@ def test_with_the_clip_editor_on_a_clips_step_1_is_arma_tu_video(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """m-25026621: with `QUALIFY_CLIP_EDITOR` on, the Clip's first step is the editor;
-    the other steps keep their names."""
+    ED-06 (m-25026636, D-E4): its context lives there, so «Qué decir» goes — 3 steps."""
     from . import clip_editor_vm
 
     monkeypatch.setattr(clip_editor_vm, "CLIP_EDITOR_ON", True)
     state = _clip_state_with_product()
     state.choose_category("clip")
     labels = [step["label"] for step in state.gen_view_steps]
-    assert labels == ["Arma tu video", "Qué decir", "Cómo la quieres", "Revisa y crea"]
+    assert labels == ["Arma tu video", "Cómo la quieres", "Revisa y crea"]
+    assert state.gen_step_count == "Paso 1 de 3"
+    assert state.gen_step_views == ["reference", "topic", "rules"]
 
 
 def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:

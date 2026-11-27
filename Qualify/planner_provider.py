@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime, time
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from qualify_api.ads.unpublished_repository import story_ads
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.creative.own_upload import OwnUpload, UploadedPiece, record_planner_upload
 from qualify_api.creative.service import ApprovalBlocked
@@ -105,6 +106,7 @@ from .planner_vm import (
     time_label_12h,
     week_label,
 )
+from .promotion_unpublished_provider import story_ads_ready
 from .r2_media import is_r2_key, issue_view_path
 
 logger = logging.getLogger(__name__)
@@ -369,6 +371,30 @@ def _post_option(
 _DRAFT_PENDING_TEXT = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
 
 
+def _with_story_ads(tenant_id: UUID, options: list[PostOptionVM]) -> list[PostOptionVM]:
+    """HIS-1 (m-25130281): mark the approved historias the story-only ad can be made from
+    (the same rule as Tu semana's «Agregar un botón con enlace»), so a card never links
+    to an empty wizard. One batched read; a failed read hides every such link."""
+    wanted = [UUID(o.post_id) for o in options if o.is_story and o.is_approved]
+    try:
+        ready = {str(i) for i in story_ads_ready(tenant_id, wanted)} if wanted else set()
+    except Exception as exc:  # noqa: BLE001 — no link is better than a dead end
+        logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+        ready = set()
+    # N3 (m-25142902): and the ones that already have a story ad, said on the card.
+    try:
+        having = {str(i) for i in story_ads(tenant_id, wanted)} if wanted else set()
+    except Exception as exc:  # noqa: BLE001 — only a note; the wizard warns again
+        logger.warning("story ad lookup failed: %s", type(exc).__name__)
+        having = set()
+    return [
+        replace(o, story_ad_ready=o.post_id in ready, story_ad_exists=o.post_id in having)
+        if o.post_id in ready | having
+        else o
+        for o in options
+    ]
+
+
 def _draft_pending(post: PostSummary) -> bool:
     pending = {_DRAFT_PENDING_TEXT, REASON_TEXT[UnpublishableReason.MEDIA_FINAL_UNCONFIRMED]}
     if post.unpublishable_reason in pending:
@@ -472,6 +498,7 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
         )
         for p in posts
     ]
+    options = _with_story_ads(tenant_id, options)
     return GalleryData(posts=options, categories=category_options(options))
 
 
@@ -693,18 +720,21 @@ def load_week(
         days=grid.days,
         rows=grid.rows,
         # The panel's cards show the same first frame the gallery and the drawer do.
-        unscheduled=[
-            _post_option(
-                p,
-                occupied.get(p.post_id),
-                zone=zone,
-                connections=index,
-                thumbnails=thumbnails,
-                video_url=option_videos.get(str(p.post_id), ""),
-                video=video_states.get(str(p.post_id)),
-            )
-            for p in unscheduled
-        ],
+        unscheduled=_with_story_ads(
+            tenant_id,
+            [
+                _post_option(
+                    p,
+                    occupied.get(p.post_id),
+                    zone=zone,
+                    connections=index,
+                    thumbnails=thumbnails,
+                    video_url=option_videos.get(str(p.post_id), ""),
+                    video=video_states.get(str(p.post_id)),
+                )
+                for p in unscheduled
+            ],
+        ),
         schedulable=[
             _post_option(
                 p,

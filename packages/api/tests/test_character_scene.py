@@ -140,6 +140,42 @@ class SceneStore:
         return self.pending
 
 
+class SceneRows:
+    """`character_scene.SceneRowsStore` over the in-memory repository: each scene child
+    with its own scene and, once a test says it is made (`videos`), its kept video."""
+
+    def __init__(self, repo: BlockRepo) -> None:
+        self.repo = repo
+        self.videos: dict[UUID, tuple[UUID, str, dict[str, Any]]] = {}
+        self.reads = 0
+
+    def scene_rows(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[cs.SceneRow, ...]:
+        self.reads += 1
+        found = []
+        for draft_id, (parent, slot) in self.repo.parents.items():
+            if parent != clip_id:
+                continue
+            record = self.repo.drafts[draft_id]
+            brief = self.repo.briefs[record.brief_id]
+            video = self.videos.get(draft_id)
+            found.append(
+                cs.SceneRow(
+                    id=draft_id,
+                    slot=slot,
+                    status=record.status,
+                    revision=record.revision,
+                    item=brief.media.character_scenes[0] if brief.media.character_scenes else None,
+                    failure_reason=record.failure_reason,
+                    asset_id=video[0] if video else None,
+                    object_key=video[1] if video else None,
+                    params=video[2] if video else {},
+                    model_id=cs.SCENE_MODEL,
+                    provider="seedance",
+                )
+            )
+        return tuple(sorted(found, key=lambda row: row.slot))
+
+
 @dataclass
 class World:
     service: cs.CharacterSceneService
@@ -158,6 +194,7 @@ def _world(
     previews_used: int = 0,
     videos_used: int = 0,
     media: Any = None,
+    **content_kw: Any,
 ) -> World:
     repo, dispatcher = BlockRepo(), RecordingDispatcher()
     store = SceneStore(repo)
@@ -166,7 +203,10 @@ def _world(
         if quota
         else None
     )
+    # PR 2: the scenes a Clip waits for, read off the in-memory repository
+    content_kw.setdefault("character_scene_store", SceneRows(repo))
     content = ContentService(
+        **content_kw,
         router=FakeRouter([ok_outcome(copy_dict()) for _ in range(6)]),  # type: ignore[arg-type]
         pricing=FakePricing(),
         credentials=StaticKeyResolver(),

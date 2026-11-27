@@ -60,6 +60,9 @@ ExtendOutput = Literal["segment", "whole"]
 #: total): a previous part's file outside them is refused before any spend.
 EXTEND_SOURCE_MIN_S = 2.0
 EXTEND_SOURCE_MAX_S = 30.0
+#: m-25129406: what of the owner's OWN video an «extend» part of a Clip continues — its
+#: last seconds, at most these (the input video is billed too: fewer tokens, same idea).
+EXTEND_OWN_SOURCE_MAX_S = 10.0
 
 #: The child's own record of what it continued, next to its copied source video
 #: (written once per revision before the vendor request is captured).
@@ -341,6 +344,7 @@ def release_next_extend(session: Session, child_id: UUID) -> None:
 __all__ = [
     "EXTEND_MANIFEST",
     "EXTEND_OUTPUT_SWITCH",
+    "EXTEND_OWN_SOURCE_MAX_S",
     "EXTEND_SOURCE_MAX_S",
     "EXTEND_SOURCE_MIN_S",
     "EXTEND_SWITCH",

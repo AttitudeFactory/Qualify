@@ -642,6 +642,13 @@ eval-avatar-escena *args:
 eval-avatar-foto *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/avatar_escena/personaje_foto.py {{args}}
 
+# m-25129406 (ADR 50 §13): «Sigue a la anterior» after the owner's OWN video, Seedance 2.5
+# extend at the 480p draft. `plan` and `extender --dry-run` quote it and send nothing; a paid
+# `extender` needs --i-have-spend-authorization and --max-usd (Deivid's OK in session) and
+# runs 23:00-05:00 Bogotá unless --allow-daytime. Videos and outputs stay outside the repo.
+eval-extender-propio *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/extender_video_propio/run_experiment.py {{args}}
+
 # m-24849234: Seedream 5.0 pro color/texture matrix. `--dry-run` quotes it and sends nothing;
 # a paid run needs --i-have-spend-authorization (the founder authorizes each one).
 eval-plantillas *args:

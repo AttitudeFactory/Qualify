@@ -266,7 +266,10 @@ def extend_code(
     before — never an owner's photo or video:
 
     - nothing before (the first block): `extend_needs_block_before`;
-    - an own photo or video before: `extend_after_own_media`;
+    - an own photo or video before: `extend_after_own_media` — except, with
+      `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on (m-25129406), an own video at ×1 of 2 s or more,
+      which is continued; at another speed `extend_own_video_speed`, shorter
+      `extend_own_video_short` (the contract's `_extend_problems`, read never copied);
     - an AI part before, but not the same moment of the reel: `extend_not_same_moment`.
 
     `entry`: the entry as it would be (the panel asks before changing the mode); None
@@ -275,6 +278,12 @@ def extend_code(
         return "extend_needs_block_before"
     before = segments[at - 1] if at - 1 < len(segments) else {}
     if not is_ai_block(before):
+        if _kind(before) == "video" and contract_ai.clip_extend_own_video_on():
+            if (_float(before.get("speed")) or 1.0) != 1.0:
+                return "extend_own_video_speed"
+            if block_seconds(before) < contract_ai.EXTEND_OWN_MIN_S:
+                return "extend_own_video_short"
+            return ""
         return "extend_after_own_media"
     previous = _entry_of(segments, ai_parts, at - 1)
     current = entry if entry is not None else _entry_of(segments, ai_parts, at)
@@ -299,7 +308,9 @@ def extend_reason(
     if not extend_on:
         return part_editor_vm.EXTEND_REASON
     code = extend_code(segments, ai_parts, at, entry)
-    return AI_PART_TEXTS[code] if code else ""
+    # the contract's words as the switch reads them now (`ai_part_text`: with
+    # `QUALIFY_CLIP_EXTEND_OWN_VIDEO` on, a photo's own sentence) — never an empty line
+    return (refusal_text(code) or AI_PART_TEXTS.get(code, "")) if code else ""
 
 
 def edit_reason(

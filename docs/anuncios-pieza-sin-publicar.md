@@ -29,6 +29,34 @@ Instagram y un país explícito. No selecciona un país por defecto. Los límite
 Qualify son 8 MiB por imagen, 2.200 caracteres de mensaje y 100 de título. No son una
 afirmación sobre los límites de Meta. Meta debe aceptar la validación exacta de la solicitud.
 
+## Qué cuenta como «publicada» (m-25130283)
+
+Una pieza está publicada cuando Qualify tiene, para esa pieza, un evento del calendario con un
+intento en `publish_attempts` en estado `published` hecho por una conexión de Instagram. No
+se exige el id de Meta (`published_media_id`): cuando Meta confirma la publicación pero falla
+la lectura del id, el intento queda publicado sin id (QUA-111) y la publicación ya está en
+Instagram. Vale para cualquier formato, historias incluidas. Una
+pieza publicada solo en Facebook sigue disponible. La columna
+`content_drafts.published_media_id` no se usa: ningún código la escribe, y por eso antes se
+ofrecía «Anunciar sin publicar» en piezas que ya estaban en Instagram.
+
+La condición vive en un solo lugar, `NOT_PUBLISHED_BY_QUALIFY` en
+`qualify_api.ads.unpublished_repository`, y la usan la lectura que propone la pieza
+(`Qualify/promotion_unpublished_provider.py`) y la que la valida otra vez antes de preparar y
+de confirmar (`load_image_source`, `guard_source`). Si la pieza se publica entre la
+preparación y la confirmación, la confirmación se niega. La lectura va por `tenant_session`
+y compara el negocio en cada unión: el intento de otro negocio nunca cuenta (prueba con base
+de datos y dos negocios).
+
+La condición solo se aplica a la pareja 4:5 + 9:16. El anuncio de historia con botón de
+enlace (`feed_asset_id=None`, «formato historia») siempre crea un creativo 9:16 nuevo
+(decisión D1 de la épica), así que una pieza ya publicada por Qualify se sigue ofreciendo ahí.
+
+**Límite conocido:** una historia que el dueño sube a mano con «Abrir en Instagram» no deja
+ningún rastro en Qualify (no hay intento ni id de Meta). Por eso esa pieza se sigue tratando
+como no publicada y se le ofrece «Anunciar sin publicar». Registrar esas historias queda
+fuera de esta entrega.
+
 ## Preparación y confirmación
 
 1. La preparación exige `confirm_preparation=True`, comprueba cuenta, acceso y pagos, y
@@ -177,6 +205,31 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
   **Antes de lanzar, hay que leer de vuelta un anuncio de historia real en pausa** en la prueba
   en vivo m-24828971 y ajustar la comparación solo a lo que Meta añada de verdad. En esa misma
   prueba se decide si una historia ya publicada puede promocionarse por su id.
+
+### Un solo anuncio de historia por pieza, salvo que el dueño elija otro (N3, m-25142902)
+
+- **Qué es «ya tiene un anuncio en historias»:** cualquier fila de `ad_unpublished_sources` de
+  la pieza con `source->>'pipeline'` `ad-story-image-v1` / `ad-story-video-v1` que **dejó algo
+  en Meta** (un paso de campaña enviado o creado en `ad_promotion_steps`, `in_flight` o
+  `completed`) o que se aprobó hace menos de 10 minutos (todavía preparándose: así dos teléfonos
+  a la vez se siguen encontrando). Un intento fallido que no creó nada en Meta deja de contar
+  pasados esos minutos: no avisa ni sale en la tarjeta (decisión del 2026-11-27). Sin migración:
+  se reutiliza la aprobación guardada.
+- **Del lado del servidor y sin carreras:** `UnpublishedRepository.approve` toma
+  `pg_advisory_xact_lock('ad-story:<pieza>')` en la misma transacción que guarda la aprobación,
+  antes de cualquier llamada a Meta. Si hay otra aprobación de historia de la pieza (otra clave
+  de pedido: recargar, otra pestaña u otro teléfono) más nueva que la que el dueño ya vio,
+  responde `StoryAdExists` (motivo `story_ad_exists`) y no crea nada. Repetir la misma clave
+  (video en proceso) nunca es un duplicado. Dos teléfonos a la vez: pasa uno solo (test `-m db`).
+- **La elección del dueño:** el asistente avisa al abrirse y cuando el servidor lo rechaza:
+  «Ver el anuncio que ya tienes» (`/promotions/<id>`, o «Anuncios» si aún no tiene campaña) o
+  «Crear otro anuncio», que suma la aprobación avisada a `seen_story_ads`. Las claves de pedido
+  de la propia sesión también van ahí: su intento, aunque haya fallado (video en proceso, Meta
+  lo rechazó), nunca es un «duplicado», y cambiar el presupuesto y volver a preparar no avisa.
+  Si la aprobación avisada aún no tiene campaña, el botón dice «Ver tus anuncios».
+- **En «Anuncios»:** el anuncio de historia lleva la etiqueta «Anuncio en historias», la imagen
+  9:16 (o la portada del video) mientras la pieza conserve sus archivos, y «Ver la historia».
+  La tarjeta de la historia dice «Ya tiene un anuncio en historias».
 
 ## Carrusel de productos del Catálogo (m-25113484)
 

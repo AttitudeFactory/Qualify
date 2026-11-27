@@ -17,7 +17,7 @@ from typing import Any
 import reflex as rx
 
 from .planner_vm import DESTINATION_ICONS, KIND_ICONS
-from .promotion_entry import promotion_link
+from .promotion_entry import card_promotion_link
 from .r2_media import BACKEND_BASE
 from .ui import card, signal_pill, tag
 from .ui import tokens as T
@@ -384,11 +384,7 @@ def post_card(
     inner = card(
         body,
         rx.box(actions, width="100%", margin_top="0.5rem"),
-        rx.cond(
-            # a historia never (same rule as the gallery card: the wizard has no source)
-            (post.used_count > 0) & ~post.is_story,
-            promotion_link(post.post_id),
-        ),
+        card_promotion_link(post),
         padding="0.6rem 0.6rem 0.6rem 0.75rem",
         border_left=tone_edge(post.gallery_tone),
     )

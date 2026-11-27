@@ -124,7 +124,8 @@ ORDER_HINT = (
 
 # -- «Idea» --------------------------------------------------------------------------------
 
-IDEA_HELP = "Esto guía el texto de todo tu video."
+#: ED-06 (m-25026636): the ticket's words, in the general panel and in «Pedir una idea».
+IDEA_HELP = "Esto guía el texto de todo el video."
 #: In the help only, never as a placeholder.
 IDEA_EXAMPLE = "Ej.: «Promoción de 2×1 los martes»."
 
@@ -773,19 +774,17 @@ def editor_shown(
     has_plan: bool,
     reel_video: bool,
     enabled: bool | None = None,
+    reel_blocks: bool = False,
 ) -> bool:
     """«Arma tu video» replaces «Qué mostrar» on a normal Clip only — with the switch on
     (`CLIP_EDITOR_ON`, read at call time so tests can patch it) — and never on a video by
-    parts (a plan on screen), «Hacer uno parecido» or a reel's replica."""
+    parts (a plan on screen), «Hacer uno parecido» or a reel's replica. ED-06
+    (m-25026636): `reel_blocks` — a reel's plan the editor holds as blocks («Hacer uno
+    parecido» with `QUALIFY_CLIP_AI_PARTS` on) — is the editor too."""
     on = CLIP_EDITOR_ON if enabled is None else enabled
-    return (
-        on
-        and category == "clip"
-        and kind == "clip"
-        and not from_reel
-        and not has_plan
-        and not reel_video
-    )
+    if not (on and category == "clip" and kind == "clip"):
+        return False
+    return reel_blocks or (not from_reel and not has_plan and not reel_video)
 
 
 def recipe_of(

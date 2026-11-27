@@ -896,12 +896,35 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    `ui.edit_preview` + `assets/edit-preview.js`. */
 .q-edit-host { container: edit-host / inline-size; width: 100%; min-width: 0; }
 .q-edit { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); width: 100%; min-width: 0; }
+/* m-25026638 (live test): pinned UNDER the step's own sticky head («Arma tu video» and
+   its steps, `.q-page-header`), never behind it — `--q-sticky-header-height` is that
+   head's measured height on `main.q-panel` (`assets/glass-nav.js`, PASOS-10). */
 .q-edit__preview {
   position: sticky;
-  top: 0;
+  top: var(--q-sticky-header-height, 0px);
   z-index: 3;
   padding-block: var(--space-2);
   background: var(--color-panel-solid);
+}
+/* m-25026638 (second live test): what follows the sticky preview in the flow is its own
+   stacking context at z 0, UNDER the preview (z 3) and the step's head (z 5). Inside the
+   timeline the chosen block (z 3), the playhead (z 4), a lifted block (z 6) and the
+   drop line (z 7) were raised in the editor's own context: the chosen AI part's dashed
+   edge and «Parte con IA 1 · 5 s» rode over the pinned preview, and the playhead's line
+   crossed it, even with the Clip empty. Their order among themselves stays. */
+.q-edit > :is(.q-edit__timeline, .q-edit__main, .q-edit__parts) {
+  position: relative;
+  z-index: 0;
+}
+/* … and a panel or a field brought into view (`__qTimeline.reveal`, a field's focus)
+   stops under the step's head and the pinned preview, never behind them
+   (`--q-edit-preview-h`: the preview's height while it is sticky, `assets/edit-room.js`;
+   0 on a wide step, where the preview scrolls with the page). */
+.q-edit--timeline > .q-edit__main,
+.q-edit--timeline > .q-edit__main * {
+  scroll-margin-top: calc(
+    var(--q-sticky-header-height, 0px) + var(--q-edit-preview-h, 0px) + var(--space-2)
+  );
 }
 .q-edit__main {
   container: edit-main / inline-size;
@@ -910,9 +933,22 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   gap: var(--space-4);
   min-width: 0;
 }
+/* ED-06 (m-25026636, design D6): «Todo el video» over an AI part's panel, folded to one
+   line — the whole context is one «Cambiar» away, in the general panel */
+.q-edit__whole-value {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 @container edit-host (min-width: 46rem) {
   .q-edit { grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr); align-items: start; }
-  .q-edit__preview { top: var(--space-3); background: transparent; padding-block: 0; }
+  .q-edit__preview {
+    top: calc(var(--q-sticky-header-height, 0px) + var(--space-3));
+    background: transparent;
+    padding-block: 0;
+  }
   .q-edit-preview__frame { height: auto; width: 100%; max-height: 70vh; }
   /* «Arma tu video» (ED-10) on a wide step: ONE column, the preview centred on top and
      scrolling with the page (Deivid, 2026-11-16: «quiero que esté centrado») */
@@ -926,6 +962,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
     height: 20svh;
   }
   .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-preview__note {
+    display: none;
+  }
+  /* m-25026638 (UX review): the AI mark hides with the note */
+  .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-seq__ai {
     display: none;
   }
 }
@@ -2149,16 +2189,43 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-ai-mark svg { flex: none; }
 /* ED-07 (m-25026638): the mark over the preview while its clock is on a «parte con IA»
-   not made yet (the script sets `data-on` and its words); hidden otherwise. Top centre,
-   over the poster and under the ▶ button. */
+   not made yet (the script sets `data-on`, its words and its accessible name); hidden
+   otherwise. A capsule in the top-left corner, as the signed mockup draws it
+   (docs/mockups/editor-unico, `.preview__ai`: 8 px from the top and the left), over the
+   poster and under the ▶ button. Live test: anchored at `left: 50%` with no right edge
+   it could only be half the frame wide and broke into 5–6 lines over the ▶ button; now
+   it may take the frame's width less 8 px a side, at most two lines, and what does not
+   fit ends in «…» (the full words stay in its `aria-label`; no `title`: with
+   `pointer-events: none` a tooltip would never show). One line reads as a pill — its
+   0.75rem radius is past half its ~20 px height. Two lines of
+   12 px end ~44 px from the top: clear of the centred ▶ even in the 9rem frame. */
 .q-edit-seq__ai {
   position: absolute;
-  top: 6%;
-  left: 50%;
+  top: 8px;
+  left: 8px;
+  right: auto;
   z-index: 3;
-  max-width: 88%;
-  transform: translateX(-50%);
-  text-align: center;
+  box-sizing: border-box;
+  max-width: calc(100% - 16px);
+  border-radius: 0.75rem;
+  line-height: 1.3;
+  text-align: left;
+  pointer-events: none;
+}
+.q-edit-seq__ai [data-edit-seq-ai-text] {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+/* UX review: a phone's frame can be ~81 px wide — «✦ Parte…» said nothing. Under 9rem
+   (the frame is the nearest size container) the mark keeps its name alone, «✦ Parte
+   con IA 1»; its `aria-label` keeps the whole phrase. */
+@container (max-width: 9rem) {
+  .q-edit-seq__ai .q-edit-seq__ai-rest { display: none; }
 }
 .q-edit-seq__ai:not([data-on]) { display: none; }
 /* ED-07: the «i» of the mode's reason in the AI part's panel (§5.10.1, `--q-ai-icon`) */
