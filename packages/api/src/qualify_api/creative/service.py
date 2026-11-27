@@ -925,6 +925,13 @@ def check_part_link(
     the other child: always under its Clip, in a slot (`part_index`), never with a part —
     and a block is never created loose."""
     part = brief.media.part
+    if brief.kind is ContentKind.CHARACTER_SCENE:
+        # m-25128784 (ADR 50 §12.2): a character's scene lives under its Clip, in a slot
+        if part is not None:
+            raise ValueError("a character scene of a Clip is a scene, never a part")
+        if parent_draft_id is None or part_index is None:
+            raise ValueError("a character scene of a Clip lives under its Clip, in a slot")
+        return
     if brief.media.clip_avatar_block:
         if part is not None or not brief.kind.is_video:
             raise ValueError("an avatar block of a Clip is an avatar, never a part")
@@ -2660,6 +2667,11 @@ class ContentService:
             if existing is not None:
                 return existing
         received_middle = len(brief.media.clip_image_keys)
+        if brief.media.character_scenes:
+            # m-25128784: a Clip with a «Personajes» track is created with its scenes by
+            # `character_scene.CharacterSceneService.create_clip_with_scenes` (switch,
+            # daily cap, vistas previas, seconds) — never as a plain draft
+            raise ValueError("a Clip with character scenes is created by its own service")
         if brief.media.clip_avatar_plan:
             # m-25119867: server-owned — only `clip_avatar.create_clip_with_blocks` plans; a
             # brief sent with one (by hand, or «Crearla otra vez» of such a Clip) is refused
@@ -3451,6 +3463,16 @@ class ContentService:
             if ready is None:
                 return  # the owner's time ran out: failed, its creations given back
             draft, brief = ready
+        if brief.kind is ContentKind.CLIP and brief.media.character_scenes:
+            # m-25128784 (ADR 50 §12): a Clip with a «Personajes» track is never assembled
+            # without its scenes. Until the scenes' wait and assembly land (the next PR of
+            # the ticket) it waits — its sign of life stamped, nothing read nor paid
+            from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
+
+            beat = self._heartbeat(tenant_id, draft.id)
+            if beat is not None:
+                beat()
+            raise ClipBlocksWait(f"clip {draft.id} waits for its character scenes")
         from qualify_api.creative.clip_ai_parts import has_ai_part_blocks  # noqa: PLC0415
 
         if has_ai_part_blocks(brief):
@@ -3759,6 +3781,24 @@ class ContentService:
             (v for v in variants if parent is not None and v.id == parent.selected_variant_id),
             None,
         ) or next((v for v in variants if (v.fidelity or {}).get("passed")), None)
+        if chosen is None and brief is not None and brief.kind is ContentKind.CHARACTER_SCENE:
+            # m-25128784: a character's scene is made before its Clip has a text and is
+            # never published alone — an empty text, no vendor call, cost 0; what the
+            # character says is the owner's approved line
+            line = brief.media.character_scenes[0].line if brief.media.character_scenes else ""
+            empty = VariantWrite(
+                ordinal=0,
+                copy={"hook": "", "caption": "", "script": line},
+                fidelity={
+                    "passed": True,
+                    "hard_failures": [],
+                    "inherited_from": None,
+                    "character_scene_without_text": True,
+                },
+                model_id="none",
+                model_revision=None,
+            )
+            return [empty], [], Decimal(0), True
         if chosen is None and brief is not None and brief.media.clip_avatar_block:
             # m-25119867 (P3, Deivid 2026-11-25): an avatar block chosen at its Clip's
             # first «Crear» is made before the Clip has a text. A block is never published
@@ -5154,7 +5194,11 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft_id} has no readable brief")
-        if brief.media.clip_avatar_plan or brief.media.derived_from_brief_id is not None:
+        if (
+            brief.media.clip_avatar_plan
+            or brief.media.character_scenes
+            or brief.media.derived_from_brief_id is not None
+        ):
             # m-25119867 (R6): a Clip with avatar blocks — waiting for them, or made from
             # them (their videos belong to THIS Clip) — is made again from the editor,
             # never copied: refused before anything is written or charged
@@ -5811,6 +5855,10 @@ class ContentService:
             self._refuse_own_media(tenant_id=tenant_id, draft_id=draft_id, brief_id=record.brief_id)
             if record.parent_draft_id is not None:
                 stored = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+                if stored is not None and stored.kind is ContentKind.CHARACTER_SCENE:
+                    # m-25128784: a scene is made again with «Intentar de nuevo» of its
+                    # Clip (the daily cap counts it), never regenerated on its own here
+                    raise ValueError("a character scene of a Clip is not made again on its own")
                 if stored is not None and stored.media.clip_avatar_block:
                     # m-25112920: a Clip's avatar block is paid OmniHuman with no charge of
                     # its own — never made again here, past the quota check of

@@ -397,7 +397,17 @@
     return Math.min(at, block.src_end > block.src_start ? block.src_end : at);
   }
 
+  /* ED-07 (m-25026638): the mark over the preview while the clock is on block `index` —
+     a «parte con IA» not made yet says «Parte con IA 1 · se crea al tocar «Crear»»
+     (`PreviewBlock.mark`); "" on any other block. */
+  function aiMark(seq, index) {
+    var blocks = (seq && seq.blocks) || [];
+    var block = index >= 0 && index < blocks.length ? blocks[index] : null;
+    return block && block.kind === "ai" && block.mark ? String(block.mark) : "";
+  }
+
   var api = {
+    aiMark: aiMark,
     joinFrame: joinFrame,
     joinUnder: joinUnder,
     underSourceTime: underSourceTime,

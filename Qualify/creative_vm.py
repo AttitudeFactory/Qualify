@@ -193,6 +193,13 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     "analysis_not_ready": ("Todavía estamos mirando el reel", "", ""),
     "window_unavailable": ("No pudimos tomar este momento del reel", "", ""),
     "part_failed": ("No pudimos crear esta parte", "", ""),
+    # m-25128784 (ADR 50 §12, R7): the saved character needs a new drawing. No route to
+    # «tus personajes» yet (lane B): until it exists the action makes the video again
+    "character_needs_redraw": (
+        "Tu personaje necesita un dibujo nuevo",
+        "Elige un dibujo nuevo y crea tu video otra vez",
+        "/create",
+    ),
 }
 
 
@@ -1050,6 +1057,8 @@ def is_view_only_upload(kind: str | None, reuse_type: str | None) -> bool:
 _UNLISTED_KIND_LABELS: dict[str, str] = {
     "shot_video": "Video por partes",
     "own_media": "Subida por ti",
+    # m-25128784: a character's scene lives under its Clip, never offered on its own
+    "character_scene": "Escena con personaje",
 }
 KIND_LABELS: dict[str, str] = {
     **{key: title for key, title, _, _ in KIND_OPTIONS},

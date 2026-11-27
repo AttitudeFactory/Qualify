@@ -256,6 +256,10 @@ class FailureReason(StrEnum):
     # their own codes so the owner reads one reason, not the template's «no caben».
     PRICE_DOES_NOT_FIT = "price_does_not_fit"
     COMPOSE_UNAVAILABLE = "compose_unavailable"
+    # m-25128784 (ADR 50 §12, R7): the vendor took the saved character for a real face,
+    # or the drawing is past the 30 days the vendor accepts one for: the owner picks a
+    # new drawing of it («Tu personaje necesita un dibujo nuevo») — never retried as is.
+    CHARACTER_NEEDS_REDRAW = "character_needs_redraw"
 
     @property
     def is_part_reason(self) -> bool:
@@ -457,6 +461,12 @@ class ContentKind(StrEnum):
     CLIP = "clip"
     SHOT_VIDEO = "shot_video"
     OWN_MEDIA = "own_media"
+    #: m-25128784 (ADR 50 §12): one scene of a `local` Clip where the brand's saved
+    #: character acts and speaks with the product and the place — a child draft of the
+    #: Clip, made by Seedance 2.5 in one omni-reference task. Never offered nor created
+    #: loose (`qualify_api.creative.character_scene`); deliberately not `is_video`, which
+    #: opens the presenter's paths.
+    CHARACTER_SCENE = "character_scene"
 
     @property
     def enabled(self) -> bool:
@@ -465,8 +475,18 @@ class ContentKind(StrEnum):
     @property
     def is_offered(self) -> bool:
         """Whether «¿Qué creamos?» offers this kind. A video by parts is reached from a
-        Clip or a reel; an own-media piece is recorded from «Publicar», never created."""
-        return self not in (ContentKind.SHOT_VIDEO, ContentKind.OWN_MEDIA)
+        Clip or a reel; an own-media piece is recorded from «Publicar», never created; a
+        character scene only lives under its Clip."""
+        return self not in (
+            ContentKind.SHOT_VIDEO,
+            ContentKind.OWN_MEDIA,
+            ContentKind.CHARACTER_SCENE,
+        )
+
+    @property
+    def is_character_scene(self) -> bool:
+        """m-25128784: a scene of a Clip's «Personajes» track (ADR 50 §12)."""
+        return self is ContentKind.CHARACTER_SCENE
 
     @property
     def is_own_media(self) -> bool:
@@ -498,8 +518,13 @@ class ContentKind(StrEnum):
     def requires_ai_disclosure(self) -> bool:
         """A generated presenter is AI-generated footage by definition — Meta's label
         applies whatever the image route says about the product's own pixels. So is a
-        generated clip, and a video joined from generated clips (`SHOT_VIDEO`)."""
-        return self.is_video or self in (ContentKind.CLIP, ContentKind.SHOT_VIDEO)
+        generated clip, a video joined from generated clips (`SHOT_VIDEO`) and a
+        character's scene (m-25128784)."""
+        return self.is_video or self in (
+            ContentKind.CLIP,
+            ContentKind.SHOT_VIDEO,
+            ContentKind.CHARACTER_SCENE,
+        )
 
     @property
     def is_parts_parent(self) -> bool:
@@ -671,6 +696,8 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.FEED_4_5,
         ContentFormat.FEED_1_1,
     ),
+    # m-25128784: a scene goes into its Clip's vertical frame (ADR 50 §12.4, 9:16)
+    ContentKind.CHARACTER_SCENE: (ContentFormat.REELS_9_16,),
     # m-25019217: whatever «Publicar» sent — a feed image or carousel, a Reel or a story
     ContentKind.OWN_MEDIA: (
         ContentFormat.FEED_4_5,

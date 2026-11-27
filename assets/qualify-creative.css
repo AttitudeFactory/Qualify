@@ -2148,6 +2148,21 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   font-weight: 650;
 }
 .q-ai-mark svg { flex: none; }
+/* ED-07 (m-25026638): the mark over the preview while its clock is on a «parte con IA»
+   not made yet (the script sets `data-on` and its words); hidden otherwise. Top centre,
+   over the poster and under the ▶ button. */
+.q-edit-seq__ai {
+  position: absolute;
+  top: 6%;
+  left: 50%;
+  z-index: 3;
+  max-width: 88%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+.q-edit-seq__ai:not([data-on]) { display: none; }
+/* ED-07: the «i» of the mode's reason in the AI part's panel (§5.10.1, `--q-ai-icon`) */
+.q-ai-why { color: var(--q-ai-icon); flex: none; }
 /* the /design sample (m-25026602): each block in a box as wide as its seconds on a phone
    (1 s = 44 px) and as tall as the media track (56 px) */
 .q-ai-samples { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-5); }

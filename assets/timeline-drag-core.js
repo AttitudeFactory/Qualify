@@ -524,8 +524,17 @@
     return isFinite(v) ? v : 0;
   }
 
+  /* What a held block does (`data-tl-block`): a video, a photo or — ED-07 (m-25026638) —
+     a «parte con IA» («ai») is a block of «Fotos y videos» and changes place («move»);
+     a text or an effect slides in time («time»). */
+  var MOVE_KINDS = ["video", "photo", "ai"];
+  function dragMode(kind) {
+    return MOVE_KINDS.indexOf(kind) >= 0 ? "move" : "time";
+  }
+
   var api = {
     STEP: STEP,
+    dragMode: dragMode,
     LONG_PRESS_MS: LONG_PRESS_MS,
     MOUSE_LIFT_PX: MOUSE_LIFT_PX,
     MOVE_CANCEL_PX: MOVE_CANCEL_PX,

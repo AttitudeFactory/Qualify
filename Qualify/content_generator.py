@@ -20,7 +20,14 @@ from __future__ import annotations
 
 import reflex as rx
 
-from . import clip_editor_vm, clip_gallery_vm, part_editor_vm, reel_parts_vm, reel_wait_vm
+from . import (
+    ai_block_vm,
+    clip_editor_vm,
+    clip_gallery_vm,
+    part_editor_vm,
+    reel_parts_vm,
+    reel_wait_vm,
+)
 from .ask_more_ui import ask_more_block
 from .audience_view import audience_question
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
@@ -6184,10 +6191,32 @@ def _summary_view() -> rx.Component:
             width="100%",
         ),
         rx.cond(CreativeState.reel_plan_shown, _parts_review()),
+        # ED-07 (m-25026638): a Clip with «partes con IA» — what it uses, and when
+        rx.cond(CreativeState.clip_ai_review_shown, _ai_parts_review()),
         _creations_notice(),
         spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+def _ai_parts_review() -> rx.Component:
+    """«Lo que usa de tu mes» of a Clip with AI parts (design D12, 04A): «Ahora, al
+    crear» and «Después, al aprobar» apart and «Si una parte no sale…». Why «Crear» is
+    off until PR 2 (m-25129406) is said ONCE, by the summary's problem line above
+    (`gen_problem`), and in short beside «Crear» (`create_reason`); «Probar esta parte»
+    lives in each part's panel, which says which part (ux review). Nothing here charges:
+    it only says."""
+    review = CreativeState.clip_ai_review
+    return rx.vstack(
+        rx.heading(ai_block_vm.REVIEW_TITLE, size="3", as_="h4"),
+        rx.text(review["now"], size="2"),
+        rx.text(review["later"], size="2"),
+        rx.text(review["not_counted"], size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        custom_attrs={"data-ai-review": ""},
     )
 
 
