@@ -3177,15 +3177,16 @@ class ContentService:
         the Clip gets ONE new brief with their videos as stretches (×1, the interval the
         join keeps; texts and effects moved to the real lengths) and is made from it, once.
         Otherwise it waits: its sign of life is stamped and `ClipBlocksWait` leaves the
-        worker's run not done — nothing written or paid. A part that failed keeps it
-        waiting `CLIP_AVATAR_OWNER_WAIT` (72 h, as §11) from the part's failure; then the
-        Clip fails (`ai_part_failed`) and None is returned — the run gives its creations
-        back. The wait and the assembly after it write no charge row: they never count in
-        the day's local cap (§13.5)."""
+        worker's run not done — nothing written or paid. A part that failed makes the Clip
+        fail at once (`ai_part_failed`; decided 2026-11-26 — PR 3, m-25129407, brings
+        «Intentar de nuevo» and §11's 72 h wait back) and None is returned: the vistas
+        previas of ALL its parts come back in the same write, the Clip's creations with the
+        run's own refund. The wait and the assembly after it write no charge row: they
+        never count in the day's local cap (§13.5)."""
         from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
             AI_PART_FAILED,
             AI_PART_FAILED_TEXT,
-            AiPartsExpired,
+            AiPartsFailed,
             AiPartsReady,
             PostgresAiPartsStore,
             ai_parts_gate,
@@ -3202,13 +3203,20 @@ class ContentService:
             clip_id=draft.id,
             brief=brief,
             store=store,
-            now=self._clip_avatar_clock(),
         )
-        if isinstance(verdict, AiPartsExpired):
+        if isinstance(verdict, AiPartsFailed):
             self._fail_waiting_clip(
-                tenant_id, draft, reason=AI_PART_FAILED, detail=AI_PART_FAILED_TEXT
+                tenant_id,
+                draft,
+                reason=AI_PART_FAILED,
+                detail=AI_PART_FAILED_TEXT,
+                give_back=[(part.id, part.revision) for part in verdict.parts],
             )
-            logger.info("clip %s: an AI part failed and its time ran out; failed", draft.id)
+            logger.info(
+                "clip %s: an AI part failed; failed, %d vista(s) previa(s) given back",
+                draft.id,
+                len(verdict.parts),
+            )
             return None
         if isinstance(verdict, AiPartsReady):
             fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
@@ -3226,12 +3234,21 @@ class ContentService:
         raise ClipBlocksWait(f"clip {draft.id} waits for its AI parts ({verdict.reason})")
 
     def _fail_waiting_clip(
-        self, tenant_id: UUID, draft: DraftRecord, *, reason: str, detail: str
+        self,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        *,
+        reason: str,
+        detail: str,
+        give_back: Sequence[tuple[UUID, int]] = (),
     ) -> None:
         """A waiting Clip fails (`generate_fail`) with the owner's words, in a transaction
         fenced as `_replace_clip_brief` is (still `drafting`, same revision). Its
         creations come back with the run's own refund (`_refund_if_not_delivered`); its
-        blocks were never charged, and a failed Clip's blocks owe nothing (P6)."""
+        blocks were never charged, and a failed Clip's blocks owe nothing (P6).
+        m-25129406: `give_back` — (draft, revision) of the Clip's AI parts, whose vistas
+        previas come back in the SAME transaction (idempotent: a row already given back is
+        skipped)."""
         repo = self._repo
         new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=reason)
         if isinstance(repo, PostgresContentRepository):
@@ -3267,6 +3284,7 @@ class ContentService:
                 """),
                     {"s": new_status, "r": reason, "t": detail, "d": draft.id},
                 )
+                self._give_back_parts(tenant_id, give_back, reason)
             return
         now = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
         if (
@@ -3284,6 +3302,20 @@ class ContentService:
             from dataclasses import replace as _replace  # noqa: PLC0415
 
             drafts[draft.id] = _replace(drafts[draft.id], failure_detail=detail)
+        self._give_back_parts(tenant_id, give_back, reason)
+
+    def _give_back_parts(
+        self, tenant_id: UUID, parts: Sequence[tuple[UUID, int]], reason: str
+    ) -> None:
+        """m-25129406: the vistas previas of a failed Clip's AI parts, back to the month
+        (made, failed or never started alike: the owner got no video). Idempotent — the
+        ledger gives back only a row still charged."""
+        if self._creations is None:
+            return
+        for part_id, revision in parts:
+            self._creations.refund(
+                tenant_id=tenant_id, draft_id=part_id, revision=revision, reason=reason
+            )
 
     def _replace_clip_brief(
         self,

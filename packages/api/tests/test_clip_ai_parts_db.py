@@ -176,7 +176,7 @@ def test_the_lookups_find_the_parts_video_and_mark_it_an_ai_part(
         )
     store = cap.PostgresAiPartsStore()
     (row,) = store.parts_of(tenant_id=tenant, clip_id=made.clip_id)
-    assert row.status == "generated" and row.settled_at is not None
+    assert row.status == "generated" and row.revision == 1
     video = store.part_video(tenant_id=tenant, part_id=part_id)
     assert video is not None and video.object_key == key and video.seconds == 5.0
     sources = ca.PostgresClipAvatarStore().generated_sources(tenant_id=tenant, keys=[key])
@@ -185,3 +185,35 @@ def test_the_lookups_find_the_parts_video_and_mark_it_an_ai_part(
     assert source.ai_part is not None and source.ai_part["mode"] == "reference"
     assert source.clip_id == made.clip_id
     assert ca.PostgresClipAvatarStore().generated_sources(tenant_id=uuid4(), keys=[key]) == {}
+
+
+def test_a_failed_clip_gives_every_parts_preview_back_in_its_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decided 2026-11-26: a part failed → the Clip fails at once and the vistas previas of
+    ALL its parts come back in the same transaction; a second try gives nothing twice."""
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    world = _world(monkeypatch)
+    tenant, content = world["tenant"], world["service"]._content  # noqa: SLF001
+    made = _create(world)
+    draft = content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id)
+    rows = cap.PostgresAiPartsStore().parts_of(tenant_id=tenant, clip_id=made.clip_id)
+    give_back = [(row.id, row.revision) for row in rows]
+    content._fail_waiting_clip(  # noqa: SLF001
+        tenant,
+        draft,
+        reason=cap.AI_PART_FAILED,
+        detail=cap.AI_PART_FAILED_TEXT,
+        give_back=give_back,
+    )
+    status = "SELECT status FROM content_drafts WHERE id = :d"
+    refunded = "SELECT count(*) FROM creation_charges WHERE draft_id = :d AND status = 'refunded'"
+    assert _count(tenant, refunded, d=made.part_ids[0]) == 1
+    with tenant_session(tenant) as session:
+        assert session.scalar(text(status), {"d": made.clip_id}) == "failed"
+    with pytest.raises(CheckpointError):  # the Clip already moved: nothing again
+        content._fail_waiting_clip(  # noqa: SLF001
+            tenant, draft, reason="x", detail="y", give_back=give_back
+        )
+    assert _count(tenant, refunded, d=made.part_ids[0]) == 1

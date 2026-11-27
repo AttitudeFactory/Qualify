@@ -32,9 +32,10 @@ such a Clip exist and be assembled:
   always). The automatic assembly writes no charge row, so it never counts in the day's
   10 local builds (§13.5, answer 5). The video comes out `ai_generated=True` with each
   part's provenance (`produce_local`, from the child's asset row).
-- **A child that failed** keeps the Clip waiting `CLIP_AVATAR_OWNER_WAIT` (72 h, as §11)
-  from the part's failure; then the Clip fails (`ai_part_failed`) and its creations come
-  back. The owner's actions on a failed part (retry, make it new, remove) are PR 3.
+- **A child that failed** makes the Clip fail at once (`ai_part_failed`), and the vistas
+  previas of ALL its parts come back with the Clip's creations — the owner got no video
+  (decided 2026-11-26). No 72 h wait yet: the owner's actions on a failed part (retry,
+  make it new, remove) come with PR 3 (m-25129407), which brings §11's wait back.
 - **«Sigue a la anterior» after the owner's OWN video** (Deivid, 2026-11-26): the child's
   `PartRef.extend_own` names the owner's video stretch right before it; the producer
   continues that file. Behind `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until the paid
@@ -52,7 +53,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
@@ -61,7 +61,6 @@ from qualify_creative.enums import ContentFormat, ContentKind
 from qualify_creative.schemas import ContentBrief, SourceSegment, VideoPartPlan
 
 from qualify_api.creative.clip_avatar import (
-    CLIP_AVATAR_OWNER_WAIT,
     ClipAvatarRefused,
     ClipAvatarService,
     _mapper,
@@ -82,7 +81,7 @@ CLIP_AI_PARTS_VERSION = 1
 AI_PART_FAILED = "ai_part_failed"
 AI_PART_FAILED_TEXT = (
     "Tu video no se armó porque una de sus partes con IA no se pudo crear. "
-    "Créalo de nuevo cuando quieras."
+    "No se descontó nada de tu plan. Créalo de nuevo cuando quieras."
 )
 #: Approving a Clip with AI parts waits for PR 4 (the seconds of its parts, their finals).
 APPROVE_UNAVAILABLE_CODE = "ai_parts_approve_unavailable"
@@ -122,8 +121,8 @@ class AiPartRow:
     status: str
     removed: bool = False
     failure_reason: str | None = None
-    #: When the part settled as it stands (its row's last change): a failure's moment.
-    settled_at: datetime | None = None
+    #: Its current revision (what its vista previa was charged at, to give it back).
+    revision: int = 1
 
 
 @dataclass(frozen=True)
@@ -154,7 +153,7 @@ class PostgresAiPartsStore:
             rows = session.execute(
                 text("""
                 SELECT d.id, d.part_index, d.status, d.part_removed_at IS NOT NULL AS removed,
-                       d.failure_reason, d.updated_at
+                       d.failure_reason, d.revision
                 FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
                 WHERE d.parent_draft_id = :c AND b.media->'part' IS NOT NULL
                   AND jsonb_typeof(b.media->'part') = 'object'
@@ -169,7 +168,7 @@ class PostgresAiPartsStore:
                 status=str(row.status),
                 removed=bool(row.removed),
                 failure_reason=row.failure_reason,
-                settled_at=row.updated_at,
+                revision=int(row.revision),
             )
             for row in rows
         )
@@ -392,11 +391,9 @@ PartState = Literal["creating", "ready", "failed"]
 
 @dataclass(frozen=True)
 class AiPartsWait:
-    """The Clip goes on waiting: `creating` (a part is being made) or `part_failed`
-    (then `wait_until`, when the 72 h run out)."""
+    """The Clip goes on waiting: a part is still being made (`creating`)."""
 
     reason: str
-    wait_until: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -410,19 +407,17 @@ class AiPartsReady:
 
 
 @dataclass(frozen=True)
-class AiPartsExpired:
-    """A part failed and 72 h went by: the Clip fails (`ai_part_failed`)."""
+class AiPartsFailed:
+    """A part failed (or was never created, or came out without its video): the Clip
+    fails at once (`ai_part_failed`) and the vistas previas of ALL its parts come back
+    with its own creations (Deivid via the coordinator, 2026-11-26: the owner got no
+    video). `parts`: every part row of the Clip, to give back."""
 
-    wait_until: datetime
+    parts: tuple[AiPartRow, ...]
 
     @property
     def reason(self) -> str:
         return AI_PART_FAILED
-
-
-def _continues_own_video(brief: ContentBrief, planned: PlannedPart) -> bool:
-    """An «extend» part right after the owner's own video (it never waits for a part)."""
-    return planned.at > 0 and brief.media.segments[planned.at - 1].kind == "video"
 
 
 def _state(row: AiPartRow | None) -> PartState:
@@ -439,43 +434,24 @@ def ai_parts_gate(
     clip_id: UUID,
     brief: ContentBrief,
     store: AiPartsStore,
-    now: datetime | None = None,
-) -> AiPartsWait | AiPartsReady | AiPartsExpired:
-    """What a Clip with AI parts does on this pass: wait (a part still being made, or one
-    failed — 72 h from its failure), fail once that time ran out, or be assembled from the
-    parts' videos. Reads the parts once (and each made part's video); writes nothing. A
-    part missing (never created: a broken invariant) fails the Clip at once."""
-    now = now or datetime.now(UTC)
+) -> AiPartsWait | AiPartsReady | AiPartsFailed:
+    """What a Clip with AI parts does on this pass: fail at once when a part failed —
+    until PR 3 (m-25129407) brings «Intentar de nuevo» there is nothing the owner could
+    choose, so no 72 h wait (decided 2026-11-26) —, wait while a part is being made, or be
+    assembled from the parts' videos. A failure is checked FIRST: a «Sigue a la anterior»
+    after a failed part waits for it for good and must never hold the Clip. Reads the
+    parts once (and each made part's video); writes nothing."""
     planned = planned_parts(brief)
-    rows = {row.slot: row for row in store.parts_of(tenant_id=tenant_id, clip_id=clip_id)}
+    found = store.parts_of(tenant_id=tenant_id, clip_id=clip_id)
+    rows = {row.slot: row for row in found}
     states = [(p, rows.get(p.slot), _state(rows.get(p.slot))) for p in planned]
     if any(row is None for _, row, _ in states):
         logger.error("clip %s: an AI part was never created", clip_id)
-        return AiPartsExpired(now)
-    failed = [row for _, row, state in states if state == "failed" and row is not None]
-    # «Sigue a la anterior» after a part that failed never starts: it waits for that part
-    # (`GenerationDeferred`, its job kept) — blocked, it must not hold the Clip in
-    # «creating» forever; the failed part's 72 h run instead (review of m-25129406). In
-    # slot order, so a chain of «Sigue a la anterior» after it is blocked too
-    by_slot = {p.slot: state for p, _, state in states}
-    blocked: set[int] = set()
-    for p, _, state in sorted(states, key=lambda s: s[0].slot):
-        before = p.slot - 1
-        if (
-            state == "creating"
-            and p.entry.mode == "extend"
-            and (by_slot.get(before) == "failed" or before in blocked)
-            and not _continues_own_video(brief, p)
-        ):
-            blocked.add(p.slot)
-    if any(state == "creating" and p.slot not in blocked for p, _, state in states):
+        return AiPartsFailed(found)
+    if any(state == "failed" for _, _, state in states):
+        return AiPartsFailed(found)
+    if any(state == "creating" for _, _, state in states):
         return AiPartsWait("creating")
-    if failed:
-        seen = [row.settled_at for row in failed if row.settled_at is not None]
-        deadline = (max(seen) if seen else now) + CLIP_AVATAR_OWNER_WAIT
-        if now >= deadline:
-            return AiPartsExpired(deadline)
-        return AiPartsWait("part_failed", wait_until=deadline)
     videos: dict[int, AiPartVideo] = {}
     for part, row, _ in states:
         assert row is not None
@@ -483,7 +459,7 @@ def ai_parts_gate(
         if video is None:
             # made but without its video (purged, a broken row): never assembled without it
             logger.error("clip %s: AI part %s is made but has no video", clip_id, row.id)
-            return AiPartsExpired(now)
+            return AiPartsFailed(found)
         videos[part.entry_at] = video
     resolved = resolve(brief, videos)
     return AiPartsReady(
@@ -687,7 +663,7 @@ __all__ = [
     "NEEDS_DESCRIPTION_TEXT",
     "AiPartRow",
     "AiPartVideo",
-    "AiPartsExpired",
+    "AiPartsFailed",
     "AiPartsReady",
     "AiPartsStore",
     "AiPartsWait",
