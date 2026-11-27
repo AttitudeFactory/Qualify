@@ -64,7 +64,7 @@ def _open_question(select_id: str) -> rx.Component:
     )
 
 
-def _closed_line() -> rx.Component:
+def _closed_line(select_id: str) -> rx.Component:
     """The answer already given in the parts card, as one line with «Cambiar» — the same
     shape as the generator's «Producto · Cambiar» row — so «Qué decir» does not ask it
     again. «Cambiar» opens the dropdown in its place."""
@@ -85,6 +85,8 @@ def _closed_line() -> rx.Component:
             flex_shrink="0",
             on_click=CreativeState.edit_audience,
             aria_label=f"{AUDIENCE_CHANGE_LABEL} a quién le habla este video",
+            # ED-06: «Editar» on «Revisa y crea» focuses it while the answer is closed
+            id=f"{select_id}-change",
         ),
         spacing="3",
         align="center",
@@ -98,4 +100,6 @@ def audience_question(select_id: str, *, closable: bool = False) -> rx.Component
     `select_id` keeps the label tied to its own control when both places are mounted."""
     if not closable:
         return _open_question(select_id)
-    return rx.cond(CreativeState.audience_closed, _closed_line(), _open_question(select_id))
+    return rx.cond(
+        CreativeState.audience_closed, _closed_line(select_id), _open_question(select_id)
+    )

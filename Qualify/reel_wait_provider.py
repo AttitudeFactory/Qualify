@@ -9,6 +9,7 @@ global and names no business.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -16,12 +17,17 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from qualify_api.creative.parts import plan_from_analysis
+from qualify_api.creative.parts import ExtendTooShort, plan_from_analysis
+from qualify_api.creative.parts_plan import PartsPlanRefused
+from qualify_api.creative.plan_blocks import PlanBlocksRefused, blocks_from_analysis
 from qualify_api.referentes import reel_analysis
 from qualify_api.referentes.reel_analysis_types import AnalysisStatus, ReelAnalysis
 
-from . import reel_parts_vm
+from . import editor_idea_vm, reel_parts_vm
 from .avatar_proxy import part_source_path, part_thumbnail_path
+from .clip_editor_vm import LOCAL_MAX_SECONDS
+
+logger = logging.getLogger(__name__)
 
 #: How long the fleet's 24 h model-call count (`fleet_paused`) is reused across polls:
 #: it is the same number for every tab and every business (the fleet is global), and it
@@ -117,6 +123,28 @@ def reel_plan(
     return entries
 
 
+def reel_blocks(
+    tenant_id: UUID, analysis_id: UUID, products: Sequence[str] = ()
+) -> list[dict[str, Any]] | None:
+    """ED-06 (m-25026636, PR 7): «Hacer uno parecido» with `QUALIFY_CLIP_AI_PARTS` on —
+    the reel's plan as the editor's blocks, in order (`plan_blocks.blocks_from_analysis`:
+    `plan_from_analysis` then `blocks_from_plan`, pure; `editor_idea_vm.editor_ops`):
+    a `local` part as its own blocks, any other as an AI part, each join on its block.
+    None when the analysis is not `ok` (any more) or the plan does not hold or fit in a
+    Clip (the screen then lists the parts as today). One read, no model call."""
+    analysis = reel_analysis.get_analysis(tenant_id, analysis_id)
+    if analysis is None:
+        return None
+    try:
+        blocks = blocks_from_analysis(analysis, products=tuple(p for p in products if p))
+    except (PlanBlocksRefused, PartsPlanRefused, ExtendTooShort) as exc:
+        logger.info("reel plan as blocks refused: %s", type(exc).__name__)
+        return None
+    if blocks.seconds > LOCAL_MAX_SECONDS + 1e-6:
+        return None  # past the Clip's 60 s: the list of today, never a video cut short
+    return editor_idea_vm.editor_ops(blocks) or None
+
+
 def part_stretch(analysis: ReelAnalysis, shot_indexes: Sequence[int]) -> tuple[float, float] | None:
     """Where a part made of `shot_indexes` sits in the original reel: the first cut's
     start and the last cut's end, in seconds (rounded to the tenth). None when the part
@@ -135,5 +163,6 @@ __all__ = [
     "analysis_status",
     "part_stretch",
     "plan_parts",
+    "reel_blocks",
     "reel_plan",
 ]

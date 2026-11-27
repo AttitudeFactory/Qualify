@@ -55,6 +55,7 @@ from qualify_api.creative.parts import (
     PartsUnavailable,
 )
 from qualify_api.creative.placement_ai import placement_enabled
+from qualify_api.creative.plan_blocks import ClipBlocks
 from qualify_api.creative.queue_visibility import CANCEL_NOT_AVAILABLE, QueueCancellationUnavailable
 from qualify_api.creative.service import (
     ApprovalBlocked,
@@ -108,6 +109,7 @@ from . import (
     clip_photos_vm,
     clip_texts_vm,
     edit_sequence,
+    editor_idea_vm,
     part_editor_provider,
     part_editor_vm,
     parts_start_vm,
@@ -314,7 +316,7 @@ from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
 from .ui import timeline_vm
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
-from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
+from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param, step_url
 from .upload_images import (
     PHOTO_MAX_BYTES,
     PhotoBusy,
@@ -863,10 +865,12 @@ _HISTORY_STATUSES: frozenset[str] = frozenset(
 
 
 async def _read_reel_wait(
-    tenant_id: UUID, analysis_id: UUID, products: tuple[str, ...]
-) -> tuple[reel_wait_vm.ReelWait, list[dict[str, Any]]] | None:
+    tenant_id: UUID, analysis_id: UUID, products: tuple[str, ...], *, blocks: bool = False
+) -> tuple[reel_wait_vm.ReelWait, list[dict[str, Any]], list[dict[str, Any]]] | None:
     """One tick of the analysis wait (UI-2): its status and, once `ok`, the plan's parts
-    (UI-3: the entries `reel_parts_vm` lists; their count is «Encontramos {n} partes»).
+    (UI-3: the entries `reel_parts_vm` lists; their count is «Encontramos {n} partes»)
+    and — `blocks`, ED-06 with `QUALIFY_CLIP_AI_PARTS` on — the same plan as the editor's
+    blocks (`reel_wait_provider.reel_blocks`; [] when it does not fit: the list follows).
     None when the read itself failed (a pool timeout, a database blip): the poll keeps
     what it showed and tries again (`_REEL_POLL_MAX_FAILURES`). A row that is gone
     (status None) or an `ok` without its analysis fails closed at once; the log keeps the
@@ -875,7 +879,7 @@ async def _read_reel_wait(
         status = await asyncio.to_thread(reel_wait_provider.analysis_status, tenant_id, analysis_id)
         wait = reel_wait_vm.from_status(status)
         if wait.phase != reel_wait_vm.PHASE_PLANNING:
-            return wait, []
+            return wait, [], []
         entries = await asyncio.to_thread(
             reel_wait_provider.reel_plan, tenant_id, analysis_id, products
         )
@@ -883,8 +887,17 @@ async def _read_reel_wait(
         logger.warning("reel analysis wait failed: %s", type(exc).__name__)
         return None
     if entries is None:
-        return reel_wait_vm.failed_error(), []
-    return reel_wait_vm.ready(len(entries)), entries
+        return reel_wait_vm.failed_error(), [], []
+    laid = None
+    if blocks:
+        try:
+            laid = await asyncio.to_thread(
+                reel_wait_provider.reel_blocks, tenant_id, analysis_id, products
+            )
+        except Exception as exc:  # noqa: BLE001 — the list of always, never a wait failure
+            logger.warning("reel plan as blocks unreadable: %s", type(exc).__name__)
+            laid = None
+    return reel_wait_vm.ready(len(entries)), entries, list(laid or [])
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -1050,18 +1063,34 @@ OPTIONAL_VIEWS = ("rules", "campaign")
 SHOW_MORE_SUFFIX = ":more"
 
 
-def generator_steps(category: str, kind: str) -> list[tuple[str, list[str]]]:
+#: ED-06 (m-25026636, D-E4 signed): on a video whose step 1 is «Arma tu video», the
+#: context and «Datos clave» live in the editor's general panel — so «Qué decir» has no
+#: view and the video walks 3 steps («Arma tu video · Cómo la quieres · Revisa y crea»).
+_EDITOR_STEP_OF_VIEW = {**_STEP_OF_VIEW, "topic": "show", "rules": "show"}
+
+
+def generator_steps(
+    category: str, kind: str, *, editor: bool = False
+) -> list[tuple[str, list[str]]]:
     """The steps of `category`/`kind`: `(step, its views)` in order. A step with no
     view for this kind (the creator's script shows nothing of its own) is skipped, so
-    «Paso N de M» counts only real steps (N6)."""
+    «Paso N de M» counts only real steps (N6). `editor` (ED-06): the Clip's step 1 is
+    «Arma tu video», which holds the context — only the video types (a Clip) skip «Qué
+    decir»; Imagen, Carrusel and Avatar keep their 4 steps whatever it says."""
     views = generator_views(category, kind)
-    steps = [(step, [v for v in views if _STEP_OF_VIEW.get(v) == step]) for step in GENERATOR_STEPS]
+    step_of = _EDITOR_STEP_OF_VIEW if editor and _is_video_type(category, kind) else _STEP_OF_VIEW
+    steps = [(step, [v for v in views if step_of.get(v) == step]) for step in GENERATOR_STEPS]
     return [(step, step_views) for step, step_views in steps if step_views]
 
 
-def generator_step_of(category: str, kind: str, view: str) -> int:
+def _is_video_type(category: str, kind: str) -> bool:
+    """ED-06: the types whose context moves into the editor — the Clip («Arma tu video»)."""
+    return category == "clip" and kind == "clip"
+
+
+def generator_step_of(category: str, kind: str, view: str, *, editor: bool = False) -> int:
     """The index of the step that holds `view` (-1 when this kind has no such view)."""
-    for index, (_step, views) in enumerate(generator_steps(category, kind)):
+    for index, (_step, views) in enumerate(generator_steps(category, kind, editor=editor)):
         if view in views:
             return index
     return -1
@@ -1942,6 +1971,25 @@ class CreativeState(rx.State):
     clip_ai_parts: list[dict[str, Any]] = []
     #: ED-07: «Más opciones» («Video o audio tuyo») open in the chosen AI part's panel.
     clip_ai_more: bool = False
+    #: ED-06 (m-25026636, PR 7): «Hacer uno parecido» with `QUALIFY_CLIP_AI_PARTS` on — the
+    #: reel's plan is on «Arma tu video»'s timeline as blocks (`plan_blocks`), under the
+    #: «Video de inspiración» card, instead of «Orden del clip»'s list.
+    clip_reel_blocks: bool = False
+    #: ED-06 (design D21): the general panel («¿De qué trata tu video?») is open as the
+    #: thing chosen; any block, join or side panel chosen closes it.
+    clip_general_open: bool = False
+    #: ED-06: goes up when «Pedir una idea» opens or the context is typed — an error of
+    #: the editor's proposal (`PartsStartState.error_epoch`) shows only until then.
+    clip_idea_epoch: int = 0
+    #: ED-06: «atrás» just closed the general panel — the focus goes back to its row.
+    _clip_general_left: bool = False
+    #: ED-06 (final review): the open general panel pushed its own `?bloque=` entry (on
+    #: the editor's step); opened from «Editar» it did not, and «Listo» never walks back.
+    _clip_general_addressed: bool = False
+    #: ED-06: who proposed the last idea added to the track (`PartsProvenance` as JSON;
+    #: None = none). Kept here: the Clip's brief cannot carry it until PR 2 (m-25129406)
+    #: — `MediaInputs` refuses `parts_provenance` outside a video by parts today.
+    _clip_idea_provenance: dict[str, Any] | None = None
     #: ED-07: why «Juntar con la siguiente» could not join (the provider's words; "").
     clip_ai_merge_error: str = ""
     #: ED-07 (review): the session's business, read from `AuthState` when the timeline
@@ -2944,7 +2992,35 @@ class CreativeState(rx.State):
         return generator_views(self.gen_category, self.brief_kind)
 
     def _gen_steps(self) -> list[tuple[str, list[str]]]:
-        return generator_steps(self.gen_category, self.brief_kind)
+        return generator_steps(
+            self.gen_category, self.brief_kind, editor=self._clip_idea_in_editor()
+        )
+
+    def _clip_idea_in_editor(self) -> bool:
+        """ED-06 (m-25026636): the Clip's context lives in «Arma tu video», so the video
+        walks 3 steps — the editor is its step 1, or a reel's plan is on its way to it
+        (`_clip_reel_blocks_due`). Off the switches nothing changes: 4 steps."""
+        return self.clip_editor_shown or self._clip_reel_blocks_due()
+
+    def _clip_reel_blocks_due(self) -> bool:
+        """«Hacer uno parecido» with `QUALIFY_CLIP_AI_PARTS` on (ED-06, PR 7): the reel's
+        plan goes into the editor as blocks — while its analysis is on its way, and once
+        it is there (`clip_reel_blocks`). A failed analysis or «Armar sin el reel» keeps
+        today's 4 steps."""
+        if self.clip_reel_blocks:
+            return True
+        return (
+            self.from_reel_ideas
+            and clip_editor_vm.editor_shown(
+                category=self.gen_category,
+                kind=self.brief_kind,
+                from_reel=False,
+                has_plan=False,
+                reel_video=False,
+            )
+            and ai_block_vm.switch_on()
+            and self.reel_wait_phase in (reel_wait_vm.PHASE_WAITING, reel_wait_vm.PHASE_PLANNING)
+        )
 
     def _view_index(self) -> int:
         """The step in front (`gen_step` kept within the kind's steps)."""
@@ -3758,6 +3834,8 @@ class CreativeState(rx.State):
     @rx.event
     def set_brief_topic(self, value: str) -> None:
         self.brief_topic = value
+        # ED-06: typing takes «Pedir una idea»'s last error away
+        self.clip_idea_epoch += 1
 
     @rx.event
     def set_brief_product_ref(self, value: str) -> None:
@@ -4333,6 +4411,8 @@ class CreativeState(rx.State):
         # and a proposal still running for it is dropped
         self.parts_without_reel = False
         self._parts_provenance = None
+        # ED-06: a reel's plan laid as blocks goes with its analysis
+        self.clip_reel_blocks = False
         self.parts_piece += 1
         self._show_reel_wait(reel_wait_vm.IDLE)
         self._reel_poll_token += 1
@@ -4402,6 +4482,8 @@ class CreativeState(rx.State):
         """The parts list is on screen: a piece from «Hacer uno parecido» whose analysis
         is `ok` and its plan read, or a Clip whose plan was made without a reel
         («Armar mi video por partes», m-24921079)."""
+        if self.clip_reel_blocks:
+            return False  # ED-06: the reel's plan is on the editor's timeline, not a list
         if self.from_reel_ideas:
             return self.reel_wait_phase == reel_wait_vm.PHASE_READY
         return self.parts_without_reel and self.brief_kind == "clip" and self.reel_parts_count > 0
@@ -5424,6 +5506,8 @@ class CreativeState(rx.State):
             self._reel_poll_owner = _PROCESS_ID
             self._reel_poll_beat = self._reel_seen_at = time.time()
             products = (self.brief_product_ref,)
+            # ED-06: with `QUALIFY_CLIP_AI_PARTS` on, the plan comes as the editor's blocks
+            blocks = self._clip_reel_blocks_due()
         started = time.monotonic()
 
         async def still_mine() -> bool:
@@ -5443,8 +5527,8 @@ class CreativeState(rx.State):
         failures = 0
         try:
             while True:
-                read = await _read_reel_wait(tenant_id, analysis_id, products)
-                wait, entries = read if read is not None else (None, [])
+                read = await _read_reel_wait(tenant_id, analysis_id, products, blocks=blocks)
+                wait, entries, laid = read if read is not None else (None, [], [])
                 if wait is None:
                     failures += 1
                     if failures >= _REEL_POLL_MAX_FAILURES:
@@ -5456,10 +5540,16 @@ class CreativeState(rx.State):
                         return
                     self._reel_poll_beat = time.time()
                     if wait is not None:  # a failed read keeps what was shown
+                        due = self._clip_reel_blocks_due()
+                        step_key = self._gen_steps()[self._view_index()][0]
                         self._show_reel_wait(wait)
                         if wait.phase == reel_wait_vm.PHASE_READY:
-                            # UI-3: the plan's parts, listed on this step
-                            self._set_reel_plan(entries)
+                            # ED-06: the editor with its blocks laid; else (off, or a
+                            # plan that does not fit) UI-3's list, as today
+                            if not (due and self._clip_lay_reel_blocks(laid)):
+                                self._set_reel_plan(entries)
+                                if due:
+                                    self._reel_blocks_fell_back(step_key)
                         if wait.terminal:
                             return
                 if time.monotonic() - started > _REEL_POLL_BUDGET_SECONDS:
@@ -5514,6 +5604,7 @@ class CreativeState(rx.State):
         self._clear_clip_notes()
         self.clip_sequence = []
         self.clip_ai_parts = []  # ED-07: a reel's replica has no AI part of its own
+        self.clip_reel_blocks = False  # ED-06: its plan comes as blocks once it is read
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
         # m-25026509: a fresh clip — the last piece's answer never rides on
@@ -6691,6 +6782,7 @@ class CreativeState(rx.State):
             from_reel=self.from_reel_ideas,
             has_plan=self._reel_plan_open(),
             reel_video=has_reel_video(self.clip_videos),
+            reel_blocks=self.clip_reel_blocks,  # ED-06: a reel's plan laid as blocks
         )
 
     @rx.var
@@ -6954,6 +7046,268 @@ class CreativeState(rx.State):
         self._clip_edit_changed(before)
         self.clip_edit_notice = self._clip_with_gone(ai_block_vm.removed_line(number), gone)
         return self._clip_removed(track, place)
+
+    # -- ED-06 m-25026636 (PR 7): the plan's blocks on the track ----------------------
+
+    def _clip_put_ops(self, ops: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+        """`editor_idea_vm.editor_ops` put at the END of the track, in order — nothing
+        that is there moves or goes (Deivid, P2 = A): each AI part a new entry with its
+        token, each own photo or video a file of the Clip (a file already on the track
+        is not put twice: the editor holds one block per file), each join on the block
+        it enters. Returns (AI parts put, own blocks put). Kept at once, as every change."""
+        order = self._clip_order_keys()
+        parts = [dict(p) for p in self.clip_ai_parts]
+        images = [dict(i) for i in self.clip_images]
+        videos = [dict(v) for v in self.clip_videos]
+        photo_seconds = dict(self.clip_photo_seconds)
+        photo_turns = dict(self.clip_photo_turns)
+        joins = dict(self.clip_block_joins)
+        join_seconds = dict(self.clip_join_seconds)
+        join_dirs = dict(self.clip_join_dirs)
+        ai = own = 0
+        for op in ops:
+            kind = str(op.get("kind") or "")
+            if kind == "ai":
+                uid = ai_block_vm.new_uid(parts)
+                block = ai_block_vm.token(uid)
+                parts.append({"uid": uid, "plan": dict(op.get("plan") or {}), "desc_rev": 0})
+                ai += 1
+            else:
+                block = str(op.get("key") or "")
+                if not block or block in order:
+                    continue
+                item = {"key": block, "name": Path(block).name, "source": "upload"}
+                if kind == "photo":
+                    images.append({**item, "role": "product"})
+                    if op.get("seconds"):
+                        photo_seconds[block] = float(op["seconds"])
+                    if op.get("rotate"):
+                        photo_turns[block] = int(op["rotate"])
+                else:
+                    videos.append(item)
+                own += 1
+            order.append(block)
+            join = op.get("join") or {}
+            if join.get("kind") in clip_joins_vm.KINDS and join["kind"] != clip_joins_vm.CUT:
+                joins[block] = str(join["kind"])
+                if join.get("seconds"):
+                    join_seconds[block] = float(join["seconds"])
+                if join.get("direction"):
+                    join_dirs[block] = str(join["direction"])
+        self.clip_images = images
+        self.clip_videos = videos
+        self.clip_photo_seconds = photo_seconds
+        self.clip_photo_turns = photo_turns
+        self.clip_ai_parts = parts
+        self.clip_sequence = order
+        self.clip_join_seconds = join_seconds
+        self.clip_join_dirs = join_dirs
+        if clip_joins_vm.joins_enabled():
+            self._clip_keep_joins(clip_joins_vm.clean_joins(joins, self._clip_tl_media()))
+        return ai, own
+
+    def _clip_lay_reel_blocks(self, ops: Sequence[Mapping[str, Any]]) -> bool:
+        """«Hacer uno parecido» with `QUALIFY_CLIP_AI_PARTS` on (design D20): the reel's
+        plan opens «Arma tu video» with its blocks already laid (`plan_blocks`), the reel
+        itself only as the «Video de inspiración» card — never a block. False (nothing
+        changes: today's list follows) without blocks or off the switch. The caller has
+        checked that the piece is due (`_clip_reel_blocks_due`, before the wait's «ready»)."""
+        if not ops or not ai_block_vm.switch_on():
+            return False
+        self.clip_videos = [v for v in self.clip_videos if v.get("source") != "reel"]
+        self.clip_sequence = []
+        self.clip_ai_parts = []
+        self._clip_keep_joins({})
+        self.clip_reel_blocks = True
+        self.clip_edit_block = ""
+        ai, own = self._clip_put_ops(ops)
+        self._clip_say(editor_idea_vm.reel_line(ai, own))
+        return True
+
+    def _clip_idea_track(self) -> ClipBlocks:
+        """The track as the server's `ClipBlocks` (`after` of a proposal). Raises
+        `ValidationError` while an own video is still being read (no length yet)."""
+        return editor_idea_vm.track_blocks(
+            self._clip_ai_segments() if self._clip_tl_media() else [],
+            ai_block_vm.plans(self.clip_ai_parts),
+        )
+
+    def _reel_blocks_fell_back(self, step_key: str) -> None:
+        """«Hacer uno parecido» could not lay the reel's plan as blocks (ED-06, UX review):
+        the list of today comes with «Qué decir» back (3 steps → 4) — the owner stays on
+        the same step BY ITS NAME, never by its number, and the list says why."""
+        steps = [step for step, _views in self._gen_steps()]
+        if step_key in steps:
+            self.gen_step = steps.index(step_key)
+        self.reel_parts_notice = editor_idea_vm.REEL_FALLBACK_LINE
+
+    def _clip_add_idea(
+        self, entries: Sequence[Mapping[str, Any]], provenance: dict[str, Any] | None
+    ) -> tuple[bool, str]:
+        """«Agregar → Pedir una idea» (Deivid P2 = A): Claude's parts (`propose_parts`, the
+        card's entries) go at the END of the track as far as the caps let — 8 blocks, 6 AI
+        parts, 60 s (`editor_idea_vm.fit_proposal`, the server's `blocks_from_plan`) —
+        and the live line says how many went in and why not the rest. Free: nothing is
+        created until «Crear». (placed?, the owner's line). Never half a plan: one Claude
+        sent malformed, empty, or with what the editor cannot hold yet is `NOT_PLACED`."""
+        if not self._clip_ai_on():
+            return False, ""
+        if not entries:
+            return False, editor_idea_vm.NOT_PLACED
+        try:
+            plans = editor_idea_vm.plans_of(entries)
+        except ValidationError:
+            return False, editor_idea_vm.NOT_PLACED
+        try:
+            after = self._clip_idea_track()
+        except ValidationError:
+            # an own video still being read has no length yet: nothing is put half-way
+            return False, editor_idea_vm.TRACK_NOT_READY_AFTER
+        blocks, placed, reason = editor_idea_vm.fit_proposal(plans, after)
+        if blocks is None:
+            return False, editor_idea_vm.cap_text(reason) or editor_idea_vm.NOT_PLACED
+        ops = editor_idea_vm.editor_ops(blocks, start=len(after.segments))
+        if not ops:
+            return False, editor_idea_vm.NOT_PLACED
+        before = self._clip_edit_snapshot()
+        self._clip_put_ops(ops)
+        # TODO(PR 2, m-25129406): the brief carries it once `MediaInputs` takes
+        # `parts_provenance` on a Clip (refused outside a video by parts today)
+        self._clip_idea_provenance = dict(provenance) if provenance else None
+        self._clip_edit_changed(before)
+        line = editor_idea_vm.idea_line(len(plans), placed, reason)
+        self._clip_say(line)
+        return True, line
+
+    def _clip_idea_off_reason(self) -> str:
+        """Why «Pedir una idea» cannot put a part now ("" = it can), said BEFORE Claude is
+        asked: the switches off, an own video still being read (UX review), or the caps
+        «Parte con IA» says before the choque — 8 blocks, 6 AI parts, 60 s (design D22)."""
+        if not self._clip_ai_on():
+            return ai_block_vm.refusal_text("switched_off")
+        try:
+            self._clip_idea_track()
+        except ValidationError:
+            return editor_idea_vm.TRACK_NOT_READY
+        return ai_block_vm.add_reason(self._clip_ai_segments())
+
+    @rx.var
+    def clip_idea_off(self) -> str:
+        """`_clip_idea_off_reason` for «Proponerme las partes» in «Pedir una idea» ("" off
+        the switches: the button is not drawn there)."""
+        return self._clip_idea_off_reason() if self._clip_ai_on() else ""
+
+    @rx.var
+    def clip_topic_whole(self) -> str:
+        """«Todo el video»'s line over an AI part's panel (design D21): the context in
+        quotes, or «Cuenta de qué trata tu video: guía el texto.»."""
+        return editor_idea_vm.whole_value(self.brief_topic)
+
+    @rx.var
+    def clip_topic_row(self) -> str:
+        """The folded row with nothing chosen (design D21): «Tu video trata de: «…»», or
+        «Cuenta de qué trata tu video: guía el texto.»."""
+        return editor_idea_vm.row_text(self.brief_topic)
+
+    @rx.var
+    def clip_topic_said(self) -> bool:
+        """Something is written: the row's button says «Cambiar», else «Escribir»."""
+        return bool(editor_idea_vm.said_topic(self.brief_topic))
+
+    @rx.event
+    def finish_clip_idea(self) -> list[Any]:
+        """The proposal is on the track (design 03C): «Pedir una idea»'s panel closes by
+        itself and the focus goes back to what opened it; the live line stays."""
+        if clip_editor_vm.flow_of(self.clip_edit_block) != clip_editor_vm.FLOW_IDEA:
+            return []
+        return self._clip_close_flow()
+
+    def _clip_open_general(
+        self, *field_ids: str, more: bool = False, address: bool = True
+    ) -> list[Any]:
+        """The general panel opened as the thing chosen (design D21): nothing else chosen,
+        «Más opciones» unfolded when `more`, the focus on `field_ids`' first one drawn.
+        `address` (on the editor's own step): its `?bloque=de-que-trata` replaces the
+        chosen block's. «Editar» from another step passes False: it touches no block
+        history at all (review) — the step's own entry is the way back."""
+        was_open = self.clip_general_open
+        # `_clip_choose`'s first event is the block's address: never emitted here (its
+        # walk back would race the push, or leave the step through an inherited entry)
+        events: list[Any] = list(self._clip_choose(""))[1:] if address else []
+        if not address:
+            self._clip_choose("")
+        self.clip_general_open = True
+        if more:
+            self.rules_open = True
+        if address and not was_open:
+            # UX review P1: `?bloque=de-que-trata` — the phone's «atrás» closes it
+            events.insert(0, self._clip_general_url(open_=True))
+        if not was_open:
+            self._clip_general_addressed = address
+        events.append(rx.call_script(editor_idea_vm.focus_script(*field_ids)))
+        return events
+
+    @staticmethod
+    def _clip_general_url(*, open_: bool) -> rx.event.EventSpec:
+        """The general panel's address, as a block's (`clip_editor_vm.block_url_script`):
+        pushed when it opens, walked back when «Listo» closes it."""
+        slug = editor_idea_vm.GENERAL_SLUG if open_ else ""
+        return rx.call_script(
+            clip_editor_vm.block_url_script(clip_editor_vm.BLOCK_PARAM, slug, flow=False)
+        )
+
+    @rx.event
+    def edit_clip_general(self) -> list[Any]:
+        """The folded row's (or «Todo el video»'s) «Cambiar» / «Escribir» (design D6, D21):
+        the general panel opens — no other sheet — with the focus on «¿De qué trata tu
+        video?»."""
+        return self._clip_open_general(editor_idea_vm.TOPIC_FIELD_ID)
+
+    @rx.event
+    def close_clip_general(self) -> list[Any]:
+        """The general panel's «Listo»: back to the folded row (its address entry walked
+        back), the focus on its button."""
+        if not self.clip_general_open:
+            return []
+        self.clip_general_open = False
+        # final review: only an address this panel pushed is walked back; opened from
+        # «Editar» (no address of its own) the word is just dropped — never a
+        # `history.back()` that would leave the step
+        addressed = self._clip_general_addressed
+        self._clip_general_addressed = False
+        return [
+            self._clip_general_url(open_=False)
+            if addressed
+            else rx.call_script(editor_idea_vm.release_address_script()),
+            rx.call_script(editor_idea_vm.focus_script(editor_idea_vm.ROW_BUTTON_ID)),
+        ]
+
+    def _clip_general_leave_step(self, step: rx.event.EventSpec, *, old: int) -> Any:
+        """«Siguiente», «Atrás» or the step bar with the general panel open (last review):
+        it closes, and no history entry is left behind.
+
+        - Opened with its own address (`?bloque=de-que-trata`, pushed on step 1) and the
+          step changes: that entry BECOMES the next step's (`replaceState`, with the state
+          `__qStepGo` would have pushed — `editor_idea_vm.replace_with_step_script`); the
+          step's own script then finds the address already written and stacks nothing.
+          «Atrás» from there walks back to step 1's own entry: no duplicate, no dead one.
+        - Opened with its own address and the step does not change («Atrás» on step 1):
+          its entry is walked back, as «Listo» does; no step script (nothing moves).
+        - Opened without one («Editar», a reload): its word is dropped (`replaceState`)
+          before the step's own entry is written, which then never inherits `qBloque`.
+
+        Nothing open: `step` as it was."""
+        if not self.clip_general_open:
+            return step
+        addressed = self._clip_general_addressed
+        self.clip_general_open = False
+        self._clip_general_addressed = False
+        if not addressed:
+            return [rx.call_script(editor_idea_vm.release_address_script()), step]
+        if self._view_index() == old:
+            return [self._clip_general_url(open_=False)]
+        target = step_url(self._CREATE_ROUTE, self.create_step_n)
+        return [rx.call_script(editor_idea_vm.replace_with_step_script(target)), step]
 
     @rx.var
     def clip_ai_on(self) -> bool:
@@ -8566,6 +8920,10 @@ class CreativeState(rx.State):
         self.clip_join_open = ""
         # ED-07: the AI parts go with the Clip they were put in
         self.clip_ai_parts = []
+        # ED-06: and so do the reel's plan laid as blocks and the last idea's provenance
+        self.clip_reel_blocks = False
+        self._clip_idea_provenance = None
+        self.clip_general_open = False
         self.clip_ai_more = False
         self.clip_ai_merge_error = ""
         self.clip_effect_ids = []
@@ -9607,6 +9965,8 @@ class CreativeState(rx.State):
             self._clip_insert_at = -1
         # m-25114465: one thing under the timeline at a time — a block or a flow closes a join
         self.clip_join_open = ""
+        # ED-06: … and the general panel (design D21)
+        self.clip_general_open = False
         if block != self.clip_edit_block:
             # a handle's «hasta aquí» and an off speed's «why» belong to their block
             self.clip_cut_error = ""
@@ -9717,6 +10077,8 @@ class CreativeState(rx.State):
         before = self.clip_edit_block
         self.clip_flow_opener = opener
         events: list[Any] = list(self._clip_choose(clip_editor_vm.FLOW_MARK + flow))
+        if flow == clip_editor_vm.FLOW_IDEA and not already:
+            self.clip_idea_epoch += 1  # ED-06: reopened, the last error goes
         if flow == clip_editor_vm.FLOW_EFFECT and not already:
             # ED-04: «¿En qué partes va?» opens on the block that was chosen, else on all
             ids = self._clip_media_ids()
@@ -11466,7 +11828,7 @@ class CreativeState(rx.State):
         }
 
     @rx.event
-    def next_view(self) -> rx.event.EventSpec | None:
+    def next_view(self) -> rx.event.EventSpec | list[Any] | None:
         """«Siguiente»: the next step. Nothing is checked here — only the summary says
         what is missing — so with the same kind and format as last time, writing the
         topic and «Siguiente» reach «Crear» (CREAR-2). PASOS-5: writes ``?paso=N`` and
@@ -11486,23 +11848,28 @@ class CreativeState(rx.State):
         self.gen_direction = DIR_NEXT if self._view_index() >= old else DIR_BACK
         self.create_error = ""
         self.clip_edit_notice = ""  # the live line lasts until the owner leaves the step
-        return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
+        return self._clip_general_leave_step(
+            go_to_step("/create", self.create_step_n, back=self._view_index() < old), old=old
+        )
 
     @rx.event
-    def prev_view(self) -> rx.event.EventSpec:
+    def prev_view(self) -> rx.event.EventSpec | list[Any]:
         """«Atrás»: the previous step; what was written stays in the state. PASOS-5:
         writes ``?paso=N`` (back) and scrolls the panel to the top + focuses the title."""
         if self.reel_edit_open:
             return self.set_reel_edit_open(False)
         self._flush_phrase_drafts()
+        old = self._view_index()
         self.gen_step = max(self._view_index() - 1, 0)
         self.gen_direction = DIR_BACK
         self.create_error = ""
         self.clip_edit_notice = ""  # the live line lasts until the owner leaves the step
-        return go_to_step("/create", self.create_step_n, back=True)
+        return self._clip_general_leave_step(
+            go_to_step("/create", self.create_step_n, back=True), old=old
+        )
 
     @rx.event
-    def go_to_view(self, index: str) -> rx.event.EventSpec | None:
+    def go_to_view(self, index: str) -> rx.event.EventSpec | list[Any] | None:
         """A step of the step bar: any step, back or ahead — only the context is
         required, and the summary says what is missing. PASOS-5: writes ``?paso=N``."""
         self._flush_phrase_drafts()
@@ -11522,20 +11889,39 @@ class CreativeState(rx.State):
         self.gen_direction = DIR_BACK if self._view_index() < old else DIR_NEXT
         self.create_error = ""
         self.clip_edit_notice = ""  # the live line lasts until the owner leaves the step
-        return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
+        return self._clip_general_leave_step(
+            go_to_step("/create", self.create_step_n, back=self._view_index() < old), old=old
+        )
 
     @rx.event
-    def edit_view(self, view: str) -> rx.event.EventSpec | None:
+    def edit_view(self, view: str) -> rx.event.EventSpec | list[Any] | None:
         """A summary row's «Editar»: the step that holds `view`, with that step's «Más
         opciones» unfolded when the row lives behind it."""
         base, more, _ = view.partition(SHOW_MORE_SUFFIX)
-        index = generator_step_of(self.gen_category, self.brief_kind, base)
+        editor = self._clip_idea_in_editor()
+        index = generator_step_of(self.gen_category, self.brief_kind, base, editor=editor)
         if index < 0:
             return None
         old = self._view_index()
         self.gen_step = index
         self.gen_direction = DIR_BACK if index < old else DIR_NEXT
-        if base == "rules":
+        events: list[Any] = []
+        if editor and base in ("topic", "rules"):
+            # ED-06 (UX review): each row to the editor's general panel, open, with the
+            # focus on its own field — the context, «¿A quién le habla?» (`topic:more`)
+            # or «Datos clave», those two with «Más opciones» unfolded
+            if base == "rules":
+                fields = editor_idea_vm.RULES_FIELDS_BY_VIEW.get(
+                    view, editor_idea_vm.RULES_FIELD_IDS
+                )
+                events = self._clip_open_general(*fields, more=True, address=False)
+            elif more:
+                events = self._clip_open_general(
+                    *editor_idea_vm.AUDIENCE_FIELD_IDS, more=True, address=False
+                )
+            else:
+                events = self._clip_open_general(editor_idea_vm.TOPIC_FIELD_ID, address=False)
+        elif base == "rules":
             self.rules_open = True
         elif base == "campaign" or (base == "channel" and more):
             # step 3's «Más opciones» holds the campaign and a clip's «Con sonido»
@@ -11544,7 +11930,8 @@ class CreativeState(rx.State):
             self.show_more_open = True
         self.create_error = ""
         self.clip_edit_notice = ""  # the live line lasts until the owner leaves the step
-        return go_to_step(self._CREATE_ROUTE, self.create_step_n, back=index < old)
+        step = go_to_step(self._CREATE_ROUTE, self.create_step_n, back=index < old)
+        return [step, *events] if events else step
 
     # -- PASOS-5 (m-24852244): the step frame's address and settle -----------------------
 
@@ -11646,6 +12033,9 @@ class CreativeState(rx.State):
         self.create_resume_pending = False
         if reveal:
             events.append(rx.call_script(f"window.__qTimeline?.reveal({json.dumps(reveal)})"))
+        if self._clip_general_left:
+            self._clip_general_left = False
+            events.append(rx.call_script(editor_idea_vm.focus_script(editor_idea_vm.ROW_BUTTON_ID)))
         if sideways:  # m-25114465: «atrás» closed a text just put: the tracks go to it
             events.append(rx.call_script(clip_editor_vm.reveal_new_script(sideways)))
         at = part_editor_vm.position(
@@ -11702,6 +12092,18 @@ class CreativeState(rx.State):
         of a text «+ Texto» just put whose panel this closed, to scroll the tracks to
         sideways ("" = none)."""
         if not self.clip_editor_shown:
+            return "", ""
+        if slug == editor_idea_vm.GENERAL_SLUG:
+            # ED-06: the general panel's own address (a reload, «adelante»)
+            self.clip_edit_block = ""
+            self.clip_join_open = ""
+            self.clip_general_open = True
+            return "", ""
+        if not slug and self.clip_general_open:
+            # ED-06 (UX review P1): «atrás» closes the general panel; the focus goes back
+            # to its row's «Cambiar» / «Escribir» (`reconcile_reel_editor_route`)
+            self.clip_general_open = False
+            self._clip_general_left = True
             return "", ""
         if not slug:
             if clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_MEDIA:
@@ -14478,8 +14880,12 @@ class CreativeState(rx.State):
 
         def row(label: str, value: str, view: str = "", href: str = "", thumb: str = "") -> None:
             # CREAR-2: «Editar» goes to the step that holds the view
-            base = view.removesuffix(SHOW_MORE_SUFFIX)
-            step = generator_step_of(self.gen_category, kind, base) if view else -1
+            base = view.partition(SHOW_MORE_SUFFIX)[0]
+            step = (
+                generator_step_of(self.gen_category, kind, base, editor=self._clip_idea_in_editor())
+                if view
+                else -1
+            )
             index = str(step) if step >= 0 else ""
             rows.append(
                 {
@@ -14642,15 +15048,16 @@ class CreativeState(rx.State):
         empty = AUDIENCE_SUMMARY_NO_PRICE if self._price_hidden_by_audience() else "Ninguno"
         row("Datos clave", facts or empty, "rules")
         if self.brief_must_mention.strip():
-            row("Debe mencionar", self.brief_must_mention.strip(), "rules")
+            row("Debe mencionar", self.brief_must_mention.strip(), editor_idea_vm.MENTION_VIEW)
         if self.brief_must_avoid.strip():
-            row("Debe evitar", self.brief_must_avoid.strip(), "rules")
+            row("Debe evitar", self.brief_must_avoid.strip(), editor_idea_vm.AVOID_VIEW)
         if self.clip_audience_level():
             # m-25026509: an optional answer, listed only when given (like «Debe evitar»)
             row(
                 AUDIENCE_SUMMARY_LABEL,
                 dict(audience_options()).get(self.clip_audience_level(), ""),
-                "topic",
+                # ED-06: in the editor its «Editar» goes to its own selector
+                "topic" + SHOW_MORE_SUFFIX if self._clip_idea_in_editor() else "topic",
             )
         replica = kind == "clip" and has_reel_video(self.clip_videos)
         if kind == "static_flyer":
@@ -14660,7 +15067,12 @@ class CreativeState(rx.State):
             # the app's, sent as before but never shown as if the owner had written it
             row("Contexto", self.brief_topic.strip() or REPLICA_OWN_TOPIC_EMPTY, "topic")
         else:
-            row("Contexto", self._effective_topic() or "Falta: es lo único obligatorio", "topic")
+            row(
+                # ED-06 (UX review): with the editor, the general panel's own name
+                editor_idea_vm.PANEL_TITLE if self._clip_idea_in_editor() else "Contexto",
+                self._effective_topic() or "Falta: es lo único obligatorio",
+                "topic",
+            )
         if replica and self.source_reel:
             row(
                 "Basado en el reel",
