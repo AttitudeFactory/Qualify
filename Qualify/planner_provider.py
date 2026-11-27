@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime, time
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from qualify_api.ads.unpublished_repository import story_ads
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.creative.own_upload import OwnUpload, UploadedPiece, record_planner_upload
 from qualify_api.creative.service import ApprovalBlocked
@@ -380,7 +381,18 @@ def _with_story_ads(tenant_id: UUID, options: list[PostOptionVM]) -> list[PostOp
     except Exception as exc:  # noqa: BLE001 — no link is better than a dead end
         logger.warning("story ad readiness read failed: %s", type(exc).__name__)
         ready = set()
-    return [replace(o, story_ad_ready=True) if o.post_id in ready else o for o in options]
+    # N3 (m-25142902): and the ones that already have a story ad, said on the card.
+    try:
+        having = {str(i) for i in story_ads(tenant_id, wanted)} if wanted else set()
+    except Exception as exc:  # noqa: BLE001 — only a note; the wizard warns again
+        logger.warning("story ad lookup failed: %s", type(exc).__name__)
+        having = set()
+    return [
+        replace(o, story_ad_ready=o.post_id in ready, story_ad_exists=o.post_id in having)
+        if o.post_id in ready | having
+        else o
+        for o in options
+    ]
 
 
 def _draft_pending(post: PostSummary) -> bool:

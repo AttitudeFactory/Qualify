@@ -108,6 +108,9 @@ class AdResultVM:
     operation_pending: bool = False
     rejected: bool = False
     fix_href: str = "/drafts"
+    # N3 (m-25142902): a story-only ad, its 9:16 image ("" = none to show) and its piece.
+    story: bool = False
+    story_image: str = ""
 
 
 @dataclass(frozen=True)

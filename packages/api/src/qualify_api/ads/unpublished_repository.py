@@ -13,10 +13,13 @@ from sqlalchemy import text
 from qualify_api.ads.carousel import CARD_COUNT, MAX_CARDS, CarouselCard, CarouselSource
 from qualify_api.ads.client import MarketingSettings
 from qualify_api.ads.unpublished import (
+    STORY_PIPELINE,
+    STORY_VIDEO_PIPELINE,
     UPLOAD_UNCERTAIN,
     ImageAdForm,
     ImageSelection,
     ImageSource,
+    StoryAdExists,
     UnpublishedUnavailable,
     VideoSelection,
     recipe_hash,
@@ -44,6 +47,22 @@ NOT_PUBLISHED_BY_QUALIFY = """(CAST(:story AS boolean) OR NOT EXISTS (SELECT 1
     AND pc.platform='instagram'
   WHERE pe.post_id=d.id AND pe.tenant_id=d.tenant_id
     AND pa.status='published'))"""
+
+# N3 (m-25142902): a story ad of a piece = its story recipes. The newest per piece, with
+# the paused campaign it led to (None while still being prepared).
+STORY_PIPELINES = [STORY_PIPELINE, STORY_VIDEO_PIPELINE]
+_STORY_ADS = text("""SELECT DISTINCT ON (draft_id) draft_id,id,promotion_id
+FROM ad_unpublished_sources WHERE draft_id=ANY(:drafts) AND source->>'pipeline'=ANY(:pipelines)
+ORDER BY draft_id,approved_at DESC,id DESC""")
+
+
+def story_ads(tenant: UUID, draft_ids: list[UUID]) -> dict[UUID, tuple[UUID, UUID | None]]:
+    """{piece: (newest story recipe, its promotion or None)} for the pieces that have one."""
+    if not draft_ids:
+        return {}
+    with tenant_session(tenant) as session:
+        rows = session.execute(_STORY_ADS, {"drafts": draft_ids, "pipelines": STORY_PIPELINES})
+        return {row.draft_id: (row.id, row.promotion_id) for row in rows}
 
 
 def load_image_source(
@@ -318,13 +337,48 @@ def guard_source(source: ImageSource | CarouselSource) -> None:
         raise UnpublishedUnavailable(CHANGED)
 
 
+def _refuse_duplicate_story(
+    session: Any, draft: UUID, key: UUID, duplicate_of: UUID | None
+) -> None:
+    """Race-safe (two phones at once): the piece's lock is held until this transaction
+    commits its recipe, so the second caller sees the first one's. A retry of the same
+    request key (a video Meta is still processing) is never a duplicate."""
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock, 0))"),
+        {"lock": f"ad-story:{draft}"},
+    )
+    newer = (
+        session.execute(
+            text("""SELECT id,promotion_id FROM ad_unpublished_sources
+          WHERE draft_id=:draft AND source->>'pipeline'=ANY(:pipelines) AND request_key<>:key
+            AND NOT EXISTS(SELECT 1 FROM ad_unpublished_sources WHERE request_key=:key)
+            AND approved_at > COALESCE((SELECT approved_at FROM ad_unpublished_sources
+              WHERE id=:seen AND draft_id=:draft), '-infinity')
+          ORDER BY approved_at DESC,id DESC LIMIT 1"""),
+            {"draft": draft, "pipelines": STORY_PIPELINES, "key": key, "seen": duplicate_of},
+        )
+        .mappings()
+        .first()
+    )
+    if newer is not None:
+        raise StoryAdExists(newer["id"], newer["promotion_id"])
+
+
 class UnpublishedRepository:
     def approve(
-        self, source: ImageSource | CarouselSource, form: ImageAdForm, actor: UUID, key: UUID
+        self,
+        source: ImageSource | CarouselSource,
+        form: ImageAdForm,
+        actor: UUID,
+        key: UUID,
+        duplicate_of: UUID | None = None,
     ) -> dict:
+        """`duplicate_of`: the story recipe the owner was warned about and chose to repeat."""
         guard_source(source)
         digest = recipe_hash(source, form, actor)
         with tenant_session(source.tenant_id, independent=True) as session:
+            if isinstance(source, ImageSource) and source.is_story:
+                _refuse_duplicate_story(session, source.draft_id, key, duplicate_of)
             session.execute(
                 text("""INSERT INTO ad_unpublished_sources
               (tenant_id,brand_id,connection_id,ad_account_id,draft_id,request_key,request_hash,

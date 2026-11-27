@@ -170,6 +170,12 @@ STORY_PAID_NOTE = (
     "Tu historia no cambia."
 )
 STORY_AD_DECLINE = "Dejar la historia sin botón"
+#: N3 (m-25142902): the piece already has a story ad (another tab, a reload, another phone).
+STORY_AD_LABEL = "Anuncio en historias"
+STORY_HAS_AD = "Ya tiene un anuncio en historias"
+STORY_SEE_EXISTING = "Ver el anuncio que ya tienes"
+STORY_CREATE_ANOTHER = "Crear otro anuncio"
+STORY_SEE_PIECE = "Ver la historia"
 #: The 9:16 safe zones Instagram covers with the account name (top) and the button (bottom).
 STORY_SAFE_TOP = "Aquí va tu nombre"
 STORY_SAFE_BOTTOM = "Aquí va el botón"

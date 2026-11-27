@@ -212,6 +212,24 @@ def story_ads_ready(tenant_id: UUID, draft_ids: list[UUID]) -> set[UUID]:
     }
 
 
+def existing_story_ad(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
+    """N3 (m-25142902): (newest story ad of the piece, where to see it) or ("", ""). Only a
+    warning: a failed read shows none, and the backend still refuses a duplicate."""
+    from qualify_api.ads.unpublished_repository import story_ads  # noqa: PLC0415
+
+    try:
+        found = story_ads(tenant_id, [draft_id]).get(draft_id)
+    except Exception as exc:  # noqa: BLE001 — the preparation re-checks under a lock
+        logger.warning("story ad lookup failed: %s", type(exc).__name__)
+        return "", ""
+    return ("", "") if found is None else (str(found[0]), promotion_href(found[1]))
+
+
+def promotion_href(promotion_id: UUID | None) -> str:
+    """A story ad still being prepared has no campaign yet: the whole «Anuncios» list."""
+    return f"/promotions/{promotion_id}" if promotion_id else "/promotions"
+
+
 def unpublished_sources(
     tenant_id: UUID, draft_id: UUID, *, check_health: bool = False, story: bool = False
 ) -> list[PromotionSourceVM]:
@@ -326,10 +344,12 @@ def prepare_unpublished(
     source: PromotionSourceVM,
     timezone_name: str,
     request_key: str,
+    duplicate_of: str = "",
 ) -> PromotionReviewVM:
     """Creates the ad paused and returns its two previews (one, 9:16, for a story ad).
     While Meta processes a video this raises; the caller repeats it with the SAME
-    `request_key` (never a re-upload)."""
+    `request_key` (never a re-upload). `duplicate_of`: the story ad of this piece the
+    owner chose to repeat (N3); without it a second one raises `StoryAdExists`."""
     from .promotion_provider import safe_preview_url  # noqa: PLC0415
 
     if form.media_kind == "carousel":
@@ -348,6 +368,7 @@ def prepare_unpublished(
             actor=actor,
             request_key=UUID(request_key),
             confirm_preparation=True,
+            duplicate_of=_id(duplicate_of) if form.story else None,
         )
     )
     vertical = safe_preview_url(preview.vertical_html)

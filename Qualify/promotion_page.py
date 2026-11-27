@@ -12,6 +12,7 @@ from .promotion_market_vm import SATURATED
 from .promotion_state import PromotionState as S
 from .promotion_story_ui import (
     story_audience,
+    story_duplicate,
     story_empty,
     story_link,
     story_media,
@@ -1154,7 +1155,11 @@ def promotion_index() -> rx.Component:
                 on_primary=S.create_preview,
                 on_back=S.back_step,
                 primary_disabled=(
-                    S.busy | S.paid_operation_locked | (S.execution_reason != "") | S.needs_help
+                    S.busy
+                    | S.paid_operation_locked
+                    | (S.execution_reason != "")
+                    | S.needs_help
+                    | (S.story_existing != "")
                 ),
                 primary_loading=S.busy,
                 reason=S.execution_reason,
@@ -1186,6 +1191,7 @@ def _wizard(body: rx.Component, foot: rx.Component) -> rx.Component:
         step_sync(S.step, S.direction),
         # HIS-1 (m-25130281): right under the title, on the story path only
         rx.cond(S.story_entry, rx.text(STORY_PAID_NOTE, size="2", color=T.TEXT_MUTED)),
+        story_duplicate(),
         rx.cond((S.error != "") & ~S.error_by_locate, callout(S.error, "error")),
         rx.cond(S.success != "", callout(S.success, "ok")),
         rx.cond(

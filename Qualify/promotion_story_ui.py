@@ -9,6 +9,7 @@ are the unpublished wizard's own (`promotion_unpublished_ui`)."""
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.ads.unpublished import STORY_DUPLICATE
 
 from .promotion_state import PromotionState as S
 from .promotion_unpublished_ui import (
@@ -27,6 +28,7 @@ from .promotion_vm import (
     STORY_AUTO_CHANGES,
     STORY_AUTO_CHANGES_LABEL,
     STORY_BACK_TO_PIECE,
+    STORY_CREATE_ANOTHER,
     STORY_LEFT_WEEK,
     STORY_NO_CHARGE,
     STORY_PLACEMENT,
@@ -34,6 +36,7 @@ from .promotion_vm import (
     STORY_SAFE_BOTTOM,
     STORY_SAFE_HINT,
     STORY_SAFE_TOP,
+    STORY_SEE_EXISTING,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
 )
@@ -321,6 +324,38 @@ def story_review() -> rx.Component:
         ),
         spacing="4",
         width="100%",
+    )
+
+
+def story_duplicate() -> rx.Component:
+    """N3 (m-25142902): the piece already has a story ad (another tab, a reload, another
+    phone). Nothing more is prepared until the owner chooses: see it, or make another."""
+    return rx.cond(
+        S.story_existing != "",
+        rx.vstack(
+            callout(STORY_DUPLICATE, "warn"),
+            rx.flex(
+                rx.link(
+                    rx.button(STORY_SEE_EXISTING, size="3", min_height="44px", width="100%"),
+                    href=S.story_existing_href,
+                    width=["100%", "auto"],
+                ),
+                rx.button(
+                    STORY_CREATE_ANOTHER,
+                    on_click=S.create_another_story_ad,
+                    disabled=S.busy,
+                    variant="outline",
+                    size="3",
+                    min_height="44px",
+                    width=["100%", "auto"],
+                ),
+                direction=rx.breakpoints(initial="column", sm="row"),
+                gap="3",
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+        ),
     )
 
 

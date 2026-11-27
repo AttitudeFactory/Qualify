@@ -17,6 +17,7 @@ from .ad_results_vm import (
     AlertAccountVM,
 )
 from .investment_profile_page import investment_profile_card
+from .promotion_vm import STORY_AD_LABEL, STORY_SEE_PIECE
 from .ui import (
     app_shell,
     callout,
@@ -41,36 +42,78 @@ def _fact(label: str, value: str | rx.Var[str]) -> rx.Component:
     )
 
 
+def _story_mark(row: rx.Var[AdResultVM]) -> rx.Component:
+    """N3 (m-25142902): a story ad says so, with its 9:16 picture when the piece has one."""
+    return rx.cond(
+        row.story,
+        rx.hstack(
+            rx.cond(
+                row.story_image != "",
+                rx.image(
+                    src=row.story_image,
+                    alt="",
+                    width="3rem",
+                    aspect_ratio="9 / 16",
+                    object_fit="cover",
+                    border_radius="6px",
+                    flex_shrink="0",
+                ),
+            ),
+            rx.badge(rx.icon("smartphone", size=12), STORY_AD_LABEL, variant="soft"),
+            align="center",
+            spacing="2",
+        ),
+    )
+
+
 def _ad(row: rx.Var[AdResultVM]) -> rx.Component:
-    return rx.link(
-        card(
-            rx.vstack(
-                signal_pill(row.status_label, row.tone),
-                rx.cond(
-                    row.stale | row.refresh_failed,
-                    rx.text("Actualiza con Meta para comprobar el estado actual.", size="2"),
+    # Two links side by side, never one inside the other: the ad, and its historia.
+    return card(
+        rx.vstack(
+            rx.link(
+                rx.vstack(
+                    signal_pill(row.status_label, row.tone),
+                    _story_mark(row),
+                    rx.cond(
+                        row.stale | row.refresh_failed,
+                        rx.text("Actualiza con Meta para comprobar el estado actual.", size="2"),
+                    ),
+                    rx.text(row.title, weight="medium", class_name="q-clamp-3"),
+                    rx.text(row.account, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+                    _fact("Presupuesto aprobado al crear", row.approved_budget),
+                    rx.text("Última consulta: " + row.checked_label, size="1", color=T.TEXT_MUTED),
+                    rx.cond(
+                        row.rejection_reason != "",
+                        rx.text(row.rejection_reason, size="2", overflow_wrap="anywhere"),
+                    ),
+                    rx.text("Ver estado y resultados →", size="2"),
+                    align_items="start",
+                    spacing="3",
+                    width="100%",
                 ),
-                rx.text(row.title, weight="medium", class_name="q-clamp-3"),
-                rx.text(row.account, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
-                _fact("Presupuesto aprobado al crear", row.approved_budget),
-                rx.text("Última consulta: " + row.checked_label, size="1", color=T.TEXT_MUTED),
-                rx.cond(
-                    row.rejection_reason != "",
-                    rx.text(row.rejection_reason, size="2", overflow_wrap="anywhere"),
-                ),
-                rx.text("Ver estado y resultados →", size="2"),
-                align_items="start",
-                spacing="3",
+                href="/promotions/" + row.id,
+                underline="none",
+                color="inherit",
+                display="block",
+                min_height="44px",
                 width="100%",
             ),
-            interactive=True,
+            rx.cond(
+                row.story,
+                rx.link(
+                    STORY_SEE_PIECE,
+                    href=row.fix_href,
+                    size="2",
+                    min_height="44px",
+                    display="inline-flex",
+                    align_items="center",
+                ),
+            ),
+            align_items="start",
+            spacing="2",
             width="100%",
         ),
-        href="/promotions/" + row.id,
-        underline="none",
-        color="inherit",
-        display="block",
-        min_height="44px",
+        interactive=True,
         width="100%",
     )
 
@@ -627,6 +670,23 @@ def _detail() -> rx.Component:
                     ),
                 ),
                 rx.heading(S.detail.promotion.title, size="4", as_="h2", overflow_wrap="anywhere"),
+                rx.cond(
+                    S.detail.promotion.story,
+                    rx.hstack(
+                        rx.badge(rx.icon("smartphone", size=12), STORY_AD_LABEL, variant="soft"),
+                        rx.link(
+                            STORY_SEE_PIECE,
+                            href=S.detail.promotion.fix_href,
+                            size="2",
+                            min_height="44px",
+                            display="inline-flex",
+                            align_items="center",
+                        ),
+                        align="center",
+                        spacing="3",
+                        wrap="wrap",
+                    ),
+                ),
                 rx.cond(
                     S.detail.promotion.rejection_reason != "",
                     callout(S.detail.promotion.rejection_reason, "error"),

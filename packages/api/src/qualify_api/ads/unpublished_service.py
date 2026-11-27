@@ -444,11 +444,13 @@ class UnpublishedImageService:
         confirm_preparation: bool,
         feed_thumbnail_asset_id: UUID | None = None,
         vertical_thumbnail_asset_id: UUID | None = None,
+        duplicate_of: UUID | None = None,
     ) -> UnpublishedPreview:
         """Images: one call. Videos: each video also needs its cover image; while Meta is
         still processing a video this raises and the caller repeats the SAME call later.
         `feed_asset_id=None` is a story ad (m-25026350): one 9:16 image or video, shown only
-        in Instagram stories; `feed_html` of the preview is then empty."""
+        in Instagram stories; `feed_html` of the preview is then empty. A story ad of a piece that
+        already has one raises `StoryAdExists` unless `duplicate_of` names it (N3)."""
         if confirm_preparation is not True:
             raise UnpublishedUnavailable("Confirma la preparación del anuncio en pausa.")
         form.validate(datetime.now(UTC))
@@ -478,7 +480,7 @@ class UnpublishedImageService:
             if source.is_story and str(error) in STORY_LIMITS:
                 raise UnpublishedUnavailable(STORY_LIMITS[str(error)]) from None
             raise
-        recipe = self.recipes.approve(source, form, actor, request_key)
+        recipe = self.recipes.approve(source, form, actor, request_key, duplicate_of)
         access = await self._account(source, actor)
         client = access.client
         try:

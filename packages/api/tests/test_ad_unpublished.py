@@ -77,7 +77,7 @@ class Recipes:
     def __init__(self):
         self.rows, self.uploads = {}, {}
 
-    def approve(self, source, form, actor, key):
+    def approve(self, source, form, actor, key, duplicate_of=None):
         row = self.rows.setdefault(
             key,
             {

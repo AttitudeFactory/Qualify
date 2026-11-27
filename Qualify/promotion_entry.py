@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .promotion_vm import STORY_FORMAT, STORY_PROMOTE
+from .promotion_vm import STORY_FORMAT, STORY_HAS_AD, STORY_PROMOTE
+from .ui import tokens as T
 
 
 def promotion_event_query(query: rx.Var[str], event_id: rx.Var[str]) -> rx.Var[str]:
@@ -37,9 +38,16 @@ def card_promotion_link(post: rx.Var) -> rx.Component:
     wizard as before."""
     return rx.cond(
         post.is_story,
-        rx.cond(
-            post.story_ad_ready,
-            promotion_link(post.post_id, query="?formato=" + STORY_FORMAT, label=STORY_PROMOTE),
+        rx.fragment(
+            # N3 (m-25142902): the card says the historia already has a story ad.
+            rx.cond(
+                post.story_ad_exists,
+                rx.text(STORY_HAS_AD, size="1", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                post.story_ad_ready,
+                promotion_link(post.post_id, query="?formato=" + STORY_FORMAT, label=STORY_PROMOTE),
+            ),
         ),
         rx.cond(post.used_count > 0, promotion_link(post.post_id)),
     )

@@ -19,7 +19,7 @@ from qualify_api.ads.messaging_greeting import (
     WELCOME_TOO_LONG,
     GreetingUnavailable,
 )
-from qualify_api.ads.unpublished import UnpublishedUnavailable
+from qualify_api.ads.unpublished import StoryAdExists, UnpublishedUnavailable
 from qualify_api.ads.wizard import WizardUnavailable, goal_reason
 from qualify_api.tenancy.acting import acting_login
 
@@ -93,7 +93,12 @@ from .promotion_provider import (
     story_block_text,
     story_block_view,
 )
-from .promotion_unpublished_provider import confirm_unpublished, prepare_unpublished
+from .promotion_unpublished_provider import (
+    confirm_unpublished,
+    existing_story_ad,
+    prepare_unpublished,
+    promotion_href,
+)
 from .promotion_vm import (
     CHAT_BUTTON_LABELS,
     CONFIRM_FAILED,
@@ -198,6 +203,11 @@ class PromotionState(rx.State):
     story_block: str = ""
     story_block_action: str = ""
     story_block_href: str = ""
+    # N3 (m-25142902): this piece already has a story ad (another tab, a reload, another
+    # phone): the newest one's recipe and where to see it, until the owner chooses.
+    story_existing: str = ""
+    story_existing_href: str = "/promotions"
+    _duplicate_of: str = ""  # the story ad the owner chose to repeat (or this session's own)
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -2092,6 +2102,8 @@ class PromotionState(rx.State):
             self.story_entry = story
             self.story_cta_open = False
             self.story_block = self.story_block_action = self.story_block_href = ""
+            self.story_existing, self.story_existing_href = "", "/promotions"
+            self._duplicate_of = ""
             self.back_href = week or f"/drafts/{piece}"
             self.back_label = (
                 "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
@@ -2111,6 +2123,11 @@ class PromotionState(rx.State):
                 )
                 if story and not rows and not block[0]:
                     block = story_block_text("missing")  # e.g. it changed between reads
+                existing = (
+                    await asyncio.to_thread(existing_story_ad, UUID(context[0]), piece)
+                    if rows and story
+                    else ("", "")
+                )
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
             async with self:
@@ -2122,6 +2139,8 @@ class PromotionState(rx.State):
                     return
                 self.sources = rows
                 self.story_block, self.story_block_action, self.story_block_href = block
+                if existing[0]:
+                    self.story_existing, self.story_existing_href = existing
                 if rows and rows[0].media_kind and self.back_label != "Tu semana":
                     self.back_label = "Revisar pieza"  # never published: one name, «pieza»
                 self.covers_open = False
@@ -2157,6 +2176,14 @@ class PromotionState(rx.State):
     async def create_preview(self) -> None:
         await self._remote(confirm=False)
 
+    @rx.event
+    def create_another_story_ad(self) -> None:
+        """N3: the owner read that the piece has a story ad and still wants another one."""
+        if self.busy or not self.story_existing:
+            return
+        self._duplicate_of, self.story_existing = self.story_existing, ""
+        self.error = ""
+
     @rx.event(background=True)
     async def confirm(self) -> None:
         await self._remote(confirm=True)
@@ -2173,6 +2200,8 @@ class PromotionState(rx.State):
                 or getattr(self, "result", PromotionResultVM()).status
                 or self.preparation_blocked
                 or (getattr(self, "needs_help", False) and not confirm)
+                # N3: the owner first chooses between the story ad they have and another.
+                or (getattr(self, "story_existing", "") and not confirm)
             ):
                 return
             if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
@@ -2199,6 +2228,7 @@ class PromotionState(rx.State):
                 suggestion = None
             source = next((row for row in self.sources if row.id == form.source_id), None)
             piece, request_key = self._piece_id, self._request_key
+            duplicate_of = getattr(self, "_duplicate_of", "")
         try:
             with acting_login(UUID(context[1])):
                 if confirm and form.media_kind:
@@ -2225,6 +2255,7 @@ class PromotionState(rx.State):
                         source,
                         zone,
                         request_key,
+                        **({"duplicate_of": duplicate_of} if duplicate_of else {}),
                     )
                 else:
                     prepared = await asyncio.to_thread(
@@ -2284,6 +2315,10 @@ class PromotionState(rx.State):
                     self.needs_help = outcome_kind == "help"
                     if self.video_waiting:
                         self.error = ""
+                    if isinstance(exc, StoryAdExists):  # N3: the warning says it, not an error
+                        self.error = ""
+                        self.story_existing = str(exc.recipe_id)
+                        self.story_existing_href = promotion_href(exc.promotion_id)
         else:
             async with self:
                 if (
@@ -2300,6 +2335,8 @@ class PromotionState(rx.State):
                         self.confirm_charge = False
                     elif form.enhancements == self.form.enhancements:
                         self.video_waiting = False
+                        if form.story:  # this session's own story ad is never a «duplicate»
+                            self._duplicate_of = prepared.recipe_id
                         self.review = prepared
                         self.checks = prepared.checks
                         self.confirm_charge = False

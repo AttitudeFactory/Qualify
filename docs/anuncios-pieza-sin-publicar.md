@@ -206,6 +206,25 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
   en vivo m-24828971 y ajustar la comparación solo a lo que Meta añada de verdad. En esa misma
   prueba se decide si una historia ya publicada puede promocionarse por su id.
 
+### Un solo anuncio de historia por pieza, salvo que el dueño elija otro (N3, m-25142902)
+
+- **Qué es «ya tiene un anuncio en historias»:** cualquier fila de `ad_unpublished_sources` de
+  la pieza con `source->>'pipeline'` `ad-story-image-v1` / `ad-story-video-v1`, tenga o no ya
+  campaña en pausa (`promotion_id`). Sin migración: se reutiliza la aprobación guardada.
+- **Del lado del servidor y sin carreras:** `UnpublishedRepository.approve` toma
+  `pg_advisory_xact_lock('ad-story:<pieza>')` en la misma transacción que guarda la aprobación,
+  antes de cualquier llamada a Meta. Si hay otra aprobación de historia de la pieza (otra clave
+  de pedido: recargar, otra pestaña u otro teléfono) más nueva que la que el dueño ya vio,
+  responde `StoryAdExists` (motivo `story_ad_exists`) y no crea nada. Repetir la misma clave
+  (video en proceso) nunca es un duplicado. Dos teléfonos a la vez: pasa uno solo (test `-m db`).
+- **La elección del dueño:** el asistente avisa al abrirse y cuando el servidor lo rechaza:
+  «Ver el anuncio que ya tienes» (`/promotions/<id>`, o «Anuncios» si aún no tiene campaña) o
+  «Crear otro anuncio», que manda `duplicate_of` = la aprobación avisada. La propia aprobación de
+  la sesión cuenta como vista: cambiar el presupuesto y volver a preparar no avisa.
+- **En «Anuncios»:** el anuncio de historia lleva la etiqueta «Anuncio en historias», la imagen
+  9:16 (o la portada del video) mientras la pieza conserve sus archivos, y «Ver la historia».
+  La tarjeta de la historia dice «Ya tiene un anuncio en historias».
+
 ## Carrusel de productos del Catálogo (m-25113484)
 
 Un anuncio en carrusel de Instagram cuyas tarjetas son productos del Catálogo del negocio,
