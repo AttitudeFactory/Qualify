@@ -202,6 +202,10 @@ por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin 
     en una ventana más ancha, el mismo panel entra desde la derecha, como «Tus
     competidores». Son dos `drawer` del sistema y se abre uno. Al cerrarse, el foco vuelve a
     «Filtros».
+  - **«Competidores»** sigue la misma regla de 640 px desde la barra ancha y desde la
+    angosta (Deivid, 2026-11-26): abre desde abajo en el teléfono y desde la derecha en una
+    ventana más ancha. Ya no depende de en qué barra está el botón. Al cerrarse, el foco
+    vuelve al botón que lo abrió.
 - **Cortes de la barra** (cuenta completa en `assets/qualify-creative.css`). Deivid midió en
   vivo los anchos naturales con «Compiten contigo» y «Venezuela» elegidos a la vez: 88 + 155
   + 88 + 98 + 108 + 133 + 44 + 116 + 7 × 12 ≈ 914 px. La estimación anterior era 918 px.

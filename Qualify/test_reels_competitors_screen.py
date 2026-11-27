@@ -355,11 +355,11 @@ async def test_the_drawer_opens_and_closes_and_needs_competitors(world: _World) 
     state, proxy = _screen_state()
     await _open(proxy)
     assert state.competitor_rows
-    state.open_competitors(True)  # the phone's chip: from the bottom
+    state.open_competitors(True)  # a phone's window: from the bottom
     assert state.competitors_open and state.competitors_bottom
     state.competitors_changed(False)  # Esc / backdrop / «Cerrar»
     assert not state.competitors_open
-    state.open_competitors(False)  # the desktop button: from the right
+    state.open_competitors(False)  # a wider window: from the right
     assert state.competitors_open and not state.competitors_bottom
     state.close_competitors()  # «Listo»
     assert not state.competitors_open

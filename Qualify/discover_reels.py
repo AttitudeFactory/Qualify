@@ -662,7 +662,8 @@ class DiscoverReelsState(rx.State):
 
     @rx.event
     def open_competitors(self, bottom: bool) -> None:
-        """«Tus competidores»: the drawer from the right (desktop) or the bottom (phone)."""
+        """«Tus competidores»: the drawer from the bottom when `bottom` (the browser's
+        `PHONE_MEDIA` answer: a phone's window), from the right otherwise."""
         if not self.competitor_rows:
             return
         self.competitors_bottom = bool(bottom)
@@ -2251,7 +2252,10 @@ RIVALS_FOCUS_SCRIPT = (
 
 def _rivals_button(*, chip: bool) -> rx.Component:
     """«Tus competidores» at the end of the bar (option A, Deivid 2026-11-25): opens the
-    drawer — from the right on a desktop, from the bottom on a phone. While a manual read
+    drawer — from the bottom on a phone (a window of `PHONE_MAX_PX` or less), from the
+    right on a wider window, whichever bar it sits on (RF-02b); closed, the focus goes
+    back to the button that opened it (`RIVALS_FOCUS_SCRIPT`: the visible one of the two
+    ids, as only one bar shows). While a manual read
     is in flight it shows the spinner instead of its icon. Not drawn for a brand that
     marked no competitor (RF-02's empty message tells it how). RF-13: a `surface` Radix
     button of the skin, like the filters beside it, reading «Competidores» on a phone and
@@ -2269,7 +2273,10 @@ def _rivals_button(*, chip: bool) -> rx.Component:
             rx.text(reels_competitors_vm.PICKER_SHORT, as_="span", min_width="0", **_ELLIPSIS),
             type="button",
             id=RIVALS_CHIP_ID if chip else RIVALS_BUTTON_ID,
-            on_click=S.open_competitors(chip),
+            # RF-02b (Deivid, 2026-11-26): the same rule as «Filtros» on both bars — the
+            # browser says whether the window is a phone's (`PHONE_MEDIA`): from the bottom
+            # there, from the right on a wider window
+            on_click=rx.call_script(PHONE_MEDIA, callback=S.open_competitors),
             variant="surface",
             size="2",
             min_height=_TARGET,

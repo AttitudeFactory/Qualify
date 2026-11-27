@@ -1840,3 +1840,33 @@ async def test_filtros_opens_from_the_right_on_a_wider_window(world: _World) -> 
     state.sheet_changed(False)
     state.open_filters(True)  # a phone
     assert state.sheet == "all" and state.sheet_bottom is True
+
+
+async def test_competidores_follows_the_same_640px_rule_on_both_bars(world: _World) -> None:
+    """Deivid, 2026-11-26: «Competidores» opens from the bottom on a phone's window and
+    from the right on a wider one, from the wide bar and the narrow bar alike — the
+    browser's `PHONE_MEDIA` answer, never which bar the button sits on — and, closed,
+    the focus goes back to the button that opened it (the visible one of its two ids)."""
+    import inspect
+
+    from . import discover_reels
+
+    rivals = inspect.getsource(discover_reels._rivals_button)
+    assert "rx.call_script(PHONE_MEDIA, callback=S.open_competitors)" in rivals
+    assert "open_competitors(chip)" not in rivals  # the bar no longer decides the side
+    for button_id in (discover_reels.RIVALS_BUTTON_ID, discover_reels.RIVALS_CHIP_ID):
+        assert button_id in discover_reels.RIVALS_FOCUS_SCRIPT
+    assert "b.offsetParent !== null" in discover_reels.RIVALS_FOCUS_SCRIPT
+    drawers = inspect.getsource(discover_reels._competitors_drawer)
+    assert "on_close_auto_focus=rx.call_script(RIVALS_FOCUS_SCRIPT)" in drawers
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.competitor_rows
+    state.open_competitors(False)  # a desktop window, from either bar
+    assert state.competitors_open and not state.competitors_bottom
+    state.competitors_changed(False)
+    state.open_competitors(True)  # a phone
+    assert state.competitors_open and state.competitors_bottom
+    assert world.paid == []
