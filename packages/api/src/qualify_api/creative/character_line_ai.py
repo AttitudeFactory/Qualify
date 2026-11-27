@@ -12,7 +12,11 @@ switch off (`QUALIFY_CLIP_CHARACTER_SCENE`, ADR 50 §12.5, P3) the request is re
 `switched_off` before anything is read.
 
 **The prompt** (`LINE_PROMPT_VERSION`): plain neutral Spanish, first person, ONE sentence,
-aimed at `max_chars - LINE_MARGIN_CHARS` so a slightly long answer still fits; no price,
+aimed at `max_chars - LINE_MARGIN_CHARS` so a slightly long answer still fits — said in
+characters AND words, with an example sentence of the right size, and asked TWICE in the
+same call (`line`, then a shorter `shorter_line`): the first that fits is kept, the call
+counts once (v2; strict tools do not enforce `maxLength`, so the length is checked
+here); no price,
 promotion, date or fact that is not in the input (the catalog price is never sent: a
 spoken price is the one fact a scene must not get wrong, so the line has none — brand rule
 7, «whole or not at all»); no emojis, hashtags, digits or English words, and a foreign
@@ -108,7 +112,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("qualify_api.creative.character_line_ai")
 
 LINE_MODEL: Final = ModelConfig("claude-haiku-5-5", effort="low")
-LINE_PROMPT_VERSION: Final = "personaje-linea-v1"
+#: v2 (2026-11-27): v1's only live sample came back too long (LINEA-001, 1 of 1 over 82
+#: characters at 8 s). v2 states the length in characters AND words, shows a sentence of the
+#: right length, and asks for TWO candidates in the same call (the second shorter); the
+#: first that fits is kept. Not measured live yet.
+LINE_PROMPT_VERSION: Final = "personaje-linea-v2"
+#: About this many characters per spoken Spanish word, space included (for the word cap).
+CHARS_PER_WORD: Final = 6
 TOOL_NAME: Final = "propose_line"
 #: The function the consumption ledger books these calls to (m-24955649).
 FEATURE: Final = "sugerir-linea-personaje"
@@ -327,8 +337,10 @@ SYSTEM_PROMPT: Final = (
     "Reglas sin excepción:\n"
     "- UNA sola frase, en primera persona (habla el personaje), en español claro y neutro, "
     "de tú, cálida y natural. Sin jerga ni palabras de una sola región.\n"
-    "- Respeta el largo máximo que se indica, contando espacios y signos. Más corta está "
-    "bien; más larga no sirve.\n"
+    "- Respeta el largo máximo que se indica, en caracteres (contando espacios y signos) Y "
+    "en palabras. Más corta está bien; más larga no sirve y se descarta. Antes de "
+    "responder, cuenta las palabras de cada frase.\n"
+    "- Propón DOS frases distintas: la segunda, más corta que la primera.\n"
     "- NO inventes hechos: ningún precio, promoción, descuento, fecha, horario, dirección, "
     "cifra, ingrediente, premio ni afirmación que no esté en los datos que se te dan. "
     "Nunca digas un precio.\n"
@@ -393,9 +405,33 @@ def render_request(
     lines += [
         "",
         f"La escena dura {duration_s} segundos.",
-        f"Largo máximo de la frase: {target_chars} caracteres.",
+        f"Largo máximo de cada frase: {target_chars} caracteres y "
+        f"{max_words(target_chars)} palabras.",
+        f"Ejemplo de una frase de largo correcto ({len(length_example(target_chars))} "
+        f"caracteres): {length_example(target_chars)}",
     ]
     return "\n".join(lines)
+
+
+#: Sentences of a known length, about no product in particular: the longest that fits the
+#: target is shown as the size to aim for.
+_LENGTH_EXAMPLES: Final = (
+    "Pruébalo y me cuentas.",
+    "Pruébalo hoy, te va a encantar.",
+    "Mira qué rico se ve, pruébalo hoy y vas a querer repetir con tus amigos.",
+    "Hola, mira esto que preparamos con tanto cariño: pruébalo hoy y vas a querer repetir conmigo.",
+)
+
+
+def max_words(target_chars: int) -> int:
+    """The word cap that goes with `target_chars` (at least 3)."""
+    return max(3, target_chars // CHARS_PER_WORD)
+
+
+def length_example(target_chars: int) -> str:
+    """The longest example sentence that fits `target_chars`."""
+    fitting = [text for text in _LENGTH_EXAMPLES if len(text) <= target_chars]
+    return max(fitting, key=len) if fitting else _LENGTH_EXAMPLES[0]
 
 
 def line_tool(target_chars: int) -> dict[str, Any]:
@@ -406,8 +442,14 @@ def line_tool(target_chars: int) -> dict[str, Any]:
             "line": {
                 "type": "string",
                 "description": (
-                    f"Una sola frase de hasta {target_chars} caracteres contando espacios y "
-                    "signos, en primera persona, sin comillas."
+                    f"Una sola frase de hasta {target_chars} caracteres y "
+                    f"{max_words(target_chars)} palabras, en primera persona, sin comillas."
+                ),
+            },
+            "shorter_line": {
+                "type": "string",
+                "description": (
+                    "Otra frase distinta y MÁS CORTA que la primera, con las mismas reglas."
                 ),
             },
             "added_facts": {
@@ -609,17 +651,25 @@ class CharacterLineService:
         stats = meter.stats()
         calls = [use for use in tool_uses(response) if use.name == TOOL_NAME]
         answer = (calls[0].input or {}) if calls else {}
-        line = normalize_line(answer.get("line") or "")
         added = [str(fact).strip() for fact in answer.get("added_facts") or () if str(fact).strip()]
-        problem = (
-            f"no {TOOL_NAME} call"
-            if not calls
-            else "added facts"
-            if added
-            else check_line(
-                line, duration_s=duration_s, character_id=character_id, product_id=product_id
-            )
-        )
+        line = ""
+        problem = f"no {TOOL_NAME} call" if not calls else "added facts" if added else None
+        if problem is None:
+            # both candidates came in the ONE paid call: the first that fits is kept
+            problems: list[str] = []
+            for field_name in ("line", "shorter_line"):
+                candidate = normalize_line(answer.get(field_name) or "")
+                why = check_line(
+                    candidate,
+                    duration_s=duration_s,
+                    character_id=character_id,
+                    product_id=product_id,
+                )
+                if why is None:
+                    line, problems = candidate, []
+                    break
+                problems.append(f"{field_name}: {why}")
+            problem = "; ".join(problems) or None
         logger.info(
             "character_line.suggested tenant=%s brand=%s user=%s scene=%s model=%s in=%s "
             "out=%s cost=%.6f chars=%s max=%s problem=%s prompt=%s",

@@ -175,7 +175,8 @@ TRANSITION_UNAVAILABLE = "character_scene_transition_unavailable"
 LINE_PROVENANCE = "character_line_provenance"
 #: The prompt versions of «Sugerir con IA» (`character_line_ai.LINE_PROMPT_VERSION`) a
 #: suggested line may carry. A new version is added here when it ships.
-KNOWN_LINE_PROMPT_VERSIONS = frozenset({"personaje-linea-v1"})
+#: v1 stays known for provenance (a line suggested by it is still a suggested line).
+KNOWN_LINE_PROMPT_VERSIONS = frozenset({"personaje-linea-v1", "personaje-linea-v2"})
 
 
 def past_end_text(number: int) -> str:

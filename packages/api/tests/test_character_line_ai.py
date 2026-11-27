@@ -202,14 +202,21 @@ def test_a_line_per_scene_length(
     tool = call["tools"][0]
     assert tool["name"] == cl.TOOL_NAME and tool["strict"] is True
     user = call["messages"][0]["content"]
-    assert f"Largo máximo de la frase: {limit - 5} caracteres." in user
+    target = limit - 5
+    assert (
+        f"Largo máximo de cada frase: {target} caracteres y {cl.max_words(target)} palabras."
+        in user
+    )
+    assert len(cl.length_example(target)) <= target
+    assert cl.length_example(target) in user
+    assert set(tool["input_schema"]["properties"]) == {"line", "shorter_line", "added_facts"}
     assert f"La escena dura {duration} segundos." in user
     # the consumption ledger: the business, the brand, the feature and the prompt version
     (consumption,) = booked
     assert consumption.attribution.tenant_id == TENANT
     assert consumption.attribution.brand_id == BRAND
     assert consumption.attribution.feature == "sugerir-linea-personaje"
-    assert consumption.attribution.prompt_version == "personaje-linea-v1"
+    assert consumption.attribution.prompt_version == cl.LINE_PROMPT_VERSION
 
 
 def test_the_prompt_carries_the_servers_reads_and_never_a_price() -> None:
@@ -494,3 +501,42 @@ def test_a_released_tap_may_ask_again() -> None:
         _suggest(service, request="tap-x")
     assert _suggest(service, request="tap-x").left_today == 9
     assert len(ledger.rows) == 1
+
+
+# -- personaje-linea-v2: two candidates in one call (LINEA-001: v1 came back too long) -----
+
+
+def test_v2_keeps_the_shorter_candidate_when_the_first_is_too_long() -> None:
+    factory = FakeFactory(fixture("long_then_short_8s"))
+    service, ledger, _ = _service(factory)
+    got = _suggest(service, duration=8)
+    assert got.line == "Soy Mango y esta copa de mango fresquita te va a encantar."
+    assert got.prompt_version == "personaje-linea-v2"
+    assert len(factory.messages.calls) == 1  # one call, both candidates in it
+    (row,) = ledger.rows.values()  # counted once
+    assert row.output_tokens == 140
+    assert got.left_today == 9
+
+
+def test_v2_fails_once_when_both_candidates_are_too_long() -> None:
+    factory = FakeFactory(fixture("both_long_8s"), fixture("ok_8s"))
+    service, ledger, _ = _service(factory)
+    with pytest.raises(cl.CharacterLineRefused) as refused:
+        _suggest(service, duration=8)
+    assert refused.value.code == cl.LINE_SUGGESTION_FAILED
+    assert "line:" in str(refused.value) and "shorter_line:" in str(refused.value)
+    assert len(factory.messages.calls) == 1 and len(ledger.rows) == 1  # never retried
+
+
+def test_v1_stays_a_known_provenance_and_v2_is_current() -> None:
+    assert {"personaje-linea-v1", "personaje-linea-v2"} <= cs.KNOWN_LINE_PROMPT_VERSIONS
+    assert cl.LINE_PROMPT_VERSION == "personaje-linea-v2"
+
+
+@pytest.mark.parametrize("seconds", [5, 6, 7, 8, 9, 10])
+def test_the_length_example_and_word_cap_fit_every_scene(seconds: int) -> None:
+    from qualify_creative.schemas import character_line_max_chars
+
+    target = character_line_max_chars(seconds) - cl.LINE_MARGIN_CHARS
+    assert len(cl.length_example(target)) <= target
+    assert cl.max_words(target) * 4 <= target  # a word cap the characters can hold

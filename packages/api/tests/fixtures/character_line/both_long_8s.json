@@ -1,0 +1,23 @@
+{
+  "_note": "Fictional business and words, written for the offline tests (no client data).",
+  "id": "msg_fixture",
+  "model": "claude-haiku-5-5-20261008",
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 820,
+    "output_tokens": 140,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0
+  },
+  "content": [
+    {
+      "type": "tool_use",
+      "name": "propose_line",
+      "input": {
+        "line": "Hola, soy Mango y te traigo mi copa favorita de mango, fresquita, cremosa y llena de fruta para tu tarde.",
+        "shorter_line": "Hola, soy Mango y te traigo mi copa favorita de mango, fresquita, cremosa y llena de fruta para tu tarde. Ven ya.",
+        "added_facts": []
+      }
+    }
+  ]
+}

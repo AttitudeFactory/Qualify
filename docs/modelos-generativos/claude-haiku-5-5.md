@@ -210,7 +210,7 @@ Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, 
 - **Qué hace:** propone UNA frase que el personaje guardado del negocio le dice a la cámara en una escena de 5 a 10 s, sobre un producto del Catálogo. El dueño la ve, la puede editar y solo entonces entra en la escena (`line_suggested` + `line_prompt_version`). Gratis para el dueño: no usa creaciones ni vistas previas.
 - **Modelo:** `claude-haiku-5-5`, esfuerzo `low` (pensamiento adaptativo; sus tokens cuentan dentro de `max_tokens` = 2048), herramienta estricta `propose_line`. Una sola llamada, nunca se reintenta (cliente con `max_retries=0`).
 - **Precio:** US$0,10 por millón de tokens de entrada y US$0,50 de salida (`claude_tools.PRICES`, tabla `v7`; verificado contra el código el 2026-11-27).
-- **Módulo:** `packages/api/src/qualify_api/creative/character_line_ai.py`, prompt `personaje-linea-v1`, función del registro de consumo `sugerir-linea-personaje`.
+- **Módulo:** `packages/api/src/qualify_api/creative/character_line_ai.py`, prompt `personaje-linea-v2` (antes `personaje-linea-v1`), función del registro de consumo `sugerir-linea-personaje`.
 - **Largo:** el prompt pide `max_chars − 5` (32, 77 y 107 caracteres a 5, 8 y 10 s); la respuesta se valida contra el límite de la escena (37, 82 y 112). Una frase larga, vacía, rechazada, con cifras o con un hecho inventado falla (`line_suggestion_failed`) y cuenta para el día, porque se pagó.
 - **Topes:** 10 sugerencias por escena y 30 por negocio al día del negocio (`tenants.timezone`); medidor de US$0,01 por llamada y el tope mensual en dólares de la marca.
 - **Estimado offline (2026-11-27, gratis):** `packages/api/evals/linea_personaje/run_once.py --count-tokens` (contador de tokens de Anthropic, sin costo) sobre un negocio ficticio escrito para la medición («Heladería La Nube», el personaje «Mango», la «Copa de mango»):
@@ -219,4 +219,15 @@ Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, 
   - Peor caso, con los 2.048 tokens de salida: **US$0,00116** por sugerencia, por debajo del medidor de US$0,01.
   - Esperado, con 100 a 400 tokens de salida (pensamiento corto y una frase): **US$0,00018–0,00033** por sugerencia.
   - Un negocio que usa su tope entero, 30 al día durante 30 días, gastaría a lo sumo US$1,04 al mes (peor caso) y unos US$0,16–0,30 con el esperado.
-- **Llamada real única (autorizada por Deivid en la sesión, tope US$0,01):** no se hizo el 2026-11-27, porque el sistema de permisos de la sesión bloqueó el comando. Pendiente: `packages/api/evals/linea_personaje/run_once.py --env-file .env --live-once`. Los tokens y el costo reales se anotan aquí cuando se haga.
+- **Llamada real única (autorizada por Deivid, 2026-11-27; la corrió el coordinador):** `run_once.py --env-file .env --live-once`, a las 21:48:04 UTC. Escena de 8 s, `claude-haiku-5-5@low`, prompt `personaje-linea-v1`, negocio ficticio.
+  - **Tokens:** 406 de entrada, 117 de salida, 934 de escritura de caché y 0 de lectura de caché.
+  - **Costo:** US$0,000215850, registrado como 0,000216.
+  - **Resultado:** `line_suggestion_failed` (`character_line_too_long`). La frase superó los 82 caracteres de una escena de 8 s. **Muestra real: 1 de 1 demasiado larga, así que `personaje-linea-v1` no cumple la regla del largo.**
+  - **Gasto total:** a lo sumo US$0,0014. Un intento anterior no imprimió nada y no se sabe si se cobró; se cuenta su peor caso.
+- **Corrección, `personaje-linea-v2` (2026-11-27, sin llamadas pagadas):**
+  - El largo se pide en caracteres y en palabras (unos 6 caracteres por palabra).
+  - El pedido trae una frase de ejemplo del largo correcto.
+  - Se piden DOS frases en la misma llamada (`line` y otra más corta, `shorter_line`) y se guarda la primera que cabe. Es una sola llamada: cuenta una vez y nunca se reintenta.
+  - `maxLength` no sirve: las herramientas estrictas no lo admiten (skill `claude-api`, «JSON Schema Limitations»), así que el largo lo sigue validando el servidor.
+  - `personaje-linea-v1` sigue en `KNOWN_LINE_PROMPT_VERSIONS` como procedencia válida.
+  - **v2 NO se ha medido en vivo.** Antes de encender `QUALIFY_CLIP_CHARACTER_SCENE` hace falta una muestra chica pagada, y esa muestra necesita el OK de Deivid.
