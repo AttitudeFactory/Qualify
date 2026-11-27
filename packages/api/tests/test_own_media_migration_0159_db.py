@@ -77,6 +77,18 @@ def test_downgrade_removes_recorded_own_media_pieces_then_upgrade_reapplies() ->
                     "ON b.id = d.brief_id WHERE b.kind = 'own_media' AND d.tenant_id = :t"
                 )
                 assert _count(conn, own, **tenant) == 1
+                # m-25128784: the shared test database may hold briefs of kinds born AFTER
+                # 0159 (`character_scene`, 0189), which 0159's CHECK — rebuilt by its own
+                # downgrade and upgrade — cannot express. Inside this rolled-back
+                # transaction they read as `clip`, the kind they live under, so only
+                # 0159's own rows are judged; nothing outlives the rollback.
+                conn.execute(
+                    text(
+                        "UPDATE content_briefs SET kind = 'clip' "
+                        "WHERE NOT (kind = ANY(CAST(:kinds AS text[])))"
+                    ),
+                    {"kinds": list(migration._KINDS)},
+                )
                 with Operations.context(MigrationContext.configure(conn)):
                     migration.downgrade()
 

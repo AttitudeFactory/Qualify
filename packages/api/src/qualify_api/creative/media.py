@@ -870,6 +870,12 @@ def _key_problems(
             for plan in (*media.parts, *media.parts_removed)
             for segment in plan.segments
         ),
+        # m-25128784: a character scene's product photo and place
+        *(
+            key
+            for scene in media.character_scenes
+            for key in (scene.product.photo_key, scene.background.key)
+        ),
     ]
     present = [key for key in keys if key]
     malformed = [key for key in present if parse_tenant_key(key) is None]
@@ -2504,9 +2510,13 @@ class MediaProducer:
         #: given (tenant, keys)). None = no lookup: a recipe with such a file fails
         #: closed (never made without knowing its «hecho con IA»).
         clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
+        #: m-25128784: the saved characters (m-25129385's `character_reference`), byte for
+        #: byte. None = a character scene fails before any spend («no disponible»).
+        character_references: Any = None,
     ) -> None:
         self._store = store
         self._clip_avatar_sources = clip_avatar_sources
+        self._character_references = character_references
         self._render_client = render_client
         self._clip_composer = clip_composer
         self._part_windows = part_windows
@@ -2807,6 +2817,12 @@ class MediaProducer:
             # ADR 44: the parent of a video by parts makes no video of its own — its parts
             # (child clips) do, and the join is local. Nothing read, selected nor paid.
             return MediaOutcome()
+        if brief.kind is ContentKind.CHARACTER_SCENE:
+            # m-25128784 (ADR 50 §12): one Seedance 2.5 omni task, no Brand Kit resource
+            # selection nor logo — its Clip carries the brand's texts
+            return self._character_scene(
+                tenant_id, draft_id, brief, kit, budget, revision, heartbeat
+            )
         if brief.kind is ContentKind.CLIP and brief.media.clip_reference_mode == "local":
             if brief.media.effects_pipeline_version >= 1:
                 # EF-06: «Tu video, con efectos» — the owner's own stretches made here, at
@@ -5457,6 +5473,51 @@ class MediaProducer:
         if self._clip_composer is not None:
             return self._clip_composer
         return ClipComposer(self._render_client)
+
+    def _character_scene(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        budget: BudgetContext,
+        revision: int,
+        heartbeat: Callable[[], None] | None,
+    ) -> MediaOutcome:
+        """m-25128784: a character's scene as a 480p draft (`character_scene.produce_scene`).
+        Never raises for a vendor or file problem: the outcome carries the failure and the
+        usage of whatever was paid."""
+        from qualify_api.creative.character_scene import produce_scene  # noqa: PLC0415
+
+        usage: list[MediaUsage] = []
+        save = _Saver(self._store, tenant_id, draft_id, revision, heartbeat)
+        try:
+            media = produce_scene(
+                self,
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                brief=brief,
+                kit=kit,
+                budget=budget,
+                usage=usage,
+                save=save,
+            )
+        except (_MediaPending, GenerationDeferred) as exc:
+            logger.warning("character scene %s waits for its vendor: %s", draft_id, exc)
+            return MediaOutcome(usage=tuple(usage), pending=True)
+        except _MediaFailed as exc:
+            logger.warning("character scene %s failed: %s", draft_id, exc.raw or exc.detail)
+            return MediaOutcome(usage=tuple(usage), failure=exc.failure, detail=exc.detail)
+        except CheckpointError:
+            raise
+        except Exception as exc:  # a vendor error, a missing upload, a bad image file
+            logger.warning("character scene %s failed: %s", draft_id, exc)
+            return MediaOutcome(
+                usage=tuple(usage),
+                failure=FailureReason.PROVIDER_ERROR.value,
+                detail=ark_failure_text(f"{type(exc).__name__}: {exc}"),
+            )
+        return MediaOutcome(media=tuple(media), usage=tuple(usage))
 
     def _seedance_task_recorded(self) -> bool:
         """Whether this generation already has its Seedance task recorded (m-24852154:
