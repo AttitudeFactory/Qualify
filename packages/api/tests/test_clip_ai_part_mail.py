@@ -4,7 +4,7 @@ failed or ran out of time, nothing with `QUALIFY_CLIP_AI_PARTS` off.
 
 Offline only: the Clip, its parts and the outbox live in memory (the AI parts world of
 `test_clip_ai_parts`), the mailer is a double that records (no Resend call), the identity
-check is injected and the clock is fixed. Postgres (migration 0192) is in
+check is injected and the clock is fixed. Postgres (migration 0193) is in
 `test_clip_ai_part_mail_db.py`."""
 
 from __future__ import annotations
@@ -21,11 +21,20 @@ from qualify_api.creative import clip_ai_parts as cap
 from qualify_api.creative import clip_avatar as ca
 from qualify_api.creative import clip_avatar_mail as cm
 from qualify_api.creative.fsm import FAILED
+from qualify_api.creative.part_extend import EXTEND_SWITCH
 from qualify_api.creative.video_pipeline.ai_parts import CLIP_AI_PARTS_SWITCH
 from qualify_api.mail import OutgoingMail
 from qualify_api.mail import clip_ai_part as template
 
-from .test_clip_ai_part_actions import _actions, _edit_analysis, _edit_clip, _fail
+from .test_clip_ai_part_actions import (
+    _actions,
+    _edit_analysis,
+    _edit_clip,
+    _fail,
+    _made_clip,
+    _split_clip,
+    _split_cuts_checked,
+)
 from .test_clip_ai_parts import (
     World,
     _block,
@@ -55,6 +64,7 @@ BASE = "https://app.qualify.test"
 BUSINESS = "Arepas Doña Clotilde"
 EMAIL = "clotilde.owner@example.org"
 AUTH_USER = uuid4()
+CHANGE = f"«Cambiar» {template.CHANGE_HINT}"
 
 
 class RecordingMailer:
@@ -84,21 +94,22 @@ class WorldOutbox(cm.MemoryAvatarFailureOutbox):
             plan=(),
             blocks=(),
             ai_parts=self.world.store.parts_of(tenant_id=tenant_id, clip_id=clip_id),
-            segments=_brief_of(self.world, clip_id).media.segments,
+            brief=_brief_of(self.world, clip_id),
         )
 
 
 class Mailing:
     """An AI parts world whose Clip stages its failure emails, and the sender's pass."""
 
-    def __init__(self, brief: Any = None) -> None:
+    def __init__(self, brief: Any = None, *, create: bool = True) -> None:
         self.world = _world()
         self.outbox = WorldOutbox()
         self.outbox.world = self.world
         self.outbox.recipients[(TENANT_ID, UUID(int=0))] = cm.Recipient(EMAIL, AUTH_USER)
         self.world.content._clip_failure_outbox = self.outbox  # noqa: SLF001
         self.mailer = RecordingMailer()
-        self.made = _create(self.world, brief)
+        if create:
+            self.made = _create(self.world, brief)
 
     def verify(self, auth_user_id: UUID, email: str) -> str | None:
         return email if auth_user_id == AUTH_USER else None
@@ -150,9 +161,9 @@ def test_a_failed_part_stages_one_email_and_sends_it() -> None:
     assert mail.to == EMAIL
     assert mail.subject == f"{BUSINESS}: una parte con IA de tu video no salió"
     assert "La parte con IA 1 de tu video no salió" in mail.text
-    assert "no se descontó nada de tu plan por ella" in mail.text
-    assert "Elige «Intentar de nuevo», «Cambiar» o «Quitar»." in mail.text
-    assert template.REMOVE in mail.text and template.COST in mail.text
+    assert "La Parte con IA 1 no se pudo crear y no se descontó su vista previa." in mail.text
+    assert f"Elige «Intentar de nuevo», {CHANGE} o «Quitar»." in mail.text
+    assert template.COST in mail.text and template.FOOTER.format(business=BUSINESS) in mail.text
     url = f"{BASE}/drafts/{m.made.clip_id}"
     assert url in mail.text and f'href="{url}"' in mail.html
     # the owner's 72 h from the failure (12:00 UTC) in Bogotá: 7 a. m. three days on
@@ -192,9 +203,10 @@ def test_two_parts_failed_in_one_pass_are_one_email() -> None:
     assert m.send() == 1
     (mail,) = m.mailer.sent
     assert mail.subject == f"{BUSINESS}: algunas partes con IA de tu video no salieron"
-    assert "Las partes con IA 1 y 2 no se pudieron crear" in mail.text
-    assert "Con cada parte, elige «Intentar de nuevo», «Cambiar» o «Quitar»." in mail.text
-    assert template.REMOVE_MANY in mail.text
+    assert "Las Partes con IA 1 y 2 no se pudieron crear" in mail.text
+    assert f"cada una: «Intentar de nuevo», {CHANGE} o «Quitar»." in mail.text
+    assert "no se descontaron sus vistas previas" in mail.text
+    assert template.COST_MANY in mail.text
 
 
 def test_a_part_failing_on_a_later_pass_is_its_own_email_once() -> None:
@@ -344,8 +356,81 @@ def test_the_only_block_left_offers_no_quitar() -> None:
     m.run()
     assert m.send() == 1
     (mail,) = m.mailer.sent
-    assert "Elige «Intentar de nuevo» o «Cambiar»." in mail.text
+    assert "Elige «Intentar de nuevo» o «Cambiar» (su descripción o sus fotos)." in mail.text
     assert "Quitar" not in mail.text and template.COST_NO_REMOVE in mail.text
+
+
+def test_no_quitar_while_the_sigue_a_la_anterior_after_it_is_being_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """As the screen (`parts_view`): «Quitar» is refused while the «Sigue a la anterior»
+    right after the failed part is still being made."""
+    monkeypatch.setenv(EXTEND_SWITCH, "draft")
+    _split_cuts_checked(monkeypatch)
+    m = Mailing(_split_clip())
+    m.fail(0)
+    m.run()
+    assert m.send() == 1
+    (mail,) = m.mailer.sent
+    assert "«Quitar»" not in mail.text
+
+
+def test_a_failed_part_added_to_a_made_clip_says_the_video_stays_as_it_was() -> None:
+    """m-25142982: a part added to a made Clip waits 72 h too, but the Clip never fails for
+    it — the email says the video stays as it was, and names it as the part added."""
+    m = Mailing(create=False)
+    m.made, _ = _made_clip(m.world)
+    new = _actions(m.world).add_part(
+        tenant_id=TENANT_ID,
+        user_id=USER_ID,
+        clip_id=m.made.clip_id,
+        entry=_entry(5, description="La arepa servida en la mesa"),
+        position=len(_brief_of(m.world, m.made.clip_id).media.segments),
+    )
+    _fail(m.world, new)
+    m.run()
+    m.run()
+    (row,) = m.outbox.rows
+    assert row.block_ids == (new,) and row.slots == (3,)
+    assert m.send() == 1
+    (mail,) = m.mailer.sent
+    assert mail.subject == f"{BUSINESS}: la parte con IA que agregaste a tu video no salió"
+    assert template.HEADING_ADDED in mail.text
+    assert f"Elige «Intentar de nuevo», {CHANGE}" in mail.text
+    assert template.COST_ADDED in mail.text
+    assert "tu video queda como estaba, sin esa parte" in mail.text
+    assert "se descarta" not in mail.text and "se descarta" not in mail.html
+    # once the owner's time ran out the Clip keeps its video: a later row is never sent
+    other = Mailing(create=False)
+    other.made, _ = _made_clip(other.world)
+    late = _actions(other.world).add_part(
+        tenant_id=TENANT_ID,
+        user_id=USER_ID,
+        clip_id=other.made.clip_id,
+        entry=_entry(5, description="La arepa servida en la mesa"),
+        position=1,
+    )
+    _fail(other.world, late)
+    other.run()
+    other.world.clock[0] += cap.CLIP_AI_PART_OWNER_WAIT + timedelta(minutes=1)
+    other.world.content.run_generation(tenant_id=TENANT_ID, draft_id=other.made.clip_id)
+    assert other.send() == 0 and other.reasons() == ["resolved"]
+
+
+def test_a_row_closed_while_the_switch_was_off_is_mailed_again_once_it_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m = Mailing()
+    m.fail(0)
+    m.run()
+    monkeypatch.setenv(CLIP_AI_PARTS_SWITCH, "off")
+    assert m.send() == 0 and m.reasons() == ["switched_off"]
+    monkeypatch.setenv(CLIP_AI_PARTS_SWITCH, "on")
+    m.world.clock[0] += timedelta(minutes=5)
+    m.run()
+    m.run()
+    assert m.reasons() == ["switched_off", None]
+    assert m.send() == 1
 
 
 def test_the_template_words() -> None:
@@ -356,6 +441,7 @@ def test_the_template_words() -> None:
         "«Intentar de nuevo»",
         "«Quitar»",
     ]
+    assert template.action_words(["change"]) == ["«Cambiar» (su descripción o sus fotos)"]
     with pytest.raises(ValueError):
         template.ai_part_failure_mail(
             to=EMAIL,

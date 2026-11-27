@@ -1,4 +1,4 @@
-"""m-25142979 on Postgres (migration 0192): a waiting Clip's failed AI part stages ONE row
+"""m-25142979 on Postgres (migration 0193): a waiting Clip's failed AI part stages ONE row
 in its own fenced write, never twice for the same (part, revision); a part made again
 that fails again is one more; the sender mails it once through a recording mailer (never
 Resend), closes it unsent once the Clip failed, and another business never sees it (RLS).
@@ -163,3 +163,23 @@ def test_an_ai_part_row_needs_its_revisions(monkeypatch: pytest.MonkeyPatch) -> 
                 "k": f"k-{uuid4()}",
             },
         )
+
+
+def test_a_clip_that_moved_since_the_pass_read_it_stages_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fence: a Clip whose revision changed between the gate's read and the staging
+    write (another tab chose, the server moved it) gets no row from that pass."""
+    world = _world(monkeypatch)
+    tenant, content = world["tenant"], world["content"]
+    made = _create(world)
+    _fail(tenant, made.part_ids[0])
+    stale = content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id)
+    failed = cap.PostgresAiPartsStore().parts_of(tenant_id=tenant, clip_id=made.clip_id)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE content_drafts SET revision = revision + 1 WHERE id = :c"),
+            {"c": made.clip_id},
+        )
+    content._stage_ai_part_mail(tenant, stale, failed)  # noqa: SLF001
+    assert _rows(tenant) == []

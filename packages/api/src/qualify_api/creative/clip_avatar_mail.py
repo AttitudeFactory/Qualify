@@ -43,14 +43,17 @@ reads nothing while it and both avatar switches are off.
 **AI parts** (m-25142979, ADR 50 §13): a Clip's «parte con IA» that failed keeps the
 Clip waiting 72 h for its owner (m-25129407) and sends ONE email per Clip and pass, in
 its own words (`mail.clip_ai_part`) — `kind` `ai_part_failed`, `block_ids` the parts,
-`block_revisions` each part's revision as it failed (migration 0192). The wait writes
+`block_revisions` each part's revision as it failed (migration 0193). The wait writes
 nothing on the Clip, so the pass that sees a failed part stages its row in its own
 fenced write (`ContentService._stage_ai_part_mail`), and a pair (part, revision) already
 in a row is never staged again (`mailable_ai_part_failures`): only a part made again (a
 new revision) that fails again sends one more. A Clip that failed at once
 (`ai_part_failed`) or whose 72 h ran out (`ai_part_expired`) never waits, so it never
 stages; a row staged before is closed `resolved` (the Clip is no longer `drafting`). Its
-switch is `QUALIFY_CLIP_AI_PARTS`: nothing staged nor sent while it is off.
+switch is `QUALIFY_CLIP_AI_PARTS`: nothing staged nor sent while it is off (a row closed
+`switched_off` was never sent, so its parts are mailed again once it is back on). A part
+added to a made Clip (m-25142982) waits too, but its Clip keeps its video when the time
+runs out: its email says so (`added`). «Quitar» is offered as the screen offers it.
 
 **Who.** The Clip's author (`content_briefs.created_by`), while still a member of the
 business with a real seat and a confirmed address (`auth.confirmed_email`, fail closed).
@@ -70,7 +73,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from qualify_creative.schemas import CharacterSceneItem, ClipAvatarSlot, SourceSegment
+from qualify_creative.schemas import CharacterSceneItem, ClipAvatarSlot, ContentBrief
 
 from qualify_api.creative.character_scene import (
     SWITCHED_OFF,
@@ -294,10 +297,11 @@ class ClipView:
     #: its scene children — empty for a Clip with avatar blocks.
     scene_items: tuple[CharacterSceneItem, ...] = ()
     scene_rows: tuple[SceneRow, ...] = ()
-    #: m-25142979: the Clip's AI parts and its timeline's blocks (to tell whether
-    #: «Quitar» is left for a part) — empty for a Clip without AI parts.
+    #: m-25142979: the Clip's AI parts and its brief (to tell whether «Quitar» is left
+    #: for a part, and whether the part was added to a made Clip) — empty / None for a
+    #: Clip without AI parts.
     ai_parts: tuple[AiPartRow, ...] = ()
-    segments: tuple[SourceSegment, ...] = ()
+    brief: ContentBrief | None = None
 
 
 @dataclass(frozen=True)
@@ -324,8 +328,10 @@ class AvatarFailureOutbox(Protocol):
     def mailed_ai_parts(
         self, session: Any, *, tenant_id: UUID, clip_id: UUID
     ) -> frozenset[tuple[UUID, int]]:
-        """m-25142979: every (part, revision) of the Clip an `ai_part_failed` row holds,
-        read inside the Clip's fenced write (`session`; None for the in-memory double)."""
+        """m-25142979: every (part, revision) of the Clip an `ai_part_failed` row holds —
+        but a row closed `switched_off` (never sent: the failure is mailed again once the
+        switch is back on) — read inside the Clip's fenced write (`session`; None for the
+        in-memory double)."""
         ...
 
     def pending_tenants(self) -> list[UUID]: ...
@@ -417,18 +423,24 @@ class AiPartsDue:
     slots: tuple[int, ...]
     actions: frozenset[str]
     wait_until: datetime
+    #: m-25142982: the part was added to a made Clip — its video stays as it was.
+    added: bool = False
 
 
-def _removable(segments: Sequence[SourceSegment], removed: frozenset[int]) -> bool:
-    """Whether the Clip keeps a block once the parts at `removed` are taken out
-    (`clip_ai_part_actions.remove_part` refuses the last one, `last_block`); True when the
-    timeline is unknown. Pure."""
-    from qualify_api.creative.video_pipeline.ai_parts import ai_part_slots  # noqa: PLC0415
+def _removable(clip: ClipView, row: AiPartRow) -> bool:
+    """Whether «Quitar» is offered for `row`, as the screen and the action judge it
+    (`clip_ai_part_actions.parts_view`, `remove_part`): not while the «Sigue a la
+    anterior» right after it is being made, and never the Clip's last block
+    (`last_block`). True when the brief is unknown. Pure."""
+    from qualify_api.creative.clip_ai_part_actions import kept_brief  # noqa: PLC0415
 
-    if not segments:
+    follower = next((r for r in clip.ai_parts if r.slot > row.slot and not r.removed), None)
+    if follower is not None and follower.mode == "extend" and follower.status == "drafting":
+        return False
+    if clip.brief is None:
         return True
-    slots = ai_part_slots(segments)
-    return any(s.ai_part_at is None or slots.get(s.ai_part_at) not in removed for s in segments)
+    removed = frozenset({r.slot for r in clip.ai_parts if r.removed} | {row.slot})
+    return bool(kept_brief(clip.brief, removed, clip.ai_parts).media.segments)
 
 
 def _ai_part_due(
@@ -460,18 +472,22 @@ def _ai_part_due(
         waiting.append(row)
     if not waiting:
         return "resolved", None
-    removed = frozenset(row.slot for row in clip.ai_parts if row.removed)
+    from qualify_api.creative.clip_ai_parts import is_added_part_brief  # noqa: PLC0415
+
     actions: set[str] = set()
     for row in waiting:
         _, allowed = failed_part(row.mode, row.failure_reason)
         for action in allowed:
-            if action is PartAction.REMOVE and not _removable(clip.segments, removed | {row.slot}):
+            if action is PartAction.REMOVE and not _removable(clip, row):
                 continue
             actions.add(str(action))
     failed_now = [row for row in clip.ai_parts if part_state(row) == "failed"]
     deadline = ai_part_deadline(failed_now) or mail.failed_at + CLIP_AI_PART_OWNER_WAIT
     return None, AiPartsDue(
-        slots=tuple(row.slot for row in waiting), actions=frozenset(actions), wait_until=deadline
+        slots=tuple(row.slot for row in waiting),
+        actions=frozenset(actions),
+        wait_until=deadline,
+        added=clip.brief is not None and is_added_part_brief(clip.brief),
     )
 
 
@@ -545,6 +561,7 @@ def send_pending(
                     idempotency_key=mail.idempotency_key,
                     slots=ai_due.slots,
                     actions=ai_due.actions,
+                    added=ai_due.added,
                 )
             else:
                 outgoing = failure_mail(
@@ -759,6 +776,7 @@ class PostgresAvatarFailureOutbox:
             FROM clip_avatar_failure_mails m,
                  unnest(m.block_ids, m.block_revisions) AS u(part_id, revision)
             WHERE m.clip_id = :clip AND m.kind = 'ai_part_failed'
+              AND m.closed_reason IS DISTINCT FROM 'switched_off'
         """),
             {"clip": clip_id},
         ).all()
@@ -836,9 +854,8 @@ class PostgresAvatarFailureOutbox:
         with tenant_session(tenant_id) as session:
             row = session.execute(
                 text("""
-                SELECT d.status, b.media->'clip_avatar_plan' AS plan,
+                SELECT d.status, d.brief_id, b.media->'clip_avatar_plan' AS plan,
                        b.media->'character_scenes' AS scenes,
-                       b.media->'segments' AS segments,
                        CASE WHEN jsonb_typeof(b.media->'ai_parts') = 'array'
                             THEN jsonb_array_length(b.media->'ai_parts') > 0
                             ELSE false END AS has_ai_parts,
@@ -863,11 +880,16 @@ class PostgresAvatarFailureOutbox:
                 tenant_id=tenant_id, clip_id=clip_id
             )
         ai_parts: tuple[AiPartRow, ...] = ()
-        segments: tuple[SourceSegment, ...] = ()
+        brief: ContentBrief | None = None
         if row.has_ai_parts:
-            # m-25142979: an AI part's row is read only for a Clip with AI parts
+            # m-25142979: an AI part's row and the brief are read only for a Clip with AI
+            # parts
+            from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
+
             ai_parts = PostgresAiPartsStore().parts_of(tenant_id=tenant_id, clip_id=clip_id)
-            segments = tuple(SourceSegment.model_validate(s) for s in (row.segments or ()))
+            brief = PostgresContentRepository().get_brief(
+                tenant_id=tenant_id, brief_id=row.brief_id
+            )
         return ClipView(
             status=str(row.status),
             business=str(row.business),
@@ -877,7 +899,7 @@ class PostgresAvatarFailureOutbox:
             scene_items=scenes,
             scene_rows=scene_rows,
             ai_parts=ai_parts,
-            segments=segments,
+            brief=brief,
         )
 
     def recipient(self, tenant_id: UUID, user_id: UUID) -> Recipient | None:
@@ -1040,6 +1062,7 @@ class MemoryAvatarFailureOutbox:
             and row.clip_id == clip_id
             and row.kind == AI_PART_FAILED
             and row.revisions is not None
+            and row.closed_reason != "switched_off"
             for part_id, revision in zip(row.block_ids, row.revisions, strict=True)
         )
 
