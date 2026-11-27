@@ -33,7 +33,6 @@ from .promotion_vm import (
     EMPTY_SOURCES,
     GREETING_QUESTION_SLOTS,
     LEAD_CTA_LABELS,
-    STORY_EMPTY,
     STORY_PAID_NOTE,
     STORY_PLACEMENT,
     STORY_PREVIEW_BUTTON,
@@ -1098,7 +1097,7 @@ def promotion_index() -> rx.Component:
                 rx.button(
                     "Volver a consultar", on_click=S.load, variant="outline", min_height="44px"
                 ),
-                callout(rx.cond(S.story_entry, STORY_EMPTY, EMPTY_SOURCES), "info"),
+                callout(rx.cond(S.story_entry, S.story_block, EMPTY_SOURCES), "info"),
             ),
             rx.cond(
                 S.reviewed,

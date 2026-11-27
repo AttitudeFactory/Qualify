@@ -27,6 +27,7 @@ from .ad_health_provider import account_health_for, refresh_health
 from .catalog_provider import list_products
 from .promotion_vm import (
     CAROUSEL_MIN,
+    STORY_COP_ONLY,
     AdMediaVM,
     CarouselProductVM,
     PromotionDraftVM,
@@ -266,6 +267,8 @@ def unpublished_sources(
                     timezone_name=account["timezone_name"],
                     unavailable_reason=blocked
                     if account["currency"] == "COP"
+                    else STORY_COP_ONLY
+                    if story  # HIS-2: a story ad cannot be «published first»
                     else UNPUBLISHED_COP_ONLY,
                     health=health,
                     ad_account_id=str(account["id"]),

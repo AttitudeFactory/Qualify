@@ -27,7 +27,6 @@ from .promotion_vm import (
     STORY_AUTO_CHANGES,
     STORY_AUTO_CHANGES_LABEL,
     STORY_BACK_TO_PIECE,
-    STORY_EMPTY,
     STORY_LEFT_WEEK,
     STORY_NO_CHARGE,
     STORY_PLACEMENT,
@@ -345,10 +344,22 @@ def story_empty() -> rx.Component:
                             spacing="3",
                             align_items="start",
                         ),
-                        callout(STORY_EMPTY, "info"),
+                        callout(S.story_block, "info"),
+                    ),
+                    rx.cond(
+                        S.story_block_href != "",
+                        rx.link(
+                            rx.button(S.story_block_action, size="3", min_height="44px"),
+                            href=S.story_block_href,
+                        ),
                     ),
                     rx.link(
-                        rx.button(STORY_BACK_TO_PIECE, size="3", min_height="44px"),
+                        rx.button(
+                            STORY_BACK_TO_PIECE,
+                            size="3",
+                            min_height="44px",
+                            variant=rx.cond(S.story_block_href != "", "outline", "solid"),
+                        ),
                         href=S.piece_href,
                     ),
                     spacing="4",

@@ -81,10 +81,73 @@ STORY_PREVIEW_BUTTON = "Ver cómo queda (sin cobrar)"
 STORY_AUTO_CHANGES_LABEL = "Ajustes por su cuenta"
 STORY_AUTO_CHANGES = "No: el anuncio sale tal como lo apruebas"
 STORY_BACK_TO_PIECE = "Volver a la pieza"
-STORY_EMPTY = (
-    "Esta pieza no tiene una imagen o un video vertical (9:16) listo para anunciar en "
-    "historias. Vuelve a la pieza y revisa que esté aprobada."
+#: HIS-2 (m-25130282): why this historia cannot be a story ad, one text per cause the
+#: backend names (`qualify_api.ads.story_readiness.StoryBlock`) with its next step, and
+#: the link to where that step happens (None: the piece, «Volver a la pieza»).
+STORY_TUS_REDES = ("Ir a Tus redes", "/connections")
+STORY_TU_MARCA = ("Ir a Tu marca", "/brand/kit")
+STORY_COP_ONLY = (
+    "Por ahora, este anuncio solo funciona con cuentas publicitarias en pesos colombianos. "
+    "Elige una cuenta en pesos colombianos en Tus redes."
 )
+STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
+    "missing": (
+        "No encontramos esta historia entre tus piezas. Vuelve a la pieza y ábrela de nuevo.",
+        None,
+    ),
+    "not_approved": (
+        "Esta historia todavía no está aprobada. Apruébala y vuelve a tocar «Promocionar "
+        "como anuncio».",
+        None,
+    ),
+    "edited": (
+        "Cambiaste esta historia después de aprobarla. Apruébala otra vez para anunciarla.",
+        None,
+    ),
+    "files_deleted": (
+        "Los archivos de esta historia ya se borraron porque pasó su tiempo de guardado. "
+        "Crea la historia de nuevo para anunciarla.",
+        None,
+    ),
+    "no_vertical": (
+        "Esta historia no tiene una foto o un video vertical, de pantalla completa. Créala de "
+        "nuevo en formato de historia para anunciarla.",
+        None,
+    ),
+    "video_without_cover": (
+        "Por ahora, una historia en video solo se puede anunciar si también trae una foto "
+        "vertical para la portada, y esta no la tiene. Mientras tanto, puedes anunciar una "
+        "historia con foto.",
+        None,
+    ),
+    "button": (
+        "El botón guardado en esta historia abre un chat o una llamada, o su enlace no sirve. "
+        "Un anuncio en historias solo puede llevar a una página web: cambia el botón en la "
+        "pieza y vuelve.",
+        None,
+    ),
+    "enhancements": (
+        "Tu marca permite que Meta cambie tus anuncios, y este anuncio debe salir tal como lo "
+        "apruebas. Apaga esos cambios en Tu marca, en «Qué puede cambiar Meta en tus "
+        "anuncios».",
+        STORY_TU_MARCA,
+    ),
+    "no_ad_account": (
+        "Esta marca todavía no tiene una cuenta publicitaria elegida. Elígela en Tus redes y "
+        "vuelve.",
+        STORY_TUS_REDES,
+    ),
+    "reconnect": (
+        "Tu cuenta publicitaria se desconectó. Conéctala de nuevo en Tus redes y vuelve.",
+        STORY_TUS_REDES,
+    ),
+    "ad_permission": (
+        "Falta tu permiso para anunciar, o ya venció. Autoriza los anuncios de nuevo en Tus "
+        "redes y vuelve.",
+        STORY_TUS_REDES,
+    ),
+    "currency": (STORY_COP_ONLY, STORY_TUS_REDES),
+}
 #: `/drafts/<id>/promote?formato=historia` — the wizard opened as a story with a button.
 STORY_FORMAT = "historia"
 #: Tu semana's historia (m-25026350): the option, and its one-line notice BEFORE the wizard.

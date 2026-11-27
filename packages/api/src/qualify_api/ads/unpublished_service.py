@@ -19,7 +19,7 @@ from qualify_api.ads.carousel import CAROUSEL_PIPELINE, CarouselSource, carousel
 from qualify_api.ads.client import MarketingClient
 from qualify_api.ads.enhancements import compose_brand_policy
 from qualify_api.ads.enhancements_service import load_brand_enhancements
-from qualify_api.ads.errors import MarketingError
+from qualify_api.ads.errors import CODE_MESSAGES, SUBCODE_MESSAGES, MarketingError
 from qualify_api.ads.live_wizard import authorize_actor
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import (
@@ -180,6 +180,19 @@ class _Hashing:
 
 
 VIDEO_STATE = {"ready": "ready_remote", "processing": "processing", "error": "failed"}
+PREPARE_REFUSED = "Meta no confirmó la preparación. No se activó el anuncio."
+
+
+def meta_refusal(error: MarketingError) -> UnpublishedUnavailable:
+    """HIS-2 (m-25130282): a refusal Meta numbered (its `validate_only` checks included)
+    keeps the next step our tables give that number; the generic text only otherwise.
+    Never Meta's own message."""
+    if error.outcome_unknown:  # a send whose outcome is unknown: its number explains nothing
+        return UnpublishedUnavailable(PREPARE_REFUSED)
+    message = SUBCODE_MESSAGES.get(error.subcode) or CODE_MESSAGES.get(error.code)
+    return UnpublishedUnavailable(message or PREPARE_REFUSED)
+
+
 VIDEO_WAIT = {
     "processing": "Meta todavía está preparando tu video. Ya lo recibió: no tienes que "
     "subirlo de nuevo. Vuelve en unos minutos.",
@@ -492,10 +505,8 @@ class UnpublishedImageService:
                 kind=("unpublished-story-" if source.is_story else "unpublished-")
                 + ("videos" if source.is_video else "images"),
             )
-        except MarketingError:
-            raise UnpublishedUnavailable(
-                "Meta no confirmó la preparación. No se activó el anuncio."
-            ) from None
+        except MarketingError as error:
+            raise meta_refusal(error) from None
         finally:
             await client.aclose()
 
@@ -858,9 +869,7 @@ class CarouselAdService(UnpublishedImageService):
                 placements=("INSTAGRAM_STANDARD",),
                 kind="unpublished-carousel",
             )
-        except MarketingError:
-            raise UnpublishedUnavailable(
-                "Meta no confirmó la preparación. No se activó el anuncio."
-            ) from None
+        except MarketingError as error:
+            raise meta_refusal(error) from None
         finally:
             await client.aclose()
