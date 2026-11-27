@@ -40,6 +40,12 @@ such a Clip exist and be assembled:
   `PartRef.extend_own` names the owner's video stretch right before it; the producer
   continues that file. Behind `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until the paid
   measurement Deivid approves (`just eval-extender-propio`).
+- **The reference tracks** (m-25142725, PR B; contract §3.4): on a brief with
+  `references_version` 1 each child's photos, videos and audios are the tracks' items
+  under its block (`ai_parts.references_for_parts`, on the owner's timeline at «Crear»,
+  never recomputed after the assembly moves anything), recorded on `PartRef.references`;
+  a part under no photo takes none — it no longer inherits the Clip's. A brief with
+  `references_version` 0 makes its children exactly as before.
 
 Seconds of video are charged when the Clip is approved — PR 4 (§13.4, with §12.4). Until
 then a Clip with AI parts cannot be approved (`approve_unavailable`): nothing is ever
@@ -52,13 +58,20 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
 from qualify_creative.creations import weight_for
 from qualify_creative.enums import ContentFormat, ContentKind
-from qualify_creative.schemas import ContentBrief, SourceSegment, VideoPartPlan
+from qualify_creative.scene_plan import unroled_image_role
+from qualify_creative.schemas import (
+    ClipReference,
+    ContentBrief,
+    PartRef,
+    SourceSegment,
+    VideoPartPlan,
+)
 
 from qualify_api.creative.clip_avatar import (
     ClipAvatarRefused,
@@ -66,8 +79,10 @@ from qualify_api.creative.clip_avatar import (
     _mapper,
 )
 from qualify_api.creative.video_pipeline.ai_parts import (
+    PartReferences,
     ai_part_blocks,
     ai_part_slots,
+    references_for_parts,
 )
 
 logger = logging.getLogger(__name__)
@@ -287,22 +302,81 @@ def planned_parts(brief: ContentBrief) -> tuple[PlannedPart, ...]:
     return tuple(found)
 
 
-def child_brief(clip: ContentBrief, planned: PlannedPart) -> ContentBrief:
+def part_references(clip: ContentBrief, entry_at: int) -> PartReferences | None:
+    """m-25142725: what the AI part of `clip`'s entry `entry_at` takes from the reference
+    tracks (`references_for_parts`, the active video model's caps), None when its block
+    is not on the timeline. Pure."""
+    return next((r for r in references_for_parts(clip) if r.entry_at == entry_at), None)
+
+
+def _entry_from_references(
+    clip: ContentBrief, entry: VideoPartPlan, references: PartReferences | None
+) -> tuple[VideoPartPlan, tuple[ClipReference, ...]]:
+    """m-25142725 (PR B): `entry` with its `clip_*_keys` derived from the tracks' items
+    under its block — always an explicit photo tuple, empty when none applies, so the
+    part never inherits the Clip's photos; a product's photo is the `product`, any other
+    photo `unroled_image_role` — and the items it took, for `PartRef.references`. Over
+    its model's caps it is refused (`RecipeRefused`), never cut. Pure."""
+    from qualify_api.creative.video_pipeline.recipe import RecipeRefused  # noqa: PLC0415
+
+    if references is not None and references.problems:
+        raise RecipeRefused(references.problems)
+    photos = references.photos if references is not None else ()
+    videos = references.videos if references is not None else ()
+    audios = references.audios if references is not None else ()
+    unroled = unroled_image_role(clip)
+    derived = VideoPartPlan.model_validate(
+        {
+            **entry.model_dump(),
+            "clip_image_keys": tuple(ref.key for ref in photos),
+            "clip_image_roles": tuple(
+                "product" if ref.origin == "product" else unroled for ref in photos
+            ),
+            "clip_video_keys": tuple(ref.key for ref in videos),
+            "clip_audio_keys": tuple(ref.key for ref in audios),
+        }
+    )
+    return derived, (*photos, *videos, *audios)
+
+
+def child_brief(
+    clip: ContentBrief, planned: PlannedPart, references: PartReferences | None = None
+) -> ContentBrief:
     """An AI part's own brief: the child of a video by parts (`parts._child_brief`, a
     9:16 `CLIP` of the part's generation length in its mode, no logo, no subtitles, no
     texts — the Clip carries them once), under a Clip instead of a `SHOT_VIDEO`. It never
     carries the Clip's `ai_parts`. An «extend» right after the owner's own video names
-    that stretch (`PartRef.extend_own`, m-25129406) — the producer continues it. Pure."""
+    that stretch (`PartRef.extend_own`, m-25129406) — the producer continues it.
+
+    m-25142725 (PR B): on a Clip with `references_version` 1 the part's photos, videos
+    and audios are the tracks' items under its block (`references`, else
+    `part_references` of `clip`), recorded on `PartRef.references`; the child never
+    carries the Clip's tracks. A Clip with `references_version` 0 is made as before. Pure."""
     from qualify_api.creative.parts import _child_brief  # noqa: PLC0415
 
+    on_tracks = clip.media.references_version >= 1
+    taken: tuple[ClipReference, ...] = ()
+    if on_tracks:
+        if references is None:
+            references = part_references(clip, planned.entry_at)
+        entry, taken = _entry_from_references(clip, planned.entry, references)
+        planned = replace(planned, entry=entry)
     own: SourceSegment | None = None
     if planned.entry.mode == "extend" and planned.at > 0:
         before = clip.media.segments[planned.at - 1]
         if before.kind == "video":
             own = before.model_copy(update={"transition_in": None})
-    parent = clip.model_copy(update={"media": clip.media.model_copy(update={"ai_parts": ()})})
+    cleared: dict[str, Any] = {"ai_parts": ()}
+    if on_tracks:
+        cleared["clip_references"] = ()
+    parent = clip.model_copy(update={"media": clip.media.model_copy(update=cleared)})
     made = _child_brief(parent, planned.entry, planned.slot, None, extend_own=own)
-    return made.model_copy(update={"media": made.media.model_copy(update={"ai_parts": ()})})
+    update: dict[str, Any] = {"ai_parts": ()}
+    if on_tracks and made.media.part is not None:
+        update["part"] = PartRef.model_validate(
+            {**made.media.part.model_dump(), "references": [r.model_dump() for r in taken]}
+        )
+    return made.model_copy(update={"media": made.media.model_copy(update=update)})
 
 
 @dataclass(frozen=True)
@@ -544,6 +618,14 @@ class ClipAiPartsService(ClipAvatarService):
         problems = validate_brief_recipe(brief, tenant_id=tenant_id)
         if problems:
             raise RecipeRefused(problems)
+        # m-25142725 (PR B): each part's items of the reference tracks, on the owner's
+        # timeline, once — over a cap the Clip is refused here, before any read or write
+        references: dict[int, PartReferences] = {}
+        if media.references_version >= 1:
+            references = {r.entry_at: r for r in references_for_parts(brief)}
+            over = tuple(p for r in references.values() for p in r.problems)
+            if over:
+                raise RecipeRefused(over)
         planned = planned_parts(brief)
         if not planned:
             raise ValueError("a Clip with AI parts has at least one")
@@ -581,7 +663,7 @@ class ClipAiPartsService(ClipAvatarService):
             raise RuntimeError("a Clip's AI parts were lost while being prepared")
         prepared: list[tuple[PlannedPart, ContentBrief, int, str]] = []
         for p in planned:
-            child = child_brief(clip_brief, p)
+            child = child_brief(clip_brief, p, references.get(p.entry_at))
             stamped, voice_version, pipeline_version = self._content.prepare_new_generation(
                 tenant_id=tenant_id, brand_id=brand_id, brief=child
             )
@@ -700,6 +782,7 @@ __all__ = [
     "child_brief",
     "has_ai_part_blocks",
     "part_stretch",
+    "part_references",
     "planned_parts",
     "refuse_ai_parts_approval",
     "resolve",

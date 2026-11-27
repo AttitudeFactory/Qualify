@@ -884,6 +884,8 @@ def _key_problems(
         ),
         # m-25142725: every item of a Clip's reference tracks
         *(reference.key for reference in media.clip_references),
+        # m-25142725 (PR B): the items an AI part took from them, kept on its `part`
+        *(reference.key for reference in (media.part.references if media.part else ())),
     ]
     present = [key for key in keys if key]
     malformed = [key for key in present if parse_tenant_key(key) is None]

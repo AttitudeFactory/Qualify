@@ -248,3 +248,23 @@ def test_a_failed_clip_gives_every_parts_preview_back_in_its_write(
             tenant, draft, reason="x", detail="y", give_back=give_back
         )
     assert _count(tenant, refunded, d=made.part_ids[0]) == 1
+
+
+def test_a_part_on_the_tracks_is_stored_with_the_references_it_took(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25142725 (PR B): the child's derived photo and the items it took survive the
+    round trip through `content_briefs.media` (JSON, no migration)."""
+    from qualify_creative.schemas import ClipReference
+
+    world = _world(monkeypatch)
+    tenant, repo = world["tenant"], world["service"]._content.repository  # noqa: SLF001
+    photo = ClipReference(kind="photo", key=f"uploads/{tenant}/arepa.png", start_s=4, end_s=9)
+    clip = _clip(world["brand"], tenant)
+    media = clip.media.model_copy(update={"references_version": 1, "clip_references": (photo,)})
+    made = _create(world, brief=clip.model_copy(update={"media": media}))
+    draft = repo.get_draft(tenant_id=tenant, draft_id=made.part_ids[0])
+    stored = repo.get_brief(tenant_id=tenant, brief_id=draft.brief_id)
+    assert stored.media.clip_image_keys == (photo.key,)
+    assert stored.media.clip_references == ()
+    assert stored.media.part is not None and stored.media.part.references == (photo,)

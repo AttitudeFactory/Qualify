@@ -161,9 +161,9 @@ Por eso, en la v1, una entrada `extend` vale solo si:
 
 Los códigos se agregaron al final de `RecipeRefusal` (`qualify_creative.schemas.RECIPE_REFUSALS`) y no se reordenan.
 
-### 3.4 Pistas de referencias `[CONSTRUIDO EN PR A]` · m-25142725
+### 3.4 Pistas de referencias `[CONSTRUIDO EN PR A Y PR B]` · m-25142725
 
-Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos del video final. Cada parte con IA toma las que quedan debajo de ella. El PR A trae solo el contrato (forma, reglas y textos), sin migración: todo va en el JSON del brief. Crear los hijos con estas referencias es el PR B (detrás de `QUALIFY_CLIP_AI_PARTS`).
+Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos del video final. Cada parte con IA toma las que quedan debajo de ella. El PR A trae solo el contrato (forma, reglas y textos), sin migración: todo va en el JSON del brief. Crear los hijos con estas referencias es el PR B (detrás de `QUALIFY_CLIP_AI_PARTS`, ver «Al crear» más abajo).
 
 **Forma.** `MediaInputs.clip_references` (hasta 40, `CLIP_REFERENCES_MAX`) y `MediaInputs.references_version` (0 = brief de antes; 1 = usa pistas):
 
@@ -185,11 +185,19 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 **Qué recibe cada parte** (`ai_parts.references_for_parts(brief, model=None)`, pura; la pantalla la puede llamar antes de «Crear»):
 
 - El tramo de la parte es el de su bloque `ai_part`, en segundos del video que sale: los bloques en orden y a su velocidad, como los pone `clip_avatar.virtual_brief` (los avatares que el Clip espera cuentan con su largo estimado), y cada bloque empieza donde termina el anterior menos lo que se come su unión. El final del Clip es el de `recipe.clip_seconds`.
-- **Para el PR B:** las referencias de cada hijo se calculan en «Crear» sobre ese mismo `virtual_brief`. `clip_avatar.fit_plan` mueve los textos y efectos a los largos reales de los avatares, pero todavía no mueve `clip_references`: no hay que volver a calcular las referencias sobre el brief ya ajustado (o `fit_plan` las mueve con el mismo `_mapper`).
+- **Al crear (PR B):** las referencias de cada hijo se calculan una sola vez en «Crear», sobre ese mismo tramo (`references_for_parts`). `clip_avatar.fit_plan` y el armado (`clip_ai_parts.resolve`) mueven los textos y efectos a los largos reales, pero no mueven `clip_references`: las referencias nunca se vuelven a calcular sobre el brief ya ajustado. Hoy un Clip con partes con IA no lleva avatares ni escenas del personaje (se rechaza), así que el tramo es el de `segments`.
 - Una referencia aplica si se solapa con la parte más de 0,05 s (`REFERENCE_OVERLAP_MIN_S`).
 - Las fotos aplican en todos los modos. Los videos y audios, solo en «Nueva» (`reference`).
 - Orden: `(start_s, row, posición en la lista)`. La misma clave del mismo tipo cuenta una sola vez.
 - Devuelve un `PartReferences` por parte (`entry_at`, `block_at`, `mode`, `start_s`, `end_s`, `photos`, `videos`, `audios`, `problems`). Nunca corta a un tope: si la parte se pasa, `problems` trae su `too_many_references`, **que bloquea** («Siguiente» y «Crear» apagados con su texto).
+
+**Lo que recibe cada hijo al crear** (PR B, `clip_ai_parts.child_brief`). Solo en un brief con `references_version` 1; uno con 0 se crea igual que antes.
+
+- `clip_image_keys` = las fotos que le aplican, en su orden; `clip_image_roles` = `product` si su `origin` es `product`, y si no `unroled_image_role` del Clip. Si no le aplica ninguna foto, va con una tupla vacía: ya no hereda las fotos del Clip.
+- `clip_video_keys` y `clip_audio_keys` = los videos y audios que le aplican (solo en «Nueva»).
+- `PartRef.references` guarda las referencias que tomó (procedencia); `media._key_problems` revisa también esas claves antes de leer nada.
+- El hijo nunca lleva las pistas del Clip (`clip_references` vacío).
+- Pasarse del tope rechaza la creación entera antes de escribir o cobrar nada (`too_many_references`); `child_brief` también lo rechaza si se llama sin pasar por «Crear».
 
 **Topes por modelo** (Deivid, 2026-11-27). Cada modelo declara los suyos en `qualify_creative.reference_caps.REFERENCE_CAPS_BY_MODEL`. Hoy, Seedance 2.x (todas sus familias): 9 fotos, 3 videos y 3 audios por parte. Magi-2 tendrá 10/5/5 cuando llegue (todavía no está en la tabla). Son topes del producto, no los del proveedor (la API de Seedance 2.5 acepta 30/10/10). Sin `model`, se usa el modelo de video activo (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, o su valor por defecto). Un modelo sin fila da `ValueError`: no se adivina. Cuando entre un modelo con más de 9 fotos, el PR que lo active sube también `CLIP_MAX_IMAGES` del hijo.
 

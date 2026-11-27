@@ -1495,6 +1495,43 @@ class PartsRequest(BaseModel):
     duration_s: float | None = None
 
 
+#: m-25142725: at most this many items on the Clip's reference tracks, photos, videos
+#: and audios together.
+CLIP_REFERENCES_MAX = 40
+ReferenceKind = Literal["photo", "video", "audio"]
+REFERENCE_KINDS: tuple[str, ...] = get_args(ReferenceKind)
+ReferenceOrigin = Literal["owner", "product"]
+
+
+class ClipReference(BaseModel):
+    """m-25142725: one item of a Clip's reference tracks in the single editor — a photo,
+    video or audio the AI parts under it follow. `start_s`/`end_s` are seconds of the
+    FINAL video; `row` is only the screen's (which track line it sits on, also the
+    tie-break of the order). `origin` `product`: a photo of a Catálogo product the screen
+    put there (`product_id`); `owner`: anything the owner chose. Which part takes it is
+    `video_pipeline.ai_parts.references_for_parts`'."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: ReferenceKind
+    key: str = Field(min_length=1, max_length=500)
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    row: int = Field(default=0, ge=0, le=CLIP_REFERENCES_MAX)
+    origin: ReferenceOrigin = "owner"
+    product_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _coherent(self) -> ClipReference:
+        if self.end_s <= self.start_s:
+            raise ValueError("a reference ends after it starts")
+        if self.origin == "product" and (self.kind != "photo" or self.product_id is None):
+            raise ValueError("a product's reference is a photo of a named product")
+        if self.origin == "owner" and self.product_id is not None:
+            raise ValueError("only a product's reference names a product")
+        return self
+
+
 class PartRef(_PartSource):
     """A child draft's link to its place in the parent's plan (`MediaInputs.part`): the
     part's 1-based index, its length and how it is made. The child is a `CLIP` whose own
@@ -1509,6 +1546,10 @@ class PartRef(_PartSource):
     #: an `extend` child of a Clip, written by the server (`clip_ai_parts`), behind
     #: `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until a paid measurement Deivid approves.
     extend_own: SourceSegment | None = None
+    #: m-25142725 (PR B): the items of its Clip's reference tracks this part took when it
+    #: was created (`video_pipeline.ai_parts.references_for_parts`), as provenance. Its
+    #: `clip_*_keys` are derived from them; empty on every part before the tracks.
+    references: tuple[ClipReference, ...] = Field(default=(), max_length=CLIP_REFERENCES_MAX)
 
     @model_validator(mode="after")
     def _extend_own_only_extends(self) -> PartRef:
@@ -1797,43 +1838,6 @@ def _scenes_apart(scenes: tuple[CharacterSceneItem, ...]) -> tuple[CharacterScen
                 "character_scenes_overlap", "two scenes cannot play at the same time"
             )
     return scenes
-
-
-#: m-25142725: at most this many items on the Clip's reference tracks, photos, videos
-#: and audios together.
-CLIP_REFERENCES_MAX = 40
-ReferenceKind = Literal["photo", "video", "audio"]
-REFERENCE_KINDS: tuple[str, ...] = get_args(ReferenceKind)
-ReferenceOrigin = Literal["owner", "product"]
-
-
-class ClipReference(BaseModel):
-    """m-25142725: one item of a Clip's reference tracks in the single editor — a photo,
-    video or audio the AI parts under it follow. `start_s`/`end_s` are seconds of the
-    FINAL video; `row` is only the screen's (which track line it sits on, also the
-    tie-break of the order). `origin` `product`: a photo of a Catálogo product the screen
-    put there (`product_id`); `owner`: anything the owner chose. Which part takes it is
-    `video_pipeline.ai_parts.references_for_parts`'."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: ReferenceKind
-    key: str = Field(min_length=1, max_length=500)
-    start_s: float = Field(ge=0)
-    end_s: float = Field(gt=0)
-    row: int = Field(default=0, ge=0, le=CLIP_REFERENCES_MAX)
-    origin: ReferenceOrigin = "owner"
-    product_id: UUID | None = None
-
-    @model_validator(mode="after")
-    def _coherent(self) -> ClipReference:
-        if self.end_s <= self.start_s:
-            raise ValueError("a reference ends after it starts")
-        if self.origin == "product" and (self.kind != "photo" or self.product_id is None):
-            raise ValueError("a product's reference is a photo of a named product")
-        if self.origin == "owner" and self.product_id is not None:
-            raise ValueError("only a product's reference names a product")
-        return self
 
 
 class MediaInputs(BaseModel):
