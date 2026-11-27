@@ -362,6 +362,7 @@ _PUBLISH_GAPS = (
     "Esta versión tiene datos por completar. Complétalos o quita esas respuestas y vuelve a "
     "publicar. Si los corchetes son a propósito, cámbialos por paréntesis ( )."
 )
+_SAVED_NOT_PUBLISHED = "Guardamos tus cambios, pero todavía no se publicaron. Vuelve a publicar."
 _PAUSE_FAILED = "No se pudo cambiar la pausa del menú. Vuelve a intentarlo en un momento."
 _MENU_GONE = "Ese menú ya no está en este número. Actualizamos la lista."
 _NAME_TAKEN = "Ya hay un menú con ese nombre en este número."
@@ -841,6 +842,8 @@ class WhatsAppMenuState(rx.State):
             and not self.saving
             and self.has_menu
             and not self.card_busy
+            # m-25142807: not while another menu opens (what is typed is being replaced).
+            and not self.opening
         )
 
     @rx.var
@@ -2796,7 +2799,7 @@ class WhatsAppMenuState(rx.State):
     async def _save_now(self) -> bool:
         """Save the editor as the menu's next version; True when it is on disk."""
         async with self:
-            if not self.can_save or self.publishing:
+            if not self.can_save or self.publishing or self.opening:
                 return False
             scope = self._scope_value()
             if scope is None:
@@ -2858,6 +2861,7 @@ class WhatsAppMenuState(rx.State):
             # The editor must still hold what was confirmed (no other menu opened meanwhile).
             if self.opening or self.menu.menu_id != menu_id:
                 self.publishing = False
+                self.banner, self.banner_tone = _SAVED_NOT_PUBLISHED, "warn"
                 return
         try:
             user_id = await asyncio.to_thread(user_id_for, tenant_id, email)

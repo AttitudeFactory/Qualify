@@ -896,6 +896,27 @@ async def test_nothing_publishes_while_another_menu_opens(
     monkeypatch.setattr(module, "save_version", save)
     await _run(WhatsAppMenuState.publish_current, state)
     assert called == [] and not state.publishing
+    # Saved, not published — and the owner is told.
+    assert (state.banner, state.banner_tone) == (
+        "Guardamos tus cambios, pero todavía no se publicaron. Vuelve a publicar.",
+        "warn",
+    )
+
+
+async def test_nothing_is_saved_while_another_menu_opens(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After «Cambiar sin guardar» the discarded text stays on screen (still `dirty`)
+    until the other menu has opened: «Guardar sin publicar» must not save it."""
+    state = _state()
+    state.set_welcome("Hola, bienvenido")
+    state.choose_version(VB)
+    state.discard_and_switch()
+    state.opening = True  # what `open_menu` sets while it reads
+    assert state.dirty and not state.can_save
+    monkeypatch.setattr(module, "save_version", lambda *a: pytest.fail("saved"))
+    await _run(WhatsAppMenuState.save_current_version, state)
+    assert not state.saving and state.menu.menu_id == A
 
 
 async def test_a_card_action_waits_for_the_one_in_flight(
