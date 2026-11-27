@@ -416,9 +416,21 @@
     return { name: text.slice(0, cut), rest: text.slice(cut) };
   }
 
+  /* m-25026638 (second live test): the words of the card a block with nothing to show
+     draws. A «parte con IA» not made yet whose frame draws its mark (`marked`, the
+     `.q-ai-mark` capsule in the corner) gets none: its name is already in the capsule,
+     and the card's big name in 2–3 lines covered the ▶ button. Any other block: its
+     name, as before. */
+  function cardLabel(block, marked) {
+    if (!block) return "";
+    if (marked && block.kind === "ai" && block.mark) return "";
+    return String(block.label || "");
+  }
+
   var api = {
     aiMark: aiMark,
     aiMarkParts: aiMarkParts,
+    cardLabel: cardLabel,
     joinFrame: joinFrame,
     joinUnder: joinUnder,
     underSourceTime: underSourceTime,
