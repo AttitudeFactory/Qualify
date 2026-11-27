@@ -193,11 +193,34 @@ Los códigos se agregaron al final de `RecipeRefusal` (`qualify_creative.schemas
 
 - **Mientras se hacen los finales al aprobar, el Clip queda bloqueado para edición** (decidido en el diseño firmado, m-25026602). La pantalla no deja cambiar bloques, textos, efectos ni uniones hasta que estén los finales (o hasta que uno falle y el dueño elija qué hacer). Lo construye el PR 4; este contrato no trae todavía el estado ni el código de rechazo.
 
-### PR 5 (m-25129409) · del plan a los bloques
+### PR 5 (m-25129409) · del plan a los bloques `[CONSTRUIDO]`
 
-- `blocks_from_plan(plan, analysis)` → bloques propios para las partes `local`, bloques con IA para las demás, y las transiciones del plan en el `transition_in` de cada bloque. Los textos y efectos de cada parte pasan a las pistas del Clip (`merged_recipe`).
-- Devuelve exactamente la forma del §2: entradas sin receta propia y bloques con `key = ai_part_key(n)`.
-- **«Pedir una idea» con la pista ya armada agrega las partes propuestas al final, sin borrar nada** (diseño firmado, m-25026602). Las entradas nuevas se suman al final de `media.ai_parts` (los bloques que ya existen conservan su `ai_part:<n>`), y los topes de §3 (8 bloques, 6 hijos de IA, 60 s) siguen valiendo: si la idea no cabe, se avisa con esos mismos códigos.
+Código: `qualify_api.creative.plan_blocks`. Funciones puras: no escriben, no pagan y no llaman a ningún proveedor.
+
+| Función | Para qué |
+|---|---|
+| `blocks_from_analysis(analysis, products=…, extend_on=…)` | «Hacer uno parecido»: `plan_from_analysis` y luego `blocks_from_plan`. |
+| `blocks_from_proposal(proposal, after=…, other_ai_children=…)` | «Pedir una idea»: lo que devolvió `propose_parts` (ya cobrado y trazado allí), con su `PartsProvenance`. |
+| `blocks_from_plan(plan, analysis, after=…, other_ai_children=…)` | Cualquier plan de partes → `ClipBlocks` (`segments`, `ai_parts`, `text_layers`, `effects`, `provenance`). |
+| `ClipBlocks.of_media(media)` | La pista que el Clip ya tiene, para pasarla en `after`. |
+| `ClipBlocks.problems(other_ai_children=…, tenant_id=…)` | Lo que dice el contrato del §3 (`validate_recipe`); con el interruptor apagado, solo `switched_off`. |
+| `ClipBlocks.seconds` | Cuánto dura el video armado (`clip_seconds`). |
+
+- Cada parte `local` pasa a ser sus propios bloques, en orden; su unión con lo anterior queda en el `transition_in` de su primer bloque. Cada parte de otro modo pasa a ser **un** bloque `ai_part` (`key = ai_part_key(n)`, ×1, de 0 a sus `seconds`, con la unión de la parte) y la entrada `n` de `ai_parts`: la misma parte, sin receta propia.
+- **Textos y efectos** pasan a las pistas del Clip en segundos del video final, con la colocación de `merged_recipe`: «toda la parte» se vuelve su tramo explícito, y el mismo efecto (o el mismo texto) que sigue de una parte a la siguiente queda como uno solo. La ventana de una parte en el Clip va desde el inicio de su primer bloque hasta el inicio de la parte siguiente (la última, hasta el final del Clip). Así, lo que dura una unión es de la parte que entra, y dos textos nunca se pisan en ella.
+- Antes de nada se revisa el plan contra su reel, como en el flujo de partes (`check_edited_plan`): el mismo reel, cortes que existen, «Igual al original» solo donde el reel se puede editar y «Sigue a la anterior» justo después de la parte que sigue. Si falla, sale `PartsPlanRefused` o `ExtendTooShort` con sus códigos de siempre.
+- **«Pedir una idea» con la pista ya armada agrega las partes al final, sin borrar nada** (diseño firmado, m-25026602): los bloques que ya existen conservan su `ai_part:<n>` y las entradas nuevas se suman al final de `ai_parts`. Lo que no cabe se rechaza con `PlanBlocksRefused` (`reason` y, cuando existe, el mismo código de receta en `problems`); nunca se corta en silencio. Los textos para el dueño están en `PLAN_BLOCKS_TEXTS`:
+
+| `reason` | Cuándo | Texto para el dueño |
+|---|---|---|
+| `too_many_blocks` | Más de 8 bloques en total | El de `too_many_blocks` del §3. |
+| `too_many_ai_children` | Más de 6 hijos de IA, contando escenas y avatares (`other_ai_children`) | El de `too_many_ai_children` del §3. |
+| `too_many_texts` | Más de 3 textos en el Clip | Tu video puede tener hasta 3 textos y estas partes traen más. Quita alguno para seguir. |
+| `too_many_effects` | Más de 8 efectos en el Clip | Tu video puede tener hasta 8 efectos y estas partes traen más. Quita alguno para seguir. |
+| `span_lost` | Un texto o un efecto que empieza donde termina la ventana de su parte | Un texto o un efecto queda justo en el cambio a la parte siguiente y no se vería. Muévelo un poco antes o quítalo. |
+
+- Al agregar, los textos y efectos que ya tenía la pista terminan donde empieza la primera parte nueva: si esa parte entra con una unión, la unión es suya, y «hasta el final» era el final de antes. Una parte agregada no puede ser «Sigue a la anterior» (`extend_order`; `propose_parts` nunca la propone). Queda la procedencia de la última idea pedida (`parts_provenance` guarda una); el costo de cada llamada sigue en su propio registro.
+- Los 60 s y el resto de las reglas del §3 los dice `ClipBlocks.problems`, con sus códigos de siempre.
 
 ## 5. Lo que este PR no hace
 
