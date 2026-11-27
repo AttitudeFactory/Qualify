@@ -730,3 +730,78 @@ def test_the_assembly_records_each_ai_part_it_plays(
     assert record["mode_reason"] == "no_source" and record["seconds_asked"] == 4
     assert record["prompt_version"] == "part-reference-v6" and record["task_id"] == "cgt-123"
     assert record["cost_usd"] == "0.21" and record["provider"] == "seedance"
+
+
+class _Rows:
+    """An `AiPartsStore` of fixed rows (the gate's pure reading)."""
+
+    def __init__(self, *rows: cap.AiPartRow) -> None:
+        self.rows = rows
+
+    def parts_of(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[cap.AiPartRow, ...]:
+        return self.rows
+
+    def part_video(self, *, tenant_id: UUID, part_id: UUID) -> cap.AiPartVideo | None:
+        return None
+
+
+def test_a_chain_of_extends_after_a_failed_part_is_blocked_whole() -> None:
+    """Re-review of m-25129406: parts 2 and 3 «Sigue a la anterior» after a failed part 1
+    both wait for good — the Clip runs the 72 h, never «creating» forever."""
+    failed_at = datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+    brief = _clip(
+        (_own(4.0), _block(0), _block(1), _block(2)),
+        (_entry(5), _entry(5, mode="extend"), _entry(5, mode="extend")),
+    )
+    store = _Rows(
+        cap.AiPartRow(id=uuid4(), slot=1, status=FAILED, settled_at=failed_at),
+        cap.AiPartRow(id=uuid4(), slot=2, status=DRAFTING),
+        cap.AiPartRow(id=uuid4(), slot=3, status=DRAFTING),
+    )
+    gate = cap.ai_parts_gate(
+        tenant_id=TENANT_ID, clip_id=uuid4(), brief=brief, store=store, now=failed_at
+    )
+    assert isinstance(gate, cap.AiPartsWait) and gate.reason == "part_failed"
+    late = cap.ai_parts_gate(
+        tenant_id=TENANT_ID,
+        clip_id=uuid4(),
+        brief=brief,
+        store=store,
+        now=failed_at + timedelta(hours=72),
+    )
+    assert isinstance(late, cap.AiPartsExpired)
+
+
+def test_an_extend_after_a_failed_part_never_holds_the_clip_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of m-25129406: the part «Sigue a la anterior» continues failed, so it waits
+    for it (`drafting`) for good — the Clip does not stay «creating»: the failed part's
+    72 h run, then the Clip fails."""
+    import qualify_api.creative.parts as parts_module
+
+    monkeypatch.setenv(EXTEND_SWITCH, "draft")
+    # the reel's split cut is proved against its analysis (a database read): not here
+    monkeypatch.setattr(parts_module, "check_split_parts_for_tenant", lambda **_: None)
+    reel = UUID(int=9)
+    first = _entry(5, analysis_id=reel, shot_indexes=(3,))
+    second = _entry(5, mode="extend", original_mode="extend", analysis_id=reel, shot_indexes=(3,))
+    world = _world()
+    made = _create(world, _clip((_own(4.0), _block(0), _block(1)), (first, second)))
+    failed_at = world.clock[0]
+    world.repo.drafts[made.part_ids[0]] = replace(
+        world.repo.drafts[made.part_ids[0]], status=FAILED, failure_reason="provider_error"
+    )
+    world.store.settled[made.part_ids[0]] = failed_at
+    assert world.repo.drafts[made.part_ids[1]].status == DRAFTING
+    gate = cap.ai_parts_gate(
+        tenant_id=TENANT_ID,
+        clip_id=made.clip_id,
+        brief=_brief_of(world, made.clip_id),
+        store=world.store,
+        now=failed_at + timedelta(hours=1),
+    )
+    assert isinstance(gate, cap.AiPartsWait) and gate.reason == "part_failed"
+    world.clock[0] = failed_at + timedelta(hours=72)
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == FAILED

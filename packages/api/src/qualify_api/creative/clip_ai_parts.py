@@ -420,6 +420,11 @@ class AiPartsExpired:
         return AI_PART_FAILED
 
 
+def _continues_own_video(brief: ContentBrief, planned: PlannedPart) -> bool:
+    """An «extend» part right after the owner's own video (it never waits for a part)."""
+    return planned.at > 0 and brief.media.segments[planned.at - 1].kind == "video"
+
+
 def _state(row: AiPartRow | None) -> PartState:
     if row is None or row.removed or row.status == "failed":
         return "failed"
@@ -447,9 +452,24 @@ def ai_parts_gate(
     if any(row is None for _, row, _ in states):
         logger.error("clip %s: an AI part was never created", clip_id)
         return AiPartsExpired(now)
-    if any(state == "creating" for _, _, state in states):
-        return AiPartsWait("creating")
     failed = [row for _, row, state in states if state == "failed" and row is not None]
+    # «Sigue a la anterior» after a part that failed never starts: it waits for that part
+    # (`GenerationDeferred`, its job kept) — blocked, it must not hold the Clip in
+    # «creating» forever; the failed part's 72 h run instead (review of m-25129406). In
+    # slot order, so a chain of «Sigue a la anterior» after it is blocked too
+    by_slot = {p.slot: state for p, _, state in states}
+    blocked: set[int] = set()
+    for p, _, state in sorted(states, key=lambda s: s[0].slot):
+        before = p.slot - 1
+        if (
+            state == "creating"
+            and p.entry.mode == "extend"
+            and (by_slot.get(before) == "failed" or before in blocked)
+            and not _continues_own_video(brief, p)
+        ):
+            blocked.add(p.slot)
+    if any(state == "creating" and p.slot not in blocked for p, _, state in states):
+        return AiPartsWait("creating")
     if failed:
         seen = [row.settled_at for row in failed if row.settled_at is not None]
         deadline = (max(seen) if seen else now) + CLIP_AVATAR_OWNER_WAIT

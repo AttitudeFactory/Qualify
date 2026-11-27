@@ -579,7 +579,8 @@ class GeneratedSource:
     #: m-25129406 (ADR 50 §13): the file is a «parte con IA» of a Clip — its child's
     #: `media.part` as stored (mode, seconds, reel, `mode_reason`…); None otherwise.
     ai_part: Mapping[str, Any] | None = None
-    #: The part's prompt version, its vendor task and what its revision cost (usage rows).
+    #: The part's prompt version, its vendor task and what its draft cost (usage rows of
+    #: every revision: `creative_usage_events` has no revision).
     prompt_version: str | None = None
     task_id: str | None = None
     cost_usd: str | None = None
