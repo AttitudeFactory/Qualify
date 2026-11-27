@@ -3104,8 +3104,30 @@ class ContentService:
                 )
             if after.status == FAILED and after.parent_draft_id is None:
                 self._give_back_broken_scenes(tenant_id, after)
+                self._give_back_ai_parts_of_failed_clip(tenant_id, after)
         except Exception:
             logger.exception("draft %s: creations refund failed", draft_id)
+
+    def _give_back_ai_parts_of_failed_clip(self, tenant_id: UUID, clip: DraftRecord) -> None:
+        """m-25142725 (review of fa5caf93): a Clip with AI parts that failed for any
+        reason — its assembly broke, not only a part (`ai_part_failed`, which gives them
+        back in its own write) — gives back the vistas previas of ALL its parts: the
+        owner got no video (decided 2026-11-26). Idempotent (the ledger gives back only a
+        row still charged); nothing for a Clip without AI parts."""
+        from qualify_api.creative.clip_ai_parts import PostgresAiPartsStore  # noqa: PLC0415
+
+        store = self._clip_ai_parts_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return
+            store = PostgresAiPartsStore()
+        rows = store.parts_of(tenant_id=tenant_id, clip_id=clip.id)
+        if rows:
+            self._give_back_parts(
+                tenant_id,
+                [(row.id, row.revision) for row in rows],
+                clip.failure_reason or "clip_failed",
+            )
 
     def _give_back_broken_scenes(self, tenant_id: UUID, clip: DraftRecord) -> None:
         """m-25128784 PR 2: a Clip with character scenes that failed for a reason of ours
