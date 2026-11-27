@@ -728,6 +728,9 @@ def number_card_activity_link(connection_id: rx.Var[str]) -> rx.Component:
             size="2",
             color_scheme="gray",
             type="button",
+            # a ghost button pulls itself out by its padding: keep it clear of the
+            # «Más detalles» beside it (seen at 360 px)
+            margin="0",
             **_TAP,
         ),
         href=activity_href(connection_id),

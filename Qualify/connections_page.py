@@ -559,7 +559,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
                     ),
                     align="center",
                     wrap="wrap",
-                    gap="2",
+                    gap="4",
                 ),
                 rx.cond(conn.status != "revoked", disconnect_action(conn), rx.fragment()),
                 justify="between",
