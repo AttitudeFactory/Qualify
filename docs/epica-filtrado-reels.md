@@ -180,51 +180,73 @@ un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para l
 **no** se aplica por defecto: la cobertura de rubro es ~0 % hasta que las cuentas vuelvan a pasar
 por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
 
-**RF-02b pantalla (2026-11-26, m-25119463, rama `feat/m-25119463-region-nicho-ui`):**
-- **«País»** (el ticket decía «Región»; Deivid, 2026-11-26) es el quinto filtro, después de
-  «Duración» (los cuatro de RF-02 no cambian de lugar). Opciones: «Todos» primero, después el
-  país del negocio y después los otros dos en el orden de siempre (Colombia, Venezuela,
-  Uruguay). El país del negocio sale de `tenants.country`, el que se elige al registrarse:
-  `reels_discovery.business_country` → `tenancy.locale.read_business_locale`, una lectura por
-  clave primaria con `tenant_session`. Sin país guardado (o si no se puede leer), queda el
-  orden de siempre. En la barra ancha es un chip más («País» sin filtro, «Venezuela» con él);
-  en el panel «Filtros» es un grupo más, con las mismas filas de radio que Canal y Duración,
-  de 44 px. «Restablecer filtros» lo deja en «Todos». Con «Todos» siguen las cuentas sin país
-  conocido; con un país, solo las de ese país (la regla del backend). Cambiar el país es
-  otra lectura de lo guardado, igual que los demás filtros: cero llamadas pagadas. En el
-  código el eje sigue llamándose `region`, y el backend sigue diciendo «Región».
-- **«Tu rubro: …»** (el ticket decía «Nicho: »; Deivid, 2026-11-26) es una línea de solo
-  lectura con el rubro del Brand Kit (`reels_discovery.brand_niche_line` →
-  `reviewed_reels.brand_niche`, con `tenant_session`; las palabras las pone
-  `reels_filters_vm.niche_line`). «Fitness y salud» se muestra «Ejercicio y salud»
-  (`reels_filters_vm.NICHE_DISPLAY`): es solo lo que se ve. La clave guardada, el catálogo
-  compartido `discovery_seed.NICHE_LABELS` (que también lee RF-09) y el prompt
-  `referentes-review-3` no cambian. Va al final del grupo «País», debajo de sus opciones y
-  tras una línea fina, en el desplegable y en el panel por igual. No es un chip ni una
-  línea propia en la barra (regla de Deivid: nada solo en una fila). Se lee al abrir la
-  pantalla; sin rubro, no se dibuja; otro negocio en la misma pestaña empieza sin ella.
-- **Opciones B + C de Deivid (2026-11-26):**
-  - **B.** En la barra ancha, «Quitar filtros» es un botón de solo ícono de 44 px
-    (`rotate-ccw`, «Quitar filtros» en `aria-label` y `title`), al final de la fila, después
-    del botón de búsqueda (ícono `radar`). En el pie del panel de la barra angosta sigue con sus palabras.
-  - **C.** En la barra angosta, «Filtros» le pregunta al navegador al tocarlo si la ventana
-    es de teléfono (640 px o menos, `matchMedia`). En el teléfono abre la hoja desde abajo;
-    en una ventana más ancha, el mismo panel entra desde la derecha, como «Tus
-    competidores». Son dos `drawer` del sistema y se abre uno. Al cerrarse, el foco vuelve a
-    «Filtros».
-  - **«Competidores»** sigue la misma regla de 640 px desde la barra ancha y desde la
-    angosta (Deivid, 2026-11-26): abre desde abajo en el teléfono y desde la derecha en una
-    ventana más ancha. Ya no depende de en qué barra está el botón. Al cerrarse, el foco
-    vuelve al botón que lo abrió.
-- **Cortes de la barra** (cuenta completa en `assets/qualify-creative.css`). Deivid midió en
-  vivo los anchos naturales con «Compiten contigo» y «Venezuela» elegidos a la vez: 88 + 155
-  + 88 + 98 + 108 + 133 + 44 + 116 + 7 × 12 ≈ 914 px. La estimación anterior era 918 px.
-  Con «Quitar filtros» de 44 px queda en 842 px, así que la fila ancha pasa de 760 a
-  **850 px** de contenido. El texto de «Buscar reels nuevos» sigue desde **1000 px**: 842
-  + ~133 de las palabras ≈ 975 px; el ancho de las palabras es una estimación. Sin cubrir:
-  tres o más valores largos a la vez (≈ 879 px con los cinco); entre 850 px y ese ancho, el
-  chip más largo termina en «…».
-- Sin migración, sin backend nuevo, sin llamadas pagadas.
+**RF-02b pantalla (2026-11-26/27, m-25119463, rama `feat/m-25119463-region-nicho-ui`):**
+estado tras la ronda de diseño de Deivid del 2026-11-27.
+- **Dos lados, nunca mezclados.** Sale el chip «Tipo» (Todos / Inspiradores /
+  Competidores). La pantalla abre siempre con los reels de las cuentas que inspiran. El
+  botón de la barra que decía «Competidores» ahora cambia de lado: muestra solo los reels de
+  los competidores y pasa a decir «Inspiraciones» para volver. No existe «Todos». El texto
+  dice adónde va; el nombre accesible dice la acción completa («Ver reels de tus
+  competidores» / «Volver a los reels de tus inspiraciones»). En el lado de los
+  competidores queda `soft`. No lleva `aria-pressed`, porque su texto cambia. Mide lo mismo
+  en los dos estados (las dos palabras en una sola celda de grilla, `.q-reels-side`), así
+  que la barra no salta. En el teléfono sigue en la fila [Filtros · N | Competidores |
+  búsqueda]. «Cuenta» ofrece solo las cuentas del lado que se ve; al cambiar de lado, las
+  cuentas elegidas del otro lado se quitan. El lado no es un filtro: no cuenta en «Filtros
+  · N» y «Restablecer filtros» lo conserva. Al salir y volver, la pantalla abre otra vez en
+  las inspiraciones.
+- **«Tus competidores» ya no se abre desde la barra.** El cajón de RF-05 (elegir los 6 del
+  lunes y «Ver sus reels ahora») y su estado siguen montados, pero cerrados. Su botón para
+  abrirlo es `discover_reels.competitors_opener`, que no está montado en ninguna parte: está
+  listo para la pantalla donde vaya. Deivid pidió llevarlo a «Negocios parecidos al tuyo».
+  Esa sección vive en `brand_kit_editor.py` (`BrandEditState`), y el cajón depende de todo
+  el ciclo de `DiscoverReelsState`: cargar las filas, elegir los 6 del lunes, «Ver sus
+  reels ahora» y su reloj. **Mudarlo es un cambio aparte** y se avisó antes de hacerlo. El
+  estado vacío del lado de los competidores ya lleva a «Negocios parecidos al tuyo»
+  («Elegir competidores»).
+- **«País»** (el ticket decía «Región») tiene tres opciones. Cada una aparece solo si el
+  negocio tiene ese dato. Sin país ni ciudad, no hay chip ni grupo «País».
+  - «Todas»: sin filtro de lugar.
+  - «Tu país»: el país del negocio, `tenants.country` (`reels_discovery.business_country`,
+    una lectura por clave primaria con `tenant_session`). Muestra el nombre del país debajo y
+    en el chip.
+  - «Locales»: la ciudad del Brand Kit, `connect.city` (`reels_discovery.business_city`,
+    con `tenant_session`; la misma que usan la búsqueda de cuentas y el brief). Muestra la
+    ciudad debajo y en el chip.
+  - **Qué cuenta como local** (backend mínimo, sin migración): una cuenta es local si la
+    tabla global `creator_sightings` la vio bajo un término de búsqueda que nombra la
+    ciudad, con acentos y «ñ» doblados (`reviewed_reels.ReelFilters.city`,
+    `term_names_city`, `local_accounts`):
+    - en una búsqueda de varias palabras, la ciudad tiene que aparecer como palabras
+      completas («comida cúcuta», «restaurantes san cristóbal táchira»);
+    - en un hashtag o un usuario de una sola palabra, tiene que ser la palabra entera, o su
+      comienzo o su final con al menos 4 letras más («#cucutafood», «comidacucuta»);
+    - para una ciudad corta (5 letras o menos: Cali, Coro, Melo, Salto) solo cuenta la
+      palabra entera o su final, con al menos 5 letras más («#comidacali»). Así
+      «#caliente», «#coronavirus», «#caramelo» y «#saltodealtura» no cuentan.
+    Una ciudad metida dentro de otra palabra no cuenta: «calidad» no es Cali, «asalto» no es
+    Salto, «corona» no es Coro (lo encontró la revisión independiente). Caso aceptado: «agua
+    de colonia» cuenta para Colonia, porque es la palabra entera. El SQL y Python dan lo
+    mismo en los 14 casos de prueba y en los 4867 avistamientos de la base local. **No se usa
+    `creator_sightings.city_slug` solo:** guarda la ciudad del negocio que hizo la búsqueda,
+    así que una cuenta nacional encontrada desde Cúcuta también la llevaría. Base local del
+    2026-11-27: 3877 avistamientos con `city_slug`, y solo 579 nombran la ciudad en el
+    término (432 de 2948 en «tachira», 147 de 929 en «sancristobal»).
+  - Es un `EXISTS` por fila sobre `ix_sightings_account`: gratis y sin migración.
+- **Sin «Tu rubro: …».** El rubro del negocio es siempre el mismo y no aportaba (Deivid,
+  2026-11-27). Se quitaron `niche_line` y el mapeo «Fitness y salud» → «Ejercicio y salud»,
+  que ya no se mostraba en ninguna parte. El catálogo, la base y el prompt no se tocaron.
+- **Lo que no cambió:** el ícono `radar` de «Buscar reels nuevos». «Quitar filtros» sigue
+  como ícono de 44 px al final de la fila ancha. «Filtros» sigue abriendo desde abajo en el
+  teléfono y desde la derecha en una ventana más ancha.
+- **Cortes de la barra** (cuenta completa en `assets/qualify-creative.css`). Sin el chip
+  «Tipo», el peor caso con un filtro activo es: 88 + 88 + 98 + ~140 («San Cristóbal» en
+  «País») + ~140 (botón de lado) + 44 + 44 + 6 × 12 ≈ 714 px. Se suman 56 px de lugar para
+  «Descubrir cuentas nuevas» como ícono: 770 → **780 px**. Las palabras de «Buscar reels
+  nuevos» aparecen desde **920 px**. Los anchos de «Inspiraciones» y de la ciudad son
+  estimaciones; falta medirlos en vivo. Si «Descubrir cuentas nuevas» llega con palabras,
+  hay que rehacer la cuenta.
+- Sin migración, sin llamadas pagadas.
 
 **RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
 ni llamadas pagadas; se recalcula al leer, desde `public_reels` y `creators` (globales).

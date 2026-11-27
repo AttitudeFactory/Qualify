@@ -259,7 +259,7 @@ async def test_the_competitors_filter_shows_their_reels_once_read(world: _World)
     )
     state, proxy = _screen_state()
     await _open(proxy)
-    await _filter(proxy, state.set_filter("kind", "competencia"))
+    await _filter(proxy, state.toggle_side())  # the competitors' side
     assert [c["key"] for c in state.more_reels] == ["tiktok:C1"]
     assert state.empty_kind == ""
     assert world.paid == []
@@ -271,7 +271,7 @@ async def test_no_competitor_marked_keeps_rf02s_message_and_no_panel(world: _Wor
     state, proxy = _screen_state()
     await _open(proxy)
     assert state.competitor_rows == []
-    await _filter(proxy, state.set_filter("kind", "competencia"))
+    await _filter(proxy, state.toggle_side())  # the competitors' side
     from . import reels_filters_vm
 
     assert state.empty_kind == reels_filters_vm.EMPTY_NO_COMPETITORS
@@ -306,38 +306,38 @@ async def test_another_business_never_sees_the_panel_of_this_one(
     assert world.paid == []
 
 
-def test_the_panel_is_a_drawer_from_the_bar_with_its_clock_outside() -> None:
-    """Option A (Deivid, 2026-11-25): «Tus competidores» ends the bar and opens the
-    system's drawer; the clock that follows a read lives outside it."""
+def test_the_panel_is_a_drawer_no_longer_opened_from_the_bar() -> None:
+    """Deivid, 2026-11-27: the bar's «Competidores» switches the side of the reels; it no
+    longer opens «Tus competidores». The drawer and its state stay (mounted, closed), and
+    `competitors_opener` — mounted nowhere yet — is the one way to open it, for the screen
+    it goes to next. The clock that follows a read lives outside the drawer."""
     import inspect
 
     from . import discover_reels
 
     bar = inspect.getsource(discover_reels._filter_bar)
     desktop, phone = bar.split("class_name=_WIDE_CLASS")
-    # wide bar (Deivid 2026-11-26): «Competidores» then «Quitar filtros» end the one line
-    # that never wraps, after the filters — never alone, no separator
-    assert desktop.index("_rivals_button(chip=False)") < desktop.index("_reset_button()")
+    assert desktop.index("_side_button(chip=False)") < desktop.index("_reset_button()")
     assert "rx.separator" not in bar
-    # phone: «Filtros» and «Competidores» share one line in equal parts
-    assert phone.index("_filters_button()") < phone.index("_rivals_button(chip=True)")
+    assert phone.index("_filters_button()") < phone.index("_side_button(chip=True)")
     source = inspect.getsource(discover_reels)
     for gone in ("scroll_snap", "_NO_SCROLLBAR", "_with_rivals", "_chip_pair", "sheet_chip"):
         assert gone not in source, gone
+    assert "competitors_opener(" not in bar and "open_competitors" not in bar
+    side = inspect.getsource(discover_reels._side_button)
+    assert "on_click=S.toggle_side" in side and "open_competitors" not in side
+    assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
+    opener = inspect.getsource(discover_reels.competitors_opener)
+    assert "rx.call_script(PHONE_MEDIA, callback=S.open_competitors)" in opener
+    assert "id=COMPETITORS_OPENER_ID" in opener
+    assert discover_reels.COMPETITORS_OPENER_ID in discover_reels.RIVALS_FOCUS_SCRIPT
+    for needed in ('"users"', "aria_haspopup", "aria_expanded", "rx.button(", "min_height=_TARGET"):
+        assert needed in opener, needed
+    assert "loading_spinner" in opener and "competitors_label" in opener
     reset = inspect.getsource(discover_reels._reset_button)
     assert "DiscoverReelsState.filters_on" in reset  # without a filter it is not drawn
-    # never wider than the panel: every chip may sit below its content and ellipsize
-    rivals = inspect.getsource(discover_reels._rivals_button)
     button = inspect.getsource(discover_reels._filter_button)
     assert "min_width=_CHIP_MIN" in button and 'overflow="hidden"' in button
-    assert 'overflow="hidden"' in rivals and "**_ELLIPSIS" in rivals
-    assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
-    button = inspect.getsource(discover_reels._rivals_button)
-    # RF-13: a Radix button of the skin, like the filters beside it — no class of its own
-    for needed in ('"users"', "aria_haspopup", "aria_expanded", "rx.button(", "min_height=_TARGET"):
-        assert needed in button, needed
-    assert "class_name" not in button
-    assert "loading_spinner" in button and "competitors_label" in button
     drawer_source = inspect.getsource(discover_reels._competitors_drawer)
     assert "drawer(" in drawer_source and "on_close_auto_focus" in drawer_source
     assert "reels_filters_vm.DONE_LABEL" in drawer_source

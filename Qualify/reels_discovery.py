@@ -261,38 +261,58 @@ def more_reviewed(
 
 
 # --------------------------------------------------------------------------------------
-# RF-02b (m-25119463): «Tu rubro: …», the brand's rubro over the filters
+# RF-02b (m-25119463): «País» — «Tu país» and «Locales» need the business's place
 # --------------------------------------------------------------------------------------
 
 
-def brand_niche_line(
+def business_country(tenant_id: UUID) -> str:
+    """The business's own country (ISO-2, `tenants.country`, chosen at signup) — «Tu
+    país». One primary-key read through `tenant_session`
+    (`tenancy.locale.read_business_locale`; the row is RLS-keyed on its own id). "" when
+    it cannot be read: «Tu país» is not offered."""
+    from qualify_api.tenancy.locale import read_business_locale
+
+    try:
+        found = read_business_locale(tenant_id)
+    except Exception as exc:  # noqa: BLE001 — only «Tu país» depends on it
+        logger.warning("business country unreadable: %s", type(exc).__name__)
+        return ""
+    return (found.country or "").strip().upper() if found is not None else ""
+
+
+def country_name(code: str) -> str:
+    """«Colombia» for `CO`; "" for a code outside the business's three markets."""
+    from qualify_api.tenancy.locale import LocaleInvalid, locale_for_country
+
+    try:
+        return locale_for_country(code).name if code else ""
+    except LocaleInvalid:
+        return ""
+
+
+def business_city(
     tenant_id: UUID,
     brand_id: UUID,
     *,
     connect: reviewed_reels.ConnectLoader | None = None,
 ) -> str:
-    """«Tu rubro: Comida y bebida», read from the brand's Brand Kit through `tenant_session`
-    (`reviewed_reels.brand_niche`; RLS hands back this business's kit or nothing). ""
-    when the kit has no rubro or cannot be read — the line only disappears. Postgres only:
-    never the vendor nor the model."""
-    return reels_filters_vm.niche_line(
-        reviewed_reels.brand_niche(tenant_id, brand_id, connect=connect)
-    )
-
-
-def business_country(tenant_id: UUID) -> str:
-    """The business's own country (ISO-2, `tenants.country`, chosen at signup) — «País»
-    lists it first. One primary-key read through `tenant_session`
-    (`tenancy.locale.read_business_locale`; the row is RLS-keyed on its own id). "" when
-    it cannot be read: «País» keeps the usual order."""
-    from qualify_api.tenancy.locale import read_business_locale
-
+    """The business's city as its Brand Kit keeps it (`connect.city`, the place the owner
+    confirmed — the same one the account search and the brief use), read through
+    `tenant_session` (`BrandKitStore.load_details`; RLS hands back this business's kit or
+    nothing). "" when there is none or the kit cannot be read: «Locales» is not offered."""
     try:
-        found = read_business_locale(tenant_id)
-    except Exception as exc:  # noqa: BLE001 — only the order of «País» depends on it
-        logger.warning("business country unreadable: %s", type(exc).__name__)
+        data = (connect or _brand_connect)(tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001 — only «Locales» depends on it
+        logger.warning("business city unreadable: %s", type(exc).__name__)
         return ""
-    return (found.country or "").strip().upper() if found is not None else ""
+    return " ".join(str(data.get("city") or "").split())
+
+
+def _brand_connect(tenant_id: UUID, brand_id: UUID) -> Any:
+    from qualify_api.creative.brand_kit_store import BrandKitStore  # heavy: lazy
+
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
+    return connect if isinstance(connect, dict) else {}
 
 
 # --------------------------------------------------------------------------------------
@@ -438,8 +458,9 @@ def search_reels_now(
 __all__ = [
     "BRIEF_HASHTAGS",
     "brand_brief",
-    "brand_niche_line",
+    "business_city",
     "business_country",
+    "country_name",
     "choose_competitors",
     "competitor_rows",
     "cover_path",

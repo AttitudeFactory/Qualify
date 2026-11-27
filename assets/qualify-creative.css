@@ -688,31 +688,34 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    (RF-13, m-25120327 — see docs/design-system.md §5.8). The one rule of its own: which of
    its two rows shows depends on the width of the BAR, not of the window (Deivid's live
    tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
-   The bar is a size container; below 850 px of it, the narrow row («Filtros · N» +
-   «Competidores» + the search icon); from 850 px, ONE line that fills the bar — the five
-   filters share it (`flex: 1 1 auto`: the longest value takes more), then «Competidores»,
-   the search button and the «Quitar filtros» icon. Two classes, so it beats Radix's
-   `.rt-Flex` display.
-   RF-02b (m-25119463, options B + C, Deivid 2026-11-26) set the cut at 850 px. The sum is of
+   The bar is a size container; below 780 px of it, the narrow row («Filtros · N» + the
+   side button + the search icon); from 780 px, ONE line that fills the bar — the four
+   filters share it (`flex: 1 1 auto`: the longest value takes more), then the side button
+   («Competidores» / «Inspiraciones»), the search button and the «Quitar filtros» icon.
+   Two classes, so it beats Radix's `.rt-Flex` display.
+   RF-02b, round of 2026-11-27 (Deivid): no «Tipo» chip any more (the side button switches
+   inspiring / competitors), «País» offers «Todas» / «Tu país» / «Locales». The sum is of
    the CONTENT box (what the container query reads; the bar's 8 px padding on each side
-   excluded). Natural widths measured live by Deivid with «Compiten contigo» and
-   «Venezuela» chosen at once (the two longest fixed values, so «Quitar filtros» shows):
-     Canal 88 + Compiten contigo 155 + Cuenta 88 + Duración 98 + Venezuela 108 = 537
-     «Competidores» 133 + search icon 44 + «Quitar filtros» 116                 = 293
-     7 gaps x 12                                                                =  84
-                                                                                = 914 px
-   With «Quitar filtros» as a 44 px icon (option B): 914 - 116 + 44 = 842 px → 850 px. The
-   8 px (~1 %) of margin is small on purpose: these widths were measured live, not guessed;
-   a wider font only ends the longest chip in «…» (the line is `nowrap`, never split).
-   Any single filter is narrower than that (e.g. only «Compiten contigo»: ~822 px).
-   Not covered: three or more long values at once (all five on their longest fixed values,
-   Instagram ~110 + Compiten contigo 155 + «3 cuentas» ~106 + «30–60 s» ~95 + Venezuela 108,
-   ≈ 879 px): between 850 px and that, the longest chip ends in «…» (its whole name stays in
-   `title` and the accessible name). An account handle has no upper bound and always may. */
+   excluded). Measured live on 2026-11-26: Canal 88, Cuenta 88, Duración 98, «Competidores»
+   133, the 44 px icons, gap 12. Estimated (~7.4 px a letter + 42 px of chip, the rate the
+   measured «Competidores» gives): «Inspiraciones» ~140, a long city on «País» («San
+   Cristóbal») ~140 — a country («Venezuela», 108 measured) is shorter. Typical case with
+   one filter on — a long place on «País» («Quitar filtros» shows):
+     Canal 88 + Cuenta 88 + Duración 98 + País «San Cristóbal» 140    = 414
+     side button 140 (its longer face, both states) + search 44 + reset 44 = 228
+     6 gaps x 12                                                      =  72
+                                                                      = 714 px
+   + room kept for «Descubrir cuentas nuevas» (another branch puts it beside the side button;
+   counted as one more 44 px icon + a gap = 56) = 770 px → 780 px. If that button comes with
+   words, this sum is redone. Not covered: every filter on its longest value at once
+   (Instagram ~110 + «3 cuentas» ~106 + «30–60 s» ~95 + «San Cristóbal» 140 → ~754 px, ~810
+   with the room kept), nor a very long city or account handle — between 780 px and that,
+   the longest chip ends in «…» (its whole name stays in `title` and the accessible name;
+   the line is `nowrap`, never split). */
 .q-reels-bar { container-type: inline-size; }
 .q-reels-bar .q-reels-bar__wide { display: none; }
 .q-reels-bar .q-reels-bar__narrow { display: flex; }
-@container (min-width: 850px) {
+@container (min-width: 780px) {
   .q-reels-bar .q-reels-bar__wide { display: flex; }
   .q-reels-bar .q-reels-bar__narrow { display: none; }
 }
@@ -721,16 +724,22 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    the group name's indent (both 0.75rem), not centred as Radix's base button does. */
 .q-reels-option.rt-Button { justify-content: flex-start; text-align: start; }
 .q-reels-option.rt-Button > .rt-Flex { align-items: flex-start; text-align: start; }
-/* RF-14 (m-25129383): «Buscar reels nuevos» goes after «Competidores», before «Quitar
-   filtros». Its words show from 1000 px of bar; between 850 and 1000 px it is its icon only
+/* RF-14 (m-25129383): «Buscar reels nuevos» goes after the side button, before «Quitar
+   filtros». Its words show from 920 px of bar; between 780 and 920 px it is its icon only
    (44 px, its words in `aria-label` and `title`), so the line never wraps. RF-02b's sum: the
-   842 px of the measured worst case above, with the words (an estimate, not measured: words
-   ~133 + 14 icon + 8 gap + 20 padding + 2 border ≈ 177 px, so ~133 px more than the 44 px
-   icon) = ~975 px + ~2.5 % → 1000 px. */
+   770 px of the wide row above (with the room kept for «Descubrir cuentas nuevas»), with the
+   words (an estimate: words ~133 + 14 icon + 8 gap + 20 padding + 2 border ≈ 177 px, so
+   ~133 px more than the 44 px icon) = ~903 px + ~2 % → 920 px. */
 .q-reels-bar .q-reels-bar__search-words { display: none; }
-@container (min-width: 1000px) {
+@container (min-width: 920px) {
   .q-reels-bar .q-reels-bar__search-words { display: inline; }
 }
+/* RF-02b (Deivid, 2026-11-27): the side button («Competidores» ⇄ «Inspiraciones») keeps the
+   width of its longer face in both states, so the bar never jumps: both words share one
+   grid cell and the face not on screen is invisible (still laid out). */
+.q-reels-side { display: inline-grid; min-width: 0; }
+.q-reels-side > span { grid-area: 1 / 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-reels-side > .q-reels-side__ghost { visibility: hidden; }
 /* Stock on the product screen (plan-integracion-stock R2, 2026-10-16): the bank's name
    over each thumbnail, the author under it (one line, ellipsis) and the credit line the
    banks ask for wherever their results show. */
