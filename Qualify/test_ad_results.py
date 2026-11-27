@@ -630,7 +630,8 @@ async def test_advised_raise_opens_the_usual_review_and_prepares_from_the_advice
 def test_advice_card_renders_with_its_buttons() -> None:
     rendered = repr(_detail().render())
     assert "te recomendamos" in rendered
-    assert "Crear pieza" in rendered and "/promotions/perfil" in rendered
+    # repr() escapes the accent («publicaci\u00f3n»), so match the prefix.
+    assert "Crear publicaci" in rendered and "/promotions/perfil" in rendered
 
 
 @pytest.mark.parametrize("new_budget", [12_000_000, 12_100_000])

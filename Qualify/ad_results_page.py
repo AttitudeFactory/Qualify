@@ -569,7 +569,7 @@ def _advice() -> rx.Component:
                 rx.cond(
                     advice.new_piece,
                     rx.link(
-                        rx.button("Crear pieza", variant="outline", min_height="44px"),
+                        rx.button("Crear publicación", variant="outline", min_height="44px"),
                         href="/create",
                     ),
                 ),
