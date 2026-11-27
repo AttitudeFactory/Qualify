@@ -175,8 +175,17 @@ cada propuesta (disco, arco o mancha); el motor convierte `cutout_*` en `disc` c
 recorte. No se generó nada con Seedream: costo 0.
 
 **La diferencia con Bianki** es, sobre todo, este recorte: el shawarma recortado llena el lienzo. Para
-llegar ahí hace falta quitar el fondo de la foto del dueño. Elegir proveedor es decisión del
-fundador; no se adoptó ninguno:
+llegar ahí hace falta quitar el fondo de la foto del dueño.
+
+> **Corrección (2026-11-26, SISVIS-002).** Lo que decía aquí, que quitar el fondo pedía elegir un
+> proveedor nuevo, es falso. El repositorio ya tiene dos caminos sin proveedor nuevo:
+>
+> - **`LocalBiRefNetSegmenter`** (`packages/creative/src/qualify_creative/photo/segment.py`), sin
+>   conectar. Usa el modelo `birefnet-general-lite`, de licencia libre, a través de `rembg`.
+> - **El recorte por color de las figuritas** (`chroma_key` en `seasonal/kawaii.py`), en numpy.
+>
+> Lo que se midió con los dos está en §7.4. La tabla de abajo queda como contexto: la opción A es,
+> justamente, el segmentador que ya existe.
 
 | Opción | Cómo | Costo y riesgo |
 |---|---|---|
@@ -194,6 +203,10 @@ fundador; no se adoptó ninguno:
 | **Total** | **1,76** |
 
 Cada pieza tarda entre 0,8 y 1,6 s en el Mac, ya con el bundle hecho.
+
+> **Corrección (2026-11-26).** En SISVIS-001 no se midió la memoria ni el tiempo dentro de la imagen
+> de render de producción (`mem_limit: 1536m`, concurrencia 1). Los segundos de arriba son del Mac,
+> fuera de Docker. La medida en la imagen está en §7.5.
 
 ## 6. Qué necesitaría producción
 
@@ -231,3 +244,117 @@ Cada pieza tarda entre 0,8 y 1,6 s en el Mac, ya con el bundle hecho.
    piezas; son datos nuevos, no React nuevo.
 6. **Revisión de texto:** el contenido del dueño (huecos) también debe pasar por `qualify-copy-es`
    (§4.3).
+
+## 7. SISVIS-002 (2026-11-26): propuestas restringidas con negocios reales y pocos datos
+
+**Por qué:** el arquitecto señaló el supuesto más riesgoso: que las propuestas de la IA sirvan
+también con datos pobres (Polette traía un brandboard completo). El fundador aprobó la prueba con
+un tope de US$15. Detalle de las llamadas en
+[SISVIS-002](modelos-generativos/pruebas.md#sisvis-002).
+
+### 7.1 Esquema v1: la IA elige, el equipo dibuja
+
+`model_v1.py` + `recipe_library.v1.json` + `fonts.v1.json`, en
+`packages/creative/src/qualify_creative/brand_system/`.
+
+- **La geometría es del equipo:** una biblioteca versionada de recetas (3 de producto 4:5, 4 de
+  horario, 4 de historia 9:16), sacada de Bianki y de las 3 propuestas de SISVIS-001. La arma
+  `build_library.py`: los hex pasan a roles y las etiquetas a `{{tag}}`.
+- **La propuesta solo elige:**
+  - colores por rol (único lugar con hex);
+  - tipografías de una lista cerrada de 44 familias de Google con ñ, ¿, ¡ y tildes, y sus pesos;
+  - una variante de fondo con parámetros acotados;
+  - variantes de componentes con colores por rol;
+  - una voz, una etiqueta por pieza y hasta 3 frases de cinta;
+  - un id de receta por pieza.
+- **Lo que la propuesta no escribe:** nombre, precio, descripción y fotos. Se llenan desde los
+  datos al componer (`compile_to_v0` y `contents`), y el motor dibuja el documento v0 como siempre.
+- **Validación en Python:** esquema, rangos, listas cerradas y contraste por pares. El render
+  además informa si perdió un precio o achicó un bloque; esas propuestas se descartan y se cuentan.
+
+### 7.2 Negocios y datos
+
+- **Los eligió el fundador.** Sus nombres quedan solo en disco local; aquí se llaman negocio 1 y
+  negocio 2.
+- **Negocio 2:** su «Tu marca» guardada es **solo el nombre**:
+  - el alta quedó en el paso «redes»;
+  - la precarga de Instagram (foto, colores, bio y 24 publicaciones) quedó «propuesta» y nunca
+    se aceptó, así que no se usó.
+- **Negocio 1** (bar de jugos) tiene logo (una palabra, sin isotipo cuadrado), 3 colores y
+  1 producto con precio y 3 fotos de teléfono.
+  - Su posicionamiento es una sola línea con la ciudad.
+  - No hay tipografías, horario, dirección ni pagos.
+- **Ninguno de los dos tiene horario guardado:** la segunda pieza fue un segundo producto. En
+  el negocio 1 es el mismo producto con otra foto.
+- **Origen de los datos:** producción, solo con `SELECT`; las fotos, de R2 solo con `GET`. Todo queda
+  en disco local; la rama solo tiene código y métricas anónimas
+  (`packages/api/evals/sistema_visual/sisvis002_metrics.json`).
+
+### 7.3 Resultado
+
+| | Fable 5.2 | Opus 5.5 | SISVIS-001 (Fable, esquema libre) |
+|---|---|---|---|
+| Costo por ronda de 3 propuestas | US$0,46–0,56 | US$0,13–0,17 | US$1,76 |
+| Tiempo por ronda | 103–136 s | 48–68 s | 423 s |
+| Válidas a la primera | 6/6 | 6/6 | 3/3 |
+| Descartadas en el render | 0 | 1 (bloque de texto achicado a 0,82) | — |
+
+**Gasto total:** US$1,32 de US$15 (Fable 1,02, Opus 0,30).
+
+**Juicio por negocio:**
+
+- **Negocio 1:** con un solo producto y fotos de teléfono, hay piezas que se pueden publicar
+  como publicación de producto: «Cartel de sol» (Fable) y «Cartel turquesa» y «Mercado fresco»
+  (Opus). Quedan muy por debajo de la vara de Bianki por tres cosas:
+  1. La foto con fondo vive en un disco, sin recorte.
+  2. El título es el nombre del producto tal como lo escribió el dueño (dos palabras genéricas, en
+     minúscula), sin gramaje ni ingredientes.
+  3. El logo, que es una palabra ancha, queda chico en cajas pensadas para un isotipo cuadrado.
+  - El «segundo producto» repite el mismo producto con otra foto.
+- **Negocio 2:** ninguna propuesta sirve. Sin producto, precio ni foto, las piezas son el nombre
+  sobre un fondo. **Hallazgo sobre el dato mínimo:** para generar el sistema y el kit hace falta al
+  menos 1 producto con foto y precio, y un logo; el nombre solo no alcanza.
+
+**Fable contra Opus:**
+
+- Calidad parecida: las dos dan 3 familias distinguibles por negocio.
+- Opus cuesta 3,3 a 3,6 veces menos y tarda la mitad.
+- Opus tuvo el único descarte en render: escala tipográfica demasiado grande para la receta.
+- Para producción, Opus 5.5 con esfuerzo `high` es suficiente con el esquema restringido.
+
+**Lo que falla y v2 debe cerrar:**
+
+1. **Variedad entre negocios baja:** los dos modelos repiten los mismos tres tríos (pop redondeado,
+   cartel condensado, editorial con serifa) en los dos negocios.
+2. **Fuga de datos en el texto libre:** el modelo escribió «Hecho en <ciudad>» (sacado del
+   posicionamiento) y el nombre del negocio en la cinta. Para el negocio 2 supuso, solo por el nombre,
+   que vende bebidas («Frescura en cada sorbo»). La cinta y las etiquetas deberían ser frases sin
+   datos, o llenarse desde los datos.
+3. **Logos anchos:** las cajas de logo de la biblioteca asumen un logo cuadrado. Hace falta una
+   variante por proporción del logo.
+
+### 7.4 Recorte del producto sin proveedor nuevo
+
+- **`LocalBiRefNetSegmenter`:** no se pudo probar sin instalar. Pide `rembg[cpu]` (onnxruntime) y
+  los pesos de `birefnet-general-lite`, y ninguno está en el venv ni en `~/.u2net`. Según el
+  encargo, no se instaló ni se descargó nada. Es la opción A de §4.4, ya escrita en el repositorio;
+  conectarla pide agregar la dependencia y medir la RAM en el servidor.
+- **Recorte por color de las figuritas** (`kawaii.chroma_key`, numpy, sin dependencias nuevas), sobre
+  una foto por negocio (`packages/api/evals/sistema_visual/cutout_probe.py`):
+
+| Foto | Fondo | Resultado | Tiempo | RAM pico del proceso |
+|---|---|---|---|---|
+| Botellas de jugo, foto de teléfono (negocio 1) | pared y mesón | **No sirve:** borra partes de las botellas | 0,77 s | 193 MB |
+| Shawarma sobre blanco (un tenant de prueba, solo para comparar) | blanco plano | **Recorte limpio**, con un halo leve | 0,28 s | 136 MB |
+| Miniatura de video con texto (otro tenant de prueba) | oscuro con líneas | No sirve | 0,32 s | 128 MB |
+
+- **Conclusión:** el recorte por color solo sirve con fondo plano (fotos de estudio o generadas, como
+  las figuritas). Para fotos de teléfono hace falta el segmentador.
+- **Requisitos del recorte por color:** fondo de un solo color conectado al borde. Su rampa
+  (`KEY_LOW` 45, `KEY_HIGH` 120) está calibrada para el magenta de Seedream; para blanco funciona
+  igual. Habría que agregar una regla que lo descarte si el fondo no es plano; la de las figuritas
+  ya existe (`no_character`).
+
+### 7.5 Memoria y tiempo de `brand_still` en la imagen de render de producción
+
+(se completa con la medida)

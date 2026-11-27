@@ -53,10 +53,18 @@ MAX_TOKENS = 24000
 MODELS = {"fable": ("claude-fable-5-2", 8.0, 40.0), "opus": ("claude-opus-5-5", 4.0, 20.0)}
 # fallbacks "default" may bill another model; the meter's worst case uses the dearest price
 WORST_IN, WORST_OUT = 8.0, 40.0
-SLUGS = {"Araguaney Bar": "araguaney", "Zapatería": "zapateria", "Raul Dev Games": "raul-dev-games"}
-#: Founder 2026-11-26: exactly these two. «Bubu Fresh» is @burbufreshsc; its stored «Tu marca» is the
-#: name only (onboarding stopped at «redes»; the Instagram prefill was proposed, never accepted).
-BUSINESSES = ["araguaney", "burbufresh"]
+# Which businesses and how their extract maps to local folders lives OUTSIDE the repo
+# (client names are client data): _inputs/businesses.json, written when the extract was taken.
+# SISVIS-002 (founder 2026-11-26): two businesses; the second has only its name stored in «Tu marca»
+# (onboarding stopped at «redes», the Instagram prefill was proposed and never accepted).
+_LOCAL = (
+    json.loads((INPUTS / "businesses.json").read_text())
+    if (INPUTS / "businesses.json").exists()
+    else {}
+)
+SLUGS: dict[str, str] = _LOCAL.get("tenant_to_dir", {})
+BUSINESSES: list[str] = _LOCAL.get("businesses", [])
+NAME_ONLY: dict[str, str] = _LOCAL.get("name_only", {})
 
 
 # ------------------------------------------------------------------ key + meter
@@ -123,10 +131,10 @@ def _raster(src: Path, dst: Path, size: int = 1024) -> Path:
 
 def business(slug_wanted: str) -> dict:
     """The minimum «Tu marca» data, from the read-only extract (local disk only)."""
-    if slug_wanted == "burbufresh":
-        d = json.loads((INPUTS / "bubu.json").read_text())
+    if slug_wanted in NAME_ONLY:
+        d = json.loads((INPUTS / NAME_ONLY[slug_wanted]).read_text())
         return {
-            "slug": "burbufresh",
+            "slug": slug_wanted,
             "name": d["tenant"],
             "rubro": "",
             "country": d["country"],
@@ -159,7 +167,7 @@ def business(slug_wanted: str) -> dict:
                     "photos": photos,
                 }
             )
-        # same product loaded twice (Zapatería has «Hamburguesas» and «hamburguesas»): keep one
+        # the same product loaded twice with different capitalization: keep one
         seen, uniq = set(), []
         for p in prods:
             k = p["name"].strip().lower()
@@ -647,8 +655,8 @@ def collect(slugs: list[str]) -> None:
             }
         metrics["businesses"][anon] = bm
         props = {
-            "title": f"SISVIS-002 · {slug} — Claude Fable 5.2 (arriba) vs Claude Opus 5.5 (abajo), esquema v1 restringido",
-            "subtitle": "3 propuestas por modelo · geometría de la biblioteca v1 · datos y fotos del negocio tal cual (sin recorte) · las descartadas quedan con su motivo",
+            "title": f"SISVIS-002 · {slug} · Fable 5.2 (arriba) vs Opus 5.5 (abajo)",
+            "subtitle": "Esquema v1 restringido · geometría de la biblioteca v1 · datos y fotos del negocio tal cual",
             "cell": {"w": 400, "h": 500},
             "columns": [c for _, c, _ in PIECE_COLS],
             "rows": [

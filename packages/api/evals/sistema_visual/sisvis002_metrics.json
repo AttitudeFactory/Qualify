@@ -1,0 +1,196 @@
+{
+ "spike": "m-25042530",
+ "test": "SISVIS-002",
+ "prompt_version": "sistema-visual-propose-v1c",
+ "cap_usd": 15.0,
+ "spent_usd": 1.315448,
+ "businesses": {
+  "negocio-1": {
+   "fable": {
+    "input_tokens": 5290,
+    "output_tokens": 13016,
+    "usd": 0.563,
+    "seconds": 135.5,
+    "model_served": "claude-fable-5-2",
+    "proposals": 3,
+    "valid_first_try": 3,
+    "discarded_validation": [],
+    "discarded_render": [],
+    "kept": 3,
+    "distinct_families": 3,
+    "recipes": [
+     {
+      "product_hero": "product_hero.polette-1",
+      "product_alt": "product_hero.polette-3",
+      "story": "story.polette-2"
+     },
+     {
+      "product_hero": "product_hero.polette-3",
+      "product_alt": "product_hero.polette-1",
+      "story": "story.bianki"
+     },
+     {
+      "product_hero": "product_hero.polette-2",
+      "product_alt": "product_hero.polette-3",
+      "story": "story.polette-3"
+     }
+    ],
+    "fonts": [
+     [
+      "Baloo 2",
+      "Nunito"
+     ],
+     [
+      "Anton",
+      "Archivo"
+     ],
+     [
+      "Fraunces",
+      "Work Sans"
+     ]
+    ]
+   },
+   "opus": {
+    "input_tokens": 5290,
+    "output_tokens": 7384,
+    "usd": 0.1688,
+    "seconds": 67.7,
+    "model_served": "claude-opus-5-5",
+    "proposals": 3,
+    "valid_first_try": 3,
+    "discarded_validation": [],
+    "discarded_render": [
+     {
+      "n": 1,
+      "warnings": [
+       "text_stack scaled to 0.82 to fit its box"
+      ]
+     }
+    ],
+    "kept": 2,
+    "distinct_families": 3,
+    "recipes": [
+     {
+      "product_hero": "product_hero.polette-1",
+      "product_alt": "product_hero.polette-3",
+      "story": "story.polette-1"
+     },
+     {
+      "product_hero": "product_hero.polette-2",
+      "product_alt": "product_hero.polette-1",
+      "story": "story.polette-2"
+     },
+     {
+      "product_hero": "product_hero.polette-3",
+      "product_alt": "product_hero.polette-2",
+      "story": "story.bianki"
+     }
+    ],
+    "fonts": [
+     [
+      "Fredoka",
+      "Nunito"
+     ],
+     [
+      "Fraunces",
+      "Lora"
+     ],
+     [
+      "Anton",
+      "Archivo"
+     ]
+    ]
+   }
+  },
+  "negocio-2": {
+   "fable": {
+    "input_tokens": 4054,
+    "output_tokens": 10625,
+    "usd": 0.4574,
+    "seconds": 102.6,
+    "model_served": "claude-fable-5-2",
+    "proposals": 3,
+    "valid_first_try": 3,
+    "discarded_validation": [],
+    "discarded_render": [],
+    "kept": 3,
+    "distinct_families": 3,
+    "recipes": [
+     {
+      "product_hero": "product_hero.polette-1",
+      "product_alt": "product_hero.polette-3",
+      "story": "story.bianki"
+     },
+     {
+      "product_hero": "product_hero.polette-3",
+      "product_alt": "product_hero.polette-1",
+      "story": "story.polette-2"
+     },
+     {
+      "product_hero": "product_hero.polette-2",
+      "product_alt": "product_hero.polette-1",
+      "story": "story.polette-3"
+     }
+    ],
+    "fonts": [
+     [
+      "Baloo 2",
+      "Nunito"
+     ],
+     [
+      "Anton",
+      "Archivo"
+     ],
+     [
+      "Fraunces",
+      "Work Sans"
+     ]
+    ]
+   },
+   "opus": {
+    "input_tokens": 4054,
+    "output_tokens": 5500,
+    "usd": 0.1262,
+    "seconds": 48.1,
+    "model_served": "claude-opus-5-5",
+    "proposals": 3,
+    "valid_first_try": 3,
+    "discarded_validation": [],
+    "discarded_render": [],
+    "kept": 3,
+    "distinct_families": 3,
+    "recipes": [
+     {
+      "product_hero": "product_hero.polette-1",
+      "product_alt": "product_hero.polette-3",
+      "story": "story.polette-3"
+     },
+     {
+      "product_hero": "product_hero.polette-2",
+      "product_alt": "product_hero.polette-1",
+      "story": "story.bianki"
+     },
+     {
+      "product_hero": "product_hero.polette-3",
+      "product_alt": "product_hero.polette-2",
+      "story": "story.polette-2"
+     }
+    ],
+    "fonts": [
+     [
+      "Fredoka",
+      "Nunito"
+     ],
+     [
+      "Anton",
+      "Archivo"
+     ],
+     [
+      "Fraunces",
+      "Manrope"
+     ]
+    ]
+   }
+  }
+ }
+}

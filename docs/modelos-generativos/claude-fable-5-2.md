@@ -16,3 +16,12 @@ Detalle en la bitácora: [SISVIS-001](pruebas.md#sisvis-001).
 - 1 corrida, 17.051 tokens de entrada y 40.588 de salida, **US$1,76**, 423 s, `stop_reason` `end_turn`, sin respaldo.
 - 3 de 3 propuestas cumplen el esquema `BrandVisualSystem` v0 a la primera.
 - Se dibujaron sin tocar el JSON. Juicio y defectos en `docs/spike-sistema-visual-marca.md` §4.
+
+## Uso SISVIS-002 (2026-11-26): propuestas restringidas (esquema v1) para 2 negocios reales con pocos datos
+
+Detalle en la bitácora: [SISVIS-002](pruebas.md#sisvis-002).
+
+- 2 llamadas, prompt `sistema-visual-propose-v1c`, esfuerzo `high`, `max_tokens` 24.000.
+- Negocio 1: 5.290 + 13.016 tokens, US$0,563, 136 s. Negocio 2: 4.054 + 10.625 tokens, US$0,457, 103 s.
+- 6 de 6 propuestas válidas a la primera.
+- Frente a SISVIS-001 (US$1,76, 423 s), cada ronda cuesta un 68–74 % menos y tarda un 68–76 % menos: el modelo ya no escribe geometría.

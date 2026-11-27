@@ -22,6 +22,55 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="sisvis-002"></a>
+
+## SISVIS-002 — Propuestas RESTRINGIDAS (esquema v1) para 2 negocios reales con pocos datos: Fable 5.2 contra Opus 5.5 (m-25042530) — 2026-11-26 · SPIKE, TOPE US$15
+
+- **Pregunta (reto del arquitecto):** ¿las propuestas de la IA generalizan cuando los datos son pobres? En SISVIS-001 Polette traía un brandboard completo.
+- **Esquema v1:** `packages/creative/src/qualify_creative/brand_system/model_v1.py`. La IA solo elige:
+  - colores por rol (el único lugar con hex);
+  - tipografías de una lista cerrada de 44 familias con sus pesos (`fonts.v1.json`);
+  - una variante de fondo con parámetros acotados;
+  - variantes de componentes;
+  - tono: una voz, una etiqueta por pieza (≤ 26) y hasta 3 frases de cinta (≤ 28);
+  - una receta por pieza, de la biblioteca versionada `recipe_library.v1.json`: 3 de producto (4:5), 4 de horario y 4 de historia, sacadas de Bianki y de las 3 propuestas de SISVIS-001.
+  - Sin cajas en píxeles, sin rutas de recursos. Nombres, precios, descripciones y fotos se llenan desde los datos al componer.
+- **Validador:** esquema y rangos, listas cerradas, formato de la receta y contraste WCAG por pares (≥ 3:1 en texto grande, ≥ 4,5:1 sobre tarjetas). También se descarta la propuesta cuyo render pierde un precio o achica un bloque de texto por debajo de 0,85.
+- **Negocios (los dos que eligió el fundador; nombres solo en disco local):**
+  - **Negocio 1** (bar de jugos): logo, 3 colores, 1 producto con precio y 3 fotos de teléfono. Sin tipografías, horario, dirección ni pagos.
+  - **Negocio 2:** **solo el nombre**. Sin logo, colores, productos ni fotos. El alta quedó en el paso «redes» y la precarga de Instagram se propuso pero nunca se aceptó, así que no se usó.
+  - Datos leídos de producción solo con `SELECT`, y fotos de R2 solo con `GET`. Quedan en disco local, nada en la rama.
+  - Korner, San Cristóbal y PuntoServis no existen en producción.
+- **Prompt:** `sistema-visual-propose-v1c` (`packages/api/evals/sistema_visual/propose_v1.py`), el mismo para los dos modelos.
+  - Esfuerzo `high`, `max_tokens` 24.000, `fallbacks: "default"`.
+  - Medidor que niega la llamada si el peor caso pasa el tope.
+
+| Negocio · modelo | Tokens (entrada + salida) | US$ | s | Válidas a la primera | Descartadas | Familias distintas |
+|---|---|---|---|---|---|---|
+| Negocio 1 · Fable 5.2 | 5.290 + 13.016 | 0,563 | 136 | 3/3 | 0 | 3 |
+| Negocio 1 · Opus 5.5 | 5.290 + 7.384 | 0,169 | 68 | 3/3 | 1 en render (bloque achicado a 0,82) | 3 |
+| Negocio 2 · Fable 5.2 | 4.054 + 10.625 | 0,457 | 103 | 3/3 | 0 | 3 |
+| Negocio 2 · Opus 5.5 | 4.054 + 5.500 | 0,126 | 48 | 3/3 | 0 | 3 |
+
+- **Costo total:** **US$1,32** de los US$15 del tope (Fable 1,02, Opus 0,30). Un primer intento falló antes de llamar al modelo (una imagen JPG declarada como PNG), costo 0.
+- **Frente a SISVIS-001** (US$1,76 y 423 s por ronda, esquema libre):
+  - Fable cuesta 0,46–0,56 por ronda (−68 a −74 %) y tarda 103–136 s.
+  - Opus cuesta 0,13–0,17 (−90 %) y tarda 48–68 s.
+  - El modelo ya no escribe geometría.
+- **Hallazgos:**
+  - Con datos mínimos pero reales (negocio 1), varias propuestas se pueden publicar como pieza de producto. Por ejemplo, la «Cartel de sol» de Fable y la «Cartel turquesa» de Opus.
+  - Con solo el nombre (negocio 2), ninguna sirve: piezas vacías, sin producto, precio ni foto. **El dato mínimo para generar es al menos 1 producto con foto y precio.**
+  - Los dos modelos repiten los mismos tríos de familia y tipografía en los dos negocios: pop redondeado (Baloo 2 o Fredoka + Nunito), cartel condensado (Anton + Archivo) y editorial con serifa (Fraunces + Work Sans, Lora o Manrope). La variedad entre negocios es baja.
+  - El modelo metió datos del negocio en su texto libre: «Hecho en <ciudad>», sacado de la línea de posicionamiento del dueño, y el nombre en la cinta. Para el negocio 2 supuso, solo por el nombre, que vende bebidas («Frescura en cada sorbo»). La cinta libre es una vía de fuga que v2 debe cerrar.
+  - Los logos anchos (el del negocio 1 es una palabra) quedan chicos en cajas pensadas para logos cuadrados.
+  - Sin anglicismos ni precios inventados.
+- **Recorte de la foto:** ver `docs/spike-sistema-visual-marca.md` §7.4.
+- **Memoria del render:** ver §7.5 del mismo documento.
+- **Métricas anónimas:** `packages/api/evals/sistema_visual/sisvis002_metrics.json`.
+- **Hojas de contacto:** solo en disco local, bajo `/Users/herwin/dev/qualify-eval-out/sistema-visual/sisvis-002/`.
+
+---
+
 <a id="sisvis-001"></a>
 
 ## SISVIS-001 — La IA propone 3 sistemas visuales para Polette desde cero (m-25042530) — 2026-11-17 · SPIKE
@@ -40,6 +89,9 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 - **Defectos míos (entrada):** los huecos que escribí traen «crema soft» (texto del producto en Pedidos) y «toppings» en la cinta, dos anglicismos que el modelo respetó.
 - **Costo:** 17.051 tokens de entrada + 40.588 de salida = **US$1,76**. Tardó 423 s. El render es local, costo 0.
 - **Imágenes de producto:** sin llamadas a Seedream. Las fotos del brandboard van dentro de un disco o un arco, sin recorte.
+
+---
+
 <a id="avfoto-002"></a>
 
 ## AVFOTO-002 — Personaje ANIMADO dibujado por Seedream desde la foto de una persona real, como referencia de Seedance 2.5 (m-25129385, ADR 50 §12.12) — 2026-11-26 · Seedance 3 de 3 ACEPTADAS; falta el juicio de parecido de Deivid; US$1,69

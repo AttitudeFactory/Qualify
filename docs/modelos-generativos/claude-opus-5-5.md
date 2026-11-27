@@ -46,3 +46,12 @@ El copy de estas pasadas lo escribió siempre este modelo, con los ajustes de pr
   - casos con «Debe mencionar» y la forma de pedir como ventaja: 11/12;
   - puertas 41/41, ninguna rechazada por corta.
 - **Gasto en Claude de las seis pasadas:** US$8,85 (1,83 + 1,03 + 1,60 + 1,65 + 1,33 + 1,41), con copy, ángulos, partes y juez juntos; el desglose está en cada entrada.
+
+## Uso SISVIS-002 (2026-11-26): propuestas de sistema visual (esquema v1), comparado con Fable 5.2
+
+Fuera del copy del generador: spike m-25042530. Detalle en la bitácora: [SISVIS-002](pruebas.md#sisvis-002).
+
+- Mismo prompt (`sistema-visual-propose-v1c`) que Fable 5.2, esfuerzo `high`, `max_tokens` 24.000, respaldo `fallbacks: "default"` (no se usó).
+- Negocio 1: 5.290 + 7.384 tokens, US$0,169, 68 s. Negocio 2: 4.054 + 5.500 tokens, US$0,126, 48 s.
+- 6 de 6 propuestas válidas a la primera.
+- Cuesta 3,3 a 3,6 veces menos y tarda la mitad que Fable 5.2.
