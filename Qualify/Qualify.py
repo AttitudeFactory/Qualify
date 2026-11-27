@@ -91,8 +91,12 @@ from .upload_route import upload_fallback
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import (
+    whatsapp_activity_index,
     whatsapp_index,
+    whatsapp_payments_index,
+    whatsapp_profile_index,
     whatsapp_promotions_index,
+    whatsapp_qr_index,
     whatsapp_settings_index,
 )
 from .whatsapp_state import WhatsAppState
@@ -345,11 +349,20 @@ app.add_page(
         TikTokConnectionsState.read_connect_result,  # m-24921091
         TikTokConnectionsState.load,
         PinterestState.load,
+        # m-25027373 (BU-A10): «Tu número › Estado» is each WhatsApp number's card here.
+        WhatsAppState.load_numbers,
     ],
     title="Qualify · Tus redes",
 )
-# WA-12: the WhatsApp module. `enter_page` reads `?tab=` and loads the tenant's numbers;
-# each tab loads its own data on mount (see `whatsapp_page.py`).
+# m-25027373: the number's «Actividad», reached from its card in «Tus redes».
+app.add_page(
+    whatsapp_activity_index,
+    route="/connections/whatsapp/actividad",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · Actividad de tu WhatsApp",
+)
+# WA-12: the WhatsApp module. Since m-25027373 it draws nothing: `enter_page` loads
+# nothing and the page's history handler sends every address of it to its new place.
 app.add_page(
     whatsapp_index,
     route="/whatsapp",
@@ -386,6 +399,26 @@ app.add_page(
     route="/chats/ajustes/whatsapp",
     on_load=[AuthState.require_login, WhatsAppState.enter_page],
     title="Qualify · Tu menú de bienvenida",
+)
+# m-25027373 (BU-A10): «Tu número»'s Perfil, Códigos QR and Formas de pago, now pages
+# of «Ajustes de chats» — the same `WhatsAppState` and loader as the menu's page.
+app.add_page(
+    whatsapp_profile_index,
+    route="/chats/ajustes/whatsapp/perfil",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · Perfil de tu WhatsApp",
+)
+app.add_page(
+    whatsapp_qr_index,
+    route="/chats/ajustes/whatsapp/codigos-qr",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · Códigos QR",
+)
+app.add_page(
+    whatsapp_payments_index,
+    route="/chats/ajustes/formas-de-pago",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · Formas de pago",
 )
 app.add_page(
     publish_index,

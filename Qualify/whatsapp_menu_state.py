@@ -267,15 +267,19 @@ from .whatsapp_menu_vm import (
 )
 from .whatsapp_provider import UnknownWhatsAppNumber
 from .whatsapp_state import WhatsAppState
-from .whatsapp_vm import CHAT_SETTINGS_ROUTE, SETTINGS_WHATSAPP_ROUTE
+from .whatsapp_vm import (
+    CHAT_SETTINGS_ROUTE,
+    SETTINGS_PAYMENTS_ROUTE,
+    SETTINGS_WHATSAPP_ROUTE,
+)
 
 logger = logging.getLogger(__name__)
 
 #: How long «Listo: «X» ahora es botón…» and its «Deshacer» stay.
 _ANSWERS_UNDO_MS = 6000
 
-#: WhatsApp → Tu número → Formas de pago (m-24955648).
-PAYMENTS_HREF = "/whatsapp?tab=numero&sub=pagos"
+#: «Ajustes de chats › Formas de pago» (m-24955648; its own page since m-25027373).
+PAYMENTS_HREF = SETTINGS_PAYMENTS_ROUTE
 
 #: The open menu's bar: «Editar» on a card scrolls there (m-24955645).
 TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
@@ -2700,7 +2704,7 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def save_and_open_payments(self) -> AsyncIterator[rx.event.EventSpec]:
         """«Agregar formas de pago» (m-24955648, spec §6a): save first, then go to
-        WhatsApp → Tu número → Formas de pago."""
+        «Ajustes de chats › Formas de pago»."""
         async with self:
             if self.dirty and self.error_count > 0:
                 self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"

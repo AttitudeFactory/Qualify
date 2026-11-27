@@ -29,7 +29,8 @@ _HERE = Path(__file__).parent
 _GUIDE_MAP = [
     "Inicio",
     "Por responder",
-    "WhatsApp",
+    # m-25027373: no «WhatsApp» entry («Tu número» moved to «Tus redes» and «Ajustes
+    # de chats»).
     # m-25017861 (D1): what the owner prepares once, apart from the messages.
     "Ajustes de chats",
     # m-24955912: the catalog opens «Publica» (Galería → Crear publicación → Por aprobar).
@@ -87,7 +88,7 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
         ("publish", "Publica"),
     ]
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
-    assert zones["listen"] == ["Por responder", "WhatsApp", "Ajustes de chats"]
+    assert zones["listen"] == ["Por responder", "Ajustes de chats"]
     assert zones["publish"] == [
         "Galería",
         "Crear publicación",

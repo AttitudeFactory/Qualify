@@ -434,11 +434,19 @@ def _detail_row(icon: str, label: str, value: rx.Var[str]) -> rx.Component:
 def _details(conn: ConnectionVM) -> rx.Component:
     """«Más detalles»: dates, permissions and the full list — for whoever wants them,
     out of the owner's first read (m-24842969)."""
+    from .whatsapp_page import number_card_details  # noqa: PLC0415 — see `connection_card`
+
     return rx.vstack(
         _detail_row("building-2", "Negocio: ", conn.brand),
         _detail_row("clock", "Conectada: ", conn.last_verified_at),
         _detail_row("refresh-cw", "Última comprobación: ", conn.last_health_checked_at),
-        rx.cond(conn.status == "active", verify_now_button(conn), rx.fragment()),
+        # m-25027373: a WhatsApp number's facts and its «Verificar ahora» (which also
+        # covers «Comprobar ahora»), from what was «Tu número › Estado».
+        rx.cond(
+            conn.platform == "whatsapp",
+            number_card_details(conn.id),
+            rx.cond(conn.status == "active", verify_now_button(conn), rx.fragment()),
+        ),
         rx.cond(
             conn.granted_scopes.length() > 0,
             rx.vstack(
@@ -499,7 +507,14 @@ def _details_toggle(conn: ConnectionVM) -> rx.Component:
 def connection_card(conn: ConnectionVM) -> rx.Component:
     """One account, read in this order (m-24842969): which account and whether it works
     (in words), what it can and cannot do yet, the fix when something is off, and only
-    then — behind «Más detalles» — dates and permissions."""
+    then — behind «Más detalles» — dates and permissions.
+
+    m-25027373 (BU-A10): a WhatsApp number's card also carries what was «Tu número ›
+    Estado» (its line, «Avisar al equipo de Qualify», «Verificar ahora» and its facts)
+    and the way to its «Actividad». Imported here: `whatsapp_page` pulls in modules that
+    import this one."""
+    from .whatsapp_page import number_card_activity_link, number_card_status  # noqa: PLC0415
+
     return card(
         rx.vstack(
             # One column on a phone (N12): the name and the state wrap instead of
@@ -531,10 +546,21 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
+            rx.cond(conn.platform == "whatsapp", number_card_status(conn.id), rx.fragment()),
             rx.cond(conn.platform == "instagram", ad_accounts_panel(conn), rx.fragment()),
             rx.divider(),
             rx.flex(
-                _details_toggle(conn),
+                rx.flex(
+                    _details_toggle(conn),
+                    rx.cond(
+                        conn.platform == "whatsapp",
+                        number_card_activity_link(conn.id),
+                        rx.fragment(),
+                    ),
+                    align="center",
+                    wrap="wrap",
+                    gap="2",
+                ),
                 rx.cond(conn.status != "revoked", disconnect_action(conn), rx.fragment()),
                 justify="between",
                 align="center",

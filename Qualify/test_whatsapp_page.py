@@ -29,8 +29,8 @@ from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import (
-    CHATS_MOVED_ACTION,
-    CHATS_MOVED_NOTICE,
+    ACTIVITY_ROUTE,
+    CONNECTIONS_ROUTE,
     DEFAULT_TAB,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
@@ -39,8 +39,8 @@ from .whatsapp_vm import (
     NO_NUMBER_ACTION,
     NO_NUMBER_GAINS,
     NO_NUMBER_TITLE,
-    NUMBER_SUBS,
-    NUMBER_TITLE,
+    PAGE_PANELS,
+    PANEL_PAGES,
     PROMOTION_SUBS,
     PROMOTIONS_ROUTE,
     PROMOTIONS_SUBTITLE,
@@ -60,7 +60,6 @@ from .whatsapp_vm import (
     TAB_QR,
     TAB_TEMPLATES,
     VERTICAL_KEYS,
-    WHATSAPP_SUBTITLE,
     BusinessProfileVM,
     ProfileForm,
     QrCodeVM,
@@ -68,11 +67,14 @@ from .whatsapp_vm import (
     build_number_vm,
     build_profile_vm,
     build_qr_vm,
+    chat_return_path,
     compose_qr_message,
     graph_error_notice,
     health_display,
     is_promotions_panel,
     legacy_chat_target,
+    legacy_number_target,
+    legacy_panel_target,
     legacy_promotions_target,
     name_status_display,
     needs_help,
@@ -323,9 +325,9 @@ def test_one_task_left_tu_numero() -> None:
     """m-24842998: the top tabs (guide §3), the secondary ones grouped inside.
     m-25017862 (D3): «Promociones» left the strip for its own menu entry.
     m-25017861 (D1): the menu left it for «Ajustes de chats».
-    m-25029799 (BU-A11): the chats left for «Por responder» — «Tu número» (and its five
-    sub-tabs, unchanged: m-25027373 moves them) is all `/whatsapp` draws."""
-    assert NUMBER_TITLE == "Tu número"
+    m-25029799 (BU-A11): the chats left for «Por responder».
+    m-25027373 (BU-A10): «Tu número»'s five sub-tabs left too, each for its own page; the
+    section is kept only so its old addresses resolve (and then redirect)."""
     assert "chats" not in SECTION_KEYS and "chats" not in SUBTABS
     # The other sections are still ones an old address can name (it then redirects).
     assert {"respuesta", "promociones", "numero"} == set(SECTION_KEYS)
@@ -334,7 +336,7 @@ def test_one_task_left_tu_numero() -> None:
         "Mensajes aprobados",
         "Clientes que aceptaron",
     ]
-    assert [label for _, label in NUMBER_SUBS] == [
+    assert [label for _panel, _slug, label in SUBTABS["numero"]] == [
         "Estado",
         "Perfil",
         "Formas de pago",  # m-24955648
@@ -404,10 +406,10 @@ def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
         assert url.startswith(f"{PROMOTIONS_ROUTE}?sub=")
         assert panel_route(panel) == PROMOTIONS_ROUTE
         assert promotions_panel(query["sub"]) == panel
-    else:
-        assert url.startswith("/whatsapp?tab=")
-        assert panel_route(panel) == "/whatsapp"
-        assert resolve_panel(query["tab"], query.get("sub", "")) == panel
+    else:  # m-25027373: «Tu número»'s panels, each on its own page
+        assert url == panel_route(panel) == PANEL_PAGES[panel]
+        assert not url.startswith("/whatsapp")
+        assert url == CONNECTIONS_ROUTE or PAGE_PANELS[url] == panel
 
 
 @pytest.mark.parametrize(
@@ -516,8 +518,12 @@ def _mounts(component: rx.Component, gates: tuple[tuple[str, bool], ...] = ()) -
     ("page", "mine"),
     [
         (whatsapp_page.whatsapp_promotions_index, "promotions"),
-        (whatsapp_page.whatsapp_index, "whatsapp"),
         (whatsapp_page.whatsapp_settings_index, "settings"),
+        # m-25027373: «Tu número»'s old panels, each on its own page.
+        (whatsapp_page.whatsapp_profile_index, TAB_PROFILE),
+        (whatsapp_page.whatsapp_qr_index, TAB_QR),
+        (whatsapp_page.whatsapp_payments_index, TAB_PAYMENTS),
+        (whatsapp_page.whatsapp_activity_index, TAB_ACTIVITY),
     ],
 )
 def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) -> None:
@@ -526,13 +532,14 @@ def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) 
     the shell — sits in the TRUE branch of this page's section condition, so the other
     page's panel never mounts (nor loads) here. The menu's guided frame on `/whatsapp`
     has its own condition, `active_tab == "menu"`, which no promotions panel meets.
-    m-25017861: the same for «Ajustes de chats › WhatsApp», which draws the menu only."""
+    m-25017861: the same for «Ajustes de chats › WhatsApp», which draws the menu only.
+    m-25027373: and for each page of one of «Tu número»'s old panels."""
+    page_gates = {
+        "promotions": whatsapp_page._on_promotions_page,  # noqa: SLF001
+        "settings": whatsapp_page._on_settings_page,  # noqa: SLF001
+    }
     gate = str(
-        {
-            "promotions": whatsapp_page._on_promotions_page,  # noqa: SLF001
-            "whatsapp": whatsapp_page._on_whatsapp_page,  # noqa: SLF001
-            "settings": whatsapp_page._on_settings_page,  # noqa: SLF001
-        }[mine]()
+        page_gates[mine]() if mine in page_gates else whatsapp_page._on_panel(mine)  # noqa: SLF001
     )
     panels = [
         (component, gates)
@@ -546,6 +553,16 @@ def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) 
         menu_frame = any('"menu"' in cond and "active_tab" in cond and ok for cond, ok in gates)
         assert (gate, True) in gates or menu_frame, (type(component).__name__, gates)
         assert (gate, False) not in gates
+
+
+def test_whatsapp_draws_no_panel() -> None:
+    """m-25027373: `/whatsapp` only redirects — no panel mounts (nor loads) there."""
+    panels = [
+        component
+        for component, _gates in _mounts(whatsapp_page.whatsapp_index())
+        if component.tag != "nav" and "q-route-pop" not in str(component.class_name)
+    ]
+    assert panels == []
 
 
 def test_promotions_route_is_registered_behind_login() -> None:
@@ -569,10 +586,14 @@ def test_addresses_are_the_owner_words() -> None:
     assert tab_url(TAB_TEMPLATES) == "/whatsapp/promociones?sub=aprobados"
     assert tab_url(TAB_CAMPAIGNS) == "/whatsapp/promociones?sub=enviadas"
     assert tab_url(TAB_CONTACTS) == "/whatsapp/promociones?sub=clientes"
-    assert tab_url(TAB_QR) == "/whatsapp?tab=numero&sub=qr"
-    assert tab_url(TAB_CONNECTION) == "/whatsapp?tab=numero&sub=estado"
     assert tab_url(TAB_MENU) == "/chats/ajustes/whatsapp"  # m-25017861
-    assert tab_url("<script>") == "/whatsapp?tab=numero&sub=estado"
+    # m-25027373: «Tu número»'s panels, each on its own page.
+    assert tab_url(TAB_QR) == "/chats/ajustes/whatsapp/codigos-qr"
+    assert tab_url(TAB_PROFILE) == "/chats/ajustes/whatsapp/perfil"
+    assert tab_url(TAB_PAYMENTS) == "/chats/ajustes/formas-de-pago"
+    assert tab_url(TAB_ACTIVITY) == "/connections/whatsapp/actividad"
+    assert tab_url(TAB_CONNECTION) == "/connections"
+    assert tab_url("<script>") == "/connections"
 
 
 def test_sections_and_subs_of_a_panel() -> None:
@@ -619,7 +640,11 @@ def test_a_failing_number_offers_the_review_request() -> None:
     assert needs_help(_number(status="degraded").health_label)
     assert not needs_help(_number().health_label)
     source = (_HERE / "whatsapp_page.py").read_text()
-    assert "rx.cond(WhatsAppState.number_needs_help, _review_request()" in source
+    # m-25027373: on the number's card in «Tus redes» (a disconnected number's card has
+    # its own help button) and above every other panel of the number.
+    assert 'active & (number.health_tone == "error")' in source
+    assert "WhatsAppState.request_review(number.connection_id)" in source
+    assert "WhatsAppState.number_needs_help" in source and "_review_request()" in source
     assert REVIEW_ACTION == "Avisar al equipo de Qualify"
 
 
@@ -685,10 +710,14 @@ def _signed_in(monkeypatch: pytest.MonkeyPatch, tenant: str) -> None:
 @pytest.mark.parametrize(
     ("path", "panel"),
     [
-        ("/whatsapp", TAB_CONNECTION),  # m-25029799: «Tu número», no chats
         ("/chats/ajustes/whatsapp", TAB_MENU),
         ("/chats/ajustes/whatsapp/?tab=numero", TAB_MENU),  # only the menu here
-        ("/whatsapp?tab=numero&sub=qr", TAB_QR),
+        # m-25027373: «Tu número»'s old panels, one per page (the address's `tab` and
+        # `sub` are not read there).
+        ("/chats/ajustes/whatsapp/perfil", TAB_PROFILE),
+        ("/chats/ajustes/whatsapp/codigos-qr?tab=numero&sub=perfil", TAB_QR),
+        ("/chats/ajustes/formas-de-pago/", TAB_PAYMENTS),
+        ("/connections/whatsapp/actividad?cuenta=x", TAB_ACTIVITY),
         ("/whatsapp/promociones", TAB_CAMPAIGNS),
         ("/whatsapp/promociones?sub=aprobados", TAB_TEMPLATES),
         ("/whatsapp/promociones/?sub=clientes", TAB_CONTACTS),
@@ -724,6 +753,14 @@ _OLD = [
         f"/whatsapp?tab=chats&filtro=sin-leer&cuenta={_UUID}",
         f"/responder?tab=mensajes&filtro=por-responder&canal=whatsapp&numero={_UUID}",
     ),
+    # m-25027373: «Tu número» left — every other address lands on the panel's page.
+    ("/whatsapp", "/connections"),
+    ("/whatsapp?tab=numero&sub=estado", "/connections"),
+    (
+        f"/whatsapp?tab=numero&sub=qr&cuenta={_UUID}",
+        f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_UUID}",
+    ),
+    ("/whatsapp?tab=numero&sub=actividad", "/connections/whatsapp/actividad"),
 ]
 
 
@@ -758,37 +795,66 @@ def test_tabs_exist_behind_the_agreed_hooks() -> None:
     assert not hasattr(whatsapp_page, "tab_strip")
 
 
-def test_the_page_renders_every_tab() -> None:
+def _present(rendered: str, text: str) -> bool:
+    # The render escapes non-ASCII as JSON does («ó» → «\\u00f3»), and `str()` of the
+    # render dict escapes that backslash once more.
+    escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+    return text in rendered or escaped in rendered
+
+
+@pytest.mark.parametrize(
+    ("page", "texts"),
+    [
+        # m-25027373: every action of «Tu número»'s panels, now on their own pages.
+        (
+            whatsapp_page.whatsapp_profile_index,
+            ("Perfil", "Guardar", "Descartar cambios", "Volver a leer de WhatsApp"),
+        ),
+        (
+            whatsapp_page.whatsapp_qr_index,
+            ("Códigos QR", "Crear código", "Copiar enlace", "Descargar PNG", "Eliminar"),
+        ),
+        (whatsapp_page.whatsapp_payments_index, ("Formas de pago", "Agregar forma de pago")),
+        (whatsapp_page.whatsapp_activity_index, ("Actividad", "Tus redes")),
+    ],
+)
+def test_each_moved_panel_renders_on_its_page(page: typing.Any, texts: tuple[str, ...]) -> None:
+    rendered = str(page().render())
+    for text in (*texts, NO_NUMBER_ACTION):
+        assert _present(rendered, text), text
+    # No «Tu número» strip, no chats, no chat notice on any of them.
+    for gone in ("Tu número", "Secciones de WhatsApp", "Filtrar chats", "Ir a Por responder"):
+        assert not _present(rendered, gone), gone
+
+
+def test_whatsapp_shows_nothing_of_its_own() -> None:
+    """m-25027373: no header, no strip, no notice — only the shell and a skeleton."""
     rendered = str(whatsapp_page.whatsapp_index().render())
-
-    def present(text: str) -> bool:
-        # The render escapes non-ASCII as JSON does («ó» → «\\u00f3»), and `str()` of
-        # the render dict escapes that backslash once more.
-        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
-        return text in rendered or escaped in rendered
-
-    # `sub_strip` is shared with `/whatsapp/promociones`, so its labels are in the tree.
-    for _key, label in (*PROMOTION_SUBS, *NUMBER_SUBS):
-        assert present(label), label
-    assert present(WHATSAPP_SUBTITLE)
-    # m-25029799: no chats on this screen — no «Chats» tab, no list, no filters; one
-    # line says where they went, with the way there (UX review).
-    for gone in ("Secciones de WhatsApp", "Filtrar chats", "Abiertos"):
-        assert not present(gone), gone
-    assert present(CHATS_MOVED_NOTICE) and present(CHATS_MOVED_ACTION)
-    assert "chats_href" in rendered
-    # m-25017861: no setting tab of the menu on the messages screen.
-    assert not present("Respuesta automática")
-    for text in (
+    for gone in (
+        "Tu número",
+        "Tus chats de WhatsApp se responden en Por responder.",
         "Verificar ahora",
-        "Ver detalles",
-        "Guardar",
-        "Crear código",
-        "Copiar enlace",
-        "Descargar PNG",
-        NO_NUMBER_ACTION,
+        "Formas de pago",
     ):
-        assert present(text), text
+        assert not _present(rendered, gone), gone
+
+
+def test_the_number_card_of_tus_redes_carries_estado() -> None:
+    """m-25027373: «Tu número › Estado» is the WhatsApp card of «Tus redes»: the number's
+    line, «Avisar al equipo de Qualify», «Verificar ahora» (per number), the ten facts and
+    the way to «Actividad»."""
+    from . import connections_page
+    from .connections_vm import ConnectionVM
+
+    card = connections_page.connection_card(rx.Var.create("c").to(ConnectionVM))  # type: ignore[arg-type]
+    rendered = str(card.render())
+    details = str(connections_page._details(rx.Var.create("c").to(ConnectionVM)).render())  # type: ignore[arg-type]  # noqa: SLF001
+    for text in (REVIEW_ACTION, "Actividad"):
+        assert _present(rendered, text), text
+    for text in ("Verificar ahora", "Nombre verificado", "Calidad", "Límite de mensajes"):
+        assert _present(details, text), text
+    assert "verify_number" in details and "request_review" in rendered
+    assert ACTIVITY_ROUTE in rendered
 
 
 def test_the_page_never_imports_the_provider() -> None:
@@ -807,11 +873,38 @@ def test_route_is_registered_behind_login() -> None:
     assert "WhatsAppState.enter_page" in block
 
 
-def test_nav_item_sits_in_atiende_after_por_responder() -> None:
-    """NAV-1 (m-24842957, guide §3): WhatsApp is the second entry of «Atiende»."""
-    assert ("WhatsApp", "message-circle", "/whatsapp", True) in NAV_ITEMS
+@pytest.mark.parametrize(
+    ("page", "route"),
+    [
+        ("whatsapp_profile_index", "/chats/ajustes/whatsapp/perfil"),
+        ("whatsapp_qr_index", "/chats/ajustes/whatsapp/codigos-qr"),
+        ("whatsapp_payments_index", "/chats/ajustes/formas-de-pago"),
+        ("whatsapp_activity_index", "/connections/whatsapp/actividad"),
+    ],
+)
+def test_every_new_page_is_registered_behind_login(page: str, route: str) -> None:
+    """m-25027373: each page of «Tu número»'s old panels, with `WhatsAppState`'s loader."""
+    source = (_HERE / "Qualify.py").read_text()
+    start = source.index(f"    {page},\n    route=")
+    block = source[start : source.index(")", source.index("on_load", start)) + 1]
+    assert f'route="{route}"' in block
+    assert "AuthState.require_login" in block and "WhatsAppState.enter_page" in block
+    assert PAGE_PANELS[route]
+
+
+def test_tus_redes_loads_the_numbers() -> None:
+    source = (_HERE / "Qualify.py").read_text()
+    start = source.index("    connections_index,\n    route=")
+    block = source[start : source.index("title=", start)]
+    assert "WhatsAppState.load_numbers" in block
+
+
+def test_no_whatsapp_entry_in_the_menu() -> None:
+    """m-25027373 (BU-A10): the «WhatsApp» entry left the menu (and the phone's «Más»,
+    built from the same list); «Atiende» is «Por responder» and «Ajustes de chats»."""
+    assert all(label != "WhatsApp" and route != "/whatsapp" for label, _i, route, _e in NAV_ITEMS)
     labels = {zone: [label for label, *_ in items] for zone, _t, items in NAV_ZONES}["listen"]
-    assert labels.index("WhatsApp") == labels.index("Por responder") + 1
+    assert labels == ["Por responder", "Ajustes de chats"]
 
 
 def test_empty_vms_are_valid_defaults() -> None:
@@ -892,8 +985,8 @@ def test_no_sticker_or_chat_strip_on_the_page() -> None:
 
     strip = str(sub_strip().render())
     assert "Stickers y videos" not in strip and "Tus chats" not in strip
-    # Promociones and Tu número keep their strips.
-    assert "Mensajes aprobados" in strip and "Formas de pago" in strip
+    # Promociones keeps its strip; «Tu número»'s left with its panels (m-25027373).
+    assert "Mensajes aprobados" in strip and "Formas de pago" not in strip
     body = str(tab_body().render())
     assert "Stickers y videos de tu marca" not in body
     assert "WhatsAppChatsState" not in body  # no list, no chat state on this page
@@ -953,3 +1046,133 @@ def test_every_old_address_of_the_chat_list_lands_in_por_responder(
 )
 def test_tu_numero_and_a_bare_whatsapp_stay(query: dict[str, object]) -> None:
     assert legacy_chat_target(query) is None
+
+
+# --- m-25027373 (BU-A10): «Tu número» left `/whatsapp` ----------------------------------
+
+_CHAT_BACK = f"/responder?tab=mensajes&cuenta={_C}&chat={_T}"
+_QS_BACK = "%2Fresponder%3Ftab%3Dmensajes%26cuenta%3D" + _C + "%26chat%3D" + _T
+
+
+@pytest.mark.parametrize(
+    ("query", "target"),
+    [
+        # Estado (and anything that names no known panel) → «Tus redes».
+        ({}, "/connections"),
+        ({"tab": "numero"}, "/connections"),
+        ({"tab": "numero", "sub": "estado"}, "/connections"),
+        ({"tab": "conexion"}, "/connections"),
+        ({"tab": "numero", "sub": "<script>"}, "/connections"),
+        ({"tab": "<script>"}, "/connections"),
+        ({"tab": "numero", "sub": "estado", "cuenta": _C}, "/connections"),
+        # Each other panel → its page, with the number.
+        ({"tab": "numero", "sub": "perfil"}, "/chats/ajustes/whatsapp/perfil"),
+        (
+            {"tab": "numero", "sub": "pagos", "cuenta": _C},
+            f"/chats/ajustes/formas-de-pago?cuenta={_C}",
+        ),
+        (
+            {"tab": "numero", "sub": "qr", "cuenta": _C},
+            f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_C}",
+        ),
+        ({"tab": "qr"}, "/chats/ajustes/whatsapp/codigos-qr"),
+        ({"tab": "perfil"}, "/chats/ajustes/whatsapp/perfil"),
+        (
+            {"tab": "actividad", "cuenta": _C},
+            f"/connections/whatsapp/actividad?cuenta={_C}",
+        ),
+        # The chat's way back rides along to Perfil and Formas de pago only — and only an
+        # app's own chat address; junk, a foreign site, a non-UUID number never do.
+        (
+            {"tab": "numero", "sub": "perfil", "cuenta": _C, "volver": _CHAT_BACK},
+            f"/chats/ajustes/whatsapp/perfil?cuenta={_C}&volver={_QS_BACK}",
+        ),
+        (
+            {"tab": "numero", "sub": "pagos", "volver": _CHAT_BACK},
+            f"/chats/ajustes/formas-de-pago?volver={_QS_BACK}",
+        ),
+        (
+            {"tab": "numero", "sub": "qr", "volver": _CHAT_BACK},
+            "/chats/ajustes/whatsapp/codigos-qr",
+        ),
+        (
+            {"tab": "numero", "sub": "perfil", "volver": "https://evil.example/responder"},
+            "/chats/ajustes/whatsapp/perfil",
+        ),
+        (
+            {"tab": "numero", "sub": "perfil", "volver": "//evil.example"},
+            "/chats/ajustes/whatsapp/perfil",
+        ),
+        (
+            {"tab": "numero", "sub": "pagos", "volver": "/whatsapp?tab=chats"},
+            "/chats/ajustes/formas-de-pago",
+        ),
+        (
+            {"tab": "numero", "sub": "perfil", "cuenta": "<script>", "x": "y"},
+            "/chats/ajustes/whatsapp/perfil",
+        ),
+        (
+            {"tab": "numero", "sub": "perfil", "cuenta": [_C, _C]},
+            "/chats/ajustes/whatsapp/perfil",
+        ),
+    ],
+)
+def test_every_old_number_address_lands_on_its_new_page(
+    query: dict[str, object], target: str
+) -> None:
+    assert legacy_number_target(query) == target
+    assert legacy_panel_target(query) == target
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {},
+        {"tab": "numero", "sub": "qr"},
+        {"tab": "promociones", "sub": "aprobados"},
+        {"tab": "respuesta"},
+        {"tab": "chats", "filtro": "cerrados"},
+        {"cuenta": _C, "chat": _T},
+        {"tab": "x", "sub": "y", "volver": "/whatsapp"},
+    ],
+)
+def test_whatsapp_always_answers_with_another_page(query: dict[str, object]) -> None:
+    """No loop: every address of `/whatsapp` has a new place, and it is never `/whatsapp`
+    itself (`/whatsapp/promociones` is its own page, which never redirects)."""
+    target = legacy_panel_target(query)
+    assert target.startswith("/")
+    assert not target.startswith("//")
+    assert target.split("?", 1)[0] != "/whatsapp"
+
+
+def test_the_way_back_rule_is_one() -> None:
+    """The payments panel, the profile's map point and the redirects read one rule."""
+    from . import whatsapp_location_state, whatsapp_payments_state
+
+    assert whatsapp_payments_state.chat_return_path is chat_return_path
+    assert whatsapp_location_state.chat_return_path is chat_return_path
+    assert chat_return_path({"volver": _CHAT_BACK}) == _CHAT_BACK
+    assert chat_return_path({"volver": "/responder?tab=mensajes"}) == ""
+
+
+def _with_numbers(*ids: str) -> WhatsAppState:
+    state = WhatsAppState()
+    state.numbers = [_number(connection_id=i) for i in ids]
+    state.selected_connection_id = ids[0] if ids else ""
+    return state
+
+
+def test_a_card_acts_only_on_a_number_of_the_business() -> None:
+    """m-25027373: «Verificar ahora» / «Avisar al equipo de Qualify» on a card of «Tus
+    redes» act on that card's number — never on an id the business's list lacks."""
+    state = _with_numbers(_C, _T)
+    state.qr_loaded_for = _C
+    foreign = "00000000-0000-4000-8000-0000000000ff"
+    assert WhatsAppState.verify_number.fn(state, foreign) is None  # type: ignore[attr-defined]
+    assert WhatsAppState.request_review.fn(state, "<script>") is None  # type: ignore[attr-defined]
+    assert WhatsAppState.verify_number.fn(state, ["x"]) is None  # type: ignore[attr-defined]
+    assert state.selected_connection_id == _C and state.qr_loaded_for == _C  # untouched
+    assert WhatsAppState.verify_number.fn(state, _T) is not None  # type: ignore[attr-defined]
+    assert state.selected_connection_id == _T
+    assert state.qr_loaded_for == ""  # what belonged to the other number is dropped
+    assert WhatsAppState.request_review.fn(state, _T) is not None  # type: ignore[attr-defined]

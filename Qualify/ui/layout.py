@@ -90,12 +90,11 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # One place to answer (founder decision 3): messages, buyers, comments,
             # WhatsApp chats and interested people are tabs of «Por responder».
             ("Por responder", "messages-square", RESPOND_ROUTE, True),
-            # WA-12: the WhatsApp module. m-25029799 (BU-A11): its chats are attended
-            # only in «Por responder» (they count there, once); what is left here is
-            # «Tu número» — no chats, no badge. Its promotions have their own entry in
-            # «Publica» (m-25017862), its menu is in «Ajustes de chats» (m-25017861). It
-            # leaves the menu when «Tu número» moves into «Tus redes» (m-25027373).
-            ("WhatsApp", "message-circle", "/whatsapp", True),
+            # WA-12's «WhatsApp» entry is gone (m-25027373, BU-A10): its chats are
+            # attended here, in «Por responder» (m-25029799); its promotions have their
+            # own entry in «Publica» (m-25017862); its menu, profile, QR codes and
+            # payment methods are in «Ajustes de chats»; the number's state and
+            # activity in «Tus redes». An old `/whatsapp` address redirects there.
             # m-25017861 (D1, founder 2026-11-12): what the owner prepares once (the
             # menu, the starter questions…) lives apart from the messages, last in the
             # zone: answering comes first.
@@ -161,7 +160,7 @@ NAV_BUSINESS: list[Item] = [
 # `neutral` (the tone of «Pronto») where nothing is urgent. At 0 nothing is rendered.
 NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
     # m-25029799: WhatsApp's chats count only here (`attention.total`, each chat once);
-    # the «WhatsApp» entry holds no chats any more, so it carries no number.
+    # there is no «WhatsApp» entry any more (m-25027373).
     "Por responder": (PendingState.respond_badge, "warn", PendingState.respond_aria),
     "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
     "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),

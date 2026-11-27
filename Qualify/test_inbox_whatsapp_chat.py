@@ -520,7 +520,8 @@ async def test_number_settings_links_name_the_chats_number_and_come_back_to_it(
     numbers: list[UUID],
 ) -> None:
     """C2: «Cambiar estos datos» and «Completar / Poner en el mapa» open THAT number's
-    «Tu número» (`cuenta`), with the way back to the chat on the same list view."""
+    settings (`cuenta`), with the way back to the chat on the same list view.
+    m-25027373: those settings are pages of «Ajustes de chats» now."""
     from urllib.parse import parse_qs, urlsplit
 
     from .whatsapp_payments_state import chat_return_path
@@ -530,9 +531,13 @@ async def test_number_settings_links_name_the_chats_number_and_come_back_to_it(
     WhatsAppChatsState.open_from_inbox.fn(state, MINE, THREAD)  # type: ignore[attr-defined]
     await _drain(WhatsAppChatsState.open_pending.fn(state))  # type: ignore[attr-defined]
     chat = f"/responder?tab=mensajes&filtro=todos&canal=whatsapp&cuenta={MINE}&chat={THREAD}"
-    for href, sub in ((state.payments_change_href, "pagos"), (state.pick_profile_href, "perfil")):
-        query = parse_qs(urlsplit(href).query)
-        assert query["sub"] == [sub] and query["cuenta"] == [MINE], href
+    for href, page in (
+        (state.payments_change_href, "/chats/ajustes/formas-de-pago"),
+        (state.pick_profile_href, "/chats/ajustes/whatsapp/perfil"),
+    ):
+        parts = urlsplit(href)
+        query = parse_qs(parts.query)
+        assert parts.path == page and query["cuenta"] == [MINE], href
         assert query["volver"] == [chat], href
         assert chat_return_path({"volver": query["volver"][0]}) == chat
     WhatsAppChatsState.back_to_inbox.fn(state)  # type: ignore[attr-defined]

@@ -228,7 +228,7 @@ def _create_link() -> rx.Component:
 
 def _qr_link() -> rx.Component:
     """m-25029799 (UX review): an empty WhatsApp view — a QR code is how customers start
-    writing (`/whatsapp` › Tu número › Códigos QR)."""
+    writing («Ajustes de chats › Códigos QR», m-25027373)."""
     return rx.link(
         rx.button(rx.icon("qr-code", size=T.ICON_SM), EMPTY_QR_LABEL, size="3"),
         href=EMPTY_QR_HREF,
