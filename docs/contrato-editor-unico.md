@@ -402,6 +402,32 @@ Código: `qualify_api.creative.plan_blocks`. Funciones puras: no escriben, no pa
 - Al agregar, los textos y efectos que ya tenía la pista terminan donde empieza la primera parte nueva: si esa parte entra con una unión, la unión es suya, y «hasta el final» era el final de antes. Una parte agregada no puede ser «Sigue a la anterior» (`extend_order`; `propose_parts` nunca la propone). Queda la procedencia de la última idea pedida (`parts_provenance` guarda una); el costo de cada llamada sigue en su propio registro.
 - Los 60 s y el resto de las reglas del §3 los dice `ClipBlocks.problems`, con sus códigos de siempre.
 
+### «Ver qué quedó fuera» (m-25143223, PR A: servidor) `[CONSTRUIDO]`
+
+Código: `qualify_api.creative.left_out`. Funciones puras: no escriben, no pagan, no llaman a ningún proveedor y no procesan video. No hay migración: todo sale del análisis guardado. El interruptor `QUALIFY_CLIP_AI_PARTS` sigue apagado. La pantalla (PR B) es del carril B.
+
+Qué puede quedar fuera de «Hacer uno parecido»: lo que pasa del tope de 6 partes (`plan[:PARTS_MAX]`), las colas de un corte de más de 10 s y lo que el análisis no cubrió. `plan_from_analysis` no cambió: ahora arma cada grupo de cortes con `parts._parts_for_group` (`proposed_groups` da todos los grupos antes del tope), y una prueba lo compara con la versión anterior.
+
+| Función | Para qué |
+|---|---|
+| `left_out_spans(analysis, used, *, products=(), extend_on=None) -> LeftOut` | Los tramos del reel que el Clip **de ahora** no usa, en el orden del reel, y los totales del aviso. |
+| `span_entry(analysis, left_out_id, *, products=(), extend_on=None, used=None) -> VideoPartPlan` | La parte de ese tramo, con la misma regla del plan. |
+| `check_after_swap(blocks, *, other_ai_children=0)` | Lo mismo que `ClipBlocks.problems()`. Se llama después de poner la parte. |
+
+- **`used`** es lo que el Clip usa hoy: sus `ClipBlocks` (solo cuentan las entradas a las que apunta un bloque), sus entradas `VideoPartPlan` o los índices de corte que usan sus partes (uno por parte: un corte largo usado por su cabeza y una cola va dos veces). No sirve el plan de la primera vez, porque el dueño pudo quitar o cambiar partes. Solo cuentan las entradas de **ese** análisis.
+- **`LeftOut`**: `spans`, `reel_seconds` (lo que dura el reel), `used_seconds` (lo que duran las partes del Clip que salen de ese reel) y `ai_parts` (cuántas partes con IA tiene el Clip). Con índices sueltos, los dos últimos se cuentan con las partes del plan.
+- **`LeftOutSpan`**: `id`, `start_s`, `end_s` (segundos del reel), `seconds` (lo que duraría la parte), `description`, `reason`, `mode_hint` (`edit`, `reference` o `extend`; None si no se analizó), `thumbnail_key` y `shot_indexes`. También tiene `swappable`.
+  - `id` estable: `cut:<corte>` para una parte (si junta varios cortes, el índice del primero), `cut:<corte>.<k>` para la cola k de un corte de más de 10 s, y `uncovered:start` / `uncovered:end` para lo que no se analizó.
+  - `reason`: `parts_cap` (una parte del plan que no está en el Clip, porque pasó el tope o porque el dueño la quitó), `split_tail` (una cola, que solo entra justo después del pedazo anterior) o `not_analyzed` (se muestra, pero no se puede cambiar).
+  - `thumbnail_key`: la clave en R2 de un cuadro que el análisis ya guardó para esos cortes (`representative_frame`). Si no hay, o si se purgaron, es None. La pantalla firma la miniatura con `part_thumbnail_path(analysis, span.shot_indexes)`.
+- **`span_entry`** arma la parte con `_parts_for_group`: «Igual al original» (`edit`) con su ventana del reel (`analysis_id` + `shot_indexes`), o nueva, con sus `seconds`, descripción, avisos y `mode_reason`. Cumple el contrato v1: sin referencias propias, `clip_video_keys` solo como la ventana del reel en `edit` (`REEL_WINDOW_ENTRY_FIELD`) y sin receta propia. **La pantalla la pone en el lugar de la parte que reemplaza** (la entrada de `ai_parts` y el `end_s` de su bloque); el servidor no rehace el plan ni los bloques. Para `used` se pasa el Clip **sin** la parte que sale.
+- **Después de poner la parte**, la pantalla llama `check_after_swap(blocks)` (o `blocks.problems()`). Ahí salen los 60 s (`local_length_out_of_range`), los 8 bloques, los 6 hijos de IA y «Sigue a la anterior» fuera de lugar, con sus textos de siempre.
+
+| `SpanRefused.reason` | Cuándo | Texto para el dueño (`SPAN_TEXTS`) |
+|---|---|---|
+| `span_unknown` | El id no existe en ese análisis, es un tramo sin analizar o (con `used`) el Clip ya lo usa | Ese tramo del reel ya no está disponible. Elige otro. |
+| `extend_order` | Con `used`: una cola cuyo pedazo anterior no está en el Clip | Ese tramo sigue a otro que no está en tu video. Cambia primero el tramo anterior. |
+
 ## 5. Lo que este PR no hace
 
 - No crea hijos, no cobra, no arma videos y no cambia `clip_avatar.py`. La regla de 3 s propios del avatar (`avatar_needs_own_media` en `clip_avatar.py`) sigue sumando todos los tramos. Cuando un Clip tenga avatares o escenas y partes con IA, debe usar `own_seconds`: queda para el PR que junte esos caminos (PR 4 con el §12.4).
