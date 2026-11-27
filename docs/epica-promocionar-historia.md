@@ -1,8 +1,19 @@
 # Épica — Terminar el flujo de promocionar una historia
 
-**Fecha:** 2026-11-26 · **Estado:** `[BORRADOR · sin tickets · espera la decisión del fundador]` · **Meegle:** sin crear (se crea solo con el sí del fundador) · **Épica madre:** anuncios de Meta, [m-24828970](https://project.larksuite.com/5h2wsx/story/detail/24828970)
+**Fecha:** 2026-11-26 · **Estado:** `[FIRMADO 2026-11-26 · opción C · sin implementar]` · **Meegle:** épica [m-25130273](https://project.larksuite.com/5h2wsx/story/detail/25130273) (tickets en §6) · **Épica madre:** anuncios de Meta, [m-24828970](https://project.larksuite.com/5h2wsx/story/detail/24828970)
 
 Etiquetas de evidencia: `[V]` código o documento leído en `main` (9894d611) · `[S]` documentación de Meta leída el 2026-11-26, sin probar · `[H]` inferido.
+
+## Decisión del fundador (2026-11-26)
+
+Manda sobre el análisis de abajo.
+
+- **Opción C:** llevar la historia al anuncio en historias que ya existe y sumar música por etapas. `[FIRMADO]`
+- **D1–D5 aceptadas como están** (tabla de §5). `[FIRMADO]`
+- **Tickets creados** en Meegle (§6).
+- **Pendiente del fundador:** el visto bueno y la fecha de la prueba en vivo HIS-0 (m-25130278), incluida la historia de prueba en el Instagram de Bianki. Sin ese sí no se hace ninguna llamada a Meta.
+- **Pendiente antes de construir:** la revisión de arquitectura y de UX que pide `qualify-backlog` no se corrió antes de crear los tickets.
+- **Se reabre si** HIS-0 muestra que el anuncio en historias no se puede crear como está, o si a los 30 días de salir HIS-1 ningún negocio lo usó.
 
 ## 1. Qué gana el dueño
 
@@ -67,11 +78,21 @@ Hoy el dueño ve «Promocionar» en una historia de «Aprobados», lo toca y lle
 | D4 | ¿Cómo se porta el enlace de la tarjeta en una historia? | Abre el anuncio en historias con el texto «Promocionar como anuncio». Mientras sale HIS-1 no hace falta esconderlo: HIS-1 es de un día | Esconderlo y volver a mostrarlo son dos cambios para el mismo resultado |
 | D5 | ¿Cambia la regla de mejoras por marca que rechaza la música? | **No cambiar la regla de marca.** La música es una elección de cada anuncio, registrada en la confirmación de cobro. Lo que sí cambia, y necesita tu firma, es que el resumen del anuncio deje de decir siempre «Ajustes por su cuenta: No» cuando el dueño encendió la música | La regla protege la pieza aprobada. Una casilla por anuncio respeta eso; un permiso de marca encendería la música en todos los anuncios sin que el dueño lo vea cada vez |
 
-**Necesito que decidas:** (1) opción A, B, C o D; (2) si aceptas D1–D5 como están o cuál cambias; (3) si autorizas la prueba HIS-0 en la cuenta publicitaria de Bianki; (4) si creo los tickets en Meegle.
+**Decidido el 2026-11-26:** opción C, D1–D5 como están, tickets creados. Falta autorizar la prueba HIS-0.
 
 ## 6. Historias
 
-Cada una será un Issue bajo una Feature «Épica — Promocionar una historia», enlazada a m-24828970. Dueño sugerido: Raul (backend e interfaz de anuncios), salvo HIS-0.
+Cada una es un Issue bajo la Feature «Épica — Promocionar una historia» (m-25130273). El ticket de Meegle es la versión viva; el texto de abajo es el de su creación. Responsable: Raul, salvo HIS-0 (Herwin).
+
+| Historia | Ticket | Prioridad | Depende de |
+|---|---|---|---|
+| HIS-0 prueba en vivo | [m-25130278](https://project.larksuite.com/5h2wsx/issue/detail/25130278) | P1 | visto bueno del fundador |
+| HIS-1 enlace de la tarjeta | [m-25130281](https://project.larksuite.com/5h2wsx/issue/detail/25130281) | P1 | — |
+| HIS-2 mensajes cuando no sirve | [m-25130282](https://project.larksuite.com/5h2wsx/issue/detail/25130282) | P2 | HIS-1 |
+| HIS-3 «Anunciar sin publicar» en pieza publicada | [m-25130283](https://project.larksuite.com/5h2wsx/issue/detail/25130283) | P2 | — |
+| HIS-4 sonido del video | [m-25130285](https://project.larksuite.com/5h2wsx/issue/detail/25130285) | P2 | HIS-0 |
+| HIS-5 música elegida por Meta | [m-25130287](https://project.larksuite.com/5h2wsx/issue/detail/25130287) | P2 | HIS-0 |
+| HIS-6 historia activa por su id | [m-25130290](https://project.larksuite.com/5h2wsx/issue/detail/25130290) | P3 | HIS-0 |
 
 ### HIS-0 · Anuncios: prueba en vivo de historia y música (30 minutos, todo en pausa)
 
