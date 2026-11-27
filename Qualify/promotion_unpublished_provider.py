@@ -162,6 +162,47 @@ def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
     return piece is not None and bool(accounts) and bool(story_kinds(assets))
 
 
+# HIS-1 (m-25130281): `_PIECE`/`_ASSETS` for many pieces at once, built FROM them so the
+# card's check and the wizard can never disagree on what qualifies.
+_PIECES = text(
+    _PIECE.text.replace("SELECT d.brand_id", "SELECT d.id,d.brand_id", 1).replace(
+        "WHERE d.id=:draft", "WHERE d.id=ANY(:drafts)", 1
+    )
+)
+assert "ANY(:drafts)" in _PIECES.text and "SELECT d.id," in _PIECES.text
+_ASSETS_MANY = text(
+    _ASSETS.text.replace("SELECT id,", "SELECT draft_id,version_id,id,", 1).replace(
+        "WHERE draft_id=:draft AND version_id=:version", "WHERE draft_id=ANY(:drafts)", 1
+    )
+)
+assert "ANY(:drafts)" in _ASSETS_MANY.text and "version_id," in _ASSETS_MANY.text
+
+
+def story_ads_ready(tenant_id: UUID, draft_ids: list[UUID]) -> set[UUID]:
+    """`story_ad_ready` for a whole gallery in one session: the pieces the story-only ad
+    can be made from. Two reads plus one per brand, whatever the number of pieces."""
+    if not draft_ids:
+        return set()
+    with tenant_session(tenant_id) as session:
+        pieces = list(session.execute(_PIECES, {"drafts": draft_ids}).mappings())
+        if not pieces:
+            return set()
+        brands = {piece["brand_id"] for piece in pieces}
+        with_accounts = {
+            brand for brand in brands if session.execute(_ACCOUNTS, {"brand": brand}).first()
+        }
+        assets: dict[tuple[UUID, UUID], list[dict]] = {}
+        ids = [piece["id"] for piece in pieces]
+        for row in session.execute(_ASSETS_MANY, {"drafts": ids}).mappings():
+            assets.setdefault((row["draft_id"], row["version_id"]), []).append(dict(row))
+    return {
+        piece["id"]
+        for piece in pieces
+        if piece["brand_id"] in with_accounts
+        and story_kinds(assets.get((piece["id"], piece["active_version_id"]), []))
+    }
+
+
 def unpublished_sources(
     tenant_id: UUID, draft_id: UUID, *, check_health: bool = False, story: bool = False
 ) -> list[PromotionSourceVM]:

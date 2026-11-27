@@ -105,7 +105,7 @@ from .planner_vm import (
     time_label_12h,
     week_label,
 )
-from .promotion_unpublished_provider import story_ad_ready
+from .promotion_unpublished_provider import story_ads_ready
 from .r2_media import is_r2_key, issue_view_path
 
 logger = logging.getLogger(__name__)
@@ -372,19 +372,15 @@ _DRAFT_PENDING_TEXT = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
 
 def _with_story_ads(tenant_id: UUID, options: list[PostOptionVM]) -> list[PostOptionVM]:
     """HIS-1 (m-25130281): mark the approved historias the story-only ad can be made from
-    (the same check as Tu semana's «Agregar un botón con enlace»), so a card never links
-    to an empty wizard. Three reads per approved historia; a failed read hides the link."""
-
-    def ready(option: PostOptionVM) -> bool:
-        try:
-            return story_ad_ready(tenant_id, UUID(option.post_id))
-        except Exception as exc:  # noqa: BLE001 — no link is better than a dead end
-            logger.warning("story ad readiness read failed: %s", type(exc).__name__)
-            return False
-
-    return [
-        replace(o, story_ad_ready=ready(o)) if o.is_story and o.is_approved else o for o in options
-    ]
+    (the same rule as Tu semana's «Agregar un botón con enlace»), so a card never links
+    to an empty wizard. One batched read; a failed read hides every such link."""
+    wanted = [UUID(o.post_id) for o in options if o.is_story and o.is_approved]
+    try:
+        ready = {str(i) for i in story_ads_ready(tenant_id, wanted)} if wanted else set()
+    except Exception as exc:  # noqa: BLE001 — no link is better than a dead end
+        logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+        ready = set()
+    return [replace(o, story_ad_ready=True) if o.post_id in ready else o for o in options]
 
 
 def _draft_pending(post: PostSummary) -> bool:

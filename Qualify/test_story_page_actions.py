@@ -416,24 +416,41 @@ def test_the_wizard_says_it_is_a_paid_story_ad_on_the_story_path_only() -> None:
 def test_only_a_historia_the_story_ad_can_use_gets_the_link(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A historia without a 9:16 source (or whose check fails) keeps the link hidden;
-    the check runs on approved historias only, never on other publications."""
-    ready, unready, broken = (_card("story", used=0) for _ in range(3))
+    """A historia without a 9:16 source keeps the link hidden; ONE read asks for the
+    approved historias only, never for other publications."""
+    ready, unready = _card("story", used=0), _card("story", used=0)
     plain = _card("galeria", used=2)
     pending = replace(_card("story", used=0), is_approved=False)
-    asked: list[str] = []
+    asked: list[list[str]] = []
 
-    def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
-        asked.append(str(draft_id))
-        if str(draft_id) == broken.post_id:
-            raise RuntimeError("db down")
-        return str(draft_id) == ready.post_id
+    def story_ads_ready(tenant_id: UUID, ids: list[UUID]) -> set[UUID]:
+        asked.append([str(i) for i in ids])
+        return {UUID(ready.post_id)}
 
-    monkeypatch.setattr(planner, "story_ad_ready", story_ad_ready)
-    marked = planner._with_story_ads(uuid4(), [ready, unready, broken, plain, pending])
-    assert [o.story_ad_ready for o in marked] == [True, False, False, False, False]
-    assert asked == [ready.post_id, unready.post_id, broken.post_id]
-    assert marked[3] is plain and marked[4] is pending
+    monkeypatch.setattr(planner, "story_ads_ready", story_ads_ready)
+    marked = planner._with_story_ads(uuid4(), [ready, unready, plain, pending])
+    assert [o.story_ad_ready for o in marked] == [True, False, False, False]
+    assert asked == [[ready.post_id, unready.post_id]]
+    assert marked[1] is unready and marked[2] is plain and marked[3] is pending
+
+
+def test_a_failed_readiness_read_hides_every_story_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(tenant_id: UUID, ids: list[UUID]) -> set[UUID]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(planner, "story_ads_ready", broken)
+    marked = planner._with_story_ads(uuid4(), [_card("story", used=0)])
+    assert not marked[0].story_ad_ready
+
+
+def test_the_batched_read_is_the_wizards_own_rule() -> None:
+    """Same conditions as `_PIECE`/`_ASSETS`, only for many ids at once."""
+    from . import promotion_unpublished_provider as pup
+
+    rule = pup._PIECE.text.split("WHERE d.id=:draft", 1)[1]
+    assert pup._PIECES.text.endswith(rule) and "d.id=ANY(:drafts)" in pup._PIECES.text
+    assert pup._ASSETS_MANY.text.endswith(pup._ASSETS.text.split(":version", 1)[1])
+    assert pup.story_ads_ready(uuid4(), []) == set()
 
 
 # -- 3. «Ver en Tu semana» from the blocked switch -------------------------------------
