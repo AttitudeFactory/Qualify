@@ -145,7 +145,13 @@ def test_each_moved_section_opens_at_its_address(  # noqa: ANN001
     expect(page.get_by_role("heading", level=1, name=title)).to_be_visible(timeout=60_000)
     # The way back to the place it hangs from, and (two numbers) the number selector.
     expect(page.locator(".q-page-header").get_by_role("link", name=back)).to_be_visible()
-    expect(page.locator(".q-page-header [role=combobox]").first).to_be_visible(timeout=60_000)
+    selector = page.locator(".q-page-header [role=combobox]")
+    if title == "Formas de pago":
+        # UX review U4: the methods are the same for every number — no selector.
+        page.wait_for_timeout(2_000)
+        expect(selector).to_have_count(0)
+    else:
+        expect(selector.first).to_be_visible(timeout=60_000)
     # No «Tu número» strip, no WhatsApp screen around it.
     expect(page.get_by_role("group", name="Tu número")).to_have_count(0)
     expect(page.get_by_text("Tus chats de WhatsApp se responden en Por responder.")).to_have_count(
@@ -330,6 +336,125 @@ def test_a_foreign_number_opens_nothing(chats_page, app_server, context) -> None
     page.goto(_origin(page) + "/connections")
     expect(_number_card(page)).to_be_visible(timeout=60_000)
     expect(page.locator(f'a[href*="{theirs["whatsapp_connection"]}"]')).to_have_count(0)
+
+
+def test_actividad_from_the_second_card_shows_that_number(chats_page) -> None:  # noqa: ANN001
+    """Review C2: «Actividad» on the SECOND number's card opens with that number selected
+    (an in-app navigation, where the event's router data can lag behind the address)."""
+    from .chat_fixtures import seed_second_number
+
+    page = chats_page
+    second = seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
+    page.set_viewport_size(DESKTOP)
+    page.goto(_origin(page) + "/connections")
+    card = _number_card(page, r"Sede Norte")
+    expect(card).to_be_visible(timeout=60_000)
+    card.get_by_role("link", name="Actividad").click()
+    expect(page).to_have_url(re.compile(rf"actividad\?cuenta={second['connection']}$"))
+    selector = page.locator(".q-page-header [role=combobox]").first
+    expect(selector).to_contain_text("+57 311", timeout=60_000)
+    page.wait_for_timeout(2_000)  # a late load must not switch it back
+    expect(selector).to_contain_text("+57 311")
+    # The same for another page reached with `cuenta`.
+    page.goto(_origin(page) + f"/chats/ajustes/whatsapp/perfil?cuenta={second['connection']}")
+    expect(page.get_by_role("heading", level=1, name="Perfil")).to_be_visible(timeout=60_000)
+    expect(selector).to_contain_text("+57 311", timeout=60_000)
+
+
+def _set_number(tenant_id, **fields: str) -> None:  # noqa: ANN001
+    """Test-only: give the business's first number Meta's verdicts (no Meta call)."""
+    from qualify_api.whatsapp.models import WhatsAppPhoneNumber
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        row = session.scalars(
+            select(WhatsAppPhoneNumber).where(WhatsAppPhoneNumber.verified_name == "Arepera E2E")
+        ).one()
+        for key, value in fields.items():
+            setattr(row, key, value)
+
+
+@pytest.mark.parametrize(
+    ("fields", "line", "asks_help"),
+    [
+        ({"quality_rating": "RED"}, "Varios clientes marcaron tus mensajes", False),
+        ({"platform_status": "BANNED"}, "WhatsApp pausó tu número", True),
+    ],
+    ids=["calidad-baja", "pausado"],
+)
+@pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["360", "1280"])
+def test_a_number_in_trouble_shows_verificar_ahora_up_front(  # noqa: ANN001
+    chats_page, fields: dict[str, str], line: str, asks_help: bool, size: dict[str, int]
+) -> None:
+    """UX review U3: the number's line, «Verificar ahora» next to it (no need to open
+    «Más detalles») and, when the owner cannot fix it, «Avisar al equipo de Qualify»;
+    «Verificar ahora» is not repeated in the details. Nothing is tapped (no Meta call)."""
+    page = chats_page
+    _set_number(page._qualify_e2e_tenant_id, **fields)  # noqa: SLF001
+    page.set_viewport_size(size)
+    page.goto(_origin(page) + "/connections")
+    card = _number_card(page)
+    expect(card.get_by_text(re.compile(line))).to_be_visible(timeout=60_000)
+    verify = card.get_by_role("button", name="Verificar ahora")
+    expect(verify).to_have_count(1)
+    expect(verify).to_be_visible()
+    help_button = card.get_by_role("button", name="Avisar al equipo de Qualify")
+    expect(help_button).to_have_count(1 if asks_help else 0)
+    card.get_by_role("button", name="Más detalles").click()
+    expect(card.get_by_text("Nombre verificado", exact=True)).to_be_visible(timeout=30_000)
+    expect(verify).to_have_count(1)  # not repeated in the details
+    _no_sideways_scroll(page)
+    if os.environ.get("QUALIFY_E2E_SHOTS") and asks_help:
+        out = Path(os.environ["QUALIFY_E2E_SHOTS"])
+        label = os.environ.get("QUALIFY_E2E_SHOTS_LABEL", "shot")
+        card.get_by_role("button", name="Menos detalles").click()
+        card.scroll_into_view_if_needed()
+        page.wait_for_timeout(500)
+        name = f"{label}-numero-con-problema-{size['width']}-light.png"
+        page.screenshot(path=str(out / name), full_page=True)
+
+
+@pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["360", "1280"])
+def test_without_a_number_tus_redes_offers_to_connect_it(  # noqa: ANN001
+    signed_up_page, size: dict[str, int]
+) -> None:
+    """UX review U1: the WhatsApp invite card, with the no-number state's own texts and
+    request (not tapped: it files a support request); the hub's «Ver cómo conectarlo»
+    leads here."""
+    page = signed_up_page
+    page.set_viewport_size(size)
+    page.goto(_origin(page) + "/chats/ajustes")
+    link = page.get_by_role("link", name="Ver cómo conectarlo")
+    expect(link).to_have_attribute("href", "/connections", timeout=60_000)
+    link.click()
+    expect(page).to_have_url(re.compile(r"/connections$"), timeout=60_000)
+    invite = page.locator('[data-invite="whatsapp"]')
+    expect(invite).to_be_visible(timeout=60_000)
+    expect(invite.get_by_role("heading", level=2)).to_have_text(
+        "Conecta tu WhatsApp para atender y vender desde aquí"
+    )
+    button = invite.get_by_role("button", name="Pedir que conecten mi WhatsApp")
+    expect(button).to_be_visible()
+    assert button.bounding_box()["height"] >= 44
+    _no_sideways_scroll(page)
+    if os.environ.get("QUALIFY_E2E_SHOTS"):
+        out = Path(os.environ["QUALIFY_E2E_SHOTS"])
+        label = os.environ.get("QUALIFY_E2E_SHOTS_LABEL", "shot")
+        invite.scroll_into_view_if_needed()
+        page.wait_for_timeout(500)
+        page.screenshot(
+            path=str(out / f"{label}-sin-numero-{size['width']}-light.png"), full_page=True
+        )
+
+
+def test_with_a_number_there_is_no_invite(chats_page) -> None:  # noqa: ANN001
+    page = chats_page
+    page.set_viewport_size(DESKTOP)
+    page.goto(_origin(page) + "/connections")
+    expect(_number_card(page)).to_be_visible(timeout=60_000)
+    page.wait_for_timeout(1_500)
+    expect(page.locator('[data-invite="whatsapp"]')).to_have_count(0)
 
 
 # --- screenshots ------------------------------------------------------------------------------
