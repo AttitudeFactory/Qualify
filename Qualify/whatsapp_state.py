@@ -475,7 +475,7 @@ class WhatsAppState(rx.State):
 
     @rx.event
     def open_chats(self) -> rx.event.EventSpec:
-        """m-25029799: «Ir a los chats» / «Ver respuestas en Por responder» from a
+        """m-25029799: «Ir a Por responder» / «Ver respuestas en Por responder» from a
         promotions panel — WhatsApp's chats are attended only in «Por responder», on the
         number on screen (the list keeps it only if it is this business's)."""
         return rx.redirect(whatsapp_chats_href(self.selected_connection_id))

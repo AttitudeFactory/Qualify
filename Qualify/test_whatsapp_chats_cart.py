@@ -91,7 +91,7 @@ _MENU = {
     ],
     "total": "30000",
     "currency": "COP",
-    "confirmed_at": "2026-11-13T00:05:00+00:00",  # ayer 19:05 in Bogotá
+    "confirmed_at": "2026-11-13T00:05:00+00:00",  # ayer 7:05 p. m. in Bogotá
     "collected": {"direccion": "Calle 10 # 5-20"},
     "source_message_id": "wamid.menu",
 }
@@ -114,7 +114,7 @@ def test_cart_card_title_time_and_lines() -> None:
     card = _card({"_order": _cart()})
     assert card.present and card.is_cart
     assert card.title == ORDER_TITLE_CART == "Pedido desde tu catálogo"
-    assert card.confirmed_label == "Llegó 14:42"
+    assert card.confirmed_label == "Llegó 2:42\u00a0p.\u00a0m."
     assert card.items_label == "3 productos"
     assert card.total_label == "COP 45.000"
     linked, unlinked = card.lines
@@ -219,7 +219,7 @@ def test_a_cut_note_ends_with_an_ellipsis() -> None:
 def test_menu_order_card_reads_as_before() -> None:
     card = _card({"_order": _MENU}, has_payment=False)
     assert (card.title, card.is_cart) == (ORDER_TITLE_MENU, False)
-    assert card.confirmed_label == "Confirmado ayer 19:05"
+    assert card.confirmed_label == "Confirmado ayer 7:05\u00a0p.\u00a0m."
     assert [(line.label, line.amount, line.code, line.price_note) for line in card.lines] == [
         ("1 × Ensalada César", "COP 18.000", "", ""),
         ("2 × Limonada", "COP 12.000", "", ""),
@@ -249,7 +249,7 @@ def test_one_previous_order_with_its_payment_word() -> None:
     assert card.previous_label == "1 pedido anterior"
     assert card.previous == [
         PreviousOrderVM(
-            origin_label="Por el menú · ayer 19:05",
+            origin_label="Por el menú · ayer 7:05\u00a0p.\u00a0m.",
             items_line="1 × Ensalada César, 2 × Limonada",
             summary_label="3 productos · COP 30.000",
             payment_label="Pago recibido",
@@ -269,7 +269,7 @@ def test_many_previous_orders_newest_first_and_payment_words() -> None:
     ]
     card = _card({"_order": _cart(), "_orders_previous": entries})
     assert card.previous_label == "5 pedidos anteriores · 1 pago por revisar"
-    assert card.previous[0].origin_label == "Desde tu catálogo · 10:00"
+    assert card.previous[0].origin_label == "Desde tu catálogo · 10:00\u00a0a.\u00a0m."
     assert card.previous[0].items_line == "2 × Shawarma mixto, 1 × Producto sin nombre"
     assert [(p.payment_label, p.payment_tone) for p in card.previous] == [
         ("Pago por revisar", "warn"),

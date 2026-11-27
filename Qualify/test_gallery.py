@@ -872,7 +872,7 @@ def test_both_screens_reuse_the_one_card_and_say_the_specs_words() -> None:
         "Ver lo que espera tu aprobación",
         "Nada de ese tipo todavía",
         "Aún no apruebas stickers ni videos",
-        "Ir a tus chats",
+        "Ir a Por responder",
     ):
         assert says(approved, text), text
 

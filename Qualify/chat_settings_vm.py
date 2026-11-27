@@ -68,7 +68,7 @@ DIRECTIONS_HREF: Final = SETTINGS_PROFILE_ROUTE
 CONNECTIONS_HREF: Final = "/connections"
 #: The chats, for the way back (N7) and the header line.
 CHATS_HREF: Final = "/responder"
-BACK_TO_CHATS: Final = "Ir a tus chats"
+BACK_TO_CHATS: Final = "Ir a Por responder"
 
 ACCOUNT_PARAM: Final = "cuenta"
 
@@ -127,7 +127,8 @@ WHATSAPP_NUMBER_ROWS: Final = tuple(r for r in ALL_CHATS_ROWS if r.key in WHATSA
 
 #: The menu (UX review U3: the starter questions are part of it), then — m-25027373 —
 #: the number's profile and QR codes, which left «Tu número».
-#: m-25027373 — the two `detail` lines are NEW TEXT, NOT DECIDED BY THE FOUNDER.
+#: m-25027373 — the two `detail` lines are NEW TEXT, NOT DECIDED BY THE FOUNDER, except
+#: «Perfil»'s, founder-approved 2026-11-27 (m-25131413).
 PROFILE_TITLE: Final = "Perfil"
 QR_TITLE: Final = "Códigos QR"
 WHATSAPP_ROWS: Final[tuple[SettingRowVM, ...]] = (
@@ -142,7 +143,8 @@ WHATSAPP_ROWS: Final[tuple[SettingRowVM, ...]] = (
     SettingRowVM(
         "perfil",
         PROFILE_TITLE,
-        "Tu foto, tu descripción y tus datos de contacto, como los ven tus clientes en WhatsApp.",
+        "Tu foto, tu descripción, tu dirección y tus datos de contacto, como los ven tus "
+        "clientes en WhatsApp.",
         SETTINGS_PROFILE_ROUTE,
         "store",
     ),

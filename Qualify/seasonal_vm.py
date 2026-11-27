@@ -120,7 +120,7 @@ KIND_EMPTY_ACTION: Final = "Ver todos"
 SEND_HINT: Final = (
     "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos» y elige los de tu marca."
 )
-SEND_LINK_LABEL: Final = "Ir a tus chats"
+SEND_LINK_LABEL: Final = "Ir a Por responder"
 # m-25029799: the chats are attended in «Por responder», narrowed to WhatsApp.
 SEND_LINK_HREF: Final = WHATSAPP_CHATS_HREF
 

@@ -257,11 +257,11 @@ def test_the_chips_and_their_counts() -> None:
     chips = filter_chips(tally, FILTER_AWAITING, ALL_CHANNELS)
     assert [(c.key, c.label, c.pressed) for c in chips] == [
         (FILTER_AWAITING, "Por responder · 3", True),
-        (FILTER_ALL, "Todos · 7", False),
+        (FILTER_ALL, "Abiertos · 7", False),
         (FILTER_CLOSED, "Cerrados · 3", False),
     ]
     on_whatsapp = filter_chips(tally, FILTER_ALL, CHANNEL_WHATSAPP)
-    assert [c.label for c in on_whatsapp] == ["Por responder · 1", "Todos · 4", "Cerrados · 2"]
+    assert [c.label for c in on_whatsapp] == ["Por responder · 1", "Abiertos · 4", "Cerrados · 2"]
     assert count_of(tally, FILTER_AWAITING, CHANNEL_INSTAGRAM) == 2
 
 
