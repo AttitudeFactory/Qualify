@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from qualify_api.ads.unpublished import ImageAdForm
 from qualify_api.ads.unpublished_repository import NOT_PUBLISHED_BY_QUALIFY
 from qualify_api.ads.wizard import _saved_ad_destination
+from qualify_api.creative.story_covers import PIECE_FILES
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -72,8 +73,9 @@ WHERE a.brand_id=:brand AND a.selected AND a.available
   AND a.credential_version=c.current_credential_version AND c.status='active'
   AND c.purged_at IS NULL AND c.purge_started_at IS NULL
 ORDER BY a.id""")
-_ASSETS = text("""SELECT id,object_key,content_type,media_type,width,height
-FROM image_assets WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
+# N1 (m-25142900): with the automatic covers of the piece's videos, offered as covers.
+_ASSETS = text(f"""SELECT id,object_key,content_type,media_type,width,height
+FROM {PIECE_FILES} WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
 ORDER BY position NULLS LAST,id""")
 
 

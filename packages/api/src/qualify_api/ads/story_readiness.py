@@ -25,6 +25,7 @@ from qualify_api.connections.ad_accounts import (
     _connection,
     _permission_reason,
 )
+from qualify_api.creative.story_covers import PIECE_FILES
 
 
 class StoryBlock(StrEnum):
@@ -52,7 +53,8 @@ FROM content_drafts d LEFT JOIN piece_versions pv ON pv.id=d.active_version_id
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
   AND v.draft_id=d.id
 WHERE d.id=:draft AND d.parent_draft_id IS NULL AND d.part_removed_at IS NULL""")
-_ASSETS = text("""SELECT content_type,media_type,width,height FROM image_assets
+# N1 (m-25142900): with the automatic covers of the piece's videos.
+_ASSETS = text(f"""SELECT content_type,media_type,width,height FROM {PIECE_FILES}
 WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL""")
 _FLAGS = text("SELECT feature_flags FROM ad_brand_enhancements WHERE brand_id=:brand")
 _ACCOUNTS = text("""SELECT a.connection_id,a.available,COALESCE(a.currency,'') AS currency,

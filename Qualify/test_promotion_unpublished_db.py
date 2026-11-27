@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import io
 from uuid import uuid4
 
 import pytest
+from qualify_api.creative.story_covers import sweep
 from qualify_api.tenancy.acting import acting_login
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import ObjectGate
+from qualify_shared.objects.memory import MemoryObjectStore
 from sqlalchemy import text
 
 from packages.api.tests.test_ad_audience_db import audience_world as shared_audience_world
 from packages.api.tests.test_ad_unpublished_db import publish
 from packages.api.tests.test_ad_unpublished_db import unpublished_world as shared_unpublished
+from packages.api.tests.test_story_covers import jpeg
 
 from .promotion_unpublished_provider import story_ad_ready, story_ads_ready, unpublished_sources
 
@@ -106,3 +111,38 @@ def test_the_cards_offer_a_historia_qualify_already_published(unpublished_world)
     publish(source, actor)
     with acting_login(login):
         assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}
+
+
+def test_a_video_historia_with_its_automatic_cover_is_offered(unpublished_world):
+    """N1 (m-25142900): the worker's cover makes a video historia a story ad source; the
+    cover is offered as the video's «Portada» and never becomes a file of the piece."""
+    source, _, login, _ = unpublished_world
+    gate = ObjectGate(MemoryObjectStore())
+    key = f"t/{source.tenant_id}/generated/{source.draft_id}/video.mp4"
+    with tenant_session(source.tenant_id) as session:
+        session.execute(
+            text("""UPDATE image_assets SET media_type='video',content_type='video/mp4',
+              object_key=:key WHERE id=:id"""),
+            {"key": key, "id": source.vertical.asset_id},
+        )
+        session.execute(
+            text("UPDATE content_drafts SET category='story' WHERE id=:id"),
+            {"id": source.draft_id},
+        )
+    gate.put_media(source.tenant_id, key, io.BytesIO(b"mp4"), "video/mp4")
+    with acting_login(login):
+        assert not story_ad_ready(source.tenant_id, source.draft_id)
+    assert sweep([source.tenant_id], gate, grab=lambda *_a, **_k: jpeg(90, 160)) == 1
+    with acting_login(login):
+        assert story_ad_ready(source.tenant_id, source.draft_id)
+        assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}
+        video, *_ = unpublished_sources(source.tenant_id, source.draft_id, story=True)
+    assert video.media_kind == "videos"
+    assert [m.id for m in video.vertical_media] == [str(source.vertical.asset_id)]
+    assert len(video.vertical_covers) == 1
+    with tenant_session(source.tenant_id) as session:
+        images = session.scalar(
+            text("SELECT count(*) FROM image_assets WHERE draft_id=:id AND width*16=height*9"),
+            {"id": source.draft_id},
+        )
+    assert images == 1  # only the video itself: the cover lives apart

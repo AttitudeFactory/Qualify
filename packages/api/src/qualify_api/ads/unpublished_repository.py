@@ -84,21 +84,36 @@ def load_image_source(
             raise UnpublishedUnavailable(CHANGED)
 
         def asset(asset_id: UUID, media_type: str) -> dict:
+            values = {
+                "id": asset_id,
+                "draft": draft,
+                "version": row["active_version_id"],
+                "media": media_type,
+            }
             found = (
                 session.execute(
                     text("""SELECT id,object_key,content_type,width,height FROM image_assets
                   WHERE id=:id AND draft_id=:draft AND version_id=:version
                     AND media_type=:media AND object_key IS NOT NULL FOR SHARE"""),
-                    {
-                        "id": asset_id,
-                        "draft": draft,
-                        "version": row["active_version_id"],
-                        "media": media_type,
-                    },
+                    values,
                 )
                 .mappings()
                 .first()
             )
+            if found is None and media_type == "image":
+                # N1 (m-25142900): the automatic cover of one of the version's videos. Never
+                # updated, and deleted only with its video, whose row is already FOR SHARE
+                # (qualify_app has no UPDATE here, which FOR SHARE would need).
+                found = (
+                    session.execute(
+                        text("""SELECT id,object_key,content_type,width,height
+                      FROM piece_story_covers WHERE id=:id AND draft_id=:draft
+                        AND version_id=:version AND object_key IS NOT NULL"""),
+                        values,
+                    )
+                    .mappings()
+                    .first()
+                )
             if found is None:
                 raise UnpublishedUnavailable(
                     "Elige archivos finales de la versión actual de la pieza."
