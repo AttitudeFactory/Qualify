@@ -75,12 +75,9 @@ def test_the_entry_follows_anuncios_and_opens_its_own_page(
     page.wait_for_timeout(600)
     _shot(page, "promociones-escritorio-final")
 
-    # «WhatsApp» lights only itself, and its strip no longer offers «Promociones».
-    _menu(page).locator('a[href^="/whatsapp"]').first.click()
-    expect(page).to_have_url(re.compile(re.escape(app_server) + r"/whatsapp(\?.*)?$"))
-    expect(_menu(page).locator('[aria-current="page"]')).to_have_count(1)
-    expect(_menu(page).locator(f'a[href="{_ROUTE}"]')).not_to_have_attribute("aria-current", "page")
-    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible()
+    # m-25027373: no «WhatsApp» entry; «Promociones» is the only one under /whatsapp.
+    expect(_menu(page).locator('a[href="/whatsapp"]')).to_have_count(0)
+    expect(_menu(page).locator('a[href^="/whatsapp"]')).to_have_count(1)
 
 
 def test_an_old_promotions_address_lands_on_the_new_page(
@@ -193,7 +190,8 @@ def _seed_whatsapp_number(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
 
 # Records, from the click on, whether a page ever drew the OTHER page's panel under its
 # own header: the chat list under «Promociones por WhatsApp», or the promotions strip
-# under «WhatsApp». A MutationObserver sees every intermediate render.
+# under a page of one of «Tu número»'s old panels (m-25027373). A MutationObserver sees
+# every intermediate render.
 _WATCH_WRONG_PANEL = """() => {
   window.__qWrongPanel = [];
   const check = () => {
@@ -201,8 +199,9 @@ _WATCH_WRONG_PANEL = """() => {
     const title = h1 ? h1.textContent.trim() : '';
     if (title === 'Promociones por WhatsApp' && document.querySelector('.q-wa-chats'))
       window.__qWrongPanel.push('chats under Promociones');
-    if (title === 'WhatsApp' && document.body.innerText.includes('Clientes que aceptaron'))
-      window.__qWrongPanel.push('promotions under WhatsApp');
+    if (['Códigos QR', 'Perfil', 'Formas de pago', 'Actividad'].includes(title)
+        && document.body.innerText.includes('Clientes que aceptaron'))
+      window.__qWrongPanel.push('promotions under ' + title);
   };
   new MutationObserver(check).observe(document.body,
     { subtree: true, childList: true, characterData: true });
@@ -216,9 +215,9 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     page = signed_up_page
     _seed_whatsapp_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size({"width": 1280, "height": 900})
-    # m-25029799: `/whatsapp` draws «Tu número» only (its chats are in «Por responder»).
-    page.goto(f"{app_server}/whatsapp")
-    expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
+    # m-25027373: «Tu número»'s panels are pages of «Ajustes de chats» / «Tus redes».
+    page.goto(f"{app_server}/chats/ajustes/whatsapp/codigos-qr")
+    expect(page.get_by_role("heading", level=1, name="Códigos QR")).to_be_visible(timeout=60_000)
     page.evaluate(_WATCH_WRONG_PANEL)
 
     _menu(page).locator(f'a[href="{_ROUTE}"]').click()
@@ -226,23 +225,20 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     expect(page.get_by_text("Clientes que aceptaron").first).to_be_visible(timeout=60_000)
     _shot(page, "promociones-whatsapp-con-numero")
 
-    _menu(page).locator('a[href^="/whatsapp"]').first.click()
-    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible()
-    expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
+    # Back to a page of «Tu número»'s old panels, inside the app (no reload).
+    _menu(page).locator('a[href="/chats/ajustes"]').first.click()
+    page.locator('[data-setting="codigos-qr"]').click()
+    expect(page.get_by_role("heading", level=1, name="Códigos QR")).to_be_visible(timeout=60_000)
     expect(page.locator(".q-wa-chats__list")).to_have_count(0)
+    page.wait_for_timeout(1_500)
     assert page.evaluate("window.__qWrongPanel") == []
 
-    # On a phone, /whatsapp's only strip is «Tu número»'s (m-25029799: no «Chats»;
-    # «Promociones» and the menu left before, m-25017862 / m-25017861).
+    # m-25027373: no page draws «Tu número»'s strip any more.
     page.set_viewport_size({"width": 360, "height": 780})
     page.goto(f"{app_server}/whatsapp?tab=numero&sub=estado")
-    strip = page.get_by_role("group", name="Tu número")
-    expect(strip).to_be_visible(timeout=60_000)
-    expect(strip.get_by_role("button")).to_have_text(
-        ["Estado", "Perfil", "Formas de pago", "Códigos QR", "Actividad"]
-    )
+    expect(page).to_have_url(f"{app_server}/connections", timeout=60_000)
+    expect(page.get_by_role("group", name="Tu número")).to_have_count(0)
     expect(page.get_by_role("group", name="Secciones de WhatsApp")).to_have_count(0)
-    _shot(page, "whatsapp-tu-numero-360")
 
 
 def test_a_chats_links_land_on_the_right_page(chats_page) -> None:  # noqa: ANN001

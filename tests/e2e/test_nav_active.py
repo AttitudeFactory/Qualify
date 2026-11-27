@@ -23,7 +23,8 @@ _SHOTS = os.environ.get("QUALIFY_E2E_SHOTS", "")
 _ENTRIES = [
     ("Inicio", "/"),
     ("Por responder", "/responder"),
-    ("WhatsApp", "/whatsapp"),
+    # m-25027373: no «WhatsApp» entry; «Ajustes de chats» follows «Por responder».
+    ("Ajustes de chats", "/chats/ajustes"),
     ("Galería", "/catalog"),
     ("Crear publicación", "/create"),
     ("Por aprobar", "/drafts"),
