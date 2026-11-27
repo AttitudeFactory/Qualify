@@ -767,17 +767,21 @@ _OLD = [
         f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_UUID}",
     ),
     # m-25143230: the number's activity is «Resultados › WhatsApp», with the number.
-    ("/whatsapp?tab=numero&sub=actividad", "/resultados?tab=whatsapp"),
+    # UX review U2: on the block (`#actividad-numero`), not the top of the tab.
+    ("/whatsapp?tab=numero&sub=actividad", "/resultados?tab=whatsapp#actividad-numero"),
     (
         f"/whatsapp?tab=numero&sub=actividad&cuenta={_UUID}&x=<b>",
-        f"/resultados?tab=whatsapp&cuenta={_UUID}",
+        f"/resultados?tab=whatsapp&cuenta={_UUID}#actividad-numero",
     ),
-    ("/connections/whatsapp/actividad", "/resultados?tab=whatsapp"),
+    ("/connections/whatsapp/actividad", "/resultados?tab=whatsapp#actividad-numero"),
     (
         f"/connections/whatsapp/actividad?cuenta={_UUID}&tab=numero&volver=/x",
-        f"/resultados?tab=whatsapp&cuenta={_UUID}",
+        f"/resultados?tab=whatsapp&cuenta={_UUID}#actividad-numero",
     ),
-    ("/connections/whatsapp/actividad?cuenta=<script>", "/resultados?tab=whatsapp"),
+    (
+        "/connections/whatsapp/actividad?cuenta=<script>",
+        "/resultados?tab=whatsapp#actividad-numero",
+    ),
 ]
 
 
@@ -880,6 +884,7 @@ def test_the_number_card_of_tus_redes_carries_estado() -> None:
     assert "verify_number" in details and "request_review" in rendered
     # m-25143230: «Actividad» opens «Resultados › WhatsApp» on the card's number.
     assert "/resultados?tab=whatsapp&cuenta=" in rendered and ACTIVITY_ROUTE not in rendered
+    assert "#actividad-numero" in rendered  # UX review U2: it lands on the block
     # Review C4: one «last check» line, the card's own.
     assert _present(details, "Última comprobación: ")
     assert not _present(details, "Última verificación")
@@ -1108,7 +1113,7 @@ _QS_BACK = "%2Fresponder%3Ftab%3Dmensajes%26cuenta%3D" + _C + "%26chat%3D" + _T
         ({"tab": "perfil"}, "/chats/ajustes/whatsapp/perfil"),
         (
             {"tab": "actividad", "cuenta": _C},
-            f"/resultados?tab=whatsapp&cuenta={_C}",  # m-25143230
+            f"/resultados?tab=whatsapp&cuenta={_C}#actividad-numero",  # m-25143230
         ),
         # The chat's way back rides along to Perfil and Formas de pago only — and only an
         # app's own chat address; junk, a foreign site, a non-UUID number never do.
@@ -1459,9 +1464,10 @@ def test_activity_home_is_resultados_whatsapp() -> None:
         assert activity_url(junk) == ACTIVITY_HOME, junk
     # Only the number rides along, never anything else of the old address.
     assert legacy_activity_target({"cuenta": _C, "sub": "x", "volver": "/responder"}) == (
-        f"/resultados?tab=whatsapp&cuenta={_C}"
+        f"/resultados?tab=whatsapp&cuenta={_C}#actividad-numero"
     )
-    assert legacy_activity_target({"cuenta": [_C, _T]}) == ACTIVITY_HOME
+    assert legacy_activity_target({"cuenta": [_C, _T]}) == f"{ACTIVITY_HOME}#actividad-numero"
+    assert activity_url(_C, anchor=True).endswith("#actividad-numero")
 
 
 async def test_resultados_takes_the_number_from_the_browsers_address(
@@ -1537,3 +1543,65 @@ def test_resultados_whatsapp_draws_the_activity_block() -> None:
     old = str(whatsapp_page.whatsapp_activity_index().render())
     assert not _present(old, "Actividad del número")
     assert not _present(old, "Conversaciones nuevas")
+
+
+async def test_a_raced_load_runs_again_for_resultados(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review C2: «Resultados › WhatsApp» cleared `numbers_loaded` for a load that a
+    logout/login then dropped; the dropped load asks for a new one, which lands."""
+    _loadable(monkeypatch, _C)
+    first, second = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+    tenants = iter([first])
+
+    async def get_state(self: WhatsAppState, cls: type) -> object:
+        return SimpleNamespace(session_tenant_id=next(tenants, second))
+
+    monkeypatch.setattr(WhatsAppState, "get_state", get_state)
+    state = _visit("/resultados?tab=whatsapp")
+    WhatsAppState.enter_results.fn(state, {"href": "http://x/resultados?tab=whatsapp"})  # type: ignore[attr-defined]
+    events = await _drain_load(state)
+    assert events == [WhatsAppState.load_numbers] and not state.numbers_loaded
+    assert not state.is_loading
+    await _drain_load(state)  # the new load, for whoever is in session now
+    assert state.numbers_loaded and state.selected_connection_id == _C
+
+
+async def test_resultados_writes_the_number_it_shows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review C4: opened without `cuenta` and with two numbers, the address names the
+    number shown (replaced, anchor kept, only while still on Resultados); with one
+    number, or a `cuenta` of this business, nothing is written."""
+    _loadable(monkeypatch, _C, _T)
+    state = _visit("/resultados?tab=whatsapp")
+    WhatsAppState.enter_results.fn(state, {"href": "http://x/resultados?tab=whatsapp"})  # type: ignore[attr-defined]
+    events = await _drain_load(state)
+    assert len(events) == 1
+    script = str(events[0].args)
+    assert f"/resultados?tab=whatsapp&cuenta={_C}" in script
+    assert "replaceState" in script and "location.hash" in script and "/resultados" in script
+    state = _visit("/resultados?tab=whatsapp")
+    WhatsAppState.enter_results.fn(  # type: ignore[attr-defined]
+        state, {"href": f"http://x/resultados?tab=whatsapp&cuenta={_T}#actividad-numero"}
+    )
+    assert await _drain_load(state) == [] and state.selected_connection_id == _T
+    _loadable(monkeypatch, _C)
+    state = _visit("/resultados?tab=whatsapp")
+    WhatsAppState.enter_results.fn(state, {"href": "http://x/resultados?tab=whatsapp"})  # type: ignore[attr-defined]
+    assert await _drain_load(state) == []
+
+
+def test_the_activity_block_fits_a_phone_and_keeps_its_source() -> None:
+    """UX review: one tile per row on a phone (U1), the selector in the block's header
+    row (U3), the anchor the card lands on (U2), and the block shown even when the
+    week's figures fail — only a lost session hides it (U4)."""
+    from . import results_page, whatsapp_metrics_block
+
+    source = (_HERE / "whatsapp_metrics_block.py").read_text()
+    assert 'columns=rx.breakpoints(initial="1", sm="2", md="3")' in source
+    assert '"overflow_wrap": "normal"' in source
+    header = str(whatsapp_metrics_block.metrics_block(rx.text("SELECTOR")).render())
+    assert header.index("SELECTOR") < header.index("7 d")
+    block = whatsapp_page.whatsapp_activity()
+    assert block.id == "actividad-numero"
+    tab = str(results_page._whatsapp_tab().render())  # noqa: SLF001
+    assert "session_lost" in tab
+    page_source = (_HERE / "results_page.py").read_text()
+    assert 'R.error == "", whatsapp_activity()' not in page_source

@@ -86,11 +86,13 @@ def test_tus_redes_shows_the_numbers_state(chats_page, size: dict[str, int]) -> 
     # m-25143230: «Actividad» opens «Resultados › WhatsApp» on the card's number.
     activity = card.get_by_role("link", name="Actividad")
     expect(activity).to_have_attribute(
-        "href", f"/resultados?tab=whatsapp&cuenta={ids['whatsapp_connection']}"
+        "href", f"/resultados?tab=whatsapp&cuenta={ids['whatsapp_connection']}#actividad-numero"
     )
     activity.click()
     expect(page).to_have_url(
-        re.compile(rf"/resultados\?tab=whatsapp&cuenta={ids['whatsapp_connection']}$"),
+        re.compile(
+            rf"/resultados\?tab=whatsapp&cuenta={ids['whatsapp_connection']}#actividad-numero$"
+        ),
         timeout=60_000,
     )
     expect(page.get_by_role("heading", level=1, name="Resultados", exact=True)).to_be_visible(
@@ -99,8 +101,16 @@ def test_tus_redes_shows_the_numbers_state(chats_page, size: dict[str, int]) -> 
     block = page.locator('[data-activity="whatsapp"]')
     expect(block.get_by_text("Actividad del número")).to_be_visible(timeout=60_000)
     expect(block.get_by_text("Conversaciones nuevas").first).to_be_visible(timeout=60_000)
+    # UX review U2: it lands ON the block — its heading on screen, below the header.
+    page.wait_for_timeout(1_000)
+    heading = block.get_by_role("heading", name="Actividad del número").bounding_box()
+    header = page.locator(".q-page-header").first.bounding_box()
+    viewport = page.viewport_size
+    assert heading and header and viewport
+    assert heading["y"] >= header["y"] + header["height"] - 1, (heading, header)
+    assert heading["y"] + heading["height"] <= viewport["height"], (heading, viewport)
     # The week's figures stay above it.
-    expect(page.get_by_text("Tu WhatsApp esta semana")).to_be_visible()
+    expect(page.get_by_text("Tu WhatsApp esta semana")).to_have_count(1)
     if size is DESKTOP:
         expect(_lit(page).first).to_contain_text("Resultados")
     _no_sideways_scroll(page)
@@ -117,7 +127,7 @@ def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
     expect(first_card).to_be_visible(timeout=60_000)
     expect(second_card).to_be_visible()
     expect(second_card.get_by_role("link", name="Actividad")).to_have_attribute(
-        "href", f"/resultados?tab=whatsapp&cuenta={second['connection']}"
+        "href", f"/resultados?tab=whatsapp&cuenta={second['connection']}#actividad-numero"
     )
 
 
@@ -229,14 +239,17 @@ def test_the_hub_opens_the_moved_sections(chats_page) -> None:  # noqa: ANN001
         # m-25143230: the number's activity is «Resultados › WhatsApp», both old addresses.
         (
             "/whatsapp?tab=numero&sub=actividad&cuenta={c}",
-            r"/resultados\?tab=whatsapp&cuenta={c}$",
+            r"/resultados\?tab=whatsapp&cuenta={c}#actividad-numero$",
         ),
-        ("/whatsapp?tab=numero&sub=actividad", r"/resultados\?tab=whatsapp$"),
+        ("/whatsapp?tab=numero&sub=actividad", r"/resultados\?tab=whatsapp#actividad-numero$"),
         (
             "/connections/whatsapp/actividad?cuenta={c}&volver=/x&tab=y",
-            r"/resultados\?tab=whatsapp&cuenta={c}$",
+            r"/resultados\?tab=whatsapp&cuenta={c}#actividad-numero$",
         ),
-        ("/connections/whatsapp/actividad", r"/resultados\?tab=whatsapp$"),
+        (
+            "/connections/whatsapp/actividad",
+            r"/resultados\?tab=whatsapp#actividad-numero$",
+        ),
         ("/whatsapp?tab=x&sub=<b>&otro=1", r"/connections$"),
         # The redirects that already existed keep working.
         ("/whatsapp?tab=respuesta&cuenta={c}", r"/chats/ajustes/whatsapp\?cuenta={c}$"),
@@ -379,7 +392,8 @@ def test_actividad_from_the_second_card_shows_that_number(chats_page) -> None:  
     expect(card).to_be_visible(timeout=60_000)
     card.get_by_role("link", name="Actividad").click()
     expect(page).to_have_url(
-        re.compile(rf"/resultados\?tab=whatsapp&cuenta={second['connection']}$"), timeout=60_000
+        re.compile(rf"/resultados\?tab=whatsapp&cuenta={second['connection']}#actividad-numero$"),
+        timeout=60_000,
     )
     block = page.locator('[data-activity="whatsapp"]')
     activity_selector = block.locator("[role=combobox]").first
@@ -391,7 +405,9 @@ def test_actividad_from_the_second_card_shows_that_number(chats_page) -> None:  
     activity_selector.click()
     page.get_by_role("option").filter(has_not_text="+57 311").first.click()
     expect(page).to_have_url(
-        re.compile(rf"/resultados\?tab=whatsapp&cuenta={ids['whatsapp_connection']}$"),
+        re.compile(
+            rf"/resultados\?tab=whatsapp&cuenta={ids['whatsapp_connection']}#actividad-numero$"
+        ),
         timeout=30_000,
     )
     expect(activity_selector).not_to_contain_text("+57 311")
@@ -577,8 +593,15 @@ def test_capture_actividad_en_resultados(chats_page) -> None:  # noqa: ANN001
         page.set_viewport_size({**size, "height": 2400})
         page.wait_for_timeout(1_500)
         page.screenshot(path=str(out / f"{label}-resultados-whatsapp-{size_name}-entera.png"))
+        page.set_viewport_size(size)
         page.goto(_origin(page) + "/connections")
         card = _number_card(page)
         expect(card).to_be_visible(timeout=60_000)
         page.wait_for_timeout(2_000)
         card.screenshot(path=str(out / f"{label}-tarjeta-tus-redes-{size_name}.png"))
+        if size is PHONE:
+            # What the owner sees right after tapping «Actividad» on the card.
+            card.get_by_role("link", name="Actividad").click()
+            expect(page).to_have_url(re.compile(r"/resultados\?tab=whatsapp"), timeout=60_000)
+            page.wait_for_timeout(4_000)
+            page.screenshot(path=str(out / f"{label}-resultados-desde-tarjeta-{size_name}.png"))

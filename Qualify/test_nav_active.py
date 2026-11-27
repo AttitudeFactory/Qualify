@@ -95,7 +95,8 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/chats/ajustes/whatsapp/perfil": "Ajustes de chats",
     "/chats/ajustes/whatsapp/codigos-qr": "Ajustes de chats",
     "/chats/ajustes/formas-de-pago": "Ajustes de chats",
-    "/connections/whatsapp/actividad": "Tus redes",
+    # m-25143230: only redirects, into «Resultados › WhatsApp».
+    "/connections/whatsapp/actividad": "Resultados",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora
     "/resultados": "Resultados",

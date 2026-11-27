@@ -77,6 +77,7 @@ from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     ACCOUNT_PARAM,
+    ACTIVITY_ANCHOR,
     ACTIVITY_HOME,
     ACTIVITY_TITLE,
     CHAT_SETTINGS_ROUTE,
@@ -266,7 +267,14 @@ def sub_strip() -> rx.Component:
     )
 
 
-_LEASE_SCRIPT = "({href: window.location.href})"
+_LEASE_SCRIPT = "(window.__qActivityLanding = true, {href: window.location.href})"
+#: UX review U2: arriving with `#actividad-numero` (the card's link, an old address), the
+#: page scrolls to the block once it is drawn — once per arrival, not on a number switch.
+_LAND_SCRIPT = (
+    "if (window.__qActivityLanding) { window.__qActivityLanding = false;"
+    f" if (window.location.hash === '#{ACTIVITY_ANCHOR}')"
+    f" document.getElementById('{ACTIVITY_ANCHOR}')?.scrollIntoView({{block: 'start'}}); }}"
+)
 
 
 def whatsapp_activity() -> rx.Component:
@@ -288,12 +296,12 @@ def whatsapp_activity() -> rx.Component:
         ),
         rx.cond(
             WhatsAppState.numbers_loaded & WhatsAppState.has_numbers,
-            rx.vstack(
-                number_selector(),
-                rx.box(metrics_block(), key=WhatsAppState.selected_connection_id, width="100%"),
-                spacing="3",
+            # U3: the selector sits in the block's own header row.
+            rx.box(
+                metrics_block(number_selector()),
+                key=WhatsAppState.selected_connection_id,
                 width="100%",
-                align_items="start",
+                on_mount=rx.call_script(_LAND_SCRIPT),
             ),
             rx.cond(
                 WhatsAppState.load_error != "",
@@ -302,6 +310,9 @@ def whatsapp_activity() -> rx.Component:
             ),
         ),
         width="100%",
+        id=ACTIVITY_ANCHOR,
+        # clear of the sticky page header when the anchor scrolls it into view
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
         custom_attrs={"data-activity": "whatsapp"},
     )
 
@@ -814,8 +825,9 @@ def number_card_details(connection_id: rx.Var[str]) -> rx.Component:
 
 
 def activity_href(connection_id: rx.Var[str]) -> rx.Var[str]:
-    """`/resultados?tab=whatsapp&cuenta=<the number>` (m-25143230)."""
-    return f"{ACTIVITY_HOME}&{ACCOUNT_PARAM}=" + connection_id
+    """`/resultados?tab=whatsapp&cuenta=<the number>#actividad-numero` (m-25143230; the
+    anchor lands on the block, UX review U2)."""
+    return f"{ACTIVITY_HOME}&{ACCOUNT_PARAM}=" + connection_id + f"#{ACTIVITY_ANCHOR}"
 
 
 def number_card_activity_link(connection_id: rx.Var[str]) -> rx.Component:

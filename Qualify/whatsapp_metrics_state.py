@@ -88,9 +88,14 @@ class WhatsAppMetricsState(rx.State):
         async with self:
             connection_id, tenant_id = await self._scope()
             key = f"{connection_id}:{self.period}"
-            if not connection_id or self.metrics_loading or self.analytics_loading:
+            if not connection_id:
                 return
-            if not force and self.loaded_key == key:
+            loading = self.metrics_loading or self.analytics_loading
+            # m-25143230 (review C1): only a load of THIS number and period is waited for.
+            # A load of another number (the owner switched while it ran) is superseded:
+            # `loaded_key` moves to this key, so its late results are dropped, and this
+            # one runs — before, the new number never loaded and showed the old one's.
+            if self.loaded_key == key and (loading or not force):
                 return
             if not self.loaded_key.startswith(f"{connection_id}:"):
                 self.metrics_ready = False

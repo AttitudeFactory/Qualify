@@ -238,9 +238,10 @@ def _social_tab() -> rx.Component:
 def _whatsapp_tab() -> rx.Component:
     return rx.vstack(
         _whatsapp_week(),
-        # The number's activity (m-25143230). Not while the figures' read failed: that
-        # error already says what to do (and a lost session would be said twice).
-        rx.cond(R.error == "", whatsapp_activity(), rx.fragment()),
+        # The number's activity (m-25143230). Its own source, so it stays when the
+        # week's figures fail (UX review U4) — except for a lost session, which the
+        # figures already report (said once, with «Iniciar sesión»).
+        rx.cond(R.session_lost, rx.fragment(), whatsapp_activity()),
         spacing="5",
         width="100%",
     )

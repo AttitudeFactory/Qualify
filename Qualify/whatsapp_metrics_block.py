@@ -1,4 +1,5 @@
-"""The metrics block of `/whatsapp` → Conexión (WA-17, QUA-216 · WA-21, QUA-220).
+"""The metrics block of the WhatsApp number (WA-17, QUA-216 · WA-21, QUA-220) — drawn in
+«Resultados › WhatsApp» since m-25143230.
 
 A KPI row of stat tiles (our own tables) and one small chart plus a cost table (read
 from Meta). Per the dataviz rules: headline numbers are tiles, not charts; the one chart
@@ -46,9 +47,13 @@ def _kpis() -> rx.Component:
             stat_card(
                 "Mensajes enviados", m.messages_out, tone="neutral", hint=m.messages_out_detail
             ),
-            columns=rx.breakpoints(initial="2", md="3"),
+            # m-25143230 (UX review U1): one tile per row on a phone, so a label never
+            # breaks inside a word («Conversacion / es»); two from `sm`, three from `md`.
+            columns=rx.breakpoints(initial="1", sm="2", md="3"),
             spacing="3",
             width="100%",
+            # labels wrap between words only, never inside one
+            css={"& p": {"overflow_wrap": "normal", "word_break": "normal", "hyphens": "none"}},
         ),
         rx.cond(
             m.entry_counts.length() > 0,
@@ -250,12 +255,15 @@ def _analytics() -> rx.Component:
     )
 
 
-def metrics_block() -> rx.Component:
+def metrics_block(selector: rx.Component | None = None) -> rx.Component:
+    """`selector` (m-25143230, UX review U3): the number selector, in the header row next
+    to 7/30 días and «Actualizar»; on a phone the row wraps and it takes its own line."""
     return card(
         rx.vstack(
             rx.hstack(
                 rx.heading("Actividad del número", size="3", as_="h2"),
                 rx.spacer(),
+                *([selector] if selector is not None else []),
                 rx.segmented_control.root(
                     *[rx.segmented_control.item(label, value=key) for key, label in PERIODS],
                     value=S.period,

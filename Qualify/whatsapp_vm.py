@@ -207,6 +207,9 @@ ACTIVITY_ROUTE: Final = "/connections/whatsapp/actividad"
 #: checks both agree). `?cuenta=` names the number, like every page of the number.
 RESULTS_PATH: Final = "/resultados"
 ACTIVITY_HOME: Final = f"{RESULTS_PATH}?tab=whatsapp"
+#: m-25143230 (UX review U2): the block's `id` there — the card's link and the old
+#: addresses land ON the block, not at the top of the tab.
+ACTIVITY_ANCHOR: Final = "actividad-numero"
 #: m-25027373: every panel but the promotions' (`PROMOTIONS_ROUTE?sub=…`) and Actividad
 #: (`ACTIVITY_HOME`, m-25143230) → its page, drawn by `WhatsAppState`.
 PANEL_PAGES: Final[Mapping[str, str]] = {
@@ -430,19 +433,22 @@ RETURN_PARAM: Final = "volver"
 _PANELS_WITH_WAY_BACK: Final = frozenset({TAB_PROFILE, TAB_PAYMENTS})
 
 
-def activity_url(connection_id: str = "") -> str:
+def activity_url(connection_id: str = "", *, anchor: bool = False) -> str:
     """m-25143230: «Resultados › WhatsApp» on one number (`cuenta`, only a canonical
-    UUID; the page takes it only if it is this business's)."""
+    UUID; the page takes it only if it is this business's) — with `anchor`, landing on
+    the activity block (`#actividad-numero`)."""
     number = uuid_param({ACCOUNT_PARAM: connection_id}, ACCOUNT_PARAM)
-    return f"{ACTIVITY_HOME}&{ACCOUNT_PARAM}={number}" if number else ACTIVITY_HOME
+    url = f"{ACTIVITY_HOME}&{ACCOUNT_PARAM}={number}" if number else ACTIVITY_HOME
+    return f"{url}#{ACTIVITY_ANCHOR}" if anchor else url
 
 
 def legacy_activity_target(params: Mapping[str, object]) -> str:
     """m-25143230: where an old address of the number's activity lands now —
     `/connections/whatsapp/actividad[?cuenta=…]` or `/whatsapp?tab=numero&sub=actividad
-    [&cuenta=…]` → `/resultados?tab=whatsapp[&cuenta=…]`. Same whitelist rule as
-    `legacy_promotions_target`: only the number (a canonical UUID) rides along."""
-    return activity_url(uuid_param(params, ACCOUNT_PARAM))
+    [&cuenta=…]` → `/resultados?tab=whatsapp[&cuenta=…]#actividad-numero` (on the
+    block, UX review U2). Same whitelist rule as `legacy_promotions_target`: only the
+    number (a canonical UUID) rides along."""
+    return activity_url(uuid_param(params, ACCOUNT_PARAM), anchor=True)
 
 
 def legacy_number_target(params: Mapping[str, object]) -> str:
