@@ -3189,15 +3189,15 @@ class ContentService:
         the Clip gets ONE new brief with their videos as stretches (×1, the interval the
         join keeps; texts and effects moved to the real lengths) and is made from it, once.
         Otherwise it waits: its sign of life is stamped and `ClipBlocksWait` leaves the
-        worker's run not done — nothing written or paid. A part that failed makes the Clip
-        fail at once (`ai_part_failed`; decided 2026-11-26 — PR 3, m-25129407, brings
-        «Intentar de nuevo» and §11's 72 h wait back) and None is returned: the vistas
+        worker's run not done — nothing written or paid. m-25129407: a part that failed
+        keeps it waiting for the owner's choice (§11's 72 h); a broken part, or the owner's
+        time run out, makes it fail (`verdict.reason`) and None is returned: the vistas
         previas of ALL its parts come back in the same write, the Clip's creations with the
-        run's own refund. The wait and the assembly after it write no charge row: they
-        never count in the day's local cap (§13.5)."""
+        run's own refund. A MADE Clip assembled again (`plays_ai_parts`) waits for a part
+        made again and plays each part's active version (`clip_ai_parts.refresh_gate`).
+        The wait and the assembly after it write no charge row: they never count in the
+        day's local cap (§13.5)."""
         from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
-            AI_PART_FAILED,
-            AI_PART_FAILED_TEXT,
             AiPartsFailed,
             AiPartsReady,
             PostgresAiPartsStore,
@@ -3215,14 +3215,15 @@ class ContentService:
             clip_id=draft.id,
             brief=brief,
             store=store,
+            now=self._clip_avatar_clock(),
         )
         if isinstance(verdict, AiPartsFailed):
             try:
                 self._fail_waiting_clip(
                     tenant_id,
                     draft,
-                    reason=AI_PART_FAILED,
-                    detail=AI_PART_FAILED_TEXT,
+                    reason=verdict.reason,
+                    detail=verdict.detail,
                     give_back=[(part.id, part.revision) for part in verdict.parts],
                     stop_children=True,
                 )
@@ -3240,6 +3241,8 @@ class ContentService:
             )
             return None
         if isinstance(verdict, AiPartsReady):
+            if not verdict.changed:
+                return draft, brief  # m-25129407: every part at its active version
             fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
             logger.info(
                 "clip %s: its %d AI part(s) are made; assembled now (%d moved, %d dropped)",
@@ -3473,9 +3476,13 @@ class ContentService:
             if beat is not None:
                 beat()
             raise ClipBlocksWait(f"clip {draft.id} waits for its character scenes")
-        from qualify_api.creative.clip_ai_parts import has_ai_part_blocks  # noqa: PLC0415
+        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
+            has_ai_part_blocks,
+            plays_ai_parts,
+        )
 
-        if has_ai_part_blocks(brief):
+        # m-25129407: a made Clip assembled again plays its parts' active versions
+        if has_ai_part_blocks(brief) or plays_ai_parts(brief, tenant_id):
             # m-25129406 (ADR 50 §13): a Clip waits for its AI parts (`ClipBlocksWait`,
             # before any read or paid call of its own), then is made ONCE from a brief with
             # their videos as stretches

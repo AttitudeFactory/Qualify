@@ -32,10 +32,21 @@ such a Clip exist and be assembled:
   always). The automatic assembly writes no charge row, so it never counts in the day's
   10 local builds (§13.5, answer 5). The video comes out `ai_generated=True` with each
   part's provenance (`produce_local`, from the child's asset row).
-- **A child that failed** makes the Clip fail at once (`ai_part_failed`), and the vistas
-  previas of ALL its parts come back with the Clip's creations — the owner got no video
-  (decided 2026-11-26). No 72 h wait yet: the owner's actions on a failed part (retry,
-  make it new, remove) come with PR 3 (m-25129407), which brings §11's wait back.
+- **A child that failed** (m-25129407, PR 3 «después de crear»: §11's wait is back) keeps
+  the Clip waiting for its owner's choice — «Intentar de nuevo», «Cambiar», «Hacerla
+  nueva», another mode or «Quitar» (`clip_ai_part_actions`) — for
+  `CLIP_AI_PART_OWNER_WAIT` (72 h) from the latest failure the server saw (the failed
+  part's row was last written then). Once that time runs out the Clip fails
+  (`ai_part_expired`) and the vistas previas of ALL its parts come back with the Clip's
+  creations — the owner got no video. A part never created, or made without its video,
+  is a broken row, not a choice: the Clip fails at once (`ai_part_failed`), as in PR 2.
+  A part the owner removed is left out, its block dropped from the assembly.
+- **After the Clip is made** its brief plays each part as a stretch of the part's file.
+  The assembly always plays a part's ACTIVE version (`refresh`): a stretch of an older
+  version of one of its parts («Rehacer esta parte», another mode) is swapped for the
+  new file — the same cut where it fits — and the Clip waits while that part is made
+  again. Nothing else changes, so a Clip assembled again after the owner changed texts,
+  joins or order reuses every part as it is (`played` finds them).
 - **«Sigue a la anterior» after the owner's OWN video** (Deivid, 2026-11-26): the child's
   `PartRef.extend_own` names the owner's video stretch right before it; the producer
   continues that file. Behind `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until the paid
@@ -51,8 +62,9 @@ entry is checked to be the business's before any row. No migration: the children
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
@@ -77,11 +89,21 @@ CLIP_AI_PARTS_VERSION = 1
 
 # -- what the owner reads (Spanish, `qualify-copy-es`) -------------------------------------
 
-#: The Clip's failure when one of its parts failed (at once, until PR 3 brings a choice).
+#: The Clip's failure when one of its parts is broken (never created, or made without its
+#: video): there is nothing the owner could choose, so at once.
 AI_PART_FAILED = "ai_part_failed"
 AI_PART_FAILED_TEXT = (
     "Tu video no se pudo armar porque una de sus partes con IA falló. "
     "No se descontó nada de tu plan. Vuelve a crear el video cuando quieras."
+)
+#: m-25129407 (ADR 50 §11 P2, §13.1): how long a Clip waits for its owner after one of its
+#: AI parts failed, from the latest failure the server saw, before it fails
+#: (`AI_PART_EXPIRED`) and every vista previa of its parts comes back.
+CLIP_AI_PART_OWNER_WAIT = timedelta(hours=72)
+AI_PART_EXPIRED = "ai_part_expired"
+AI_PART_EXPIRED_TEXT = (
+    "Tu video no se armó: una de sus partes con IA no salió y pasaron 3 días sin que "
+    "eligieras qué hacer. No se descontó nada de tu plan. Créalo de nuevo cuando quieras."
 )
 #: A Clip with AI parts that is not vertical (a part is always 9:16).
 NOT_VERTICAL_TEXT = (
@@ -134,6 +156,13 @@ class AiPartRow:
     failure_reason: str | None = None
     #: Its current revision (what its vista previa was charged at, to give it back).
     revision: int = 1
+    #: m-25129407: when its row was last written — for a failed part, when it failed (the
+    #: owner's 72 h run from the latest one); None when unknown.
+    changed_at: datetime | None = None
+    #: Its mode as made now (`reference` / `edit` / `extend`).
+    mode: str = "reference"
+    #: Its last failure in the owner's words, when it has one.
+    failure_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +181,11 @@ class AiPartsStore(Protocol):
 
     def part_video(self, *, tenant_id: UUID, part_id: UUID) -> AiPartVideo | None: ...
 
+    def played(self, *, tenant_id: UUID, clip_id: UUID, keys: Sequence[str]) -> dict[str, UUID]:
+        """m-25129407: of `keys`, the ones that are a video (of any version) of one of the
+        Clip's AI parts → that part's id."""
+        ...
+
 
 class PostgresAiPartsStore:
     """The AI parts as Postgres keeps them — every read through `tenant_session` (RLS)."""
@@ -164,7 +198,8 @@ class PostgresAiPartsStore:
             rows = session.execute(
                 text("""
                 SELECT d.id, d.part_index, d.status, d.part_removed_at IS NOT NULL AS removed,
-                       d.failure_reason, d.revision
+                       d.failure_reason, d.revision, d.updated_at, d.failure_detail,
+                       COALESCE(b.media->'part'->>'mode', 'reference') AS mode
                 FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
                 WHERE d.parent_draft_id = :c AND b.media->'part' IS NOT NULL
                   AND jsonb_typeof(b.media->'part') = 'object'
@@ -180,9 +215,32 @@ class PostgresAiPartsStore:
                 removed=bool(row.removed),
                 failure_reason=row.failure_reason,
                 revision=int(row.revision),
+                changed_at=row.updated_at,
+                mode=str(row.mode),
+                failure_detail=row.failure_detail,
             )
             for row in rows
         )
+
+    def played(self, *, tenant_id: UUID, clip_id: UUID, keys: Sequence[str]) -> dict[str, UUID]:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import bindparam, text  # noqa: PLC0415
+
+        if not keys:
+            return {}
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text("""
+                SELECT a.object_key, d.id
+                FROM image_assets a
+                JOIN content_drafts d ON d.id = a.draft_id
+                JOIN content_briefs b ON b.id = d.brief_id
+                WHERE a.object_key IN :keys AND d.parent_draft_id = :c
+                  AND jsonb_typeof(b.media->'part') = 'object'
+            """).bindparams(bindparam("keys", expanding=True)),
+                {"keys": list(keys), "c": clip_id},
+            ).all()
+        return {str(row.object_key): row.id for row in rows}
 
     def part_video(self, *, tenant_id: UUID, part_id: UUID) -> AiPartVideo | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
@@ -344,7 +402,8 @@ def resolve(brief: ContentBrief, videos: Mapping[int, AiPartVideo]) -> Resolved:
     AI block the stretch of its video (`part_stretch`), `ai_parts` emptied; every text and
     effect timed on the planned timeline moved to the real one (a time inside a part
     keeps its place in it), cut at the new end, dropped when it would start at or after
-    it. Pure."""
+    it. m-25129407: an AI block whose entry has no video (its part removed by the owner)
+    is dropped — its seconds collapse, so a text inside it goes with it. Pure."""
     media = brief.media
     points: list[tuple[float, float]] = [(0.0, 0.0)]
     segments: list[SourceSegment] = []
@@ -355,9 +414,60 @@ def resolve(brief: ContentBrief, videos: Mapping[int, AiPartVideo]) -> Resolved:
             segments.append(segment)
             points.append((e + segment.output_seconds, r + segment.output_seconds))
             continue
-        stretch = part_stretch(segment, videos[entry_at], float(media.ai_parts[entry_at].seconds))
+        planned = float(media.ai_parts[entry_at].seconds)
+        if entry_at not in videos:
+            points.append((e + planned, r))
+            continue
+        stretch = part_stretch(segment, videos[entry_at], planned)
         segments.append(stretch)
-        points.append((e + float(media.ai_parts[entry_at].seconds), r + stretch.output_seconds))
+        points.append((e + planned, r + stretch.output_seconds))
+    return _retimed(brief, segments, points)
+
+
+def refresh(brief: ContentBrief, swaps: Mapping[str, AiPartVideo]) -> Resolved:
+    """m-25129407: a made Clip's recipe with each stretch of an OLD version of one of its
+    parts (`swaps`: the old file → the part's active video) played from the new file — the
+    same cut where it fits (its start kept inside the interval the join keeps,
+    `part_join.part_span`, its length kept up to the file's end), at ×1, its join kept;
+    texts and effects moved to the new lengths as `resolve` moves them. Pure."""
+    from qualify_api.creative.part_join import part_span  # noqa: PLC0415
+
+    points: list[tuple[float, float]] = [(0.0, 0.0)]
+    segments: list[SourceSegment] = []
+    for segment in brief.media.segments:
+        e, r = points[-1]
+        video = swaps.get(segment.key) if segment.kind == "video" else None
+        if video is None:
+            segments.append(segment)
+            points.append((e + segment.output_seconds, r + segment.output_seconds))
+            continue
+        span_start, span_end = part_span(video.params)
+        end_cap = video.seconds if span_end is None else min(span_end, video.seconds)
+        low = min(max(0.0, span_start), max(0.0, end_cap - 0.1))
+        start = min(max(segment.start_s, low), max(low, end_cap - 0.1))
+        end = min(start + (segment.end_s - segment.start_s), end_cap)
+        stretch = SourceSegment(
+            key=video.object_key,
+            start_s=round(start, 3),
+            end_s=round(end, 3),
+            speed=1.0,
+            transition_in=segment.transition_in,
+        )
+        segments.append(stretch)
+        points.append((e + segment.output_seconds, r + stretch.output_seconds))
+    return _retimed(brief, segments, points)
+
+
+def _retimed(
+    brief: ContentBrief, segments: Sequence[SourceSegment], points: Sequence[tuple[float, float]]
+) -> Resolved:
+    """`brief` with `segments` and its texts and effects moved from the planned timeline
+    to the real one through `points` (`(planned, real)` at each block's end). The first
+    block never keeps a join (nothing before it to join with). Pure."""
+    media = brief.media
+    segments = list(segments)
+    if segments and segments[0].transition_in is not None:
+        segments[0] = segments[0].model_copy(update={"transition_in": None})
     total = points[-1][1]
     move = _mapper(points)
     moved = dropped = 0
@@ -397,46 +507,90 @@ def resolve(brief: ContentBrief, videos: Mapping[int, AiPartVideo]) -> Resolved:
     return Resolved(fresh, moved=moved, dropped=dropped)
 
 
-PartState = Literal["creating", "ready", "failed"]
+PartState = Literal["creating", "ready", "failed", "removed"]
 
 
 @dataclass(frozen=True)
 class AiPartsWait:
-    """The Clip goes on waiting: a part is still being made (`creating`)."""
+    """The Clip goes on waiting: a part is still being made (`creating`), or one failed
+    and the owner has until `wait_until` to choose what to do (`part_failed`)."""
 
     reason: str
+    wait_until: datetime | None = None
 
 
 @dataclass(frozen=True)
 class AiPartsReady:
-    """Every part made: the brief the Clip is assembled from."""
+    """Every part made: the brief the Clip is assembled from. `changed=False`: the brief
+    as it is (a made Clip whose parts are all at their active version) — nothing to
+    write before the assembly."""
 
     brief: ContentBrief
     parts: int
     moved: int = 0
     dropped: int = 0
+    changed: bool = True
 
 
 @dataclass(frozen=True)
 class AiPartsFailed:
-    """A part failed (or was never created, or came out without its video): the Clip
-    fails at once (`ai_part_failed`) and the vistas previas of ALL its parts come back
-    with its own creations (Deivid via the coordinator, 2026-11-26: the owner got no
-    video). `parts`: every part row of the Clip, to give back."""
+    """The Clip fails and the vistas previas of ALL its parts come back with its own
+    creations (Deivid via the coordinator, 2026-11-26: the owner got no video): a part
+    never created or made without its video (`ai_part_failed`, at once), or a failed part
+    the owner chose nothing for within `CLIP_AI_PART_OWNER_WAIT` (`expired`,
+    `ai_part_expired`). `parts`: every part row of the Clip, to give back."""
 
     parts: tuple[AiPartRow, ...]
+    expired: bool = False
 
     @property
     def reason(self) -> str:
-        return AI_PART_FAILED
+        return AI_PART_EXPIRED if self.expired else AI_PART_FAILED
+
+    @property
+    def detail(self) -> str:
+        return AI_PART_EXPIRED_TEXT if self.expired else AI_PART_FAILED_TEXT
 
 
-def _state(row: AiPartRow | None) -> PartState:
-    if row is None or row.removed or row.status == "failed":
+def part_state(row: AiPartRow | None) -> PartState:
+    """A part's state as the Clip reads it: removed by its owner, failed (a missing row
+    reads failed: a broken Clip), being made, or made. Pure."""
+    if row is not None and row.removed:
+        return "removed"
+    if row is None or row.status == "failed":
         return "failed"
     if row.status == "drafting":
         return "creating"
     return "ready"
+
+
+def owner_deadline(failed: Sequence[AiPartRow]) -> datetime | None:
+    """When the owner's time runs out: `CLIP_AI_PART_OWNER_WAIT` after the latest failure
+    seen among the failed parts; None when none says when it failed. Pure."""
+    seen = [row.changed_at for row in failed if row.changed_at is not None]
+    return max(seen) + CLIP_AI_PART_OWNER_WAIT if seen else None
+
+
+def plays_ai_parts(brief: ContentBrief, tenant_id: UUID) -> bool:
+    """m-25129407: a MADE top-level Clip (its brief derived by the server, no AI block left)
+    that plays a file the server generated — perhaps an older version of one of its AI
+    parts, which `ai_parts_gate` swaps for the active one. False with
+    `QUALIFY_CLIP_AI_PARTS` off: then no part is ever made again, so nothing is read.
+    Pure but for the switch."""
+    from qualify_api.creative.clip_avatar import is_generated_file  # noqa: PLC0415
+    from qualify_api.creative.video_pipeline.ai_parts import clip_ai_parts_on  # noqa: PLC0415
+
+    media = brief.media
+    if (
+        brief.kind is not ContentKind.CLIP
+        or media.part is not None
+        or media.derived_from_brief_id is None
+        or ai_part_blocks(media.segments)
+    ):
+        return False
+    if not any(s.kind == "video" and is_generated_file(tenant_id, s.key) for s in media.segments):
+        return False
+    return clip_ai_parts_on()
 
 
 def ai_parts_gate(
@@ -445,26 +599,38 @@ def ai_parts_gate(
     clip_id: UUID,
     brief: ContentBrief,
     store: AiPartsStore,
+    now: datetime | None = None,
 ) -> AiPartsWait | AiPartsReady | AiPartsFailed:
-    """What a Clip with AI parts does on this pass: fail at once when a part failed —
-    until PR 3 (m-25129407) brings «Intentar de nuevo» there is nothing the owner could
-    choose, so no 72 h wait (decided 2026-11-26) —, wait while a part is being made, or be
-    assembled from the parts' videos. A failure is checked FIRST: a «Sigue a la anterior»
-    after a failed part waits for it for good and must never hold the Clip. Reads the
-    parts once (and each made part's video); writes nothing."""
+    """What a Clip with AI parts does on this pass. With AI blocks still in its recipe
+    (its first «Crear»): fail at once when a part is broken (never created, made without
+    its video); when a part failed, wait for the owner's choice until
+    `CLIP_AI_PART_OWNER_WAIT` after the latest failure, then fail (`expired`); wait while
+    a part is being made; else be assembled from the videos of the parts kept (a removed
+    part's block is dropped). A failure is checked BEFORE «creating»: a «Sigue a la
+    anterior» after a failed part waits for it, and the owner's clock must run anyway.
+    A made Clip (`plays_ai_parts`): `refresh_gate`. Reads the parts once (and each made
+    part's video); writes nothing."""
+    if not has_ai_part_blocks(brief):
+        return refresh_gate(tenant_id=tenant_id, clip_id=clip_id, brief=brief, store=store)
+    moment = now or datetime.now(UTC)
     planned = planned_parts(brief)
     found = store.parts_of(tenant_id=tenant_id, clip_id=clip_id)
     rows = {row.slot: row for row in found}
-    states = [(p, rows.get(p.slot), _state(rows.get(p.slot))) for p in planned]
+    states = [(p, rows.get(p.slot), part_state(rows.get(p.slot))) for p in planned]
     if any(row is None for _, row, _ in states):
         logger.error("clip %s: an AI part was never created", clip_id)
         return AiPartsFailed(found)
-    if any(state == "failed" for _, _, state in states):
-        return AiPartsFailed(found)
-    if any(state == "creating" for _, _, state in states):
+    live = [(p, row, state) for p, row, state in states if state != "removed"]
+    failed = [row for _, row, state in live if state == "failed" and row is not None]
+    if failed:
+        deadline = owner_deadline(failed)
+        if deadline is not None and moment >= deadline:
+            return AiPartsFailed(found, expired=True)
+        return AiPartsWait("part_failed", wait_until=deadline)
+    if any(state == "creating" for _, _, state in live):
         return AiPartsWait("creating")
     videos: dict[int, AiPartVideo] = {}
-    for part, row, _ in states:
+    for part, row, _ in live:
         assert row is not None
         video = store.part_video(tenant_id=tenant_id, part_id=row.id)
         if video is None:
@@ -475,6 +641,51 @@ def ai_parts_gate(
     resolved = resolve(brief, videos)
     return AiPartsReady(
         resolved.brief, parts=len(videos), moved=resolved.moved, dropped=resolved.dropped
+    )
+
+
+def refresh_gate(
+    *,
+    tenant_id: UUID,
+    clip_id: UUID,
+    brief: ContentBrief,
+    store: AiPartsStore,
+) -> AiPartsWait | AiPartsReady:
+    """m-25129407: a made Clip assembled again. Each of its AI parts it plays must be at
+    its active version: wait while one is being made again («Rehacer esta parte»,
+    another mode); swap the file of an older version for the active one (`refresh`);
+    otherwise the brief as it is (`changed=False`) — the owner's new texts, joins or
+    order reuse every part untouched. A part made again that did not come out keeps its
+    previous version (the generation's own rule), so its old file stays. A part without
+    a video now is left to the assembly, which refuses a file it cannot read — the Clip
+    keeps its previous version. Writes nothing."""
+    from qualify_api.creative.clip_avatar import is_generated_file  # noqa: PLC0415
+
+    keys = [
+        s.key
+        for s in brief.media.segments
+        if s.kind == "video" and is_generated_file(tenant_id, s.key)
+    ]
+    reader = getattr(store, "played", None)
+    played = reader(tenant_id=tenant_id, clip_id=clip_id, keys=keys) if keys and reader else {}
+    if not played:
+        return AiPartsReady(brief, parts=0, changed=False)
+    rows = {row.id: row for row in store.parts_of(tenant_id=tenant_id, clip_id=clip_id)}
+    if any(rows.get(part_id) and rows[part_id].status == "drafting" for part_id in played.values()):
+        return AiPartsWait("creating")
+    swaps: dict[str, AiPartVideo] = {}
+    for key, part_id in played.items():
+        video = store.part_video(tenant_id=tenant_id, part_id=part_id)
+        if video is not None and video.object_key != key:
+            swaps[key] = video
+    if not swaps:
+        return AiPartsReady(brief, parts=len(set(played.values())), changed=False)
+    refreshed = refresh(brief, swaps)
+    return AiPartsReady(
+        refreshed.brief,
+        parts=len(set(played.values())),
+        moved=refreshed.moved,
+        dropped=refreshed.dropped,
     )
 
 
@@ -674,8 +885,16 @@ def refuse_ai_parts_approval(store: AiPartsStore, *, tenant_id: UUID, clip_id: U
 
 
 __all__ = [
+    "AI_PART_EXPIRED",
+    "AI_PART_EXPIRED_TEXT",
     "AI_PART_FAILED",
     "AI_PART_FAILED_TEXT",
+    "CLIP_AI_PART_OWNER_WAIT",
+    "owner_deadline",
+    "part_state",
+    "plays_ai_parts",
+    "refresh",
+    "refresh_gate",
     "APPROVE_UNAVAILABLE_CODE",
     "APPROVE_UNAVAILABLE_TEXT",
     "CLIP_AI_PARTS_VERSION",
