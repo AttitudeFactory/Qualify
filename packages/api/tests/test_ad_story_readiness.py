@@ -25,6 +25,7 @@ def piece(**changes: object) -> dict:
         "revision": 2,
         "approved_revision": 2,
         "media_purged_at": None,
+        "published_media_id": None,
     } | changes
 
 
@@ -36,6 +37,8 @@ def piece(**changes: object) -> dict:
         (piece(status="draft"), StoryBlock.NOT_APPROVED),
         (piece(revision=3), StoryBlock.EDITED),
         (piece(published_media_id="1"), StoryBlock.PUBLISHED),
+        (piece(status="published"), StoryBlock.PUBLISHED),  # past approval, not «unapproved»
+        (piece(status="staged"), StoryBlock.PUBLISHED),
         (piece(media_purged_at=NOW), StoryBlock.FILES_DELETED),
         (piece(), None),
     ],

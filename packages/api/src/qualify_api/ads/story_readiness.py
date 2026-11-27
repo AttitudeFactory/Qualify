@@ -91,12 +91,13 @@ def files_block(assets: Iterable[Mapping[str, Any]]) -> StoryBlock | None:
 def piece_block(piece: Mapping[str, Any] | None) -> StoryBlock | None:
     if piece is None or piece["version_id"] is None:
         return StoryBlock.MISSING
+    # The draft FSM moves approved → staged → published: those are past approval.
+    if piece["status"] in {"staged", "published"} or piece["published_media_id"] is not None:
+        return StoryBlock.PUBLISHED
     if piece["status"] != "approved":
         return StoryBlock.NOT_APPROVED
     if piece["approved_revision"] != piece["revision"]:
         return StoryBlock.EDITED
-    if piece.get("published_media_id") is not None:
-        return StoryBlock.PUBLISHED
     # `media_objects_pending_at` never exists without `media_purged_at` (0139's check).
     if piece["media_purged_at"] is not None:
         return StoryBlock.FILES_DELETED

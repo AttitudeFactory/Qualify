@@ -26,6 +26,7 @@ _CASES = [
     (StoryBlock.NOT_APPROVED, "UPDATE content_drafts SET status='draft' WHERE id=:draft"),
     (StoryBlock.EDITED, "UPDATE content_drafts SET revision=revision+1 WHERE id=:draft"),
     (StoryBlock.PUBLISHED, "UPDATE content_drafts SET published_media_id='1' WHERE id=:draft"),
+    (StoryBlock.PUBLISHED, "UPDATE content_drafts SET status='published' WHERE id=:draft"),
     (StoryBlock.FILES_DELETED, "UPDATE content_drafts SET media_purged_at=now() WHERE id=:draft"),
     (StoryBlock.NO_VERTICAL, "UPDATE image_assets SET height=width WHERE id=:vertical"),
     (
