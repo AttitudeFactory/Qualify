@@ -1605,3 +1605,17 @@ def test_the_activity_block_fits_a_phone_and_keeps_its_source() -> None:
     assert "session_lost" in tab
     page_source = (_HERE / "results_page.py").read_text()
     assert 'R.error == "", whatsapp_activity()' not in page_source
+
+
+def test_landing_on_the_block_never_fights_the_owners_scroll() -> None:
+    """Review N1: the retries stop on the owner's first wheel, touch or key (passive,
+    once) and as soon as a try finds the block in place."""
+    script = whatsapp_page._LAND_SCRIPT  # noqa: SLF001
+    for needle in (
+        "'wheel', 'touchstart', 'keydown'",
+        "{once: true, passive: true}",
+        "clearTimeout",
+        "scrollMarginTop",
+        "'#actividad-numero'",
+    ):
+        assert needle in script, needle

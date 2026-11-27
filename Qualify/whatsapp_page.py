@@ -272,13 +272,23 @@ _LEASE_SCRIPT = "(window.__qActivityLanding = true, {href: window.location.href}
 #: page scrolls to the block once it is drawn — once per arrival, not on a number switch.
 #: The block grows as its reads land (skeleton → tiles), and a short page cannot scroll
 #: far enough yet: try again while it settles (seen at 360: the first try stopped short).
-_LAND_SCRIPT = (
-    "if (window.__qActivityLanding) { window.__qActivityLanding = false;"
-    f" if (window.location.hash === '#{ACTIVITY_ANCHOR}') {{"
-    f" const land = () => document.getElementById('{ACTIVITY_ANCHOR}')"
-    "?.scrollIntoView({block: 'start'});"
-    " [0, 400, 1200, 2500].forEach((ms) => window.setTimeout(land, ms)); } }"
-)
+#: Review N1: the owner's own scroll (wheel, touch, key) cancels the retries left, and a
+#: try that finds the block already in place (its top at its scroll margin) ends them.
+_LAND_SCRIPT = """if (window.__qActivityLanding) { window.__qActivityLanding = false;
+ if (window.location.hash === '#ANCHOR') {
+  const timers = [];
+  const stop = () => { timers.forEach((t) => window.clearTimeout(t)); timers.length = 0; };
+  const land = () => {
+   const el = document.getElementById('ANCHOR');
+   if (!el) return;
+   el.scrollIntoView({block: 'start'});
+   const margin = parseFloat(window.getComputedStyle(el).scrollMarginTop) || 0;
+   if (Math.abs(el.getBoundingClientRect().top - margin) <= 2) stop();
+  };
+  ['wheel', 'touchstart', 'keydown'].forEach((type) =>
+   window.addEventListener(type, stop, {once: true, passive: true}));
+  [0, 400, 1200, 2500].forEach((ms) => timers.push(window.setTimeout(land, ms)));
+ } }""".replace("ANCHOR", ACTIVITY_ANCHOR)
 
 
 def whatsapp_activity() -> rx.Component:

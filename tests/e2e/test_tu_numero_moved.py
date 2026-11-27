@@ -122,6 +122,29 @@ def test_tus_redes_shows_the_numbers_state(chats_page, size: dict[str, int]) -> 
     _no_sideways_scroll(page)
 
 
+def test_the_owners_scroll_is_never_pulled_back(chats_page) -> None:  # noqa: ANN001
+    """Review N1: right after landing on the block, the owner scrolls up; the landing's
+    later retries do not drag the page back to the block."""
+    page = chats_page
+    page.set_viewport_size(PHONE)
+    page.goto(_origin(page) + "/connections")
+    card = _number_card(page)
+    expect(card).to_be_visible(timeout=60_000)
+    card.get_by_role("link", name="Actividad").click()
+    heading = page.locator('[data-activity="whatsapp"]').get_by_role(
+        "heading", name="Actividad del número"
+    )
+    expect(heading).to_be_visible(timeout=60_000)
+    page.mouse.move(180, 400)
+    page.mouse.wheel(0, -2000)  # back to the week's figures
+    page.wait_for_timeout(3_000)
+    header = page.locator(".q-page-header").first.bounding_box()
+    box = heading.bounding_box()
+    assert header and box
+    assert box["y"] > header["y"] + header["height"] + 100, (box, header)
+    expect(page.get_by_text("Tu WhatsApp esta semana")).to_be_in_viewport()
+
+
 def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
     from .chat_fixtures import seed_second_number
 
