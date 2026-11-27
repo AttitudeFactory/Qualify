@@ -257,7 +257,12 @@ algo: **«Para mostrarte cómo se vería tu marca, falta: {lista}.»** Nunca en 
 **m-25042555 — Propuestas de la IA.** Claude propone N versiones `ai_proposal` a partir del logo, sus
 colores, el rubro y los productos; el fundador debe distinguir las N propuestas entre sí, y cada
 una se renderiza con las recetas de m-25042548. Costo y tiempo por juego de propuestas medidos y
-registrados; el tope por negocio es una pregunta abierta (9).
+registrados; el tope por negocio es una pregunta abierta (9). **Evidencia del spike** `[V]`: una
+llamada a `claude-fable-5-2` (US$1,76, 423 s) dio 3 propuestas válidas para Polette, dibujadas sin
+editar el JSON (`docs/spike-sistema-visual-marca.md` §4, rama del spike). **Evidencia de la clienta**
+`[V]` (dueña de Polette, reenviado por el fundador el 2026-11-26): «Elegiría la primera opción, la
+morada, pero pediría que me regenere más opciones antes de continuar, y así asegurarme de elegir la
+primera.» *Lectura nuestra:* pedir más opciones no debe descartar la que ya gustó (ver m-25042557).
 
 **m-25042557 — «¿Cómo se vería tu marca?».** Pantalla con título **«¿Cómo se vería tu marca?»**,
 subtítulo **«Preparamos estas opciones con tu logo, tus colores y tus productos. Elige la que más
@@ -267,7 +272,12 @@ inventa). Botones **«Elegir esta»** y **«Ver otras opciones»** (si el fundad
 formato). Mientras se generan: **«Estamos preparando tus opciones. Te avisamos cuando estén
 listas.»** Al elegir: **«Listo. Tus próximas publicaciones usarán este estilo.»** («estilo»:
 nombre pendiente de UX, igual en m-25042545 y m-25042566). Pensada para el
-teléfono; revisión de `ux-designer` antes del PR.
+teléfono; revisión de `ux-designer` antes del PR. **Evidencia** `[V]`: la dueña de Polette elegiría
+la primera propuesta («la morada») pero quiere ver más opciones antes de confirmar «y así asegurarme
+de elegir la primera» (cita completa en m-25042555). *Lectura nuestra, no decidida:* «Ver otras
+opciones» debe dejar a la vista la propuesta que el dueño ya marcó como favorita, en vez de
+reemplazar todas. Cuántas propuestas, cuántas rondas y si una ronda extra cuesta siguen en la
+pregunta 3.
 
 **m-25042563 / m-25042561 / m-25042562 — Plantillas.** En «Crear publicación», **«Plantillas»** lista el kit con
 tarjetas **«Ubicación»**, **«Horarios»**, **«Formas de pago»**, **«Contacto»**, **«Menú»**,
@@ -288,6 +298,18 @@ la anterior cuando quieras.»**
 ## Criterio para seguir o parar después del spike (m-25042530)
 
 El fundador lo juzga mirando lado a lado; el spike entrega los renders y los números.
+
+**Resultado del spike (m-25042530, `docs/spike-sistema-visual-marca.md` en la rama
+`spike/m-25042530-sistema-visual-marca`)** `[V]`:
+- **Bianki:** su sistema transcrito a datos y dibujado en Remotion sale casi idéntico a los
+  originales: horario y formas de pago idénticos píxel a píxel; los 4 shawarmas y el combo con
+  menos del 0,5 % de píxeles distintos; la historia con 0,7 % (bordes, el original es JPG).
+  Condiciones 1 y 2 de abajo cumplidas en lo medible. **La calificación «publicable» del fundador
+  pieza por pieza no está registrada por separado**, y el tiempo y la memoria pico por pieza
+  contra el `mem_limit` (condición 3) no figuran en este resumen: quedan por anotar.
+- **Polette:** una sola llamada a `claude-fable-5-2`, US$1,76, dio 3 propuestas válidas,
+  dibujadas sin editar. **Veredicto del fundador (2026-11-26):** al menos una se puede publicar tal
+  cual → **la condición para seguir con la Fase 3 se cumple.**
 
 **Sigue el camino de Bianki (Fases 1, 2 y 4)** si se cumplen las tres:
 1. Remotion reproduce desde datos 4 piezas de referencia (flyer de un producto, horarios,
@@ -317,7 +339,12 @@ Costo y tiempo del juego de propuestas quedan medidos (no hay tope firmado todav
 2. **¿Se bloquea crear imágenes, carruseles, historias y plantillas hasta elegir un estilo, o se
    usa uno provisional?** (preguntado, sin respuesta).
 3. **Cuántas propuestas.** Él dijo **cuatro** (S2). Sugerencia del equipo, sin respuesta: tres +
-   «Ver otras opciones». Sigue abierta.
+   «Ver otras opciones». Sigue abierta. **Evidencia** `[V]` (dueña de Polette, reenviado por el
+   fundador el 2026-11-26): «Elegiría la primera opción, la morada, pero pediría que me regenere
+   más opciones antes de continuar, y así asegurarme de elegir la primera.» *Lectura nuestra:* la
+   dueña quiere ver más opciones antes de confirmar sin perder la que ya le gustó, así que «Ver
+   otras opciones» tendría que dejar la favorita a la vista. Quedan para el fundador: tres o cuatro,
+   cuántas rondas y si las rondas extra cuestan.
 4. **Recorte del producto**: qué proveedor o modelo (m-25042543, tabla de opciones).
 5. **¿Generar propuestas y el kit de inicio consume creaciones?**, y el costo de plataforma por
    marca.
