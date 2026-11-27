@@ -224,8 +224,8 @@ def test_the_wide_open_chat_gives_the_messages_the_room(chats_page) -> None:  # 
         ".getBoundingClientRect(); return b.bottom <= t.bottom + 1; }"
     )
     assert inside
-    # «✕ Volver a la lista» (the desk's way back): the list as it was, the figures again.
-    close = page.locator(".q-chat-head").first.get_by_role("button", name="Volver a la lista")
+    # «✕ Volver a Por responder» (the desk's way back): the list as it was, the figures again.
+    close = page.locator(".q-chat-head").first.get_by_role("button", name="Volver a Por responder")
     expect(close).to_be_visible()
     box = close.bounding_box()
     assert box is not None and box["height"] >= 44 and box["width"] >= 44, box
@@ -354,7 +354,7 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
     assert abs(_panel_scroll(page) - before) <= 4, (_panel_scroll(page), before)
     expect(_row(page, "Cliente 14")).to_be_in_viewport()
     chips = page.get_by_role("group", name="Qué chats ver")
-    expect(chips.get_by_role("button", name=re.compile("^Todos"))).to_have_attribute(
+    expect(chips.get_by_role("button", name=re.compile("^Abiertos"))).to_have_attribute(
         "aria-pressed", "true"
     )
 
@@ -366,7 +366,7 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
     page.wait_for_timeout(800)
     assert abs(_panel_scroll(page) - before) <= 4, (_panel_scroll(page), before)
 
-    # Instagram keeps the scroll too (its row is on the «Todos» list of every channel).
+    # Instagram keeps the scroll too (its row is on the «Abiertos» list of every channel).
     _list(page, "&filtro=todos")
     cami = _row(page, "Camila Ríos")
     cami.scroll_into_view_if_needed()

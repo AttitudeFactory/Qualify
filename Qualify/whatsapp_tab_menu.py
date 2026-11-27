@@ -692,7 +692,7 @@ def _menu_picker() -> rx.Component:
                 min_height=TARGET_MIN,
                 height="auto",
                 aria_label=MENU_PICK_ARIA,
-                # «prueba 2 · Respondiendo a tus clientes» wraps at 375 px instead of «…».
+                # «prueba 2 · Activo en tu WhatsApp» wraps at 375 px instead of «…».
                 style={
                     "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
                 },
@@ -1053,7 +1053,8 @@ def _pause_row() -> rx.Component:
             rx.text(
                 rx.cond(
                     S.menu.is_published,
-                    "En pausa, tu menú no está activo; los mensajes llegan a Chats como siempre.",
+                    "En pausa, tu menú no está activo; los mensajes te llegan a Por responder "
+                    "como siempre.",
                     "Se puede pausar una vez publicado.",
                 ),
                 size="1",

@@ -40,7 +40,7 @@ from urllib.parse import urlencode
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
 from .chat_row_vm import letter_initials
-from .chat_thread_vm import mark_days, window_line
+from .chat_thread_vm import clock_12h, mark_days, window_line
 from .reply_box_vm import PLUS_LABEL, WHATSAPP_BOX, plus_rows
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
@@ -253,7 +253,8 @@ def _local(value: datetime, zone: tzinfo) -> datetime:
 
 
 def format_clock(value: datetime, zone: tzinfo) -> str:
-    return _local(value, zone).strftime("%H:%M")
+    """«5:47 p. m.» in the business's zone (`chat_thread_vm.clock_12h`)."""
+    return clock_12h(_local(value, zone))
 
 
 def format_day(value: datetime, zone: tzinfo, now: datetime) -> str:
@@ -286,7 +287,7 @@ def relative_time(value: datetime | None, now: datetime, zone: tzinfo) -> str:
 
 
 def message_time(value: datetime | None, now: datetime, zone: tzinfo) -> str:
-    """A bubble's time: `14:32` today, `ayer 14:32`, else `12 oct 14:32`."""
+    """A bubble's time: `2:32 p. m.` today, `ayer 2:32 p. m.`, else `12 oct 2:32 p. m.`."""
     if value is None:
         return ""
     days = (_local(now, zone).date() - _local(value, zone).date()).days
@@ -308,7 +309,7 @@ def window_pill(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
 ) -> tuple[str, str]:
     """(label, tone) of the 24 h window: `ok` open (the header's «Puedes escribirle hasta
-    las 17:47»), `warn` closing within the hour (the founder's «Quedan 42 min para
+    las 5:47 p. m.»), `warn` closing within the hour (the founder's «Quedan 42 min para
     responder», m-25027371: the row, the header and the send panel say the same),
     `neutral` closed («Solo con mensaje aprobado»). Worded by what the owner can do,
     never «ventana»."""
@@ -1920,7 +1921,7 @@ SEASONAL_CREATE_ACTION = "Crear para esta temporada"
 #: Tu marca › «Stickers y videos de tu marca», with «Crear para esta temporada» open
 #: (`SeasonalState.open_from_query`). m-25017173: WhatsApp › Chats no longer has a
 #: stickers sub-tab; the library lives in Tu marca. `?volver=` gives the owner Tu marca's
-#: way back («Volver a tus chats»), read there through `catalog_vm.safe_return_path`.
+#: way back («Volver a Por responder»), read there through `catalog_vm.safe_return_path`.
 SEASONAL_CREATE_HREF = (
     f"{SEASONAL_LIBRARY_CREATE_HREF}&{urlencode({RETURN_PARAM: CHATS_RETURN_PATH})}"
 )

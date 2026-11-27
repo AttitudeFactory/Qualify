@@ -21,6 +21,7 @@ from .chat_thread_vm import (
     MORE_ACTIONS_LABEL,
     REOPEN_LABEL,
     SETTINGS_LABEL,
+    clock_12h,
     day_label,
     mark_days,
     order_strip_label,
@@ -88,17 +89,48 @@ def test_channel_settings_go_to_ajustes_de_chats() -> None:
     assert "rx.redirect(WHATSAPP_SETTINGS_HREF)" in chats
 
 
+# --- the open chat's 12 h clock (m-25131413) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "said"),
+    [
+        (12, 5, "12:05\u00a0p.\u00a0m."),  # noon
+        (0, 5, "12:05\u00a0a.\u00a0m."),  # midnight
+        (17, 47, "5:47\u00a0p.\u00a0m."),
+        (9, 3, "9:03\u00a0a.\u00a0m."),  # one-digit hour, no leading zero; minutes keep theirs
+        (11, 59, "11:59\u00a0a.\u00a0m."),
+        (13, 0, "1:00\u00a0p.\u00a0m."),
+        (23, 59, "11:59\u00a0p.\u00a0m."),
+    ],
+)
+def test_clock_12h_says_the_time_as_the_owner_does(hour: int, minute: int, said: str) -> None:
+    clock = clock_12h(datetime(2026, 11, 14, hour, minute))
+    assert clock == said
+    # one unbreakable piece: U+00A0 at both joints, never a plain space
+    assert " " not in clock and clock.count(" ") == 2
+
+
+def test_bubbles_say_the_12h_clock_in_the_business_zone() -> None:
+    from .whatsapp_chats_vm import bubble_clock, message_time
+
+    # 17:05 UTC is 12:05 noon in Bogotá; 05:05 UTC is 12:05 midnight there.
+    assert bubble_clock(datetime(2026, 11, 14, 17, 5, tzinfo=UTC), ZONE) == "12:05\u00a0p.\u00a0m."
+    assert bubble_clock(datetime(2026, 11, 14, 5, 5, tzinfo=UTC), ZONE) == "12:05\u00a0a.\u00a0m."
+    assert message_time(NOW - timedelta(days=1), NOW, ZONE) == "ayer 12:00\u00a0p.\u00a0m."
+
+
 # --- the header's window line ---------------------------------------------------------------
 
 
 def test_window_line_says_until_when_today() -> None:
     text, tone = window_line(True, NOW + timedelta(hours=5), NOW, ZONE)
-    assert (text, tone) == ("Puedes escribirle hasta las 17:00", "ok")
+    assert (text, tone) == ("Puedes escribirle hasta las 5:00\u00a0p.\u00a0m.", "ok")
 
 
 def test_window_line_says_tomorrow_when_it_closes_another_day() -> None:
     text, tone = window_line(True, NOW + timedelta(hours=20), NOW, ZONE)
-    assert text == "Puedes escribirle hasta mañana a las 08:00" and tone == "ok"
+    assert text == "Puedes escribirle hasta mañana a las 8:00\u00a0a.\u00a0m." and tone == "ok"
 
 
 def test_window_line_uses_the_rows_words_under_an_hour() -> None:
@@ -167,7 +199,10 @@ def test_whatsapp_gets_day_separators_and_clock_only_bubbles() -> None:
         zone=ZONE,
     )
     assert [v.day_label for v in vms] == ["Ayer", "", "Hoy"]
-    assert vms[0].time_label == "12:00" and vms[1].time_label == "12:02"
+    assert (
+        vms[0].time_label == "12:00\u00a0p.\u00a0m."
+        and vms[1].time_label == "12:02\u00a0p.\u00a0m."
+    )
     assert vms[1].tick == "read" and vms[2].tick == "queued"
 
 
@@ -392,9 +427,10 @@ async def test_the_first_chat_reads_the_zone_and_draws_in_it(gw, monkeypatch) ->
     state._connection_id = CONN
     state.open_thread_id = THREAD
     await state._read_conversation(silent=False)
-    assert state.messages[0].time_label == "22:30" and state.messages[0].day_label == "Ayer"
-    assert "22:30" in state.order.confirmed_label
-    assert "22:40" in state.payment.confirmed_line
+    assert state.messages[0].time_label == "10:30\u00a0p.\u00a0m."
+    assert state.messages[0].day_label == "Ayer"
+    assert "10:30\u00a0p.\u00a0m." in state.order.confirmed_label
+    assert "10:40\u00a0p.\u00a0m." in state.payment.confirmed_line
     assert state.open_thread.title == "Laura Gómez"  # the header's row came with the chat
     await state._read_conversation(silent=True)  # a refresh
     assert reads == ["zone"]  # read once, not on every refresh

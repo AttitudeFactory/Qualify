@@ -76,6 +76,13 @@ CONTRACT_TABLE = {
     "ai_part_guide_type": (
         "No podemos usar ese archivo como guía. Sube un video MP4 o MOV, o un audio MP3 o WAV."
     ),
+    # m-25129406 (PR 2): «Sigue a la anterior» after an own video, `QUALIFY_CLIP_EXTEND_OWN_VIDEO`
+    "extend_own_video_speed": (
+        "Ese video va rápido o lento. Déjalo a velocidad normal para continuarlo."
+    ),
+    "extend_own_video_short": (
+        "Ese video dura menos de 2 segundos. Usa uno más largo o elige «Nueva»."
+    ),
 }
 
 TENANT = "11111111-1111-1111-1111-111111111111"

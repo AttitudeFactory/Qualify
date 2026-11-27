@@ -132,12 +132,8 @@ def _clip(refs: tuple[ClipReference, ...], version: int = 1, **extra: Any) -> Co
 
 
 def _producer_key_problems(brief: ContentBrief) -> tuple[list[str], list[str]]:
-    """`media._key_problems` without the AI blocks' `ai_part:<n>` (never a file; PR 2,
-    m-25129406, takes them out of that list)."""
-    malformed, foreign = media_module._key_problems(
-        TENANT_ID, brief, SimpleNamespace(logo_asset_key=None)
-    )
-    return [k for k in malformed if not k.startswith("ai_part:")], foreign
+    """`media._key_problems`, the producer's gate before any read."""
+    return media_module._key_problems(TENANT_ID, brief, SimpleNamespace(logo_asset_key=None))
 
 
 def _codes(problems: tuple) -> list[tuple[str, str]]:

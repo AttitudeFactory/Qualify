@@ -65,6 +65,8 @@ def _as_before(dumped: dict[str, Any]) -> dict[str, Any]:
     media["parts_removed"] = [_without(_PLAN_DEFAULTS, p) for p in media["parts_removed"]]
     if media["part"] is not None:
         media["part"] = _without(_RECIPE_DEFAULTS, media["part"])
+        # m-25129406: the owner's video an «extend» part of a Clip continues, None before
+        media["part"] = _without({"extend_own": None}, media["part"])
     if media.get("parts_request") is not None:
         # EF-06 (option A): the refused part's length, None on every older ask
         media["parts_request"] = _without({"duration_s": None}, media["parts_request"])

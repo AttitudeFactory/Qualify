@@ -759,6 +759,9 @@ RecipeRefusal = Literal[
     "ai_part_guide_type",  # «Video o audio tuyo» that is not an MP4/MOV video or MP3/WAV audio
     "extend_after_own_media",  # «Sigue a la anterior» right after the owner's video or photo
     "extend_not_same_moment",  # «Sigue a la anterior» not split from the same take as before
+    # m-25129406 (ADR 50 §13, PR 2): appended, never reordered
+    "extend_own_video_speed",  # «Sigue a la anterior» after an own video not at ×1
+    "extend_own_video_short",  # «Sigue a la anterior» after an own video under 2 s
     # m-25142725 (reference tracks of the single editor): appended, never reordered
     "too_many_references",  # an AI part under more photos, videos or audios than its model takes
     "reference_type",  # a reference that is no JPG/PNG photo, MP4/MOV video or MP3/WAV audio
@@ -1500,6 +1503,23 @@ class PartRef(_PartSource):
     creates the children (VE-08): a brief alone does not see its parent."""
 
     index: int = Field(ge=1, le=PARTS_MAX)
+    #: m-25129406 (ADR 50 §13, PR 2; Deivid: «Sigue a la anterior» after the owner's OWN
+    #: video): the owner's video stretch right before this part in its Clip, which
+    #: «Sigue a la anterior» continues instead of a previous part's vendor file. Only on
+    #: an `extend` child of a Clip, written by the server (`clip_ai_parts`), behind
+    #: `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until a paid measurement Deivid approves.
+    extend_own: SourceSegment | None = None
+
+    @model_validator(mode="after")
+    def _extend_own_only_extends(self) -> PartRef:
+        own = self.extend_own
+        if own is None:
+            return self
+        if self.mode != "extend":
+            raise ValueError("only «Sigue a la anterior» continues the owner's own video")
+        if own.kind != "video" or own.speed != 1:
+            raise ValueError("an own video continued by a part is a video at normal speed")
+        return self
 
 
 class PartRecipe(BaseModel):
@@ -2587,7 +2607,8 @@ class ContentBrief(BaseModel):
             return
         if self.kind is not ContentKind.CLIP:
             raise ValueError("a part of a video by parts is a clip")
-        if part.mode == "extend" and part.index == 1:
+        if part.mode == "extend" and part.index == 1 and part.extend_own is None:
+            # m-25129406: a Clip's first AI part may continue the owner's own video
             raise ValueError("the first part cannot continue a previous one")
         expected = CLIP_MODE_OF_PART[part.mode]
         if media.clip_reference_mode != expected:

@@ -53,6 +53,7 @@ from qualify_creative.schemas import (
     MediaInputs,
     PartNotice,
     PartRef,
+    SourceSegment,
     VideoPartPlan,
 )
 from qualify_shared.db.session import tenant_unit_of_work
@@ -1008,7 +1009,8 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
     opens no join (the Clip takes the block when the owner places it, `clip_avatar`).
     m-25119867: but a Clip still WAITING for the blocks of its first «Crear» (`drafting`,
     a plan) gets its `generation` run opened or dirtied, so it is made as soon as its
-    last block is."""
+    last block is. m-25129406: so does a Clip still waiting for its «parte con IA»
+    children (`media.ai_parts`, emptied once it is assembled)."""
     session.execute(
         text("""
         INSERT INTO creative_pipeline_runs AS r
@@ -1035,7 +1037,9 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
         JOIN content_drafts p ON p.tenant_id = c.tenant_id AND p.id = c.parent_draft_id
         JOIN content_briefs pb ON pb.id = p.brief_id AND pb.kind = 'clip'
         WHERE c.id = :child AND p.status = 'drafting'
-          AND jsonb_array_length(COALESCE(pb.media->'clip_avatar_plan', '[]'::jsonb)) > 0
+          AND (jsonb_array_length(COALESCE(pb.media->'clip_avatar_plan', '[]'::jsonb)) > 0
+               -- m-25129406: a Clip still waiting for its «parte con IA» children
+               OR jsonb_array_length(COALESCE(pb.media->'ai_parts', '[]'::jsonb)) > 0)
         ON CONFLICT (tenant_id, draft_id, revision, phase)
         DO UPDATE SET dirty_version = r.dirty_version + 1
         """),
@@ -1359,7 +1363,12 @@ def part_brief_with(parent: ContentBrief, old: ContentBrief, changes: PartChange
 
 
 def _child_brief(
-    parent: ContentBrief, plan: VideoPartPlan, index: int, window: str | None
+    parent: ContentBrief,
+    plan: VideoPartPlan,
+    index: int,
+    window: str | None,
+    *,
+    extend_own: SourceSegment | None = None,
 ) -> ContentBrief:
     """A part's own brief: a `CLIP` of the part's generation length in the part's mode,
     with the parent's product photos as its references (its words come from the
@@ -1378,7 +1387,8 @@ def _child_brief(
     if plan.clip_image_keys is not None:
         photos = plan.clip_image_keys
         roles = plan.clip_image_roles or (unroled,) * len(photos)
-    part = PartRef(index=index, **plan.model_dump())
+    # m-25129406: an «extend» part of a Clip right after the owner's own video continues it
+    part = PartRef(index=index, extend_own=extend_own, **plan.model_dump())
     video_keys = plan.clip_video_keys
     if plan.mode == "edit" and not video_keys and window:
         video_keys = (window,)

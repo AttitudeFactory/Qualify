@@ -668,7 +668,7 @@ textarea.q-reply-field::placeholder,
   .q-wa-chats--open .q-chat-head .q-chat-head__id {
     display: contents;
   }
-  /* «✕» (Volver a la lista): the desk's way back to the plain list, after «⋯» */
+  /* «✕» (Volver a Por responder): the desk's way back to the plain list, after «⋯» */
   .q-wa-chats--open .q-chat-head .q-chat-head__id > .q-chat-close {
     display: inline-flex;
     grid-column: 5;

@@ -521,7 +521,7 @@ IDEAS_RETURN_LABEL = "Ideas de videos"
 CHATS_RETURN_PATH = WHATSAPP_CHATS_HREF
 #: The retired list's path (`/whatsapp?tab=chats`), which redirects to `CHATS_RETURN_PATH`.
 _OLD_CHATS_PATH = "/whatsapp"
-CHATS_RETURN_LABEL = "Volver a tus chats"
+CHATS_RETURN_LABEL = "Volver a Por responder"
 #: The brand page's `?seccion=` value that opens «Negocios parecidos al tuyo»: where the
 #: owner chooses the accounts that inspire them and runs the search that tells Qualify
 #: what the business sells (the reels check's brief).

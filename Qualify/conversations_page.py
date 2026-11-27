@@ -32,7 +32,7 @@ What the page says that the service decides elsewhere:
   person edits or discards — nothing is sent without pressing «Enviar»;
 - **«Plantillas»** (m-24789472) opens the account's saved messages: picking one fills the
   box with its text for this person (`{nombre}`, `{marca}`), a line says what is still to
-  complete («[precio]»), and it leaves only through «Enviar». «Administrar plantillas»
+  complete («[precio]»), and it leaves only through «Enviar». «Editar mensajes guardados»
   opens a drawer to create, edit, delete (confirmed in place) and reorder them;
 - **«Respuestas rápidas»** (m-24789472) adds up to 13 short options under the message
   being written, sent with it once approved; a template **with buttons** shows them
@@ -932,7 +932,7 @@ def _templates_picker() -> rx.Component:
                 _templates_menu_list(),
                 rx.button(
                     rx.icon("library", size=T.ICON_SM),
-                    "Administrar plantillas",
+                    "Editar mensajes guardados",
                     on_click=S.open_templates_manager,
                     variant="soft",
                     size="1",
@@ -1290,7 +1290,7 @@ def _templates_list() -> rx.Component:
 
 
 def templates_manager() -> rx.Component:
-    """«Administrar plantillas»: the account's library in a drawer. The form's «Guardar»
+    """«Editar mensajes guardados»: the account's library in a drawer. The form's «Guardar»
     is the drawer's one solid button."""
     return drawer(
         rx.vstack(
@@ -1648,10 +1648,10 @@ def _conversation_pane() -> rx.Component:
     )
 
 
-#: U5 (UX review of m-25029798; new text, awaiting the founder): the pane beside the
-#: single list holds a chat of either channel.
+#: U5 (UX review of m-25029798; founder-approved 2026-11-27, m-25131413): the pane beside
+#: the single list holds a chat of either channel.
 EMPTY_PANE_TEXT = (
-    "Elige un chat de la lista para leerlo y responder, sea de Instagram o de WhatsApp."
+    "Elige un chat para leerlo y responder. Aquí están juntos los de Instagram y WhatsApp."
 )
 
 

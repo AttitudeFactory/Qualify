@@ -65,7 +65,7 @@ def _summary(*, published: bool) -> MenuSummaryVM:
         published_label="Publicado: v2" if published else "Sin publicar",
         is_published=published,
         is_paused=False,
-        status_label="Respondiendo a tus clientes" if published else "Sin publicar",
+        status_label="Activo en tu WhatsApp" if published else "Sin publicar",
         status_tone="ok" if published else "neutral",
         updated_at="hoy",
     )
@@ -385,7 +385,7 @@ def test_the_state_feeds_the_confirmation_from_the_number_s_menus(
         published_label="Publicado: versión 3",
         is_published=True,
         is_paused=False,
-        status_label="Respondiendo a tus clientes",
+        status_label="Activo en tu WhatsApp",
         status_tone="ok",
         updated_at="hoy",
     )
@@ -405,7 +405,7 @@ def _paused(detail: MenuDetail, *, paused: bool = True) -> MenuDetail:
         summary=dataclasses.replace(
             detail.summary,
             is_paused=paused,
-            status_label="En pausa" if paused else "Respondiendo a tus clientes",
+            status_label="En pausa" if paused else "Activo en tu WhatsApp",
             status_tone="warn" if paused else "ok",
         ),
     )

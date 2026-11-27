@@ -2450,8 +2450,12 @@ class ContentService:
         clip_avatar_store: Any = None,
         clip_avatar_clock: Callable[[], datetime] | None = None,
         clip_failure_outbox: Any = None,
+        clip_ai_parts_store: Any = None,
     ) -> None:
         self._media = media
+        #: m-25129406: the AI parts a Clip waits for (`clip_ai_parts.AiPartsStore`;
+        #: `PostgresAiPartsStore` on Postgres when None).
+        self._clip_ai_parts_store = clip_ai_parts_store
         #: m-25120319: where the email of a failed avatar is staged, in the same write as
         #: its `failed_at` (`clip_avatar_mail.AvatarFailureOutbox`; Postgres when None on a
         #: Postgres repository; none at all on an in-memory one unless injected).
@@ -3178,13 +3182,96 @@ class ContentService:
             beat()
         raise ClipBlocksWait(f"clip {draft.id} waits for its avatar blocks ({verdict.reason})")
 
+    def _clip_ai_parts_ready(
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+    ) -> tuple[DraftRecord, ContentBrief] | None:
+        """m-25129406 (ADR 50 §13): a Clip with «parte con IA» blocks. Every part made →
+        the Clip gets ONE new brief with their videos as stretches (×1, the interval the
+        join keeps; texts and effects moved to the real lengths) and is made from it, once.
+        Otherwise it waits: its sign of life is stamped and `ClipBlocksWait` leaves the
+        worker's run not done — nothing written or paid. A part that failed makes the Clip
+        fail at once (`ai_part_failed`; decided 2026-11-26 — PR 3, m-25129407, brings
+        «Intentar de nuevo» and §11's 72 h wait back) and None is returned: the vistas
+        previas of ALL its parts come back in the same write, the Clip's creations with the
+        run's own refund. The wait and the assembly after it write no charge row: they
+        never count in the day's local cap (§13.5)."""
+        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
+            AI_PART_FAILED,
+            AI_PART_FAILED_TEXT,
+            AiPartsFailed,
+            AiPartsReady,
+            PostgresAiPartsStore,
+            ai_parts_gate,
+        )
+        from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
+
+        store = self._clip_ai_parts_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                raise RuntimeError("a Clip waiting for its AI parts needs the parts' store")
+            store = PostgresAiPartsStore()
+        verdict = ai_parts_gate(
+            tenant_id=tenant_id,
+            clip_id=draft.id,
+            brief=brief,
+            store=store,
+        )
+        if isinstance(verdict, AiPartsFailed):
+            try:
+                self._fail_waiting_clip(
+                    tenant_id,
+                    draft,
+                    reason=AI_PART_FAILED,
+                    detail=AI_PART_FAILED_TEXT,
+                    give_back=[(part.id, part.revision) for part in verdict.parts],
+                    stop_children=True,
+                )
+            except CheckpointError:
+                raise
+            except Exception as exc:
+                # the failure and every give-back are ONE write: rolled back together,
+                # the run is tried again — never a Clip failed some other way with its
+                # parts' vistas previas kept (review of m-25129406)
+                raise CheckpointError("the Clip's failure and its give-backs") from exc
+            logger.info(
+                "clip %s: an AI part failed; failed, %d vista(s) previa(s) given back",
+                draft.id,
+                len(verdict.parts),
+            )
+            return None
+        if isinstance(verdict, AiPartsReady):
+            fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
+            logger.info(
+                "clip %s: its %d AI part(s) are made; assembled now (%d moved, %d dropped)",
+                draft.id,
+                verdict.parts,
+                verdict.moved,
+                verdict.dropped,
+            )
+            return fresh, made_from
+        beat = self._heartbeat(tenant_id, draft.id)
+        if beat is not None:
+            beat()
+        raise ClipBlocksWait(f"clip {draft.id} waits for its AI parts ({verdict.reason})")
+
     def _fail_waiting_clip(
-        self, tenant_id: UUID, draft: DraftRecord, *, reason: str, detail: str
+        self,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        *,
+        reason: str,
+        detail: str,
+        give_back: Sequence[tuple[UUID, int]] = (),
+        stop_children: bool = False,
     ) -> None:
         """A waiting Clip fails (`generate_fail`) with the owner's words, in a transaction
         fenced as `_replace_clip_brief` is (still `drafting`, same revision). Its
         creations come back with the run's own refund (`_refund_if_not_delivered`); its
-        blocks were never charged, and a failed Clip's blocks owe nothing (P6)."""
+        blocks were never charged, and a failed Clip's blocks owe nothing (P6).
+        m-25129406: `give_back` — (draft, revision) of the Clip's AI parts, whose vistas
+        previas come back in the SAME transaction (idempotent: a row already given back is
+        skipped); `stop_children` — its children still being made fail with it and their
+        jobs not sent yet are cancelled, in that same transaction."""
         repo = self._repo
         new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=reason)
         if isinstance(repo, PostgresContentRepository):
@@ -3220,6 +3307,31 @@ class ContentService:
                 """),
                     {"s": new_status, "r": reason, "t": detail, "d": draft.id},
                 )
+                if stop_children:
+                    # m-25129406: no Clip will use its parts any more — the ones still
+                    # being made stop (a «Sigue a la anterior» waiting for a failed part
+                    # would otherwise wait for good), and their jobs not sent to the vendor
+                    # yet are cancelled; one already sent finishes on its own, unpaid by
+                    # the owner (its vista previa is given back below)
+                    session.execute(
+                        text("""
+                        UPDATE creative_jobs j SET status = 'cancelled', finished_at = now()
+                        FROM content_drafts c
+                        WHERE c.parent_draft_id = :d AND c.status = 'drafting'
+                          AND j.draft_id = c.id AND j.status = 'queued'
+                          AND j.vendor_task_id IS NULL
+                    """),
+                        {"d": draft.id},
+                    )
+                    session.execute(
+                        text("""
+                        UPDATE content_drafts SET status = :s, failure_reason = :r,
+                            failure_detail = :t, updated_at = now()
+                        WHERE parent_draft_id = :d AND status = 'drafting'
+                    """),
+                        {"s": new_status, "r": reason, "t": detail, "d": draft.id},
+                    )
+                self._give_back_parts(tenant_id, give_back, reason)
             return
         now = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
         if (
@@ -3237,6 +3349,26 @@ class ContentService:
             from dataclasses import replace as _replace  # noqa: PLC0415
 
             drafts[draft.id] = _replace(drafts[draft.id], failure_detail=detail)
+            if stop_children:
+                for child_id, child in list(drafts.items()):
+                    if child.parent_draft_id == draft.id and child.status == DRAFTING:
+                        drafts[child_id] = _replace(
+                            child, status=new_status, failure_reason=reason, failure_detail=detail
+                        )
+        self._give_back_parts(tenant_id, give_back, reason)
+
+    def _give_back_parts(
+        self, tenant_id: UUID, parts: Sequence[tuple[UUID, int]], reason: str
+    ) -> None:
+        """m-25129406: the vistas previas of a failed Clip's AI parts, back to the month
+        (made, failed or never started alike: the owner got no video). Idempotent — the
+        ledger gives back only a row still charged."""
+        if self._creations is None:
+            return
+        for part_id, revision in parts:
+            self._creations.refund(
+                tenant_id=tenant_id, draft_id=part_id, revision=revision, reason=reason
+            )
 
     def _replace_clip_brief(
         self,
@@ -3341,6 +3473,16 @@ class ContentService:
             if beat is not None:
                 beat()
             raise ClipBlocksWait(f"clip {draft.id} waits for its character scenes")
+        from qualify_api.creative.clip_ai_parts import has_ai_part_blocks  # noqa: PLC0415
+
+        if has_ai_part_blocks(brief):
+            # m-25129406 (ADR 50 §13): a Clip waits for its AI parts (`ClipBlocksWait`,
+            # before any read or paid call of its own), then is made ONCE from a brief with
+            # their videos as stretches
+            ready = self._clip_ai_parts_ready(tenant_id, draft, brief)
+            if ready is None:
+                return  # a part failed: the Clip failed, every vista previa given back
+            draft, brief = ready
         # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
         # draft is the session, so its regenerations sit together; every vendor call the
         # router makes inside is nested here (`observed.TracedProvider`). A no-op unless
@@ -3620,6 +3762,11 @@ class ContentService:
             return None
         return attempt
 
+    def _is_clip(self, tenant_id: UUID, parent: DraftRecord) -> bool:
+        """Whether a child's parent is a Clip (ADR 50 §13), not a video by parts."""
+        parent_brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=parent.brief_id)
+        return parent_brief is not None and parent_brief.kind is ContentKind.CLIP
+
     def _inherited_copy(
         self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief | None = None
     ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
@@ -3665,6 +3812,29 @@ class ContentService:
                     "hard_failures": [],
                     "inherited_from": None,
                     "clip_avatar_block_without_text": True,
+                },
+                model_id="none",
+                model_revision=None,
+            )
+            return [empty], [], Decimal(0), True
+        if (
+            chosen is None
+            and brief is not None
+            and brief.media.part is not None
+            and parent is not None
+            and self._is_clip(tenant_id, parent)
+        ):
+            # m-25129406 (ADR 50 §13): a «parte con IA» of a Clip is made before its Clip
+            # has a text, and is never published alone — the Clip carries the text. It
+            # takes an empty one: no vendor call, cost 0.
+            empty = VariantWrite(
+                ordinal=0,
+                copy={"hook": "", "caption": "", "script": ""},
+                fidelity={
+                    "passed": True,
+                    "hard_failures": [],
+                    "inherited_from": None,
+                    "clip_ai_part_without_text": True,
                 },
                 model_id="none",
                 model_revision=None,
@@ -4499,6 +4669,7 @@ class ContentService:
             from qualify_api.creative.part_final import ApproveWholeVideo
 
             raise ApproveWholeVideo()
+        self._refuse_ai_parts_approval(tenant_id, record)
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
@@ -4845,6 +5016,32 @@ class ContentService:
         except CreationNotOffered:
             return 0, 0
         return price.videos, price.video_seconds
+
+    def _refuse_ai_parts_approval(self, tenant_id: UUID, record: DraftRecord) -> None:
+        """m-25129406: a top-level Clip with «parte con IA» children is not approved until
+        PR 4 (§13.4) charges their seconds and asks their finals — refused with nothing
+        written. One read, only for a Clip; nothing for any other piece."""
+        if record.parent_draft_id is not None:
+            return
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if callable(kind_of):
+            kind = kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
+        else:
+            brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+            kind = None if brief is None else brief.kind.value
+        if kind != ContentKind.CLIP.value:
+            return
+        from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
+            PostgresAiPartsStore,
+            refuse_ai_parts_approval,
+        )
+
+        store = self._clip_ai_parts_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return
+            store = PostgresAiPartsStore()
+        refuse_ai_parts_approval(store, tenant_id=tenant_id, clip_id=record.id)
 
     def _clip_avatar_charges(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
         """m-25112920: the `VideoCharge` of each avatar block of this Clip its recipe

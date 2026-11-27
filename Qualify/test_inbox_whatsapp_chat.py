@@ -580,8 +580,13 @@ def test_with_a_chat_open_the_list_extras_step_aside() -> None:
 
     for rendered in (str(messages_tab()), str(inbox_list_pane()), str(_who_is_waiting())):
         assert "has_open_thread" in rendered
-    assert EMPTY_PANE_TEXT in str(messages_tab())
-    assert "sea de Instagram o de WhatsApp" in EMPTY_PANE_TEXT
+    # The compiled page escapes accents (`í`): look for the text as JSON writes it.
+    escaped = json.dumps(EMPTY_PANE_TEXT)[1:-1]
+    pane = str(messages_tab())
+    assert EMPTY_PANE_TEXT in pane or escaped in pane
+    assert EMPTY_PANE_TEXT == (
+        "Elige un chat para leerlo y responder. Aquí están juntos los de Instagram y WhatsApp."
+    )
 
 
 def test_whatsapp_has_no_list_of_its_own_any_more() -> None:
@@ -594,7 +599,7 @@ def test_whatsapp_has_no_list_of_its_own_any_more() -> None:
 
 
 def test_a_desk_closes_the_chat_with_its_own_x() -> None:
-    """At >= 1024 px the back row hides: «✕» (Volver a la lista) closes the chat with
+    """At >= 1024 px the back row hides: «✕» (Volver a Por responder) closes the chat with
     the same handler on both channels; a 44 px target, hidden below 1024 px."""
     from pathlib import Path
 
@@ -605,7 +610,7 @@ def test_a_desk_closes_the_chat_with_its_own_x() -> None:
         (str(instagram_header()), "close_conversation"),
         (str(whatsapp_header()), "back_to_inbox"),
     ):
-        assert "Volver a la lista" in rendered and "q-chat-close" in rendered
+        assert "Volver a Por responder" in rendered and "q-chat-close" in rendered
         assert handler in rendered and "44px" in rendered
     css = (Path(__file__).resolve().parents[1] / "assets" / "qualify-inbox.css").read_text()
     assert ".q-chat-head .q-chat-close {\n  display: none;" in css
