@@ -175,9 +175,13 @@ class DiscoverReelsState(rx.State):
     #: The accounts «Cuenta» offers (`reels_filters_vm.account_options`) and their kinds.
     account_options: list[dict[str, str]] = []
     _accounts: dict[str, str] = {}
-    #: The phone's «Filtros» sheet: `SHEET_ALL` while open, "" closed (RF-13, Deivid
+    #: The narrow bar's «Filtros» panel: `SHEET_ALL` while open, "" closed (RF-13, Deivid
     #: 2026-11-26: one sheet with every axis).
     sheet: str = ""
+    #: Where it opens (RF-02b, option C, Deivid 2026-11-26): from the bottom on a phone
+    #: (a window of `PHONE_MAX_PX` or less), from the right on a wider window — as «Tus
+    #: competidores» does from the desktop bar.
+    sheet_bottom: bool = True
     #: A filtered read is in flight (the lists dim until it lands).
     filtering: bool = False
     #: The reviewed reels after the ideas (RF-01's second list, RF-13's one list): the
@@ -382,8 +386,11 @@ class DiscoverReelsState(rx.State):
         return not any(c.get("affinity") in reels_ai.FITS for c in self._cards)
 
     @rx.event
-    def open_filters(self) -> None:
-        """The phone's «Filtros»: open the sheet with every axis."""
+    def open_filters(self, phone: bool = True) -> None:
+        """The narrow bar's «Filtros»: open the panel with every axis — a sheet from the
+        bottom on a phone (`phone`, the browser's own `PHONE_MEDIA` answer), from the
+        right on a wider window."""
+        self.sheet_bottom = bool(phone)
         self.sheet = SHEET_ALL
 
     @rx.event
@@ -1465,17 +1472,17 @@ _STATE_VALUE = {
 #: tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave it ~376 px): the
 #: bar is a CSS size container (`.q-reels-bar`, assets/qualify-creative.css) and from
 #: `WIDE_FROM_PX` of it the chips row (`__wide`) shows, below it the three buttons
-#: (`__narrow`). RF-02b (m-25119463) raised it from 760 px: with «Región», five chips no
-#: longer fit there — the sum is in the CSS rule's comment.
+#: (`__narrow`). RF-02b (m-25119463) moved it from 760 px to 850 px: five chips and «Quitar
+#: filtros» as a 44 px icon (option B), measured live — the sum is in the CSS rule's comment.
 BAR_CLASS = "q-reels-bar"
 _WIDE_CLASS = "q-reels-bar__wide"
 _NARROW_CLASS = "q-reels-bar__narrow"
-WIDE_FROM_PX = 930
+WIDE_FROM_PX = 850
 #: RF-14: the words of «Buscar reels nuevos» on the wide bar show only from
 #: `SEARCH_WORDS_FROM_PX` of bar (`.q-reels-bar__search-words`, assets/qualify-creative.css):
-#: below it the five chips, «Competidores» and «Quitar filtros» leave no room for them, and
+#: below it the five chips, «Competidores» and the «Quitar filtros» icon leave no room, and
 #: the line must never wrap — the button keeps its icon, its accessible name and its `title`.
-SEARCH_WORDS_FROM_PX = 1070
+SEARCH_WORDS_FROM_PX = 1000
 _SEARCH_WORDS_CLASS = "q-reels-bar__search-words"
 #: An option row of the «Filtros» sheet, the desktop dropdowns and the competitors drawer:
 #: `.q-reels-option.rt-Button` (assets/qualify-creative.css) puts its mark and words on the
@@ -1730,8 +1737,8 @@ def _dropdown(axis: str) -> rx.Component:
     )
 
 
-#: The phone's «Filtros» button: the sheet gives the focus back to it however it closes
-#: (Escape, the backdrop, «Cerrar», «Listo»).
+#: The narrow bar's «Filtros» button: its panel (from the bottom or the right) gives the
+#: focus back to it however it closes (Escape, the backdrop, «Cerrar», «Listo»).
 FILTERS_BUTTON_ID = "reels-filters"
 SHEET_FOCUS_SCRIPT = (
     "window.setTimeout(function () {"
@@ -1739,15 +1746,30 @@ SHEET_FOCUS_SCRIPT = (
     "  if (b && b.offsetParent !== null) { b.focus(); }"
     "}, 0);"
 )
+#: «Quitar filtros» on the wide bar disappears once pressed: the focus goes to the search
+#: button, the next one on the line.
+RESET_FOCUS_SCRIPT = (
+    "window.setTimeout(function () {"
+    f"  var b = document.getElementById('{SEARCH_BUTTON_ID}');"
+    "  if (b && b.offsetParent !== null) { b.focus(); }"
+    "}, 0);"
+)
+#: RF-02b, option C (Deivid 2026-11-26): the window width up to which «Filtros» opens a
+#: sheet from the bottom — the app's phone width (the sidebar becomes a drawer there too,
+#: assets/qualify.css); wider, its panel slides in from the right. Asked to the browser
+#: at the press (`matchMedia`), so it is the window's width, not the bar's.
+PHONE_MAX_PX = 640
+PHONE_MEDIA = f"window.matchMedia('(max-width: {PHONE_MAX_PX}px)').matches"
 #: The phone's line: «Filtros» and «Competidores» share it in equal parts (`flex: 1 1 0`);
 #: RF-14's «Buscar reels nuevos» is a third button of only its icon, 44 px, at the end.
 _PHONE_SLOT = {"flex": "1 1 0", "min_width": "0", "max_width": "100%", **_CHIP_PAD}
 
 
 def _filters_button() -> rx.Component:
-    """The phone's «Filtros» (RF-13, Deivid 2026-11-26): one button for every axis, with
-    « · N» while N of them narrow the list (`soft` then, as a filtered chip); it opens
-    the one sheet. Its accessible name says it in words: «Filtros: 2 activos»."""
+    """The narrow bar's «Filtros» (RF-13, Deivid 2026-11-26): one button for every axis,
+    with « · N» while N of them narrow the list (`soft` then, as a filtered chip); it
+    opens the one panel — from the bottom on a phone, from the right on a wider window
+    (RF-02b, option C). Its accessible name says it in words: «Filtros: 2 activos»."""
     S = DiscoverReelsState
     return rx.button(
         rx.icon("sliders-horizontal", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
@@ -1758,7 +1780,9 @@ def _filters_button() -> rx.Component:
         size="2",
         min_height=_TARGET,
         overflow="hidden",
-        on_click=S.open_filters,
+        # option C: the browser says whether the window is a phone's, and the panel opens
+        # from the bottom (phone) or from the right (wider window)
+        on_click=rx.call_script(PHONE_MEDIA, callback=S.open_filters),
         aria_label=S.filters_texts["name"].to(str),
         title=S.filters_texts["name"].to(str),
         aria_haspopup="dialog",
@@ -1768,23 +1792,27 @@ def _filters_button() -> rx.Component:
 
 
 def _reset_button() -> rx.Component:
-    """«Quitar filtros» on a desktop (`RESET_SHORT`): shown while some filter narrows the
-    lists — a `ghost` button of the skin, last on the line, beside «Competidores». On a
-    phone it lives in the «Filtros» sheet's foot (`_sheet`)."""
+    """«Quitar filtros» on the wide bar (`RESET_SHORT`): shown while some filter narrows
+    the lists, last on the line, after the search button. RF-02b, option B (Deivid
+    2026-11-26): only its icon, the 44 px square like the search button beside it, with
+    «Quitar filtros» as its accessible name and `title`; the skin's focus ring shows on
+    the keyboard. On the narrow bar it lives in the «Filtros» panel's foot (`_sheet`)."""
     return rx.cond(
         DiscoverReelsState.filters_on,
-        rx.button(
+        rx.icon_button(
             rx.icon("rotate-ccw", size=T.ICON_SM, aria_hidden="true"),
-            reels_filters_vm.RESET_SHORT,
             type="button",
-            variant="ghost",
+            variant="surface",
             size="2",
             min_height=_TARGET,
+            min_width=_TARGET,
             margin="0",
-            on_click=DiscoverReelsState.reset_filters,
-            flex_shrink="0",
-            white_space="nowrap",
-            max_width="100%",
+            # the button goes away with the filters: the keyboard focus moves to the
+            # search button beside it, never lost on the page (independent review)
+            on_click=[DiscoverReelsState.reset_filters, rx.call_script(RESET_FOCUS_SCRIPT)],
+            flex="0 0 auto",
+            aria_label=reels_filters_vm.RESET_SHORT,
+            title=reels_filters_vm.RESET_SHORT,
         ),
     )
 
@@ -1854,13 +1882,15 @@ def _sheet_group(axis: str) -> rx.Component:
     )
 
 
-def _sheet() -> rx.Component:
-    """The phone's «Filtros» sheet (RF-13, Deivid 2026-11-26): every axis — Canal, Tipo de
-    cuenta, Cuenta (several), Duración and Región (RF-02b, with «Nicho: …» under its
-    options) — each under its name, with the long words;
-    each choice applies at once and the sheet stays open. Its foot: «Quitar filtros»
-    while a filter is on, and «Listo». The body scrolls when it is long. However it
-    closes, the focus goes back to «Filtros»."""
+def _sheet(*, bottom: bool) -> rx.Component:
+    """The «Filtros» panel of the narrow bar (RF-13, Deivid 2026-11-26): every axis —
+    Canal, Tipo de cuenta, Cuenta (several), Duración and Región (RF-02b, with «Nicho: …»
+    under its options) — each under its name, with the long words; each choice applies
+    at once and the panel stays open. Its foot: «Quitar filtros» while a filter is on,
+    and «Listo». The body scrolls when it is long. However it closes, the focus goes back
+    to «Filtros». RF-02b, option C: two of them, as «Tus competidores» has — the sheet
+    from the bottom on a phone (`bottom`), the drawer from the right on a wider window;
+    `DiscoverReelsState.sheet_bottom` says which one is open."""
     S = DiscoverReelsState
     foot = rx.hstack(
         rx.cond(
@@ -1892,11 +1922,11 @@ def _sheet() -> rx.Component:
             width="100%",
             align_items="stretch",
         ),
-        open=S.sheet != "",
+        open=(S.sheet != "") & (S.sheet_bottom if bottom else ~S.sheet_bottom),
         on_open_change=S.sheet_changed,
         title=reels_filters_vm.FILTERS_LABEL,
         footer=foot,
-        side="bottom",
+        side="bottom" if bottom else "right",
         on_close_auto_focus=rx.call_script(SHEET_FOCUS_SCRIPT).prevent_default,
     )
 
@@ -1905,24 +1935,24 @@ def _filter_bar() -> rx.Component:
     """RF-02's bar, as TikTok Creative Center's Top Ads: «Canal», «Tipo de cuenta»,
     «Cuenta», «Duración», «Región» (RF-02b) and «Quitar filtros». On a wide bar, chips
     that open a dropdown; on a narrow bar (under `WIDE_FROM_PX`), «Filtros» +
-    «Competidores», «Filtros» opening one sheet from the bottom with every axis. Every
-    change is one more read of what is stored — never a paid call.
+    «Competidores», «Filtros» opening one panel with every axis (from the bottom on a
+    phone, from the right on a wider window). Every change is one more read of what is
+    stored — never a paid call.
 
     RF-13: only the system's pieces (Radix buttons, popovers, `drawer`) on a soft panel
     of the system (`T.CARD_BG`, the card radius; Deivid 2026-11-26 — never the dark box
-    he took away). Every chip shows one word (`_chip_face`). On a desktop the bar is ONE
-    line — Canal + Tipo, Cuenta + Duración, «Competidores» + «Quitar filtros» as three
-    groups that never wrap apart — and, where a narrow panel cannot hold it, the groups
-    wrap onto centred lines, never one chip alone (Deivid at ~1180 px, 2026-11-26). On a
-    phone, ONE line of equal buttons: «Filtros» (every axis in one sheet) and
+    he took away). Every chip shows one word (`_chip_face`). On a wide bar, ONE line that
+    never wraps: the five chips, «Competidores», the search button and the «Quitar
+    filtros» icon. On a narrow bar, ONE line of equal buttons: «Filtros» (every axis in
+    one panel) and
     «Competidores» — «Filtros» takes the whole line for a brand with no competitor to
     show; no text broken, no sideways scroll (Deivid, 2026-11-26). Which row shows is a
     container query on the bar's own width (`BAR_CLASS`): below `WIDE_FROM_PX` of bar —
     phones, tablets, narrow panels — the buttons; from there, the chips."""
     return rx.box(
         # the wide bar: ONE line that fills the bar — the five filters share what is left,
-        # then «Competidores» and «Quitar filtros» at their natural width; it never
-        # wraps, so no chip is ever alone on a line (Deivid, 2026-11-26)
+        # then «Competidores» at its natural width, the search button and the 44 px
+        # «Quitar filtros» icon; it never wraps, so no chip is ever alone on a line
         rx.flex(
             *(_dropdown(axis) for axis in reels_filters_vm.AXES),
             _rivals_button(chip=False),
@@ -1949,7 +1979,8 @@ def _filter_bar() -> rx.Component:
             width="100%",
             min_width="0",
         ),
-        _sheet(),
+        _sheet(bottom=True),
+        _sheet(bottom=False),
         _competitors_drawer(bottom=False),
         _competitors_drawer(bottom=True),
         role="search",

@@ -1544,7 +1544,7 @@ def test_the_phone_bar_is_filtros_and_competidores_side_by_side() -> None:
     assert ".q-reels-bar .q-reels-bar__narrow { display: flex; }" in css
     query = re.search(r"@container \(min-width: (\d+)px\) \{(.*?)\n\}", css, re.S)
     # RF-02b raised the cut: five chips no longer fit at 760 px (sum in the CSS comment)
-    assert query and int(query.group(1)) == discover_reels.WIDE_FROM_PX == 930
+    assert query and int(query.group(1)) == discover_reels.WIDE_FROM_PX == 850
     assert ".q-reels-bar .q-reels-bar__wide { display: flex; }" in query.group(2)
     assert ".q-reels-bar .q-reels-bar__narrow { display: none; }" in query.group(2)
     rule_block = css[css.index(".q-reels-bar {") : css.index("@container")]
@@ -1781,5 +1781,62 @@ def test_the_search_words_wait_for_a_wider_bar_with_five_chips() -> None:
     words = re.search(
         r"@container \(min-width: (\d+)px\) \{\n  \.q-reels-bar \.q-reels-bar__search-words", css
     )
-    assert words and int(words.group(1)) == discover_reels.SEARCH_WORDS_FROM_PX == 1070
+    assert words and int(words.group(1)) == discover_reels.SEARCH_WORDS_FROM_PX == 1000
     assert discover_reels.SEARCH_WORDS_FROM_PX > discover_reels.WIDE_FROM_PX
+
+
+def test_quitar_filtros_is_a_44px_icon_last_on_the_wide_bar() -> None:
+    """Option B (Deivid, 2026-11-26): on the wide bar «Quitar filtros» is only its icon,
+    the 44 px square, named «Quitar filtros» (accessible name and `title`), after the
+    search button; the narrow bar keeps it with its words in the panel's foot."""
+    import inspect
+
+    from . import discover_reels
+
+    reset = inspect.getsource(discover_reels._reset_button)
+    assert "rx.icon_button(" in reset and 'rx.icon("rotate-ccw"' in reset
+    assert "min_width=_TARGET" in reset and "min_height=_TARGET" in reset
+    assert "aria_label=reels_filters_vm.RESET_SHORT" in reset
+    assert "title=reels_filters_vm.RESET_SHORT" in reset
+    assert "outline" not in reset  # the skin's own focus ring, never taken away
+    # pressed, it goes away with the filters: the focus moves to the search button
+    assert "rx.call_script(RESET_FOCUS_SCRIPT)" in reset
+    assert discover_reels.SEARCH_BUTTON_ID in discover_reels.RESET_FOCUS_SCRIPT
+    bar = inspect.getsource(discover_reels._filter_bar)
+    wide = bar[: bar.index("class_name=_WIDE_CLASS")]
+    assert wide.index("_search_button(icon_only=False)") < wide.index("_reset_button()")
+    assert "RESET_SHORT" in inspect.getsource(discover_reels._sheet)  # words in the foot
+
+
+async def test_filtros_opens_from_the_right_on_a_wider_window(world: _World) -> None:
+    """Option C (Deivid, 2026-11-26): the narrow bar's «Filtros» asks the browser whether
+    the window is a phone's (640 px or less): there, the sheet from the bottom; wider,
+    the same panel from the right, as «Tus competidores» — two `drawer`s, one open."""
+    import inspect
+
+    from . import discover_reels
+
+    assert discover_reels.PHONE_MAX_PX == 640
+    assert discover_reels.PHONE_MEDIA == "window.matchMedia('(max-width: 640px)').matches"
+    button = inspect.getsource(discover_reels._filters_button)
+    assert "rx.call_script(PHONE_MEDIA, callback=S.open_filters)" in button
+    bar = inspect.getsource(discover_reels._filter_bar)
+    assert "_sheet(bottom=True)" in bar and "_sheet(bottom=False)" in bar
+    sheet = inspect.getsource(discover_reels._sheet)
+    assert 'side="bottom" if bottom else "right"' in sheet
+    assert "S.sheet_bottom if bottom else ~S.sheet_bottom" in sheet
+    # however either closes, the focus goes back to «Filtros»
+    assert "on_close_auto_focus=rx.call_script(SHEET_FOCUS_SCRIPT)" in sheet
+    # rendered: two bottom sheets (Filtros, Competidores) and two right drawers (the same)
+    rendered = str(discover_reels.discover_view().render())
+    assert rendered.count("q-drawer--bottom") == 2
+    assert rendered.count('"q-drawer"') == 2
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    state.open_filters(False)  # a desktop window
+    assert state.sheet == "all" and state.sheet_bottom is False
+    state.sheet_changed(False)
+    state.open_filters(True)  # a phone
+    assert state.sheet == "all" and state.sheet_bottom is True

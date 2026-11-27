@@ -162,9 +162,9 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   buscando…» es un `callout` informativo dentro de la única región `role="status"`. Desde
   1000 px de barra lleva texto; entre 760 y 1000 px solo el ícono, para que la fila no se
   parta (medido en vivo: a ~780 px los chips quedan entre 92 y 117 px y «Buscar» no cabe).
-  Con RF-02b los cortes pasan a 930 px (fila ancha) y 1070 px (texto del botón). En la
-  versión angosta es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
-  con su nombre en `aria-label` y `title`.
+  Con RF-02b la fila ancha empieza en 850 px y el texto del botón sigue desde 1000 px. En la
+  versión angosta es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y
+  «Competidores», con su nombre en `aria-label` y `title`.
 - Sin migración y sin llamadas pagadas en las pruebas (fakes detrás de la compuerta real).
   Costo: ≈ USD 0,10–0,15 por búsqueda, aprobado por Deivid para producción.
 
@@ -193,15 +193,23 @@ por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin 
   desplegable y en la hoja por igual. No es un chip ni una línea propia en la barra (regla de
   Deivid: nada solo en una fila). Se lee al abrir la pantalla; sin rubro, no se dibuja; otro
   negocio en la misma pestaña empieza sin ella.
-- **Cortes nuevos de la barra** (cuenta completa en `assets/qualify-creative.css`): la fila
-  ancha pasa de 760 a **930 px** de contenido. Con «Región: Venezuela» activa, «Quitar
-  filtros» visible y los otros cuatro sin filtro: 88 + 88 + 88 + 98 + ~110 + 133 + 44 + 116 +
-  7 × 12 ≈ 849 px. Pero el peor caso con un solo filtro es «Tipo: Compiten contigo» (~157 px):
-  ≈ 896 px. Con «Compiten contigo» y «Venezuela» a la vez: ≈ 918 px. Con margen por el
-  dibujo de la letra → 930 px (lo encontró la revisión independiente). El texto de «Buscar
-  reels nuevos» pasa de 1000 a **1070 px** (896 + ~133 de las palabras ≈ 1029 px, más margen). Los anchos de los
-  chips son estimaciones; falta medirlos en vivo. Sin cubrir: tres o más valores largos a la
-  vez (≈ 955 px con los cinco); ahí el chip más largo termina en «…».
+- **Opciones B + C de Deivid (2026-11-26):**
+  - **B.** En la barra ancha, «Quitar filtros» es un botón de solo ícono de 44 px
+    (`rotate-ccw`, «Quitar filtros» en `aria-label` y `title`), al final de la fila, después
+    de la lupa. En el pie del panel de la barra angosta sigue con sus palabras.
+  - **C.** En la barra angosta, «Filtros» le pregunta al navegador al tocarlo si la ventana
+    es de teléfono (640 px o menos, `matchMedia`). En el teléfono abre la hoja desde abajo;
+    en una ventana más ancha, el mismo panel entra desde la derecha, como «Tus
+    competidores». Son dos `drawer` del sistema y se abre uno. Al cerrarse, el foco vuelve a
+    «Filtros».
+- **Cortes de la barra** (cuenta completa en `assets/qualify-creative.css`). Deivid midió en
+  vivo los anchos naturales con «Compiten contigo» y «Venezuela» elegidos a la vez: 88 + 155
+  + 88 + 98 + 108 + 133 + 44 + 116 + 7 × 12 ≈ 914 px. La estimación anterior era 918 px.
+  Con «Quitar filtros» de 44 px queda en 842 px, así que la fila ancha pasa de 760 a
+  **850 px** de contenido. El texto de «Buscar reels nuevos» sigue desde **1000 px**: 842
+  + ~133 de las palabras ≈ 975 px; el ancho de las palabras es una estimación. Sin cubrir:
+  tres o más valores largos a la vez (≈ 879 px con los cinco); entre 850 px y ese ancho, el
+  chip más largo termina en «…».
 - Sin migración, sin backend nuevo, sin llamadas pagadas.
 
 **RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
