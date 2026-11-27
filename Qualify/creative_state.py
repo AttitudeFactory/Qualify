@@ -46,6 +46,7 @@ from qualify_api.creative.context_ai import (
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.owner_uploads import served_upload_tenant
+from qualify_api.creative.part_extend import extend_available as part_extend_available
 from qualify_api.creative.parts import (
     ParentTextCapReached,
     ParentTextMissing,
@@ -94,11 +95,13 @@ from qualify_creative.schemas import (
     HIGHLIGHTS_MAX,
     MAX_BRAND_ELEMENTS,
     MAX_PRODUCT_IMAGES,
+    PART_DESCRIPTION_MAX,
     PRESENTER_DESCRIPTIONS,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
+    ai_block_vm,
     clip_editor_vm,
     clip_gallery_vm,
     clip_joins_vm,
@@ -1931,6 +1934,20 @@ class CreativeState(rx.State):
     clip_join_open: str = ""
     #: The owner already chose a join once: the line on how to find them goes (ux review).
     clip_join_used: bool = False
+    #: ED-07 (m-25026638, ADR 50 §13): the Clip's «partes con IA», each `{uid, plan}` —
+    #: `plan` a `VideoPartPlan` as JSON — in `media.ai_parts` order (the block of entry
+    #: `n` is `ai_part:<n>`); each one's place in `clip_sequence` is its token `ai:<uid>`
+    #: (`ai_block_vm`). Only with `QUALIFY_CLIP_AI_PARTS` on and «Arma tu video» shown;
+    #: kept at once, no «Deshacer». Always a new list.
+    clip_ai_parts: list[dict[str, Any]] = []
+    #: ED-07: «Más opciones» («Video o audio tuyo») open in the chosen AI part's panel.
+    clip_ai_more: bool = False
+    #: ED-07: why «Juntar con la siguiente» could not join (the provider's words; "").
+    clip_ai_merge_error: str = ""
+    #: ED-07 (review): the session's business, read from `AuthState` when the timeline
+    #: mounts (`remember_clip_tenant`), so the contract also checks that every AI part's
+    #: files are this business's (`malformed_key` / `foreign_key`). Backend-only.
+    _clip_session_tenant: str = ""
     #: ED-10's one text (legacy, see `clip_text_start`).
     clip_overlay_text: str = ""
     clip_text_place: str = "bottom"
@@ -3072,10 +3089,16 @@ class CreativeState(rx.State):
                 return self._reel_review().all_reason != ""
             if self._carousel_too_many():
                 return True
+            if self._clip_ai_create_off():
+                return True  # ED-07: AI parts are not created until PR 2 (its reason beside)
             return self.gen_exhausted != ""
         # UI-2: «Siguiente» waits for the reel's analysis (or for a way forward);
         # ED-13: on «Arma tu video», for texts that can be made (criterion 3)
-        return self._reel_wait_holds_next() or self._clip_text_holds_next()
+        return (
+            self._reel_wait_holds_next()
+            or self._clip_text_holds_next()
+            or bool(self._clip_ai_missing())  # ED-07 (D10): each AI part says what happens
+        )
 
     @rx.var(cache=False)
     def create_reason(self) -> str:
@@ -3092,10 +3115,14 @@ class CreativeState(rx.State):
             return self.reel_wait_reason
         if self._clip_text_holds_next() and not self.gen_is_last_view:
             return self._clip_text_problem()  # ED-13: two texts in one place, …
+        if self._clip_ai_missing() and not self.gen_is_last_view:
+            return self._clip_ai_missing()  # ED-07 (D10): «Falta contar qué pasa…»
         if self.gen_is_last_view and self._reel_review_open() and not self.is_submitting:
             return self._reel_review().foot_reason  # UI-6: the long one is in the body
         if self.gen_is_last_view and self._carousel_too_many():
             return CAROUSEL_TOO_MANY
+        if self.gen_is_last_view and self._clip_ai_create_off():
+            return ai_block_vm.CREATE_OFF_SHORT  # ED-07: until PR 2 (the body says the rest)
         return ""
 
     def _carousel_too_many(self) -> bool:
@@ -5486,6 +5513,7 @@ class CreativeState(rx.State):
         self.clip_audios = []
         self._clear_clip_notes()
         self.clip_sequence = []
+        self.clip_ai_parts = []  # ED-07: a reel's replica has no AI part of its own
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
         # m-25026509: a fresh clip — the last piece's answer never rides on
@@ -6758,6 +6786,550 @@ class CreativeState(rx.State):
         """…and its length is measured: its stretch can be changed now."""
         return self._clip_cut_offered() and self._clip_cut_known()
 
+    # -- ED-07 m-25026638: the «parte con IA» blocks' order ------------------------------
+
+    def _clip_ai_on(self) -> bool:
+        """AI parts on the Clip's timeline: «Arma tu video» shown (`QUALIFY_CLIP_EDITOR`)
+        and `QUALIFY_CLIP_AI_PARTS` on (contract §1) — read now, as the server does."""
+        return self.clip_editor_shown and ai_block_vm.switch_on()
+
+    def _clip_ai_tokens(self) -> list[str]:
+        """The tokens of the AI parts that are on the timeline ([] off the switches)."""
+        if not self.clip_ai_parts or not self._clip_ai_on():
+            return []
+        return [ai_block_vm.token(str(p["uid"])) for p in self.clip_ai_parts]
+
+    def _clip_order_keys(self) -> list[str]:
+        """The Clip's whole order — its files as `_clip_strip` orders them, each AI part's
+        token in its place (`ai_block_vm.merge_order`). Without AI parts: the strip's keys,
+        exactly as before ED-07."""
+        files = [item["key"] for item in self._clip_strip()]
+        return ai_block_vm.merge_order(files, self.clip_sequence, self._clip_ai_tokens())
+
+    def _clip_keep_ai_order(self, keys: list[str]) -> list[str]:
+        """`keys` (files only) with the AI parts' tokens kept in their places."""
+        return ai_block_vm.merge_order(keys, self.clip_sequence, self._clip_ai_tokens())
+
+    def _clip_ai_index(self, block_id: str) -> int:
+        """The place in `clip_ai_parts` of the AI part `block_id` names (-1 = none)."""
+        uid = ai_block_vm.uid_of(block_id)
+        if not uid:
+            return -1
+        return next((n for n, p in enumerate(self.clip_ai_parts) if p.get("uid") == uid), -1)
+
+    def _clip_ai_plan(self, block_id: str) -> dict[str, Any]:
+        """The entry of the AI part `block_id` names ({} = none)."""
+        at = self._clip_ai_index(block_id)
+        return dict(self.clip_ai_parts[at].get("plan") or {}) if at >= 0 else {}
+
+    def _clip_ai_desc_rev(self, block_id: str) -> int:
+        """How many times the server changed the AI part's description (0 = never)."""
+        at = self._clip_ai_index(block_id)
+        return int(self.clip_ai_parts[at].get("desc_rev") or 0) if at >= 0 else 0
+
+    def _clip_ai_put(self, block_id: str, plan: dict[str, Any], *, described: bool = False) -> None:
+        """The AI part's entry changed — kept at once (no «Deshacer», as every change).
+        `described`: its description was changed by anything but its own field (a join,
+        review): its `desc_rev` goes up and the field shows the new words."""
+        at = self._clip_ai_index(block_id)
+        if at < 0:
+            return
+        parts = [dict(p) for p in self.clip_ai_parts]
+        rev = int(parts[at].get("desc_rev") or 0) + (1 if described else 0)
+        parts[at] = {**parts[at], "plan": plan, "desc_rev": rev}
+        self.clip_ai_parts = parts
+
+    def _clip_has_product(self) -> bool:
+        """A product is chosen (its photos): «Nueva, con tu producto», else «…con tu marca»."""
+        return bool(self.selected_product_id) or any(
+            i.get("source") == "catalog" for i in self.clip_images
+        )
+
+    def _clip_ai_product_photos(self) -> list[str] | None:
+        """The chosen product's photos a new AI part takes (design 03B); None = the Clip's."""
+        keys = [i["key"] for i in self.clip_images if i.get("source") == "catalog"]
+        return keys[:CLIP_MAX_IMAGES] or None
+
+    def _clip_ai_poster(self, plan: Mapping[str, Any]) -> str:
+        """The AI part's poster before it is made (design §2): its first photo, else the
+        Clip's first — a backend path the screen already holds ("" = the block's icon)."""
+        keys = [str(k) for k in plan.get("clip_image_keys") or ()] or [
+            i["key"] for i in self.clip_images
+        ]
+        if not keys:
+            return ""
+        key = keys[0]
+        shown = self._clip_block_thumbs().get(key) or self.piece_views.get(key, "")
+        if shown:
+            return str(shown)
+        return clip_editor_vm.upload_path(key) if upload_served(key) else ""
+
+    def _clip_ai_segments(self) -> list[dict[str, Any]]:
+        """The recipe's stretches, AI blocks included, as the brief takes them."""
+        data = editor_contract.to_dict(self._clip_edit_recipe())
+        return list(data["segments"])  # type: ignore[arg-type]
+
+    def _clip_ai_problems(self) -> list[dict[str, str]]:
+        """What the server would refuse of the AI parts (`ai_block_vm.preflight_problems`:
+        `validate_recipe` itself, free, at every change; [] without AI parts)."""
+        if not self.clip_ai_parts or not self._clip_ai_on():
+            return []
+        if not self._clip_session_tenant:
+            # review: the files can't be checked without the session's business (read
+            # when the timeline mounts) — never skipped in silence: «quítala y agrégala»
+            return [ai_block_vm.no_business_problem()]
+        return ai_block_vm.preflight_problems(
+            self._clip_ai_segments(),
+            ai_block_vm.plans(self.clip_ai_parts),
+            tenant_id=self._clip_session_tenant,
+        )
+
+    @rx.event
+    async def remember_clip_tenant(self) -> None:
+        """The session's business for the AI parts' file checks — read here, on the
+        server, never from the browser (mounted with the timeline)."""
+        auth = await self.get_state(AuthState)
+        tenant = tenant_uuid(auth.session_tenant_id)
+        self._clip_session_tenant = str(tenant) if tenant is not None else ""
+
+    def _clip_ai_number(self, block_id: str) -> int:
+        """«Parte con IA n»'s n of `block_id` on the timeline now (0 = not there)."""
+        item = next((m for m in self._clip_tl_media() if m["id"] == block_id), None)
+        return int(item.get("ai_n") or 0) if item else 0  # type: ignore[call-overload]
+
+    def _clip_add_ai_part(self) -> list[Any]:
+        """«Agregar → Parte con IA» (decision 1): a part «Nueva» goes on the track at the
+        marker — after the block under it —, with 5 s or what fits under 60 s and the
+        chosen product's photos; its panel opens and the preview goes there. Nothing is
+        paid or created: it is made at «Crear». Off (8 blocks, 6 AI parts, 60 s) the
+        note above «Agregar» says why (`clip_tl_add_note`)."""
+        if not self._clip_ai_on():
+            return []
+        segments = self._clip_ai_segments()
+        if ai_block_vm.add_reason(segments):
+            return []
+        media = self._clip_tl_media()
+        at = clip_editor_vm.index_after_playhead(media, self.clip_edit_playhead)
+        uid = ai_block_vm.new_uid(self.clip_ai_parts)
+        block = ai_block_vm.token(uid)
+        _segment, plan = ai_block_vm.new_ai_block(
+            len(self.clip_ai_parts),
+            seconds=ai_block_vm.new_part_seconds(segments),
+            image_keys=self._clip_ai_product_photos(),
+        )
+        before = self._clip_edit_snapshot()
+        self.clip_sequence = ai_block_vm.place_token(self._clip_order_keys(), media, at, block)
+        self.clip_ai_parts = [*self.clip_ai_parts, {"uid": uid, "plan": plan, "desc_rev": 0}]
+        self.clip_ai_more = False
+        self.clip_ai_merge_error = ""
+        self._clip_edit_changed(before)
+        events: list[Any] = list(self._clip_choose(block))
+        placed = self._clip_tl_media()
+        spot = next((n for n, m in enumerate(placed) if m["id"] == block), len(placed))
+        self.clip_edit_playhead = clip_editor_vm.block_start(placed, spot)
+        events.append(rx.call_script(clip_editor_vm.jump_script(self.clip_edit_playhead)))
+        # design D10: the focus on «¿Qué pasa en esta parte?»
+        events.append(rx.call_script(ai_block_vm.focus_description_script()))
+        left = ai_block_vm.only_left_line(segments)
+        self._clip_say(" ".join(w for w in (ai_block_vm.ADDED_LINE, left) if w))
+        return events
+
+    def _clip_remove_ai_part(self, block_id: str) -> list[Any]:
+        """«Quitar» on an AI part: its block and its entry go (the later entries' blocks
+        keep pointing at their own: the key is the place in `clip_ai_parts`); a text or
+        an effect stuck to it follows as with any block; the join into it goes."""
+        at = self._clip_ai_index(block_id)
+        if at < 0:
+            return []
+        track, place = self._clip_track_place(block_id)
+        number = self._clip_ai_number(block_id)
+        before = self._clip_edit_snapshot()
+        self.clip_ai_parts = [p for n, p in enumerate(self.clip_ai_parts) if n != at]
+        self.clip_sequence = [k for k in self.clip_sequence if k != block_id]
+        self._clip_keep_joins(
+            clip_joins_vm.clean_joins(self.clip_block_joins, self._clip_tl_media())
+        )
+        self._clip_fit_overlays()  # a shorter video: what went past its end comes in
+        gone = self._clip_effects_follow()
+        self._clip_edit_changed(before)
+        self.clip_edit_notice = self._clip_with_gone(ai_block_vm.removed_line(number), gone)
+        return self._clip_removed(track, place)
+
+    @rx.var
+    def clip_ai_on(self) -> bool:
+        """«Agregar → Parte con IA» is offered (`QUALIFY_CLIP_AI_PARTS` on on «Arma tu
+        video»). Off: nothing of ED-07 shows and the Clip is as before."""
+        return self._clip_ai_on()
+
+    @rx.var
+    def clip_ai_add_off(self) -> bool:
+        """«Parte con IA» off in «Agregar»: 8 blocks, 6 AI parts or 60 s already."""
+        if not self._clip_ai_on():
+            return True
+        return ai_block_vm.add_reason(self._clip_ai_segments()) != ""
+
+    @rx.var
+    def clip_ai_chosen(self) -> dict[str, str]:
+        """The chosen AI part's panel, in strings ({} = none chosen): its name, the full
+        mode badge and why («Lo cambiaste tú.»), its description, its seconds control,
+        «Video o audio tuyo», «Juntar con la siguiente», «Probar esta parte» and what
+        the server would refuse of it, in the contract's words."""
+        block = self.clip_edit_block
+        if not block or not ai_block_vm.is_token(block) or not self._clip_ai_on():
+            return {}
+        media = self._clip_tl_media()
+        spot = next((n for n, m in enumerate(media) if m["id"] == block), -1)
+        if spot < 0:
+            return {}
+        item = media[spot]
+        plan = self._clip_ai_plan(block)
+        number = int(item.get("ai_n") or 1)  # type: ignore[call-overload]
+        badge = ai_block_vm.mode_badge(plan, has_product=self._clip_has_product())
+        segments = self._clip_ai_segments()
+        seconds = ai_block_vm.clamp_seconds(plan.get("seconds"))
+        control = ai_block_vm.seconds_control(seconds, ai_block_vm.laid_seconds(segments))
+        guide = ai_block_vm.guide_option(str(plan.get("mode") or "reference"))
+        entry_at = int(item.get("entry") or 0)  # type: ignore[call-overload]
+        block_at = clip_joins_vm.segment_ids(media).index(block)
+        problems = ai_block_vm.problems_of(self._clip_ai_problems(), entry_at, block_at)
+        after = media[spot + 1] if spot + 1 < len(media) else None
+        merge = ai_block_vm.merge_shown(plan)
+        merge_reason = (
+            ai_block_vm.merge_needs_ai_next(None if after is None else str(after.get("kind")))
+            if merge
+            else ""
+        )
+        try_line, try_reason = ai_block_vm.try_line(
+            plan,
+            previews_left=self.previews_left,
+            previews_quota=self.previews_quota if self.creations_left >= 0 else 0,
+            renews=self.creations_renews,
+        )
+        if not ai_block_vm.AI_CREATE_BUILT:
+            try_reason = ai_block_vm.TRY_OFF_LINE  # PR 2: nothing is created yet
+        product = plan.get("clip_image_keys") is not None and self._clip_has_product()
+        return {
+            "id": block,
+            # the description field's key: a new revision (a join) shows the new words
+            "desc_key": f"{block}-{self._clip_ai_desc_rev(block)}",
+            "name": ai_block_vm.ai_part_name(number),
+            "mode": badge["mode"],
+            "full": badge["full"],
+            "mode_icon": ai_block_vm.MODE_ICONS.get(badge["mode"], "wand-sparkles"),
+            "reason": badge["reason"],
+            "changed": badge["changed"],
+            "back_to": badge["back_to"],
+            "back_label": badge["back_label"],
+            "not_created": ai_block_vm.NOT_CREATED_LINE,
+            # ux review: without a reel the way is a fact (the badge and these lines)
+            "from_reel": "1" if plan.get("analysis_id") else "",
+            "mode_fact": ai_block_vm.mode_fact(has_product=self._clip_has_product()),
+            "mode_help": ai_block_vm.NO_REEL_MODE_TEXT,
+            "description": str(plan.get("description") or ""),
+            "missing": ""
+            if str(plan.get("description") or "").strip()
+            else ai_block_vm.missing_description_line(number),
+            "seconds": control["value"],
+            "seconds_text": control["text"],
+            "seconds_help": control["help"],
+            "minus_reason": control["minus_reason"],
+            "plus_reason": control["plus_reason"],
+            "seconds_note": control["note"],
+            "product_note": ai_block_vm.PRODUCT_PHOTO_NOTE if product else "",
+            "guide_shown": guide["shown"],
+            "guide_reason": guide["reason"],
+            "merge_shown": "1" if merge else "",
+            "merge_reason": merge_reason or self.clip_ai_merge_error,
+            "try_line": try_line,
+            "try_reason": try_reason,
+            "problem": " ".join(problems),
+        }
+
+    @rx.var
+    def clip_ai_options(self) -> list[dict[str, str]]:
+        """«¿Cómo la hacemos?» of the chosen AI part: the three ways, the one chosen and
+        why each that cannot be chosen is off (`ai_block_vm.mode_options`)."""
+        block = self.clip_edit_block
+        if not ai_block_vm.is_token(block) or not self._clip_ai_on():
+            return []
+        segments = self._clip_ai_segments()
+        at = next(
+            (n for n, s in enumerate(segments) if s.get("key") == self._clip_ai_key(block)), -1
+        )
+        if at < 0:
+            return []
+        plan = self._clip_ai_plan(block)
+        rows = ai_block_vm.mode_options(
+            {"plan": plan, "person": False, "reason": ""},
+            segments,
+            ai_block_vm.plans(self.clip_ai_parts),
+            at,
+            extend_on=part_extend_available(),
+            has_product=self._clip_has_product(),
+            images=[{"key": str(k)} for k in plan.get("clip_image_keys") or ()],
+        )
+        for row in rows:
+            row["icon"] = ai_block_vm.MODE_ICONS[row["mode"]]
+        return rows
+
+    def _clip_ai_key(self, block_id: str) -> str:
+        """The recipe key (`ai_part:<n>`) of the AI part `block_id` names ("" = none)."""
+        at = self._clip_ai_index(block_id)
+        return ai_block_vm.ai_part_key(at) if at >= 0 else ""
+
+    @rx.var
+    def clip_ai_photos(self) -> list[dict[str, str]]:
+        """«Fotos de tu producto» of the chosen AI part: the Clip's photos, each marked
+        when the part uses it (none chosen = all of the Clip's, as the brief's)."""
+        block = self.clip_edit_block
+        if not ai_block_vm.is_token(block) or not self._clip_ai_on():
+            return []
+        plan = self._clip_ai_plan(block)
+        chosen = plan.get("clip_image_keys")
+        thumbs = self._clip_block_thumbs()
+        return [
+            {
+                "key": item["key"],
+                "name": str(item.get("name") or "Foto"),
+                "thumb": thumbs.get(item["key"], ""),
+                "on": "1" if chosen is None or item["key"] in chosen else "",
+            }
+            for item in self.clip_images
+        ]
+
+    @rx.var
+    def clip_ai_guides(self) -> list[dict[str, str]]:
+        """«Video o audio tuyo» of the chosen AI part: its guide files, each `{key, name,
+        kind}` — «Nueva» only (contract §3.1)."""
+        plan = self._clip_ai_plan(self.clip_edit_block) if self._clip_ai_on() else {}
+        return [
+            {"key": str(k), "name": str(k).rsplit("/", 1)[-1], "kind": kind}
+            for kind, name in (("video", "clip_video_keys"), ("audio", "clip_audio_keys"))
+            for k in plan.get(name) or ()
+        ]
+
+    @rx.event
+    def set_clip_ai_mode(self, mode: str) -> None:
+        """«¿Cómo la hacemos?»: a way that can be chosen now — leaving «Nueva» drops its
+        «Video o audio tuyo» (`with_mode`); back to the rule's proposal, «Lo cambiaste
+        tú.» goes."""
+        block = self.clip_edit_block
+        option = next((o for o in self.clip_ai_options if o["mode"] == mode), None)
+        if option is None or option["reason"] or option["chosen"]:
+            return
+        number = self._clip_ai_number(block)
+        self._clip_notice_done()
+        self._clip_ai_put(block, ai_block_vm.with_owner_mode(self._clip_ai_plan(block), mode))
+        self.clip_edit_notice = ai_block_vm.mode_line(number, mode)
+
+    @rx.event
+    def set_clip_ai_description(self, block: str, text: str) -> None:
+        """«¿Qué pasa en esta parte?» of the AI part `block` — the field names its own
+        part (review: a debounced value may arrive after another part was chosen, and
+        must never land there); a part no longer there is ignored. Kept after a pause
+        while typing and when the field is left, as typed, and sent trimmed
+        (`ai_block_vm.plans`); the live line speaks once the words really changed."""
+        plan = self._clip_ai_plan(block)
+        if not plan:
+            return
+        words = str(text or "")[:PART_DESCRIPTION_MAX]
+        if words == str(plan.get("description") or ""):
+            return
+        changed = words.strip() != str(plan.get("description") or "").strip()
+        self._clip_notice_done()
+        self._clip_ai_put(block, {**plan, "description": words})
+        if changed:
+            self.clip_edit_notice = ai_block_vm.DESCRIPTION_LINE.format(
+                n=self._clip_ai_number(block)
+            )
+
+    @rx.event
+    def step_clip_ai_seconds(self, delta: int) -> None:
+        """«− 1 s» / «+ 1 s»: whole seconds, 1 to 10, never past 60 s (its reason says
+        why one is off); the texts and effects past the new end come in."""
+        block = self.clip_edit_block
+        row = self.clip_ai_chosen
+        if not row:
+            return
+        step = 1 if int(delta) > 0 else -1
+        if (step > 0 and row["plus_reason"]) or (step < 0 and row["minus_reason"]):
+            return
+        plan = self._clip_ai_plan(block)
+        seconds = ai_block_vm.clamp_seconds(int(row["seconds"]) + step)
+        before = self._clip_edit_snapshot()
+        self._clip_ai_put(block, ai_block_vm.with_seconds(plan, seconds))
+        self._clip_fit_overlays()
+        self._clip_effects_follow()
+        self._clip_edit_changed(before)
+        self.clip_edit_notice = ai_block_vm.seconds_line(self._clip_ai_number(block), seconds)
+
+    @rx.event
+    def toggle_clip_ai_photo(self, key: str) -> None:
+        """A photo of the Clip used, or not, by the chosen AI part («Fotos de tu
+        producto»)."""
+        block = self.clip_edit_block
+        plan = self._clip_ai_plan(block)
+        if not plan or key not in {i["key"] for i in self.clip_images}:
+            return
+        held = plan.get("clip_image_keys")
+        keys = [i["key"] for i in self.clip_images] if held is None else list(held)
+        keys = [k for k in keys if k != key] if key in keys else [*keys, key]
+        self._clip_notice_done()
+        self._clip_ai_put(block, ai_block_vm.with_photos(plan, keys))
+        self.clip_edit_notice = ai_block_vm.PHOTOS_LINE.format(n=self._clip_ai_number(block))
+
+    @rx.event
+    def toggle_clip_ai_more(self) -> None:
+        self.clip_ai_more = not self.clip_ai_more
+
+    @rx.event
+    async def handle_clip_ai_guide_uploads(self, files: list[rx.UploadFile]) -> None:
+        """«Más opciones → Video o audio tuyo» of the chosen AI part («Nueva» only): each
+        file stored as «Subir» stores it (the business's own folder) and kept as the
+        part's guide by its type — a video MP4/MOV, an audio MP3/WAV; another type, or a
+        fourth of a kind, is said and left out. Nothing is read nor paid here."""
+        block = self.clip_edit_block
+        plan = self._clip_ai_plan(block)
+        if not plan or not files or not self._clip_ai_on():
+            return
+        if str(plan.get("mode") or "reference") != "reference":
+            self._clip_notice_done()
+            self.clip_edit_notice = ai_block_vm.GUIDE_NEEDS_NEW
+            return
+        # review: only a guide's types are stored — another file never leaves an orphan
+        kept = [f for f in files if ai_block_vm.guide_kind(f.name or "")]
+        said = "" if len(kept) == len(files) else ai_block_vm.refusal_text("ai_part_guide_type")
+        self.upload_error = ""
+        saved = await self._save_uploads(kept) if kept else []
+        plan = self._clip_ai_plan(block)  # the panel may have changed meanwhile
+        if not plan:
+            return
+        said = self.upload_error or said
+        added = ""
+        for key, _name in saved:
+            plan, why = ai_block_vm.with_guide(plan, key)
+            said = said or why
+            added = added or ("" if why else ai_block_vm.guide_kind(key))
+        self._clip_notice_done()
+        self._clip_ai_put(block, plan)
+        number = self._clip_ai_number(block)
+        self.clip_edit_notice = said or (
+            ai_block_vm.guide_line(added, number, added=True) if added else ""
+        )
+
+    @rx.event
+    def remove_clip_ai_guide(self, key: str) -> None:
+        block = self.clip_edit_block
+        plan = self._clip_ai_plan(block)
+        if not plan:
+            return
+        self._clip_notice_done()
+        self._clip_ai_put(block, ai_block_vm.without_guide(plan, key))
+        self.clip_edit_notice = ai_block_vm.guide_line(
+            ai_block_vm.guide_kind(key), self._clip_ai_number(block), added=False
+        )
+
+    def _clip_ai_next_id(self, block_id: str) -> str:
+        """The id of the AI part right after `block_id` on the timeline ("" = none, or
+        not an AI part)."""
+        media = self._clip_tl_media()
+        spot = next((n for n, m in enumerate(media) if m["id"] == block_id), -1)
+        if not 0 <= spot < len(media) - 1:
+            return ""
+        after = media[spot + 1]
+        return str(after["id"]) if after.get("kind") == ai_block_vm.TL_KIND else ""
+
+    @rx.event(background=True)
+    async def merge_clip_ai_part(self) -> None:
+        """«Juntar con la siguiente» on a short AI part of a reel with another AI part
+        right after it: today's rule decides (`part_editor_provider.merge_entries` →
+        `parts_plan.merge_short_part`, the reel's analysis read off the event loop); the
+        joined part takes the first one's place and the next one goes. Refused, its
+        words show in the panel. Review: once the rule answered, nothing is joined unless
+        both parts are still side by side and unchanged."""
+        async with self:
+            block = self.clip_edit_block
+            row = self.clip_ai_chosen
+            if not row or not row.get("merge_shown") or row.get("merge_reason"):
+                return
+            following_id = self._clip_ai_next_id(block)
+            current = {"plan": self._clip_ai_plan(block)}
+            following = {"plan": self._clip_ai_plan(following_id)} if following_id else None
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+        if tenant_id is None:
+            return
+        try:
+            entry, reason = await asyncio.to_thread(
+                part_editor_provider.merge_entries, tenant_id, current, following
+            )
+        except (OSError, SQLAlchemyError, ValueError) as exc:
+            logger.warning("ai part merge read failed (%s)", type(exc).__name__)
+            entry, reason = None, part_editor_vm.MERGE_UNAVAILABLE_TEXT
+        async with self:
+            if (
+                self.clip_edit_block != block
+                or following is None
+                or self._clip_ai_next_id(block) != following_id
+                or self._clip_ai_plan(block) != current["plan"]
+                or self._clip_ai_plan(following_id) != following["plan"]
+            ):
+                return  # moved, removed or changed meanwhile: nothing is joined
+            if entry is None:
+                self.clip_ai_merge_error = reason
+                return
+            self._clip_ai_apply_merge(block, following_id, dict(entry["plan"]))
+
+    def _clip_ai_apply_merge(self, block: str, following_id: str, plan: dict[str, Any]) -> None:
+        """The joined part takes `block`'s place and the next one (`following_id`) goes.
+        Its description is the server's now: its revision goes up, so the panel's field
+        (uncontrolled, keyed by id and revision) shows the joined words."""
+        number = self._clip_ai_number(block)
+        before = self._clip_edit_snapshot()
+        self._clip_ai_put(block, plan, described=True)
+        gone = self._clip_ai_index(following_id)
+        self.clip_ai_parts = [p for n, p in enumerate(self.clip_ai_parts) if n != gone]
+        self.clip_sequence = [k for k in self.clip_sequence if k != following_id]
+        self.clip_ai_merge_error = ""
+        self._clip_keep_joins(
+            clip_joins_vm.clean_joins(self.clip_block_joins, self._clip_tl_media())
+        )
+        self._clip_effects_follow()
+        self._clip_edit_changed(before)
+        seconds = ai_block_vm.clamp_seconds(plan.get("seconds"))
+        self.clip_edit_notice = ai_block_vm.merged_line(number, seconds)
+
+    def _clip_ai_create_off(self) -> str:
+        """Why «Crear» is off with AI parts on the timeline ("" = it is not): until PR 2
+        (m-25129406) the server refuses them (`recipe_unavailable`), so nothing is sent."""
+        if ai_block_vm.AI_CREATE_BUILT or not self._clip_ai_tokens():
+            return ""
+        return ai_block_vm.CREATE_OFF_LINE
+
+    @rx.var
+    def clip_ai_review(self) -> dict[str, str]:
+        """«Revisa y crea» with AI parts (design D12, 04A): the two spends apart — «Ahora,
+        al crear» and «Después, al aprobar» —, «Si una parte no sale…» and why «Crear» is
+        off for now ({} without AI parts on the timeline)."""
+        if not self._clip_ai_tokens():
+            return {}
+        wired = self.creations_left >= 0
+        plans = ai_block_vm.plans(self.clip_ai_parts)
+        lines = ai_block_vm.review_cost_lines(
+            self._clip_ai_segments(),
+            plans,
+            previews_left=self.previews_left,
+            previews_quota=self.previews_quota if wired else 0,
+            seconds_left=self.videos_left,
+            seconds_quota=self.videos_quota if wired else 0,
+        )
+        return {**lines, "off": self._clip_ai_create_off()}
+
+    @rx.var
+    def clip_ai_review_shown(self) -> bool:
+        """«Revisa y crea» shows what the AI parts use (they are on the timeline)."""
+        return bool(self._clip_ai_tokens())
+
     # -- ED-10 m-25026648: the timeline -------------------------------------------------
 
     def _clip_tl_media(self) -> list[dict[str, object]]:
@@ -6783,6 +7355,9 @@ class CreativeState(rx.State):
         media = clip_photos_vm.apply_photo_settings(
             media, self.clip_photo_seconds, self.clip_photo_turns
         )
+        # ED-07: the AI parts in their places — a block like any other from here on
+        if self.clip_ai_parts and self._clip_ai_on():
+            media = ai_block_vm.timeline_items(media, self._clip_order_keys(), self.clip_ai_parts)
         # m-25114465: each join's choice, on the block after it (and its overlap on the
         # block before): every reader then lays the blocks as the video comes out
         return clip_joins_vm.apply_joins(
@@ -7032,6 +7607,18 @@ class CreativeState(rx.State):
             elif item.get("kind") == "photo":
                 # ED-14: a photo's end handle and the panel's line at its edges
                 row.update(self._clip_photo_fields(item, full, media))
+            elif item.get("kind") == ai_block_vm.TL_KIND:
+                # ED-07: a «parte con IA» — its badge, line, state and poster; no handles
+                plan = self._clip_ai_plan(str(item["id"]))
+                row.update(
+                    ai_block_vm.row_fields(
+                        item,
+                        plan,
+                        start_s=float(row["start"]),
+                        poster=self._clip_ai_poster(plan),
+                        has_product=self._clip_has_product(),
+                    )
+                )
         return [
             *rows,
             *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
@@ -7589,6 +8176,10 @@ class CreativeState(rx.State):
         for item in media:
             if item["kind"] == "video" and thumbs.get(str(item["key"])):
                 item["thumb"] = clip_editor_vm.SEQ_BASE + thumbs[str(item["key"])]
+            elif item["kind"] == ai_block_vm.TL_KIND:
+                # ED-07: an AI part not made yet shows its poster (design 01)
+                poster = self._clip_ai_poster(self._clip_ai_plan(str(item["id"])))
+                item["thumb"] = clip_editor_vm.SEQ_BASE + poster if poster else ""
         urls = {}
         for effect_id in self._clip_used_effect_ids():
             effect = editor_contract.effect_of(effect_id)
@@ -7918,7 +8509,7 @@ class CreativeState(rx.State):
             rotate=self.clip_rotate,
             effects=self.clip_effect_ids,
             speed=self.clip_speed,
-            order=[item["key"] for item in self._clip_strip()],
+            order=self._clip_order_keys(),  # ED-07: an AI part moved is an order changed
             texts=self._clip_text_resolved(),
             pieces=self.clip_cut_pieces,
         )
@@ -7973,6 +8564,10 @@ class CreativeState(rx.State):
         self.clip_join_dirs = {}
         self.clip_join_used = False
         self.clip_join_open = ""
+        # ED-07: the AI parts go with the Clip they were put in
+        self.clip_ai_parts = []
+        self.clip_ai_more = False
+        self.clip_ai_merge_error = ""
         self.clip_effect_ids = []
         self.clip_effect_uses = []
         self.clip_effect_parts = []
@@ -8070,7 +8665,7 @@ class CreativeState(rx.State):
             and not (broken and key == own)
             for key in unmeasured
         )
-        return clip_editor_vm.recipe_problem(
+        found = clip_editor_vm.recipe_problem(
             self._clip_edit_recipe(),
             unmeasured=unmeasured,
             waiting=waiting,
@@ -8080,6 +8675,16 @@ class CreativeState(rx.State):
             speed_offered=self._clip_fast_allowed(),
             texts_line=self._clip_text_problem(media),
         )
+        if found[0] or not self._clip_ai_tokens():
+            return found
+        # ED-07: what the server would refuse of the AI parts (8 blocks, 6 AI parts, 60 s,
+        # «Sigue a la anterior»…), in the contract's words, before «Crear»; then why
+        # «Crear» is off for now (PR 2)
+        problems = self._clip_ai_problems()
+        if problems:
+            return problems[0]["text"], "warn"
+        off = self._clip_ai_create_off()
+        return (off, "info") if off else ("", "")
 
     @rx.var
     def clip_edit_problem(self) -> list[str]:
@@ -8107,6 +8712,9 @@ class CreativeState(rx.State):
         if not self._clip_local():
             return {}
         data = editor_contract.to_dict(self._clip_edit_recipe())
+        # ED-07 (contract §2): the AI parts' entries go with their blocks — only while
+        # they are on the timeline (the switches on), so off nothing changes
+        ai = {"ai_parts": ai_block_vm.plans(self.clip_ai_parts)} if self._clip_ai_tokens() else {}
         return {
             "clip_reference_mode": "local",
             "segments": data["segments"],
@@ -8114,6 +8722,7 @@ class CreativeState(rx.State):
             "effects": data["effects"],
             "clip_audio": False,
             "clip_subtitles": False,
+            **ai,
         }
 
     async def _clip_preview_tenant(self) -> UUID | None:
@@ -8351,6 +8960,19 @@ class CreativeState(rx.State):
     def _clip_text_holds_next(self) -> bool:
         """«Siguiente» waits on «Arma tu video» while the texts cannot be made."""
         return bool(self.clip_editor_on_screen) and bool(self._clip_text_problem())
+
+    def _clip_ai_missing(self) -> str:
+        """ED-07 (design D10): «Siguiente» waits on «Arma tu video» until every AI part
+        says what happens in it — «Falta contar qué pasa en la parte con IA 1.» ("")."""
+        if not self.clip_editor_on_screen or not self._clip_ai_tokens():
+            return ""
+        for item in self._clip_tl_media():
+            if item.get("kind") != ai_block_vm.TL_KIND:
+                continue
+            plan = self._clip_ai_plan(str(item["id"]))
+            if not str(plan.get("description") or "").strip():
+                return ai_block_vm.missing_description_line(int(item.get("ai_n") or 1))  # type: ignore[call-overload]
+        return ""
 
     def _clip_text_flow(self) -> bool:
         return clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_TEXT
@@ -9134,7 +9756,10 @@ class CreativeState(rx.State):
         text from the marker and opens its panel; with 3 texts it is off. ED-12: with 8
         photos or videos «Foto o video» is off. Why is said ONCE, by the note above
         «Agregar» (`clip_tl_add_note`, the «+»'s `aria-describedby`) — m-25114465 (live
-        test): not again on the timeline's live line, where it read twice in a row."""
+        test): not again on the timeline's live line, where it read twice in a row.
+        ED-07: «Parte con IA» puts one on the track at the marker and opens its panel."""
+        if flow == ai_block_vm.ADD_KEY:
+            return self._clip_add_ai_part()
         if flow == clip_editor_vm.FLOW_MEDIA and clip_editor_vm.timeline_full(
             self._clip_tl_media()
         ):
@@ -9188,7 +9813,7 @@ class CreativeState(rx.State):
             self.clip_cut_pieces = [list(self.clip_cut_pieces[n]) for n in order]
             mapping = clip_editor_vm.order_mapping(own, order)
         shown = list(dict.fromkeys(str(m["key"]) for m in moved))
-        keys = [item["key"] for item in self._clip_strip()]
+        keys = self._clip_order_keys()  # ED-07: the AI parts move too
         self.clip_sequence = clip_editor_vm.reorder_keys(keys, shown)
         self._sync_clip_frames()
         # ED-04: an effect stuck to a block moves with it (one whose blocks are no longer
@@ -9196,7 +9821,9 @@ class CreativeState(rx.State):
         self._clip_effects_follow(mapping)
         self._clip_edit_changed(before)
         if self.clip_edit_notice:
-            self.clip_edit_notice = timeline_vm.moved_text(moved, block_id)  # type: ignore[arg-type]
+            # ED-07: an AI part says its number before and after («ahora es la parte con IA 1»)
+            was = next((int(m.get("ai_n") or 0) for m in media if m["id"] == block_id), 0)  # type: ignore[call-overload]
+            self.clip_edit_notice = timeline_vm.moved_text(moved, block_id, was=was)  # type: ignore[arg-type]
         pieces_now = [str(moved[i]["id"]) for i in at]
         if self.clip_edit_block in pieces_now:
             # a piece's id is its place: the chosen piece keeps being the chosen one
@@ -9210,7 +9837,7 @@ class CreativeState(rx.State):
         ends). The order known now is written first, so only files added after this
         count as new (`_clip_place_fresh`)."""
         media = self._clip_tl_media()
-        self.clip_sequence = [item["key"] for item in self._clip_strip()]
+        self.clip_sequence = self._clip_order_keys()
         self._clip_insert_at = min(max(int(index), 0), len(media))
 
     def _clip_place_fresh(self) -> None:
@@ -9228,7 +9855,7 @@ class CreativeState(rx.State):
         if not fresh:
             return
         media = self._clip_tl_media()
-        keys = [item["key"] for item in strip]
+        keys = self._clip_order_keys()  # ED-07: the AI parts keep their places
         self.clip_sequence = clip_editor_vm.insert_order(keys, media, fresh, at)
         placed = self._clip_tl_media()
         spots = [i for i, item in enumerate(placed) if item["key"] in fresh]
@@ -9333,6 +9960,11 @@ class CreativeState(rx.State):
         lines = []
         if clip_editor_vm.timeline_full(self._clip_tl_media()):
             lines.append(clip_editor_vm.FULL_LINE)
+        elif self._clip_ai_on():
+            # ED-07: «Parte con IA» off — 6 AI parts or 60 s (8 blocks is the line above)
+            why = ai_block_vm.add_reason(self._clip_ai_segments())
+            if why:
+                lines.append(why)
         tab_says = self._clip_text_flow() and not self._clip_text_current()
         if len(self.clip_text_uses) >= clip_texts_vm.TEXTS_MAX and not tab_says:
             lines.append(clip_texts_vm.TEXTS_FULL)
@@ -9723,6 +10355,8 @@ class CreativeState(rx.State):
             return []
         if label != clip_editor_vm.REMOVE:
             return []
+        if ai_block_vm.is_token(block):
+            return self._clip_remove_ai_part(block)  # ED-07: a «parte con IA»
         key, index = clip_editor_vm.piece_of(block)
         track, place = self._clip_track_place(block)
         media = self._clip_tl_media()
@@ -10475,7 +11109,7 @@ class CreativeState(rx.State):
             self._clip_say(self._clip_cap_note(), before=shown)
         strip = self._clip_strip()
         keys = [item["key"] for item in strip]
-        self.clip_sequence = keys
+        self.clip_sequence = self._clip_keep_ai_order(keys)  # ED-07
         # the images and the videos keep the strip's order too: the references between
         # the frames reach the model in the order the operator gave them
         for name in ("clip_images", "clip_videos"):
@@ -10538,7 +11172,7 @@ class CreativeState(rx.State):
         if start == target or not (0 <= start < len(keys) and 0 <= target < len(keys)):
             return
         keys.insert(target, keys.pop(start))
-        self.clip_sequence = keys
+        self.clip_sequence = self._clip_keep_ai_order(keys)  # ED-07
         self._sync_clip_frames()
 
     async def _add_clip_files(self, kind: str, files: list[rx.UploadFile]) -> int:
@@ -10844,6 +11478,8 @@ class CreativeState(rx.State):
             return None  # UI-2: the reel's analysis is not in yet
         if self._clip_text_holds_next():
             return None  # ED-13: the texts say what to change (criterion 3)
+        if self._clip_ai_missing():
+            return None  # ED-07 (D10): every AI part says what happens in it
         old = self._view_index()
         self.gen_step = self._view_index() + 1
         self.gen_step = self._view_index()
@@ -10879,6 +11515,8 @@ class CreativeState(rx.State):
             return None  # UI-2: not past «Qué mostrar» while the reel's analysis is not in
         if wanted > old and self._clip_text_holds_next():
             return None  # ED-13: not past «Arma tu video» while its texts cannot be made
+        if wanted > old and self._clip_ai_missing():
+            return None  # ED-07 (D10): nor while an AI part does not say what happens
         self.gen_step = wanted
         self.gen_step = self._view_index()
         self.gen_direction = DIR_BACK if self._view_index() < old else DIR_NEXT

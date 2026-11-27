@@ -238,9 +238,18 @@ def total_seconds(media: list[dict[str, Any]]) -> float:
     return sum(shown_length(item) for item in media)
 
 
+#: ED-07 (m-25026638): a «parte con IA» on «Fotos y videos» (`data-tl-block="ai"`,
+#: docs/design-system.md §5.10.1). Its name counts the AI parts only (`ai_n`).
+AI_KIND = "ai"
+AI_NAME = "Parte con IA {n}"
+
+
 def media_label(item: Mapping[str, Any], n: int) -> str:
     """A «Fotos y videos» block's short name, as the track shows it: «Foto 2», «Video 1»
-    (`n`: its place on the track, from 1). The joins' words name blocks with it."""
+    (`n`: its place on the track, from 1). The joins' words name blocks with it. ED-07:
+    «Parte con IA 1» — counted among the AI parts only (its `ai_n`, else `n`)."""
+    if item.get("kind") == AI_KIND:
+        return AI_NAME.format(n=int(item.get("ai_n") or n))
     return f"Foto {n}" if item.get("kind") == "photo" else f"Video {n}"
 
 
@@ -255,6 +264,10 @@ def _media_name(item: dict[str, Any], n: int, m: int) -> tuple[str, str, str]:
             f"Foto {n} · {length} s",
         )
     length = amount_tenth(media_length(item))
+    if item["kind"] == AI_KIND:
+        # ED-07: its full name (mode, span, state) is `ai_block_vm.track_block`'s `aria`
+        label = media_label(item, n)
+        return label, f"{label}, dura {length} s", f"{label} · {length} s"
     start, end = clock_tenth(item["src_start"]), clock_tenth(item["src_end"])
     return (
         f"Video {n}",
@@ -265,6 +278,18 @@ def _media_name(item: dict[str, Any], n: int, m: int) -> tuple[str, str, str]:
 
 #: A row with no frame strip (`strip_style`'s fields, empty).
 _NO_STRIP = {"strip": "", "strip_size": "", "strip_ratio": "", "strip_w": ""}
+#: ED-07: an AI part's own fields (`ai_block_vm.track_block`), "" on every other row so
+#: the track's `rx.foreach` reads the same keys on each.
+NO_AI = {
+    "ai_badge": "",
+    "ai_mode_icon": "",
+    "ai_line": "",
+    "ai_secs": "",
+    "ai_state": "",
+    "ai_state_word": "",
+    "ai_state_icon": "",
+    "ai_tone": "",
+}
 
 
 def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -341,6 +366,8 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "thumb": str(item.get("thumb", "")),
                 # ED-11b: its frame strip ("" until the screen lays one, `strip_style`)
                 **_NO_STRIP,
+                # ED-07: a «parte con IA»'s badge, line and state (the screen fills them)
+                **NO_AI,
                 # m-25129389: a video's seconds to the tenth, a photo's on the ½ s
                 "secs": f"{amount(length) if item['kind'] == 'photo' else amount_tenth(length)} s",
                 "speed": _speed_value(item),
@@ -556,6 +583,7 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "help_id": HELP_IDS[EFFECT_HELP if kind == "effect" else TIME_HELP],
                 "thumb": "",
                 **_NO_STRIP,
+                **NO_AI,
                 "secs": "",
                 "speed": "1",
                 "speed_tag": "",
@@ -752,10 +780,18 @@ def move(media: list[dict[str, Any]], block_id: str, step: int) -> list[dict[str
     return order
 
 
-def moved_text(media: list[dict[str, Any]], block_id: str) -> str:
+def moved_text(media: list[dict[str, Any]], block_id: str, *, was: int = 0) -> str:
     """The live line after a move (§4): «Moviste el video {n}.» / «Moviste la foto {n}.»,
     with ``n`` its new place."""
+    ai = 0
     for n, item in enumerate(media, start=1):
+        if item["kind"] == AI_KIND:
+            ai += 1  # ED-07: counted among the AI parts; `was`: its number before the move
+            if item["id"] == block_id:
+                if was and was != ai:
+                    return f"Moviste la parte con IA {was}: ahora es la parte con IA {ai}."
+                return f"Moviste la parte con IA {ai}."
+            continue
         if item["id"] == block_id:
             noun = "la foto" if item["kind"] == "photo" else "el video"
             return f"Moviste {noun} {n}."

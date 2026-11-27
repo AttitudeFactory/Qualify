@@ -91,10 +91,8 @@ from qualify_creative.schemas import ContentBrief, PartRecipe, PartRef, SourceSe
 
 from qualify_api.creative.clip_avatar import (
     AVATAR_EFFECT_TEXT,
-    AVATAR_JOIN_TEXT,
     ai_stretches,
     avatar_effect_problems,
-    avatar_join_problems,
     block_stretches,
     block_windows,
     stretch_problem,
@@ -964,11 +962,9 @@ def produce_local(
                 code,
             )
             return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=owner_text)
-    # m-25119867 (Deivid, 2026-11-25): a join next to an avatar block is only «Corte»,
-    # whatever path put it there — never a blend into its voice
-    if avatar_join_problems(part.segments, [stretch.index for stretch in blocks]):
-        logger.warning("draft %s: a blending join next to an avatar block, refused", draft_id)
-        return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=AVATAR_JOIN_TEXT)
+    # m-25128784 (ADR 50 §12.6, Deivid 2026-11-26): m-25119867's «solo Corte junto a un
+    # avatar» is gone — a join next to an avatar block takes any transition; «Corte» holds only
+    # at a character scene's exit (`character_scene.scene_problems`)
     # m-25119867 (ADR 50 §11, «Textos sí, efectos no»): no smoke, embers or steam layer
     # over an avatar block, whatever path put it there
     windows = block_windows(

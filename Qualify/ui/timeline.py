@@ -196,6 +196,62 @@ def _strip(row: Any, cells: Any, thumb_base: rx.Var[str] | str) -> rx.Component:
     )
 
 
+def _icon_of(name: Any, icons: Sequence[str], *, size: int = 11) -> rx.Component:
+    """One of `icons` by its name (an `rx.icon` needs its tag when compiled)."""
+    return rx.match(
+        name,
+        *((icon, rx.icon(icon, size=size, aria_hidden="true")) for icon in icons[1:]),
+        rx.icon(icons[0], size=size, aria_hidden="true"),
+    )
+
+
+#: ED-07: the modes' icons (docs/design-system.md §5.10.1), «Nueva»'s first (the default).
+_AI_MODE_ICONS = ("wand-sparkles", "copy", "corner-down-right")
+#: …and the states' marks with a shape (the rest show the dot).
+_AI_STATE_ICONS = ("clock", "check", "circle-x", "triangle-alert")
+
+
+def _ai_lines(row: Any) -> rx.Component:
+    """ED-07 (m-25026638): a «parte con IA»'s two lines on «Fotos y videos» — line 1 ✦,
+    the mode's icon and its short word (`.q-tl__mode`, a category); line 2 its name and
+    seconds before «Crear» (`.q-tl__ai-name`), its state after (`.q-tl__state`, a mark
+    and its word in its tone). Never colour alone; its whole name is the button's
+    `aria-label`."""
+    mode = rx.el.span(
+        rx.el.span(
+            rx.icon(T.AI_ICON, size=11, aria_hidden="true"),
+            _icon_of(row["ai_mode_icon"], _AI_MODE_ICONS),
+            rx.el.span(row["ai_badge"], class_name="q-tl__mode-word"),
+            class_name="q-tl__mode",
+        ),
+        class_name="q-tl__ai-line",
+        aria_hidden="true",
+    )
+    state = rx.el.span(
+        rx.cond(
+            row["ai_state_icon"] != "",
+            _icon_of(row["ai_state_icon"], _AI_STATE_ICONS),
+            rx.el.span(class_name="q-tl__state-dot", aria_hidden="true"),
+        ),
+        rx.el.span(row["ai_state_word"], class_name="q-tl__state-word"),
+        class_name="q-tl__state",
+        custom_attrs={"data-tone": row["ai_tone"]},
+    )
+    name = rx.el.span(
+        rx.el.span(row["label"], class_name="q-tl__label"),
+        rx.el.span(" · " + row["ai_secs"], class_name="q-tl__secs"),
+        class_name="q-tl__ai-name",
+    )
+    return rx.fragment(
+        mode,
+        rx.el.span(
+            rx.cond(row["ai_state"] == "plan", name, state),
+            class_name="q-tl__ai-line",
+            aria_hidden="true",
+        ),
+    )
+
+
 def _block(
     row: Any,
     *,
@@ -204,6 +260,7 @@ def _block(
     thumb_base: rx.Var[str] | str = "",
     overlap: bool = False,
     frames: Frames | None = None,
+    ai_on: rx.Var[bool] | bool = False,
 ) -> rx.Component:
     chosen = row["id"] == selected
     # ED-11: a video or a photo with a picture shows it under its name and seconds
@@ -225,12 +282,20 @@ def _block(
     # ED-11 review: under the picture, its film / photo icon centred on the block — it
     # shows through when the picture does not load (a `/r2media` token past its hour) or
     # is hidden (high contrast), so the block is never a bare grey box. No script.
+    # ED-07 (m-25026638): a «parte con IA» only while the screen's state says so (`ai_on`,
+    # a state var: the switch is read on the server, never when the page is compiled); a
+    # screen without AI parts passes nothing and renders as before
+    plain = rx.cond(
+        row["kind"] == "photo",
+        rx.icon("image", size=T.ICON_MD),
+        rx.icon("film", size=T.ICON_MD),
+    )
+    is_ai = (row["kind"] == vm.AI_KIND) & ai_on if isinstance(ai_on, rx.Var) else None
+    fallback = (
+        rx.cond(is_ai, rx.icon(T.AI_ICON, size=T.ICON_MD), plain) if is_ai is not None else plain
+    )
     under = rx.el.span(
-        rx.cond(
-            row["kind"] == "photo",
-            rx.icon("image", size=T.ICON_MD),
-            rx.icon("film", size=T.ICON_MD),
-        ),
+        fallback,
         class_name="q-tl__pic-fallback",
         aria_hidden="true",
     )
@@ -242,12 +307,7 @@ def _block(
             rx.cond(row["thumb"] != "", picture),
             rx.cond(strip, _strip(row, frames[row["id"]], thumb_base)),  # type: ignore[index]
         )
-    button = rx.el.button(
-        rx.cond(
-            pic,
-            rx.fragment(under, picture),
-            rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
-        ),
+    own = rx.fragment(
         rx.el.span(row["label"], class_name="q-tl__label", aria_hidden="true"),
         rx.cond(
             pic & (row["secs"] != ""),
@@ -257,6 +317,15 @@ def _block(
             row["speed_tag"] != "",
             rx.el.span(row["speed_tag"], class_name="q-tl__speed", aria_hidden="true"),
         ),
+    )
+    button = rx.el.button(
+        rx.cond(
+            pic,
+            rx.fragment(under, picture),
+            rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
+        ),
+        # ED-07: a «parte con IA» draws its two lines (docs/design-system.md §5.10.1)
+        rx.cond(is_ai, _ai_lines(row), own) if is_ai is not None else own,
         type="button",
         class_name="q-tl__block",
         on_click=on_select(row["id"]),
@@ -276,6 +345,8 @@ def _block(
             **({"data-tl-strip": rx.cond(strip, "1", "0")} if strip is not None else {}),
             # ED-13: in a clash (two texts in one place at once) — the warning tone
             "data-tl-warn": rx.cond(row["warn"] == "1", "1", "0"),
+            # ED-07: a «parte con IA»'s state (`plan` before «Crear»; "" on other blocks)
+            **({"data-ai-state": rx.cond(is_ai, row["ai_state"], "")} if is_ai is not None else {}),
         },
     )
     # m-25114465 («bloques enteros, encimados»): the start of a «Fotos y videos» block
@@ -593,8 +664,13 @@ def timeline(
     joins: Rows | None = None,
     on_join: Callable[[str], Any] | None = None,
     frames: Frames | None = None,
+    ai_on: rx.Var[bool] | bool = False,
 ) -> rx.Component:
     """The timeline of one video.
+
+    ED-07 (m-25026638): ``ai_on`` — a screen's state var (`CreativeState.clip_ai_on`,
+    `QUALIFY_CLIP_AI_PARTS` read on the server) — draws a «parte con IA» block (`ai`)
+    with its two lines, ✦ and `data-ai-state`; never read from the environment here.
 
     m-25114465: with ``joins`` (rows `{id, at, kind, name, open, warn}`) and ``on_join(id)``
     a point sits on the line between every two blocks of «Fotos y videos» — «la unión»
@@ -626,7 +702,12 @@ def timeline(
     (`timeline_vm.strip_cells`) — draws the server's frame strip under a video block whose
     row has a ``strip`` path (also after ``thumb_base``); a block without one keeps its
     picture."""
-    block_props = {"selected": selected, "on_select": on_select, "thumb_base": thumb_base}
+    block_props = {
+        "selected": selected,
+        "on_select": on_select,
+        "thumb_base": thumb_base,
+        "ai_on": ai_on,
+    }
     lanes = effect_lanes is not None and effect_lane_names is not None
     effect_names: list[rx.Component] = [
         rx.foreach(
@@ -749,6 +830,8 @@ def timeline_add(
     *,
     off: Mapping[str, Any] | None = None,
     note: rx.Var[str] | str = "",
+    options: Sequence[tuple[str, str, str]] | None = None,
+    shown: Mapping[str, Any] | None = None,
 ) -> rx.Component:
     """«Agregar» with nothing chosen: the kit's `orbit_menu` — «+» turns into «×» and
     opens «Foto o video · Texto · Efecto · Idea» to its right. ``on_add(key)`` OPENS the
@@ -758,6 +841,7 @@ def timeline_add(
     options open over it (ED-12: «Tu video ya tiene 8 fotos o videos. Quita una para
     agregar otra.») —, with an id the «+» names in `aria-describedby` (`ADD_NOTE_ID`)."""
     shut = dict(off or {})
+    drawn = dict(shown or {})  # ED-07: an option drawn only while its var is true
     saying = rx.Var.create(note) != ""
     return rx.el.div(
         rx.cond(
@@ -770,8 +854,15 @@ def timeline_add(
             orbit_menu(
                 vm.ADD_LABEL,
                 [
-                    OrbitItem(key, icon, text, on_add(key), disabled=shut.get(key, False))
-                    for key, icon, text in vm.ADD_OPTIONS
+                    OrbitItem(
+                        key,
+                        icon,
+                        text,
+                        on_add(key),
+                        disabled=shut.get(key, False),
+                        shown=drawn.get(key, True),
+                    )
+                    for key, icon, text in (vm.ADD_OPTIONS if options is None else options)
                 ],
                 # Deivid, 2026-11-16: the options open to the right of the «+», not above it
                 direction="right",
@@ -793,6 +884,8 @@ def timeline_actions(
     actions: dict[str, tuple[tuple[str, str], ...]] | None = None,
     add_off: Mapping[str, Any] | None = None,
     add_note: rx.Var[str] | str = "",
+    add_options: Sequence[tuple[str, str, str]] | None = None,
+    add_shown: Mapping[str, Any] | None = None,
 ) -> rx.Component:
     """What the owner can do now (§2): with nothing chosen (``kind`` ""), «Agregar»
     (`timeline_add`); with a video, a photo, a text or an effect chosen, its up-to-4
@@ -800,7 +893,8 @@ def timeline_actions(
     ``label``: the chosen block's short name — the bar is «Acciones de Video 1»
     (`aria-label`). ``actions``: a screen's own buttons by kind (default `vm.ACTIONS`;
     a kind with none shows no island). ``add_off`` / ``add_note``: «Agregar»'s options
-    turned off and why (`timeline_add`)."""
+    turned off and why (`timeline_add`); ``add_options`` its options (default
+    `vm.ADD_OPTIONS`; ED-07 adds «Parte con IA» behind its switch)."""
     by_kind = vm.ACTIONS if actions is None else actions
     name: rx.Var[str] | str = (
         vm.actions_label(label)
@@ -819,10 +913,12 @@ def timeline_actions(
             aria_label=name,
         )
 
+    # ED-07: a screen's own kinds too (a «parte con IA», `ai`), after today's four
+    kinds = dict.fromkeys(("video", "photo", "text", "effect", *by_kind))
     return rx.match(
         kind,
-        *((key, bar(key)) for key in ("video", "photo", "text", "effect")),
-        timeline_add(on_add, off=add_off, note=add_note),
+        *((key, bar(key)) for key in kinds),
+        timeline_add(on_add, off=add_off, note=add_note, options=add_options, shown=add_shown),
     )
 
 

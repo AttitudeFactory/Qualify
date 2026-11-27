@@ -465,7 +465,8 @@
     if (el.hasAttribute("data-tl-block")) {
       if (arrow || vertical) e.preventDefault();
       var kind = el.getAttribute("data-tl-block");
-      if ((arrow && (kind === "video" || kind === "photo")) || vertical) {
+      // ED-07: a «parte con IA» («ai») moves with ←/→ as a photo or a video
+      if ((arrow && (kind === "video" || kind === "photo" || kind === "ai")) || vertical) {
         refocusId = id;
         refocusFrom = el;
         refocusUntil = Date.now() + 800;

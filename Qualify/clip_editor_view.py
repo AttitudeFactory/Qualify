@@ -44,7 +44,9 @@ built by `content_generator` from its own helpers and handed in.
 from __future__ import annotations
 
 import reflex as rx
+from qualify_creative.schemas import PART_DESCRIPTION_MAX
 
+from . import ai_block_vm as ai_vm
 from . import clip_editor_vm as vm
 from . import clip_joins_vm as joins_vm
 from . import clip_photos_vm as photos_vm
@@ -58,12 +60,14 @@ from .ui import tokens as T
 from .ui.clip_player import SOUND_LABEL
 from .ui.edit_preview import edit_sequence_preview, edit_sequence_script
 from .ui.primitives import (
+    ai_mode_tag,
     asset_script,
     callout,
     choice_card,
     choice_card_check,
     drawer,
     dropzone,
+    removable_pill,
     tone_badge,
 )
 from .ui.text_panel import text_panel
@@ -107,6 +111,8 @@ def _preview() -> rx.Component:
             mute_label=MUTE_LABEL,
             region_label=vm.PREVIEW_REGION,
             clock=False,
+            # ED-07: the AI part's mark, while the state says the switch is on
+            ai_mark=S.clip_ai_on,
         ),
         # the own R2 video has no playable path yet: ask for one (each time it is due)
         rx.cond(
@@ -563,12 +569,421 @@ def _photo_block() -> rx.Component:
     )
 
 
+# -- ED-07 (m-25026638): the «parte con IA» panel ---------------------------------------
+
+#: The modes' icons (docs/design-system.md §5.10.1), «Nueva»'s first (the default).
+_AI_MODE_ICONS = ("wand-sparkles", "copy", "corner-down-right")
+#: Ids the panel's controls name in `aria-describedby`.
+_AI_DESCRIPTION_ID = ai_vm.DESCRIPTION_FIELD_ID
+_AI_DESCRIPTION_DEBOUNCE_MS = 400
+_AI_SECONDS_ID = "q-ai-part-seconds-why"
+_AI_TRY_ID = "q-ai-part-try-why"
+_AI_MERGE_ID = "q-ai-part-merge-why"
+_AI_GUIDE_ID = "q-ai-part-guide"
+#: «Video o audio tuyo»'s upload (the business's own folder, as «Subir»).
+AI_GUIDE_UPLOAD_ID = "clip_ai_guide"
+_AI_GUIDE_ACCEPT = {
+    "video/mp4": [".mp4"],
+    "video/quicktime": [".mov"],
+    "audio/mpeg": [".mp3"],
+    "audio/wav": [".wav"],
+}
+
+
+def _mode_icon(name: rx.Var, size: int = 16) -> rx.Component:
+    return rx.match(
+        name,
+        *((icon, rx.icon(icon, size=size, aria_hidden="true")) for icon in _AI_MODE_ICONS[1:]),
+        rx.icon(_AI_MODE_ICONS[0], size=size, aria_hidden="true"),
+    )
+
+
+def _ai_option(option: rx.Var) -> rx.Component:
+    """One way of «¿Cómo la hacemos?»: a radio card; one that cannot be chosen now stays
+    focusable (`aria-disabled`, design D8) with its reason under it, which it names."""
+    why = "q-ai-mode-why-" + option["mode"]
+    return choice_card(
+        rx.hstack(
+            _mode_icon(option["icon"]),
+            rx.text(option["label"], size="2", weight="medium"),
+            spacing="2",
+            align="center",
+        ),
+        rx.text(option["help"], size="1", color=T.TEXT_MUTED),
+        rx.cond(
+            option["reason"] != "",
+            rx.text(option["reason"], size="1", id=why, class_name="q-choice-reason"),
+        ),
+        selected=option["chosen"] == "1",
+        soft_off=option["reason"] != "",
+        on_select=S.set_clip_ai_mode(option["mode"]),
+        padding="0.75rem 1rem",
+        aria_describedby=rx.cond(option["reason"] != "", why, ""),
+        width="100%",
+        text_align="left",
+    )
+
+
+def _ai_mode() -> rx.Component:
+    """«¿Cómo la hacemos?»: the full badge (`ai_mode_tag`), why the rule chose it — or
+    «Lo cambiaste tú.» with «Volver a lo que te propusimos» — and the three ways."""
+    row = S.clip_ai_chosen
+    reel = row["from_reel"] == "1"
+    return rx.vstack(
+        rx.cond(reel, rx.text(ai_vm.MODE_TITLE, size="2", weight="bold", as_="div")),
+        rx.hstack(
+            rx.match(
+                row["mode"],
+                ("edit", ai_mode_tag(row["full"], "copy")),
+                ("extend", ai_mode_tag(row["full"], "corner-down-right")),
+                ai_mode_tag(row["full"], "wand-sparkles"),
+            ),
+            wrap="wrap",
+            spacing="2",
+            custom_attrs={"data-ai-mode": row["mode"]},
+        ),
+        rx.cond(
+            reel & (row["reason"] != ""),
+            rx.hstack(
+                rx.cond(
+                    row["changed"] == "1",
+                    rx.icon("pencil", size=T.ICON_SM, aria_hidden="true"),
+                    rx.icon("info", size=T.ICON_SM, aria_hidden="true", class_name="q-ai-why"),
+                ),
+                rx.text(row["reason"], size="1"),
+                rx.cond(
+                    row["back_label"] != "",
+                    rx.button(
+                        row["back_label"],
+                        type="button",
+                        variant="ghost",
+                        size="1",
+                        min_height="44px",
+                        on_click=S.set_clip_ai_mode(row["back_to"]),
+                    ),
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+        ),
+        # ux review: with a reel, the three ways to choose from; without one, «Nueva» is
+        # the only way — said as a fact, never as a question
+        rx.cond(
+            row["from_reel"] == "1",
+            rx.el.div(
+                rx.foreach(S.clip_ai_options, _ai_option),
+                role="radiogroup",
+                aria_label=ai_vm.MODE_TITLE,
+                class_name="q-ai-modes",
+                style={"display": "grid", "gap": "0.5rem", "width": "100%"},
+            ),
+            rx.vstack(
+                rx.text(row["mode_fact"], size="2"),
+                rx.text(row["mode_help"], size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _ai_description() -> rx.Component:
+    row = S.clip_ai_chosen
+    return rx.vstack(
+        rx.el.label(
+            ai_vm.DESCRIPTION_TITLE,
+            html_for=_AI_DESCRIPTION_ID,
+            class_name="rt-Text rt-r-size-2 rt-r-weight-bold",
+        ),
+        # kept after a pause while typing (~400 ms) and when the field is left (ux
+        # review). Uncontrolled (`default_value`): the server's echo never overwrites
+        # what is being typed; `key` starts another part from its own words. Each event
+        # names ITS part, so words that arrive late never land on another one (review)
+        rx.text_area(
+            default_value=row["description"],
+            key=row["desc_key"],  # its id and revision: a join shows the joined words
+            on_change=lambda value: S.set_clip_ai_description(row["id"], value).debounce(
+                _AI_DESCRIPTION_DEBOUNCE_MS
+            ),
+            on_blur=lambda value: S.set_clip_ai_description(row["id"], value),
+            id=_AI_DESCRIPTION_ID,
+            max_length=PART_DESCRIPTION_MAX,
+            width="100%",
+            min_height="5rem",
+            aria_describedby=_AI_DESCRIPTION_ID + "-example",
+        ),
+        rx.text(
+            ai_vm.DESCRIPTION_EXAMPLE,
+            size="1",
+            color=T.TEXT_MUTED,
+            id=_AI_DESCRIPTION_ID + "-example",
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _ai_photo(photo: rx.Var) -> rx.Component:
+    return choice_card(
+        rx.hstack(
+            rx.cond(
+                photo["thumb"] != "",
+                rx.image(
+                    src=BACKEND_BASE + photo["thumb"],
+                    alt="",
+                    width="40px",
+                    height="40px",
+                    object_fit="cover",
+                    border_radius=T.RADIUS_CONTROL,
+                ),
+                rx.icon("image", size=T.ICON_MD, aria_hidden="true"),
+            ),
+            rx.text(photo["name"], size="1", class_name="q-truncate"),
+            choice_card_check(),
+            spacing="2",
+            align="center",
+            width="100%",
+        ),
+        selected=photo["on"] == "1",
+        role="checkbox",
+        on_select=S.toggle_clip_ai_photo(photo["key"]),
+        padding="0.5rem 0.75rem",
+        width="100%",
+    )
+
+
+def _ai_photos() -> rx.Component:
+    row = S.clip_ai_chosen
+    return rx.vstack(
+        rx.text(ai_vm.PHOTOS_TITLE, size="2", weight="bold", as_="div"),
+        rx.cond(
+            S.clip_ai_photos.length() > 0,  # type: ignore[attr-defined]
+            rx.el.div(
+                rx.foreach(S.clip_ai_photos, _ai_photo),
+                role="group",
+                aria_label=ai_vm.PHOTOS_TITLE,
+                style={
+                    "display": "grid",
+                    "gap": "0.5rem",
+                    "width": "100%",
+                    "gridTemplateColumns": "repeat(auto-fill, minmax(9rem, 1fr))",
+                },
+            ),
+            rx.text(ai_vm.PHOTOS_NONE, size="1", color=T.TEXT_MUTED),
+        ),
+        rx.cond(
+            row["product_note"] != "",
+            rx.text(row["product_note"], size="1", color=T.TEXT_MUTED),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _ai_step(label: str, delta: int, reason: rx.Var) -> rx.Component:
+    """«− 1 s» / «+ 1 s»: off with its reason (focusable, `aria-disabled`)."""
+    return rx.button(
+        label,
+        type="button",
+        variant="surface",
+        min_height="44px",
+        min_width="44px",
+        on_click=S.step_clip_ai_seconds(delta),
+        aria_disabled=rx.cond(reason != "", "true", "false"),
+        aria_describedby=rx.cond(reason != "", _AI_SECONDS_ID, ""),
+        class_name=rx.cond(reason != "", "q-button-off", ""),
+    )
+
+
+def _ai_seconds() -> rx.Component:
+    row = S.clip_ai_chosen
+    why = rx.cond(row["minus_reason"] != "", row["minus_reason"], row["plus_reason"])
+    return rx.vstack(
+        rx.text(ai_vm.SECONDS_LABEL, size="2", weight="bold", as_="div"),
+        rx.hstack(
+            _ai_step(ai_vm.MINUS_LABEL, -1, row["minus_reason"]),
+            rx.text(
+                row["seconds_text"],
+                size="3",
+                weight="bold",
+                class_name="q-nums",
+                min_width="3rem",
+                text_align="center",
+            ),
+            _ai_step(ai_vm.PLUS_LABEL, 1, row["plus_reason"]),
+            spacing="2",
+            align="center",
+        ),
+        rx.text(row["seconds_help"], size="1", color=T.TEXT_MUTED),
+        rx.text(
+            why,
+            size="1",
+            id=_AI_SECONDS_ID,
+            class_name="q-choice-reason",
+            display=rx.cond(why != "", "block", "none"),
+        ),
+        rx.cond(
+            row["seconds_note"] != "",
+            rx.text(row["seconds_note"], size="1", color=T.TEXT_MUTED),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _ai_guide_file(item: rx.Var) -> rx.Component:
+    return removable_pill(
+        item["name"],
+        S.remove_clip_ai_guide(item["key"]),
+        icon=None,
+        remove_label="Quitar " + item["name"],
+    )
+
+
+def _ai_guide() -> rx.Component:
+    """«Más opciones → Video o audio tuyo» («Nueva» only, contract §3.1): folded; in any
+    other mode, how to get it."""
+    row = S.clip_ai_chosen
+    body = rx.vstack(
+        rx.text(ai_vm.GUIDE_HELP, size="1", color=T.TEXT_MUTED),
+        rx.flex(rx.foreach(S.clip_ai_guides, _ai_guide_file), wrap="wrap", gap="0.5rem"),
+        dropzone(
+            rx.hstack(
+                rx.icon("upload", size=T.ICON_SM, aria_hidden="true"),
+                rx.text(ai_vm.GUIDE_LABEL, size="2"),
+                spacing="2",
+                align="center",
+            ),
+            upload_id=AI_GUIDE_UPLOAD_ID,
+            accept=_AI_GUIDE_ACCEPT,
+            max_files=3,
+            variant="compact",
+            multiple=True,
+            on_drop=S.handle_clip_ai_guide_uploads(  # type: ignore[call-arg]
+                rx.upload_files(upload_id=AI_GUIDE_UPLOAD_ID)
+            ),
+        ),
+        id=_AI_GUIDE_ID,
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+    return rx.vstack(
+        rx.button(
+            rx.icon(rx.cond(S.clip_ai_more, "chevron-down", "chevron-right"), size=16),
+            ai_vm.MORE_OPTIONS + " · " + ai_vm.GUIDE_LABEL,
+            type="button",
+            variant="ghost",
+            min_height="44px",
+            aria_expanded=S.clip_ai_more,
+            aria_controls=_AI_GUIDE_ID,
+            on_click=S.toggle_clip_ai_more,
+        ),
+        rx.cond(
+            S.clip_ai_more,
+            rx.cond(
+                row["guide_shown"] == "1",
+                body,
+                rx.text(row["guide_reason"], size="1", color=T.TEXT_MUTED, id=_AI_GUIDE_ID),
+            ),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _ai_actions() -> rx.Component:
+    """«Probar esta parte» (off until PR 2, its reason beside it), «Juntar con la
+    siguiente» (a short part of a reel). «Quitar» is the bar's, never twice."""
+    row = S.clip_ai_chosen
+    return rx.vstack(
+        rx.cond(
+            row["problem"] != "",
+            callout(row["problem"], "warn"),
+        ),
+        rx.flex(
+            rx.button(
+                rx.icon(T.AI_ICON, size=T.ICON_SM, aria_hidden="true"),
+                ai_vm.TRY_LABEL,
+                type="button",
+                variant="soft",
+                min_height="44px",
+                aria_disabled=rx.cond(row["try_reason"] != "", "true", "false"),
+                aria_describedby=_AI_TRY_ID,
+                class_name=rx.cond(row["try_reason"] != "", "q-button-off", ""),
+            ),
+            rx.cond(
+                row["merge_shown"] == "1",
+                rx.button(
+                    ai_vm.MERGE_LABEL,
+                    type="button",
+                    variant="surface",
+                    min_height="44px",
+                    on_click=S.merge_clip_ai_part,
+                    aria_disabled=rx.cond(row["merge_reason"] != "", "true", "false"),
+                    aria_describedby=rx.cond(row["merge_reason"] != "", _AI_MERGE_ID, ""),
+                    class_name=rx.cond(row["merge_reason"] != "", "q-button-off", ""),
+                ),
+            ),
+            wrap="wrap",
+            gap="0.5rem",
+        ),
+        rx.text(
+            rx.cond(row["try_reason"] != "", row["try_reason"], row["try_line"]),
+            size="1",
+            color=T.TEXT_MUTED,
+            id=_AI_TRY_ID,
+        ),
+        rx.cond(
+            row["merge_reason"] != "",
+            rx.text(row["merge_reason"], size="1", color=T.TEXT_MUTED, id=_AI_MERGE_ID),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _ai_part() -> rx.Component:
+    """ED-07 (m-25026638): the chosen «parte con IA»'s panel (design 02): «Sin crear ·
+    gratis hasta «Crear»», «¿Cómo la hacemos?», «¿Qué pasa en esta parte?», its photos,
+    its whole seconds, «Más opciones → Video o audio tuyo» and its actions. No
+    «Velocidad», «Girar» nor «Cortar»: an AI part goes at ×1 (contract §2)."""
+    row = S.clip_ai_chosen
+    return rx.cond(
+        row["id"] != "",
+        rx.vstack(
+            rx.text(row["not_created"], size="1", color=T.TEXT_MUTED),
+            # ux review: what happens first, then its photos and seconds, then how
+            _ai_description(),
+            _ai_photos(),
+            _ai_seconds(),
+            _ai_mode(),
+            _ai_guide(),
+            _ai_actions(),
+            spacing="4",
+            width="100%",
+            align_items="start",
+            custom_attrs={"data-ai-panel": row["id"]},
+        ),
+    )
+
+
 def _block_extra() -> rx.Component:
     """The chosen block's own fields, by what it is."""
     row = S.clip_tl_chosen
     return rx.match(
         row["kind"],
         ("photo", _photo_block()),
+        (ai_vm.TL_KIND, _ai_part()),
         (
             "video",
             rx.cond(
@@ -790,7 +1205,10 @@ def _timeline_body() -> rx.Component:
     reader = rx.box(display="none", key=S.clip_placement_videos, on_mount=S.load_clip_placement)
     # ED-11b: the frame strips' reader, mounted again when the Clip's videos change
     strips = rx.box(display="none", key=S.clip_strip_videos, on_mount=S.watch_clip_frame_strips)
-    return rx.fragment(_timeline_layout(), reader, strips)
+    # ED-07 (review): the session's business, for the AI parts' file checks — always read
+    # when the timeline mounts (the switch is the server's, never the compile's)
+    tenant = rx.box(display="none", on_mount=S.remember_clip_tenant)
+    return rx.fragment(_timeline_layout(), reader, strips, tenant)
 
 
 def _timeline_layout() -> rx.Component:
@@ -817,6 +1235,8 @@ def _timeline_layout() -> rx.Component:
             # m-25114465: «la unión» between every two blocks ([] off the switch)
             joins=S.clip_tl_joins,
             on_join=S.open_clip_join,
+            # ED-07: a «parte con IA» is drawn while the state says the switch is on
+            ai_on=S.clip_ai_on,
         ),
         timeline_actions(
             S.clip_tl_chosen_kind,
@@ -825,7 +1245,15 @@ def _timeline_layout() -> rx.Component:
             label=S.clip_tl_chosen_label,
             actions=vm.EDITOR_ACTIONS,
             # ED-13 (criterion 2): «Texto» off with 3 texts, said above the «+»
-            add_off={"media": S.clip_tl_full, "text": S.clip_text_full},
+            add_off={
+                "media": S.clip_tl_full,
+                "text": S.clip_text_full,
+                ai_vm.ADD_KEY: S.clip_ai_add_off,  # ED-07: 8 blocks, 6 AI parts or 60 s
+            },
+            # ED-07: «Parte con IA», drawn only while the state says the switch is on
+            # (`clip_ai_on`, read on the server — as `clip_editor_shown` for the editor)
+            add_options=ai_vm.add_options(tl_vm.ADD_OPTIONS, on=True),
+            add_shown={ai_vm.ADD_KEY: S.clip_ai_on},
             add_note=S.clip_tl_add_note,
         ),
         bar_below=True,
