@@ -107,6 +107,7 @@ from . import (
     clip_gallery_vm,
     clip_joins_vm,
     clip_photos_vm,
+    clip_refs_vm,
     clip_texts_vm,
     edit_sequence,
     editor_idea_vm,
@@ -897,7 +898,8 @@ async def _read_reel_wait(
         except Exception as exc:  # noqa: BLE001 — the list of always, never a wait failure
             logger.warning("reel plan as blocks unreadable: %s", type(exc).__name__)
             laid = None
-    return reel_wait_vm.ready(len(entries)), entries, list(laid or [])
+    # as it came: `reel_blocks`' ops carry how much of the reel they follow (m-25143223)
+    return reel_wait_vm.ready(len(entries)), entries, laid or []
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -1969,12 +1971,30 @@ class CreativeState(rx.State):
     #: (`ai_block_vm`). Only with `QUALIFY_CLIP_AI_PARTS` on and «Arma tu video» shown;
     #: kept at once, no «Deshacer». Always a new list.
     clip_ai_parts: list[dict[str, Any]] = []
-    #: ED-07: «Más opciones» («Video o audio tuyo») open in the chosen AI part's panel.
-    clip_ai_more: bool = False
+    #: m-25142725: the reference tracks under «Fotos y videos» — each item a block of
+    #: «Fotos / Videos / Audios de referencia» (`clip_refs_vm`). Only with the AI parts on;
+    #: kept at once, as every change. Always a new list.
+    clip_refs: list[dict[str, Any]] = []
+    #: m-25142725: «Mostrar a la IA»'s tab — which kind, and from where.
+    clip_ref_kind: str = "photo"
+    #: the AI part whose «Agregar una referencia» opened the tab ("" = the playhead's).
+    _clip_ref_target: str = ""
+    #: what the references under a moved AI part did, said after the change's own line.
+    _clip_ref_followed: str = ""
+    #: this change already wrote its own live line (a follow then goes after it, else
+    #: the follow's words replace the line of before).
+    _clip_ref_own: bool = False
+    #: m-25142725: where each AI part was the last time the references were laid against
+    #: the timeline (its id → [start, end]); every change compares with it, so a reference
+    #: follows its part whatever moved it, and never twice.
+    _clip_ref_spans: dict[str, list[float]] = {}
     #: ED-06 (m-25026636, PR 7): «Hacer uno parecido» with `QUALIFY_CLIP_AI_PARTS` on — the
     #: reel's plan is on «Arma tu video»'s timeline as blocks (`plan_blocks`), under the
     #: «Video de inspiración» card, instead of «Orden del clip»'s list.
     clip_reel_blocks: bool = False
+    #: m-25143223: the card's «Usamos 44 s de los 63 del reel.» when the laid plan stops
+    #: before the reel's end ("" when it covers it whole, or no plan is laid).
+    clip_reel_cut: str = ""
     #: ED-06 (design D21): the general panel («¿De qué trata tu video?») is open as the
     #: thing chosen; any block, join or side panel chosen closes it.
     clip_general_open: bool = False
@@ -3165,6 +3185,8 @@ class CreativeState(rx.State):
                 return self._reel_review().all_reason != ""
             if self._carousel_too_many():
                 return True
+            if self._clip_refs_over():
+                return True  # m-25142725: an AI part over its cap, off any step
             if self._clip_ai_create_off():
                 return True  # ED-07: AI parts are not created until PR 2 (its reason beside)
             return self.gen_exhausted != ""
@@ -3197,6 +3219,8 @@ class CreativeState(rx.State):
             return self._reel_review().foot_reason  # UI-6: the long one is in the body
         if self.gen_is_last_view and self._carousel_too_many():
             return CAROUSEL_TOO_MANY
+        if self.gen_is_last_view and self._clip_refs_over():
+            return self._clip_refs_over()[0]  # m-25142725: not on the editor's step only
         if self.gen_is_last_view and self._clip_ai_create_off():
             return ai_block_vm.CREATE_OFF_SHORT  # ED-07: until PR 2 (the body says the rest)
         return ""
@@ -4413,6 +4437,7 @@ class CreativeState(rx.State):
         self._parts_provenance = None
         # ED-06: a reel's plan laid as blocks goes with its analysis
         self.clip_reel_blocks = False
+        self.clip_reel_cut = ""
         self.parts_piece += 1
         self._show_reel_wait(reel_wait_vm.IDLE)
         self._reel_poll_token += 1
@@ -5604,7 +5629,10 @@ class CreativeState(rx.State):
         self._clear_clip_notes()
         self.clip_sequence = []
         self.clip_ai_parts = []  # ED-07: a reel's replica has no AI part of its own
+        self.clip_refs = []  # m-25142725: …nor references for one
+        self._clip_ref_spans = {}
         self.clip_reel_blocks = False  # ED-06: its plan comes as blocks once it is read
+        self.clip_reel_cut = ""
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
         # m-25026509: a fresh clip — the last piece's answer never rides on
@@ -6267,6 +6295,7 @@ class CreativeState(rx.State):
         in (one already there counts). ED-11: ``posters`` — a video's key → the picture
         its tile showed (the timeline block shows it). ED-12: with «Arma tu video» on,
         what passes the timeline's 8 blocks is not added (`_clip_cap_note` says it)."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         self.gallery_pick_note = ""
         self._clip_cap_begin()
         added = 0
@@ -6397,6 +6426,7 @@ class CreativeState(rx.State):
                 self._replace_slide(index, photo_key=key, photo_name=name)
 
     def _pick(self, target: str, source: str, key: str) -> None:
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         spec = _PICKER_TARGETS.get(target)
         if spec is None:
             return
@@ -6937,17 +6967,18 @@ class CreativeState(rx.State):
             i.get("source") == "catalog" for i in self.clip_images
         )
 
-    def _clip_ai_product_photos(self) -> list[str] | None:
-        """The chosen product's photos a new AI part takes (design 03B); None = the Clip's."""
-        keys = [i["key"] for i in self.clip_images if i.get("source") == "catalog"]
-        return keys[:CLIP_MAX_IMAGES] or None
-
-    def _clip_ai_poster(self, plan: Mapping[str, Any]) -> str:
-        """The AI part's poster before it is made (design §2): its first photo, else the
-        Clip's first — a backend path the screen already holds ("" = the block's icon)."""
-        keys = [str(k) for k in plan.get("clip_image_keys") or ()] or [
-            i["key"] for i in self.clip_images
-        ]
+    def _clip_ai_poster(self, plan: Mapping[str, Any], entry: int = -1) -> str:
+        """The AI part's poster before it is made (design §2): the first photo under it on
+        «Fotos de referencia» (m-25142725), else the Clip's first — a backend path the
+        screen already holds ("" = the block's icon)."""
+        keys = [str(k) for k in plan.get("clip_image_keys") or ()]
+        if entry >= 0 and self.clip_refs:
+            plan_now = self._clip_refs_plan()
+            part = next((p for p in plan_now["parts"] if int(p["entry"]) == entry), None)
+            by_uid = {str(i.get("uid")): i for i in self.clip_refs}
+            for uid in (part or {}).get("uses", {}).get("photo", ()):
+                keys += [str(k) for k in by_uid.get(uid, {}).get("keys") or ()][:1]
+        keys = keys or [i["key"] for i in self.clip_images]
         if not keys:
             return ""
         key = keys[0]
@@ -6972,7 +7003,7 @@ class CreativeState(rx.State):
             return [ai_block_vm.no_business_problem()]
         return ai_block_vm.preflight_problems(
             self._clip_ai_segments(),
-            ai_block_vm.plans(self.clip_ai_parts),
+            ai_block_vm.plans(self.clip_ai_parts, references=True),
             tenant_id=self._clip_session_tenant,
         )
 
@@ -7004,15 +7035,14 @@ class CreativeState(rx.State):
         at = clip_editor_vm.index_after_playhead(media, self.clip_edit_playhead)
         uid = ai_block_vm.new_uid(self.clip_ai_parts)
         block = ai_block_vm.token(uid)
+        # m-25142725: its photos are the reference tracks' now (what lies under it), never
+        # a list of its own (`clip_image_keys` stays None, contract §3.4)
         _segment, plan = ai_block_vm.new_ai_block(
-            len(self.clip_ai_parts),
-            seconds=ai_block_vm.new_part_seconds(segments),
-            image_keys=self._clip_ai_product_photos(),
+            len(self.clip_ai_parts), seconds=ai_block_vm.new_part_seconds(segments)
         )
         before = self._clip_edit_snapshot()
         self.clip_sequence = ai_block_vm.place_token(self._clip_order_keys(), media, at, block)
         self.clip_ai_parts = [*self.clip_ai_parts, {"uid": uid, "plan": plan, "desc_rev": 0}]
-        self.clip_ai_more = False
         self.clip_ai_merge_error = ""
         self._clip_edit_changed(before)
         events: list[Any] = list(self._clip_choose(block))
@@ -7036,6 +7066,12 @@ class CreativeState(rx.State):
         track, place = self._clip_track_place(block_id)
         number = self._clip_ai_number(block_id)
         before = self._clip_edit_snapshot()
+        # m-25142725 (Deivid, option A): its references whole under it go with it
+        going = self._clip_ref_whole_under(block_id)
+        if going:
+            self.clip_refs = clip_refs_vm.compact(
+                [i for i in self.clip_refs if str(i.get("uid")) not in going]
+            )
         self.clip_ai_parts = [p for n, p in enumerate(self.clip_ai_parts) if n != at]
         self.clip_sequence = [k for k in self.clip_sequence if k != block_id]
         self._clip_keep_joins(
@@ -7044,7 +7080,10 @@ class CreativeState(rx.State):
         self._clip_fit_overlays()  # a shorter video: what went past its end comes in
         gone = self._clip_effects_follow()
         self._clip_edit_changed(before)
-        self.clip_edit_notice = self._clip_with_gone(ai_block_vm.removed_line(number), gone)
+        removed = clip_refs_vm.removed_with_line(number, len(going))
+        self.clip_edit_notice = self._clip_with_follow(
+            self._clip_with_gone(removed or ai_block_vm.removed_line(number), gone)
+        )
         return self._clip_removed(track, place)
 
     # -- ED-06 m-25026636 (PR 7): the plan's blocks on the track ----------------------
@@ -7121,7 +7160,10 @@ class CreativeState(rx.State):
         self.clip_reel_blocks = True
         self.clip_edit_block = ""
         ai, own = self._clip_put_ops(ops)
-        self._clip_say(editor_idea_vm.reel_line(ai, own))
+        # m-25143223: a plan that stops before the reel's end says how much it follows
+        cut = getattr(ops, "cut", None)
+        self.clip_reel_cut = editor_idea_vm.reel_cut_card(cut)
+        self._clip_say(editor_idea_vm.reel_line(ai, own, cut))
         return True
 
     def _clip_idea_track(self) -> ClipBlocks:
@@ -7181,15 +7223,21 @@ class CreativeState(rx.State):
 
     def _clip_idea_off_reason(self) -> str:
         """Why «Pedir una idea» cannot put a part now ("" = it can), said BEFORE Claude is
-        asked: the switches off, an own video still being read (UX review), or the caps
-        «Parte con IA» says before the choque — 8 blocks, 6 AI parts, 60 s (design D22)."""
+        asked: the switches off, an own video still being read (UX review), the caps
+        «Parte con IA» says before the choque — 8 blocks, 6 AI parts, 60 s (design D22) —,
+        or nothing written yet about what the video is about (m-25026636: the button was
+        left on with «Cuéntanos de qué trata…» under it)."""
         if not self._clip_ai_on():
             return ai_block_vm.refusal_text("switched_off")
         try:
             self._clip_idea_track()
         except ValidationError:
             return editor_idea_vm.TRACK_NOT_READY
-        return ai_block_vm.add_reason(self._clip_ai_segments())
+        cap = ai_block_vm.add_reason(self._clip_ai_segments())
+        if cap:
+            return cap
+        # the same test the proposal applies to what it sends (`clean_story`)
+        return "" if parts_start_vm.clean_story(self.brief_topic) else editor_idea_vm.STORY_MISSING
 
     @rx.var
     def clip_idea_off(self) -> str:
@@ -7342,7 +7390,6 @@ class CreativeState(rx.State):
         segments = self._clip_ai_segments()
         seconds = ai_block_vm.clamp_seconds(plan.get("seconds"))
         control = ai_block_vm.seconds_control(seconds, ai_block_vm.laid_seconds(segments))
-        guide = ai_block_vm.guide_option(str(plan.get("mode") or "reference"))
         entry_at = int(item.get("entry") or 0)  # type: ignore[call-overload]
         block_at = clip_joins_vm.segment_ids(media).index(block)
         problems = ai_block_vm.problems_of(self._clip_ai_problems(), entry_at, block_at)
@@ -7361,7 +7408,7 @@ class CreativeState(rx.State):
         )
         if not ai_block_vm.AI_CREATE_BUILT:
             try_reason = ai_block_vm.TRY_OFF_LINE  # PR 2: nothing is created yet
-        product = plan.get("clip_image_keys") is not None and self._clip_has_product()
+        refs_problem = clip_refs_vm.part_problem(self._clip_refs_plan(), entry_at)
         return {
             "id": block,
             # the description field's key: a new revision (a join) shows the new words
@@ -7389,9 +7436,11 @@ class CreativeState(rx.State):
             "minus_reason": control["minus_reason"],
             "plus_reason": control["plus_reason"],
             "seconds_note": control["note"],
-            "product_note": ai_block_vm.PRODUCT_PHOTO_NOTE if product else "",
-            "guide_shown": guide["shown"],
-            "guide_reason": guide["reason"],
+            # m-25142725: what it looks at is the reference tracks' («Lo que la IA mira
+            # aquí»); over the model's cap, the contract's words
+            "refs_problem": refs_problem,
+            # Deivid (option A): said before «Quitar», only when it has some
+            "refs_go": clip_refs_vm.GO_WITH_PART if self._clip_ref_whole_under(block) else "",
             "merge_shown": "1" if merge else "",
             "merge_reason": merge_reason or self.clip_ai_merge_error,
             "try_line": try_line,
@@ -7413,6 +7462,7 @@ class CreativeState(rx.State):
         if at < 0:
             return []
         plan = self._clip_ai_plan(block)
+        plan_entry = self._clip_ai_index(block)
         rows = ai_block_vm.mode_options(
             {"plan": plan, "person": False, "reason": ""},
             segments,
@@ -7420,7 +7470,7 @@ class CreativeState(rx.State):
             at,
             extend_on=part_extend_available(),
             has_product=self._clip_has_product(),
-            images=[{"key": str(k)} for k in plan.get("clip_image_keys") or ()],
+            images=self._clip_ai_ref_photos(at_entry=plan_entry),
         )
         for row in rows:
             row["icon"] = ai_block_vm.MODE_ICONS[row["mode"]]
@@ -7431,35 +7481,16 @@ class CreativeState(rx.State):
         at = self._clip_ai_index(block_id)
         return ai_block_vm.ai_part_key(at) if at >= 0 else ""
 
-    @rx.var
-    def clip_ai_photos(self) -> list[dict[str, str]]:
-        """«Fotos de tu producto» of the chosen AI part: the Clip's photos, each marked
-        when the part uses it (none chosen = all of the Clip's, as the brief's)."""
-        block = self.clip_edit_block
-        if not ai_block_vm.is_token(block) or not self._clip_ai_on():
-            return []
-        plan = self._clip_ai_plan(block)
-        chosen = plan.get("clip_image_keys")
-        thumbs = self._clip_block_thumbs()
+    def _clip_ai_ref_photos(self, *, at_entry: int) -> list[dict[str, str]]:
+        """The photos under the AI part `at_entry` on «Fotos de referencia» (m-25142725),
+        as `mode_options` reads a part's photos."""
+        plan_now = self._clip_refs_plan()
+        part = next((p for p in plan_now["parts"] if int(p["entry"]) == at_entry), None)
+        by_uid = {str(i.get("uid")): i for i in self.clip_refs}
         return [
-            {
-                "key": item["key"],
-                "name": str(item.get("name") or "Foto"),
-                "thumb": thumbs.get(item["key"], ""),
-                "on": "1" if chosen is None or item["key"] in chosen else "",
-            }
-            for item in self.clip_images
-        ]
-
-    @rx.var
-    def clip_ai_guides(self) -> list[dict[str, str]]:
-        """«Video o audio tuyo» of the chosen AI part: its guide files, each `{key, name,
-        kind}` — «Nueva» only (contract §3.1)."""
-        plan = self._clip_ai_plan(self.clip_edit_block) if self._clip_ai_on() else {}
-        return [
-            {"key": str(k), "name": str(k).rsplit("/", 1)[-1], "kind": kind}
-            for kind, name in (("video", "clip_video_keys"), ("audio", "clip_audio_keys"))
-            for k in plan.get(name) or ()
+            {"key": str(k)}
+            for uid in (part or {}).get("uses", {}).get("photo", ())
+            for k in by_uid.get(uid, {}).get("keys") or ()
         ]
 
     @rx.event
@@ -7515,72 +7546,8 @@ class CreativeState(rx.State):
         self._clip_fit_overlays()
         self._clip_effects_follow()
         self._clip_edit_changed(before)
-        self.clip_edit_notice = ai_block_vm.seconds_line(self._clip_ai_number(block), seconds)
-
-    @rx.event
-    def toggle_clip_ai_photo(self, key: str) -> None:
-        """A photo of the Clip used, or not, by the chosen AI part («Fotos de tu
-        producto»)."""
-        block = self.clip_edit_block
-        plan = self._clip_ai_plan(block)
-        if not plan or key not in {i["key"] for i in self.clip_images}:
-            return
-        held = plan.get("clip_image_keys")
-        keys = [i["key"] for i in self.clip_images] if held is None else list(held)
-        keys = [k for k in keys if k != key] if key in keys else [*keys, key]
-        self._clip_notice_done()
-        self._clip_ai_put(block, ai_block_vm.with_photos(plan, keys))
-        self.clip_edit_notice = ai_block_vm.PHOTOS_LINE.format(n=self._clip_ai_number(block))
-
-    @rx.event
-    def toggle_clip_ai_more(self) -> None:
-        self.clip_ai_more = not self.clip_ai_more
-
-    @rx.event
-    async def handle_clip_ai_guide_uploads(self, files: list[rx.UploadFile]) -> None:
-        """«Más opciones → Video o audio tuyo» of the chosen AI part («Nueva» only): each
-        file stored as «Subir» stores it (the business's own folder) and kept as the
-        part's guide by its type — a video MP4/MOV, an audio MP3/WAV; another type, or a
-        fourth of a kind, is said and left out. Nothing is read nor paid here."""
-        block = self.clip_edit_block
-        plan = self._clip_ai_plan(block)
-        if not plan or not files or not self._clip_ai_on():
-            return
-        if str(plan.get("mode") or "reference") != "reference":
-            self._clip_notice_done()
-            self.clip_edit_notice = ai_block_vm.GUIDE_NEEDS_NEW
-            return
-        # review: only a guide's types are stored — another file never leaves an orphan
-        kept = [f for f in files if ai_block_vm.guide_kind(f.name or "")]
-        said = "" if len(kept) == len(files) else ai_block_vm.refusal_text("ai_part_guide_type")
-        self.upload_error = ""
-        saved = await self._save_uploads(kept) if kept else []
-        plan = self._clip_ai_plan(block)  # the panel may have changed meanwhile
-        if not plan:
-            return
-        said = self.upload_error or said
-        added = ""
-        for key, _name in saved:
-            plan, why = ai_block_vm.with_guide(plan, key)
-            said = said or why
-            added = added or ("" if why else ai_block_vm.guide_kind(key))
-        self._clip_notice_done()
-        self._clip_ai_put(block, plan)
-        number = self._clip_ai_number(block)
-        self.clip_edit_notice = said or (
-            ai_block_vm.guide_line(added, number, added=True) if added else ""
-        )
-
-    @rx.event
-    def remove_clip_ai_guide(self, key: str) -> None:
-        block = self.clip_edit_block
-        plan = self._clip_ai_plan(block)
-        if not plan:
-            return
-        self._clip_notice_done()
-        self._clip_ai_put(block, ai_block_vm.without_guide(plan, key))
-        self.clip_edit_notice = ai_block_vm.guide_line(
-            ai_block_vm.guide_kind(key), self._clip_ai_number(block), added=False
+        self.clip_edit_notice = self._clip_with_follow(
+            ai_block_vm.seconds_line(self._clip_ai_number(block), seconds)
         )
 
     def _clip_ai_next_id(self, block_id: str) -> str:
@@ -7640,6 +7607,9 @@ class CreativeState(rx.State):
         (uncontrolled, keyed by id and revision) shows the joined words."""
         number = self._clip_ai_number(block)
         before = self._clip_edit_snapshot()
+        # m-25142725: the next part's references stay under the joined one — those past
+        # its end (two parts of 6 s join into one of 10 s) are cut to it
+        theirs = self._clip_ref_whole_under(following_id)
         self._clip_ai_put(block, plan, described=True)
         gone = self._clip_ai_index(following_id)
         self.clip_ai_parts = [p for n, p in enumerate(self.clip_ai_parts) if n != gone]
@@ -7650,8 +7620,13 @@ class CreativeState(rx.State):
         )
         self._clip_effects_follow()
         self._clip_edit_changed(before)
+        joined = next((sp for sp in self._clip_ai_spans() if sp["id"] == block), None)
+        if theirs and joined is not None:
+            self._clip_refs_store(
+                clip_refs_vm.fit_into(self.clip_refs, theirs, (joined["start"], joined["end"]))
+            )
         seconds = ai_block_vm.clamp_seconds(plan.get("seconds"))
-        self.clip_edit_notice = ai_block_vm.merged_line(number, seconds)
+        self.clip_edit_notice = self._clip_with_follow(ai_block_vm.merged_line(number, seconds))
 
     def _clip_ai_create_off(self) -> str:
         """Why «Crear» is off with AI parts on the timeline ("" = it is not): until PR 2
@@ -7683,6 +7658,642 @@ class CreativeState(rx.State):
     def clip_ai_review_shown(self) -> bool:
         """«Revisa y crea» shows what the AI parts use (they are on the timeline)."""
         return bool(self._clip_ai_tokens())
+
+    # -- m-25142725: the reference tracks under «Fotos y videos» --------------------------
+
+    def _clip_refs_live(self) -> bool:
+        """The reference tracks are drawn: the AI parts on and at least one on the
+        timeline (without AI parts the group is not drawn — its references are kept)."""
+        return self._clip_ai_on() and bool(self._clip_ai_tokens())
+
+    def _clip_refs_total(self) -> float:
+        return clip_editor_vm.media_total(self._clip_tl_media())
+
+    def _clip_ai_spans(self) -> list[dict[str, Any]]:
+        """Each AI part's seconds on the timeline now ([] without any)."""
+        if not self._clip_ai_tokens():
+            return []
+        return clip_refs_vm.ai_spans(self._clip_tl_media())
+
+    def _clip_refs_plan(self) -> dict[str, Any]:
+        """What each AI part takes from the tracks — the contract's answer
+        (`clip_refs_vm.plan`: `references_for_parts` and `reference_notices` of the brief
+        the timeline makes), asked once per state of the timeline."""
+        if not self._clip_refs_live():
+            return {"parts": [], "used_by": {}, "ignored": {}, "unused": [], "caps": {}}
+        media = self._clip_tl_media()
+        return clip_refs_vm.plan_cached(
+            self.clip_refs,
+            self._clip_ai_segments(),
+            ai_block_vm.plans(self.clip_ai_parts, references=True),
+            clip_refs_vm.ai_spans(media),
+            clip_editor_vm.media_total(media),
+        )
+
+    def _clip_ref_thumbs(self, keys: Sequence[str] = ()) -> dict[str, str]:
+        """A picture for each reference's file: one the screen already holds (a block's,
+        a view path), else the upload route's for a photo — never a new read."""
+        wanted = list(keys) or [k for i in self.clip_refs for k in i.get("keys") or ()]
+        blocks = self._clip_block_thumbs()
+        out: dict[str, str] = {}
+        for key in wanted:
+            seen = blocks.get(key) or self.piece_views.get(key, "")
+            if not seen and clip_refs_vm.kind_of_key(key) == "photo" and upload_served(key):
+                seen = clip_editor_vm.upload_path(key)
+            out[key] = str(seen or "")
+        return out
+
+    def _clip_ref_rows(self) -> list[dict[str, str]]:
+        if not self._clip_refs_live():
+            return []
+        return clip_refs_vm.rows(
+            self.clip_refs,
+            self._clip_refs_plan(),
+            self._clip_refs_total(),
+            thumbs=self._clip_ref_thumbs(),
+        )
+
+    def _clip_ref_item(self, block_id: str) -> dict[str, Any]:
+        uid = clip_refs_vm.uid_of(block_id)
+        if not uid:
+            return {}
+        return next((dict(i) for i in self.clip_refs if str(i.get("uid")) == uid), {})
+
+    def _clip_refs_store(self, items: list[dict[str, Any]]) -> None:
+        now = self._clip_ai_span_map()
+        pending = self._clip_ref_spans
+        if pending and pending != now:
+            # third review: a move no sync saw yet is applied first to the references that
+            # were already there (the new ones were laid against the timeline as it is)
+            held = {str(i.get("uid")) for i in self.clip_refs}
+            old = [i for i in items if str(i.get("uid")) in held]
+            new = [i for i in items if str(i.get("uid")) not in held]
+            moved, _went, _stayed = clip_refs_vm.follow(old, pending, now, self._clip_refs_total())
+            items = [*moved, *new]
+        self.clip_refs = clip_refs_vm.compact(items)
+        # laid against the timeline as it is now
+        self._clip_ref_spans = self._clip_ai_span_map()
+
+    def _clip_refs_over(self) -> list[str]:
+        """Each AI part over its model's cap, in words (decision 4: «Siguiente» off)."""
+        if not self._clip_refs_live():
+            return []
+        return clip_refs_vm.over_lines(self._clip_refs_plan())
+
+    @rx.var
+    def clip_ref_shown(self) -> bool:
+        """The group «✦ Para la IA · no sale en tu video» is drawn."""
+        return self._clip_refs_live()
+
+    @rx.var
+    def clip_ref_lanes(self) -> list[list[dict[str, str]]]:
+        return clip_refs_vm.lanes(self._clip_ref_rows())[0]
+
+    @rx.var
+    def clip_ref_lane_names(self) -> list[dict[str, str]]:
+        return clip_refs_vm.lanes(self._clip_ref_rows())[1]
+
+    @rx.var
+    def clip_ref_folded(self) -> str:
+        """The one row for the kinds with nothing («Sin videos ni audios de referencia»)."""
+        if not self._clip_refs_live():
+            return ""
+        return clip_refs_vm.lanes(self._clip_ref_rows())[2]
+
+    @rx.var
+    def clip_ref_columns(self) -> list[dict[str, str]]:
+        """One column per AI part across the tracks (iris; amber over a cap)."""
+        if not self._clip_refs_live():
+            return []
+        return clip_refs_vm.columns(self._clip_ai_spans(), self._clip_refs_plan())
+
+    @rx.var
+    def clip_ref_cards(self) -> list[str]:
+        """The card under the line for each AI part over a cap."""
+        return self._clip_refs_over()
+
+    @rx.var
+    def clip_ref_chosen(self) -> dict[str, str]:
+        """The chosen reference's panel, in strings ({} = none chosen)."""
+        block = self.clip_edit_block
+        if not clip_refs_vm.is_ref(block) or not self._clip_refs_live():
+            return {}
+        out = clip_refs_vm.panel(
+            self._clip_ref_item(block), self._clip_refs_plan(), self._clip_refs_total()
+        )
+        out.pop("photos", None)
+        return {k: str(v) for k, v in out.items()}
+
+    @rx.var
+    def clip_ref_chosen_photos(self) -> list[dict[str, str]]:
+        """A product's block: each of its photos, removed one by one."""
+        block = self.clip_edit_block
+        if not clip_refs_vm.is_ref(block) or not self._clip_refs_live():
+            return []
+        item = self._clip_ref_item(block)
+        out = clip_refs_vm.panel(
+            item,
+            self._clip_refs_plan(),
+            self._clip_refs_total(),
+            thumbs=self._clip_ref_thumbs(item.get("keys") or ()),
+        )
+        return [dict(p) for p in out.get("photos") or ()]
+
+    @rx.var
+    def clip_ai_refs(self) -> list[dict[str, str]]:
+        """«Lo que la IA mira aquí» of the chosen AI part."""
+        block = self.clip_edit_block
+        if not ai_block_vm.is_token(block) or not self._clip_refs_live():
+            return []
+        item = next((m for m in self._clip_tl_media() if m["id"] == block), None)
+        if item is None:
+            return []
+        return clip_refs_vm.ai_box(
+            self.clip_refs,
+            self._clip_refs_plan(),
+            int(item.get("entry") or 0),  # type: ignore[call-overload]
+            self._clip_refs_total(),
+            thumbs=self._clip_ref_thumbs(),
+        )
+
+    @rx.var
+    def clip_ref_where(self) -> str:
+        """The tab's line: where the new reference goes, or why it cannot go yet."""
+        if not self._clip_ai_on():
+            return ""
+        span = clip_refs_vm.target_span(
+            self._clip_ai_spans(), self.clip_edit_playhead, self._clip_ref_target
+        )
+        if span is None:
+            return clip_refs_vm.NO_AI_PART
+        return clip_refs_vm.WHERE_LINE.format(n=span["n"])
+
+    @rx.var
+    def clip_ref_can_add(self) -> bool:
+        return self._clip_refs_live()
+
+    @rx.var
+    def clip_ref_products(self) -> list[dict[str, str]]:
+        """«De tus productos»: the products' photos (or videos) of the kind chosen, each
+        `{key, name, thumb}` — what the Catálogo already gave this screen."""
+        if not self._clip_ai_on() or self.clip_ref_kind == "audio":
+            return []
+        field = "photo_keys" if self.clip_ref_kind == "photo" else "video_keys"
+        found: list[dict[str, str]] = []
+        for product in self.catalog_items:
+            for key in str(product.get(field) or "").split("\n"):
+                if key and clip_refs_vm.kind_of_key(key) == self.clip_ref_kind:
+                    found.append({"key": key, "name": str(product.get("name") or "")})
+        found = found[:24]
+        thumbs = self._clip_ref_thumbs([f["key"] for f in found])
+        return [{**f, "thumb": thumbs.get(f["key"], "")} for f in found]
+
+    @rx.var
+    def clip_ref_products_none(self) -> str:
+        return clip_refs_vm.NO_PRODUCT_MEDIA.get(self.clip_ref_kind, "")
+
+    @rx.event
+    def set_clip_ref_kind(self, value: str | list[str]) -> None:
+        kind = value[0] if isinstance(value, list) and value else value
+        if kind in clip_refs_vm.KINDS:
+            self.clip_ref_kind = str(kind)
+
+    @rx.event
+    def open_clip_refs_folded(self) -> list[Any]:
+        """The folded row's «Agregar» (UX review): the tab, on the first kind it names."""
+        if not self._clip_refs_live():
+            return []
+        held = {str(i.get("kind")) for i in self.clip_refs}
+        self.clip_ref_kind = clip_refs_vm.first_folded_kind(
+            [k for k in clip_refs_vm.KINDS if k not in held]
+        )
+        return self._clip_open_refs()
+
+    @rx.var
+    def clip_ref_add_off(self) -> bool:
+        """«Agregar → Mostrar a la IA» off without AI parts (its note says why)."""
+        return self._clip_ai_on() and not self._clip_ai_tokens()
+
+    def _clip_open_refs(self, target: str = "") -> list[Any]:
+        """«Agregar → Referencia para la IA» (or the AI part's «Agregar una referencia»):
+        the side panel on its tab; the products are read as «Tus productos» reads them."""
+        if not self._clip_ai_on():
+            return []
+        events = self._clip_open_flow(clip_editor_vm.FLOW_REF)
+        self._clip_ref_target = target
+        loads = self._tab_loads("catalog") if not self.catalog_items else None
+        if loads is not None:
+            events += loads if isinstance(loads, list) else [loads]
+        return events
+
+    @rx.event
+    def open_clip_ref_for_part(self) -> list[Any]:
+        """The chosen AI part's «Agregar una referencia»: the tab, aimed at that part."""
+        block = self.clip_edit_block
+        if not ai_block_vm.is_token(block):
+            return []
+        return self._clip_open_refs(block)
+
+    def _clip_ref_put(
+        self, kind: str, keys: list[str], *, name: str = "", source: str = "upload"
+    ) -> list[Any]:
+        """A reference under the AI part aimed at (the panel's, else the playhead's, else
+        the nearest), as long as it (notas §9); refused over the part's cap. Then the side
+        panel closes and its block is chosen. `source`: where the file came from (kept
+        for «Usar también en el video»)."""
+        span = self._clip_ref_room(kind, len(keys))
+        if span is None or not keys:
+            return []
+        item = clip_refs_vm.new_item(
+            self.clip_refs, kind, keys, float(span["start"]), float(span["end"]), name=name
+        )
+        item["source"] = source
+        self._clip_refs_store([*self.clip_refs, item])
+        self._clip_ref_target = ""
+        events = list(self._clip_close_flow())
+        events += self._clip_choose(clip_refs_vm.ref_id(item["uid"]))
+        self._clip_say(clip_refs_vm.added_line(kind, int(span["n"])))
+        return events
+
+    def _clip_ref_room(self, kind: str, count: int = 1) -> Mapping[str, Any] | None:
+        """The AI part a new reference goes under, or None — and the live line says why
+        when it does not fit (40 references, the part's cap). Asked BEFORE anything is
+        stored (code review: never an orphan upload)."""
+        span = clip_refs_vm.target_span(
+            self._clip_ai_spans(), self.clip_edit_playhead, self._clip_ref_target
+        )
+        if span is None or kind not in clip_refs_vm.KINDS:
+            return None
+        held = sum(len(i.get("keys") or ()) for i in self.clip_refs)
+        if held + count > clip_refs_vm.REFERENCES_MAX:
+            self._clip_say(clip_refs_vm.TOO_MANY)
+            return None
+        full = clip_refs_vm.room_for(self._clip_refs_plan(), int(span["entry"]), kind, count)
+        if full:
+            self._clip_say(full)
+            return None
+        return span
+
+    @rx.event
+    def add_clip_ref_key(self, key: str) -> list[Any]:
+        """«De tus productos»: a photo or a video of a product, chosen."""
+        kind = clip_refs_vm.kind_of_key(key)
+        if not self._clip_ai_on() or kind != self.clip_ref_kind:
+            return []
+        known = {
+            k
+            for p in self.catalog_items
+            for field in ("photo_keys", "video_keys")
+            for k in str(p.get(field) or "").split("\n")
+            if k
+        }
+        if key not in known:
+            return []
+        return self._clip_ref_put(kind, [key], source="catalog")
+
+    @rx.event
+    async def handle_clip_ref_uploads(self, files: list[rx.UploadFile]) -> list[Any]:
+        """«Subir de tu teléfono»: the file stored as «Subir» stores it (the business's own
+        folder) and put under the AI part aimed at — only the types the contract takes
+        (`reference_type`); another is said and never stored. Nothing is read nor paid."""
+        if not files or not self._clip_ai_on():
+            return []
+        kind = self.clip_ref_kind
+        kept = [f for f in files if clip_refs_vm.kind_of_key(f.name or "") == kind][:1]
+        if not kept:
+            self._clip_say(clip_refs_vm.WRONG_TYPE)
+            return []
+        if self._clip_ref_room(kind) is None:
+            return []  # nothing is stored that could not go in
+        self.upload_error = ""
+        saved = await self._save_uploads(kept)
+        if not saved:
+            if self.upload_error:
+                self._clip_say(self.upload_error)
+            return []
+        return self._clip_ref_put(kind, [saved[0][0]])
+
+    def _clip_refs_put_product(self, product_id: str, name: str, keys: list[str]) -> None:
+        """Decision 2: the chosen product's photos as ONE block along the whole video,
+        «De tu producto» (`origin="product"`), replacing the last product's."""
+        if not self._clip_ai_on() or self.brief_kind != "clip":
+            return
+        # code review: within the brief's 40 references — what does not fit is said
+        others = sum(
+            len(i.get("keys") or ()) for i in self.clip_refs if i.get("origin") != "product"
+        )
+        room = max(clip_refs_vm.REFERENCES_MAX - others, 0)
+        photos = [k for k in dict.fromkeys(keys) if clip_refs_vm.kind_of_key(k) == "photo"]
+        self._clip_refs_store(
+            clip_refs_vm.product_item(self.clip_refs, product_id, name, photos[:room])
+        )
+        if self._clip_refs_live() and any(i.get("origin") == "product" for i in self.clip_refs):
+            line = clip_refs_vm.PRODUCT_LINE.format(product=name or "tu producto")
+            self._clip_say(f"{line} {clip_refs_vm.TOO_MANY}" if len(photos) > room else line)
+        elif photos and not room and self._clip_refs_live():
+            self._clip_say(clip_refs_vm.TOO_MANY)
+
+    def _clip_ref_time(self, block_id: str, start: float, end: float) -> None:
+        """A reference's new seconds (a handle dragged, or moved with the arrows)."""
+        item = self._clip_ref_item(block_id)
+        if not item:
+            return
+        edges = clip_refs_vm.edges_of(self._clip_ai_spans())
+        self._clip_notice_done()
+        self._clip_refs_store(
+            clip_refs_vm.set_time(
+                self.clip_refs, item["uid"], start, end, self._clip_refs_total(), edges=edges
+            )
+        )
+        self._clip_ref_said(block_id)
+
+    def _clip_ref_shift(self, block_id: str, start: float, row: int | None = None) -> None:
+        item = self._clip_ref_item(block_id)
+        if not item:
+            return
+        edges = clip_refs_vm.edges_of(self._clip_ai_spans())
+        self._clip_notice_done()
+        self._clip_refs_store(
+            clip_refs_vm.shift(
+                self.clip_refs,
+                item["uid"],
+                start,
+                self._clip_refs_total(),
+                edges=edges,
+                row=row,
+            )
+        )
+        self._clip_ref_said(block_id)
+
+    def _clip_ref_said(self, block_id: str) -> None:
+        """The live line once a reference moved: where it is used now."""
+        row = next((r for r in self._clip_ref_rows() if r["id"] == block_id), None)
+        if row is None:
+            return
+        used_by = self._clip_refs_plan().get("used_by") or {}
+        uid = clip_refs_vm.uid_of(block_id)
+        used = list(used_by.get(uid, ()))
+        item = self._clip_ref_item(block_id)
+        numbers = clip_refs_vm.numbers_of(self.clip_refs, self._clip_refs_total())
+        self.clip_edit_notice = clip_refs_vm.now_line(item, numbers, used)
+
+    def _clip_ref_key(self, block_id: str, edge: str, key: str) -> None:
+        """The keyboard on a reference: ←/→ ½ s (on a handle, that edge), ↑/↓ a row."""
+        row = next((r for r in self._clip_ref_rows() if r["id"] == block_id), None)
+        if row is None:
+            return
+        start = float(row["start"])
+        end = start + float(row["length"])
+        if key in ("ArrowUp", "ArrowDown") and not edge:
+            lane = int(row["lane"]) + (-1 if key == "ArrowUp" else 1)
+            kind = row.get("ref_kind", "")
+            rows_of_kind = 1 + max(
+                (int(i.get("row") or 0) for i in self.clip_refs if i.get("kind") == kind),
+                default=0,
+            )
+            # as the drag: ↓ on the last row opens no new one (rows come by themselves)
+            if 0 <= lane < rows_of_kind:
+                self._clip_ref_shift(block_id, start, lane)
+            return
+        if key not in ("ArrowLeft", "ArrowRight"):
+            return
+        step = timeline_vm.STEP_S * (-1 if key == "ArrowLeft" else 1)
+        if edge == "start":
+            self._clip_ref_time(block_id, start + step, end)
+        elif edge == "end":
+            self._clip_ref_time(block_id, start, end + step)
+        else:
+            self._clip_ref_shift(block_id, start + step)
+
+    def _clip_ref_drop(self, block_id: str, what: str, number: float) -> None:
+        """A reference dragged: «time» (its new start), «time@N» (…on row N of its kind),
+        «start»/«end» (a handle released at that second)."""
+        row = next((r for r in self._clip_ref_rows() if r["id"] == block_id), None)
+        if row is None:
+            return
+        start = float(row["start"])
+        end = start + float(row["length"])
+        if what == "start":
+            self._clip_ref_time(block_id, min(number, end - clip_refs_vm.MIN_S), end)
+        elif what == "end":
+            self._clip_ref_time(block_id, start, max(number, start + clip_refs_vm.MIN_S))
+        elif what == "time" or what.startswith("time@"):
+            lane = what.partition("@")[2]
+            self._clip_ref_shift(block_id, number, int(lane) if lane.isdigit() else None)
+
+    def _clip_ref_remove(self, block_id: str) -> list[Any]:
+        """«Quitar» on the bar, without asking: free, and put back as easily."""
+        item = self._clip_ref_item(block_id)
+        if not item:
+            return []
+        track, place = self._clip_track_place(block_id)
+        numbers = clip_refs_vm.numbers_of(self.clip_refs, self._clip_refs_total())
+        self._clip_notice_done()
+        self._clip_refs_store(clip_refs_vm.remove(self.clip_refs, item["uid"]))
+        self.clip_edit_notice = clip_refs_vm.removed_line(item, numbers)
+        return self._clip_removed(track, place)
+
+    @rx.event
+    def remove_clip_ref_photo(self, key: str) -> list[Any]:
+        """A product's block: one of its photos out («Quitar esta foto»)."""
+        block = self.clip_edit_block
+        item = self._clip_ref_item(block)
+        if not item or key not in (item.get("keys") or ()):
+            return []
+        self._clip_notice_done()
+        product = str(item.get("name") or "").strip() or "tu producto"
+        self._clip_refs_store(clip_refs_vm.remove_key(self.clip_refs, item["uid"], key))
+        if not self._clip_ref_item(block):
+            events = self._clip_choose("")
+            self.clip_edit_notice = clip_refs_vm.LAST_PHOTO_REMOVED_LINE.format(product=product)
+            return events
+        self.clip_edit_notice = clip_refs_vm.PHOTO_REMOVED_LINE.format(product=product)
+        return []
+
+    @rx.event
+    def copy_clip_ref_to_video(self) -> list[Any]:
+        """Decision 6, «Usar también en el video»: the chosen photo or video reference
+        goes as a block of its own on «Fotos y videos», at the join nearest where it
+        starts — what comes after moves on. It counts for the 8 blocks and the 60 s; a
+        file already on «Fotos y videos» is not put twice (one block per file). Free: the
+        two are copies apart (the same key may be in `segments` and `clip_references`)."""
+        block = self.clip_edit_block
+        item = self._clip_ref_item(block)
+        if not item or item.get("kind") == "audio" or item.get("origin") == "product":
+            return []
+        key = str((item.get("keys") or [""])[0])
+        media = self._clip_tl_media()
+        if any(m.get("key") == key for m in media):
+            self._clip_say(clip_refs_vm.ALREADY_IN_VIDEO[str(item["kind"])])
+            return []
+        why = ai_block_vm.add_reason(self._clip_ai_segments())
+        if clip_editor_vm.timeline_full(media):
+            self._clip_say(clip_editor_vm.FULL_LINE)
+            return []
+        if item["kind"] == "video" and not clip_gallery_vm.room(
+            clip_gallery_vm.VIDEO, len(self.clip_images), len(self.clip_videos), 0
+        ):
+            # code review: the Clip's own 3 videos, the same note «Subir» says
+            self._clip_say(clip_editor_vm.video_cap_line(1, most=clip_gallery_vm.MAX_VIDEOS))
+            return []
+        if why and why != ai_block_vm.FULL_AI_LINE:
+            self._clip_say(why)  # 60 s already: nothing more fits
+            return []
+        row = next((r for r in self._clip_ref_rows() if r["id"] == block), None)
+        if row is None:
+            return []
+        # code review: the copy must fit whole under 60 s — a photo its seconds, a video
+        # its known length (else the reference's own)
+        needed = (
+            clip_editor_vm.PHOTO_SECONDS
+            if item["kind"] == "photo"
+            else float(self.clip_media_seconds.get(key) or float(row["length"]))
+        )
+        laid = ai_block_vm.laid_seconds(self._clip_ai_segments())
+        if laid + needed > ai_block_vm.CLIP_MAX_SECONDS + 1e-6:
+            self._clip_say(clip_refs_vm.NO_ROOM_IN_VIDEO)
+            return []
+        at = clip_refs_vm.nearest_join(media, float(row["start"]))
+        what = clip_refs_vm.subject(
+            item, clip_refs_vm.numbers_of(self.clip_refs, self._clip_refs_total())
+        )[0]
+        before = self._clip_edit_snapshot()
+        self._clip_aim(at)
+        # its own source when known (a product's, a copy of an own block's), else «upload»
+        entry = {"key": key, "name": Path(key).name, "source": str(item.get("source") or "upload")}
+        if item["kind"] == "photo":
+            self.clip_images = [*self.clip_images, {**entry, "role": "product"}]
+        else:
+            self.clip_videos = [*self.clip_videos, entry]
+        self._sync_clip_frames()  # third review: as `_clip_move_media` (its place, frames)
+        self._clip_insert_at = -1
+        self._clip_jump_s = -1.0
+        self._clip_edit_changed(before)
+        placed = self._clip_tl_media()
+        spot = next((n for n, m in enumerate(placed) if m.get("key") == key), -1)
+        if spot >= 0:
+            self.clip_edit_notice = clip_refs_vm.COPIED_TO_VIDEO.format(
+                what=what,
+                clock=timeline_vm.clock(clip_editor_vm.block_start(placed, spot)),
+                block=timeline_vm.media_label(placed[spot], spot + 1),
+            )
+            self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
+        return []
+
+    @rx.var
+    def clip_ref_copy_shown(self) -> bool:
+        """«Usar también como referencia» in the panel of an own photo or video."""
+        if not self._clip_refs_live():
+            return False
+        return self.clip_tl_chosen.get("kind", "") in ("photo", "video")
+
+    @rx.event
+    def copy_clip_block_to_refs(self) -> None:
+        """Decision 5, «Usar también como referencia»: the chosen own photo or video
+        copied JUST UNDER its block, on «Fotos/Videos de referencia» — under no AI part,
+        the live line says so (`reference_unused`)."""
+        if not self._clip_refs_live():
+            return
+        block = self.clip_edit_block
+        row = next((r for r in self._clip_tl_rows() if r["id"] == block), None)
+        media = next((m for m in self._clip_tl_media() if m["id"] == block), None)
+        if row is None or media is None or row.get("kind") not in ("photo", "video"):
+            return
+        key = str(media.get("key") or "")
+        kind = clip_refs_vm.kind_of_key(key)
+        if kind not in ("photo", "video"):
+            self._clip_say(clip_refs_vm.WRONG_TYPE)
+            return
+        if sum(len(i.get("keys") or ()) for i in self.clip_refs) >= clip_refs_vm.REFERENCES_MAX:
+            self._clip_say(clip_refs_vm.TOO_MANY)
+            return
+        start = float(row["start"])
+        end = start + float(row["length"])
+        # code review: never past the cap of a part it would land under
+        plan_now = self._clip_refs_plan()
+        for span in self._clip_ai_spans():
+            if clip_refs_vm.applies(start, end, span["start"], span["end"]):
+                full = clip_refs_vm.room_for(plan_now, int(span["entry"]), kind)
+                if full:
+                    self._clip_say(full)
+                    return
+        item = clip_refs_vm.new_item(self.clip_refs, kind, [key], start, end)
+        owned = next((i for i in (*self.clip_images, *self.clip_videos) if i.get("key") == key), {})
+        item["source"] = str(owned.get("source") or "upload")
+        self._clip_notice_done()
+        self._clip_refs_store([*self.clip_refs, item])
+        used = (self._clip_refs_plan().get("used_by") or {}).get(item["uid"], [])
+        article = "la" if row["kind"] == "photo" else "el"
+        line = clip_refs_vm.COPIED_TO_REFS.format(
+            what=f"{article} {clip_refs_vm.lower_label(row['label'])}",
+            track=clip_refs_vm.TRACK_NAMES[kind],
+        )
+        self.clip_edit_notice = line if used else f"{line} {clip_refs_vm.COPIED_UNUSED}"
+
+    def _clip_ai_span_map(self) -> dict[str, list[float]]:
+        return {s["id"]: [s["start"], s["end"]] for s in self._clip_ai_spans()}
+
+    def _clip_refs_sync(self) -> None:
+        """Decision 3: once any change moved the AI parts (a part moved or resized, a
+        block before it added, removed or trimmed, a join…), a reference that sat whole
+        under one of them follows it; the others stay, and the live line says so. Compared
+        with where the parts were last (`_clip_ref_spans`), so it is never done twice.
+        Called once at the end of each change that may move the parts."""
+        now = self._clip_ai_span_map()
+        before = dict(self._clip_ref_spans)
+        self._clip_ref_spans = now
+        if not self.clip_refs or not before or before == now:
+            # nothing moved since: what an earlier sync of THIS change said stays (several
+            # paths sync in one change; `_clip_with_follow` says it once and lets it go)
+            return
+        items, went, stayed = clip_refs_vm.follow(
+            self.clip_refs, before, now, self._clip_refs_total()
+        )
+        if not went and not stayed:
+            return
+        self.clip_refs = items
+        numbers = {s["id"]: int(s["n"]) for s in self._clip_ai_spans()}
+        said = [clip_refs_vm.follow_line([numbers.get(p, 0) for p in went])] if went else []
+        if stayed:
+            said.append(clip_refs_vm.STAYED_LINE)
+        # a second sync of the same change replaces what the first one said (never twice)
+        line = self.clip_edit_notice
+        previous = self._clip_ref_followed
+        if previous:
+            line = line.replace(previous, "").strip()
+        self._clip_ref_followed = " ".join(said)
+        # last review: the line of before this change is never kept in front of the words
+        # — only what THIS change wrote goes first (`_clip_ref_own`)
+        self.clip_edit_notice = self._clip_join_follow(line if self._clip_ref_own else "")
+
+    def _clip_ref_change_starts(self) -> None:
+        """A change of the editor starts: what the references said about an earlier one
+        goes, and nothing of this change has written the live line yet."""
+        self._clip_ref_followed = ""
+        self._clip_ref_own = False
+
+    def _clip_ref_whole_under(self, block_id: str) -> list[str]:
+        """The references whole under the AI part `block_id` now."""
+        if not self.clip_refs:
+            return []
+        return clip_refs_vm.whole_under(
+            clip_refs_vm.resolved(self.clip_refs, self._clip_refs_total()),
+            self._clip_ai_span_map(),
+            block_id,
+        )
+
+    def _clip_with_follow(self, line: str) -> str:
+        """`line` — this change's own words — and, after it, what the references under a
+        moved AI part did, said once at the end. Marks the line as this change's."""
+        self._clip_ref_own = True
+        return self._clip_join_follow(line)
+
+    def _clip_join_follow(self, line: str) -> str:
+        said = self._clip_ref_followed
+        if not said:
+            return line
+        line = line.replace(said, "").strip()
+        return " ".join(w for w in (line, said) if w)
 
     # -- ED-10 m-25026648: the timeline -------------------------------------------------
 
@@ -7801,6 +8412,7 @@ class CreativeState(rx.State):
     @rx.event
     def set_clip_join(self, value: str | list[str]) -> None:
         """The open join takes `value` — only a kind it offers now («Corte» always)."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         kind = value[0] if isinstance(value, list) and value else value
         row = self.clip_join_chosen
         if not row or not isinstance(kind, str) or kind not in row["offered"].split(","):
@@ -7828,6 +8440,9 @@ class CreativeState(rx.State):
         self.clip_edit_notice = clip_joins_vm.put_line(
             row["before_label"], row["after_label"], kind
         )
+        self._clip_ref_own = True
+        # code review: a join moves the parts after it — their references go with them
+        self._clip_refs_sync()
 
     def _clip_keep_joins(self, joins: dict[str, str]) -> None:
         """The joins kept, with only their own durations and directions."""
@@ -7858,6 +8473,7 @@ class CreativeState(rx.State):
     def set_clip_join_seconds(self, value: list[float] | float | str) -> None:
         """The duration bar (0,1 s a step; Radix sends a list). Never past what fits now
         (`fit_seconds`, the server's room): a longer value is brought to it."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         row = self.clip_join_chosen
         seconds = clip_joins_vm.seconds_from_slider(value)
         if not row or not row.get("has_seconds") or seconds is None or not row.get("fit"):
@@ -7871,6 +8487,8 @@ class CreativeState(rx.State):
         self.clip_edit_notice = clip_joins_vm.seconds_put_line(
             row["before_label"], row["after_label"], chosen
         )
+        self._clip_ref_own = True
+        self._clip_refs_sync()
 
     @rx.event
     def set_clip_join_direction(self, value: str | list[str]) -> None:
@@ -7969,7 +8587,7 @@ class CreativeState(rx.State):
                         item,
                         plan,
                         start_s=float(row["start"]),
-                        poster=self._clip_ai_poster(plan),
+                        poster=self._clip_ai_poster(plan, int(item.get("entry") or 0)),  # type: ignore[call-overload]
                         has_product=self._clip_has_product(),
                     )
                 )
@@ -7977,6 +8595,8 @@ class CreativeState(rx.State):
             *rows,
             *timeline_vm.overlay_blocks(overlays, "text", total),  # type: ignore[arg-type]
             *timeline_vm.overlay_blocks(overlays, "effect", total),  # type: ignore[arg-type]
+            # m-25142725: the reference tracks' blocks (none without AI parts)
+            *self._clip_ref_rows(),
         ]
 
     # -- ED-11b m-25029110: the frame strip under each uploaded video's block -------------
@@ -8532,7 +9152,10 @@ class CreativeState(rx.State):
                 item["thumb"] = clip_editor_vm.SEQ_BASE + thumbs[str(item["key"])]
             elif item["kind"] == ai_block_vm.TL_KIND:
                 # ED-07: an AI part not made yet shows its poster (design 01)
-                poster = self._clip_ai_poster(self._clip_ai_plan(str(item["id"])))
+                poster = self._clip_ai_poster(
+                    self._clip_ai_plan(str(item["id"])),
+                    int(item.get("entry") or 0),  # type: ignore[call-overload]
+                )
                 item["thumb"] = clip_editor_vm.SEQ_BASE + poster if poster else ""
         urls = {}
         for effect_id in self._clip_used_effect_ids():
@@ -8857,6 +9480,12 @@ class CreativeState(rx.State):
         )
 
     def _clip_edit_snapshot(self) -> dict[str, object]:
+        """The editor's choices before a change — which also starts the change: what the
+        references said about an earlier one is let go (m-25142725)."""
+        self._clip_ref_change_starts()
+        return self._clip_edit_snapshot_now()
+
+    def _clip_edit_snapshot_now(self) -> dict[str, object]:
         return clip_editor_vm.snapshot(
             start=self.clip_cut_start,
             end=self.clip_cut_end,
@@ -8883,10 +9512,13 @@ class CreativeState(rx.State):
             self._clip_keep_joins(
                 clip_joins_vm.clean_joins(self.clip_block_joins, self._clip_tl_media())
             )
-        after = self._clip_edit_snapshot()
+        after = self._clip_edit_snapshot_now()
         line = clip_editor_vm.change_message(before, after)
         if line:
             self.clip_edit_notice = line
+            self._clip_ref_own = True  # m-25142725: this change's own words
+        # m-25142725: the references whole under an AI part that moved go with it
+        self._clip_refs_sync()
 
     def _reset_clip_editor(self) -> None:
         self.clip_edit_block = ""
@@ -8920,11 +9552,15 @@ class CreativeState(rx.State):
         self.clip_join_open = ""
         # ED-07: the AI parts go with the Clip they were put in
         self.clip_ai_parts = []
+        # m-25142725: and so do their references
+        self.clip_refs = []
+        self._clip_ref_spans = {}
+        self._clip_ref_target = ""
         # ED-06: and so do the reel's plan laid as blocks and the last idea's provenance
         self.clip_reel_blocks = False
+        self.clip_reel_cut = ""
         self._clip_idea_provenance = None
         self.clip_general_open = False
-        self.clip_ai_more = False
         self.clip_ai_merge_error = ""
         self.clip_effect_ids = []
         self.clip_effect_uses = []
@@ -9041,6 +9677,8 @@ class CreativeState(rx.State):
         problems = self._clip_ai_problems()
         if problems:
             return problems[0]["text"], "warn"
+        # m-25142725: an AI part over its cap is said by its own cards under the line
+        # (`clip_ref_cards`), never twice here
         off = self._clip_ai_create_off()
         return (off, "info") if off else ("", "")
 
@@ -9072,7 +9710,24 @@ class CreativeState(rx.State):
         data = editor_contract.to_dict(self._clip_edit_recipe())
         # ED-07 (contract §2): the AI parts' entries go with their blocks — only while
         # they are on the timeline (the switches on), so off nothing changes
-        ai = {"ai_parts": ai_block_vm.plans(self.clip_ai_parts)} if self._clip_ai_tokens() else {}
+        ai: dict[str, object] = {}
+        if self._clip_ai_tokens():
+            # m-25142725 (contract §3.4): what each part looks at goes on the tracks
+            # (`references_version` 1) — never as the entries' or the Clip's old keys,
+            # which a brief on the tracks may not carry (`references_and_old_fields`): the
+            # Clip's photos and videos are its blocks (`segments`) already
+            ai = {
+                "ai_parts": ai_block_vm.plans(self.clip_ai_parts, references=True),
+                "references_version": 1,
+                "clip_references": clip_refs_vm.brief_references(
+                    self.clip_refs, self._clip_refs_total()
+                ),
+                "clip_image_keys": [],
+                "clip_image_roles": [],
+                "clip_video_keys": [],
+                "clip_audio_keys": [],
+                "source_pins": [],
+            }
         return {
             "clip_reference_mode": "local",
             "segments": data["segments"],
@@ -9330,7 +9985,10 @@ class CreativeState(rx.State):
             plan = self._clip_ai_plan(str(item["id"]))
             if not str(plan.get("description") or "").strip():
                 return ai_block_vm.missing_description_line(int(item.get("ai_n") or 1))  # type: ignore[call-overload]
-        return ""
+        # m-25142725 (decision 4): «Siguiente» off while an AI part takes more references
+        # than its model's cap, with its reason
+        over = self._clip_refs_over()
+        return over[0] if over else ""
 
     def _clip_text_flow(self) -> bool:
         return clip_editor_vm.flow_of(self.clip_edit_block) == clip_editor_vm.FLOW_TEXT
@@ -9902,6 +10560,7 @@ class CreativeState(rx.State):
                     had_cut=had_cut,
                     capped=self.clip_source_seconds > clip_editor_vm.SOURCE_MAX_SECONDS + 0.005,
                 )
+                self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
                 return None
         return self._clip_edit_changed(before)
 
@@ -9929,6 +10588,9 @@ class CreativeState(rx.State):
         media, overlays, _total = self._clip_tl()
         flow = clip_editor_vm.is_flow(block)
         slug = clip_editor_vm.block_slug(media, overlays, block) if block and not flow else ""
+        if clip_refs_vm.is_ref(block):
+            # m-25142725: `?bloque=referencia-foto-2`
+            slug = clip_refs_vm.slug(self.clip_refs, block, clip_editor_vm.media_total(media))
         return rx.call_script(
             clip_editor_vm.block_url_script(clip_editor_vm.BLOCK_PARAM, slug, flow=flow)
         )
@@ -10122,6 +10784,8 @@ class CreativeState(rx.State):
         ED-07: «Parte con IA» puts one on the track at the marker and opens its panel."""
         if flow == ai_block_vm.ADD_KEY:
             return self._clip_add_ai_part()
+        if flow == clip_editor_vm.FLOW_REF:
+            return self._clip_open_refs()  # m-25142725: «Mostrar a la IA»
         if flow == clip_editor_vm.FLOW_MEDIA and clip_editor_vm.timeline_full(
             self._clip_tl_media()
         ):
@@ -10138,6 +10802,8 @@ class CreativeState(rx.State):
             return []
         if clip_editor_vm.flow_of(self.clip_edit_block) == value:
             return []
+        if value == clip_editor_vm.FLOW_REF:
+            return self._clip_open_refs()  # m-25142725: only with the AI parts on
         # back on «¿Con qué lo armamos?», its source is the one left open
         return self._clip_open_flow(value, tab=self.clip_source_tab, opener=self.clip_flow_opener)
 
@@ -10185,7 +10851,9 @@ class CreativeState(rx.State):
         if self.clip_edit_notice:
             # ED-07: an AI part says its number before and after («ahora es la parte con IA 1»)
             was = next((int(m.get("ai_n") or 0) for m in media if m["id"] == block_id), 0)  # type: ignore[call-overload]
-            self.clip_edit_notice = timeline_vm.moved_text(moved, block_id, was=was)  # type: ignore[arg-type]
+            self.clip_edit_notice = self._clip_with_follow(
+                timeline_vm.moved_text(moved, block_id, was=was)  # type: ignore[arg-type]
+            )
         pieces_now = [str(moved[i]["id"]) for i in at]
         if self.clip_edit_block in pieces_now:
             # a piece's id is its place: the chosen piece keeps being the chosen one
@@ -10252,6 +10920,7 @@ class CreativeState(rx.State):
         if line and shown == line:
             line = f"{line}{clip_editor_vm.SAY_AGAIN}"
         self.clip_edit_notice = line
+        self._clip_ref_own = True  # m-25142725: this change's own words
 
     def _clip_cap_refuse(self, kinds: Sequence[str]) -> None:
         """Files the action brought that are left out before they are even stored."""
@@ -10327,6 +10996,8 @@ class CreativeState(rx.State):
             why = ai_block_vm.add_reason(self._clip_ai_segments())
             if why:
                 lines.append(why)
+        if self._clip_ai_on() and not self._clip_ai_tokens() and not lines:
+            lines.append(clip_refs_vm.NO_AI_PART)  # m-25142725: «Mostrar a la IA» off
         tab_says = self._clip_text_flow() and not self._clip_text_current()
         if len(self.clip_text_uses) >= clip_texts_vm.TEXTS_MAX and not tab_says:
             lines.append(clip_texts_vm.TEXTS_FULL)
@@ -10485,6 +11156,10 @@ class CreativeState(rx.State):
             delta = float(delta)
         except (TypeError, ValueError):
             return None
+        if clip_refs_vm.is_ref(block_id):
+            # m-25142725: a reference's edge, ½ s
+            self._clip_ref_key(block_id, edge, "ArrowLeft" if delta < 0 else "ArrowRight")
+            return None
         uid = clip_texts_vm.text_uid(block_id)
         if uid:
             CreativeState.nudge_clip_text.fn(self, uid, edge, delta)
@@ -10517,6 +11192,10 @@ class CreativeState(rx.State):
             return []
         if key == "Escape":
             return self._clip_choose("") if self.clip_edit_block else []
+        if clip_refs_vm.is_ref(block_id):
+            # m-25142725: a reference — ←/→ ½ s (a handle: that edge), ↑/↓ a row
+            self._clip_ref_key(block_id, edge, key)
+            return [self._clip_block_url(self.clip_edit_block)] if self.clip_edit_block else []
         if key in ("ArrowUp", "ArrowDown") and not edge:
             # ED-04: ↑/↓ on an effect moves it to the row above or below
             uid = clip_editor_vm.use_uid(block_id)
@@ -10577,6 +11256,10 @@ class CreativeState(rx.State):
             else:
                 self._clip_drop_at = max(int(round(number)), 0)
             return []
+        if clip_refs_vm.is_ref(block_id):
+            # m-25142725: a reference moved or trimmed like a text or an effect
+            self._clip_ref_drop(block_id, what, number)
+            return [self._clip_block_url(self.clip_edit_block)] if self.clip_edit_block else []
         if what == "move" and block_id in self._clip_media_ids():
             self._clip_move_media(block_id, int(round(number)))
         elif what in ("start", "end") and self._clip_photo_place(block_id):
@@ -10667,6 +11350,7 @@ class CreativeState(rx.State):
                     had_cut=had_cut,
                     capped=self.clip_source_seconds > clip_editor_vm.SOURCE_MAX_SECONDS + 0.005,
                 )
+                self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
                 return
             if speed == 1:
                 # the stretch from before the speed-up — unless the owner trimmed since
@@ -10683,6 +11367,7 @@ class CreativeState(rx.State):
                 self._clip_fast_before = {}
                 self._clip_edit_changed(before)
                 self.clip_edit_notice = clip_editor_vm.FAST_OFF_LINE
+                self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
                 return
         pieces[index][2] = float(speed)
         self._clip_store_pieces(pieces)
@@ -10690,12 +11375,14 @@ class CreativeState(rx.State):
         self._clip_effects_follow()  # inside it, none over another on a row
         self._clip_edit_changed(before)
         self.clip_edit_notice = clip_editor_vm.speed_changed_line(number, speed)
+        self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
 
     @rx.event
     def clip_block_action(self, label: str) -> list[rx.event.EventSpec]:
         """The chosen block's bar. «Quitar»: a video or a photo leaves the Clip (as its
         ✕ in «Fotos y videos»), the text or an effect leaves the video (the live line
         says which). ED-14: «Girar» of a photo turns that block a quarter clockwise."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         block = self.clip_edit_block
         uid = clip_texts_vm.text_uid(block)
         if uid and self._clip_text_has(uid):
@@ -10719,6 +11406,8 @@ class CreativeState(rx.State):
             return []
         if ai_block_vm.is_token(block):
             return self._clip_remove_ai_part(block)  # ED-07: a «parte con IA»
+        if clip_refs_vm.is_ref(block):
+            return self._clip_ref_remove(block)  # m-25142725: a reference
         key, index = clip_editor_vm.piece_of(block)
         track, place = self._clip_track_place(block)
         media = self._clip_tl_media()
@@ -10738,8 +11427,8 @@ class CreativeState(rx.State):
             self._clip_fit_overlays()  # a shorter video: what went past its end comes in
             gone = self._clip_effects_follow(clip_editor_vm.removed_mapping(key, count, index))
             self._clip_edit_changed(before)
-            self.clip_edit_notice = self._clip_with_gone(
-                clip_editor_vm.removed_line("video", number), gone
+            self.clip_edit_notice = self._clip_with_follow(
+                self._clip_with_gone(clip_editor_vm.removed_line("video", number), gone)
             )
             return self._clip_removed(track, place)
         if block in self._clip_media_ids():
@@ -10751,8 +11440,8 @@ class CreativeState(rx.State):
                 CreativeState.remove_clip_image.fn(self, block)
             self._clip_fit_overlays()  # a shorter video: what went past its end comes in
             gone = self._clip_effects_follow()
-            self.clip_edit_notice = self._clip_with_gone(
-                clip_editor_vm.removed_line(kind, number), gone
+            self.clip_edit_notice = self._clip_with_follow(
+                self._clip_with_gone(clip_editor_vm.removed_line(kind, number), gone)
             )
             return self._clip_removed(track, place)
         row = self._clip_overlay(block)
@@ -10898,6 +11587,7 @@ class CreativeState(rx.State):
         line = clip_editor_vm.trim_line(ids.index(block_id) + 1, longer=longer)
         extra = clip_editor_vm.fitted_line(fitted)
         self.clip_edit_notice = f"{line} {extra}" if extra else line
+        self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
         return True
 
     # -- ED-14 m-25029109: a photo's seconds and turn ------------------------------------------
@@ -10931,6 +11621,7 @@ class CreativeState(rx.State):
         blocks after it move (no gaps), a text or an effect past a shorter video's end is
         cut to it, effects stuck to blocks follow, and the live line says so. Whether
         anything changed."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         number = self._clip_photo_place(block_id)
         if not number:
             return False
@@ -10947,12 +11638,15 @@ class CreativeState(rx.State):
         line = clip_photos_vm.changed_line(number, new)
         extra = clip_editor_vm.fitted_line(fitted)
         self.clip_edit_notice = f"{line} {extra}" if extra else line
+        self._clip_ref_own = True
+        self._clip_refs_sync()  # m-25142725: the AI parts after it moved
         return True
 
     def _clip_photo_nudge(self, block_id: str, delta: float) -> None:
         """←/→ on a photo's focused end handle: ½ s; at 1 s or 5 s nothing moves. The
         reason is shown ONCE, under the panel's «Se ve N s» (`row["limit"]`, the handle's
         `aria-describedby`): the live line does not repeat it (ED-14 UX review)."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         media = self._clip_tl_media()
         now = self._clip_photo_seconds_now(block_id)
         new, why = clip_photos_vm.nudge(
@@ -11063,6 +11757,7 @@ class CreativeState(rx.State):
         self._clip_edit_changed(before)
         if self.clip_edit_notice and number:
             self.clip_edit_notice = clip_editor_vm.cut_line(number)
+            self.clip_edit_notice = self._clip_with_follow(self.clip_edit_notice)
         # the marker rests on the line between the halves: the piece that starts there
         # is chosen, so «Cortar» is ready again as soon as the marker moves into it
         return self._clip_choose(clip_editor_vm.piece_id(self._clip_edit_key(), index + 1))
@@ -11490,6 +12185,10 @@ class CreativeState(rx.State):
         self._set_clip_frame("last", *((last["key"], last["name"]) if last else ("", "")))
         self._clip_prune_photos()
         self._clip_prune_joins()
+        # m-25142725 (third review): every path that changes «Fotos y videos» passes here
+        # — a Galería pick, the strip reordered, a product seeded or dropped, Pinterest —:
+        # the references follow their AI parts once, whatever moved them
+        self._clip_refs_sync()
 
     def _clip_prune_joins(self) -> None:
         """m-25114465 review: every way a block leaves or moves (its ✕, «Quitar», the
@@ -11528,6 +12227,7 @@ class CreativeState(rx.State):
     def drop_clip_image(self, index: int) -> None:
         """Dropped on another file — an image or a video: it takes that place, and the
         frames follow."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         start, target = self.clip_drag_from, int(index)
         self.clip_drag_from = -1
         keys = [item["key"] for item in self._clip_strip()]
@@ -11540,6 +12240,7 @@ class CreativeState(rx.State):
     async def _add_clip_files(self, kind: str, files: list[rx.UploadFile]) -> int:
         """Store `files` as clip references of `kind` (`clip_gallery_vm` kinds) up to
         the room the brief allows; how many did NOT fit (said, never silently dropped)."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         free = clip_gallery_vm.room(
             kind, len(self.clip_images), len(self.clip_videos), len(self.clip_audios)
         )
@@ -11567,6 +12268,7 @@ class CreativeState(rx.State):
             ]
         if kind in (clip_gallery_vm.IMAGE, clip_gallery_vm.VIDEO):
             self._sync_clip_frames()
+            self._clip_refs_sync()  # m-25142725: put before an AI part, it moved
         return max(len(files) - free, 0)
 
     def _show_clip_note(self, kind: str) -> None:
@@ -11613,9 +12315,11 @@ class CreativeState(rx.State):
     @rx.event
     def remove_clip_image(self, key: str) -> None:
         self._clear_clip_notes()
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         self.clip_images = [item for item in self.clip_images if item["key"] != key]
         self._sync_clip_frames()
         self._prune_pinterest_sources()
+        self._clip_refs_sync()  # m-25142725: the AI parts after it moved
 
     @rx.event
     async def handle_clip_video_uploads(self, files: list[rx.UploadFile]) -> None:
@@ -11625,6 +12329,7 @@ class CreativeState(rx.State):
     @rx.event
     def remove_clip_video(self, key: str) -> None:
         self._clear_clip_notes()
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         was_reel = any(
             item["key"] == key and item.get("source") == "reel" for item in self.clip_videos
         )
@@ -11639,6 +12344,7 @@ class CreativeState(rx.State):
             self.replication_context = ""
             self.replication_brand_text = False
         self._sync_clip_frames()
+        self._clip_refs_sync()  # m-25142725: the AI parts after it moved
 
     def drop_clip_reference(self, key: str) -> bool:
         """«Tu Galería» (m-25026648): a tile already among the Clip's references, tapped
@@ -11764,6 +12470,7 @@ class CreativeState(rx.State):
         self, key: str, name: str, source: dict[str, str], *, target: str = "clip_images"
     ) -> bool:
         """Apply one confirmed image without changing format or claiming catalog ownership."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         if self._pinterest_problem(target) or source.get("image_key") != key:
             return False
         if target == "clip_images":
@@ -11884,6 +12591,8 @@ class CreativeState(rx.State):
             return None  # ED-13: not past «Arma tu video» while its texts cannot be made
         if wanted > old and self._clip_ai_missing():
             return None  # ED-07 (D10): nor while an AI part does not say what happens
+        if wanted > old and self._clip_refs_over():
+            return None  # m-25142725: nor past an AI part over its cap, from any step
         self.gen_step = wanted
         self.gen_step = self._view_index()
         self.gen_direction = DIR_BACK if self._view_index() < old else DIR_NEXT
@@ -12455,6 +13164,7 @@ class CreativeState(rx.State):
         """Pick (or unpick) the catalog product the piece is about: the brief's
         `product_ref` becomes its name (what `DbProductCatalog` resolves), its photos
         ride along as the piece's product keys, and an empty topic takes the name."""
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         if self.selected_product_id == product_id:
             self.clear_product()
             return
@@ -12482,6 +13192,14 @@ class CreativeState(rx.State):
             self.brief_topic = item.get("name", "")
             self._topic_default = self.brief_topic.strip()
         self._seed_clip_product()
+        # m-25142725 (decision 2): its photos, one block along the whole video on
+        # «Fotos de referencia» — only with the AI parts on
+        main = self.selected_product_photo_key
+        self._clip_refs_put_product(
+            product_id,
+            item.get("name", ""),
+            [*([main] if main else []), *self._selected_product_photo_keys],
+        )
         self.create_error = ""
 
     def _drop_product_references(self) -> None:
@@ -12490,6 +13208,9 @@ class CreativeState(rx.State):
         must not keep the old one's), and the owner is told."""
         self.product_change_note = ""
         self.product_seed_note = ""
+        if any(i.get("origin") == "product" for i in self.clip_refs):
+            # m-25142725: the last product's block leaves «Fotos de referencia»
+            self.clip_refs = clip_refs_vm.without_product(self.clip_refs)
         photos = set(self._selected_product_photo_keys)
         videos = set(self._selected_product_video_keys)
 
@@ -13026,6 +13747,7 @@ class CreativeState(rx.State):
 
     @rx.event
     def clear_product(self) -> None:
+        self._clip_ref_change_starts()  # m-25142725: a new change starts
         if self.selected_product_id:
             self._product_changed()
         else:

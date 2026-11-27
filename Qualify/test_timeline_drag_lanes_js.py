@@ -80,8 +80,9 @@ def test_only_an_effect_moves_up_or_down() -> None:
     `timeWhat`; a still drop on its own row and time changes nothing."""
     drag = (_ASSETS / "timeline-drag.js").read_text(encoding="utf-8")
     arm = drag[drag.index("function arm()") : drag.index("function update()")]
-    assert 'd.block.getAttribute("data-tl-block") === "effect"' in arm
-    assert ".q-tl__lane--effect" in arm
+    # m-25142725: an effect's rows, or a reference's rows of its own kind (`rowKind`)
+    assert 'core().rowKind(d.block.getAttribute("data-tl-block"))' in arm
+    assert "rows.newLane" in arm
     assert "core().laneAt(" in drag and "core().laneShift(" in drag
     release = drag[drag.index("function release(e)") :]
     assert "d.laneTo === d.laneFrom" in release
@@ -92,7 +93,8 @@ def test_only_an_effect_moves_up_or_down() -> None:
 def test_up_and_down_keys_reach_the_screen_for_an_effect_only() -> None:
     script = (_ASSETS / "timeline.js").read_text(encoding="utf-8")
     assert '(e.key === "ArrowUp" || e.key === "ArrowDown")' in script
-    assert 'el.getAttribute("data-tl-block") === "effect"' in script
+    # m-25142725: a reference's block too (its row inside its own kind)
+    assert '/^(effect|refphoto|refvideo|refaudio)$/.test(el.getAttribute("data-tl-block")' in script
 
 
 def test_the_scripts_parse() -> None:

@@ -6036,6 +6036,11 @@ def _clip_inspiration() -> rx.Component:
                 rx.vstack(
                     rx.text(editor_idea_vm.INSPIRATION_TITLE, size="2", weight="medium"),
                     rx.text(CreativeState.reel_based_on_text, size="1", color=T.TEXT_MUTED),
+                    # m-25143223: the plan stops before the reel's end — how much it uses
+                    rx.cond(
+                        CreativeState.clip_reel_cut != "",
+                        rx.text(CreativeState.clip_reel_cut, size="1", color=T.TEXT_MUTED),
+                    ),
                     spacing="0",
                     align_items="start",
                     flex="1",

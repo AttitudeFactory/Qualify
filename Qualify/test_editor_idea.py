@@ -7,11 +7,13 @@ database, no Claude, no vendor, nothing paid."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from qualify_api.creative.parts import plan_from_analysis
 from qualify_api.creative.parts_ai import (
     PROPOSE_RETRY_TEXT,
     STORY_MAX,
@@ -122,7 +124,7 @@ def test_the_new_words_read_literally() -> None:
     assert vm.GO_TO_VIDEO == "Ir al video"
     assert vm.PROPOSE_LABEL == "Proponerme las partes"
     assert vm.PROPOSE_NOTE == (
-        "Proponer es gratis. Las partes se ponen en tu línea de tiempo y las revisas antes "
+        "Proponer es gratis. Las partes se suman al final de tu video y las revisas antes "
         "de crear nada."
     )
     # «bloque» stays where it already is; nothing new says it (contract §3.3)
@@ -286,7 +288,7 @@ def test_a_local_video_the_editor_cannot_hold_is_never_lost_in_silence(
     # «Hacer uno parecido»: the provider says «no blocks», so the list follows
     reel = analysis(shot(0, 0, 5), shot(1, 5, 9))
     monkeypatch.setattr(reel_wait_provider.reel_analysis, "get_analysis", lambda *_a: reel)
-    monkeypatch.setattr(reel_wait_provider, "blocks_from_analysis", lambda *_a, **_k: blocks)
+    monkeypatch.setattr(reel_wait_provider, "blocks_from_plan", lambda *_a, **_k: blocks)
     assert reel_wait_provider.reel_blocks(_TENANT, ANALYSIS_ID) is None
 
 
@@ -813,7 +815,7 @@ def test_a_reels_plan_past_60_seconds_falls_back_to_the_list(
         ai_parts=tuple(_plan(10) for _ in range(6)),
     )
     assert long.seconds > clip_editor_vm.LOCAL_MAX_SECONDS
-    monkeypatch.setattr(reel_wait_provider, "blocks_from_analysis", lambda *_a, **_k: long)
+    monkeypatch.setattr(reel_wait_provider, "blocks_from_plan", lambda *_a, **_k: long)
     assert reel_wait_provider.reel_blocks(_TENANT, ANALYSIS_ID) is None
 
 
@@ -825,6 +827,116 @@ def test_a_reels_plan_the_server_refuses_as_blocks_falls_back_to_the_list(
     reel = analysis(shot(0, 0, 3), shot(1, 3, 7, people="observed", faces="observed"))
     monkeypatch.setattr(reel_wait_provider.reel_analysis, "get_analysis", lambda *_a: reel)
     assert reel_wait_provider.reel_blocks(_TENANT, ANALYSIS_ID, ("smash doble",)) is None
+
+
+# -- m-25143223: a reel's plan that stops before the reel's end says so ----------------------
+
+
+def test_the_reel_line_and_the_card_say_how_much_of_the_reel_a_cut_plan_uses() -> None:
+    capped = vm.ReelCut(used_s=44, reel_s=63, capped=True)
+    assert vm.reel_line(6, 0, capped) == (
+        "Te armamos tu video como el reel: 6 partes con IA (el máximo por video), con 44 s "
+        "de los 63 del reel. Revisa cada una; hasta «Crear» no gastas nada."
+    )
+    assert vm.reel_cut_card(capped) == "Usamos 44 s de los 63 del reel."
+    # own parts among them: the plan's cap was of parts, not of AI parts — no bracket
+    assert vm.reel_line(4, 2, capped) == (
+        "Te armamos tu video como el reel: 4 partes con IA y 2 tuyas, con 44 s de los 63 "
+        "del reel. Revisa cada una; hasta «Crear» no gastas nada."
+    )
+    # one part, stopped by something else than the cap: no bracket, «Revísala»
+    one = vm.ReelCut(used_s=8, reel_s=20)
+    assert vm.reel_line(1, 0, one) == (
+        "Te armamos tu video como el reel: 1 parte con IA, con 8 s de los 20 del reel. "
+        "Revísala; hasta «Crear» no gastas nada."
+    )
+    # a plan that covers the reel: nothing changes
+    assert vm.reel_line(3, 2, None) == vm.reel_line(3, 2)
+    assert vm.reel_cut_card(None) == ""
+
+
+def test_the_provider_says_a_plan_cut_at_six_parts(monkeypatch: pytest.MonkeyPatch) -> None:
+    # nine cuts of 5-8 s (none joinable under 10 s): the plan keeps the first six, 44 s
+    ends = [8, 15, 22, 29, 36, 44, 51, 58, 63]
+    starts = [0, *ends[:-1]]
+    reel = analysis(*(shot(i, a, b) for i, (a, b) in enumerate(zip(starts, ends, strict=True))))
+    monkeypatch.setattr(reel_wait_provider.reel_analysis, "get_analysis", lambda *_a: reel)
+    ops = reel_wait_provider.reel_blocks(_TENANT, ANALYSIS_ID, ("smash doble",))
+    assert isinstance(ops, vm.ReelOps) and len(ops) == 6
+    assert ops.cut == vm.ReelCut(used_s=44, reel_s=63, capped=True)
+
+
+def test_six_natural_cuts_of_a_reel_read_short_are_not_capped() -> None:
+    """Review: six cuts, all in the plan, of an analysis that stopped at 44 s of a 63 s
+    reel — nothing was left out at the cap, so no bracket."""
+    ends = [8, 15, 22, 29, 36, 44]
+    starts = [0, *ends[:-1]]
+    six = analysis(*(shot(i, a, b) for i, (a, b) in enumerate(zip(starts, ends, strict=True))))
+    reel = replace(six, source_seconds=63.0)
+    plan = plan_from_analysis(reel)
+    assert len(plan) == 6
+    assert reel_wait_provider.reel_cut(reel, plan) == vm.ReelCut(used_s=44, reel_s=63)
+
+
+def test_the_provider_says_nothing_when_the_plan_covers_the_reel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reel = analysis(shot(0, 0, 5), shot(1, 5, 9))
+    monkeypatch.setattr(reel_wait_provider.reel_analysis, "get_analysis", lambda *_a: reel)
+    ops = reel_wait_provider.reel_blocks(_TENANT, ANALYSIS_ID, ("smash doble",))
+    assert isinstance(ops, vm.ReelOps) and ops.cut is None
+    # the shot detector's last half second is not a cut the owner should hear of
+    close = replace(reel, source_seconds=9.6)
+    assert reel_wait_provider.reel_cut(close, plan_from_analysis(close)) is None
+
+
+def test_the_provider_says_how_much_one_part_uses_of_a_longer_reel() -> None:
+    """One part of an analysis that read 8 s of a 20 s reel: «8 s de los 20», no cap."""
+    reel = replace(analysis(shot(0, 0, 8)), source_seconds=20.2)
+    plan = plan_from_analysis(reel)
+    assert len(plan) == 1
+    assert reel_wait_provider.reel_cut(reel, plan) == vm.ReelCut(used_s=8, reel_s=20)
+
+
+def test_a_long_cut_split_in_parts_counts_only_the_parts_kept() -> None:
+    """Review (the real case): cuts of 8, 7, 7, 7 s and one of 40 s split in 10 s parts —
+    the plan keeps 8 + 7 + 7 + 7 + 10 + 10: 49 s of the 69, two parts of the long cut left
+    out at the cap."""
+    reel = analysis(shot(0, 0, 8), shot(1, 8, 15), shot(2, 15, 22), shot(3, 22, 29),
+                    shot(4, 29, 69))  # fmt: skip
+    plan = plan_from_analysis(reel)
+    assert [p.seconds for p in plan] == [8, 7, 7, 7, 10, 10]
+    assert reel_wait_provider.reel_cut(reel, plan) == vm.ReelCut(used_s=49, reel_s=69, capped=True)
+
+
+@pytest.mark.usefixtures("ai_on")
+async def test_a_cut_reel_plan_is_said_on_the_line_and_the_card(
+    reel_backend: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cut = vm.ReelCut(used_s=9, reel_s=20)
+    monkeypatch.setattr(
+        module.reel_wait_provider,
+        "reel_blocks",
+        lambda *_a: vm.ReelOps(_reel_ops(), cut=cut),
+    )
+    state = _replica()
+    await _poll(state)
+    assert state.clip_reel_blocks
+    assert state.clip_edit_notice == vm.reel_line(2, 0, cut)
+    assert state.clip_reel_cut == "Usamos 9 s de los 20 del reel."
+    # the plan goes with its analysis: the card's line too
+    state._apply_reel_reference(_CARD, _IMPORTED, str(uuid4()), "queued")
+    assert state.clip_reel_cut == ""
+
+
+@pytest.mark.usefixtures("ai_on")
+async def test_a_whole_reel_plan_keeps_the_card_without_a_cut_line(
+    reel_backend: SimpleNamespace,
+) -> None:
+    state = _replica()
+    await _poll(state)
+    assert state.clip_reel_blocks and state.clip_reel_cut == ""
+    assert state.clip_edit_notice == vm.reel_line(2, 0)
 
 
 # -- «Agregar → Pedir una idea» ------------------------------------------------------------
@@ -1060,13 +1172,40 @@ async def test_a_track_filled_meanwhile_puts_what_still_fits_or_says_why(
 
 
 @pytest.mark.usefixtures("ai_on")
-async def test_pedir_una_idea_without_a_context_asks_for_it(
+async def test_pedir_una_idea_without_a_context_is_off_and_asks_for_it(
     fake_claude: dict[str, Any],
 ) -> None:
+    """m-25026636: with nothing written the button is off with «Escribe de qué trata tu
+    video, arriba en «¿De qué trata tu video?»…» as its reason (like the caps and a video
+    being read), and a tap never asks Claude."""
     creative = _clip(brief_topic="")
-    card, _events = await _ask_idea(creative, "   ")
-    assert fake_claude["calls"] == []
-    assert card.error == vm.STORY_MISSING
+    assert creative.clip_idea_off == vm.STORY_MISSING
+    CreativeState.set_brief_topic.fn(creative, "   ")
+    assert creative.clip_idea_off == vm.STORY_MISSING  # blanks are not a context
+    card, events = await _ask_idea(creative, "   ")
+    assert fake_claude["calls"] == [] and events == []
+    # said once, under the button — never a second time on the card
+    assert card.error == "" and card.phase == start_vm.PHASE_IDLE
+    CreativeState.set_brief_topic.fn(creative, "Promoción de 2×1")
+    assert creative.clip_idea_off == ""
+
+
+@pytest.mark.usefixtures("ai_on")
+async def test_what_is_typed_at_the_tap_turns_the_idea_on(
+    fake_claude: dict[str, Any],
+) -> None:
+    """The field is debounced: the state may still hold "" when the owner taps right after
+    typing. What the field holds at the tap counts, so the proposal goes ahead."""
+    creative = _clip(brief_topic="")
+    _card, _events = await _ask_idea(creative, "Promoción de 2×1 los martes")
+    (asked,) = fake_claude["calls"]
+    assert asked["story"] == "Promoción de 2×1 los martes"
+
+
+def test_the_idea_reason_follows_the_context() -> None:
+    """`clip_idea_off` recomputes when the context changes (a dependency Reflex sees)."""
+    deps = CreativeState.computed_vars["clip_idea_off"]._deps(objclass=CreativeState)
+    assert any("brief_topic" in names for names in deps.values())
 
 
 @pytest.mark.usefixtures("ai_off")

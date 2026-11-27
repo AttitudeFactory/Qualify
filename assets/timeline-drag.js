@@ -140,17 +140,18 @@
       d.item.setAttribute("data-tl-time", core().clock(d.start));
       // ED-04: an effect may go up or down to another row of «Efectos» (never out of
       // them); a text, a photo or a video only ever moves in X
-      if (d.block.getAttribute("data-tl-block") === "effect") {
-        d.lanes = Array.prototype.slice.call(
-          d.root.querySelectorAll(".q-tl__lane--effect")
-        );
+      // m-25142725: a reference likewise, among the rows of its own kind
+      var rows = core().rowKind(d.block.getAttribute("data-tl-block"));
+      if (rows) {
+        d.lanes = Array.prototype.slice.call(d.root.querySelectorAll(rows.lanes));
         d.laneFrom = d.laneTo = d.lanes.indexOf(d.lane);
         if (d.laneFrom < 0) d.lanes = null;
         // Deivid 2026-11-20: no «+ Pista» — one more row shows under the last one while
         // an effect is held; dropped there it opens a new row (not for the only effect
         // of the last row: that would be its own row again)
         var last = d.lanes ? d.lanes.length - 1 : -1;
-        d.newLane = !!d.lanes && !(d.laneFrom === last && itemsOf(d.lane).length < 2);
+        d.newLane =
+          rows.newLane && !!d.lanes && !(d.laneFrom === last && itemsOf(d.lane).length < 2);
         if (d.newLane) d.root.setAttribute("data-tl-new-lane", "");
       }
       // the block stays inside the video (unknown length: no bound to keep)

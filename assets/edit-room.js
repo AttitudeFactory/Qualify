@@ -1,6 +1,6 @@
 /* «Arma tu video» on a phone (ED-10 m-25026648, UX note): the preview takes the height
-   the step leaves, so the step's head, the preview, the timeline with its bar and the
-   step's foot all show without scrolling the page — as big as it can be (Deivid: «la
+   the step leaves, so the step's head, the preview, the timeline, its bar (its own box,
+   `.q-edit__bar`) and the step's foot all show without scrolling the page — as big as it can be (Deivid: «la
    preview … es muy pequeña»), never under `MIN_PX`, never over 70 % of the screen.
 
    CSS alone cannot know how tall the step's head is: this measures, on the editor's
@@ -14,7 +14,12 @@
    m-25026638 (second live test): it also writes the sticky preview's own height in
    `--q-edit-preview-h` (stacked only; on a wide step the preview scrolls with the page),
    so a panel or a field scrolled into view stops UNDER the preview, never behind it
-   (`scroll-margin-top` in `assets/qualify-creative.css`). */
+   (`scroll-margin-top` in `assets/qualify-creative.css`).
+
+   m-25026636 (live test): the timeline's bar (`.q-edit__bar`) pins right under that
+   preview while stacked, so `--q-edit-bar-h` (its height) joins the panel's
+   `scroll-margin-top`, and the bar's flow position is read from the timeline above it
+   (pinned, its own box says where it is stuck). */
 (function () {
   "use strict";
   var MIN_PX = 144;
@@ -39,14 +44,31 @@
     return top + (window.scrollY || 0);
   }
 
-  // the sticky preview's height, for the panel's `scroll-margin-top` ("" = none)
-  function previewRoom(edit, on) {
-    var preview = on ? edit.querySelector(".q-edit__preview") : null;
-    var h = preview ? Math.ceil(preview.getBoundingClientRect().height) : 0;
-    var set = edit.style.getPropertyValue("--q-edit-preview-h");
+  function room(edit, name, el) {
+    var h = el ? Math.ceil(el.getBoundingClientRect().height) : 0;
+    var set = edit.style.getPropertyValue(name);
     if (h > 0) {
-      if (set !== h + "px") edit.style.setProperty("--q-edit-preview-h", h + "px");
-    } else if (set) edit.style.removeProperty("--q-edit-preview-h");
+      if (set !== h + "px") edit.style.setProperty(name, h + "px");
+    } else if (set) edit.style.removeProperty(name);
+  }
+
+  // the sticky preview's height — where the bar pins, and the panel's
+  // `scroll-margin-top` — and the pinned bar's (m-25026636), "" = none
+  function previewRoom(edit, on) {
+    room(edit, "--q-edit-preview-h", on ? edit.querySelector(".q-edit__preview") : null);
+    room(edit, "--q-edit-bar-h", on ? edit.querySelector(".q-edit__bar") : null);
+  }
+
+  // where the bar's bottom is in the flow, from the page's top: the timeline's bottom
+  // (never sticky), the grid's gap and the bar's own height — the bar's box itself
+  // reads where it is pinned while the page is scrolled (m-25026636)
+  function barFlowBottom(edit, bar, shift) {
+    var holder = edit.querySelector(".q-edit__bar");
+    var timeline = edit.querySelector(".q-edit__timeline");
+    if (!holder || !timeline) return bar.getBoundingClientRect().bottom + shift;
+    var gap = parseFloat(getComputedStyle(edit).rowGap) || 0;
+    var inner = bar.getBoundingClientRect().bottom - holder.getBoundingClientRect().top;
+    return timeline.getBoundingClientRect().bottom + shift + gap + inner;
   }
 
   function fit(edit) {
@@ -54,9 +76,9 @@
     var frame = edit.querySelector(".q-edit__preview .q-edit-preview__frame");
     var bar = edit.querySelector(".q-tl-stack__actions");
     var narrow = stacked(edit);
-    previewRoom(edit, narrow);
     if (!frame || !bar || !narrow) {
       edit.style.removeProperty("--q-edit-frame-h");
+      previewRoom(edit, narrow);
       return;
     }
     var view = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -65,12 +87,14 @@
     var limit = Math.min(footTop, view) - GAP_PX;
     // where the bar's bottom would be with the page at its top (flow position)
     var shift = scrollTopOf(edit);
-    var barBottom = bar.getBoundingClientRect().bottom + shift;
+    var barBottom = barFlowBottom(edit, bar, shift);
     var now = frame.getBoundingClientRect().height;
     var want = Math.round(now + (limit - barBottom));
     want = Math.max(MIN_PX, Math.min(want, Math.round(view * MAX_SHARE)));
     var set = parseFloat(edit.style.getPropertyValue("--q-edit-frame-h")) || 0;
     if (Math.abs(set - want) > 2) edit.style.setProperty("--q-edit-frame-h", want + "px");
+    // measured once the frame has its height: where the bar pins depends on it
+    previewRoom(edit, narrow);
   }
 
   function attach(edit) {
@@ -98,6 +122,8 @@
       if (timeline) edit.__qRoom.observe(timeline);
       var preview = edit.querySelector(".q-edit__preview");
       if (preview) edit.__qRoom.observe(preview);
+      var pinned = edit.querySelector(".q-edit__bar");
+      if (pinned) edit.__qRoom.observe(pinned);
       edit.__qRoom.observe(edit);
     }
     window.addEventListener("resize", later);

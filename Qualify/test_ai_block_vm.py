@@ -986,17 +986,7 @@ def test_remove_ai_block_renumbers() -> None:
 # -- «Video o audio tuyo» ----------------------------------------------------------------
 
 
-def test_guide_option_only_in_nueva() -> None:
-    assert vm.guide_option("reference") == {
-        "shown": "1",
-        "section": "Más opciones",
-        "label": "Video o audio tuyo",
-        "reason": "",
-    }
-    for mode in ("edit", "extend"):
-        option = vm.guide_option(mode)
-        assert option["shown"] == ""
-        assert option["reason"] == "Para usar tu video o audio, elige hacer esta parte nueva."
+def test_the_guide_needs_nueva_in_the_part_editors_words() -> None:
     # today's words of the part editor, not new ones
     assert vm.GUIDE_NEEDS_NEW == part_editor_vm.save_reason(
         "extend", "algo", [], has_own_media=True
@@ -1110,11 +1100,6 @@ def test_add_options_and_owner_mode() -> None:
     changed = vm.with_owner_mode(plan, "reference")
     assert changed["mode_changed_by_owner"] is True  # the rule proposed «edit»
     assert vm.with_owner_mode(plan, "edit")["mode_changed_by_owner"] is False
-    assert vm.with_photos(entry(), ["k", "k", ""]) == {
-        **entry(),
-        "clip_image_keys": ["k"],
-        "clip_image_roles": ["product"],
-    }
     assert vm.with_seconds(entry(), 14)["seconds"] == 10
 
 

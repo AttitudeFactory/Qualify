@@ -261,6 +261,7 @@ def _block(
     overlap: bool = False,
     frames: Frames | None = None,
     ai_on: rx.Var[bool] | bool = False,
+    ref: bool = False,
 ) -> rx.Component:
     chosen = row["id"] == selected
     # ED-11: a video or a photo with a picture shows it under its name and seconds
@@ -279,6 +280,14 @@ def _block(
         ("text", rx.el.span("Aa", class_name="q-tl__aa")),
         rx.icon("sparkles", size=T.ICON_SM),
     )
+    if ref:
+        # m-25142725: a reference — its kind's icon (never colour alone)
+        icon = rx.match(
+            row["kind"],
+            ("refvideo", media_thumb("", icon="film", **thumb)),
+            ("refaudio", rx.icon("audio-lines", size=T.ICON_MD)),
+            media_thumb("", icon="image", **thumb),
+        )
     # ED-11 review: under the picture, its film / photo icon centred on the block — it
     # shows through when the picture does not load (a `/r2media` token past its hour) or
     # is hidden (high contrast), so the block is never a bare grey box. No script.
@@ -317,6 +326,17 @@ def _block(
             row["speed_tag"] != "",
             rx.el.span(row["speed_tag"], class_name="q-tl__speed", aria_hidden="true"),
         ),
+        # m-25142725: «De tu producto», «No se usa», «No se usa aquí» (its name says it)
+        *(
+            [
+                rx.cond(
+                    row["ref_tag"] != "",
+                    rx.el.span(row["ref_tag"], class_name="q-tl__ref-tag", aria_hidden="true"),
+                )
+            ]
+            if ref
+            else []
+        ),
     )
     button = rx.el.button(
         rx.cond(
@@ -347,6 +367,8 @@ def _block(
             "data-tl-warn": rx.cond(row["warn"] == "1", "1", "0"),
             # ED-07: a «parte con IA»'s state (`plan` before «Crear»; "" on other blocks)
             **({"data-ai-state": rx.cond(is_ai, row["ai_state"], "")} if is_ai is not None else {}),
+            # m-25142725: a reference under no AI part that uses it
+            **({"data-ref-off": row["ref_off"]} if ref else {}),
         },
     )
     # m-25114465 («bloques enteros, encimados»): the start of a «Fotos y videos» block
@@ -427,6 +449,88 @@ def _effect_lane(rows: Any, names: Any, **block_props: Any) -> rx.Component:
         class_name=f"q-tl__lane q-tl__lane--{vm.TRACK_EFFECT}",
         # the row a block dragged up or down lands on (`assets/timeline-drag.js`)
         custom_attrs={"data-tl-lane": names["index"]},
+    )
+
+
+def _ref_lane(rows: Any, names: Any, **block_props: Any) -> rx.Component:
+    """m-25142725: one row of a reference track («Fotos de referencia 2»): its blocks are
+    moved and trimmed in time, as a text's or an effect's; dragged up or down they change
+    row inside their kind (`data-tl-lane`, `.q-tl__lane--refphoto`…)."""
+    return rx.el.div(
+        rx.foreach(rows, lambda row: _block(row, ref=True, **block_props)),
+        role="list",
+        aria_label=rx.cond(rows.length() > 0, names["name"], names["empty"]),
+        class_name=names["cls"],
+        custom_attrs={"data-tl-lane": names["index"], "data-tl-ref-kind": names["kind"]},
+    )
+
+
+def _ref_column(column: Any) -> rx.Component:
+    """One AI part's column across the reference tracks (a picture: the blocks' names
+    and the panel say which part uses what): iris, amber over a cap with its capsule
+    «⚠ 10 fotos · máx. 9» on top."""
+    return rx.el.span(
+        rx.cond(
+            column["cap"] != "",
+            rx.el.span(column["cap"], class_name="q-tl__ref-cap"),
+        ),
+        class_name="q-tl__ref-col",
+        style={"--b-start": column["start"], "--b-len": column["length"]},
+        custom_attrs={"data-tone": column["tone"], "data-mode": column["mode"]},
+    )
+
+
+def _ref_group(
+    lanes: rx.Var[list[list[dict[str, str]]]],
+    names: rx.Var[list[dict[str, str]]],
+    folded: rx.Var[str],
+    columns: Rows,
+    on_add: Any,
+    block_props: Mapping[str, Any],
+) -> rx.Component:
+    """m-25142725 (Deivid 2026-11-27, decision 1): under «Fotos y videos», the thin line
+    «✦ Para la IA · no sale en tu video», one column per AI part, the rows of
+    «Fotos / Videos / Audios de referencia» that hold something and ONE folded row for
+    the kinds that hold nothing («Sin videos ni audios de referencia · Agregar»), 44 px.
+    Outside the AI parts' columns the tracks are striped: nothing there is used."""
+    fold = rx.cond(
+        folded != "",
+        rx.el.div(
+            # UX review: the words and «Agregar» in ONE sticky span, so on a phone both
+            # stay in view while the tracks slide
+            rx.el.span(
+                rx.el.span(folded, class_name="q-tl__ref-fold-text"),
+                rx.el.button(
+                    rx.icon("plus", size=T.ICON_SM, aria_hidden="true"),
+                    vm.REF_FOLDED_ADD,
+                    type="button",
+                    class_name="q-tl__ref-fold-add",
+                    on_click=on_add,
+                    aria_label=folded + " · " + vm.REF_FOLDED_ADD,
+                ),
+                class_name="q-tl__ref-fold-in",
+            ),
+            class_name="q-tl__lane q-tl__ref-fold",
+        ),
+    )
+    return rx.el.div(
+        rx.el.div(
+            rx.el.span(vm.REF_SEPARATOR, class_name="q-tl__ref-sep-text"),
+            class_name="q-tl__ref-sep",
+            aria_hidden="true",
+        ),
+        rx.el.div(
+            rx.foreach(columns, _ref_column), class_name="q-tl__ref-cols", aria_hidden="true"
+        ),
+        rx.foreach(
+            lanes,
+            lambda rows, i: _ref_lane(rows, names[i], **block_props),  # type: ignore[index]
+        ),
+        fold,
+        rx.el.span(vm.REF_HELP, id=vm.REF_HELP_ID, class_name="q-edit-sr"),
+        role="group",
+        aria_label=vm.REF_GROUP_LABEL,
+        class_name="q-tl__refs",
     )
 
 
@@ -665,8 +769,15 @@ def timeline(
     on_join: Callable[[str], Any] | None = None,
     frames: Frames | None = None,
     ai_on: rx.Var[bool] | bool = False,
+    refs: Mapping[str, Any] | None = None,
 ) -> rx.Component:
     """The timeline of one video.
+
+    m-25142725: ``refs`` — ``shown`` (a state var: the Clip has AI parts), ``lanes`` and
+    ``names`` (each reference row's blocks and names), ``folded`` (the one row for the
+    kinds with nothing, "" when none), ``columns`` (one per AI part) and ``on_add`` (the
+    folded row's «Agregar») — draws the reference tracks under «Fotos y videos»
+    (`_ref_group`). Without it, nothing of them is drawn.
 
     ED-07 (m-25026638): ``ai_on`` — a screen's state var (`CreativeState.clip_ai_on`,
     `QUALIFY_CLIP_AI_PARTS` read on the server) — draws a «parte con IA» block (`ai`)
@@ -721,11 +832,32 @@ def timeline(
             vm.TRACK_LABELS[vm.TRACK_EFFECT], class_name=f"q-tl__name q-tl__name--{vm.TRACK_EFFECT}"
         )
     ]
+    ref_names: list[rx.Component] = []
+    if refs is not None:
+        # m-25142725: the reference rows' names, under «Fotos y videos» (desktop)
+        ref_names.append(
+            rx.cond(
+                refs["shown"],
+                rx.el.div(
+                    rx.el.span(class_name="q-tl__name q-tl__name--ref-sep"),
+                    rx.foreach(
+                        refs["names"],
+                        lambda names: rx.el.span(names["name"], class_name="q-tl__name"),
+                    ),
+                    rx.cond(
+                        refs["folded"] != "",
+                        rx.el.span(class_name="q-tl__name"),
+                    ),
+                    class_name="q-tl__names-refs",
+                ),
+            )
+        )
     names = rx.el.div(
         rx.el.span(class_name="q-tl__name q-tl__name--ruler"),
         rx.el.span(
             vm.TRACK_LABELS[vm.TRACK_MEDIA], class_name=f"q-tl__name q-tl__name--{vm.TRACK_MEDIA}"
         ),
+        *ref_names,
         rx.el.span(
             vm.TRACK_LABELS[vm.TRACK_TEXT], class_name=f"q-tl__name q-tl__name--{vm.TRACK_TEXT}"
         ),
@@ -767,10 +899,27 @@ def timeline(
         media_lane = rx.el.div(
             media_lane, _joins(joins, on_join, selected), class_name="q-tl__media"
         )
+    ref_group: list[rx.Component] = []
+    if refs is not None:
+        ref_group.append(
+            rx.cond(
+                refs["shown"],
+                _ref_group(
+                    refs["lanes"],
+                    refs["names"],
+                    refs["folded"],
+                    refs["columns"],
+                    refs["on_add"],
+                    block_props,
+                ),
+            )
+        )
     canvas = rx.el.div(
         ruler,
         scrub,
         media_lane,
+        # m-25142725: right under «Fotos y videos», before «Textos» and «Efectos»
+        *ref_group,
         _lane(vm.TRACK_TEXT, texts, **block_props),
         effect_rows,
         rx.el.div(class_name="q-tl__head q-tl__head--move", aria_hidden="true"),
@@ -1076,8 +1225,7 @@ def timeline_layout(
     """The timeline with its action bar and its panel, in their places: on a phone the
     bar sits ABOVE the tracks (in the flow: it never covers the tracks nor the
     playhead), on a desktop under them; the panel always last (`.q-tl-stack`).
-    ``bar_below``: the bar under the tracks at every size (the editor, ED-10: preview,
-    tracks, bar, panel — top to bottom)."""
+    ``bar_below``: the bar under the tracks at every size."""
     return rx.el.div(
         rx.el.div(actions, class_name="q-tl-stack__actions"),
         rx.el.div(timeline_view, class_name="q-tl-stack__track"),
