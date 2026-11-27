@@ -28,7 +28,7 @@ from qualify_creative.schemas import (
 from qualify_api.creative import clip_ai_part_actions as act
 from qualify_api.creative import clip_ai_parts as cap
 from qualify_api.creative.composition import SEEDANCE_REFERENCE_MODEL_ENV
-from qualify_api.creative.fsm import GENERATED
+from qualify_api.creative.fsm import FAILED, GENERATED
 from qualify_api.creative.video_pipeline import validate_brief_recipe
 from qualify_api.creative.video_pipeline.recipe import RecipeRefused
 
@@ -36,6 +36,7 @@ from .test_clip_ai_parts import (
     OTHER,
     World,
     _brief_of,
+    _charged,
     _clip,
     _create,
     _entry,
@@ -141,6 +142,41 @@ def test_a_pinterest_origin_goes_with_its_photo_to_the_part_that_took_it() -> No
     first, second = (_brief_of(world, part) for part in made.part_ids)
     assert [p.image_key for p in first.media.source_pins] == [pinned.key]
     assert second.media.source_pins == ()
+
+
+def test_a_pinned_track_photo_is_assembled_without_its_origin() -> None:
+    """Review of fa5caf93: the assembled Clip leaves the tracks AND the Pinterest origin
+    of a photo only they held — before, it kept the pin and failed its own validation
+    after its parts were made and charged."""
+    pinned = _ref("photo", 4.0, 9.0, "pin.png")
+    world = _world()
+    made = _create(world, _on_tracks(_clip(), pinned, source_pins=(_pin(pinned.key),)))
+    assembled = _assembled(world, made)
+    assert assembled.media.source_pins == () and assembled.media.clip_references == ()
+    # the part that took the photo keeps its origin
+    assert [p.image_key for p in _brief_of(world, made.part_ids[0]).media.source_pins] == [
+        pinned.key
+    ]
+
+
+def test_a_clip_whose_assembly_breaks_gives_every_parts_preview_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The money path: a Clip with AI parts that fails for a reason of ours (its
+    assembly broke) gives back its own creations AND the vistas previas of its parts."""
+    world = _world()
+    made = _create(world, _on_tracks(_clip(), _ref("photo", 4.0, 9.0, "arepa.png")))
+    _made(world, made.part_ids[0], 5.0)
+    _made(world, made.part_ids[1], 4.0)
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise ValueError("assembly broke")
+
+    monkeypatch.setattr(cap, "resolve", broken)
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == FAILED
+    for draft in (made.clip_id, *made.part_ids):
+        assert not _charged(world, draft)
 
 
 def test_a_pinterest_origin_of_no_photo_is_still_refused() -> None:
@@ -257,3 +293,32 @@ def test_a_made_clip_on_the_tracks_changes_a_parts_mode() -> None:
     assert child.media.clip_references == () and child.media.references_version == 0
     assert child.media.clip_image_keys == (photo.key,)
     assert child.media.part.references == (photo,)
+
+
+def test_another_mode_never_takes_another_parts_pinned_photo() -> None:
+    """Review of fa5caf93: a pin on a track photo the OTHER part took must not come with
+    a mode change (it failed validation: a 500 with nothing charged); the part keeps
+    its own photo's pin."""
+    own = _ref("photo", 4.0, 9.0, "mia.png")
+    others = _ref("photo", 12.5, 15.0, "ajena.png")
+    entries = (
+        _entry(4),
+        _entry(5, mode="edit", analysis_id=uuid4(), shot_indexes=(1,), original_mode="edit"),
+    )
+    pins = (_pin(own.key, "1"), _pin(others.key, "2"))
+    world = _world()
+    made = _create(world, _on_tracks(_clip(entries=entries), own, others, source_pins=pins))
+    _assembled(world, made)
+    part_id = made.part_ids[0]
+    act.ClipAiPartActions(
+        world.content, parts_store=world.store, store=object(), env={}
+    ).change_part_mode(
+        tenant_id=TENANT_ID,
+        user_id=USER_ID,
+        clip_id=made.clip_id,
+        part_id=part_id,
+        mode="reference",
+    )
+    child = _brief_of(world, part_id)
+    assert child.media.part is not None and child.media.part.mode == "reference"
+    assert [p.image_key for p in child.media.source_pins] == [own.key]

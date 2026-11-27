@@ -941,22 +941,35 @@ class ClipAiPartActions(ClipAiPartsService):
         )
         # m-25142725: a part that took references from the tracks keeps only what its new
         # mode uses, and never carries the Clip's tracks
+        old = seen.child_brief.media
+        on_tracks = bool(part.references) or seen.brief.media.references_version >= 1
         taken: tuple[ClipReference, ...] = ()
-        if part.references or seen.brief.media.references_version >= 1:
+        if on_tracks:
             entry, taken = entry_in_mode(part, entry)
+        photos = set(entry.clip_image_keys or ()) & set(old.clip_image_keys)
         parent = without_tracks(
             seen.brief.model_copy(
                 update={"media": seen.brief.media.model_copy(update={"ai_parts": ()})}
-            )
+            ),
+            photos=photos,
         )
         made = _child_brief(parent, entry, seen.row.slot, None)
-        old = seen.child_brief.media
         media: dict[str, Any] = {
             **made.media.model_dump(),
             "ai_parts": (),
             "clip_image_keys": old.clip_image_keys,
             "clip_image_roles": old.clip_image_roles,
         }
+        if on_tracks:
+            # the Pinterest origins the part had, for the photos it keeps (another
+            # part's track photo never comes with them)
+            media["source_pins"] = [
+                p.model_dump() for p in old.source_pins if p.image_key in old.clip_image_keys
+            ] + [
+                p.model_dump()
+                for p in made.media.source_pins
+                if p.image_key not in {*old.clip_image_keys, *made.media.clip_image_keys}
+            ]
         if taken and media["part"] is not None:
             media["part"] = {**media["part"], "references": [r.model_dump() for r in taken]}
         return ContentBrief.model_validate({**made.model_dump(), "media": media})

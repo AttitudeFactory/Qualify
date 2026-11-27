@@ -69,7 +69,7 @@ entry is checked to be the business's before any row. No migration: the children
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
@@ -442,15 +442,27 @@ def entry_in_mode(
     return derived, (*photos, *videos, *audios)
 
 
-def without_tracks(brief: ContentBrief) -> ContentBrief:
+def without_tracks(brief: ContentBrief, *, photos: Iterable[str] = ()) -> ContentBrief:
     """`brief` without the Clip's reference tracks (`clip_references`, and version 0):
     they only feed «Crear»; a child, a recipe checked after it, and the assembled Clip
-    carry what they took instead. Pure; `brief` itself when it has none."""
+    carry what they took instead. A Pinterest origin (`source_pins`) of a photo only the
+    tracks held goes with them — kept only for `photos`, the track photos a part took
+    (its own `clip_image_keys`). Pure; `brief` itself when it has no tracks."""
     media = brief.media
     if not media.clip_references and not media.references_version:
         return brief
+    tracks = {ref.key for ref in media.clip_references if ref.kind == "photo"}
+    kept = (media.pinterest_image_keys - tracks) | set(photos)
     return brief.model_copy(
-        update={"media": media.model_copy(update={"clip_references": (), "references_version": 0})}
+        update={
+            "media": media.model_copy(
+                update={
+                    "clip_references": (),
+                    "references_version": 0,
+                    "source_pins": tuple(p for p in media.source_pins if p.image_key in kept),
+                }
+            )
+        }
     )
 
 
@@ -481,19 +493,13 @@ def child_brief(
         before = clip.media.segments[planned.at - 1]
         if before.kind == "video":
             own = before.model_copy(update={"transition_in": None})
-    cleared: dict[str, Any] = {"ai_parts": ()}
+    parent = clip.model_copy(update={"media": clip.media.model_copy(update={"ai_parts": ()})})
     if on_tracks:
         # the child's tracks are resolved into its own keys (provenance on `PartRef`): it
         # is a brief before the tracks, never one whose keys `references_and_old_fields`
-        # would refuse
-        cleared.update(clip_references=(), references_version=0)
-        # a Pinterest origin of a photo on the tracks goes only to the part that took it
-        tracks = {r.key for r in clip.media.clip_references if r.kind == "photo"}
-        kept = (clip.media.pinterest_image_keys - tracks) | set(planned.entry.clip_image_keys or ())
-        cleared["source_pins"] = tuple(
-            pin for pin in clip.media.source_pins if pin.image_key in kept
-        )
-    parent = clip.model_copy(update={"media": clip.media.model_copy(update=cleared)})
+        # would refuse; a Pinterest origin of a track photo goes only to the part that
+        # took it
+        parent = without_tracks(parent, photos=planned.entry.clip_image_keys or ())
     made = _child_brief(parent, planned.entry, planned.slot, None, extend_own=own)
     update: dict[str, Any] = {"ai_parts": ()}
     if on_tracks and made.media.part is not None:
@@ -605,6 +611,9 @@ def _retimed(
     """`brief` with `segments` and its texts and effects moved from the planned timeline
     to the real one through `points` (`(planned, real)` at each block's end). The first
     block never keeps a join (nothing before it to join with). Pure."""
+    # m-25142725: the tracks fed the parts; the assembled Clip has none left, nor a
+    # Pinterest origin of a photo only they held
+    brief = without_tracks(brief)
     media = brief.media
     segments = list(segments)
     if segments and segments[0].transition_in is not None:
@@ -642,9 +651,6 @@ def _retimed(
                 "text_layers": tuple(t.model_dump() for t in texts),
                 "effects": tuple(f.model_dump() for f in effects),
                 "ai_parts": (),
-                # m-25142725: the tracks fed the parts; the assembled Clip has none left
-                "clip_references": (),
-                "references_version": 0,
             },
         }
     )
