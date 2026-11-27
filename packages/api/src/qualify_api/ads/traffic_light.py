@@ -25,7 +25,7 @@ only as our own budget raise (`prepare_advised_raise` → the consented two-step
 `live_management`); `CREATIVE_FATIGUE` is only ever a notice. Nothing here writes to Meta.
 
 Assisted, never autonomous: the advice is computed on each results read and stored with its
-rules version and the Meta data it used (`ad_promotion_observations.advice`, 0189). While
+rules version and the Meta data it used (`ad_promotion_observations.advice`, 0190). While
 `QUALIFY_ADS_TRAFFIC_LIGHT` is off (the default) no extra Meta read happens and nothing is
 shown: the shapes below follow Meta's documentation and wait for the live test m-24828971.
 """

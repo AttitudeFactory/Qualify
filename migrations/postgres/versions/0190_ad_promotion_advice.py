@@ -1,7 +1,7 @@
 """ad_promotion_observations.advice: the traffic light of each results read (m-25091390)
 
-Revision ID: 0189
-Revises: 0188
+Revision ID: 0190
+Revises: 0189
 Create Date: 2026-11-26
 
 Each results read can compute one recommended action for the promotion («espera», «súbele
@@ -22,8 +22,8 @@ No RLS or grant change: `ad_promotion_observations` has RLS and `qualify_app` UP
 
 from alembic import op
 
-revision = "0189"
-down_revision = "0188"
+revision = "0190"
+down_revision = "0189"
 branch_labels = None
 depends_on = None
 
