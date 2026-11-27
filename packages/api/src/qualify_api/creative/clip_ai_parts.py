@@ -42,6 +42,9 @@ such a Clip exist and be assembled:
   never created, or made without its video, is a broken row, not a choice: the Clip
   fails at once (`ai_part_failed`), as in PR 2.
   A part the owner removed is left out, its block dropped from the assembly.
+  m-25142979: the pass that sees a part failed stages the owner's email («La parte con
+  IA n de tu video no salió») — one per Clip and pass, never twice for the same part and
+  revision (`clip_avatar_mail`, `AiPartsWait.failed`).
 - **After the Clip is made** its brief plays each part as a stretch of the part's file.
   The assembly always plays a part's ACTIVE version (`refresh`): a stretch of an older
   version of one of its parts («Rehacer esta parte», another mode) is swapped for the
@@ -667,6 +670,9 @@ class AiPartsWait:
 
     reason: str
     wait_until: datetime | None = None
+    #: m-25142979: with `part_failed`, the failed parts the owner must choose for (not
+    #: removed) — what the failure email of this pass is staged from.
+    failed: tuple[AiPartRow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -776,7 +782,7 @@ def ai_parts_gate(
         deadline = owner_deadline(failed)
         if deadline is not None and moment >= deadline:
             return AiPartsFailed(found, expired=True)
-        return AiPartsWait("part_failed", wait_until=deadline)
+        return AiPartsWait("part_failed", wait_until=deadline, failed=tuple(failed))
     if any(state == "creating" for _, _, state in live):
         return AiPartsWait("creating")
     videos: dict[int, AiPartVideo] = {}

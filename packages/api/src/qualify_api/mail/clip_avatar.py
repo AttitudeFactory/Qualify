@@ -232,8 +232,37 @@ def failure_mail(
     lead = words.lead.format(business=business)
     wait = words.wait.format(business=business, deadline=deadline)
     footer = (SCENE_FOOTER if scene else FOOTER).format(business=business)
+    return render_mail(
+        to=to,
+        subject=subject,
+        heading=heading,
+        preheader=preheader,
+        paragraphs=(lead, wait),
+        footer=footer,
+        url=url,
+        base_url=base_url,
+        idempotency_key=idempotency_key,
+    )
+
+
+def render_mail(
+    *,
+    to: str,
+    subject: str,
+    heading: str,
+    preheader: str,
+    paragraphs: tuple[str, ...],
+    footer: str,
+    url: str,
+    base_url: str,
+    idempotency_key: str,
+) -> OutgoingMail:
+    """The layout every Clip failure email shares (m-25142979 reuses it for an AI part):
+    the logo, the heading, the paragraphs, «Revisar mi video» and the footer, HTML and
+    plain text. Pure."""
     href = escape(url, quote=True)
     logo = escape(base_url.rstrip("/") + "/qualify-icon-email.png", quote=True)
+    body = "".join(f"<p>{escape(p)}</p>" for p in paragraphs)
     html = (
         '<!doctype html><html lang="es"><head><meta name="viewport" '
         'content="width=device-width, initial-scale=1"><meta name="color-scheme" '
@@ -251,7 +280,7 @@ def failure_mail(
         f'<tr><td><img src="{logo}" width="36" alt="Qualify" '
         'style="vertical-align:middle;border-radius:8px"> <strong>Qualify</strong>'
         f'<h1 style="font-size:26px">{escape(heading)}</h1>'
-        f"<p>{escape(lead)}</p><p>{escape(wait)}</p>"
+        f"{body}"
         '<table role="presentation" width="100%"><tr>'
         '<td align="center" style="background:#008573;border-radius:12px">'
         f'<a class="mail-cta" href="{href}" style="display:block;padding:14px;'
@@ -260,7 +289,7 @@ def failure_mail(
         f'<p style="color:#60646c;font-size:13px">{escape(footer)}</p>'
         "</td></tr></table></td></tr></table></body></html>"
     )
-    text = "\n\n".join([heading, lead, wait, f"{BUTTON}: {url}", footer])
+    text = "\n\n".join([heading, *paragraphs, f"{BUTTON}: {url}", footer])
     return OutgoingMail(
         to=to, subject=subject, html=html, text=text, idempotency_key=idempotency_key
     )
@@ -282,6 +311,7 @@ __all__ = [
     "Words",
     "business_zone",
     "failure_mail",
+    "render_mail",
     "spanish_deadline",
     "video_url",
     "words_for",

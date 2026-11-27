@@ -3325,10 +3325,93 @@ class ContentService:
                 verdict.dropped,
             )
             return fresh, made_from
+        if verdict.reason == "part_failed" and verdict.failed:
+            self._stage_ai_part_mail(tenant_id, draft, verdict.failed)
         beat = self._heartbeat(tenant_id, draft.id)
         if beat is not None:
             beat()
         raise ClipBlocksWait(f"clip {draft.id} waits for its AI parts ({verdict.reason})")
+
+    def _stage_ai_part_mail(
+        self, tenant_id: UUID, draft: DraftRecord, failed: Sequence[Any]
+    ) -> None:
+        """m-25142979: the Clip waits for its owner because AI parts failed — ONE email for
+        the parts no email was staged for yet (by (part, revision)), in a write fenced as
+        `_replace_clip_brief` is (the run's lease, the Clip still `drafting` at the same
+        revision and brief); the sender in the worker's mail chore sends it after this
+        commits. Never a reason to stop the Clip's wait: anything that goes wrong is
+        logged (ids and the error's type) and the next pass tries again — nothing was
+        staged, so nothing is lost and nothing is sent twice."""
+        from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
+            PostgresAvatarFailureOutbox,
+            ai_parts_mail_on,
+            mailable_ai_part_failures,
+        )
+
+        if not ai_parts_mail_on():
+            return
+        outbox = self._clip_failure_outbox
+        repo = self._repo
+        postgres = isinstance(repo, PostgresContentRepository)
+        if outbox is None:
+            if not postgres:
+                return
+            outbox = PostgresAvatarFailureOutbox()
+        moment = self._clip_avatar_clock()
+        try:
+            if postgres:
+                from qualify_shared.db.session import tenant_unit_of_work  # noqa: PLC0415
+
+                from qualify_api.creative.pipeline import PipelineStore  # noqa: PLC0415
+
+                run = current_preparation()
+                with tenant_unit_of_work(tenant_id) as session:
+                    if run is not None:
+                        PipelineStore().fence(session, run)
+                    row = session.execute(
+                        text("""
+                        SELECT d.status, d.revision, d.brief_id, b.created_by
+                        FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
+                        WHERE d.id = :d FOR UPDATE OF d
+                    """),
+                        {"d": draft.id},
+                    ).first()
+                    if (
+                        row is None
+                        or str(row.status) != DRAFTING
+                        or int(row.revision) != draft.revision
+                        or row.brief_id != draft.brief_id
+                    ):
+                        return  # the Clip moved: the next pass reads it again
+                    mailed = outbox.mailed_ai_parts(session, tenant_id=tenant_id, clip_id=draft.id)
+                    failures = mailable_ai_part_failures(failed, mailed, moment)
+                    if failures:
+                        outbox.stage(
+                            session,
+                            tenant_id=tenant_id,
+                            clip_id=draft.id,
+                            user_id=row.created_by,
+                            failures=failures,
+                        )
+            else:
+                mailed = outbox.mailed_ai_parts(None, tenant_id=tenant_id, clip_id=draft.id)
+                failures = mailable_ai_part_failures(failed, mailed, moment)
+                if failures:
+                    outbox.stage(
+                        None,
+                        tenant_id=tenant_id,
+                        clip_id=draft.id,
+                        user_id=UUID(int=0),
+                        failures=failures,
+                    )
+        except CheckpointError:
+            raise  # the run lost its lease: never write past it
+        except Exception as exc:
+            logger.warning(
+                "clip %s: AI part failure email not staged error_type=%s",
+                draft.id,
+                type(exc).__name__,
+            )
 
     def _fail_waiting_clip(
         self,
