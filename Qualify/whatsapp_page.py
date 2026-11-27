@@ -183,6 +183,9 @@ def number_selector() -> rx.Component:
         rx.select.root(
             # m-25029799 (UX review): on a phone the column's width, leaving room for
             # the theme button on the same row; 280 px from `sm` up. 44 px tall (N12).
+            # m-25142793: at ≤ 640 px the header's pinned bar already keeps the toggle's
+            # corner, and `.q-page-head-actions > .rt-SelectTrigger` (qualify.css) gives
+            # the trigger its whole row; the calc below holds from 641 to 767 px.
             rx.select.trigger(
                 placeholder="Elige un número",
                 width=rx.breakpoints(initial="calc(100% - 4.5rem)", sm="280px"),

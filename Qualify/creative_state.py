@@ -317,6 +317,7 @@ from .tenant import tenant_uuid
 from .ui import timeline_vm
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param, step_url
+from .ui.tokens import pinned_header_js
 from .upload_images import (
     PHOTO_MAX_BYTES,
     PhotoBusy,
@@ -346,7 +347,7 @@ _ALIGN_VIEW_JS = (
     "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
     " box = box.parentElement; }"
     " const scroller = box && box !== document.body ? box : document.scrollingElement;"
-    " const head = view.closest('main')?.querySelector('.q-page-header');"
+    " const head = " + pinned_header_js("view.closest('main')") + ";"
     " const floor = head ? head.getBoundingClientRect().bottom : 0;"
     " const delta = view.getBoundingClientRect().top - floor - 8;"
     " if (smooth || delta < 0) {"
@@ -384,7 +385,7 @@ def _scroll_field_into_view(element_id: str) -> rx.event.EventSpec:
         "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
         " box = box.parentElement; }"
         " const scroller = box && box !== document.body ? box : document.scrollingElement;"
-        " const head = field.closest('main')?.querySelector('.q-page-header');"
+        " const head = " + pinned_header_js("field.closest('main')") + ";"
         " const floor = head ? head.getBoundingClientRect().bottom : 0;"
         " const delta = field.getBoundingClientRect().top - floor - 12;"
         " if (smooth || Math.abs(delta) > 4) {"

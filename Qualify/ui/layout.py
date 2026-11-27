@@ -23,6 +23,7 @@ Four guarantees a screen gets for free, so no page re-implements them:
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
 
 import reflex as rx
@@ -966,6 +967,10 @@ def session_badge() -> rx.Component:
     return rx.fragment()
 
 
+#: The page subtitle's id: the h1 names it in `aria-describedby` (one header per page).
+SUBTITLE_ID = "q-page-subtitle"
+
+
 def page_header(
     title: str | rx.Var,
     subtitle: str | rx.Var | None = None,
@@ -978,6 +983,10 @@ def page_header(
     """Title row of a business page.
 
     ``actions`` render right-aligned, in the order given, before the colour-mode toggle.
+    On a phone (≤ 640 px) only the line with the title, the badge, the actions and the
+    toggle stays pinned; the business chip, the kicker and the subtitle scroll away
+    (m-25142793). Actions that do not fit beside the title wrap to a second row of that
+    pinned line; the title ends in «…» before it ever pushes the toggle down.
     ``badge`` sits next to the title — for a state that describes the whole page ("demo",
     a count), never for an action. ``show_session`` is accepted for compatibility and
     ignored: the session lives in the sidebar.
@@ -993,40 +1002,77 @@ def page_header(
     macOS-Setup-Assistant-style flow uses. Still exactly one ``h1`` per page (`as_="h1"`
     unconditionally below), so §8's accessibility rule holds regardless of size.
     """
+    # m-25142793: laid out by `assets/qualify.css` («Encabezado de página»).
+    # · > 640 px — the bar is the old row, unchanged: the title column (kicker, title,
+    #   subtitle), a spacer, each action and the toggle, as flex items that wrap below
+    #   the column when they do not fit; the sheet `.q-page-header` is the sticky glass.
+    # · ≤ 640 px — the sheet gives up its box (`display: contents`) and only the bar is
+    #   pinned: title (+ badge), the actions, the toggle in its top-right corner. The
+    #   chip, the kicker and the subtitle scroll away, so they need a copy OUTSIDE the
+    #   bar (`.q-page-head-top`, `.q-page-head-sub`); each copy is `display: none` at
+    #   the other width, so a page reads and tabs through one of them only.
+    # Layout lives in the stylesheet, not in props: a prop would outrank the media query.
+    described = {"aria-describedby": SUBTITLE_ID} if subtitle is not None else {}
     title_row = rx.hstack(
-        rx.heading(title, size=title_size, as_="h1"),
+        rx.heading(title, size=title_size, as_="h1", custom_attrs=described),
         *([badge] if badge is not None else []),
         align="center",
         spacing="2",
+        class_name="q-page-head-title",
     )
-    title_block = rx.vstack(
+    column = rx.box(
+        *(
+            [rx.box(copy.deepcopy(kicker), class_name="q-page-head-kicker q-page-head-wide")]
+            if kicker is not None
+            else []
+        ),
+        title_row,
+        *(
+            [
+                rx.text(
+                    subtitle,
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    id=SUBTITLE_ID,
+                    class_name="q-page-head-desc q-page-head-wide",
+                )
+            ]
+            if subtitle is not None
+            else []
+        ),
+        class_name="q-page-head-main",
+    )
+    bar = rx.box(
+        column,
+        rx.box(class_name="q-page-head-spacer"),
+        *([rx.box(*actions, class_name="q-page-head-actions")] if actions else []),
+        # Ghost: the toggle is a page control, never the page's one solid action (P3).
+        rx.box(theme_toggle(), class_name="q-page-head-toggle"),
+        class_name="q-page-head-bar",
+    )
+    top = rx.box(
         # ADR 43 A9: the active business — on a phone only (m-24976899); above it,
         # the sidebar's top row is always on screen.
         business_chip(),
-        *([kicker] if kicker is not None else []),
-        title_row,
-        *([rx.text(subtitle, size="2", color=T.TEXT_MUTED)] if subtitle is not None else []),
-        spacing="1",
-        align_items="start",
-        # Never wider than the header: a long business name in the chip ends in «…»
-        # instead of pushing the page sideways at 360 px (ADR 43 S3).
-        min_width="0",
-        max_width="100%",
+        *([rx.box(kicker, class_name="q-page-head-kicker")] if kicker is not None else []),
+        class_name="q-page-head-top",
     )
-    return rx.hstack(
-        title_block,
-        rx.spacer(),
-        *actions,
-        # Ghost: the toggle is a page control, never the page's one solid action (P3).
-        theme_toggle(),
-        width="100%",
-        padding=T.PAD_HEADER,
-        align="center",
-        spacing="3",
-        wrap="wrap",
+    return rx.box(
+        top,
+        bar,
+        *(
+            # the phone's copy, read as content there (a screen reader on a phone may
+            # not announce `aria-describedby` on a heading); the wide copy, which the
+            # h1 names, is `display: none` at that width, so nothing is read twice
+            [rx.text(subtitle, size="2", color=T.TEXT_MUTED, class_name="q-page-head-sub")]
+            if subtitle is not None
+            else []
+        ),
         # A sheet of glass pinned to the top of the panel (`.q-page-header`,
         # assets/qualify.css): the panel is the scroll container, so `sticky` works.
-        class_name="q-page-header",
+        # `.q-page-head` scopes the m-25142793 layout (the wizard's `step_head` shares
+        # `.q-page-header` but not this structure).
+        class_name="q-page-header q-page-head",
     )
 
 

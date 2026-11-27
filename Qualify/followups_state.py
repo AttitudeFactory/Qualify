@@ -85,6 +85,7 @@ from .nav_url import flow_param, push_url_script, uuid_param
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 from .ui.steps_vm import DIR_NEXT, step_direction
+from .ui.tokens import pinned_header_js
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ def query_settle_script(followup_id: str) -> str:
         "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
         f" const id={key}; const panel=document.querySelector('main.q-panel');"
         " const card=document.getElementById('consulta-'+id); if (!panel || !card) return;"
-        " const header=panel.querySelector('.q-page-header');"
+        " const header=" + pinned_header_js("panel") + ";"
         " if (header) panel.style.setProperty('--q-sticky-header-height',"
         " header.offsetHeight+'px');"
         " const edge=header ? header.getBoundingClientRect().bottom"
