@@ -18,7 +18,7 @@ from packages.api.tests.test_ad_unpublished_video import video as video  # noqa:
 
 from qualify_api.ads import unpublished_service as module
 from qualify_api.ads.errors import CODE_MESSAGES, SUBCODE_MESSAGES, MarketingError
-from qualify_api.ads.story_readiness import StoryBlock, files_block, piece_block
+from qualify_api.ads.story_readiness import StoryBlock, accounts_block, files_block, piece_block
 from qualify_api.ads.unpublished import UnpublishedUnavailable
 from qualify_api.ads.unpublished_service import PREPARE_REFUSED, meta_refusal
 
@@ -153,3 +153,25 @@ async def test_a_pair_keeps_its_choose_another_text(service, monkeypatch) -> Non
     monkeypatch.setattr(module, "MAX_IMAGE_BYTES", 10)
     with pytest.raises(UnpublishedUnavailable, match="como máximo 8 MB"):
         await prepare(service)
+
+
+def account(currency: str, *, allowed: bool = True, usable: bool = True) -> dict:
+    return {"currency": currency, "available": usable, "connected": True, "allowed": allowed}
+
+
+@pytest.mark.parametrize(
+    ("accounts", "expected"),
+    [
+        ([], StoryBlock.NO_AD_ACCOUNT),
+        ([account("COP", usable=False)], StoryBlock.RECONNECT),
+        ([account("COP", allowed=False)], StoryBlock.AD_PERMISSION),
+        ([account("USD")], StoryBlock.CURRENCY),
+        ([account("COP")], None),
+        ([account("COP"), account("USD", allowed=False)], None),
+        # A peso account only missing its permission beside an allowed dollar one: the next
+        # step is authorizing, never choosing a peso account.
+        ([account("COP", allowed=False), account("USD")], StoryBlock.AD_PERMISSION),
+    ],
+)
+def test_account_causes(accounts: list[dict], expected: StoryBlock | None) -> None:
+    assert accounts_block(accounts, lambda row: row["allowed"]) == expected

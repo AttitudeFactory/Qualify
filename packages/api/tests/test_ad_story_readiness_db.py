@@ -4,6 +4,7 @@ Postgres and RLS. Each case changes one fact of a ready piece and puts it back."
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
@@ -115,3 +116,18 @@ def test_a_historia_qualify_published_can_still_be_a_story_ad(unpublished_world)
     publish(source, actor)
     with acting_login(login):
         assert story_block(source.tenant_id, source.draft_id) is None
+
+
+def test_reading_the_causes_never_waits_on_the_brand_row(unpublished_world) -> None:
+    """Approval locks the brand row (`read_policy`); a page load reads around it."""
+    source, _, login, _ = unpublished_world
+
+    def read() -> StoryBlock | None:
+        with acting_login(login):
+            return story_block(source.tenant_id, source.draft_id)
+
+    with tenant_session(source.tenant_id) as session, ThreadPoolExecutor(1) as pool:
+        session.execute(
+            text("SELECT id FROM brands WHERE id=:id FOR UPDATE"), {"id": source.brand_id}
+        )
+        assert pool.submit(read).result(timeout=10) is None

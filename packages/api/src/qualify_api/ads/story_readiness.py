@@ -10,7 +10,7 @@ Spanish text (`Qualify/promotion_vm.py`, `STORY_BLOCKS`).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -18,7 +18,7 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
-from qualify_api.ads.enhancements_service import read_policy
+from qualify_api.ads.enhancements import normalize
 from qualify_api.ads.wizard import _saved_ad_destination
 from qualify_api.connections.ad_accounts import (
     AdAccountUnavailable,
@@ -54,6 +54,7 @@ LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant
 WHERE d.id=:draft AND d.parent_draft_id IS NULL AND d.part_removed_at IS NULL""")
 _ASSETS = text("""SELECT content_type,media_type,width,height FROM image_assets
 WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL""")
+_FLAGS = text("SELECT feature_flags FROM ad_brand_enhancements WHERE brand_id=:brand")
 _ACCOUNTS = text("""SELECT a.connection_id,a.available,COALESCE(a.currency,'') AS currency,
   (a.credential_version=c.current_credential_version AND c.status='active'
    AND c.purged_at IS NULL AND c.purge_started_at IS NULL) AS connected
@@ -123,17 +124,28 @@ def story_block(tenant_id: UUID, draft_id: UUID) -> StoryBlock | None:
             return block
         if _saved_ad_destination(piece["ad_copy"])[2]:
             return StoryBlock.BUTTON
-        if read_policy(session, tenant_id, piece["brand_id"]).enabled:
+        # A plain read: approval's `read_policy` locks the brand row, a page load must not.
+        flags = session.scalar(_FLAGS, {"brand": piece["brand_id"]})
+        if flags is not None and any(normalize(flags).values()):
             return StoryBlock.ENHANCEMENTS
         accounts = list(session.execute(_ACCOUNTS, {"brand": piece["brand_id"]}).mappings())
-        if not accounts:
-            return StoryBlock.NO_AD_ACCOUNT
-        usable = [row for row in accounts if row["available"] and row["connected"]]
-        if not usable:
-            return StoryBlock.RECONNECT
-        permitted = [row for row in usable if _permitted(session, row["connection_id"])]
-        if not permitted:
-            return StoryBlock.AD_PERMISSION
-        if all(row["currency"] != "COP" for row in permitted):
-            return StoryBlock.CURRENCY
-    return None
+        return accounts_block(accounts, lambda row: _permitted(session, row["connection_id"]))
+
+
+def accounts_block(
+    accounts: list[Mapping[str, Any]], permitted: Callable[[Mapping[str, Any]], bool]
+) -> StoryBlock | None:
+    """The brand's selected ad accounts: ready when one is usable, allowed to advertise and
+    in pesos. A peso account only missing its permission says so, even when another
+    currency's account is allowed: authorizing is the owner's real next step."""
+    if not accounts:
+        return StoryBlock.NO_AD_ACCOUNT
+    usable = [row for row in accounts if row["available"] and row["connected"]]
+    if not usable:
+        return StoryBlock.RECONNECT
+    allowed = [row for row in usable if permitted(row)]
+    if any(row["currency"] == "COP" for row in allowed):
+        return None
+    if not allowed or any(row["currency"] == "COP" for row in usable):
+        return StoryBlock.AD_PERMISSION
+    return StoryBlock.CURRENCY
