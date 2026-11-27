@@ -100,12 +100,9 @@ class ResponderState(rx.State):
             events.append(InboxListState.enter)
             events.append(ConversationsState.enter_page)
             events.append(WhatsAppChatsState.restore_inbox_address)
-            # m-25143229 U2: the Instagram «+» panel follows the address too — inline,
-            # so its step lands in the same update as the history ack (a chained event
-            # would let the panel's old step write the address back).
-            restored = (await self.get_state(InstagramPickState)).restore_picker()
-            if restored is not None:
-                events.append(restored)
+            # m-25143229 U2: the Instagram «+» panel follows the address too (on «atrás»
+            # it is restored inline first, in `enter_history`).
+            events.append(InstagramPickState.restore_picker)
         elif self.active_tab == TAB_BUYERS:
             events.append(FollowupsState.enter_page)
         elif self.active_tab == TAB_COMMENTS:
@@ -119,7 +116,13 @@ class ResponderState(rx.State):
     @rx.event
     async def enter_history(self, lease: dict) -> list[rx.event.EventSpec]:
         (await self.get_state(FollowupsState)).flow_card_id = ""
+        # m-25143229 U2: the Instagram «+» panel's step lands in the SAME update as the
+        # history ack below — a chained event would let its old step write the address
+        # back (`flow_sync` runs on the ack).
+        restored = (await self.get_state(InstagramPickState)).restore_picker()
         events = await self.enter_page()
+        if restored is not None:
+            events = [*events, restored]
         self.history_ack = history_ack_value(lease)
         return [*events, route_history_ready("/responder", lease)]
 
