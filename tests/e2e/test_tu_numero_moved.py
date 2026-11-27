@@ -54,7 +54,10 @@ def _no_sideways_scroll(page) -> None:  # noqa: ANN001
 def _number_card(page, title: str = r"^Arepera E2E"):  # noqa: ANN001, ANN202
     """The «Tus redes» card of the WhatsApp number whose title matches `title`."""
     heading = page.get_by_role("heading", level=2, name=re.compile(title))
-    return page.locator("div").filter(has=heading).filter(has_text="Más detalles").last
+    # the nearest box around the title that also holds the card's own «Más detalles»
+    return heading.locator(
+        "xpath=ancestor::div[.//button[contains(normalize-space(.), 'detalles')]][1]"
+    )
 
 
 # --- Estado: the number's card in «Tus redes» ---------------------------------------------
@@ -363,9 +366,10 @@ def test_capture_tu_numero_moved(chats_page) -> None:  # noqa: ANN001
                 expect(page.locator("h1").first).to_be_visible(timeout=60_000)
                 page.wait_for_timeout(2_500)
                 if name == "tus-redes":
-                    toggle = page.get_by_role("button", name="Más detalles")
+                    # open the number card's details once (the state keeps them open)
+                    toggle = _number_card(page).get_by_role("button", name="Más detalles")
                     if toggle.count():
-                        _number_card(page).get_by_role("button", name="Más detalles").click()
+                        toggle.click()
                         page.wait_for_timeout(500)
                 key = f"{label}-{name}-{size_name}-{scheme}"
                 page.screenshot(path=str(out / f"{key}.png"), full_page=True)
