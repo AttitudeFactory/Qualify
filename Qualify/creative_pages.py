@@ -66,7 +66,7 @@ from .post_card import (
     readiness_note,
     viewable_src,
 )
-from .promotion_entry import promotion_link
+from .promotion_entry import card_promotion_link, promotion_link
 from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
 from .seasonal_ui import fold_summary
@@ -1081,12 +1081,7 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
                 **T.tone_scheme("error"),
             ),
         ),
-        rx.cond(
-            # a historia never: the ads wizard has nothing to offer for it (m-25026350
-            # keeps the story ad as its own entry, `?formato=historia`, in Tu semana)
-            (post.used_count > 0) & ~post.is_story,
-            promotion_link(post.post_id),
-        ),
+        card_promotion_link(post),
         class_name="q-gcard-actions",
     )
     return rx.box(

@@ -475,7 +475,7 @@ class PlannerState(rx.State):
     story_ad_post: str = ""
     #: …and the pieces checked to be story ad sources (`story_ad_ready`).
     story_ad_ready: list[str] = []
-    #: «Hacer anuncio pagado» re-reads readiness before leaving: disabled meanwhile.
+    #: «Promocionar como anuncio» re-reads readiness before leaving: disabled meanwhile.
     story_ad_busy: bool = False
     form_event_id: str = ""
     form_tag_query: str = ""
@@ -2315,13 +2315,13 @@ class PlannerState(rx.State):
 
     @rx.event(background=True)
     async def continue_story_ad(self):
-        """«Hacer anuncio pagado»: the readiness is read again first; only then the ad
+        """«Promocionar como anuncio»: the readiness is read again first; only then the ad
         REPLACES the historia (see `_leave_for_story_ad`)."""
         async with self:
             if self.story_ad_busy or self.saving:
                 return
             post_id = self.story_ad_post
-            self.story_ad_busy = True  # «Hacer anuncio pagado» is disabled meanwhile
+            self.story_ad_busy = True  # «Promocionar como anuncio» is disabled meanwhile
         try:
             tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
             ready = False

@@ -13,7 +13,7 @@ from packages.api.tests.test_ad_audience_db import audience_world as shared_audi
 from packages.api.tests.test_ad_unpublished_db import publish
 from packages.api.tests.test_ad_unpublished_db import unpublished_world as shared_unpublished
 
-from .promotion_unpublished_provider import story_ad_ready, unpublished_sources
+from .promotion_unpublished_provider import story_ad_ready, story_ads_ready, unpublished_sources
 
 pytestmark = pytest.mark.db
 audience_world = shared_audience_world
@@ -62,3 +62,47 @@ def test_story_source_offers_only_the_vertical_file(unpublished_world):
     with acting_login(login):
         (pair,) = unpublished_sources(source.tenant_id, source.draft_id)
     assert row.id != pair.id and not pair.story  # distinct, stable per kind
+
+
+# -- HIS-1 (m-25130281): the cards' batched readiness read ------------------------------
+
+
+def test_batched_readiness_marks_only_a_piece_the_story_ad_can_use(unpublished_world):
+    """Approved, unpublished, 9:16 and an ad account → ready; without the account or
+    the 9:16 file → not; an unknown id never makes the read fail."""
+    source, _, login, _ = unpublished_world
+    with acting_login(login):
+        ready = story_ads_ready(source.tenant_id, [source.draft_id, uuid4()])
+    assert ready == {source.draft_id}
+    with tenant_session(source.tenant_id) as session:
+        session.execute(
+            text("UPDATE ad_accounts SET selected=false WHERE id=:id"), {"id": source.account_id}
+        )
+    with acting_login(login):
+        assert story_ads_ready(source.tenant_id, [source.draft_id]) == set()
+    with tenant_session(source.tenant_id) as session:
+        session.execute(
+            text("UPDATE ad_accounts SET selected=true WHERE id=:id"), {"id": source.account_id}
+        )
+        session.execute(
+            text("UPDATE image_assets SET height=width WHERE id=:id"),
+            {"id": source.vertical.asset_id},
+        )
+    with acting_login(login):
+        assert story_ads_ready(source.tenant_id, [source.draft_id]) == set()
+
+
+def test_batched_readiness_never_crosses_businesses(unpublished_world):
+    source, _, login, _ = unpublished_world
+    with acting_login(login):
+        assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}
+    # Another business asking for the same id sees nothing of it (RLS).
+    assert story_ads_ready(uuid4(), [source.draft_id]) == set()
+
+
+def test_the_cards_offer_a_historia_qualify_already_published(unpublished_world):
+    """HIS-1 + epic D1: the gallery's batched readiness never hides a published historia."""
+    source, _, login, actor = unpublished_world
+    publish(source, actor)
+    with acting_login(login):
+        assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}
