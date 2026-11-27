@@ -202,3 +202,109 @@ def test_without_accounts_the_hub_says_what_to_connect(signed_up_page, app_serve
     for mode in ("dark", "light"):
         _theme(page, mode)
         _shot(page, f"hub-vacio-360-{mode}-v2")
+
+
+def _seed_menus(tenant_id, connection_id: str) -> None:  # noqa: ANN001
+    """m-25142807: «prueba 2» answering with v2 (v1 published before it, a draft v3 on
+    top) and «Navidad» never published. Written straight to the database — publishing
+    here is the repository's row update, never a call to WhatsApp."""
+    from uuid import UUID
+
+    from qualify_api.whatsapp.menus import PostgresMenuRepository
+    from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
+
+    from Qualify.whatsapp_menu_provider import create_menu, number_scope, save_version
+    from Qualify.whatsapp_menu_vm import TEMPLATE_EMPTY
+
+    repo = PostgresMenuRepository()
+    scope = number_scope(tenant_id, UUID(connection_id))
+
+    def payload(n: int) -> dict:
+        data = BIANKI_DEMO_MENU.model_dump(mode="json")
+        data["entry"]["welcome"] = f"Hola, esta es la versión {n} del menú."
+        return data
+
+    def menu(name: str, versions: int, live: int | None) -> None:
+        created = create_menu(tenant_id, scope, name, TEMPLATE_EMPTY, repo=repo)
+        menu_id = UUID(created.summary.menu_id)
+        for n in range(1, versions + 1):
+            saved = save_version(tenant_id, scope, menu_id, payload(n), repo=repo)
+            if live is not None and n <= live:
+                repo.publish_version(
+                    tenant_id=tenant_id,
+                    menu_id=menu_id,
+                    version_id=UUID(saved.versions[0].version_id),
+                    user_id=None,
+                )
+
+    menu("Navidad", 1, None)
+    menu("prueba 2", 3, 2)
+
+
+def _pick(page, name: str) -> None:  # noqa: ANN001
+    page.get_by_role("combobox", name="Menú y versión").click()
+    page.get_by_role("option", name=re.compile(name)).click()
+
+
+def test_the_welcome_menu_is_one_box(chats_page) -> None:  # noqa: ANN001
+    """m-25142807 (option A): one select «Menú y versión» over every menu's versions,
+    what is picked is what the editor shows, one pause switch that asks first."""
+    page = chats_page
+    ids = page._qualify_e2e_chats  # noqa: SLF001
+    _seed_menus(page._qualify_e2e_tenant_id, ids["whatsapp_connection"])  # noqa: SLF001
+    base = re.match(r"https?://[^/]+", page.url)[0]
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(f"{base}/chats/ajustes/whatsapp?cuenta={ids['whatsapp_connection']}")
+    box = page.locator("#whatsapp-menu-toolbar")
+    expect(box.get_by_role("heading", name="Tu menú de bienvenida")).to_be_visible(timeout=60_000)
+    select = page.get_by_role("combobox", name="Menú y versión")
+    expect(select).to_have_count(1)
+    # The newest saved version opens first: the draft on top of the live one.
+    expect(select).to_contain_text("prueba 2 · Cambios sin publicar", timeout=30_000)
+    for gone in ("Elige qué menú ver", "Pausar el menú en tu WhatsApp", "Editando a partir"):
+        expect(page.get_by_text(gone)).to_have_count(0)
+    expect(page.get_by_role("button", name="Editar", exact=True)).to_have_count(0)
+    expect(page.get_by_role("switch", name="Responde en tu WhatsApp")).to_be_checked()
+    _shot(page, "menu-una-caja-1280-borrador")
+
+    # Every menu is a group; the live version is marked in words, open and closed.
+    select.click()
+    expect(page.get_by_role("group", name="Navidad")).to_be_visible()
+    page.get_by_role("option", name=re.compile(r"^Versión 2 · .* · Activo en tu WhatsApp$")).click()
+    expect(select).to_contain_text("prueba 2 · Versión 2")
+    expect(select).to_contain_text("Activo en tu WhatsApp")
+    expect(box.get_by_text("Es la versión que tienen tus clientes.")).to_be_visible()
+    expect(page.get_by_text("Hola, esta es la versión 2 del menú.").first).to_be_visible()
+    _shot(page, "menu-una-caja-1280-activa")
+
+    # An older version: the editor shows it, and the way back is offered.
+    _pick(page, r"^Versión 1 · ")
+    expect(select).to_contain_text("prueba 2 · Versión 1")
+    expect(
+        box.get_by_text("Tus clientes tienen «prueba 2 · Versión 2». Esta todavía no les llega.")
+    ).to_be_visible()
+    expect(box.get_by_role("button", name="Volver a la versión 1")).to_be_visible()
+    expect(page.get_by_text("Hola, esta es la versión 1 del menú.").first).to_be_visible()
+    _shot(page, "menu-una-caja-1280-anterior")
+
+    page.set_viewport_size({"width": 375, "height": 812})
+    page.wait_for_timeout(500)
+    _no_sideways_scroll(page)
+    _shot(page, "menu-una-caja-375-anterior")
+    _pick(page, r"^Versión 2 · ")
+    expect(box.get_by_text("Es la versión que tienen tus clientes.")).to_be_visible()
+    _no_sideways_scroll(page)
+    _shot(page, "menu-una-caja-375-activa")
+
+    # Pausing asks first, then the switch says «En pausa».
+    page.get_by_role("switch", name="Responde en tu WhatsApp").click()
+    dialog = page.get_by_role("alertdialog")
+    expect(dialog).to_contain_text("Pausar «prueba 2»")
+    dialog.get_by_role("button", name="Sí, pausar").click()
+    expect(page.get_by_role("switch", name="En pausa")).not_to_be_checked(timeout=30_000)
+    expect(select).to_contain_text("En pausa")
+    _no_sideways_scroll(page)
+    _shot(page, "menu-una-caja-375-pausa")
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.wait_for_timeout(500)
+    _shot(page, "menu-una-caja-1280-pausa")
