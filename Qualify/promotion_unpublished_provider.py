@@ -16,6 +16,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.ads.unpublished import ImageAdForm
+from qualify_api.ads.unpublished_repository import NOT_PUBLISHED_BY_QUALIFY
 from qualify_api.ads.wizard import _saved_ad_destination
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
@@ -46,13 +47,13 @@ ENHANCEMENTS_ON = (
 )
 FEED, VERTICAL = (4, 5), (9, 16)
 
-_PIECE = text("""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
+_PIECE = text(f"""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
 FROM content_drafts d JOIN piece_versions pv ON pv.id=d.active_version_id
   AND pv.tenant_id=d.tenant_id AND pv.draft_id=d.id AND pv.status='active'
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
   AND v.draft_id=d.id
 WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
-  AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+  AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
   AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
   AND d.part_removed_at IS NULL""")
 # The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).
@@ -104,10 +105,13 @@ def _pick(rows: list[dict], kind: str, ratio: tuple[int, int]) -> list[dict]:
     ]
 
 
-def _read(tenant_id: UUID, draft_id: UUID) -> tuple[dict | None, list[dict], list[dict]]:
-    """The approved, unpublished piece, its brand's selected ad accounts and its files."""
+def _read(
+    tenant_id: UUID, draft_id: UUID, story: bool = False
+) -> tuple[dict | None, list[dict], list[dict]]:
+    """The approved piece (unpublished, unless `story`), its brand's selected ad accounts and
+    its files."""
     with tenant_session(tenant_id) as session:
-        piece = session.execute(_PIECE, {"draft": draft_id}).mappings().first()
+        piece = session.execute(_PIECE, {"draft": draft_id, "story": story}).mappings().first()
         if piece is None:
             return None, [], []
         accounts = [
@@ -152,8 +156,9 @@ def story_kinds(assets: list[dict]) -> list[str]:
 
 def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
     """«Agregar un botón con enlace» is offered only when the wizard will have a source:
-    approved, unpublished, a 9:16 file (with its cover for a video), an ad account."""
-    piece, accounts, assets = _read(tenant_id, draft_id)
+    approved, a 9:16 file (with its cover for a video), an ad account. Already published by
+    Qualify is fine: a story ad is always a new 9:16 creative (m-25130283, epic D1)."""
+    piece, accounts, assets = _read(tenant_id, draft_id, True)
     return piece is not None and bool(accounts) and bool(story_kinds(assets))
 
 
@@ -163,7 +168,7 @@ def unpublished_sources(
     """One source per selected ad account and kind (two images, or two videos with
     their covers) of the active approved version; [] when the piece does not qualify.
     `story` (m-25026350): only the 9:16 file (and its cover) — a story-only ad."""
-    piece, accounts, assets = _read(tenant_id, draft_id)
+    piece, accounts, assets = _read(tenant_id, draft_id, story)
     if piece is None:
         return []
     feed_images, vertical_images = _pick(assets, "image", FEED), _pick(assets, "image", VERTICAL)

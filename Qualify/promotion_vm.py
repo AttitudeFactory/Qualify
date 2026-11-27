@@ -83,7 +83,7 @@ STORY_AUTO_CHANGES = "No: el anuncio sale tal como lo apruebas"
 STORY_BACK_TO_PIECE = "Volver a la pieza"
 STORY_EMPTY = (
     "Esta pieza no tiene una imagen o un video vertical (9:16) listo para anunciar en "
-    "historias. Vuelve a la pieza y revisa que esté aprobada y sin publicar."
+    "historias. Vuelve a la pieza y revisa que esté aprobada."
 )
 #: `/drafts/<id>/promote?formato=historia` — the wizard opened as a story with a button.
 STORY_FORMAT = "historia"
