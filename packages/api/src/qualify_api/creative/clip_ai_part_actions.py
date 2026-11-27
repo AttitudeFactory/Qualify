@@ -185,10 +185,11 @@ NO_PLACE_LEFT_TEXT = (
     "Crea un video nuevo para agregar más."
 )
 #: m-25142982 (m-25142725): a new part with files of its own in a video whose parts take
-#: their photos, videos and audios from the reference tracks.
+#: their photos, videos and audios from the reference tracks (their names on screen,
+#: Deivid: «Fotos de referencia», «Videos de referencia», «Audios de referencia»).
 ADD_ON_TRACKS_TEXT = (
-    "En este video, cada parte toma sus fotos y videos de las pistas de referencias. "
-    "Quita los archivos de esta parte y agrégala de nuevo."
+    "En este video, las partes con IA usan las «Fotos de referencia» y los «Videos de "
+    "referencia». Quita los archivos de esta parte y agrégala de nuevo: tomará los de ahí."
 )
 #: m-25142982: a new part with nothing to make it from.
 ADD_NEEDS_DESCRIPTION_TEXT = "Cuéntanos qué se ve en esta parte con IA antes de agregarla."

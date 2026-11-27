@@ -151,7 +151,14 @@ def test_an_added_part_with_files_of_its_own_on_the_tracks_is_refused() -> None:
             position=4,
         )
     assert refused.value.code == "references_and_old_fields"
-    assert refused.value.owner_message == act.ADD_ON_TRACKS_TEXT
+    assert (
+        refused.value.owner_message
+        == act.ADD_ON_TRACKS_TEXT
+        == (
+            "En este video, las partes con IA usan las «Fotos de referencia» y los «Videos de "
+            "referencia». Quita los archivos de esta parte y agrégala de nuevo: tomará los de ahí."
+        )
+    )
     assert snap.same(world)
 
 
