@@ -488,13 +488,15 @@ def _confirm(
 
 def _picker_option(option: PickerOptionVM) -> rx.Component:
     # The status in words inside the option («· Activo en tu WhatsApp»), never a colour.
-    return rx.select.item(option.label, value=option.value)
+    # 44 px rows, and a long label wraps (at 375 px) instead of being clipped.
+    return rx.select.item(option.label, value=option.value, min_height=TARGET_MIN, height="auto")
 
 
 def _picker_group(group: PickerGroupVM) -> rx.Component:
     """One menu: its name, then its versions, newest first."""
     return rx.select.group(
-        rx.select.label(group.name),
+        # The menu's name reads as a heading of its versions, not as faint text.
+        rx.select.label(group.name, font_weight="500", color=T.TEXT_STRONG),
         rx.foreach(group.options, _picker_option),
     )
 
@@ -755,6 +757,10 @@ def _delete_dialog() -> rx.Component:
     )
 
 
+#: «Para eliminarlo, primero páusalo.» inside «⋯», tied to the open menu for screen readers.
+DELETE_BLOCKED_ID = "whatsapp-menu-delete-blocked"
+
+
 def _more_menu() -> rx.Component:
     """«⋯» of the menu the editor holds: «Eliminar este menú», or why it cannot go yet."""
     p = S.picker
@@ -782,12 +788,23 @@ def _more_menu() -> rx.Component:
                     on_click=S.set_delete_confirm_open(True),
                     **T.tone_scheme("error"),
                 ),
-                # m-24986800: never on the menu that answers — a line says why instead.
-                rx.menu.item(DELETE_BLOCKED, disabled=True),
+                # m-24986800: never on the menu that answers — a readable line says why
+                # (not a greyed-out item); the open menu is described by it.
+                rx.text(
+                    DELETE_BLOCKED,
+                    id=DELETE_BLOCKED_ID,
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    padding="0.5rem 0.75rem",
+                ),
             ),
+            aria_describedby=rx.cond(p.can_delete, "", DELETE_BLOCKED_ID),
             align="end",
         ),
     )
+
+
+_DIALOG_BUTTON_WIDTH = rx.breakpoints(initial="100%", md="auto")
 
 
 def _switch_dialog() -> rx.Component:
@@ -796,14 +813,17 @@ def _switch_dialog() -> rx.Component:
         rx.alert_dialog.content(
             rx.alert_dialog.title(S.switch_title),
             rx.alert_dialog.description(S.switch_text, size="2"),
+            # Phone: stacked full width, save first and «Cancelar» last. From md up the
+            # same order reversed into one row, «Cancelar» on the left. DOM order is the
+            # phone's, so focus follows what the eye reads first there.
             rx.flex(
-                rx.alert_dialog.cancel(
+                rx.alert_dialog.action(
                     rx.button(
-                        CANCEL_BUTTON,
-                        variant="soft",
+                        S.switch_yes,
+                        on_click=S.save_and_switch,
                         size="3",
                         min_height=TARGET_MIN,
-                        **T.tone_scheme("neutral"),
+                        width=_DIALOG_BUTTON_WIDTH,
                     ),
                 ),
                 rx.alert_dialog.action(
@@ -813,20 +833,25 @@ def _switch_dialog() -> rx.Component:
                         variant="soft",
                         size="3",
                         min_height=TARGET_MIN,
+                        width=_DIALOG_BUTTON_WIDTH,
                         **T.tone_scheme("neutral"),
                     ),
                 ),
-                rx.alert_dialog.action(
+                rx.alert_dialog.cancel(
                     rx.button(
-                        S.switch_yes,
-                        on_click=S.save_and_switch,
+                        CANCEL_BUTTON,
+                        variant="soft",
                         size="3",
                         min_height=TARGET_MIN,
+                        width=_DIALOG_BUTTON_WIDTH,
+                        **T.tone_scheme("neutral"),
                     ),
                 ),
+                direction=rx.breakpoints(initial="column", md="row-reverse"),
                 spacing="3",
                 margin_top="1rem",
-                justify="end",
+                # row-reverse: «start» packs the row to the right edge.
+                justify="start",
                 wrap="wrap",
             ),
             max_width="28rem",
@@ -843,11 +868,22 @@ def _menus_card() -> rx.Component:
     has_menus = S.menu_cards.length() > 0
     return card(
         rx.vstack(
-            _section_title(
-                PICKER_TITLE,
-                _new_menu_dialog(),
-                rx.cond(has_menus & S.has_menu, _more_menu(), rx.fragment()),
-                heading_id=MENUS_HEADING_ID,
+            # Phone: the title on its own row, the actions right-aligned below it, so
+            # «Tu menú de bienvenida» never wraps into three lines; md up, one row.
+            rx.flex(
+                rx.heading(PICKER_TITLE, size="3", as_="h2", id=MENUS_HEADING_ID, tab_index=-1),
+                rx.hstack(
+                    _new_menu_dialog(),
+                    rx.cond(has_menus & S.has_menu, _more_menu(), rx.fragment()),
+                    align="center",
+                    justify="end",
+                    width=rx.breakpoints(initial="100%", md="auto"),
+                ),
+                direction=rx.breakpoints(initial="column", md="row"),
+                align=rx.breakpoints(initial="stretch", md="center"),
+                justify="between",
+                gap="0.5rem",
+                width="100%",
             ),
             rx.cond(
                 has_menus,

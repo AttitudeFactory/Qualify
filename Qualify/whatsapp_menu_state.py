@@ -370,7 +370,7 @@ _SAVED = (
     "Versión {n} guardada sin publicar. Tu WhatsApp aún no responde con ella: toca "
     "«Publicar en mi WhatsApp» cuando quieras."
 )
-_PAUSED = "Menú en pausa: tu WhatsApp no responde con el menú hasta que lo reactives."
+_PAUSED = "Tu menú está en pausa. Para que vuelva a responder, enciende «Responder en tu WhatsApp»."
 _RESUMED = "Menú reactivado: tu WhatsApp vuelve a responder con el menú que escribiste."
 _CARD_TOAST_MS = 8000
 _CARD_LIST_CHANGED = "La lista cambió. Elige la versión otra vez."
