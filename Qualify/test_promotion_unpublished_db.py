@@ -10,6 +10,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from packages.api.tests.test_ad_audience_db import audience_world as shared_audience_world
+from packages.api.tests.test_ad_unpublished_db import publish
 from packages.api.tests.test_ad_unpublished_db import unpublished_world as shared_unpublished
 
 from .promotion_unpublished_provider import unpublished_sources
@@ -32,7 +33,7 @@ def test_unpublished_piece_offers_its_own_pair_scoped_to_its_business(unpublishe
 
 
 def test_a_published_or_unselected_source_is_not_offered(unpublished_world):
-    source, _, login, _ = unpublished_world
+    source, _, login, actor = unpublished_world
     with tenant_session(source.tenant_id) as session:
         session.execute(
             text("UPDATE ad_accounts SET selected=false WHERE id=:id"), {"id": source.account_id}
@@ -43,12 +44,10 @@ def test_a_published_or_unselected_source_is_not_offered(unpublished_world):
         session.execute(
             text("UPDATE ad_accounts SET selected=true WHERE id=:id"), {"id": source.account_id}
         )
-        session.execute(
-            text("UPDATE content_drafts SET published_media_id='1' WHERE id=:id"),
-            {"id": source.draft_id},
-        )
+    publish(source, actor)  # m-25130283: Qualify published it, as a story
     with acting_login(login):
         assert unpublished_sources(source.tenant_id, source.draft_id) == []
+        assert unpublished_sources(source.tenant_id, source.draft_id, story=True) == []
 
 
 def test_story_source_offers_only_the_vertical_file(unpublished_world):

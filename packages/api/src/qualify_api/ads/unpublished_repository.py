@@ -31,6 +31,13 @@ CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
 # A send claim idle this long lost its process (crash between claim and settle): it becomes
 # `unknown`, never re-sent. Must match the 0161 trigger.
 STALE_CLAIM_MINUTES = 30
+# m-25130283: «publicada» = Qualify has a published attempt with Meta's media id for this
+# piece (`content_drafts.published_media_id` is never written). Expects the piece as `d`.
+# A story the owner uploads by hand («Abrir en Instagram») leaves no attempt: unpublished.
+NOT_PUBLISHED_BY_QUALIFY = """NOT EXISTS (SELECT 1 FROM calendar_events pe
+  JOIN publish_attempts pa ON pa.id=pe.publish_attempt_id AND pa.tenant_id=pe.tenant_id
+  WHERE pe.post_id=d.id AND pe.tenant_id=d.tenant_id
+    AND pa.status='published' AND pa.published_media_id IS NOT NULL)"""
 
 
 def load_image_source(
@@ -47,7 +54,7 @@ def load_image_source(
     with tenant_session(tenant, independent=True) as session:
         row = (
             session.execute(
-                text("""SELECT d.id,d.brand_id,d.active_version_id,d.revision,
+                text(f"""SELECT d.id,d.brand_id,d.active_version_id,d.revision,
               a.connection_id,a.ad_account_id,a.currency,a.timezone_name,a.credential_version,
               c.external_account_id,c.linked_page_id
             FROM content_drafts d JOIN piece_versions v ON v.id=d.active_version_id
@@ -59,7 +66,7 @@ def load_image_source(
               AND a.credential_version=c.current_credential_version AND c.status='active'
               AND c.purged_at IS NULL AND c.purge_started_at IS NULL
               AND d.status='approved' AND d.approved_revision=d.revision
-              AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+              AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
               AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
               AND d.part_removed_at IS NULL FOR SHARE OF d,v,a,c"""),
                 {"draft": draft, "account": account},

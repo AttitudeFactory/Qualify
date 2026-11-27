@@ -29,6 +29,27 @@ Instagram y un país explícito. No selecciona un país por defecto. Los límite
 Qualify son 8 MiB por imagen, 2.200 caracteres de mensaje y 100 de título. No son una
 afirmación sobre los límites de Meta. Meta debe aceptar la validación exacta de la solicitud.
 
+## Qué cuenta como «publicada» (m-25130283)
+
+Una pieza está publicada cuando Qualify tiene, para esa pieza, un evento del calendario con un
+intento en `publish_attempts` en estado `published` y con el id de Meta
+(`published_media_id`). Vale para cualquier formato, historias incluidas. La columna
+`content_drafts.published_media_id` no se usa: ningún código la escribe, y por eso antes se
+ofrecía «Anunciar sin publicar» en piezas que ya estaban en Instagram.
+
+La condición vive en un solo lugar, `NOT_PUBLISHED_BY_QUALIFY` en
+`qualify_api.ads.unpublished_repository`, y la usan la lectura que propone la pieza
+(`Qualify/promotion_unpublished_provider.py`) y la que la valida otra vez antes de preparar y
+de confirmar (`load_image_source`, `guard_source`). Si la pieza se publica entre la
+preparación y la confirmación, la confirmación se niega. La lectura va por `tenant_session`
+y compara el negocio en cada unión: el intento de otro negocio nunca cuenta (prueba con base
+de datos y dos negocios).
+
+**Límite conocido:** una historia que el dueño sube a mano con «Abrir en Instagram» no deja
+ningún rastro en Qualify (no hay intento ni id de Meta). Por eso esa pieza se sigue tratando
+como no publicada y se le ofrece «Anunciar sin publicar». Registrar esas historias queda
+fuera de esta entrega.
+
 ## Preparación y confirmación
 
 1. La preparación exige `confirm_preparation=True`, comprueba cuenta, acceso y pagos, y

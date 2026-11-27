@@ -38,6 +38,11 @@ pytestmark = pytest.mark.db
 
 @pytest.fixture
 def audience_world():
+    return make_audience_world()
+
+
+def make_audience_world():
+    """A business with a selected COP ad account and one piece published by Qualify."""
     tenant, brand, user, login, connection = (uuid4() for _ in range(5))
     now = datetime.now(UTC)
     with admin_session() as s:

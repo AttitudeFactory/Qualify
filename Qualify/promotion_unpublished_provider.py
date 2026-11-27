@@ -16,6 +16,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.ads.unpublished import ImageAdForm
+from qualify_api.ads.unpublished_repository import NOT_PUBLISHED_BY_QUALIFY
 from qualify_api.ads.wizard import _saved_ad_destination
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
@@ -46,13 +47,13 @@ ENHANCEMENTS_ON = (
 )
 FEED, VERTICAL = (4, 5), (9, 16)
 
-_PIECE = text("""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
+_PIECE = text(f"""SELECT d.brand_id,d.active_version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
 FROM content_drafts d JOIN piece_versions pv ON pv.id=d.active_version_id
   AND pv.tenant_id=d.tenant_id AND pv.draft_id=d.id AND pv.status='active'
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
   AND v.draft_id=d.id
 WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
-  AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
+  AND {NOT_PUBLISHED_BY_QUALIFY} AND d.parent_draft_id IS NULL
   AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
   AND d.part_removed_at IS NULL""")
 # The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).

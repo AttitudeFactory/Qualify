@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from packages.api.tests.test_ad_audience_db import audience_world as shared_audience_world
+from packages.api.tests.test_ad_audience_db import make_audience_world
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +33,10 @@ audience_world = shared_audience_world
 
 @pytest.fixture
 def unpublished_world(audience_world):
+    return make_unpublished_world(audience_world)
+
+
+def make_unpublished_world(audience_world):
     ids, login, actor, connection, brand = audience_world
     tenant, account = ids["tenant_id"], ids["ad_account_id"]
     draft, version, feed, vertical = (uuid4() for _ in range(4))
@@ -84,6 +89,59 @@ def unpublished_world(audience_world):
         "CO",
     )
     return source, form, login, actor
+
+
+def publish(source, actor, *, status="published", media="9001", post=None) -> None:
+    """Qualify's own publication of `post` (default: the source's piece) as a story."""
+    attempt = uuid4()
+    values = {
+        "attempt": attempt,
+        "tenant": source.tenant_id,
+        "brand": source.brand_id,
+        "connection": source.connection_id,
+        "post": post or source.draft_id,
+        "user": actor,
+        "status": status,
+        "media": media,
+        "key": str(attempt),
+    }
+    with tenant_session(source.tenant_id) as session:
+        session.execute(
+            text("""INSERT INTO publish_attempts
+          (id,tenant_id,connection_id,idempotency_key,media_product_type,adapter_version,
+           status,published_media_id,settled_at)
+          VALUES(:attempt,:tenant,:connection,:key,'STORIES','test',:status,:media,now())"""),
+            values,
+        )
+        session.execute(
+            text("""INSERT INTO calendar_events
+          (tenant_id,brand_id,post_id,connection_id,scheduled_at,scheduled_tz,status,
+           publish_attempt_id,created_by_user_id,destination)
+          VALUES(:tenant,:brand,:post,:connection,now(),'America/Bogota',:status,:attempt,
+                 :user,'story')"""),
+            values,
+        )
+
+
+def test_a_piece_published_by_qualify_is_never_an_unpublished_source(unpublished_world):
+    """m-25130283: «publicada» comes from `publish_attempts`, per business."""
+    source, _, login, actor = unpublished_world
+    other, _, other_login, other_actor = make_unpublished_world(make_audience_world())
+    # A failed attempt, or one Meta never named, is not a publication.
+    publish(other, other_actor, status="failed", media=None)
+    # Another business's rows never count, even one forged to name this piece.
+    publish(other, other_actor, post=source.draft_id)
+    with acting_login(login):
+        assert load_image_source(
+            source.tenant_id, source.draft_id, source.account_id, None, source.vertical.asset_id
+        )
+    with acting_login(other_login):
+        assert guard_source(other) is None
+        publish(other, other_actor)
+        with pytest.raises(UnpublishedUnavailable):
+            guard_source(other)  # published between «Preparar» and «Confirmar»
+    with acting_login(login):
+        guard_source(source)
 
 
 def test_source_version_ownership_and_upload_claim_survives_rollback(unpublished_world):
