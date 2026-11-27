@@ -6,6 +6,7 @@ variant of `/drafts/<id>` (single piece, template package, video by parts)."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -380,12 +381,13 @@ def _cards() -> tuple[str, str]:
 
 
 def test_both_cards_send_a_historia_to_the_story_ad() -> None:
-    """Rendered trees: an approved historia opens `?formato=historia` with its own label;
-    any other POST keeps the plain link behind `used_count`; `kind` decides nothing."""
+    """Rendered trees: a historia with a story ad source opens `?formato=historia` with
+    its own label; any other POST keeps the plain link behind `used_count`; `kind`
+    decides nothing."""
     for tree in _cards():
         story = tree.index('"/promote")+"?formato=historia"')
         cond = tree[:story][tree[:story].rindex("is_story") :]
-        assert "is_approved" in cond and "kind" not in cond
+        assert "story_ad_ready" in cond and "kind" not in cond
         assert "Promocionar como anuncio" in tree[story:]
         rest = tree[story:][tree[story:].index("used_count") :]
         assert '"/promote")' in rest and "kind" not in rest[: rest.index('"/promote")')]
@@ -403,11 +405,35 @@ def test_the_wizard_says_it_is_a_paid_story_ad_on_the_story_path_only() -> None:
     from .promotion_vm import STORY_PAID_NOTE
 
     assert STORY_PAID_NOTE == (
-        "Esto crea un anuncio pagado en historias. No cambia la historia que ya publicaste."
+        "Esto crea un anuncio pagado que se muestra entre las historias de otras cuentas. "
+        "Tu historia no cambia."
     )
     tree = _render(promotion_page._wizard(rx.fragment(), rx.fragment()))
     note = tree.index(STORY_PAID_NOTE)
     assert "story_entry" in tree[:note][-400:]
+
+
+def test_only_a_historia_the_story_ad_can_use_gets_the_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A historia without a 9:16 source (or whose check fails) keeps the link hidden;
+    the check runs on approved historias only, never on other publications."""
+    ready, unready, broken = (_card("story", used=0) for _ in range(3))
+    plain = _card("galeria", used=2)
+    pending = replace(_card("story", used=0), is_approved=False)
+    asked: list[str] = []
+
+    def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
+        asked.append(str(draft_id))
+        if str(draft_id) == broken.post_id:
+            raise RuntimeError("db down")
+        return str(draft_id) == ready.post_id
+
+    monkeypatch.setattr(planner, "story_ad_ready", story_ad_ready)
+    marked = planner._with_story_ads(uuid4(), [ready, unready, broken, plain, pending])
+    assert [o.story_ad_ready for o in marked] == [True, False, False, False, False]
+    assert asked == [ready.post_id, unready.post_id, broken.post_id]
+    assert marked[3] is plain and marked[4] is pending
 
 
 # -- 3. «Ver en Tu semana» from the blocked switch -------------------------------------

@@ -105,6 +105,7 @@ from .planner_vm import (
     time_label_12h,
     week_label,
 )
+from .promotion_unpublished_provider import story_ad_ready
 from .r2_media import is_r2_key, issue_view_path
 
 logger = logging.getLogger(__name__)
@@ -369,6 +370,23 @@ def _post_option(
 _DRAFT_PENDING_TEXT = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
 
 
+def _with_story_ads(tenant_id: UUID, options: list[PostOptionVM]) -> list[PostOptionVM]:
+    """HIS-1 (m-25130281): mark the approved historias the story-only ad can be made from
+    (the same check as Tu semana's «Agregar un botón con enlace»), so a card never links
+    to an empty wizard. Three reads per approved historia; a failed read hides the link."""
+
+    def ready(option: PostOptionVM) -> bool:
+        try:
+            return story_ad_ready(tenant_id, UUID(option.post_id))
+        except Exception as exc:  # noqa: BLE001 — no link is better than a dead end
+            logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+            return False
+
+    return [
+        replace(o, story_ad_ready=ready(o)) if o.is_story and o.is_approved else o for o in options
+    ]
+
+
 def _draft_pending(post: PostSummary) -> bool:
     pending = {_DRAFT_PENDING_TEXT, REASON_TEXT[UnpublishableReason.MEDIA_FINAL_UNCONFIRMED]}
     if post.unpublishable_reason in pending:
@@ -472,6 +490,7 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
         )
         for p in posts
     ]
+    options = _with_story_ads(tenant_id, options)
     return GalleryData(posts=options, categories=category_options(options))
 
 
@@ -693,18 +712,21 @@ def load_week(
         days=grid.days,
         rows=grid.rows,
         # The panel's cards show the same first frame the gallery and the drawer do.
-        unscheduled=[
-            _post_option(
-                p,
-                occupied.get(p.post_id),
-                zone=zone,
-                connections=index,
-                thumbnails=thumbnails,
-                video_url=option_videos.get(str(p.post_id), ""),
-                video=video_states.get(str(p.post_id)),
-            )
-            for p in unscheduled
-        ],
+        unscheduled=_with_story_ads(
+            tenant_id,
+            [
+                _post_option(
+                    p,
+                    occupied.get(p.post_id),
+                    zone=zone,
+                    connections=index,
+                    thumbnails=thumbnails,
+                    video_url=option_videos.get(str(p.post_id), ""),
+                    video=video_states.get(str(p.post_id)),
+                )
+                for p in unscheduled
+            ],
+        ),
         schedulable=[
             _post_option(
                 p,
