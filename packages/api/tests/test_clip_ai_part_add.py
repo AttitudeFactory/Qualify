@@ -521,6 +521,16 @@ def test_a_part_left_out_offers_nothing_and_holds_no_part_of_the_six() -> None:
         assert snap.same(world)
 
 
+def test_no_place_left_says_why_for_a_part_removed_or_left_out() -> None:
+    """Review N1 of m-25142982: the place of a part that did not come out is lost too —
+    the owner reads both causes, never only «las que quitaste»."""
+    places = tuple((slot, slot == 2) for slot in range(1, 7))  # place 2 removed
+    left_out = frozenset({5})  # an added part whose owner's time ran out
+    problem = act.ClipAiPartActions._place_problem(places, left_out)  # noqa: SLF001
+    assert problem == ("no_place_left", act.NO_PLACE_LEFT_TEXT)
+    assert "quitaste" in act.NO_PLACE_LEFT_TEXT and "no salieron" in act.NO_PLACE_LEFT_TEXT
+
+
 def test_a_position_off_the_timeline_is_a_moved_clip() -> None:
     world = _world()
     made, _ = _made_clip(world)

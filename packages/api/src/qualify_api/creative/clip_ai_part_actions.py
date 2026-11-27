@@ -178,7 +178,7 @@ ADD_MAX_PARTS_TEXT = (
 )
 #: m-25142982: every child place of the Clip is taken (6, removed parts included).
 NO_PLACE_LEFT_TEXT = (
-    "Ya usaste las 6 partes con IA de este video, contando las que quitaste. "
+    "Ya usaste las 6 partes con IA de este video, contando las que quitaste o no salieron. "
     "Crea un video nuevo para agregar más."
 )
 #: m-25142982: a new part with nothing to make it from.
