@@ -85,6 +85,7 @@ from .whatsapp_menu_vm import (
     ADDRESS_ASK,
     ADDRESS_SKIP,
     ANSWER_ISSUE,
+    ANSWERING_LABEL,
     ANSWERS_EMPTY,
     ANSWERS_FULL,
     BUTTONS_HEADING,
@@ -184,10 +185,9 @@ from .whatsapp_menu_vm import (
     SUGGEST_NEUTRAL,
     SUGGEST_UNDO,
     SUGGESTION_CUSTOM,
-    SWITCH_DISCARD,
-    SWITCH_YES,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    UNSAVED_TAG,
     AnswerVM,
     CatalogRowVM,
     CatalogSectionVM,
@@ -644,8 +644,9 @@ def _answering_switch() -> rx.Component:
                 margin_top="0.125rem",
             ),
             rx.vstack(
+                # One fixed name; the position and the help line say the state.
                 rx.text(
-                    p.switch_label,
+                    ANSWERING_LABEL,
                     as_="label",
                     html_for=ANSWERING_SWITCH_ID,
                     size="2",
@@ -802,7 +803,7 @@ def _switch_dialog() -> rx.Component:
                 ),
                 rx.alert_dialog.action(
                     rx.button(
-                        SWITCH_DISCARD,
+                        S.switch_discard,
                         on_click=S.discard_and_switch,
                         variant="soft",
                         size="3",
@@ -812,7 +813,7 @@ def _switch_dialog() -> rx.Component:
                 ),
                 rx.alert_dialog.action(
                     rx.button(
-                        SWITCH_YES,
+                        S.switch_yes,
                         on_click=S.save_and_switch,
                         size="3",
                         min_height=TARGET_MIN,
@@ -873,7 +874,7 @@ def _menus_card() -> rx.Component:
                         width="100%",
                         align="start",
                     ),
-                    rx.cond(S.dirty, tag("Cambios sin publicar"), rx.fragment()),
+                    rx.cond(S.dirty, tag(UNSAVED_TAG), rx.fragment()),
                     rx.cond(S.advanced_open & S.has_menu, _publish_area(), rx.fragment()),
                     rx.cond(
                         S.has_menu & (S.error_count > 0),

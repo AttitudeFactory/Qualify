@@ -567,8 +567,11 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Menú y versión",
         "Sí, pausar",
         "Eliminar este menú",
+        "Responder en tu WhatsApp",
+        "Cambios sin guardar",
         "¿Eliminar este menú?",
-        "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?",
+        "Tus clientes dejarán de recibir este menú hasta que lo reanudes. Sus mensajes te "
+        "llegarán a «Por responder». ¿Pausar?",
         "Vista previa",
         "Reiniciar",
     ):
@@ -578,6 +581,7 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Pausar el menú en tu WhatsApp",  # the old bar's switch
         "Elige qué menú ver",  # the old «Menú» select
         "Tienes cambios sin publicar · ábrelos en «Editar»",
+        "Responde en tu WhatsApp",  # the switch's label is fixed: «Responder en tu WhatsApp»
     ):
         assert not present(gone), gone
     source = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()

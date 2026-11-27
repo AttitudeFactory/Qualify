@@ -287,7 +287,7 @@ async def test_a_late_proposal_never_lands_in_another_menu_and_holds_the_slot(
     def slow(tenant_id: UUID, brand_id: UUID | None, data: SuggestInput) -> SuggestProposal:
         state = box[0]
         # Another menu loads meanwhile (same «greeting» key, maybe another brand).
-        state._load_definition(None, "Otro menú")
+        state._load_definition(None)
         state.welcome = data.current_text  # even with the same text it must not land
         assert state.suggest_busy == "greeting"  # the slot is still held
         return _proposal("Propuesta del menú anterior.")

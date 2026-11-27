@@ -3958,15 +3958,27 @@ PICKER_TITLE = "Tu menú de bienvenida"
 PICKER_LABEL = "Menú y versión"
 #: The newest saved version when it never went out: listed first in its menu's group.
 DRAFT_OPTION = "Cambios sin publicar"
+#: Any other save that never went out, after its «Versión n · creada el …».
+UNPUBLISHED_SUFFIX = "sin publicar"
+#: Beside the select while the editor holds changes not saved yet.
+UNSAVED_TAG = "Cambios sin guardar"
 #: A menu created empty has no saved version yet: its group holds this one option.
 UNSAVED_OPTION = "Todavía sin guardar"
 SELECTED_IS_ACTIVE = "Es la versión que tienen tus clientes."
 #: A paused menu's live version: customers get it again only after it is resumed.
 SELECTED_IS_ACTIVE_PAUSED = "Es la versión que tendrán tus clientes cuando lo reanudes."
-#: Under the select when the editor holds a version customers do not get.
-NOT_LIVE_YET = "Tus clientes tienen «{live}». Esta todavía no les llega."
-NOT_LIVE_YET_PAUSED = "En tu WhatsApp está «{live}», en pausa. Esta todavía no les llega."
-NOT_LIVE_NOTHING = "Esta todavía no les llega a tus clientes."
+#: Under the select when the editor holds a version that never went out…
+NOT_LIVE_YET = "Tus clientes reciben «{live}». La que estás viendo todavía no les llega."
+NOT_LIVE_YET_PAUSED = (
+    "En tu WhatsApp está «{live}», en pausa. La que estás viendo todavía no les llega."
+)
+NOT_LIVE_NOTHING = "La que estás viendo todavía no les llega a tus clientes."
+#: …or one that went out once and was replaced (never «todavía no les llega» of it).
+OLDER_VERSION = "Tus clientes reciben «{live}». La que estás viendo es una versión anterior."
+OLDER_VERSION_PAUSED = (
+    "En tu WhatsApp está «{live}», en pausa. La que estás viendo es una versión anterior."
+)
+OLDER_VERSION_NOTHING = "La que estás viendo es una versión anterior."
 PUBLISH_VERSION_BUTTON = "Publicar esta versión"
 BACK_TO_VERSION_BUTTON = "Volver a la versión {n}"
 PUBLISH_VERSION_TITLE = "Publicar la versión {n}"
@@ -3978,15 +3990,20 @@ KEPT_WITH_DRAFT = "La versión {m} y tu borrador quedan guardados."
 KEPT = "La versión {m} queda guardada."
 PUBLISH_VERSION_YES = "Sí, publicar"
 #: The one pause control: a switch on the menu that is live on the number.
-ANSWERING_LABEL = "Responde en tu WhatsApp"
-PAUSED_LABEL = "En pausa"
+#: One fixed label (and accessible name): the state is the switch's position and the help.
+ANSWERING_LABEL = "Responder en tu WhatsApp"
 ANSWERING_HELP = "Tus clientes lo reciben cuando te escriben."
-PAUSED_HELP = "Tu menú no responde; los mensajes te llegan a Por responder."
+PAUSED_HELP = (
+    "Está en pausa: tus clientes no lo reciben y sus mensajes te llegan a «Por responder»."
+)
 #: When another menu is picked, the switch still acts on the live one: the help names it.
-SWITCH_FOR_LIVE = "Es para «{name}», el menú que está en tu WhatsApp."
+SWITCH_FOR_LIVE = "Este botón pausa o reanuda «{name}», el menú que está en tu WhatsApp."
 PAUSE_BUTTON = "Pausar"  # the toast's way back after resuming
 PAUSE_TITLE = "Pausar «{name}»"
-PAUSE_CONFIRM = "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?"
+PAUSE_CONFIRM = (
+    "Tus clientes dejarán de recibir este menú hasta que lo reanudes. Sus mensajes te "
+    "llegarán a «Por responder». ¿Pausar?"
+)
 PAUSE_YES = "Sí, pausar"
 #: Resuming is one tap (UX review): the toast says it and offers «Pausar» back.
 RESUMED_TOAST = "Listo: tus clientes vuelven a recibir este menú."
@@ -4002,6 +4019,10 @@ SWITCH_TITLE_VERSION = "¿Abrir otra versión?"
 SWITCH_TEXT = "Tienes cambios sin guardar en «{name}». Guárdalos o se pierden."
 SWITCH_YES = "Guardar y cambiar"
 SWITCH_DISCARD = "Cambiar sin guardar"
+SWITCH_YES_VERSION = "Guardar y abrir"
+SWITCH_DISCARD_VERSION = "Abrir sin guardar"
+#: The option picked behind the dialog left the select meanwhile (the list was re-read).
+SWITCH_GONE = "Esa versión ya no está en la lista. Elígela otra vez."
 #: «Eliminar» archives the menu (decision D1): it leaves the list for good; its versions
 #: stay in the database for the chats that used them.
 DELETE_TITLE = "¿Eliminar este menú?"
@@ -4067,19 +4088,14 @@ class MenuCardInput:
 @dataclass(frozen=True)
 class MenuCardVM:
     """One menu of the number: what the handlers check before a write (is it live, can
-    it be deleted) and what «Eliminar» says about it."""
+    it be deleted). What the screen says about it lives in `MenuPickerVM`."""
 
     menu_id: str
     name: str
-    status_label: str
-    status_tone: str
     is_live: bool  # published on its number (answering or paused)
     is_paused: bool
-    has_draft: bool  # the newest saved version was never published
     #: m-24986800: «Eliminar» — never on the menu that answers (it is paused first).
     can_delete: bool = False
-    delete_tail: str = ""  # « con sus 3 versiones guardadas.» after the bold name
-    delete_case: str = ""  # why customers are unaffected (paused / never sent / replaced)
 
 
 def local_long_date(value: datetime, zone: tzinfo, today: date) -> str:
@@ -4124,23 +4140,12 @@ def card_input_from(
 def build_menu_card(card: MenuCardInput) -> MenuCardVM:
     """One menu of the number."""
     live = bool(card.live_version_id)
-    status_label, status_tone = menu_status(published=live, paused=card.is_paused)
-    newest = max(card.versions, key=lambda v: v.number) if card.versions else None
     return MenuCardVM(
         menu_id=card.menu_id,
         name=card.name,
-        status_label=status_label,
-        status_tone=status_tone,
         is_live=live,
         is_paused=live and card.is_paused,
-        has_draft=newest is not None and newest.published_at is None,
         can_delete=not live or card.is_paused,
-        delete_tail=delete_versions_tail(len(card.versions)),
-        delete_case=delete_case_line(
-            live=live,
-            paused=card.is_paused,
-            ever_published=any(v.published_at is not None for v in card.versions),
-        ),
     )
 
 
@@ -4199,13 +4204,11 @@ class MenuPickerVM:
     has_live: bool = False
     live_menu_id: str = ""
     live_paused: bool = False
-    switch_label: str = ""
     switch_help: str = ""
     pause_title: str = ""
     #: «⋯» of the menu the editor holds.
     more_label: str = ""
     can_delete: bool = False
-    has_draft: bool = False
     delete_tail: str = ""
     delete_case: str = ""
 
@@ -4214,14 +4217,15 @@ EMPTY_PICKER = MenuPickerVM()
 
 
 def _listed_versions(card: MenuCardInput, holding: str) -> list[CardVersionInput]:
-    """The versions a menu's group lists, newest first: the draft (the newest, never
-    published), every published one, and the one the editor holds. Older saves that
-    never went out are left out — a later save replaced them."""
-    newest = max(card.versions, key=lambda v: v.number) if card.versions else None
+    """The versions a menu's group lists, newest first: every published one, every save
+    newer than the last published one (for a menu never published: all its saves) — so
+    saving from an older version never hides the draft that was there —, and the one the
+    editor holds. Only saves older than a later publication are left out."""
+    last = max((v.number for v in card.versions if v.published_at is not None), default=0)
     keep = [
         v
         for v in card.versions
-        if v.published_at is not None or v is newest or v.version_id == holding
+        if v.published_at is not None or v.number > last or v.version_id == holding
     ]
     return sorted(keep, key=lambda v: v.number, reverse=True)
 
@@ -4235,6 +4239,8 @@ def _option_label(
     if version.version_id == card.live_version_id:
         status, _tone = menu_status(published=True, paused=card.is_paused)
         return f"{label} · {status}"
+    if version.published_at is None:
+        return f"{label} · {UNPUBLISHED_SUFFIX}"
     return label
 
 
@@ -4276,7 +4282,6 @@ def build_menu_picker(
             "has_live": True,
             "live_menu_id": live.menu_id,
             "live_paused": live.is_paused,
-            "switch_label": PAUSED_LABEL if live.is_paused else ANSWERING_LABEL,
             "pause_title": PAUSE_TITLE.format(name=live.name),
         }
     held = next((c for c in cards if c.menu_id == open_menu_id), None)
@@ -4286,6 +4291,7 @@ def build_menu_picker(
     version = next((v for v in held.versions if v.version_id == editing_version_id), None)
     newest = max(held.versions, key=lambda v: v.number) if held.versions else None
     has_draft = newest is not None and newest.published_at is None
+    published = version is not None and version.published_at is not None
     is_live_version = version is not None and version.version_id == held.live_version_id
     if version is None:
         value, tail = f"{UNSAVED_PREFIX}{held.menu_id}", UNSAVED_OPTION
@@ -4298,20 +4304,25 @@ def build_menu_picker(
         help_line = SELECTED_IS_ACTIVE_PAUSED if held.is_paused else SELECTED_IS_ACTIVE
     else:
         status_label, status_tone = "", "neutral"
+        nothing, paused_text, live_line = (
+            (OLDER_VERSION_NOTHING, OLDER_VERSION_PAUSED, OLDER_VERSION)
+            if published
+            else (NOT_LIVE_NOTHING, NOT_LIVE_YET_PAUSED, NOT_LIVE_YET)
+        )
         if not live_text:
-            help_line = NOT_LIVE_NOTHING
+            help_line = nothing
         elif live is not None and live.is_paused:
-            help_line = NOT_LIVE_YET_PAUSED.format(live=live_text)
+            help_line = paused_text.format(live=live_text)
         else:
-            help_line = NOT_LIVE_YET.format(live=live_text)
+            help_line = live_line.format(live=live_text)
 
     switch_help = ""
     if live is not None:
         switch_help = PAUSED_HELP if live.is_paused else ANSWERING_HELP
         if live.menu_id != held.menu_id:
-            switch_help = f"{SWITCH_FOR_LIVE.format(name=live.name)} {switch_help}"
+            other = SWITCH_FOR_LIVE.format(name=live.name)
+            switch_help = f"{other} {PAUSED_HELP}" if live.is_paused else other
 
-    published = version is not None and version.published_at is not None
     can_publish_version = published and not is_live_version
     number = version.number if version is not None else 0
     held_live = bool(held.live_version_id)
@@ -4351,7 +4362,6 @@ def build_menu_picker(
         switch_help=switch_help,
         more_label=MENU_MORE_LABEL.format(name=held.name),
         can_delete=not held_live or held.is_paused,
-        has_draft=has_draft,
         delete_tail=delete_versions_tail(len(held.versions)),
         delete_case=delete_case_line(
             live=held_live,
@@ -4429,6 +4439,14 @@ def merge_card_input(cards: Sequence[MenuCardInput], fresh: MenuCardInput) -> li
 
 
 __all__ = [
+    "SWITCH_GONE",
+    "SWITCH_DISCARD_VERSION",
+    "SWITCH_YES_VERSION",
+    "OLDER_VERSION_NOTHING",
+    "OLDER_VERSION_PAUSED",
+    "OLDER_VERSION",
+    "UNSAVED_TAG",
+    "UNPUBLISHED_SUFFIX",
     "MENU_MORE_LABEL",
     "picker_target",
     "build_menu_picker",
@@ -4441,7 +4459,6 @@ __all__ = [
     "SWITCH_FOR_LIVE",
     "PICKER_TITLE",
     "PICKER_LABEL",
-    "PAUSED_LABEL",
     "PAUSED_HELP",
     "NOT_LIVE_YET_PAUSED",
     "NOT_LIVE_YET",

@@ -264,7 +264,7 @@ def test_the_welcome_menu_is_one_box(chats_page) -> None:  # noqa: ANN001
     for gone in ("Elige qué menú ver", "Pausar el menú en tu WhatsApp", "Editando a partir"):
         expect(page.get_by_text(gone)).to_have_count(0)
     expect(page.get_by_role("button", name="Editar", exact=True)).to_have_count(0)
-    expect(page.get_by_role("switch", name="Responde en tu WhatsApp")).to_be_checked()
+    expect(page.get_by_role("switch", name="Responder en tu WhatsApp")).to_be_checked()
     _shot(page, "menu-una-caja-1280-borrador")
 
     # Every menu is a group; the live version is marked in words, open and closed.
@@ -281,7 +281,10 @@ def test_the_welcome_menu_is_one_box(chats_page) -> None:  # noqa: ANN001
     _pick(page, r"^Versión 1 · ")
     expect(select).to_contain_text("prueba 2 · Versión 1")
     expect(
-        box.get_by_text("Tus clientes tienen «prueba 2 · Versión 2». Esta todavía no les llega.")
+        box.get_by_text(
+            "Tus clientes reciben «prueba 2 · Versión 2». La que estás viendo es una versión "
+            "anterior."
+        )
     ).to_be_visible()
     expect(box.get_by_role("button", name="Volver a la versión 1")).to_be_visible()
     expect(page.get_by_text("Hola, esta es la versión 1 del menú.").first).to_be_visible()
@@ -297,11 +300,16 @@ def test_the_welcome_menu_is_one_box(chats_page) -> None:  # noqa: ANN001
     _shot(page, "menu-una-caja-375-activa")
 
     # Pausing asks first, then the switch says «En pausa».
-    page.get_by_role("switch", name="Responde en tu WhatsApp").click()
+    page.get_by_role("switch", name="Responder en tu WhatsApp").click()
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_contain_text("Pausar «prueba 2»")
     dialog.get_by_role("button", name="Sí, pausar").click()
-    expect(page.get_by_role("switch", name="En pausa")).not_to_be_checked(timeout=30_000)
+    expect(page.get_by_role("switch", name="Responder en tu WhatsApp")).not_to_be_checked(
+        timeout=30_000
+    )
+    expect(
+        box.get_by_text(re.compile("^Está en pausa: tus clientes no lo reciben"))
+    ).to_be_visible()
     expect(select).to_contain_text("En pausa")
     _no_sideways_scroll(page)
     _shot(page, "menu-una-caja-375-pausa")
