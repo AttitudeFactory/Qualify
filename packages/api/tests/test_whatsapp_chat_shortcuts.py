@@ -31,6 +31,7 @@ from qualify_api.whatsapp.directions import (
     DirectionsService,
     LocationInvalid,
     MemoryLocationStore,
+    directions_sentence,
     maps_link,
 )
 from qualify_api.whatsapp.optins import MemoryOptInRepository, OptInService
@@ -207,6 +208,9 @@ def test_without_a_point_the_address_goes_with_a_maps_link(world: World) -> None
         "https://maps.google.com/?q=Av.+5+12-34%2C+C%C3%BAcuta"
     )
     assert maps_link("a b&c") == "https://maps.google.com/?q=a+b%26c"
+    # N3: nothing left to search for: no link, and the sentence goes alone
+    assert maps_link(" # ") == ""
+    assert directions_sentence("#", maps_link("#")) == "Estamos en #."
     # m-25143229 U4: readable in the chat — no «#», spaces as «+», still one valid URL
     assert maps_link(" Calle 10 # 5-20, Cúcuta ") == (
         "https://maps.google.com/?q=Calle+10+5-20%2C+C%C3%BAcuta"

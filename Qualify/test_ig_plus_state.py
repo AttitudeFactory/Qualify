@@ -167,7 +167,7 @@ async def test_a_failed_text_after_the_qr_retries_the_text_alone(monkeypatch) ->
     await _send(pick)  # «Reintentar»
     kinds = [r.media.media_type if r.media else "text" for r in h.rows()]
     assert kinds == ["image", "text"]  # one QR, then its text
-    assert pick._qr_queued_for == "" and pick.pick_open is False
+    assert pick._qr_queued == {} and pick.pick_open is False
 
 
 def test_the_gateway_says_the_qr_went_when_its_text_did_not(monkeypatch) -> None:  # noqa: ANN001
@@ -187,8 +187,9 @@ def test_the_gateway_says_the_qr_went_when_its_text_did_not(monkeypatch) -> None
     assert [r.media.media_type for r in h.rows()] == ["image"]
     # the retry of the same intent: no second QR (and the text still fails here)
     with pytest.raises(RuntimeError):
-        h.world.gateway.send_payment_method(*_ids(h), method.id, include_qr=False)
+        h.world.gateway.send_payment_method(*_ids(h), method.id, skip_qr_key=QR_KEY)
     assert len(h.rows()) == 1
+    assert caught.value.qr_key == QR_KEY
 
 
 def _ids(h: Harness) -> tuple[UUID, UUID, UUID, UUID]:
@@ -233,3 +234,98 @@ def test_instagram_has_its_own_help_for_directions(monkeypatch) -> None:  # noqa
     pick.pick_source, pick.pick_directions = PICK_DIRECTIONS, DirectionsVM(present=True)
     assert pick.pick_help == IG_DIRECTIONS_HELP != DIRECTIONS_HELP
     assert "mapa" in IG_DIRECTIONS_HELP and "Enviar" in IG_DIRECTIONS_HELP
+
+
+async def test_a_qr_replaced_after_a_half_send_goes_on_the_retry(monkeypatch) -> None:  # noqa: ANN001
+    """The memory is keyed by the QR object: a QR changed in Formas de pago meanwhile
+    is a different key, so «Reintentar» sends the new one (and its text)."""
+    import dataclasses
+
+    h = Harness(monkeypatch)
+    method = _method(qr=QR_KEY)
+    h.world.plus.methods = [method]
+    pick = h.on_review(method.id)
+    real = h.world.service.reply_text
+    calls = {"n": 0}
+
+    def flaky(**kw: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db down")
+        return real(**kw)
+
+    monkeypatch.setattr(h.world.service, "reply_text", flaky)
+    await _send(pick)
+    new_key = QR_KEY.replace("qr-nequi", "qr-nequi-2")
+    h.world.plus.methods = [dataclasses.replace(method, qr_media_key=new_key)]
+    await _send(pick)
+    keys = [r.media.object_key if r.media else "text" for r in h.rows()]
+    assert keys == [QR_KEY, new_key, "text"]
+
+
+# --- N1: the owner moved to another chat while it was in flight --------------------------
+
+
+def _toasts(events: list[Any]) -> list[str]:
+    return [repr(e) for e in events if "toast" in repr(e).lower()]
+
+
+async def test_a_failure_after_moving_to_another_chat_is_a_toast(monkeypatch) -> None:  # noqa: ANN001
+    h = Harness(monkeypatch)
+    pick = h.on_review(_method().id)  # never offered: the send is refused
+    plan = pick._begin_send()
+    assert plan is not None
+    real = h.conv.open_thread_id
+    calls = {"n": 0}
+    auth = SimpleNamespace(user_email="ana@bianki.co")
+
+    async def get_state(_self: Any, cls: type) -> Any:
+        # the plan's first read sees chat A; the result's read sees chat B
+        if cls is ConversationsState:
+            calls["n"] += 1
+            h.conv.open_thread_id = real if calls["n"] == 1 else "chat-b"
+            return h.conv
+        return auth
+
+    monkeypatch.setattr(InstagramPickState, "get_state", get_state)
+    events = [e async for e in pick._send(plan)]
+    assert h.rows() == [] and _toasts(events)
+    assert pick._session == plan.session  # no panel reset: only the chat changed
+
+
+async def test_a_success_after_moving_to_another_chat_is_a_toast_too(monkeypatch) -> None:  # noqa: ANN001
+    h = Harness(monkeypatch)
+    method = _method()
+    h.world.plus.methods = [method]
+    pick = h.on_review(method.id)
+    plan = pick._begin_send()
+    assert plan is not None
+    real = h.conv.open_thread_id
+    calls = {"n": 0}
+    auth = SimpleNamespace(user_email="ana@bianki.co")
+
+    async def get_state(_self: Any, cls: type) -> Any:
+        if cls is ConversationsState:
+            calls["n"] += 1
+            h.conv.open_thread_id = real if calls["n"] == 1 else "chat-b"
+            return h.conv
+        return auth
+
+    monkeypatch.setattr(InstagramPickState, "get_state", get_state)
+    events = [e async for e in pick._send(plan)]
+    assert len(h.rows()) == 1 and _toasts(events)
+
+
+# --- N2: a send lost to a restart never locks the «+» ------------------------------------
+
+
+async def test_a_stale_busy_flag_expires(monkeypatch) -> None:  # noqa: ANN001
+    h = Harness(monkeypatch)
+    pick = h.on_review(_method().id)
+    pick.pick_busy, pick._busy_since = True, pick_module.time.time()
+    assert pick.pick_locked and pick.set_picker_open(False) is None
+    # the app restarted mid-send: the flag was persisted, the `finally` never ran
+    pick._busy_since -= pick_module.BUSY_FOR_S + 1
+    assert not pick.pick_locked
+    assert pick.set_picker_open(False) is not None  # closes again
+    assert await InstagramPickState.open_pick.fn(pick, PICK_DIRECTIONS) is not None

@@ -305,9 +305,10 @@ class PaymentTextNotQueued(Exception):
 
     qr_queued = True
 
-    def __init__(self, cause: BaseException) -> None:
+    def __init__(self, cause: BaseException, qr_key: str = "") -> None:
         super().__init__(type(cause).__name__)
         self.cause = cause
+        self.qr_key = qr_key
 
 
 @dataclass(frozen=True)
@@ -758,7 +759,7 @@ class ConversationsGateway:
         user_id: UUID,
         method_id: UUID,
         *,
-        include_qr: bool = True,
+        skip_qr_key: str = "",
     ) -> list[UUID]:
         """«Formas de pago» › «Enviar» — only ever the owner's tap. The QR goes as an
         image reply (Instagram's image message carries no text), then the text. The
@@ -767,13 +768,14 @@ class ConversationsGateway:
 
         The two rows are two outbox writes (the service has no batch door): when the
         text fails AFTER the QR was queued, `PaymentTextNotQueued` says so (`qr_queued`,
-        the cause chained), and the retry of the same intent passes `include_qr=False`
-        so the customer never gets the QR twice (m-25143229, review C2)."""
+        the cause chained, `qr_key` the object queued), and the retry passes that key as
+        `skip_qr_key`: the same QR is not queued twice, while a QR REPLACED meanwhile
+        (another key) still goes (m-25143229, review C2)."""
         self._owned(tenant_id, connection_id, thread_id)
         method = self._method(tenant_id, connection_id, method_id)
         approval = self._approval(user_id)
         queued: list[UUID] = []
-        if include_qr and method.qr_media_key:
+        if method.qr_media_key and method.qr_media_key != skip_qr_key:
             key = method.qr_media_key
             queued.append(
                 self.service.reply_media(
@@ -796,7 +798,7 @@ class ConversationsGateway:
             )
         except Exception as exc:
             if queued:
-                raise PaymentTextNotQueued(exc) from exc
+                raise PaymentTextNotQueued(exc, method.qr_media_key or "") from exc
             raise
         return queued
 

@@ -16,7 +16,10 @@ steps of `chat_plus_picks.py`.
   changed). (Instagram's outbox has no request key: this is an in-flight guard, like
   every other send of this screen.)
 - **The QR once** (review C2): when the QR was queued and its text was not, the retry
-  of that method in that chat sends the text alone (`_qr_queued_for`).
+  of that method in that chat skips THAT QR object (`_qr_queued`); a QR replaced
+  meanwhile has another key and goes.
+- **A lost send never locks the «+»** (N2): `pick_busy` counts only for `BUSY_FOR_S`
+  after it was set — an app restart mid-send never runs the `finally`.
 - **The phone's «atrás»** (review U2): WhatsApp's `?flujo=` mechanism with its own flow
   name (`IG_PICK_FLOW`): one step back, or closed on step 1, in the same chat.
 - **Scoped**: every read and send goes through `conversations_provider.gateway()` with
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -81,6 +85,8 @@ IG_PICK_SOURCES = frozenset({PICK_PAYMENTS, PICK_DIRECTIONS})
 #: The panel's `?flujo=` (WhatsApp's is «enviar»: a distinct name, so one chat's
 #: restore never closes the other's panel).
 IG_PICK_FLOW = "enviar-ig"
+#: N2: how long an «Enviar» in flight holds the panel (a send that outlives it was lost).
+BUSY_FOR_S = 60.0
 #: Review U3 (texto nuevo, pendiente de aprobación del fundador): Instagram has no
 #: location message — the customer always gets the address with a link to the map.
 IG_DIRECTIONS_HELP = (
@@ -171,7 +177,7 @@ class _Plan:
     thread_id: str
     connection_id: str
     item_id: str
-    include_qr: bool = True
+    skip_qr_key: str = ""
 
 
 class InstagramPickState(rx.State):
@@ -200,8 +206,10 @@ class InstagramPickState(rx.State):
     _session: int = 0
     _connection: str = ""
     _zone_name: str = ""
-    #: "<thread>:<method>" whose QR is queued but whose text is not (C2).
-    _qr_queued_for: str = ""
+    #: C2: "<thread>:<method>" → the QR object key queued while its text was not.
+    _qr_queued: dict[str, str] = {}
+    #: N2: when `pick_busy` was set (epoch seconds).
+    _busy_since: float = 0.0
 
     # --- computed ------------------------------------------------------------------------
 
@@ -236,12 +244,21 @@ class InstagramPickState(rx.State):
         return ig_pick_can_send(
             source=self.pick_source,
             reviewing=self.pick_reviewing,
-            sending=self.pick_sending or self.pick_busy,
+            sending=self.pick_sending or self._busy(),
             payment_id=self.pick_selected,
             payment_text=self.pick_payment_text,
             payment_loading=self.pick_payment_loading,
             directions=self.pick_directions,
         )
+
+    def _busy(self) -> bool:
+        """N2: in flight, and not for longer than a send can take."""
+        return self.pick_busy and time.time() - self._busy_since < BUSY_FOR_S
+
+    @rx.var(cache=False)
+    def pick_locked(self) -> bool:
+        """The «+» is held by a send in flight (the same expiry as the guards)."""
+        return self._busy()
 
     @rx.var
     def pick_send_label(self) -> str:
@@ -292,7 +309,7 @@ class InstagramPickState(rx.State):
     def _close(self) -> list[rx.event.EventSpec] | None:
         """Closed (Volver al chat, ✕, Esc, the backdrop): the focus goes back to the «+».
         Refused while a send is in flight (C1): its result must reach this panel."""
-        if self.pick_busy:
+        if self._busy():
             return None
         self._reset()
         return [
@@ -314,7 +331,7 @@ class InstagramPickState(rx.State):
         chat may get a message; choosing a row never sends anything."""
         if not isinstance(source, str) or source not in IG_PICK_SOURCES:
             return None
-        if self.pick_busy:
+        if self._busy():
             return None  # C1: the last «Enviar» has not come back yet
         conv = await self.get_state(ConversationsState)
         if not conv.can_compose or conv.busy or not conv.open_thread_id:
@@ -342,7 +359,7 @@ class InstagramPickState(rx.State):
     @rx.event
     def pick_back(self) -> rx.event.EventSpec | list[rx.event.EventSpec] | None:
         """«Atrás»; on step 1 it is «Volver al chat» and closes the panel."""
-        if self.pick_busy:
+        if self._busy():
             return None
         if self.pick_step <= 1:
             return self._close()
@@ -360,7 +377,7 @@ class InstagramPickState(rx.State):
         requested = flow_param(params, IG_PICK_FLOW, 2)
         if not self.pick_open:
             return rx.call_script(close_flow_script(IG_PICK_FLOW)) if requested else None
-        if self.pick_busy:
+        if self._busy():
             return None
         if not requested:
             self._reset()
@@ -380,7 +397,7 @@ class InstagramPickState(rx.State):
             return None
         if not any(c.id == method_id for c in self.pick_payments):
             return None
-        if self.pick_busy:
+        if self._busy():
             return None
         if method_id != self.pick_selected:
             self.pick_selected = method_id
@@ -514,9 +531,10 @@ class InstagramPickState(rx.State):
     # --- «Enviar» --------------------------------------------------------------------------
 
     def _begin_send(self) -> _Plan | None:
-        if not self.pick_open or not self.pick_can_send or self.pick_busy:
+        if not self.pick_open or not self.pick_can_send or self._busy():
             return None
         self.pick_busy = True
+        self._busy_since = time.time()
         self.pick_sending = True
         self.pick_send_error = ""
         return _Plan(
@@ -525,7 +543,7 @@ class InstagramPickState(rx.State):
             thread_id=self.pick_thread,
             connection_id=self._connection,
             item_id=self.pick_selected,
-            include_qr=self._qr_queued_for != f"{self.pick_thread}:{self.pick_selected}",
+            skip_qr_key=self._qr_queued.get(f"{self.pick_thread}:{self.pick_selected}", ""),
         )
 
     @rx.event(background=True)
@@ -558,7 +576,7 @@ class InstagramPickState(rx.State):
                 self._reset()
             return
         thread, connection = _uuid(plan.thread_id), _uuid(plan.connection_id)
-        error, window_closed, qr_now = "", False, False
+        error, window_closed, qr_now = "", False, ""
         try:
             if tenant_id is None or thread is None or connection is None:
                 raise _NoSession
@@ -573,7 +591,7 @@ class InstagramPickState(rx.State):
                         if method is None:
                             raise PaymentMethodNotFound(plan.item_id)
                         await asyncio.to_thread(
-                            partial(gw.send_payment_method, include_qr=plan.include_qr),
+                            partial(gw.send_payment_method, skip_qr_key=plan.skip_qr_key),
                             tenant_id,
                             connection,
                             thread,
@@ -586,7 +604,7 @@ class InstagramPickState(rx.State):
                         )
         except PaymentTextNotQueued as half:
             # C2: the QR is queued; the retry of this method sends the text alone
-            qr_now = True
+            qr_now = half.qr_key
             cause = half.cause
             if isinstance(cause, (WindowClosed, DispatchWindowClosed)):
                 window_closed = True
@@ -608,9 +626,9 @@ class InstagramPickState(rx.State):
         async with self:
             key = f"{plan.thread_id}:{plan.item_id}"
             if qr_now:
-                self._qr_queued_for = key
-            elif not error and not window_closed and self._qr_queued_for == key:
-                self._qr_queued_for = ""
+                self._qr_queued = {**self._qr_queued, key: qr_now}
+            elif not error and not window_closed and key in self._qr_queued:
+                self._qr_queued = {k: v for k, v in self._qr_queued.items() if k != key}
         if window_closed:
             notice = await _window_closed_cause(tenant_id, connection, thread)
             async with self:
@@ -622,6 +640,10 @@ class InstagramPickState(rx.State):
             yield ConversationsState.refresh
             return
         async with self:
+            conv = await self.get_state(ConversationsState)
+            # N1: the owner moved to another chat while it was in flight — the panel
+            # (even when not reset) is not on screen, so a toast tells the outcome
+            elsewhere = conv.open_thread_id != plan.thread_id
             here = self._session == plan.session
             if error:
                 self.pick_sending = False
@@ -632,10 +654,10 @@ class InstagramPickState(rx.State):
                 if here:
                     self._reset()
         if error:
-            if not here:  # C1: the panel is gone (another chat): the owner still hears it
+            if not here or elsewhere:  # C1/N1: the panel is not on screen
                 yield rx.toast.error(error, duration=_TOAST_MS)
             return
-        if here:
+        if here and not elsewhere:
             yield rx.call_script(close_flow_script(IG_PICK_FLOW))
             yield rx.call_script(ORBIT_FOCUS_SCRIPT)
         yield rx.toast.info(reply_sent_message(who), duration=_TOAST_MS)

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from qualify_api.whatsapp.directions import DIRECTIONS_TEXT, NumberLocation, maps_link
+from qualify_api.whatsapp.directions import NumberLocation, directions_sentence, maps_link
 
 from .whatsapp_chats_vm import map_href
 
@@ -133,7 +133,8 @@ def directions_text(location: NumberLocation | None) -> str:
         link = maps_link(address)
     else:
         return ""
-    return DIRECTIONS_TEXT.format(address=place, link=link) if place else link
+    # N3: an address that cleans to nothing has no link — the sentence goes alone
+    return directions_sentence(place, link) if place else link
 
 
 class DirectionsUnavailable(LookupError):

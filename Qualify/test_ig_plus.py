@@ -123,6 +123,8 @@ def test_directions_text_is_whatsapps_text_with_the_right_link() -> None:
     # a point and only the name; a point with nothing else is the bare link
     named = NumberLocation(latitude=Decimal("1"), longitude=Decimal("2"), name="Bianki")
     assert directions_text(named).startswith("Estamos en Bianki.\nhttps://www.google.com/maps")
+    # N3: an address that cleans to nothing has no link: the sentence alone
+    assert directions_text(NumberLocation(address="#")) == "Estamos en #."
     bare = NumberLocation(latitude=Decimal("1"), longitude=Decimal("2"))
     assert directions_text(bare) == "https://www.google.com/maps/search/?api=1&query=1,2"
 
