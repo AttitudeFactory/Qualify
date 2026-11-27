@@ -282,7 +282,7 @@ ClipAiPartsService(content).create_clip_with_ai_parts(
 - Con todos los hijos hechos, el Clip recibe **un brief nuevo** (el que mandó el dueño queda guardado, `derived_from_brief_id`): cada bloque con IA pasa a ser un tramo de video del hijo, a ×1, con el intervalo que guarda la unión de «Video por partes» (`part_span`: el recorte, la ventana de «Igual al original», lo que repite «Sigue a la anterior»), nunca más largo que sus `seconds`, con su unión. Los textos y efectos se mueven al largo real. Se arma **una sola vez** con `produce_local` y `block_join` de siempre.
 - **El armado automático no cuenta en los 10 armados del día** (§13.5): no escribe fila de cobro. Solo cuenta el «Crear».
 - El video sale `ai_generated=True`. `params.local.ai_parts` guarda, por cada parte que se ve: borrador, revisión y asset del hijo, proveedor, modelo y versión del prompt, modo y `mode_reason`, reel y cortes, segundos pedidos, hechos y vistos, tarea y costo. `ai_sources` la marca con `ai_part: true`.
-- **Un hijo que falla hace fallar el Clip de inmediato** (decidido el 2026-11-26), con `ai_part_failed` («Tu video no se pudo armar porque una de sus partes con IA falló. No se descontó nada de tu plan. Vuelve a crear el video cuando quieras.»). En la misma escritura vuelven **las vistas previas de todas sus partes** (hechas, fallidas o sin empezar) y, con la devolución de siempre, las creaciones del Clip: el dueño no recibió ningún video. Devolver dos veces no devuelve nada más. La espera de 72 h del §11 vuelve con el PR 3 (m-25129407), junto con «Intentar de nuevo», «Hacerla nueva» y «Quitar». La falla se lee **antes** que la espera: una «Sigue a la anterior» que espera a una parte fallida nunca deja el Clip esperando para siempre.
+- **Cambiado por el PR 3 (m-25129407):** un hijo que falla ya no hace fallar el Clip de inmediato; el Clip espera la elección del dueño 72 h (ver «PR 3» más abajo). Lo que sigue describe lo que construyó el PR 2. **Un hijo que falla hace fallar el Clip de inmediato** (decidido el 2026-11-26), con `ai_part_failed` («Tu video no se pudo armar porque una de sus partes con IA falló. No se descontó nada de tu plan. Vuelve a crear el video cuando quieras.»). En la misma escritura vuelven **las vistas previas de todas sus partes** (hechas, fallidas o sin empezar) y, con la devolución de siempre, las creaciones del Clip: el dueño no recibió ningún video. Devolver dos veces no devuelve nada más. La espera de 72 h del §11 vuelve con el PR 3 (m-25129407), junto con «Intentar de nuevo», «Hacerla nueva» y «Quitar». La falla se lee **antes** que la espera: una «Sigue a la anterior» que espera a una parte fallida nunca deja el Clip esperando para siempre.
 - `produce_local` nunca recibe un bloque con IA sin resolver: si llega uno, falla cerrado. Por eso los dos `validate_recipe` que nombraba el review-agent (`clip_avatar.place_block` y `produce_local`) no cambian: después de resolver, el brief ya no tiene bloques con IA ni `ai_parts`.
 - `media._key_problems` ya recorre los archivos de `media.ai_parts` y salta las claves `ai_part:<n>`.
 
@@ -297,10 +297,63 @@ ClipAiPartsService(content).create_clip_with_ai_parts(
 - El hijo guarda ese tramo en `media.part.extend_own`. El productor corta **los últimos segundos** de ese video (hasta 10 s, segundos enteros, derecho y sin audio, con `cut_window`), los guarda en la carpeta del hijo y Seedance los continúa (`extend`). La procedencia queda en `extend-source.json` y en `params.part.extend` con `source_kind="own_video"`.
 - **No se enciende** hasta la medición pagada que Deivid apruebe: BytePlus puede rechazar una cara real que no salió de sus propios videos. Medición preparada, sin correr: `just eval-extender-propio` (`packages/api/evals/extender_video_propio/`). Tres videos del negocio (con una persona, solo el producto, solo el local), una tarea `extend` de 5 s a 480p (borrador de Seedance 2.5) cada uno. Cotización con la guarda de precios y la tabla `v10`: US$0,92 por tarea con 10 s de entrada, **US$2,77 en total** (reserva con 10 % de margen: US$3,04; tope propuesto: US$3,10).
 
-### PR 3 (m-25129407) · después de crear
+### PR 3 (m-25129407) · después de crear `[CONSTRUIDO]`
 
-- «Rehacer esta parte» (`regenerate_part`, con padre `CLIP`), intentar de nuevo, hacerla nueva, quitar y cambiar el modo.
-- Volver a armar el Clip cuando cambian los textos, las uniones o el orden, reusando el video de los hijos.
+Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre `ClipAiPartsService`) y la espera en `clip_ai_parts.ai_parts_gate`. Interruptor: el mismo `QUALIFY_CLIP_AI_PARTS`, apagado. Sin migración.
+
+**La espera del §11 vuelve.** Si una parte con IA falla mientras el Clip espera su primer armado, el Clip **sigue esperando** la elección del dueño (`AiPartsWait("part_failed")`, con `wait_until`). El plazo es de **72 h desde la última falla** que vio el servidor (`CLIP_AI_PART_OWNER_WAIT`; la hora es la más reciente entre la última escritura de la fila de la parte, la devolución de su vista previa en esa revisión y el fin de su trabajo en la cola, porque una falla no siempre escribe la fila). Si se vence, el Clip falla con `ai_part_expired` («Tu video no se armó porque una de sus partes con IA no salió y pasaron 3 días sin una elección. No se descontó nada de tu plan. Créalo de nuevo cuando quieras.») y vuelven las vistas previas de todas sus partes, en su revisión actual, como en el PR 2. Una parte que nunca se creó, o hecha sin su video, sigue haciendo fallar el Clip de inmediato (`ai_part_failed`): no hay nada que el dueño pueda elegir. Por ahora no sale correo de falla (el de los avatares, m-25120319, no se extendió a las partes).
+
+| Acción | Cuándo | Qué hace | Cobro | Tope de 10 armados |
+|---|---|---|---|---|
+| `retry_part` «Intentar de nuevo» | Clip esperando, parte fallida | La misma parte otra vez | 1 vista previa | No cuenta: el «Crear» ya contó ese armado |
+| `retry_part(changes=…)` «Cambiar» | Igual | Primero su descripción o fotos | 1 vista previa | No cuenta |
+| `make_part_new` «Hacerla nueva» | Igual, solo «Igual al original» donde la regla de partes lo ofrece | Pasa a «Nueva» | 1 vista previa | No cuenta |
+| `change_part_mode` | Clip esperando (parte fallida) o Clip armado (parte hecha) | Otro modo; ver reglas abajo | 1 vista previa | Cuenta solo con el Clip armado |
+| `remove_part` «Quitar» | Clip esperando, parte fallida | Se marca quitada (`part_removed_at`), el Clip se arma sin su bloque | 0 | No cuenta |
+| `redo_part` «Rehacer esta parte» | Clip armado, parte hecha (o una versión rehecha que quedó fallida) y en el video | Otra versión de la parte (descripción o fotos; nunca el modo) y otra versión del Clip que la espera | 1 vista previa | Cuenta 1 |
+| `rearrange` | Clip armado | Orden, recortes, uniones, quitar un bloque, textos y efectos | 0 | Cuenta 1 |
+| `parts_view` | Siempre | Lo que la pantalla muestra de cada parte y qué botones ofrece | Gratis | — |
+
+**Todo se revisa antes de escribir o pagar** (criterio 1): el interruptor, las reglas de la parte (las de «Video por partes», `part_actions._refusal`: una «Nueva» rechazada por sus fotos no se vuelve a pedir con las mismas), el interruptor de «Sigue a la anterior», que las fotos nuevas sean del negocio, el tope de dólares, el tope de 10 armados y el mes (`NotEnoughCreations`). El cobro es la primera escritura y es todo o nada (`charge_many`: la parte y, con el Clip armado, la fila de armado local del Clip). Todo pasa en una transacción con el candado del negocio, después de la valla del Clip (sus eventos del calendario y su fila: una publicación en curso, programada o un Clip purgado rechazan) y de la fila de la parte; si algo cambió entretanto, se rechaza con `clip_moved` sin escribir nada. Se despacha después del commit, primero la parte y luego el Clip. Un doble toque hace un solo intento.
+
+**Reusar los hijos** (criterio 2). Después de armado, el brief del Clip toca cada parte como un tramo del archivo de su hijo. `rearrange` cambia solo ese brief: ningún hijo se vuelve a pedir, ni se cobra, ni cambia de revisión. Al armar de nuevo, `refresh_gate` revisa que cada tramo de una parte sea de su **versión activa**: si el dueño rehízo la parte, el tramo viejo se cambia por el archivo nuevo (el mismo corte donde cabe, a ×1, con su unión), y el Clip espera mientras la parte se hace. Si la versión nueva no sale, la parte conserva la anterior (la regla de siempre de la generación) y el Clip sale como antes, nunca sin su parte.
+
+**El tope** (criterio 3). Cuentan el «Crear», «Rehacer esta parte», otro modo con el Clip armado y `rearrange` (una fila `local_video` del Clip por revisión). No cuentan los armados automáticos: cuando termina un hijo, ni el que espera una parte rehecha.
+
+**Reglas de otro modo** (`mode_change_problem`): el mismo modo no (`mode_unchanged`); «Igual al original» solo para una parte que el plan hizo así desde el reel (`original_mode == "edit"`, `edit_needs_reel_window`); «Sigue a la anterior» solo si el bloque justo antes en la línea de tiempo es la parte con IA anterior (`extend_needs_block_before`; un video o foto propios en medio no se continúan) y salida de la misma toma (`extend_not_same_moment`, la regla del contrato), con los cortes del reel comprobados como en el «Crear» y su interruptor; «Nueva» siempre.
+
+**«Quitar».** No se quita lo último que queda (`last_block`), y la receta que queda se revisa como en el «Crear». Una «Sigue a la anterior» justo después pasa a «Nueva»; mientras esa parte se está haciendo, «Quitar» se rechaza (el texto de siempre de «Video por partes»).
+
+**Rechazos** (`ClipAiPartsRefused`, con `code` y `owner_message`):
+
+| Código | Texto para el dueño |
+|---|---|
+| `switched_off` | Las partes con IA no están disponibles por ahora. Tu video queda como está. |
+| `clip_not_waiting` | Ya no hace falta elegir nada para esta parte. Abre tu video de nuevo para ver cómo va. |
+| `clip_busy` / `clip_not_made` | Tu video se está armando. Cuando termine, podrás cambiarlo. |
+| `clip_failed` | Este video no se pudo armar. Créalo de nuevo cuando quieras. |
+| `clip_moved` | Tu video cambió mientras tanto. Vuelve a abrirlo y elige otra vez. |
+| `part_not_failed` | Esta parte ya salió bien. No hace falta intentarla de nuevo. |
+| `part_not_ready` | Esta parte todavía se está creando. Cuando termine, podrás rehacerla. |
+| `part_being_made` | Esta parte se está creando. Cuando termine, podrás quitarla. |
+| `part_not_in_video` | Esta parte ya no está en tu video. |
+| `last_block` | Si quitas esta parte, tu video se queda sin nada que mostrar. Intenta de nuevo o cámbiala. |
+| `mode_unchanged` | Esta parte ya está así. Elige otra opción. |
+| `edit_needs_reel_window` | «Igual al original» solo funciona en partes que salen de un momento del video de inspiración. Elige «Nueva». |
+| `extend_needs_block_before` | «Sigue a la anterior» necesita una parte con IA justo antes. Elige «Nueva». |
+| `extend_not_same_moment` | «Sigue a la anterior» solo funciona si esta parte y la anterior salen del mismo momento del video de inspiración. Elige «Nueva». |
+| `ai_part_file_not_owned` | No pudimos usar una de esas fotos. Elige otra de tus fotos o súbela de nuevo. |
+| `ai_part_added` | Por ahora no puedes agregar partes con IA a un video ya armado. Crea un video nuevo para usarlas. |
+| `stretch_not_of_clip` | Uno de los bloques de tu video ya no está disponible. Vuelve a abrir tu video e inténtalo de nuevo. |
+| `part_action_refused` | El texto de «Video por partes» (`part_actions`) |
+
+**«Sigue a la anterior» después de rehacer la parte anterior** (Deivid, 2026-11-27): la parte no se rehace sola. `parts_view` la marca con `follows_old_version: true`, el aviso `follows_old_version` y el texto «Esta parte sigue a una versión anterior. Rehazla para que continúe la nueva.». El dueño elige qué hacer. La marca se calcula cada vez con la regla de «Video por partes» (`part_extend.extend_is_stale`: el archivo que continuó ya no es el de la parte anterior), así que desaparece cuando el dueño la rehace o le cambia el modo.
+
+El texto de una parte fallida sin palabras propias (`PART_FAILED_TEXT`, en `parts_view`): «Esta parte no salió. Puedes intentarla de nuevo, cambiarla o quitarla. Tu video te espera 3 días.»
+
+Además, con sus textos de siempre: `PartChangeRefused` (programado, publicándose, purgado, la parte que sigue se está haciendo), `PartsExtendUnavailable`, `PartsSourceInvalid`, `PartsOverBudget`, `LocalDailyCapReached`, `NotEnoughCreations` y `RecipeRefused`.
+
+**Pendiente para otros PR:** agregar una parte con IA nueva a un Clip ya armado (hoy `ai_part_added`), el correo de falla de una parte, y la pantalla (PR 8).
 
 ### PR 4 (m-25129408) · aprobar y finales
 

@@ -13,7 +13,7 @@ double, the database a set of dicts."""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -107,12 +107,23 @@ class PartsRepo(BlockRepo):
     ledger: InMemoryCreationsLedger | None = None
     cap_counting = True
 
+    def __init__(self) -> None:
+        super().__init__()
+        #: m-25129407: the parts their owner removed (`part_removed_at`)
+        self.removed: set[UUID] = set()
+
     def local_builds_today(self, *, tenant_id: UUID) -> int:
         if self.ledger is None or not self.cap_counting:
             return 0
         return sum(
             1 for row in self.ledger.rows.values() if row.price.request_kind == "local_video"
         )
+
+    def mark_part_removed(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> bool:
+        if draft_id in self.removed:
+            return False
+        self.removed.add(draft_id)
+        return True
 
 
 class PartsStore:
@@ -122,6 +133,10 @@ class PartsStore:
         self.repo = repo
         self.videos: dict[UUID, cap.AiPartVideo] = {}
         self.reads = 0
+        #: m-25129407: when each part's row was last written (its failure, for the wait)
+        self.changed: dict[UUID, datetime] = {}
+        #: files of OLDER versions of a part (the active one is in `videos`)
+        self.old_keys: dict[str, UUID] = {}
 
     def parts_of(self, *, tenant_id: UUID, clip_id: UUID) -> tuple[cap.AiPartRow, ...]:
         self.reads += 1
@@ -136,14 +151,26 @@ class PartsStore:
                     id=draft_id,
                     slot=slot,
                     status=draft.status,
+                    removed=draft_id in self.repo.removed,
                     failure_reason=draft.failure_reason,
                     revision=draft.revision,
+                    changed_at=self.changed.get(draft_id),
+                    mode=brief.media.part.mode,
+                    failure_detail=draft.failure_detail,
                 )
             )
         return tuple(sorted(rows, key=lambda row: row.slot))
 
     def part_video(self, *, tenant_id: UUID, part_id: UUID) -> cap.AiPartVideo | None:
         return self.videos.get(part_id)
+
+    def played(self, *, tenant_id: UUID, clip_id: UUID, keys: Any) -> dict[str, UUID]:
+        mine = {
+            draft_id for draft_id, (parent, _) in self.repo.parents.items() if parent == clip_id
+        }
+        files = {video.object_key: part for part, video in self.videos.items()}
+        files.update(self.old_keys)
+        return {key: files[key] for key in keys if files.get(key) in mine}
 
 
 @dataclass
@@ -646,23 +673,32 @@ def _charged(world: World, draft_id: UUID) -> bool:
 
 
 @pytest.mark.parametrize("second", ["made", "still_creating"])
-def test_a_failed_part_fails_the_clip_at_once_and_gives_every_preview_back(
+def test_a_failed_part_waits_72_hours_then_fails_and_gives_every_preview_back(
     second: str,
 ) -> None:
-    """Decided 2026-11-26: until PR 3 brings «Intentar de nuevo» a failed part fails the
-    Clip right away (no 72 h wait), and the vistas previas of ALL its parts come back —
-    made, failed or still being made — with the Clip's creations: no video, nothing kept."""
+    """m-25129407 (§11's wait back with PR 3): a failed part keeps the Clip waiting for its
+    owner's choice — nothing written, nothing given back — for 72 h from the failure;
+    then the Clip fails (`ai_part_expired`) and the vistas previas of ALL its parts come
+    back — made, failed or still being made — with the Clip's creations."""
     world = _world()
     made = _create(world)
     world.repo.drafts[made.part_ids[0]] = replace(
         world.repo.drafts[made.part_ids[0]], status=FAILED, failure_reason="provider_error"
     )
+    world.store.changed[made.part_ids[0]] = world.clock[0]
     if second == "made":
         _made(world, made.part_ids[1])
     assert all(_charged(world, d) for d in (made.clip_id, *made.part_ids))
+    world.clock[0] += cap.CLIP_AI_PART_OWNER_WAIT - timedelta(minutes=1)
+    with pytest.raises(ca.ClipBlocksWait, match="part_failed"):
+        world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert world.repo.drafts[made.clip_id].status == DRAFTING
+    assert all(_charged(world, d) for d in (made.clip_id, *made.part_ids[1:]))
+    world.clock[0] += timedelta(minutes=1)
     world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
     clip = world.repo.drafts[made.clip_id]
-    assert clip.status == FAILED and clip.failure_reason == cap.AI_PART_FAILED
+    assert clip.status == FAILED and clip.failure_reason == cap.AI_PART_EXPIRED
+    assert clip.failure_detail == cap.AI_PART_EXPIRED_TEXT
     assert not any(_charged(world, d) for d in (made.clip_id, *made.part_ids))
     # a part still being made stops with its Clip: no Clip will ever use it
     expected = GENERATED if second == "made" else FAILED
@@ -682,6 +718,7 @@ def test_a_give_back_that_breaks_rolls_the_failure_back_and_retries(
     world.repo.drafts[made.part_ids[0]] = replace(
         world.repo.drafts[made.part_ids[0]], status=FAILED, failure_reason="provider_error"
     )
+    world.store.changed[made.part_ids[0]] = world.clock[0] - cap.CLIP_AI_PART_OWNER_WAIT
     assert world.ledger is not None
 
     def broken(**_: Any) -> bool:
@@ -848,19 +885,31 @@ class _Rows:
 
 def test_a_chain_of_extends_after_a_failed_part_never_holds_the_clip() -> None:
     """Review of m-25129406: parts 2 and 3 «Sigue a la anterior» after a failed part 1
-    wait for it for good — the failure is read FIRST, so the Clip fails at once, never
-    «creating» forever, and every part is given back."""
+    wait for it for good — the failure is read FIRST (m-25129407: the owner's 72 h run,
+    never «creating» forever), and once they ran out every part is given back."""
     brief = _clip(
         (_own(4.0), _block(0), _block(1), _block(2)),
         (_entry(5), _entry(5, mode="extend"), _entry(5, mode="extend")),
     )
+    failed_at = datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
     rows = (
-        cap.AiPartRow(id=uuid4(), slot=1, status=FAILED),
+        cap.AiPartRow(id=uuid4(), slot=1, status=FAILED, changed_at=failed_at),
         cap.AiPartRow(id=uuid4(), slot=2, status=DRAFTING),
         cap.AiPartRow(id=uuid4(), slot=3, status=DRAFTING, revision=2),
     )
-    gate = cap.ai_parts_gate(tenant_id=TENANT_ID, clip_id=uuid4(), brief=brief, store=_Rows(*rows))
-    assert isinstance(gate, cap.AiPartsFailed) and gate.reason == cap.AI_PART_FAILED
+    gate = cap.ai_parts_gate(
+        tenant_id=TENANT_ID, clip_id=uuid4(), brief=brief, store=_Rows(*rows), now=failed_at
+    )
+    assert isinstance(gate, cap.AiPartsWait) and gate.reason == "part_failed"
+    assert gate.wait_until == failed_at + cap.CLIP_AI_PART_OWNER_WAIT
+    gate = cap.ai_parts_gate(
+        tenant_id=TENANT_ID,
+        clip_id=uuid4(),
+        brief=brief,
+        store=_Rows(*rows),
+        now=failed_at + cap.CLIP_AI_PART_OWNER_WAIT,
+    )
+    assert isinstance(gate, cap.AiPartsFailed) and gate.reason == cap.AI_PART_EXPIRED
     assert gate.parts == rows
 
 
