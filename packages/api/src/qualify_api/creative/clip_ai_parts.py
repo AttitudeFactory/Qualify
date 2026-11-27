@@ -45,6 +45,13 @@ such a Clip exist and be assembled:
   m-25142979: the pass that sees a part failed stages the owner's email («La parte con
   IA n de tu video no salió») — one per Clip and pass, never twice for the same part and
   revision (`clip_avatar_mail`, `AiPartsWait.failed`).
+- **A part added to a made Clip** (m-25142982, `clip_ai_part_actions.add_part`): the
+  Clip's new brief is the one it played plus ONE new AI block, a brief the server
+  derived (`is_added_part_brief`), so its block's child is the newest place
+  (`entry_slots`). It waits as above, but never fails for that part: once the owner's
+  time runs out — or the part is broken — it is assembled without it (the video it had),
+  and nothing of its other parts comes back (spent on the video the owner has).
+  Its failure email (m-25142979) says so: the video stays as it was.
 - **After the Clip is made** its brief plays each part as a stretch of the part's file.
   The assembly always plays a part's ACTIVE version (`refresh`): a stretch of an older
   version of one of its parts («Rehacer esta parte», another mode) is swapped for the
@@ -364,10 +371,46 @@ class PlannedPart:
     entry: VideoPartPlan
 
 
-def planned_parts(brief: ContentBrief) -> tuple[PlannedPart, ...]:
-    """The Clip's AI blocks in timeline order with their child's place. Pure."""
+def is_added_part_brief(brief: ContentBrief) -> bool:
+    """m-25142982: a MADE Clip's brief with an AI block added by its owner
+    (`clip_ai_part_actions.add_part`) — AI blocks in a brief the server derived
+    (`derived_from_brief_id`, which «Crear» always clears). Pure."""
     media = brief.media
-    slots = ai_part_slots(media.segments)
+    return (
+        has_ai_part_blocks(brief)
+        and media.derived_from_brief_id is not None
+        # review of m-25142982: never a Clip of another path the server derived
+        and not media.clip_avatar_plan
+        and not media.clip_avatar_block
+        and not media.character_scenes
+    )
+
+
+def entry_slots(brief: ContentBrief, rows: Sequence[AiPartRow] = ()) -> dict[int, int]:
+    """Each AI block's child place (`part_index`), `{entry_at: slot}`. A «Crear» brief:
+    by the order of its blocks on the timeline (`ai_part_slots`). m-25142982: a made Clip
+    with a part added (`is_added_part_brief`) — its parts made before are stretches of
+    their files, so its AI blocks are the NEWEST children: the highest places among
+    `rows` (every AI part of the Clip, removed ones too), in timeline order. An added
+    part always takes the place after every child the Clip has, and nothing else is
+    added while the Clip waits for it. Pure."""
+    slots = ai_part_slots(brief.media.segments)
+    if not slots or not is_added_part_brief(brief) or not rows:
+        return slots
+    newest = sorted(row.slot for row in rows)[-len(slots) :]
+    if len(newest) < len(slots):
+        return slots  # broken: `ai_parts_gate` finds no row for a place and fails it
+    return {entry_at: newest[order - 1] for entry_at, order in slots.items()}
+
+
+def planned_parts(
+    brief: ContentBrief, slots: Mapping[int, int] | None = None
+) -> tuple[PlannedPart, ...]:
+    """The Clip's AI blocks in timeline order with their child's place (`slots`, default
+    the «Crear» order `ai_part_slots`; m-25142982: `entry_slots`). Pure."""
+    media = brief.media
+    if slots is None:
+        slots = ai_part_slots(media.segments)
     found: list[PlannedPart] = []
     for at, segment in enumerate(media.segments):
         entry_at = segment.ai_part_at
@@ -764,25 +807,36 @@ def ai_parts_gate(
     a part is being made; else be assembled from the videos of the parts kept (a removed
     part's block is dropped). A failure is checked BEFORE «creating»: a «Sigue a la
     anterior» after a failed part waits for it, and the owner's clock must run anyway.
-    A made Clip (`plays_ai_parts`): `refresh_gate`. Reads the parts once (and each made
-    part's video); writes nothing."""
+    A made Clip (`plays_ai_parts`): `refresh_gate`. m-25142982: a made Clip waiting for a
+    part its owner added (`is_added_part_brief`) leaves that part out instead of failing.
+    Reads the parts once (and each made part's video); writes nothing."""
     if not has_ai_part_blocks(brief):
         return refresh_gate(tenant_id=tenant_id, clip_id=clip_id, brief=brief, store=store)
     moment = now or datetime.now(UTC)
-    planned = planned_parts(brief)
     found = store.parts_of(tenant_id=tenant_id, clip_id=clip_id)
+    planned = planned_parts(brief, entry_slots(brief, found))
+    # m-25142982: a made Clip waiting for a part its owner added never fails for it — the
+    # video it had is kept: that part is left out (its block dropped) once the owner's
+    # time runs out, or when it is broken; the vistas previas of its other parts were
+    # spent on the video the owner already has, so none comes back
+    added = is_added_part_brief(brief)
     rows = {row.slot: row for row in found}
     states = [(p, rows.get(p.slot), part_state(rows.get(p.slot))) for p in planned]
     if any(row is None for _, row, _ in states):
         logger.error("clip %s: an AI part was never created", clip_id)
-        return AiPartsFailed(found)
-    live = [(p, row, state) for p, row, state in states if state != "removed"]
+        if not added:
+            return AiPartsFailed(found)
+    live = [(p, row, state) for p, row, state in states if state != "removed" and row]
     failed = [row for _, row, state in live if state == "failed" and row is not None]
     if failed:
         deadline = owner_deadline(failed)
         if deadline is not None and moment >= deadline:
-            return AiPartsFailed(found, expired=True)
-        return AiPartsWait("part_failed", wait_until=deadline, failed=tuple(failed))
+            if not added:
+                return AiPartsFailed(found, expired=True)
+            logger.info("clip %s: the owner's time ran out; assembled without it", clip_id)
+            live = [(p, row, state) for p, row, state in live if state != "failed"]
+        else:
+            return AiPartsWait("part_failed", wait_until=deadline, failed=tuple(failed))
     if any(state == "creating" for _, _, state in live):
         return AiPartsWait("creating")
     videos: dict[int, AiPartVideo] = {}
@@ -792,6 +846,8 @@ def ai_parts_gate(
         if video is None:
             # made but without its video (purged, a broken row): never assembled without it
             logger.error("clip %s: AI part %s is made but has no video", clip_id, row.id)
+            if added:
+                continue
             return AiPartsFailed(found)
         videos[part.entry_at] = video
     resolved = resolve(brief, videos)
@@ -1083,8 +1139,10 @@ __all__ = [
     "Resolved",
     "ai_parts_gate",
     "child_brief",
+    "entry_slots",
     "entry_in_mode",
     "has_ai_part_blocks",
+    "is_added_part_brief",
     "part_stretch",
     "part_references",
     "planned_parts",
