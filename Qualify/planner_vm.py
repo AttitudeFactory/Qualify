@@ -1243,6 +1243,8 @@ class PostOptionVM:
     #: HIS-1 (m-25130281): the story-only ad wizard will have a source for this historia
     #: (`promotion_unpublished_provider.story_ad_ready`) — only then the card offers it.
     story_ad_ready: bool = False
+    #: N3 (m-25142902): this historia already has a story ad (prepared or created).
+    story_ad_exists: bool = False
     #: The gallery card's media line: `media_label`, minus «Historia» on a historia —
     #: the card already says it in its label («Imagen · 9:16»). Other screens keep
     #: `media_label`, which names the format.

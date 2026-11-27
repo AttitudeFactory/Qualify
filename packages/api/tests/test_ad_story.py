@@ -25,6 +25,7 @@ from qualify_api.ads.unpublished import (
     ImageAdForm,
     ImageSelection,
     ImageSource,
+    StoryAdExists,
     UnpublishedUnavailable,
     VideoSelection,
     creative_payload,
@@ -115,6 +116,35 @@ async def test_an_unreadable_story_image_is_refused_before_any_meta_call(story):
     with pytest.raises(UnpublishedUnavailable):
         await prepare(story)
     assert client.upload_calls == 0 and not client.calls and not obj.recipes.rows
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_story_ad_is_refused_before_any_meta_call(story, monkeypatch):
+    """N3 (m-25142902): the recipe store refuses a second story ad of the piece; nothing
+    reaches Meta. What the owner already knows of (`seen_story_ads`) reaches the store."""
+    obj, selected, actor, client, _ = story
+    existing, seen = uuid4(), []
+
+    def refuse(source, chosen_form, who, key, known=()):
+        seen.append(known)
+        raise StoryAdExists(existing, None)
+
+    monkeypatch.setattr(obj.recipes, "approve", refuse)
+    with pytest.raises(StoryAdExists) as refused:
+        await obj.prepare(
+            tenant_id=selected.tenant_id,
+            draft_id=selected.draft_id,
+            ad_account_id=selected.account_id,
+            feed_asset_id=None,
+            vertical_asset_id=selected.vertical.asset_id,
+            form=form(),
+            actor=actor,
+            request_key=uuid4(),
+            confirm_preparation=True,
+            seen_story_ads=(existing,),
+        )
+    assert refused.value.recipe_id == existing and refused.value.reason == "story_ad_exists"
+    assert seen == [(existing,)] and client.upload_calls == 0 and not client.calls
 
 
 def test_call_now_is_never_a_story_button():
