@@ -117,8 +117,6 @@ PREVIEW_MARK = "Parte con IA {n} · se crea al tocar «Crear»"
 FREE_UNTIL_CREATE = "Las partes con IA se crean al tocar «Crear». Hasta entonces, todo es gratis."
 #: The live line after «Agregar → Parte con IA» (design 03B).
 ADDED_LINE = "Pusiste una parte con IA. Cuéntanos qué pasa en ella."
-#: Under «Fotos de tu producto» when the new part took the chosen product's photo (03B).
-PRODUCT_PHOTO_NOTE = "Pusimos la foto de tu producto elegido. Puedes cambiarla."
 #: «¿Cómo la hacemos?» without a reel: one form, shown as a fact (design 03B).
 NO_REEL_MODE_TEXT = (
     "Sin un reel de inspiración, la parte se hace nueva. «Igual al original» aparece "
@@ -399,20 +397,6 @@ GUIDE_LABEL = part_editor_vm.MORE_LABEL
 #: Only «Nueva» takes a guide: in any other mode, today's words of the part editor
 #: (`part_editor_vm.save_reason`).
 GUIDE_NEEDS_NEW = "Para usar tu video o audio, elige hacer esta parte nueva."
-
-
-def guide_option(mode: str) -> dict[str, str]:
-    """«Más opciones → Video o audio tuyo» for an AI part in `mode`: `shown` "1" only in
-    «Nueva» (`reference`, contract §3.1); otherwise `reason` says how to get it. The
-    type refuses a guide in «Sigue a la anterior», and «Igual al original»'s one video
-    is the reel's window: the screen never writes either (`with_mode` drops it)."""
-    shown = mode == "reference"
-    return {
-        "shown": "1" if shown else "",
-        "section": MORE_OPTIONS,
-        "label": GUIDE_LABEL,
-        "reason": "" if shown else GUIDE_NEEDS_NEW,
-    }
 
 
 def with_mode(plan: Mapping[str, Any], mode: str) -> dict[str, Any]:
@@ -1214,13 +1198,33 @@ def new_uid(parts: Sequence[Mapping[str, Any]]) -> str:
     return f"p{n}"
 
 
-def plans(parts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+#: m-25142725: the per-part reference fields a brief on the reference tracks never
+#: carries (contract §3.4, `references_and_old_fields`).
+OLD_REFERENCE_FIELDS: Final[Mapping[str, Any]] = {
+    "clip_image_keys": None,
+    "clip_image_roles": [],
+    "clip_video_keys": [],
+    "clip_audio_keys": [],
+}
+
+
+def plans(parts: Sequence[Mapping[str, Any]], *, references: bool = False) -> list[dict[str, Any]]:
     """`media.ai_parts`: each part's entry, in the state's order — its description
-    trimmed (the field keeps it as typed)."""
+    trimmed (the field keeps it as typed). `references` (m-25142725): the Clip is on the
+    reference tracks, so no entry carries its own photos, videos or audios any more —
+    what each part looks at is what lies under it (`clip_references`)."""
     out = []
     for part in parts:
         plan = dict(part.get("plan") or {})
         plan["description"] = str(plan.get("description") or "").strip()
+        if references:
+            # PR B (#869): «Igual al original» keeps its reel window
+            # (`REEL_WINDOW_ENTRY_FIELD`) — the part's source, not a reference; any other
+            # mode carries none
+            field = contract_ai.REEL_WINDOW_ENTRY_FIELD
+            window = list(plan.get(field) or ()) if plan.get("mode") == "edit" else []
+            plan.update(OLD_REFERENCE_FIELDS)
+            plan[field] = window
         out.append(plan)
     return out
 
@@ -1362,7 +1366,6 @@ REMOVED_LINE = "Quitaste la parte con IA {n}."
 SECONDS_LINE = "La parte con IA {n} ahora dura {s} s."
 MODE_LINE = "Cambiaste cómo se hace la parte con IA {n}: «{mode}»."
 DESCRIPTION_LINE = "Guardamos lo que contaste de la parte con IA {n}."
-PHOTOS_LINE = "Cambiaste las fotos de la parte con IA {n}."
 #: «Video o audio tuyo» put or taken out (`guide_line`).
 GUIDE_ADDED = {
     "video": "Agregaste tu video a la parte con IA {n}.",
@@ -1488,12 +1491,6 @@ def with_owner_mode(plan: Mapping[str, Any], mode: str) -> dict[str, Any]:
     return out
 
 
-def with_photos(plan: Mapping[str, Any], keys: Sequence[str]) -> dict[str, Any]:
-    """The entry's own photos (at most the type's 9), each «Producto»."""
-    chosen = list(dict.fromkeys(str(k) for k in keys if k))[: schemas.CLIP_MAX_IMAGES]
-    return {**plan, "clip_image_keys": chosen, "clip_image_roles": ["product"] * len(chosen)}
-
-
 def with_guide(plan: Mapping[str, Any], key: str) -> tuple[dict[str, Any], str]:
     """«Video o audio tuyo»: `key` added as a guide video or audio by its type — (the
     entry, "") — or the entry unchanged and why not: not «Nueva» (`GUIDE_NEEDS_NEW`), a
@@ -1564,7 +1561,6 @@ __all__ = [
     "edit_reason",
     "extend_code",
     "extend_reason",
-    "guide_option",
     "guide_problems",
     "insert_ai_block",
     "mode_badge",

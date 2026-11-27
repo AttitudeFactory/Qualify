@@ -1102,7 +1102,7 @@ n» pasa a «la parte con IA n», D16):
 | 6 | ¿Se puede cambiar el video mientras se hacen los finales? | No: el video queda quieto. | «Mientras se prepara, tu video no se puede cambiar.», con `progress_panel` (§5.4) y la lista de partes (D19). |
 | 7 | ¿«Probar esta parte» o «Probar este bloque»? | «Probar esta parte». | El botón del panel, con su línea de costo y sin diálogo (D11). |
 | 8 | Insignia del modo | Corta en la pista, completa en el panel. | `.q-tl__mode` en la pista y `ui.ai_mode_tag` en el panel. |
-| 9 | «Video o audio tuyo» de la hoja de la parte | En «Más opciones» del panel. | **Confirmado con el servidor (2026-11-26):** va en «Más opciones» del panel y **solo aparece en «Nueva»** (`reference`). El contrato lo acepta solo en ese modo, con un video mp4/mov o un audio mp3/wav del negocio. En «Igual al original» y «Sigue a la anterior» no se dibuja. |
+| 9 | «Video o audio tuyo» de la hoja de la parte | En «Más opciones» del panel. | **Confirmado con el servidor (2026-11-26):** va en «Más opciones» del panel y **solo aparece en «Nueva»** (`reference`). El contrato lo acepta solo en ese modo, con un video mp4/mov o un audio mp3/wav del negocio. En «Igual al original» y «Sigue a la anterior» no se dibuja. **Reemplazado el 2026-11-27 (m-25142725):** el panel ya no trae «Fotos de tu producto» ni «Video o audio tuyo»; van en las pistas de referencias (abajo). |
 
 **Lo que queda para ED-07.** El arrastre (`assets/timeline-drag.js`) todavía no trata un bloque
 `ai` como una foto o un video: hoy solo cambia de lugar los bloques `video` y `photo`, y un `ai`
@@ -1121,6 +1121,85 @@ toma el color del texto.
 Demo en `/design`: sección «Parte con IA en la línea de tiempo» (`#parte-con-ia`), estática:
 todos los estados, los anchos de 3, 2 y 1 s, un video y una foto propios para comparar, la
 insignia completa del panel y la marca de la vista previa.
+
+#### Pistas de referencias (m-25142725, firmado por Deivid el 2026-11-27)
+
+> Mockups: `docs/mockups/referencias/` (copia fiel de los firmados; se abren con doble clic) —
+> `docs/mockups/referencias/index.html`, las pantallas 01 a 07
+> (`docs/mockups/referencias/01-pistas.html` … `docs/mockups/referencias/07-usar-tambien.html`)
+> y `docs/mockups/referencias/notas.md`. Contrato:
+> `docs/contrato-editor-unico.md` §3.4. Código: `Qualify/clip_refs_vm.py` (puro),
+> `ui.timeline` (`refs=`, `_ref_group`), las clases «m-25142725: the reference tracks» de
+> `assets/qualify-creative.css` y `timeline-drag-core.js` (`rowKind`). Detrás de
+> `QUALIFY_CLIP_AI_PARTS`, leído como var del estado (`clip_ai_on`): apagado, nada cambia.
+
+**Para qué.** Lo que la IA **mira** para hacer cada parte con IA (fotos, videos y audios) ya no
+vive en el panel de la parte («Fotos de tu producto» y «Video o audio tuyo» se fueron): va en
+pistas propias, debajo de las partes. Cada referencia aplica a las partes con IA que tiene
+**encima** (si se solapan más de 0,05 s, contrato). No es un componente nuevo: son filas de
+`.q-tl__lane` con bloques `.q-tl__block` que se mueven y se acortan como un texto o un efecto.
+
+**Orden** (decisión 1): «Fotos y videos» → línea fina «✦ Para la IA · no sale en tu video»
+(20 px, borde `--q-ai-edge`) → «Fotos de referencia» → «Videos de referencia» → «Audios de
+referencia» → «Textos» → «Efectos». Esto amplía las «tres pistas» de §5.10: las de referencias
+existen solo mientras el video tiene partes con IA; sin ninguna, el grupo no se dibuja (las
+referencias se guardan).
+
+**Anatomía.**
+
+- **Columna por parte con IA** (`.q-tl__ref-col`, decorativa): fondo `--q-ai-fill` sobre el
+  panel y borde `--q-ai-edge`, a lo ancho de las pistas de referencias. Fuera de las columnas,
+  las pistas van **rayadas** (`.q-tl__lane--ref`): ahí no se usa nada.
+- **Bloque de referencia** (`data-tl-block="refphoto" | "refvideo" | "refaudio"`): borde
+  `--q-ai-edge`, su miniatura (foto o cuadro del video) o el ícono de su tipo (`image`, `film`,
+  `audio-lines`), su nombre («Foto de referencia n», con su propia cuenta) y, si aplica, una
+  etiqueta (`.q-tl__ref-tag`): «De tu producto», «No se usa» o «No se usa aquí». Sin ninguna
+  parte que lo use, borde punteado (`data-ref-off="1"`). Nunca solo el color.
+- **Filas:** varias referencias del mismo tipo que se enciman se apilan solas en filas
+  («Fotos de referencia 1, 2…»); no hay «+ Pista». Arrastrada hacia arriba o abajo, una
+  referencia cambia de fila **dentro de su tipo** (nunca abre una fila nueva: si cae encima de
+  otra, la pantalla la baja a la primera fila libre).
+- **Pistas vacías:** los tipos sin nada se pliegan en **una** fila de 44 px, sin rayado y con
+  borde punteado, «Sin videos ni audios de referencia · Agregar» («Sin referencias todavía ·
+  Agregar» si faltan los tres), en el celular y en escritorio. El texto y «Agregar» van en un
+  solo `span` fijo a la izquierda; «Agregar» abre la pestaña en el primer tipo que nombra.
+- **Producto** (decisión 2): al elegir el producto, sus fotos entran como **un solo bloque a
+  todo lo largo**, «Combo Vecino · 2 fotos» con la etiqueta «De tu producto». Cada foto cuenta
+  para el tope y se quita una por una en su panel («Fotos de tu producto»).
+
+**Tope** (decisión 4): el máximo sale del modelo activo (`ai_parts.reference_caps()`; hoy,
+Seedance, 9 fotos, 3 videos y 3 audios por parte): la pantalla nunca lo escribe fijo. Al
+pasarse: cápsula ámbar en la esquina de arriba de la columna («⚠ 10 fotos · máx. 9»,
+`.q-tl__ref-cap`, nunca sobre la línea «✦ Para la IA…»), la columna
+en ámbar (`data-tone="warn"`), el bloque con borde ámbar, la tarjeta bajo la línea («La parte
+con IA 1 tiene 10 fotos de referencia y la IA usa hasta 9. Quita una o muévela a otra parte.»),
+el texto del contrato en el panel de la parte y «Siguiente» apagado con ese motivo.
+
+**Panel de la referencia:** «Se usa en la parte con IA 1.» / «Se usa en las partes con IA 1 y
+2.» (decisión 7) o el aviso del contrato, qué es («La IA la mira…; no sale en tu video»),
+«Empieza · Termina», cómo cambiarlo (arrastrando su bloque, con imán a los bordes de cada
+parte con IA) y «Usar también en el video» (no en un audio). «Quitar» va en la barra.
+
+**Panel de la parte con IA:** «Lo que la IA mira aquí», de solo lectura, con miniaturas y
+«Agregar una referencia»; un video o audio que la parte no usa en su modo va tachado con el
+aviso `reference_mode_ignored`.
+
+**Copias** (decisiones 5 y 6, gratis, independientes): «Usar también como referencia» (en el
+panel de una foto o un video propio) la copia **justo debajo**; «Usar también en el video» la
+pone en «Fotos y videos» en la unión más cercana y corre lo que viene después (cuenta para los 8
+bloques y los 60 s).
+
+**«Agregar».** La opción del «+» («Mostrar a la IA», elegida por Deivid el 2026-11-27: la
+píldora toma 16 caracteres) se ve apagada sin partes con IA, con el motivo encima del «+»:
+«Primero agrega una parte con IA: las referencias son para ella.». La pestaña tiene «Foto ·
+Video · Audio» y, una debajo de la otra, «De tus productos» (miniaturas) y «De tu teléfono».
+
+**Accesibilidad.** El grupo se llama «Referencias para la IA (no salen en tu video)»; cada fila,
+por su nombre; cada bloque lleva su nombre completo («Foto de referencia 1, de 0:02 a 0:07. Se
+usa en la parte con IA 1.»; el del producto, «Combo Vecino, 2 fotos de tu producto, de 0:00 a
+0:30. …»; uno que se pasa del tope suma «Esta parte tiene más fotos de las que usa la IA.») y
+su ayuda (←/→ la mueve medio segundo, ↑/↓ cambia de fila), leída una vez desde un `span` oculto.
+Las columnas y la línea fina son `aria-hidden`.
 
 ---
 

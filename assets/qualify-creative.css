@@ -1500,6 +1500,131 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   pointer-events: none;
 }
 .q-edit-effect-choice.rt-Button { justify-content: flex-start; height: auto; white-space: normal; }
+/* m-25142725: the reference tracks, right under «Fotos y videos» (Deivid 2026-11-27,
+   decision 1; docs/design-system.md §5.10.1, mockups docs/mockups/referencias/). A thin
+   line «✦ Para la IA · no sale en tu video» (20 px), then the rows of «Fotos / Videos /
+   Audios de referencia» that hold something and ONE folded row for the kinds that hold
+   nothing (44 px). Under each AI part a faint iris column (`--q-ai-*`, the role «hecho
+   con IA»); outside them the tracks are striped — nothing there is used. Over its
+   model's cap the column turns amber with its capsule «⚠ 10 fotos · máx. 9». No new
+   token: iris and amber are the kit's. */
+.q-tl__refs { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.q-tl__ref-sep {
+  position: relative;
+  height: 20px;
+  border-top: 1px solid var(--q-ai-edge);
+  font-size: var(--font-size-1);
+  line-height: 18px;
+  color: var(--q-ai-ink, var(--iris-11));
+}
+.q-tl__ref-sep-text { position: sticky; left: 0; display: inline-block; padding-inline: 4px; white-space: nowrap; }
+.q-tl__lane--ref {
+  background: repeating-linear-gradient(135deg, var(--gray-a2) 0 6px, var(--gray-a4) 6px 8px);
+}
+.q-tl__ref-cols { position: absolute; inset: 24px 0 0 0; pointer-events: none; }
+.q-tl__ref-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  left: calc(var(--b-start) * var(--tl-px));
+  width: calc(var(--b-len) * var(--tl-px));
+  border-radius: var(--q-radius-control);
+  background: linear-gradient(var(--q-ai-fill), var(--q-ai-fill)), var(--color-panel-solid);
+  box-shadow: inset 0 0 0 1px var(--q-ai-edge);
+}
+.q-tl__ref-col[data-tone="warn"] {
+  background: linear-gradient(var(--amber-a4), var(--amber-a4)), var(--color-panel-solid);
+  box-shadow: inset 0 0 0 1px var(--amber-a8);
+}
+/* inside its column's top-right corner, never over the line «✦ Para la IA…» (a part
+   that starts at 0 s puts its column under that line's words) */
+.q-tl__ref-cap {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 3;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--amber-3);
+  color: var(--amber-11);
+  box-shadow: inset 0 0 0 1px var(--amber-a8);
+}
+.q-tl__block:is([data-tl-block="refphoto"], [data-tl-block="refvideo"], [data-tl-block="refaudio"]) {
+  border: 1px solid var(--q-ai-edge);
+  background: var(--color-panel-solid);
+  color: var(--gray-12);
+}
+.q-tl__block[data-ref-off="1"] { border-style: dashed; opacity: 0.75; }
+.q-tl__block[data-tl-warn="1"]:is([data-tl-block="refphoto"], [data-tl-block="refvideo"], [data-tl-block="refaudio"]) {
+  border-color: var(--amber-9);
+}
+.q-tl__ref-tag {
+  position: relative;
+  z-index: 1;
+  align-self: flex-start;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+  background: var(--q-ai-fill);
+  color: var(--gray-12);
+}
+/* the folded row: no stripes, a dashed border (mockup 06), over the columns */
+.q-tl__ref-fold {
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  background: var(--color-panel-solid);
+  border: 1px dashed var(--gray-a7);
+}
+.q-tl__ref-fold-in { position: sticky; left: 0; display: inline-flex; align-items: center; gap: 4px; }
+.q-tl__ref-fold-text {
+  padding-inline: 8px;
+  font-size: var(--font-size-1);
+  color: var(--gray-11);
+  white-space: nowrap;
+}
+.q-tl__ref-fold-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding-inline: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-11);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.q-tl__ref-fold-add:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+.q-tl__names-refs { display: flex; flex-direction: column; gap: 4px; }
+.q-tl__name--ref-sep { height: 20px !important; }
+.q-ref-box { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+.q-ref-off { text-decoration: line-through; color: var(--gray-11); }
+.q-ref-thumb { display: grid; place-items: center; flex: none; border-radius: var(--q-radius-control); background: var(--gray-a3); color: var(--gray-11); }
+.q-ref-picks { display: grid; gap: 0.5rem; width: 100%; grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr)); }
+.q-ref-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 6px;
+  border: 1px solid var(--gray-a6);
+  border-radius: var(--q-radius-control);
+  background: var(--color-panel-solid);
+  cursor: pointer;
+  min-width: 0;
+}
+.q-ref-pick:hover { border-color: var(--q-ai-edge); }
+.q-ref-pick:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
 
 @container q-tl (min-width: 52rem) {
   .q-tl__top { justify-content: flex-end; }
@@ -1512,6 +1637,7 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-tl__canvas { width: auto; padding-inline: 0; }
   .q-tl__tick { left: calc(var(--b-start) / var(--tl-total) * 100%); }
   .q-tl__item { left: calc(var(--b-start) / var(--tl-total) * 100%); width: calc(var(--b-len) / var(--tl-total) * 100%); }
+  .q-tl__ref-col { left: calc(var(--b-start) / var(--tl-total) * 100%); width: calc(var(--b-len) / var(--tl-total) * 100%); }
   .q-tl__scrub { pointer-events: auto; }
   .q-tl__head--fixed { display: none; }
   .q-tl__head--move { display: block; }

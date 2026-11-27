@@ -446,10 +446,11 @@
     var root = rootOf(el);
     if (!root) return;
     var arrow = e.key === "ArrowLeft" || e.key === "ArrowRight";
-    // ED-04: ↑/↓ on an effect block moves it to the row above or below
+    // ED-04: ↑/↓ on an effect block moves it to the row above or below; m-25142725: a
+    // reference's too, inside its own kind
     var vertical =
       (e.key === "ArrowUp" || e.key === "ArrowDown") &&
-      el.getAttribute("data-tl-block") === "effect";
+      /^(effect|refphoto|refvideo|refaudio)$/.test(el.getAttribute("data-tl-block") || "");
     if (!arrow && !vertical && e.key !== "Escape") return;
     var id = el.getAttribute("data-tl-id");
     if (el.hasAttribute("data-tl-handle")) {

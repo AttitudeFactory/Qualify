@@ -1,0 +1,80 @@
+/* Pistas de referencias (m-25142725). Se suma a editor-unico.css (copia de los mockups firmados
+   del editor único). Ningún color nuevo: gris slate, acento teal, el rol iris «hecho con IA»
+   (§5.10.1) y el ámbar de los avisos. Lo NUEVO para firmar va marcado «NUEVO». */
+
+/* NUEVO: separador de grupo «Para la IA · no sale en tu video» */
+.q-tl__group { position: relative; height: 22px; display: flex; align-items: center; font-size: 11.5px; font-weight: 650; color: var(--iris-11); letter-spacing: .02em; }
+.q-tl__group::after { content: ""; flex: 1; height: 1px; background: var(--iris-a5); margin-left: 6px; }
+.q-tl__group > span { position: sticky; left: 8px; display: inline-flex; gap: 6px; align-items: center; background: var(--color-panel-solid); padding: 0 6px 0 2px; border-radius: 6px; }
+.q-tl__group svg.i { width: 12px; height: 12px; }
+
+/* NUEVO: fila de una pista de referencias (44 px, como Textos y Efectos); rayada = «aquí no se usa» */
+.q-tl__lane--ref { background: repeating-linear-gradient(135deg, var(--gray-a2) 0 6px, transparent 6px 12px); }
+/* the columns of the AI parts above: where a reference is used */
+.q-tl__zone { position: absolute; top: 0; bottom: 0; left: calc(var(--b-start) * var(--tl-px)); width: calc(var(--b-len) * var(--tl-px));
+  background: var(--iris-a3); box-shadow: inset 1px 0 0 var(--iris-a6), inset -1px 0 0 var(--iris-a6); z-index: 0; pointer-events: none; border-radius: 4px; }
+.q-tl__zone[data-over="1"] { background: var(--amber-a3); box-shadow: inset 1px 0 0 var(--amber-a6), inset -1px 0 0 var(--amber-a6); }
+.q-tl__zone[data-off="1"] { background: transparent; box-shadow: inset 1px 0 0 var(--gray-a6), inset -1px 0 0 var(--gray-a6); }
+
+/* NUEVO: el bloque de una referencia */
+.q-tl__block[data-tl-block="ref"] { border: 1px solid var(--iris-a7); background: rgba(24,25,27,.9); color: var(--gray-12); padding-left: 4px; gap: 6px; }
+.q-tl__refpic { width: 34px; height: 34px; border-radius: 8px; flex: none; position: relative; display: grid; place-items: center; box-shadow: inset 0 0 0 1px var(--q-control-edge); color: #fff; }
+.q-tl__refpic svg.i { width: 14px; height: 14px; filter: drop-shadow(0 1px 1px rgba(0,0,0,.8)); }
+.q-tl__refpic--audio { background: var(--gray-a5); }
+.q-tl__reftxt { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.q-tl__refword { font-size: 10.5px; font-weight: 650; color: var(--gray-11); display: inline-flex; gap: 3px; align-items: center; overflow: hidden; text-overflow: ellipsis; }
+.q-tl__refword svg.i { width: 11px; height: 11px; }
+.q-tl__refword[data-tone="warn"] { color: var(--amber-11); }
+.q-tl__refword[data-tone="prod"] { color: var(--gray-12); }
+.q-tl__block[data-tl-block="ref"][aria-pressed="true"] { border: 2px solid var(--accent-9); }
+.q-tl__block[data-tl-block="ref"][data-ref-state="unused"] { border-style: dashed; border-color: var(--gray-a8); opacity: .65; }
+/* the stretch of a reference under a part that does not use it (video/audio under «Igual al original» / «Sigue a la anterior») */
+.q-tl__off { position: absolute; top: 2px; bottom: 2px; z-index: 3; left: calc(var(--o-start) * var(--tl-px)); width: calc(var(--o-len) * var(--tl-px));
+  background: repeating-linear-gradient(135deg, rgba(17,17,19,.78) 0 5px, rgba(17,17,19,.55) 5px 10px); border-radius: 8px; pointer-events: none;
+  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 3px; }
+.q-tl__off > span { font-size: 10.5px; font-weight: 650; color: var(--amber-11); background: rgba(0,0,0,.8); border-radius: 999px; padding: 0 6px; display: inline-flex; gap: 3px; align-items: center; white-space: nowrap; }
+.q-tl__off svg.i { width: 11px; height: 11px; }
+@container q-tl-block (max-width: 96px) { .q-tl__reftxt { display: none; } }
+
+/* NUEVO: aviso de tope sobre la parte con IA (misma cápsula que el estado de §5.10.1) */
+.q-tl__block[data-tl-block="ai"][data-ref-over="1"] { border: 2px solid var(--amber-9); }
+
+/* NUEVO: en el celular las pistas de referencias vacías se pliegan en una fila de 44 px */
+.q-tl__folded { position: relative; height: 44px; border-radius: var(--q-radius-control); border: 1px dashed var(--gray-a6); background: transparent; color: var(--gray-11);
+  font: inherit; font-size: 12px; font-weight: 600; display: flex; align-items: center; width: 100%; padding: 0; cursor: pointer; text-align: left; }
+.q-tl__folded > span { position: sticky; left: 8px; display: inline-flex; gap: 6px; align-items: center; padding: 0 10px; white-space: nowrap; }
+
+/* drag: balloon with the time and the lifted block, as .q-tl does today */
+.q-tl__balloon { position: absolute; top: -24px; left: 0; background: var(--q-overlay-fill); color: var(--gray-12); font-size: 11.5px; font-weight: 650;
+  padding: 2px 8px; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--q-card-edge); white-space: nowrap; z-index: 6; }
+.q-tl__item--lifted { z-index: 6 !important; }
+.q-tl__item--lifted .q-tl__block { border: 2px solid var(--accent-9) !important; box-shadow: 0 10px 24px rgba(0,0,0,.55); transform: translateY(-3px); }
+.q-tl__ghost { position: absolute; top: 0; bottom: 0; left: calc(var(--b-start) * var(--tl-px)); width: calc(var(--b-len) * var(--tl-px)); border: 2px dashed var(--accent-a7); border-radius: var(--q-radius-control); pointer-events: none; z-index: 1; }
+
+@container q-tl (min-width: 52rem) {
+  .q-tl__frame { grid-template-columns: 10rem minmax(0, 1fr); }
+  .q-tl__name--group { height: 22px; }
+  .q-tl__name--ref { color: var(--iris-11); }
+  .q-tl__zone, .q-tl__ghost { left: calc(var(--b-start) / var(--tl-total) * 100%); width: calc(var(--b-len) / var(--tl-total) * 100%); }
+  .q-tl__off { left: calc(var(--o-start) / var(--tl-total) * 100%); width: calc(var(--o-len) / var(--tl-total) * 100%); }
+  .q-tl__group > span { position: static; }
+  .q-tl__folded > span { position: static; }
+}
+
+/* «Lo que la IA mira aquí» (panel de la parte con IA) */
+.uses { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 14px; background: var(--iris-a3); box-shadow: inset 0 0 0 1px var(--iris-a5); }
+.uses__k { font-size: 11.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--iris-11); display: flex; gap: 6px; align-items: center; }
+.uses__list { display: flex; flex-direction: column; gap: 6px; }
+.uses__item { display: grid; grid-template-columns: 40px 1fr; gap: 10px; align-items: center; font-size: 13px; }
+.uses__item .thumb { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: #fff; }
+.uses__item small { display: block; color: var(--gray-11); font-size: 12px; }
+.uses__item[data-off="1"] { opacity: .75; }
+.uses__item[data-off="1"] small { color: var(--amber-11); }
+.ref-audio { background: var(--gray-a5); }
+
+/* page helpers */
+.mk-compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin: 8px 0 24px; }
+.mk-compare .card h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; }
+.mk-compare .card p { font-size: 13px; color: var(--gray-11); margin-top: 4px; }
+.mk-pick { color: var(--grass-11); font-weight: 700; font-size: 12px; }
+.mk-drop { color: var(--gray-11); font-weight: 700; font-size: 12px; }

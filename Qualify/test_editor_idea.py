@@ -122,7 +122,7 @@ def test_the_new_words_read_literally() -> None:
     assert vm.GO_TO_VIDEO == "Ir al video"
     assert vm.PROPOSE_LABEL == "Proponerme las partes"
     assert vm.PROPOSE_NOTE == (
-        "Proponer es gratis. Las partes se ponen en tu línea de tiempo y las revisas antes "
+        "Proponer es gratis. Las partes se suman al final de tu video y las revisas antes "
         "de crear nada."
     )
     # «bloque» stays where it already is; nothing new says it (contract §3.3)

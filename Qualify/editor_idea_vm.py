@@ -247,9 +247,9 @@ def reel_line(ai: int, own: int) -> str:
 # -- «Agregar → Pedir una idea» (design 03C, D22; Deivid's answer to P2: A) ----------------
 
 PROPOSE_LABEL = parts_start_vm.PROPOSE_LABEL
-#: Under the button (design 03C).
+#: Under the button (design 03C; Deivid 2026-11-27, m-25142725: where they go, in his words).
 PROPOSE_NOTE = (
-    "Proponer es gratis. Las partes se ponen en tu línea de tiempo y las revisas antes de "
+    "Proponer es gratis. Las partes se suman al final de tu video y las revisas antes de "
     "crear nada."
 )
 #: Why «Proponerme las partes» waits: the context is what Claude reads.
