@@ -462,11 +462,17 @@ def test_a_second_story_ad_of_a_piece_is_refused_until_the_owner_chooses_it(unpu
         # A reload: refused; once the owner chose to make another, it goes through.
         with pytest.raises(StoryAdExists):
             repo.approve(story, form, actor, uuid4())
-        second = repo.approve(story, form, actor, uuid4(), first["id"])
+        second_key = uuid4()
+        second = repo.approve(story, form, actor, second_key, (first["id"],))
         # The warning then names the newest; having seen an older one is not enough.
         with pytest.raises(StoryAdExists) as newer:
-            repo.approve(story, form, actor, uuid4(), first["id"])
+            repo.approve(story, form, actor, uuid4(), (first["id"],))
         assert newer.value.recipe_id == second["id"]
+        # The session's own earlier request key (even one whose preparation then failed
+        # at Meta) counts as seen; an unknown id acknowledges nothing.
+        third = repo.approve(story, form, actor, uuid4(), (uuid4(), second_key))
+        with pytest.raises(StoryAdExists):
+            repo.approve(story, form, actor, uuid4(), (uuid4(),))
         # Its paused campaign: «Anuncios» shows it as a story ad with its 9:16 image.
         promotion = PostgresPromotionRepository().create_or_get(
             compose_brand_policy(
@@ -496,7 +502,7 @@ def test_a_second_story_ad_of_a_piece_is_refused_until_the_owner_chooses_it(unpu
         assert listed.id == promotion.id and listed.content_draft_id == source.draft_id
         assert listed.story_image_key == source.vertical.object_key
     assert story_ads(source.tenant_id, [source.draft_id, uuid4()]) == {
-        source.draft_id: (second["id"], promotion.id)
+        source.draft_id: (third["id"], None)
     }
     # Another business sees none of it, and its own story ad is its own.
     other, other_form, other_login, other_actor = make_unpublished_world(make_audience_world())

@@ -121,12 +121,12 @@ async def test_an_unreadable_story_image_is_refused_before_any_meta_call(story):
 @pytest.mark.asyncio
 async def test_a_duplicate_story_ad_is_refused_before_any_meta_call(story, monkeypatch):
     """N3 (m-25142902): the recipe store refuses a second story ad of the piece; nothing
-    reaches Meta. The owner's choice (`duplicate_of`) reaches the store."""
+    reaches Meta. What the owner already knows of (`seen_story_ads`) reaches the store."""
     obj, selected, actor, client, _ = story
     existing, seen = uuid4(), []
 
-    def refuse(source, chosen_form, who, key, duplicate_of=None):
-        seen.append(duplicate_of)
+    def refuse(source, chosen_form, who, key, known=()):
+        seen.append(known)
         raise StoryAdExists(existing, None)
 
     monkeypatch.setattr(obj.recipes, "approve", refuse)
@@ -141,10 +141,10 @@ async def test_a_duplicate_story_ad_is_refused_before_any_meta_call(story, monke
             actor=actor,
             request_key=uuid4(),
             confirm_preparation=True,
-            duplicate_of=existing,
+            seen_story_ads=(existing,),
         )
     assert refused.value.recipe_id == existing and refused.value.reason == "story_ad_exists"
-    assert seen == [existing] and client.upload_calls == 0 and not client.calls
+    assert seen == [(existing,)] and client.upload_calls == 0 and not client.calls
 
 
 def test_call_now_is_never_a_story_button():

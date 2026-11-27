@@ -113,7 +113,6 @@ def _ad(row: rx.Var[AdResultVM]) -> rx.Component:
             spacing="2",
             width="100%",
         ),
-        interactive=True,
         width="100%",
     )
 

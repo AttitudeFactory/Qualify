@@ -44,8 +44,8 @@ class UnpublishedUnavailable(ValueError):
 
 STORY_AD_EXISTS = "story_ad_exists"  # N3 (m-25142902): warn, then let the owner choose
 STORY_DUPLICATE = (
-    "Esta historia ya tiene un anuncio. Revisa el que ya tienes o, si quieres otro, "
-    "créalo aparte: cada anuncio se cobra por separado."
+    "Esta historia ya tiene un anuncio. Puedes ver el que ya tienes o crear otro. "
+    "Cada anuncio se cobra por separado."
 )
 
 

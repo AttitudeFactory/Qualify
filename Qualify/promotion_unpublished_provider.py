@@ -344,12 +344,12 @@ def prepare_unpublished(
     source: PromotionSourceVM,
     timezone_name: str,
     request_key: str,
-    duplicate_of: str = "",
+    seen: tuple[str, ...] = (),
 ) -> PromotionReviewVM:
     """Creates the ad paused and returns its two previews (one, 9:16, for a story ad).
     While Meta processes a video this raises; the caller repeats it with the SAME
-    `request_key` (never a re-upload). `duplicate_of`: the story ad of this piece the
-    owner chose to repeat (N3); without it a second one raises `StoryAdExists`."""
+    `request_key` (never a re-upload). `seen` (N3): the story ads of this piece the owner
+    chose to repeat and this session's own request keys; a newer one raises `StoryAdExists`."""
     from .promotion_provider import safe_preview_url  # noqa: PLC0415
 
     if form.media_kind == "carousel":
@@ -368,7 +368,7 @@ def prepare_unpublished(
             actor=actor,
             request_key=UUID(request_key),
             confirm_preparation=True,
-            duplicate_of=_id(duplicate_of) if form.story else None,
+            seen_story_ads=tuple(UUID(value) for value in seen) if form.story else (),
         )
     )
     vertical = safe_preview_url(preview.vertical_html)

@@ -34,6 +34,7 @@ from .promotion_vm import (
     EMPTY_SOURCES,
     GREETING_QUESTION_SLOTS,
     LEAD_CTA_LABELS,
+    STORY_CHOOSE_FIRST,
     STORY_PAID_NOTE,
     STORY_PLACEMENT,
     STORY_PREVIEW_BUTTON,
@@ -1162,7 +1163,7 @@ def promotion_index() -> rx.Component:
                     | (S.story_existing != "")
                 ),
                 primary_loading=S.busy,
-                reason=S.execution_reason,
+                reason=rx.cond(S.story_existing != "", STORY_CHOOSE_FIRST, S.execution_reason),
             ),
         ),
         step_foot(

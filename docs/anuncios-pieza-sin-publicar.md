@@ -219,8 +219,10 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
   (video en proceso) nunca es un duplicado. Dos teléfonos a la vez: pasa uno solo (test `-m db`).
 - **La elección del dueño:** el asistente avisa al abrirse y cuando el servidor lo rechaza:
   «Ver el anuncio que ya tienes» (`/promotions/<id>`, o «Anuncios» si aún no tiene campaña) o
-  «Crear otro anuncio», que manda `duplicate_of` = la aprobación avisada. La propia aprobación de
-  la sesión cuenta como vista: cambiar el presupuesto y volver a preparar no avisa.
+  «Crear otro anuncio», que suma la aprobación avisada a `seen_story_ads`. Las claves de pedido
+  de la propia sesión también van ahí: su intento, aunque haya fallado (video en proceso, Meta
+  lo rechazó), nunca es un «duplicado», y cambiar el presupuesto y volver a preparar no avisa.
+  Si la aprobación avisada aún no tiene campaña, el botón dice «Ver tus anuncios».
 - **En «Anuncios»:** el anuncio de historia lleva la etiqueta «Anuncio en historias», la imagen
   9:16 (o la portada del video) mientras la pieza conserve sus archivos, y «Ver la historia».
   La tarjeta de la historia dice «Ya tiene un anuncio en historias».

@@ -36,6 +36,7 @@ from .promotion_vm import (
     STORY_SAFE_BOTTOM,
     STORY_SAFE_HINT,
     STORY_SAFE_TOP,
+    STORY_SEE_ALL,
     STORY_SEE_EXISTING,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
@@ -336,7 +337,16 @@ def story_duplicate() -> rx.Component:
             callout(STORY_DUPLICATE, "warn"),
             rx.flex(
                 rx.link(
-                    rx.button(STORY_SEE_EXISTING, size="3", min_height="44px", width="100%"),
+                    rx.button(
+                        rx.cond(
+                            S.story_existing_href == "/promotions",
+                            STORY_SEE_ALL,
+                            STORY_SEE_EXISTING,
+                        ),
+                        size="3",
+                        min_height="44px",
+                        width="100%",
+                    ),
                     href=S.story_existing_href,
                     width=["100%", "auto"],
                 ),

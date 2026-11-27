@@ -36,7 +36,7 @@ def _story_context() -> ActionContext:
     context.form = replace(story_form(), source_id=context.sources[0].id)
     context.review = PromotionReviewVM()
     context.needs_help = context.video_waiting = False
-    context.story_existing, context.story_existing_href, context._duplicate_of = "", "", ""
+    context.story_existing, context.story_existing_href, context._story_seen = "", "", []
     return context
 
 
@@ -48,7 +48,7 @@ async def test_opening_a_historia_that_has_a_story_ad_warns_first(monkeypatch) -
     monkeypatch.setattr(promotion_state, "existing_story_ad", lambda *a: ("r1", "/promotions/p1"))
     _ = [event async for event in PromotionState.load.fn(context)]
     assert (context.story_existing, context.story_existing_href) == ("r1", "/promotions/p1")
-    assert context._duplicate_of == ""
+    assert context._story_seen == []
 
 
 @pytest.mark.asyncio
@@ -65,11 +65,14 @@ async def test_nothing_is_prepared_until_the_owner_chooses_another(monkeypatch) 
     await context._remote(confirm=False)
     assert calls == []  # the warning stands: no paused campaign at Meta
     PromotionState.create_another_story_ad.fn(context)
-    assert context.story_existing == "" and context._duplicate_of == "r1"
+    assert context.story_existing == "" and context._story_seen == ["r1"]
     await context._remote(confirm=False)
-    assert calls == [{"duplicate_of": "r1"}]
-    # Its own story ad is never a «duplicate» of this session's next preparation.
-    assert context._duplicate_of == "r2"
+    assert calls == [{"seen": ("r1", "one-approved-draft")}]
+    # A failed attempt, an edit (a new key), a retry: its own attempts are never warned of.
+    context.reviewed, context.review = True, PromotionReviewVM()
+    context._request_key = "after-an-edit"
+    await context._remote(confirm=False)
+    assert calls[-1] == {"seen": ("r1", "one-approved-draft", "after-an-edit")}
 
 
 @pytest.mark.asyncio

@@ -337,12 +337,12 @@ def guard_source(source: ImageSource | CarouselSource) -> None:
         raise UnpublishedUnavailable(CHANGED)
 
 
-def _refuse_duplicate_story(
-    session: Any, draft: UUID, key: UUID, duplicate_of: UUID | None
-) -> None:
+def _refuse_duplicate_story(session: Any, draft: UUID, key: UUID, seen: tuple[UUID, ...]) -> None:
     """Race-safe (two phones at once): the piece's lock is held until this transaction
     commits its recipe, so the second caller sees the first one's. A retry of the same
-    request key (a video Meta is still processing) is never a duplicate."""
+    request key (a video Meta is still processing) is never a duplicate. `seen`: recipe ids
+    the owner was warned about and request keys of their own session; only a story recipe
+    newer than all of them is a duplicate."""
     session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:lock, 0))"),
         {"lock": f"ad-story:{draft}"},
@@ -350,12 +350,13 @@ def _refuse_duplicate_story(
     newer = (
         session.execute(
             text("""SELECT id,promotion_id FROM ad_unpublished_sources
-          WHERE draft_id=:draft AND source->>'pipeline'=ANY(:pipelines) AND request_key<>:key
+          WHERE draft_id=:draft AND source->>'pipeline'=ANY(:pipelines)
             AND NOT EXISTS(SELECT 1 FROM ad_unpublished_sources WHERE request_key=:key)
-            AND approved_at > COALESCE((SELECT approved_at FROM ad_unpublished_sources
-              WHERE id=:seen AND draft_id=:draft), '-infinity')
+            AND approved_at > COALESCE((SELECT max(approved_at) FROM ad_unpublished_sources
+              WHERE draft_id=:draft AND (id=ANY(CAST(:seen AS uuid[]))
+                OR request_key=ANY(CAST(:seen AS uuid[])))), '-infinity')
           ORDER BY approved_at DESC,id DESC LIMIT 1"""),
-            {"draft": draft, "pipelines": STORY_PIPELINES, "key": key, "seen": duplicate_of},
+            {"draft": draft, "pipelines": STORY_PIPELINES, "key": key, "seen": list(seen)},
         )
         .mappings()
         .first()
@@ -371,14 +372,15 @@ class UnpublishedRepository:
         form: ImageAdForm,
         actor: UUID,
         key: UUID,
-        duplicate_of: UUID | None = None,
+        seen: tuple[UUID, ...] = (),
     ) -> dict:
-        """`duplicate_of`: the story recipe the owner was warned about and chose to repeat."""
+        """`seen` (story ads only): what the owner already knows of — see
+        `_refuse_duplicate_story`."""
         guard_source(source)
         digest = recipe_hash(source, form, actor)
         with tenant_session(source.tenant_id, independent=True) as session:
             if isinstance(source, ImageSource) and source.is_story:
-                _refuse_duplicate_story(session, source.draft_id, key, duplicate_of)
+                _refuse_duplicate_story(session, source.draft_id, key, seen)
             session.execute(
                 text("""INSERT INTO ad_unpublished_sources
               (tenant_id,brand_id,connection_id,ad_account_id,draft_id,request_key,request_hash,

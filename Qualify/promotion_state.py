@@ -207,7 +207,8 @@ class PromotionState(rx.State):
     # phone): the newest one's recipe and where to see it, until the owner chooses.
     story_existing: str = ""
     story_existing_href: str = "/promotions"
-    _duplicate_of: str = ""  # the story ad the owner chose to repeat (or this session's own)
+    # Story ads the owner chose to repeat, and this session's own request keys: never warned.
+    _story_seen: list[str] = []
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -2103,7 +2104,7 @@ class PromotionState(rx.State):
             self.story_cta_open = False
             self.story_block = self.story_block_action = self.story_block_href = ""
             self.story_existing, self.story_existing_href = "", "/promotions"
-            self._duplicate_of = ""
+            self._story_seen = []
             self.back_href = week or f"/drafts/{piece}"
             self.back_label = (
                 "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
@@ -2181,7 +2182,8 @@ class PromotionState(rx.State):
         """N3: the owner read that the piece has a story ad and still wants another one."""
         if self.busy or not self.story_existing:
             return
-        self._duplicate_of, self.story_existing = self.story_existing, ""
+        self._story_seen = [*self._story_seen, self.story_existing]
+        self.story_existing = ""
         self.error = ""
 
     @rx.event(background=True)
@@ -2228,7 +2230,11 @@ class PromotionState(rx.State):
                 suggestion = None
             source = next((row for row in self.sources if row.id == form.source_id), None)
             piece, request_key = self._piece_id, self._request_key
-            duplicate_of = getattr(self, "_duplicate_of", "")
+            seen: tuple[str, ...] = ()
+            if form.story:  # its own attempt, even a failed one, is never a «duplicate»
+                known = getattr(self, "_story_seen", [])
+                self._story_seen = known if request_key in known else [*known, request_key]
+                seen = tuple(self._story_seen)
         try:
             with acting_login(UUID(context[1])):
                 if confirm and form.media_kind:
@@ -2255,7 +2261,7 @@ class PromotionState(rx.State):
                         source,
                         zone,
                         request_key,
-                        **({"duplicate_of": duplicate_of} if duplicate_of else {}),
+                        **({"seen": seen} if seen else {}),
                     )
                 else:
                     prepared = await asyncio.to_thread(
@@ -2335,8 +2341,6 @@ class PromotionState(rx.State):
                         self.confirm_charge = False
                     elif form.enhancements == self.form.enhancements:
                         self.video_waiting = False
-                        if form.story:  # this session's own story ad is never a «duplicate»
-                            self._duplicate_of = prepared.recipe_id
                         self.review = prepared
                         self.checks = prepared.checks
                         self.confirm_charge = False
