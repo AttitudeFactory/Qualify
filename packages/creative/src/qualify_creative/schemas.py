@@ -1555,6 +1555,14 @@ class PartRef(_PartSource):
     #: `clip_*_keys` are derived from them; empty on every part before the tracks.
     references: tuple[ClipReference, ...] = Field(default=(), max_length=CLIP_REFERENCES_MAX)
 
+    @model_serializer(mode="wrap")
+    def _without_empty_references(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """A part without references dumps exactly as one stored before the field."""
+        data = handler(self)
+        if isinstance(data, dict) and not self.references:
+            data.pop("references", None)
+        return data
+
     @model_validator(mode="after")
     def _extend_own_only_extends(self) -> PartRef:
         own = self.extend_own
@@ -2142,6 +2150,8 @@ class MediaInputs(BaseModel):
                 *self.clip_image_keys,
                 self.clip_first_frame_key,
                 self.clip_last_frame_key,
+                # m-25142725: a photo on a Clip's reference tracks
+                *(ref.key for ref in self.clip_references if ref.kind == "photo"),
             )
             if key
         )

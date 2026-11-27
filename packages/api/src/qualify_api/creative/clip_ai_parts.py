@@ -341,8 +341,12 @@ def virtual_brief(brief: ContentBrief, tenant_id: UUID) -> ContentBrief:
         segments.append(
             _placeholder(tenant_id, entry_at, segment, media.ai_parts[entry_at].seconds)
         )
-    return brief.model_copy(
-        update={"media": media.model_copy(update={"segments": tuple(segments), "ai_parts": ()})}
+    # m-25142725: the tracks only feed the children; the recipe checked here is the
+    # assembly's, which never reads them (`without_tracks`)
+    return without_tracks(
+        brief.model_copy(
+            update={"media": media.model_copy(update={"segments": tuple(segments), "ai_parts": ()})}
+        )
     )
 
 
@@ -402,11 +406,52 @@ def _entry_from_references(
             "clip_image_roles": tuple(
                 "product" if ref.origin == "product" else unroled for ref in photos
             ),
-            "clip_video_keys": tuple(ref.key for ref in videos),
+            # «Igual al original»: its `clip_video_keys` are the reel's window it changes
+            # (the part's source, never a reference: `REEL_WINDOW_ENTRY_FIELD`) — kept
+            "clip_video_keys": (
+                entry.clip_video_keys if entry.mode == "edit" else tuple(ref.key for ref in videos)
+            ),
             "clip_audio_keys": tuple(ref.key for ref in audios),
         }
     )
     return derived, (*photos, *videos, *audios)
+
+
+def entry_in_mode(
+    old: PartRef, entry: VideoPartPlan
+) -> tuple[VideoPartPlan, tuple[ClipReference, ...]]:
+    """m-25142725: a part of a Clip on the tracks made again in another mode
+    (`clip_ai_part_actions`, «Cambiar a…» / «Hacerla nueva»): `entry` (from `old`) with
+    the videos and audios it took at «Crear» only while it stays «Nueva» — never a
+    reference turned into the source of «Igual al original» — and the items it still
+    uses, for `PartRef.references`. Its photos stay as given. Pure."""
+    keeps_av = entry.mode == "reference"
+    videos = tuple(r for r in old.references if r.kind == "video" and keeps_av)
+    audios = tuple(r for r in old.references if r.kind == "audio" and keeps_av)
+    photos = tuple(
+        r for r in old.references if r.kind == "photo" and r.key in (entry.clip_image_keys or ())
+    )
+    window = entry.clip_video_keys if entry.mode == "edit" and old.mode == "edit" else ()
+    derived = VideoPartPlan.model_validate(
+        {
+            **entry.model_dump(),
+            "clip_video_keys": window or tuple(r.key for r in videos),
+            "clip_audio_keys": tuple(r.key for r in audios),
+        }
+    )
+    return derived, (*photos, *videos, *audios)
+
+
+def without_tracks(brief: ContentBrief) -> ContentBrief:
+    """`brief` without the Clip's reference tracks (`clip_references`, and version 0):
+    they only feed «Crear»; a child, a recipe checked after it, and the assembled Clip
+    carry what they took instead. Pure; `brief` itself when it has none."""
+    media = brief.media
+    if not media.clip_references and not media.references_version:
+        return brief
+    return brief.model_copy(
+        update={"media": media.model_copy(update={"clip_references": (), "references_version": 0})}
+    )
 
 
 def child_brief(
@@ -442,6 +487,12 @@ def child_brief(
         # is a brief before the tracks, never one whose keys `references_and_old_fields`
         # would refuse
         cleared.update(clip_references=(), references_version=0)
+        # a Pinterest origin of a photo on the tracks goes only to the part that took it
+        tracks = {r.key for r in clip.media.clip_references if r.kind == "photo"}
+        kept = (clip.media.pinterest_image_keys - tracks) | set(planned.entry.clip_image_keys or ())
+        cleared["source_pins"] = tuple(
+            pin for pin in clip.media.source_pins if pin.image_key in kept
+        )
     parent = clip.model_copy(update={"media": clip.media.model_copy(update=cleared)})
     made = _child_brief(parent, planned.entry, planned.slot, None, extend_own=own)
     update: dict[str, Any] = {"ai_parts": ()}
@@ -591,6 +642,9 @@ def _retimed(
                 "text_layers": tuple(t.model_dump() for t in texts),
                 "effects": tuple(f.model_dump() for f in effects),
                 "ai_parts": (),
+                # m-25142725: the tracks fed the parts; the assembled Clip has none left
+                "clip_references": (),
+                "references_version": 0,
             },
         }
     )
@@ -1017,6 +1071,7 @@ __all__ = [
     "Resolved",
     "ai_parts_gate",
     "child_brief",
+    "entry_in_mode",
     "has_ai_part_blocks",
     "part_stretch",
     "part_references",
@@ -1024,4 +1079,5 @@ __all__ = [
     "refuse_ai_parts_approval",
     "resolve",
     "virtual_brief",
+    "without_tracks",
 ]
