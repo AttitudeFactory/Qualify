@@ -116,8 +116,8 @@ STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
         None,
     ),
     "video_without_cover": (
-        "Esta historia es un video sin foto de portada, y por ahora solo se pueden anunciar "
-        "historias con foto. Mientras tanto, anuncia una historia con foto.",
+        "Este video no trae una foto de portada vertical, y por ahora no podemos anunciarlo "
+        "sin ella. Mientras tanto, anuncia una historia con foto.",
         None,
     ),
     "button": (

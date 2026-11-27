@@ -88,8 +88,8 @@ VIDEO_DURATION = "Cada video del anuncio debe durar entre 1 y 60 segundos. Recó
 # HIS-2 (m-25130282): a story ad has one file and nothing else to choose; the way out is
 # the historia itself.
 STORY_LIMITS = {
-    IMAGE_TOO_LARGE: "La foto de esta historia pesa más de 8 MB. Crea la historia de nuevo "
-    "con una foto más liviana para anunciarla.",
+    IMAGE_TOO_LARGE: "La foto de esta historia, o la de su portada, pesa más de 8 MB. Crea la "
+    "historia de nuevo con una foto más liviana para anunciarla.",
     VIDEO_DURATION: "El video de esta historia debe durar entre 1 y 60 segundos. Crea la "
     "historia de nuevo con un video de esa duración para anunciarla.",
     TOO_LARGE: "El video de esta historia pesa más de 100 MB. Crea la historia de nuevo con "
