@@ -40,6 +40,7 @@ from .catalog_vm import (
     return_label_for,
     return_path_from_query,
 )
+from .competitors_panel import competitors_section
 from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
@@ -1389,7 +1390,8 @@ def _referentes_section() -> rx.Component:
                 align="center",
                 width="100%",
             ),
-            rx.cond(is_open, _referentes_body()),
+            # m-25142823: «Tus competidores» (RF-05's panel) under the board, as one line
+            rx.cond(is_open, rx.fragment(_referentes_body(), competitors_section())),
             # UX re-check 2: sent here from the reels ideas, the way back is also at the foot
             # of the section the owner just used (the one at the top is out of sight)
             rx.cond(is_open & _to_ideas(), rx.box(_return_link(), padding_top="0.25rem")),

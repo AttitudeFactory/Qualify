@@ -6274,16 +6274,17 @@ class BrandConnectState(rx.State):
             return {}, []
 
     @rx.event(background=True)
-    async def sync_labels(self) -> None:
+    async def sync_labels(self) -> Any:
         """Writes the sort to Postgres. Fired right after every decision (the zones'
         tap and drop, Deshacer) and diff-based — it stores whatever changed since the
         last write, so it cannot miss an undo or write one twice. Serialized per brand
         so two quick taps are stored in the order they were made."""
         ids = await self._referentes_ids()
         if ids is None:
-            return
+            return None
         async with _labels_lock(ids[1]):
             await self._flush_labels(ids)
+        return _competitors_reread()
 
     async def _flush_labels(self, ids: tuple[UUID, UUID, UUID | None]) -> None:
         """`sync_labels`' write: the diff since the last one. The caller holds the
@@ -6443,15 +6444,16 @@ class BrandConnectState(rx.State):
         return BrandConnectState.sync_sort
 
     @rx.event(background=True)
-    async def sync_sort(self) -> None:
+    async def sync_sort(self) -> Any:
         """`sync_labels` then `sync_order` under ONE hold of the brand's lock, in that
         order — a move changes both, and a position must never land before its label."""
         ids = await self._referentes_ids()
         if ids is None:
-            return
+            return None
         async with _labels_lock(ids[1]):
             await self._flush_labels(ids)
             await self._flush_order(ids)
+        return _competitors_reread()
 
     # -- The influence ranking on Resultados e insights (§ request 2026-09-29) --------
 
@@ -7848,6 +7850,16 @@ MISSING_HANDLE_ERROR = (
 
 def _labels_lock(brand_id: UUID) -> asyncio.Lock:
     return _LABEL_LOCKS.setdefault(brand_id, asyncio.Lock())
+
+
+def _competitors_reread() -> Any:
+    """m-25142823: after the sort is stored, «Tus competidores» (just under the board in
+    «Negocios parecidos al tuyo») reads its rows again — a «Compite contigo» added or taken
+    out shows there at once. Postgres only, free. Imported here: the reels screen's state
+    module imports a lot, and this one is imported early."""
+    from .discover_reels import DiscoverReelsState  # noqa: PLC0415
+
+    return DiscoverReelsState.load_competitors
 
 
 def _account_key(card: dict[str, str]) -> str:

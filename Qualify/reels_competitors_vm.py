@@ -40,9 +40,13 @@ PICKER_BODY = (
     "Marca hasta 6: cada lunes te traemos sus reels nuevos. Para ver ya los de otro, "
     "pulsa «Ver sus reels ahora»."
 )
+#: m-25142823 (Deivid, 2026-11-27): the panel lives in «Negocios parecidos al tuyo», one
+#: line under the board — what it does, and the button that opens it.
+SECTION_BODY = "Marca hasta 6 para que cada lunes te traigamos sus reels nuevos."
+OPENER_LABEL = "Elegir competidores"
 #: How many are ticked: «3 de 6 marcados».
 PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY) + " marcados"
-#: The bar button's accessible name: how many are read on Monday, or that a read is on.
+#: The opener's `title` (m-25142823): how many are read on Monday, or that a read is on.
 BUTTON_LABEL = "Tus competidores: {n} de " + str(rivals.MAX_WEEKLY) + " los revisamos cada lunes"
 BUTTON_LABEL_READING = "Tus competidores: estamos leyendo sus reels"
 #: A manual read ended while the drawer was closed (a toast; open, the row says it).
@@ -148,7 +152,7 @@ def ended(before: Mapping[str, str], table: Iterable[Mapping[str, str]]) -> list
 
 
 def button_label(table: Iterable[Mapping[str, str]]) -> str:
-    """The bar button's accessible name (`BUTTON_LABEL` / `BUTTON_LABEL_READING`)."""
+    """The opener's `title` (`BUTTON_LABEL` / `BUTTON_LABEL_READING`)."""
     rows_ = list(table)
     if reading(rows_):
         return BUTTON_LABEL_READING
@@ -197,6 +201,7 @@ __all__ = [
     "BUTTON_LABEL",
     "BUTTON_LABEL_READING",
     "KEEP_ONE",
+    "OPENER_LABEL",
     "PICKED_COUNT",
     "PICKER_BODY",
     "PICKER_SHORT",
@@ -204,6 +209,7 @@ __all__ = [
     "READ_FAILED",
     "READ_NOW",
     "SAVE_FAILED",
+    "SECTION_BODY",
     "STATE_TONES",
     "TOAST_DONE",
     "TOAST_FAILED",

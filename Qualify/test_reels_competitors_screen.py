@@ -306,11 +306,10 @@ async def test_another_business_never_sees_the_panel_of_this_one(
     assert world.paid == []
 
 
-def test_the_panel_is_a_drawer_no_longer_opened_from_the_bar() -> None:
-    """Deivid, 2026-11-27: the bar's «Competidores» switches the side of the reels; it no
-    longer opens «Tus competidores». The drawer and its state stay (mounted, closed), and
-    `competitors_opener` — mounted nowhere yet — is the one way to open it, for the screen
-    it goes to next. The clock that follows a read lives outside the drawer."""
+def test_the_bar_no_longer_holds_the_panel() -> None:
+    """Deivid, 2026-11-27: the bar's «Competidores» switches the side of the reels; the
+    panel «Tus competidores» is not in the bar any more (m-25142823 moved it to «Negocios
+    parecidos al tuyo»). The reels screen still follows a manual read with its clock."""
     import inspect
 
     from . import discover_reels
@@ -321,33 +320,169 @@ def test_the_panel_is_a_drawer_no_longer_opened_from_the_bar() -> None:
     assert "rx.separator" not in bar
     assert phone.index("_filters_button()") < phone.index("_side_button(chip=True)")
     source = inspect.getsource(discover_reels)
-    for gone in ("scroll_snap", "_NO_SCROLLBAR", "_with_rivals", "_chip_pair", "sheet_chip"):
+    for gone in (
+        "scroll_snap",
+        "_NO_SCROLLBAR",
+        "_with_rivals",
+        "_chip_pair",
+        "sheet_chip",
+        "def _competitors_drawer",
+        "def competitors_opener",
+        "def _competitor_row(",
+    ):
         assert gone not in source, gone
-    assert "competitors_opener(" not in bar and "open_competitors" not in bar
+    assert "_competitors_drawer" not in bar and "open_competitors" not in bar
     side = inspect.getsource(discover_reels._side_button)
     assert "on_click=S.toggle_side" in side and "open_competitors" not in side
-    assert "_competitors_drawer(bottom=False)" in bar and "_competitors_drawer(bottom=True)" in bar
-    opener = inspect.getsource(discover_reels.competitors_opener)
-    assert "rx.call_script(PHONE_MEDIA, callback=S.open_competitors)" in opener
-    assert "id=COMPETITORS_OPENER_ID" in opener
-    assert discover_reels.COMPETITORS_OPENER_ID in discover_reels.RIVALS_FOCUS_SCRIPT
-    for needed in ('"users"', "aria_haspopup", "aria_expanded", "rx.button(", "min_height=_TARGET"):
-        assert needed in opener, needed
-    assert "loading_spinner" in opener and "competitors_label" in opener
     reset = inspect.getsource(discover_reels._reset_button)
     assert "DiscoverReelsState.filters_on" in reset  # without a filter it is not drawn
     button = inspect.getsource(discover_reels._filter_button)
     assert "min_width=_CHIP_MIN" in button and 'overflow="hidden"' in button
-    drawer_source = inspect.getsource(discover_reels._competitors_drawer)
+    ideas = inspect.getsource(discover_reels._ideas)
+    assert "_ticker(S.refresh_competitors)" in ideas
+    assert STATUS_OK  # the panel never shows a run's status word
+
+
+def test_the_panel_is_a_section_of_negocios_parecidos() -> None:
+    """m-25142823 (Deivid, 2026-11-27): «Tus competidores» is one line under the board of
+    «Negocios parecidos al tuyo» — its name, what it does, «3 de 6 marcados» and «Elegir
+    competidores», which opens the same panel (the `drawer`, from the bottom on a phone,
+    from the right on a wider window). The section reads its rows on mount and follows a
+    manual read with the browser clock; the drawer's rows are the reels screen's own state
+    (`DiscoverReelsState`), never a copy. Only the system's pieces."""
+    import inspect
+
+    from . import brand_kit_editor, competitors_panel
+
+    section = inspect.getsource(brand_kit_editor._referentes_section)
+    assert "rx.fragment(_referentes_body(), competitors_section())" in section
+    panel = inspect.getsource(competitors_panel.competitors_section)
+    for needed in (
+        "on_mount=S.load_competitors",
+        "_competitors_drawer(bottom=False)",
+        "_competitors_drawer(bottom=True)",
+        "rx.cond(S.competitors_reading, _ticker(S.refresh_competitors))",
+        "rx.cond(S.competitor_rows.length() > 0, line)",
+        "competitors_opener()",
+        "signal_pill(S.competitors_count",
+        "reels_competitors_vm.SECTION_BODY",
+    ):
+        assert needed in panel, needed
+    opener = inspect.getsource(competitors_panel.competitors_opener)
+    assert "rx.call_script(PHONE_MEDIA, callback=S.open_competitors)" in opener
+    assert "id=COMPETITORS_OPENER_ID" in opener and "min_height=_TARGET" in opener
+    assert "reels_competitors_vm.OPENER_LABEL" in opener  # its words are its name
+    assert "aria_label" not in opener and "title=S.competitors_label" in opener
+    assert competitors_panel.COMPETITORS_OPENER_ID in competitors_panel.RIVALS_FOCUS_SCRIPT
+    drawer_source = inspect.getsource(competitors_panel._competitors_drawer)
     assert "drawer(" in drawer_source and "on_close_auto_focus" in drawer_source
     assert "reels_filters_vm.DONE_LABEL" in drawer_source
     assert "_ticker" not in drawer_source  # closing it never stops the clock
-    ideas = inspect.getsource(discover_reels._ideas)
-    assert "_ticker(S.refresh_competitors)" in ideas
-    row = inspect.getsource(discover_reels._competitor_row)
+    row = inspect.getsource(competitors_panel._competitor_row)
     assert 'min_height="44px"' in row  # «Ver sus reels ahora»
     assert 'role="checkbox"' in row and "_option_row(" in row  # the 44 px row, empty box
-    assert STATUS_OK  # the panel never shows a run's status word
+    assert reels_competitors_vm.OPENER_LABEL == "Elegir competidores"
+    assert reels_competitors_vm.SECTION_BODY == (
+        "Marca hasta 6 para que cada lunes te traigamos sus reels nuevos."
+    )
+    rendered = str(brand_kit_editor._referentes_section().render())
+    assert competitors_panel.COMPETITORS_OPENER_ID in rendered
+    assert rendered.count("q-drawer--bottom") >= 1
+
+
+async def test_the_section_reads_its_rows_for_the_session_business(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`load_competitors` reads the rows of the logged-in business's brand — even when the
+    reels screen was never opened — and opening the panel reads them again; another
+    business never sees this one's rows; nothing is paid."""
+    from . import discover_reels
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    assert state.competitor_rows == []
+    await DiscoverReelsState.load_competitors.fn(proxy)
+    assert [r["key"] for r in state.competitor_rows] == ["tiktok:rival"]
+    assert state._brand_id == str(world.brand)
+    assert state.open_competitors(False) is DiscoverReelsState.load_competitors
+    assert state.competitors_open and not state.competitors_bottom
+    other_brand = uuid4()
+    world.repo.add_brand(tenant_id=OTHER, brand_id=other_brand)
+    monkeypatch.setattr(
+        discover_reels,
+        "default_brand_id",
+        lambda tenant: world.brand if tenant == TENANT else other_brand,
+    )
+    proxy.auth.session_tenant_id = str(OTHER)
+    await DiscoverReelsState.load_competitors.fn(proxy)
+    assert state.competitor_rows == [] and not state.competitors_open
+    assert world.paid == []
+
+
+async def test_unmarking_every_competitor_closes_the_empty_panel(world: _World) -> None:
+    """Open, and the board above unmarked them all: the re-read closes the panel (never an
+    empty drawer whose opener is gone, so the focus has somewhere to go)."""
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    await DiscoverReelsState.load_competitors.fn(proxy)
+    state.open_competitors(True)
+    assert state.competitors_open
+    world.repo.clear_label(tenant_id=TENANT, brand_id=world.brand, network="tiktok", handle="rival")
+    await DiscoverReelsState.load_competitors.fn(proxy)
+    assert state.competitor_rows == [] and not state.competitors_open
+
+
+async def test_a_read_for_a_session_that_changed_meanwhile_never_paints(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rows were read for A, and B logged in before they landed: A's rows never show."""
+    from . import discover_reels
+    from .discover_reels import DiscoverReelsState
+
+    world.ok_run()
+    state, proxy = _screen_state()
+    real = discover_reels._competitor_rows
+
+    async def rows_then_switch(tenant: UUID, brand: UUID) -> Any:
+        found = await real(tenant, brand)
+        proxy.auth.session_tenant_id = str(OTHER)  # another business, same tab
+        return found
+
+    monkeypatch.setattr(discover_reels, "_competitor_rows", rows_then_switch)
+    await DiscoverReelsState.load_competitors.fn(proxy)
+    assert state.competitor_rows == [] and state._brand_id == ""
+    proxy.auth.session_tenant_id = ""  # no session: nothing is read
+    monkeypatch.setattr(discover_reels, "_competitor_rows", real)
+    await DiscoverReelsState.load_competitors.fn(proxy)
+    assert state.competitor_rows == []
+
+
+def test_storing_the_sort_reads_the_competitors_again() -> None:
+    """m-25142823: a «Compite contigo» added or taken out on the board shows at once in
+    «Tus competidores» just under it — both ways the sort is stored chain the free read."""
+    import inspect
+
+    from . import creative_wizard_pages as wiz
+    from .discover_reels import DiscoverReelsState
+
+    for event in (wiz.BrandConnectState.sync_labels, wiz.BrandConnectState.sync_sort):
+        assert "return _competitors_reread()" in inspect.getsource(event.fn)
+    assert wiz._competitors_reread() is DiscoverReelsState.load_competitors
+
+
+def test_the_brand_page_never_refilters_lists_it_never_painted() -> None:
+    """A manual read that ends while the owner is on the brand page reads the reels list
+    again only when the reels screen painted one (`screen != ""`)."""
+    import inspect
+
+    from .discover_reels import DiscoverReelsState
+
+    source = inspect.getsource(DiscoverReelsState.refresh_competitors.fn)
+    assert 'lists = self.screen != ""' in source
+    assert "[DiscoverReelsState.refilter] if lists else []" in source
 
 
 async def test_the_drawer_opens_and_closes_and_needs_competitors(world: _World) -> None:

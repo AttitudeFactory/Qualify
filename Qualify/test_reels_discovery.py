@@ -1659,10 +1659,11 @@ async def test_filtros_opens_from_the_right_on_a_wider_window(world: _World) -> 
     assert "S.sheet_bottom if bottom else ~S.sheet_bottom" in sheet
     # however either closes, the focus goes back to «Filtros»
     assert "on_close_auto_focus=rx.call_script(SHEET_FOCUS_SCRIPT)" in sheet
-    # rendered: two bottom sheets (Filtros, Competidores) and two right drawers (the same)
+    # rendered: the «Filtros» panel, once from the bottom and once from the right («Tus
+    # competidores» lives in «Negocios parecidos al tuyo» now, m-25142823)
     rendered = str(discover_reels.discover_view().render())
-    assert rendered.count("q-drawer--bottom") == 2
-    assert rendered.count('"q-drawer"') == 2
+    assert rendered.count("q-drawer--bottom") == 1
+    assert rendered.count('"q-drawer"') == 1
 
     world.ok_run()
     state, proxy = _screen_state()

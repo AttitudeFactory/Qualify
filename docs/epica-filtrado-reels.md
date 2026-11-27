@@ -195,15 +195,33 @@ estado tras la ronda de diseño de Deivid del 2026-11-27.
   cuentas elegidas del otro lado se quitan. El lado no es un filtro: no cuenta en «Filtros
   · N» y «Restablecer filtros» lo conserva. Al salir y volver, la pantalla abre otra vez en
   las inspiraciones.
-- **«Tus competidores» ya no se abre desde la barra.** El cajón de RF-05 (elegir los 6 del
-  lunes y «Ver sus reels ahora») y su estado siguen montados, pero cerrados. Su botón para
-  abrirlo es `discover_reels.competitors_opener`, que no está montado en ninguna parte: está
-  listo para la pantalla donde vaya. Deivid pidió llevarlo a «Negocios parecidos al tuyo».
-  Esa sección vive en `brand_kit_editor.py` (`BrandEditState`), y el cajón depende de todo
-  el ciclo de `DiscoverReelsState`: cargar las filas, elegir los 6 del lunes, «Ver sus
-  reels ahora» y su reloj. **Mudarlo es un cambio aparte** y se avisó antes de hacerlo. El
-  estado vacío del lado de los competidores ya lleva a «Negocios parecidos al tuyo»
-  («Elegir competidores»).
+- **«Tus competidores» ya no se abre desde la barra.** Se mudó a «Negocios parecidos al
+  tuyo» con el ticket **m-25142823** (Deivid, 2026-11-27), que se fusiona en el mismo PR
+  (ver abajo). El estado vacío del lado de los competidores lleva a esa sección
+  («Elegir competidores», `?seccion=referentes`, que la abre y la trae a la vista).
+
+**m-25142823 — «Tus competidores» en «Negocios parecidos al tuyo» (2026-11-27):**
+- **Dónde:** dentro de la sección «Negocios parecidos al tuyo» (`brand_kit_editor`), debajo
+  del tablero donde el dueño marca «Compite contigo», hay una línea con «Tus competidores»,
+  «Marca hasta 6 para que cada lunes te traigamos sus reels nuevos.», cuántos están
+  marcados («3 de 6 marcados») y el botón «Elegir competidores». El botón abre **el mismo
+  panel** de RF-05 (`drawer`): desde abajo en el teléfono (640 px o menos) y desde la
+  derecha en una ventana más ancha. Ahí se ve la lista, se marcan hasta 6 para el lunes,
+  se quita uno y se usa «Ver sus reels ahora». Es la misma lectura pagada que firmó Deivid,
+  con los mismos topes; no hay llamadas nuevas. Si la marca no tiene competidores, la línea
+  no aparece: el tablero de arriba es donde se marcan.
+- **Por qué un botón que abre el panel, y no el panel integrado:** reusa el panel tal cual
+  (la misma pieza, el mismo estado y las mismas pruebas), no alarga una sección que ya es
+  larga, y en el teléfono se ve igual que antes. El cambio en `brand_kit_editor.py` es de
+  una línea más el import.
+- **Cómo:** las vistas del panel salieron de `discover_reels.py` a un módulo propio,
+  `Qualify/competitors_panel.py`: `competitors_section`, `competitors_opener`, el `drawer`
+  y las filas. La lógica sigue en `DiscoverReelsState` (`toggle_weekly`, `read_competitor`,
+  `refresh_competitors`), así que la pantalla de reels y la sección comparten un solo
+  estado. Lo nuevo es `load_competitors`: lee las filas del negocio en sesión al montar la
+  sección y de nuevo al abrir el panel, solo con Postgres y sin pagar. La sección monta su
+  propio reloj mientras una lectura manual está en curso. La pantalla de reels conserva el
+  suyo, para que una lectura empezada en la sección muestre sus reels al terminar.
 - **«País»** (el ticket decía «Región») tiene tres opciones. Cada una aparece solo si el
   negocio tiene ese dato. Sin país ni ciudad, no hay chip ni grupo «País».
   - «Todas»: sin filtro de lugar.

@@ -55,7 +55,6 @@ from uuid import UUID
 
 import reflex as rx
 from qualify_api.referentes import reels_ai
-from qualify_api.referentes.competitors import STATE_READING
 from qualify_api.referentes.manual_search import SearchNow
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 from qualify_api.referentes.reviewed_reels import KIND_COMPETENCIA, KIND_REFERENTE
@@ -721,14 +720,52 @@ class DiscoverReelsState(rx.State):
         return reels_competitors_vm.button_label(self.competitor_rows)
 
     @rx.event
-    def open_competitors(self, bottom: bool) -> None:
+    def open_competitors(self, bottom: bool) -> Any:
         """«Tus competidores»: the drawer from the bottom when `bottom` (the browser's
-        `PHONE_MEDIA` answer: a phone's window), from the right otherwise."""
+        `PHONE_MEDIA` answer: a phone's window), from the right otherwise — its rows read
+        again as it opens (the board just above may have marked or unmarked some)."""
         if not self.competitor_rows:
-            return
+            return None
         self.competitors_bottom = bool(bottom)
         self.competitors_open = True
         self.competitor_error = ""
+        return DiscoverReelsState.load_competitors
+
+    @rx.event(background=True)
+    async def load_competitors(self) -> None:
+        """m-25142823: the panel's rows for the logged-in business's brand, read where the
+        panel lives («Negocios parecidos al tuyo», `competitors_panel`) — Postgres only,
+        free, never a run nor a paid read. Another business in the same tab starts clean
+        (`_claim_cards`); a read for a business that logged out meanwhile never paints."""
+        async with self:
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if tenant_id is None:
+            return
+        try:
+            brand_id = await asyncio.to_thread(default_brand_id, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — only the panel depends on it
+            logger.warning("competitors panel brand unreadable: %s", type(exc).__name__)
+            return
+        if brand_id is None:
+            return
+        rivals = await _competitor_rows(tenant_id, brand_id)
+        async with self:
+            auth = await self.get_state(AuthState)
+            if auth.session_tenant_id != session_tenant_id:
+                return
+            # another business (or brand) starts with no search on screen, as in `load`
+            if self._cards_tenant_id != str(tenant_id) or self._brand_id != str(brand_id):
+                self.searching = False
+            if self._cards_tenant_id != str(tenant_id):
+                self._claim_cards(str(tenant_id))
+            self._brand_id = str(brand_id)
+            if rivals is not None:
+                self.competitor_rows = rivals
+                if not rivals:
+                    # every competitor unmarked on the board: no empty panel left open
+                    self.competitors_open = False
 
     @rx.event
     def competitors_changed(self, is_open: bool) -> None:
@@ -840,6 +877,9 @@ class DiscoverReelsState(rx.State):
                 return None
             self.competitor_rows = rivals
             closed = not self.competitors_open
+            # the lists only when the reels screen has painted them (not from the brand
+            # page before the reels screen ever opened)
+            lists = self.screen != ""
         finished = reels_competitors_vm.ended(before, rivals)
         if not finished:
             return None
@@ -851,7 +891,7 @@ class DiscoverReelsState(rx.State):
             else rx.toast.error(text)
             for tone, text in finished
         ]
-        return [DiscoverReelsState.refilter, *(toasts if closed else [])]
+        return [*([DiscoverReelsState.refilter] if lists else []), *(toasts if closed else [])]
 
     # -- RF-14: «Buscar reels nuevos» ----------------------------------------------------
 
@@ -2023,7 +2063,7 @@ def _filter_bar() -> rx.Component:
     no text broken, no sideways scroll (Deivid, 2026-11-26). Which row shows is a container
     query on the bar's own width (`BAR_CLASS`): below `WIDE_FROM_PX` of bar — phones,
     tablets, narrow panels — the buttons; from there, the chips. The «Tus competidores»
-    drawers stay mounted here but nothing in the bar opens them (`competitors_opener`)."""
+    panel lives in «Negocios parecidos al tuyo» now (m-25142823, `competitors_panel`)."""
     return rx.box(
         # the wide bar: ONE line that fills the bar — the filters share what is left, then
         # the side button at its natural width, the search button and the 44 px «Quitar
@@ -2056,8 +2096,6 @@ def _filter_bar() -> rx.Component:
         ),
         _sheet(bottom=True),
         _sheet(bottom=False),
-        _competitors_drawer(bottom=False),
-        _competitors_drawer(bottom=True),
         role="search",
         aria_label=reels_filters_vm.BAR_LABEL,
         class_name=BAR_CLASS,
@@ -2251,81 +2289,9 @@ def _ideas() -> rx.Component:
     )
 
 
-def _read_state(row: rx.Var[dict[str, str]]) -> rx.Component:
-    """Under a row, today's «Ver sus reels ahora»: reading, done, a limit or a failure, in
-    the tone of each (`reels_competitors_vm.STATE_TONES`)."""
-    message = row["message"].to(str)
-    return rx.match(
-        row["tone"],
-        ("info", callout(message, "info")),
-        ("ok", callout(message, "ok")),
-        ("warn", callout(message, "warn")),
-        ("error", callout(message, "error")),
-        rx.fragment(),
-    )
-
-
-def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
-    """One competitor: a 44 px checkbox row («leemos cada lunes») and, outside the 6,
-    «Ver sus reels ahora». The button drops under the name on a phone."""
-    S = DiscoverReelsState
-    key = row["key"].to(str)
-    weekly = row["weekly"].to(str) != ""
-    busy = S.competitor_busy == key
-    read_now = rx.button(
-        rx.cond(busy, loading_spinner("sm"), rx.icon("play", size=14, aria_hidden="true")),
-        reels_competitors_vm.READ_NOW,
-        variant="soft",
-        size="2",
-        min_height="44px",
-        on_click=S.read_competitor(key),
-        disabled=(S.competitor_busy != "") | (row["state"].to(str) == STATE_READING),
-        aria_busy=rx.cond(busy, "true", "false"),
-        aria_label=reels_competitors_vm.READ_NOW + ": " + row["label"].to(str),
-    )
-    return rx.vstack(
-        rx.flex(
-            rx.box(
-                _option_row(
-                    row["label"].to(str),
-                    weekly,
-                    S.toggle_weekly(key),
-                    role="checkbox",
-                    detail=row["detail"].to(str),
-                ),
-                flex="1 1 14rem",
-                min_width="0",
-            ),
-            rx.cond(weekly, rx.fragment(), read_now),
-            wrap="wrap",
-            align="center",
-            spacing="2",
-            width="100%",
-        ),
-        _read_state(row),
-        spacing="1",
-        width="100%",
-        role="listitem",
-    )
-
-
 #: The bar's side button (wide bar) and its narrow-bar twin.
 RIVALS_BUTTON_ID = "reels-rivals"
 RIVALS_CHIP_ID = "reels-rivals-chip"
-#: «Tus competidores»' opener (`competitors_opener`, wherever it is mounted): the drawer
-#: gives the focus back to it when it closes.
-COMPETITORS_OPENER_ID = "competitors-panel"
-RIVALS_FOCUS_SCRIPT = (
-    "window.setTimeout(function () {"
-    f" var ids = ['{COMPETITORS_OPENER_ID}'];"
-    " for (var i = 0; i < ids.length; i++) {"
-    "  var b = document.getElementById(ids[i]);"
-    "  if (b && b.offsetParent !== null) { b.focus(); return; }"
-    " }"
-    "}, 0);"
-)
-
-
 #: The side button keeps the width of its longer face in both states: both words sit in
 #: the same grid cell, the other one invisible (`.q-reels-side`, assets/qualify-creative.css)
 #: — so the bar never jumps when it switches (Deivid, 2026-11-27).
@@ -2343,7 +2309,7 @@ def _side_button(*, chip: bool) -> rx.Component:
     2.5.3); not `aria-pressed`, since its words change with the side (a toggle whose name
     changes would be read twice). The same width in both states (`_SIDE_CLASS`). On the
     narrow bar it is the second of the equal slots, beside «Filtros». It no longer opens
-    «Tus competidores» (`competitors_opener` is that, for wherever it goes next)."""
+    «Tus competidores» (m-25142823: that panel is in «Negocios parecidos al tuyo»)."""
     S = DiscoverReelsState
     on = S.on_competitors
     return rx.button(
@@ -2375,89 +2341,6 @@ def _side_button(*, chip: bool) -> rx.Component:
             if chip
             else {"flex_shrink": "0", "min_width": "0", "max_width": "100%", **_CHIP_PAD}
         ),
-    )
-
-
-def competitors_opener(*, chip: bool) -> rx.Component:
-    """«Tus competidores» — the RF-05 panel's opener, taken off the reels bar (Deivid,
-    2026-11-27: the side button is a switch now). Kept, unmounted, for the screen it
-    goes to next: it opens the drawer from the bottom on a phone (a window of
-    `PHONE_MAX_PX` or less) and from the right on a wider one; closed, the focus goes
-    back to it (`RIVALS_FOCUS_SCRIPT`). While a manual read is in flight it shows the
-    spinner; not drawn for a brand that marked no competitor."""
-    S = DiscoverReelsState
-    return rx.cond(
-        S.competitor_rows.length() > 0,
-        rx.button(
-            rx.cond(
-                S.competitors_reading,
-                loading_spinner("sm"),
-                rx.icon("users", size=T.ICON_SM, aria_hidden="true"),
-            ),
-            rx.text(reels_competitors_vm.PICKER_SHORT, as_="span", min_width="0", **_ELLIPSIS),
-            type="button",
-            id=COMPETITORS_OPENER_ID,
-            # RF-02b (Deivid, 2026-11-26): the same rule as «Filtros» on both bars — the
-            # browser says whether the window is a phone's (`PHONE_MEDIA`): from the bottom
-            # there, from the right on a wider window
-            on_click=rx.call_script(PHONE_MEDIA, callback=S.open_competitors),
-            variant="surface",
-            size="2",
-            min_height=_TARGET,
-            overflow="hidden",
-            title=reels_competitors_vm.PICKER_TITLE,
-            **(
-                _PHONE_SLOT
-                if chip
-                else {"flex_shrink": "0", "min_width": "0", "max_width": "100%", **_CHIP_PAD}
-            ),
-            aria_label=S.competitors_label,
-            aria_haspopup="dialog",
-            aria_expanded=rx.cond(S.competitors_open, "true", "false"),
-        ),
-    )
-
-
-def _competitors_drawer(*, bottom: bool) -> rx.Component:
-    """The competitors panel in the system's `drawer`: the same rows (ticking saves the
-    brand's labels; «Ver sus reels ahora» only queues the read, the reels-worker pays
-    inside the daily cap) and «Listo». Its clock is NOT here (`_ideas` mounts it), so
-    closing the drawer never stops a read's follow-up."""
-    S = DiscoverReelsState
-    body = rx.vstack(
-        signal_pill(S.competitors_count, "accent"),
-        rx.cond(S.competitor_error != "", callout(S.competitor_error, "warn")),
-        rx.vstack(
-            rx.foreach(S.competitor_rows, _competitor_row),
-            spacing="2",
-            width="100%",
-            role="list",
-            aria_label=reels_competitors_vm.PICKER_TITLE,
-        ),
-        spacing="3",
-        width="100%",
-    )
-    foot = rx.hstack(
-        rx.spacer(),
-        rx.button(
-            reels_filters_vm.DONE_LABEL,
-            size="3",
-            min_height="44px",
-            on_click=S.close_competitors,
-        ),
-        width="100%",
-        align="center",
-    )
-    shown = S.competitors_bottom if bottom else ~S.competitors_bottom
-    return drawer(
-        body,
-        open=S.competitors_open & shown,
-        on_open_change=S.competitors_changed,
-        title=reels_competitors_vm.PICKER_TITLE,
-        description=reels_competitors_vm.PICKER_BODY,
-        footer=foot,
-        side="bottom" if bottom else "right",
-        on_close_auto_focus=rx.call_script(RIVALS_FOCUS_SCRIPT).prevent_default,
     )
 
 
