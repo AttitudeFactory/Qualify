@@ -12,10 +12,14 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
+from qualify_creative.enums import ContentFormat, ContentKind
 from qualify_creative.schemas import (
     AI_PART_KIND,
+    ContentBrief,
     EffectUse,
     MediaInputs,
+    PartRef,
     PartsProvenance,
     SourceSegment,
     VideoPartPlan,
@@ -42,7 +46,7 @@ from qualify_api.creative.plan_blocks import (
 from qualify_api.creative.video_pipeline.ai_parts import CLIP_AI_PARTS_SWITCH
 from qualify_api.creative.video_pipeline.recipe import CLIP_BLOCK_TRANSITIONS_SWITCH
 
-from .test_content_service import TENANT_ID
+from .test_content_service import TENANT_ID, make_brief
 from .test_creative_parts import ANALYSIS_ID, analysis, shot
 
 VIDEO = f"uploads/{TENANT_ID}/mi-cocina.mp4"
@@ -354,3 +358,77 @@ def test_it_writes_and_pays_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(blocks.segments) == len(blocks.ai_parts)
     assert "tenant_session" not in vars(plan_blocks)
     assert "propose_parts" not in vars(plan_blocks)
+
+
+# ---------------------------------------------------------------------------
+# m-25026636: the Clip brief keeps who proposed its AI parts
+
+
+def _local_clip(**media: object):
+    return make_brief(
+        variants=1,
+        kind=ContentKind.CLIP,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(duration_seconds=5, clip_reference_mode="local", **media),
+    )
+
+
+def test_an_ideas_provenance_is_carried_into_the_local_clip_brief() -> None:
+    idea = _idea()
+    fields = blocks_from_proposal(idea).media_fields()
+
+    assert fields["parts_provenance"] == PROVENANCE
+    brief = _local_clip(**fields)
+    assert brief.media.parts_provenance == PROVENANCE
+    assert brief.media.ai_parts == blocks_from_proposal(idea).ai_parts
+    stored = MediaInputs.model_validate(brief.media.model_dump(mode="json"))
+    assert stored.parts_provenance == PROVENANCE
+
+
+def test_a_reel_plan_or_the_owners_own_blocks_carry_no_provenance() -> None:
+    fields = blocks_from_analysis(_reel(), extend_on=True).media_fields()
+
+    assert fields["parts_provenance"] is None
+    assert _local_clip(**fields).media.parts_provenance is None
+
+
+def test_an_old_provenance_without_a_proposal_id_still_validates() -> None:
+    stored = _local_clip(
+        segments=(_own(5.0),),
+        parts_provenance=PROVENANCE.model_copy(update={"proposal_id": UUID(int=7)}),
+    ).model_dump(mode="json")
+    assert stored["media"]["parts_provenance"]["proposal_id"] == str(UUID(int=7))
+    del stored["media"]["parts_provenance"]["proposal_id"]  # as stored before it existed
+
+    old = ContentBrief.model_validate(stored)
+
+    assert old.media.parts_provenance is not None
+    assert old.media.parts_provenance.proposal_id is None
+    assert old.media.parts_provenance.model_id == PROVENANCE.model_id
+
+
+@pytest.mark.parametrize(
+    ("kind", "media"),
+    [
+        (ContentKind.CLIP, {"clip_reference_mode": "motion"}),
+        (
+            ContentKind.CLIP,
+            {
+                "clip_reference_mode": "local",
+                "segments": (_own(5.0),),
+                "part": PartRef(index=1, seconds=5, mode="local", segments=(_own(5.0),)),
+            },
+        ),
+        (ContentKind.STATIC_FLYER, {}),
+    ],
+    ids=["motion clip", "a part of a video by parts", "a flyer"],
+)
+def test_a_provenance_is_refused_where_no_idea_proposed_parts(
+    kind: ContentKind, media: dict[str, object]
+) -> None:
+    with pytest.raises(ValidationError, match="video by parts or a local clip"):
+        make_brief(
+            variants=1,
+            kind=kind,
+            media=MediaInputs(duration_seconds=5, parts_provenance=PROVENANCE, **media),
+        )

@@ -37,6 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 from qualify_creative.adapters.anthropic_copy import strict_schema
 from qualify_creative.angles import AngleBrand, AngleProduct, CreativeAngle, price_mentions
@@ -680,6 +681,7 @@ def _provenance(stats: CallStats, fingerprint: str, version: str) -> PartsProven
         input_tokens=stats.input_tokens,
         output_tokens=stats.output_tokens,
         turns=stats.turns,
+        proposal_id=uuid4(),
     )
 
 
