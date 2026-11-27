@@ -136,7 +136,8 @@ def test_a_video_historia_with_its_automatic_cover_is_offered(unpublished_world)
     with acting_login(login):
         assert story_ad_ready(source.tenant_id, source.draft_id)
         assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}
-        video, *_ = unpublished_sources(source.tenant_id, source.draft_id, story=True)
+        # only the video: the frame is its cover, never a photo option of its own
+        (video,) = unpublished_sources(source.tenant_id, source.draft_id, story=True)
     assert video.media_kind == "videos"
     assert [m.id for m in video.vertical_media] == [str(source.vertical.asset_id)]
     assert len(video.vertical_covers) == 1

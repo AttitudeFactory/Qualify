@@ -71,6 +71,18 @@ def test_the_backend_and_the_wizard_agree_on_the_files(assets: list[dict]) -> No
     assert (files_block(assets) is None) == bool(story_kinds(assets))
 
 
+def test_an_automatic_cover_is_only_its_videos_cover() -> None:
+    """N1 (m-25142900): a frame of the video makes it a story ad, never a photo option."""
+    video = _asset("video", "video/mp4", 1080, 1920)
+    frame = _asset("image", "image/jpeg", 1080, 1920) | {"auto_cover": True}
+    assert files_block([video, frame]) is None
+    assert story_kinds([video, frame]) == ["videos"]
+    assert story_kinds([video, frame, _asset("image", "image/png", 1080, 1920)]) == [
+        "videos",
+        "images",
+    ]
+
+
 def _context(params: dict) -> ActionContext:
     context = ActionContext()
     context.draft_id = str(PIECE)

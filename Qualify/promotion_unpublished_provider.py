@@ -74,7 +74,7 @@ WHERE a.brand_id=:brand AND a.selected AND a.available
   AND c.purged_at IS NULL AND c.purge_started_at IS NULL
 ORDER BY a.id""")
 # N1 (m-25142900): with the automatic covers of the piece's videos, offered as covers.
-_ASSETS = text(f"""SELECT id,object_key,content_type,media_type,width,height
+_ASSETS = text(f"""SELECT id,object_key,content_type,media_type,width,height,auto_cover
 FROM {PIECE_FILES} WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
 ORDER BY position NULLS LAST,id""")
 
@@ -154,7 +154,13 @@ def story_kinds(assets: list[dict]) -> list[str]:
     vertical_images = _pick(assets, "image", VERTICAL)
     if not vertical_images:
         return []
-    return ["videos", "images"] if _pick(assets, "video", VERTICAL) else ["images"]
+    photos = ["images"] if _own(vertical_images) else []  # N1: an automatic frame is no photo
+    return ["videos", *photos] if _pick(assets, "video", VERTICAL) else photos
+
+
+def _own(rows: list[dict]) -> list[dict]:
+    """The piece's own files: without the automatic covers of its videos (m-25142900)."""
+    return [row for row in rows if not row.get("auto_cover")]
 
 
 def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
@@ -282,7 +288,7 @@ def unpublished_sources(
                     else media(feed_videos if video else feed_images, "Opción"),
                     vertical_media=[]
                     if carousel
-                    else media(vertical_videos if video else vertical_images, "Opción"),
+                    else media(vertical_videos if video else _own(vertical_images), "Opción"),
                     feed_covers=media(feed_images, "Portada") if video else [],
                     vertical_covers=media(vertical_images, "Portada") if video else [],
                     products=products if carousel else [],

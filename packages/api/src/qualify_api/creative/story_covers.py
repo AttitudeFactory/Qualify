@@ -52,9 +52,10 @@ _JPEG_QUALITY = 92
 #: A piece's files plus the automatic covers of its videos, as 9:16 image rows: a drop-in
 #: for `FROM image_assets` in the story ad's readers (same name, same columns they read).
 #: A failed cover has no key and is left out by their `object_key IS NOT NULL`.
+#: `auto_cover`: the wizard offers such a frame only as its video's cover, never as a photo.
 PIECE_FILES = """(SELECT id,draft_id,version_id,object_key,content_type,media_type,width,height,
-  position FROM image_assets
-  UNION ALL SELECT id,draft_id,version_id,object_key,content_type,'image',width,height,1000
+  position,false AS auto_cover FROM image_assets
+  UNION ALL SELECT id,draft_id,version_id,object_key,content_type,'image',width,height,1000,true
   FROM piece_story_covers) AS image_assets"""
 
 _CANDIDATES = """SELECT a.tenant_id,a.id AS asset_id,a.draft_id,a.version_id,a.object_key,
