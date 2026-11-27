@@ -48,10 +48,15 @@ final and its charge are PR 3):
   `CLIP_AVATAR_OWNER_WAIT` (72 h) from the latest failure and fails after it
   (`character_scene_failed`), its creations given back by the run's refund. A scene
   that was never created, or made with no video, fails the Clip at once.
-- **Approval** (`ContentService._refuse_scenes_approval`, `APPROVE_UNAVAILABLE`): until
-  PR 3 charges the scenes' seconds and
-  asks their 1080p finals, a Clip with scenes is never approved — no video second is
-  given away.
+- **After a failure** (PR 3, `character_scene_actions`): the owner chooses per scene,
+  with the words the failure email names — «Intentar de nuevo» (a new attempt of the
+  scene: 1 vista previa, one more scene of the day) or «Quitar escena» (the scene leaves
+  the Clip's «Personajes» track and the Clip is made without it).
+- **Approval** (PR 3, with m-25129408: ONE path for scenes and «parte con IA»,
+  `clip_final`): approving the Clip charges every scene's requested seconds on its own
+  row, all or nothing, orders its 1080p final from its draft and assembles the Clip again
+  with the finals. A final that fails gives its seconds back and the Clip waits for
+  «Intentar de nuevo».
 
 Tenant isolation: every read goes through `tenant_session` (RLS) or the content
 repository; every file of a scene is checked with `owned_by` before anything is written,
@@ -889,12 +894,6 @@ SCENE_BROKEN_TEXT = (
     "No pudimos armar tu video con las escenas de tu personaje. No se descontaron "
     "segundos de video de tu plan. Puedes crearlo de nuevo."
 )
-#: Approving a Clip with scenes waits for PR 3 (the scenes' seconds and 1080p finals).
-APPROVE_UNAVAILABLE = "character_scene_approve_unavailable"
-APPROVE_UNAVAILABLE_TEXT = (
-    "Todavía no puedes aprobar videos con escenas de tu personaje. Tu video queda "
-    "guardado en Por aprobar, tal como está."
-)
 #: A scene child that is made (its video kept): the statuses a draft can leave
 #: `drafting` for with its media (`clip_avatar._READY_STATUSES`).
 _MADE = frozenset({"generated", "rejected", "approved", "staged", "published"})
@@ -988,14 +987,19 @@ class ScenesBroken:
 def placed_scenes(
     scenes: Sequence[CharacterSceneItem], rows: Iterable[SceneRow]
 ) -> tuple[PlacedScene, ...]:
-    """The Clip's scenes with their children: slot `n` is the `n`-th scene by start (how
-    `create_clip_with_scenes` numbered them). Pure."""
-    by_slot = {row.slot: row for row in rows}
+    """The Clip's scenes with their children: the `n`-th scene by start is the `n`-th
+    child by slot (how `create_clip_with_scenes` numbered them) among the children its
+    owner did NOT remove — «Quitar escena» (PR 3) takes the scene out of the Clip's track
+    and marks its child removed in the same write, so the others keep their own child. A
+    scene with no child left reads `row=None` (broken). Pure."""
+    live = sorted((row for row in rows if not row.removed), key=lambda row: row.slot)
     order = sorted(range(len(scenes)), key=lambda i: scenes[i].start)
-    return tuple(
-        PlacedScene(index=index, slot=slot, item=scenes[index], row=by_slot.get(slot))
-        for slot, index in enumerate(order, 1)
-    )
+    placed: list[PlacedScene] = []
+    for number, index in enumerate(order):
+        row = live[number] if number < len(live) else None
+        slot = row.slot if row is not None else number + 1
+        placed.append(PlacedScene(index=index, slot=slot, item=scenes[index], row=row))
+    return tuple(placed)
 
 
 def _same_scene(placed: PlacedScene) -> bool:
@@ -1399,7 +1403,9 @@ class CharacterSceneService:
         )
 
         if has_ai_part_blocks(brief):
-            # AI parts and scenes in one Clip wait for one path for both children
+            # m-25129408: approving takes both kinds of child on one path, but creating
+            # one Clip with both does not exist (their slots, waits and actions are
+            # each their own): still refused before anything is written or paid
             raise ClipAiPartsRefused(WITH_SCENES_CODE, WITH_SCENES_TEXT)
         if media.part is not None or not is_local_recipe(brief):
             raise ClipAvatarRefused(NOT_LOCAL, NOT_LOCAL_TEXT)

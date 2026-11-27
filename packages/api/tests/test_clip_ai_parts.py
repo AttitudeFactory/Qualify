@@ -805,21 +805,6 @@ def test_a_part_of_a_clip_takes_an_empty_text() -> None:
     assert variant.fidelity["clip_ai_part_without_text"] is True
 
 
-def test_a_clip_with_ai_parts_is_not_approved_until_pr4() -> None:
-    world = _world()
-    made = _create(world)
-    for part_id in made.part_ids:
-        _made(world, part_id)
-    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
-    (variant,) = world.repo.variants_for(tenant_id=TENANT_ID, draft_id=made.clip_id)[:1]
-    with pytest.raises(cap.ClipAiPartsRefused) as refused:
-        world.content.approve(
-            tenant_id=TENANT_ID, draft_id=made.clip_id, variant_id=variant.id, user_id=USER_ID
-        )
-    assert refused.value.code == cap.APPROVE_UNAVAILABLE_CODE
-    assert world.repo.drafts[made.clip_id].status == GENERATED
-
-
 def test_key_problems_skip_ai_blocks_and_check_the_entries_files() -> None:
     foreign = f"uploads/{uuid4()}/ajeno.mp4"
     brief = _clip(entries=(_entry(4), _entry(5, clip_video_keys=(foreign,))))

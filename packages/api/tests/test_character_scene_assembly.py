@@ -1,7 +1,7 @@
 """m-25128784 PR 2 (ADR 50 §12): a Clip with a «Personajes» track waits for its scenes,
 then is assembled ONCE with each scene laid over its window; a scene that fails stamps
 the Clip and stages the failure email of m-25120319; the owner's 72 h out fails the
-Clip; a Clip with scenes is never approved before PR 3.
+Clip (approving it: `test_clip_final`).
 
 Offline only: no vendor is called — the scenes' rows are a double over the in-memory
 repository, the email outbox the in-memory one, the videos tiny synthetic encodes."""
@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_api.creative import character_scene as cs
-from qualify_api.creative.clip_avatar import ClipAvatarRefused, ClipBlocksWait
+from qualify_api.creative.clip_avatar import ClipBlocksWait
 from qualify_api.creative.clip_avatar_mail import (
     SCENE_MAIL_KIND,
     ClipView,
@@ -40,7 +40,7 @@ from .test_character_scene import (
     _own,
     _world,
 )
-from .test_content_service import BRAND_ID, TENANT_ID, USER_ID
+from .test_content_service import BRAND_ID, TENANT_ID
 
 AFTER = NOW + timedelta(minutes=5)
 
@@ -240,25 +240,6 @@ def test_the_owners_72_hours_out_keep_the_vista_previa_of_a_scene_that_was_made(
     assert world.ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).previews_used == 1
 
 
-def test_a_clip_with_scenes_is_never_approved_before_its_finals() -> None:
-    from qualify_api.creative.media import MediaOutcome
-
-    from .test_content_service import FakeMedia
-
-    world, _, _ = _scene_world(media=FakeMedia(MediaOutcome()))
-    made = _create(world)
-    (scene_id,) = made.scene_ids
-    _made(world, scene_id)
-    _run(world, made.clip_id)
-    variant = world.repo.variants_for(tenant_id=TENANT_ID, draft_id=made.clip_id)[0]
-    with pytest.raises(ClipAvatarRefused) as refused:
-        world.content.approve(
-            tenant_id=TENANT_ID, draft_id=made.clip_id, variant_id=variant.id, user_id=USER_ID
-        )
-    assert refused.value.code == cs.APPROVE_UNAVAILABLE
-    assert world.repo.drafts[made.clip_id].status == GENERATED
-
-
 def test_scenes_and_ai_parts_together_stay_refused() -> None:
     from qualify_creative.schemas import SourceSegment, VideoPartPlan, ai_part_key
 
@@ -379,7 +360,6 @@ def test_the_new_texts_are_plain_spanish() -> None:
     texts = [
         cs.SCENE_FAILED_TEXT,
         cs.SCENE_BROKEN_TEXT,
-        cs.APPROVE_UNAVAILABLE_TEXT,
         words.SCENE_SUBJECT,
         words.SCENE_HEADING,
         words.SCENE_LEAD,
