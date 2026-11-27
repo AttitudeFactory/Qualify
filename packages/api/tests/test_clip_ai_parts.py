@@ -605,6 +605,35 @@ def test_a_failed_part_fails_the_clip_at_once_and_gives_every_preview_back(
     clip = world.repo.drafts[made.clip_id]
     assert clip.status == FAILED and clip.failure_reason == cap.AI_PART_FAILED
     assert not any(_charged(world, d) for d in (made.clip_id, *made.part_ids))
+    # a part still being made stops with its Clip: no Clip will ever use it
+    expected = GENERATED if second == "made" else FAILED
+    assert world.repo.drafts[made.part_ids[1]].status == expected
+
+
+def test_a_give_back_that_breaks_rolls_the_failure_back_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of m-25129406: the Clip's failure and its give-backs are one write — when a
+    give-back breaks, the run is tried again (`CheckpointError`), never a Clip failed
+    another way with its parts' vistas previas kept."""
+    from qualify_api.creative.queue_dispatch import CheckpointError
+
+    world = _world()
+    made = _create(world)
+    world.repo.drafts[made.part_ids[0]] = replace(
+        world.repo.drafts[made.part_ids[0]], status=FAILED, failure_reason="provider_error"
+    )
+    assert world.ledger is not None
+
+    def broken(**_: Any) -> bool:
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(world.ledger, "refund", broken)
+    draft = world.repo.drafts[made.clip_id]
+    with pytest.raises(CheckpointError):
+        world.content._clip_ai_parts_ready(  # noqa: SLF001
+            TENANT_ID, draft, _brief_of(world, made.clip_id)
+        )
     # again: nothing is given back twice, nothing written
     assert world.ledger is not None
     rows = {k: (r.status, r.reason) for k, r in world.ledger.rows.items()}

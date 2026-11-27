@@ -3205,13 +3205,22 @@ class ContentService:
             store=store,
         )
         if isinstance(verdict, AiPartsFailed):
-            self._fail_waiting_clip(
-                tenant_id,
-                draft,
-                reason=AI_PART_FAILED,
-                detail=AI_PART_FAILED_TEXT,
-                give_back=[(part.id, part.revision) for part in verdict.parts],
-            )
+            try:
+                self._fail_waiting_clip(
+                    tenant_id,
+                    draft,
+                    reason=AI_PART_FAILED,
+                    detail=AI_PART_FAILED_TEXT,
+                    give_back=[(part.id, part.revision) for part in verdict.parts],
+                    stop_children=True,
+                )
+            except CheckpointError:
+                raise
+            except Exception as exc:
+                # the failure and every give-back are ONE write: rolled back together,
+                # the run is tried again — never a Clip failed some other way with its
+                # parts' vistas previas kept (review of m-25129406)
+                raise CheckpointError("the Clip's failure and its give-backs") from exc
             logger.info(
                 "clip %s: an AI part failed; failed, %d vista(s) previa(s) given back",
                 draft.id,
@@ -3241,6 +3250,7 @@ class ContentService:
         reason: str,
         detail: str,
         give_back: Sequence[tuple[UUID, int]] = (),
+        stop_children: bool = False,
     ) -> None:
         """A waiting Clip fails (`generate_fail`) with the owner's words, in a transaction
         fenced as `_replace_clip_brief` is (still `drafting`, same revision). Its
@@ -3248,7 +3258,8 @@ class ContentService:
         blocks were never charged, and a failed Clip's blocks owe nothing (P6).
         m-25129406: `give_back` — (draft, revision) of the Clip's AI parts, whose vistas
         previas come back in the SAME transaction (idempotent: a row already given back is
-        skipped)."""
+        skipped); `stop_children` — its children still being made fail with it and their
+        jobs not sent yet are cancelled, in that same transaction."""
         repo = self._repo
         new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=reason)
         if isinstance(repo, PostgresContentRepository):
@@ -3284,6 +3295,30 @@ class ContentService:
                 """),
                     {"s": new_status, "r": reason, "t": detail, "d": draft.id},
                 )
+                if stop_children:
+                    # m-25129406: no Clip will use its parts any more — the ones still
+                    # being made stop (a «Sigue a la anterior» waiting for a failed part
+                    # would otherwise wait for good), and their jobs not sent to the vendor
+                    # yet are cancelled; one already sent finishes on its own, unpaid by
+                    # the owner (its vista previa is given back below)
+                    session.execute(
+                        text("""
+                        UPDATE creative_jobs j SET status = 'cancelled', finished_at = now()
+                        FROM content_drafts c
+                        WHERE c.parent_draft_id = :d AND c.status = 'drafting'
+                          AND j.draft_id = c.id AND j.status = 'queued'
+                          AND j.vendor_task_id IS NULL
+                    """),
+                        {"d": draft.id},
+                    )
+                    session.execute(
+                        text("""
+                        UPDATE content_drafts SET status = :s, failure_reason = :r,
+                            failure_detail = :t, updated_at = now()
+                        WHERE parent_draft_id = :d AND status = 'drafting'
+                    """),
+                        {"s": new_status, "r": reason, "t": detail, "d": draft.id},
+                    )
                 self._give_back_parts(tenant_id, give_back, reason)
             return
         now = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
@@ -3302,6 +3337,12 @@ class ContentService:
             from dataclasses import replace as _replace  # noqa: PLC0415
 
             drafts[draft.id] = _replace(drafts[draft.id], failure_detail=detail)
+            if stop_children:
+                for child_id, child in list(drafts.items()):
+                    if child.parent_draft_id == draft.id and child.status == DRAFTING:
+                        drafts[child_id] = _replace(
+                            child, status=new_status, failure_reason=reason, failure_detail=detail
+                        )
         self._give_back_parts(tenant_id, give_back, reason)
 
     def _give_back_parts(
@@ -3418,7 +3459,7 @@ class ContentService:
             # their videos as stretches
             ready = self._clip_ai_parts_ready(tenant_id, draft, brief)
             if ready is None:
-                return  # a part failed and its time ran out: failed, creations given back
+                return  # a part failed: the Clip failed, every vista previa given back
             draft, brief = ready
         # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
         # draft is the session, so its regenerations sit together; every vendor call the

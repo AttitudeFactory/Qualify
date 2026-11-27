@@ -200,18 +200,49 @@ def test_a_failed_clip_gives_every_parts_preview_back_in_its_write(
     draft = content.repository.get_draft(tenant_id=tenant, draft_id=made.clip_id)
     rows = cap.PostgresAiPartsStore().parts_of(tenant_id=tenant, clip_id=made.clip_id)
     give_back = [(row.id, row.revision) for row in rows]
+    status = "SELECT status FROM content_drafts WHERE id = :d"
+    refunded = "SELECT count(*) FROM creation_charges WHERE draft_id = :d AND status = 'refunded'"
+    cancelled = "SELECT count(*) FROM creative_jobs WHERE draft_id = :d AND status = 'cancelled'"
+
+    # a give-back that breaks rolls the whole write back: nothing failed, nothing given
+    ledger = content.creations
+    real = ledger.refund
+    monkeypatch.setattr(ledger, "refund", lambda **_: (_ for _ in ()).throw(RuntimeError()))
+    with pytest.raises(RuntimeError):
+        content._fail_waiting_clip(  # noqa: SLF001
+            tenant,
+            draft,
+            reason=cap.AI_PART_FAILED,
+            detail=cap.AI_PART_FAILED_TEXT,
+            give_back=give_back,
+            stop_children=True,
+        )
+    with tenant_session(tenant) as session:
+        assert session.scalar(text(status), {"d": made.clip_id}) == "drafting"
+        assert session.scalar(text(status), {"d": made.part_ids[0]}) == "drafting"
+    assert _count(tenant, refunded, d=made.part_ids[0]) == 0
+    assert _count(tenant, cancelled, d=made.part_ids[0]) == 0
+    monkeypatch.setattr(ledger, "refund", real)
+
     content._fail_waiting_clip(  # noqa: SLF001
         tenant,
         draft,
         reason=cap.AI_PART_FAILED,
         detail=cap.AI_PART_FAILED_TEXT,
         give_back=give_back,
+        stop_children=True,
     )
-    status = "SELECT status FROM content_drafts WHERE id = :d"
-    refunded = "SELECT count(*) FROM creation_charges WHERE draft_id = :d AND status = 'refunded'"
-    assert _count(tenant, refunded, d=made.part_ids[0]) == 1
+    for part_id in made.part_ids:
+        assert _count(tenant, refunded, d=part_id) == 1
+        # the part still being made stops with its Clip, its unsent job cancelled
+        assert _count(tenant, cancelled, d=part_id) == 1
+        with tenant_session(tenant) as session:
+            assert session.scalar(text(status), {"d": part_id}) == "failed"
     with tenant_session(tenant) as session:
         assert session.scalar(text(status), {"d": made.clip_id}) == "failed"
+    # the ledger never gives back twice
+    content._give_back_parts(tenant, give_back, "again")  # noqa: SLF001
+    assert _count(tenant, refunded, d=made.part_ids[0]) == 1
     with pytest.raises(CheckpointError):  # the Clip already moved: nothing again
         content._fail_waiting_clip(  # noqa: SLF001
             tenant, draft, reason="x", detail="y", give_back=give_back
