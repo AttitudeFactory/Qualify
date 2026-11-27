@@ -1176,3 +1176,44 @@ def test_a_card_acts_only_on_a_number_of_the_business() -> None:
     assert state.selected_connection_id == _T
     assert state.qr_loaded_for == ""  # what belonged to the other number is dropped
     assert WhatsAppState.request_review.fn(state, _T) is not None  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("router", "href", "target"),
+    [
+        # The browser's own address wins over the router data an event carries, which
+        # after a client-side navigation can still be the previous page's.
+        (
+            "/chats/ajustes",
+            "http://x/whatsapp?tab=numero&sub=qr",
+            "/chats/ajustes/whatsapp/codigos-qr",
+        ),
+        ("/connections", "http://x/whatsapp/promociones?sub=aprobados", None),
+        ("/promotions", "http://x/chats/ajustes/whatsapp/perfil", None),
+        # Not one of these pages: nothing is set and nobody is sent away.
+        ("/chats/ajustes", "", None),
+        ("/connections", "http://x/connections", None),
+        # A lease naming another page: nothing happens there either.
+        ("/whatsapp?tab=numero&sub=pagos", "//evil.example/x", None),
+    ],
+)
+async def test_the_history_handler_reads_the_browsers_address(
+    monkeypatch: pytest.MonkeyPatch, router: str, href: str, target: str | None
+) -> None:
+    """m-25027373 (e2e finding): with the PREVIOUS page's router data, `/whatsapp`'s
+    redirect would have sent the owner to «Tus redes» from any page of the number."""
+    _signed_in(monkeypatch, "00000000-0000-4000-8000-000000000001")
+    state = _visit(router)
+    state.active_tab = TAB_MENU
+    events = await WhatsAppState.enter_history.fn(state, {"visit": "v", "href": href})  # type: ignore[attr-defined]
+    if target is None:
+        assert all("_redirect" not in str(event) for event in events)
+    else:
+        assert len(events) == 1
+        assert str(events[0].args) == str(rx.redirect(target, replace=True).args)
+    if href.endswith("/chats/ajustes/whatsapp/perfil"):
+        assert state.active_tab == TAB_PROFILE
+    if href.endswith("sub=aprobados"):
+        assert state.active_tab == TAB_TEMPLATES
+    if not href and router == "/chats/ajustes":
+        assert state.active_tab == TAB_MENU  # untouched

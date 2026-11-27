@@ -51,9 +51,9 @@ def _no_sideways_scroll(page) -> None:  # noqa: ANN001
     assert not page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
 
 
-def _number_card(page, phone: str = r"\+57 300"):  # noqa: ANN001, ANN202
-    """The «Tus redes» card of the WhatsApp number whose title starts with `phone`."""
-    heading = page.get_by_role("heading", level=2, name=re.compile(phone))
+def _number_card(page, title: str = r"^Arepera E2E"):  # noqa: ANN001, ANN202
+    """The «Tus redes» card of the WhatsApp number whose title matches `title`."""
+    heading = page.get_by_role("heading", level=2, name=re.compile(title))
     return page.locator("div").filter(has=heading).filter(has_text="Más detalles").last
 
 
@@ -104,7 +104,7 @@ def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
     second = seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size(DESKTOP)
     page.goto(_origin(page) + "/connections")
-    first_card, second_card = _number_card(page), _number_card(page, r"\+57 311")
+    first_card, second_card = _number_card(page), _number_card(page, r"Sede Norte")
     expect(first_card).to_be_visible(timeout=60_000)
     expect(second_card).to_be_visible()
     expect(second_card.get_by_role("link", name="Actividad")).to_have_attribute(

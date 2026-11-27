@@ -25,7 +25,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import httpx
@@ -72,6 +73,7 @@ from .whatsapp_vm import (
     QR_DEFAULT_CHANNEL,
     SUB_PARAM,
     TAB_KEYS,
+    WHATSAPP_ROUTE,
     BusinessProfileVM,
     ProfileForm,
     QrCodeVM,
@@ -278,17 +280,32 @@ class WhatsAppState(rx.State):
     # Shell
     # ==================================================================================
 
-    def _read_address(self) -> str | None:
+    def _address(self, href: str = "") -> tuple[str, Mapping[str, object]]:
+        """(path, query) of the page on screen. `href` is the browser's own
+        `location.href` (the route history's lease): after a client-side navigation the
+        router data an event carries can still be the PREVIOUS page's, and since
+        m-25027373 a wrong path would send the owner away. Only a same-origin path is
+        read from it; anything else falls back to the router."""
+        parts = urlsplit(href) if isinstance(href, str) and href else None
+        if parts is not None and parts.path.startswith("/") and not parts.path.startswith("//"):
+            query: dict[str, object] = {
+                key: values[0] if len(values) == 1 else values
+                for key, values in parse_qs(parts.query, keep_blank_values=True).items()
+            }
+            return parts.path.rstrip("/"), query
+        url = self.router.url
+        return url.path.rstrip("/"), url.query_parameters
+
+    def _read_address(self, href: str = "") -> str | None:
         """Set the panel from the address, or return where an old address now lives.
 
         `/whatsapp/promociones` (m-25017862) shows a promotions panel from `?sub=`; each
         page of `PAGE_PANELS` its one panel — the menu (m-25017861), and «Tu número»'s
         Perfil, Códigos QR, Formas de pago and Actividad (m-25027373). `/whatsapp` draws
         nothing since m-25027373: every address of it is answered with its new place
-        (the caller redirects, nothing is set)."""
-        url = self.router.url
-        params = url.query_parameters
-        path = url.path.rstrip("/")
+        (the caller redirects, nothing is set). Any other path (not one of these pages)
+        changes nothing and sends nowhere."""
+        path, params = self._address(href)
         if path == PROMOTIONS_ROUTE:
             self.active_tab = promotions_panel(str(params.get(SUB_PARAM, "") or ""))
             return None
@@ -296,7 +313,9 @@ class WhatsAppState(rx.State):
         if panel is not None:
             self.active_tab = panel
             return None
-        return legacy_panel_target(params)
+        if path == WHATSAPP_ROUTE:
+            return legacy_panel_target(params)
+        return None
 
     @rx.event
     def enter_page(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
@@ -345,7 +364,8 @@ class WhatsAppState(rx.State):
 
     @rx.event
     async def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
-        moved = self._read_address()
+        href = lease.get("href", "") if isinstance(lease, dict) else ""
+        moved = self._read_address(href if isinstance(href, str) else "")
         if moved is not None:
             # m-25017862: «Promociones» left this screen; a bookmark lands on its page —
             # once signed in. Without a session `require_login` sends the visitor to log
