@@ -55,7 +55,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from qualify_creative.creations import weight_for
@@ -159,6 +159,13 @@ STRETCH_NOT_OF_CLIP_TEXT = (
     "inténtalo de nuevo."
 )
 
+#: m-25129407 (Deivid, 2026-11-27): the notice on a «Sigue a la anterior» part that
+#: continues an older version of the part before it.
+FOLLOWS_OLD_VERSION = "follows_old_version"
+FOLLOWS_OLD_VERSION_TEXT = (
+    "Esta parte sigue a una versión anterior. Rehazla para que continúe la nueva."
+)
+
 #: The modes a part can be asked in (a `local` part is the owner's own blocks, §13.2).
 PART_MODES = ("reference", "edit", "extend")
 #: A made Clip: what the owner sees and may change.
@@ -185,6 +192,13 @@ class AiPartView:
     state: str
     owner_text: str | None = None
     actions: tuple[str, ...] = ()
+    #: m-25129407 (Deivid, 2026-11-27): a «Sigue a la anterior» part that continues an
+    #: OLDER version of the part before it (that one was redone since). Never redone by
+    #: itself: the owner chooses (`notice` = `FOLLOWS_OLD_VERSION`, `notice_text` his
+    #: words). Derived each time, so redoing it or giving it another mode clears it.
+    follows_old_version: bool = False
+    notice: str | None = None
+    notice_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +331,7 @@ class ClipAiPartActions(ClipAiPartsService):
                 # it is only where a failed part allows a retry (`failed_part`)
                 redo_ok = state == "ready" or "retry" in _failed_actions(row)
                 actions = ("redo", "change_mode") if redo_ok else ("change_mode",)
+            stale = self._follows_old_version(tenant_id, row, rows)
             views.append(
                 AiPartView(
                     part_id=row.id,
@@ -327,6 +342,9 @@ class ClipAiPartActions(ClipAiPartsService):
                     if state == "failed"
                     else None,
                     actions=actions,
+                    follows_old_version=stale,
+                    notice=FOLLOWS_OLD_VERSION if stale else None,
+                    notice_text=FOLLOWS_OLD_VERSION_TEXT if stale else None,
                 )
             )
         failed = [r for r in rows if part_state(r) == "failed"]
@@ -856,6 +874,38 @@ class ClipAiPartActions(ClipAiPartsService):
             return None
         return owners[at - 1]
 
+    def _follows_old_version(
+        self, tenant_id: UUID, row: AiPartRow, rows: Sequence[AiPartRow]
+    ) -> bool:
+        """A made «Sigue a la anterior» part whose made previous part no longer shows the
+        file it continued (`part_extend.extend_is_stale`, the rule of «Video por partes»):
+        that part was redone after it. False while either is being made, failed or
+        removed, and for any other mode — so redoing it, or another mode, clears it."""
+        from qualify_api.creative.part_extend import (  # noqa: PLC0415
+            continued_key,
+            extend_is_stale,
+            source_key,
+        )
+
+        if row.mode != "extend" or part_state(row) != "ready":
+            return False
+        before = [r for r in rows if r.slot < row.slot and not r.removed]
+        if not before:
+            return False
+        previous = max(before, key=lambda r: r.slot)
+        if part_state(previous) != "ready":
+            return False
+        own = self._parts.part_video(tenant_id=tenant_id, part_id=row.id)
+        prev = self._parts.part_video(tenant_id=tenant_id, part_id=previous.id)
+        if own is None or prev is None:
+            return False
+        return extend_is_stale(
+            continued=continued_key(own.params),
+            previous_source=source_key(prev.params),
+            own_made_at=_made_at(own.params),
+            previous_made_at=_made_at(prev.params),
+        )
+
     def _played(self, tenant_id: UUID, clip_id: UUID, brief: ContentBrief) -> dict[str, UUID]:
         """The files of the Clip's AI parts its recipe plays → their part."""
         keys = [
@@ -1078,6 +1128,17 @@ def _failed_actions(row: AiPartRow) -> tuple[str, ...]:
     return tuple(str(a) for a in allowed if a is not PartAction.REMOVE)
 
 
+def _made_at(params: Any) -> float | None:
+    """When a part's vista previa was made (`params.draft.created_at`), None unknown."""
+    from collections.abc import Mapping  # noqa: PLC0415
+
+    draft = params.get("draft") if isinstance(params, Mapping) else None
+    value = draft.get("created_at") if isinstance(draft, Mapping) else None
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
 def _plan_of(brief: ContentBrief) -> VideoPartPlan:
     """A part's plan entry as its child brief stores it (its `PartRef` without place)."""
     part = brief.media.part
@@ -1094,6 +1155,8 @@ __all__ = [
     "EDIT_UNAVAILABLE_TEXT",
     "EXTEND_NEEDS_PART_TEXT",
     "EXTEND_NOT_SAME_MOMENT_TEXT",
+    "FOLLOWS_OLD_VERSION",
+    "FOLLOWS_OLD_VERSION_TEXT",
     "LAST_BLOCK_TEXT",
     "MODE_UNCHANGED_TEXT",
     "PART_BEING_MADE_TEXT",

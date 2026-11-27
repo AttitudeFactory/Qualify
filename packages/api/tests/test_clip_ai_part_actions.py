@@ -835,6 +835,87 @@ def test_a_redo_refused_for_its_photos_is_not_sent_again_with_them() -> None:
     assert world.repo.drafts[part].status == DRAFTING
 
 
+def test_a_sigue_a_la_anterior_after_a_redone_part_carries_a_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deivid, 2026-11-27: after the part before it is redone, a «Sigue a la anterior»
+    continues an old version — the view says so (never redone by itself), and redoing it
+    or giving it another mode clears the notice."""
+    monkeypatch.setenv(EXTEND_SWITCH, "draft")
+    _split_cuts_checked(monkeypatch)
+    world = _world()
+    made = _create(world, _split_clip())
+    first, follower = made.part_ids
+    old = f"t/{TENANT_ID}/generated/{first}/r1/raw.mp4"
+    _made(world, first, raw_key=old)
+    _made(world, follower, extend={"source_key": old})
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    actions = _actions(world)
+    args: dict[str, Any] = {"tenant_id": TENANT_ID, "user_id": USER_ID, "clip_id": made.clip_id}
+
+    def notice() -> act.AiPartView:
+        view = actions.parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+        assert view is not None
+        assert not view.parts[0].follows_old_version
+        return view.parts[1]
+
+    assert not notice().follows_old_version and notice().notice is None
+    # the first part redone: its new file is not the one the follower continued
+    actions.redo_part(part_id=first, **args)
+    _made_again(world, first)
+    new = f"t/{TENANT_ID}/generated/{first}/r2/raw.mp4"
+    video = world.store.videos[first]
+    world.store.videos[first] = replace(
+        video, params={**video.params, "part": {**video.params["part"], "raw_key": new}}
+    )
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    flagged = notice()
+    assert flagged.follows_old_version and flagged.notice == act.FOLLOWS_OLD_VERSION
+    assert flagged.notice_text == (
+        "Esta parte sigue a una versión anterior. Rehazla para que continúe la nueva."
+    )
+    # never redone by itself
+    assert world.repo.drafts[follower].revision == 1
+    assert world.repo.drafts[follower].status == GENERATED
+    # the owner redoes it: it continues the new file, the notice is gone
+    actions.redo_part(part_id=follower, **args)
+    assert not notice().follows_old_version  # being made: no notice
+    _made_again(world, follower)
+    video = world.store.videos[follower]
+    world.store.videos[follower] = replace(
+        video,
+        params={**video.params, "part": {**video.params["part"], "extend": {"source_key": new}}},
+    )
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    assert not notice().follows_old_version
+
+
+def test_another_mode_clears_the_old_version_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(EXTEND_SWITCH, "draft")
+    _split_cuts_checked(monkeypatch)
+    world = _world()
+    made = _create(world, _split_clip())
+    first, follower = made.part_ids
+    _made(world, first, raw_key=f"t/{TENANT_ID}/generated/{first}/r2/raw.mp4")
+    _made(world, follower, extend={"source_key": f"t/{TENANT_ID}/generated/{first}/r1/raw.mp4"})
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    actions = _actions(world)
+    view = actions.parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and view.parts[1].follows_old_version
+    actions.change_part_mode(
+        tenant_id=TENANT_ID,
+        user_id=USER_ID,
+        clip_id=made.clip_id,
+        part_id=follower,
+        mode="reference",
+    )
+    _made_again(world, follower)
+    world.content.run_generation(tenant_id=TENANT_ID, draft_id=made.clip_id)
+    view = actions.parts_view(tenant_id=TENANT_ID, clip_id=made.clip_id)
+    assert view is not None and view.parts[1].mode == "reference"
+    assert not view.parts[1].follows_old_version and view.parts[1].notice is None
+
+
 def test_a_refreshed_stretch_keeps_its_cut_speed_and_join() -> None:
     fade = EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5})
     old_key = f"t/{TENANT_ID}/generated/{uuid4()}/r1/video.mp4"

@@ -282,6 +282,8 @@ Código: `qualify_api.creative.clip_ai_part_actions` (`ClipAiPartActions`, sobre
 | `stretch_not_of_clip` | Uno de los bloques de tu video ya no está disponible. Vuelve a abrir tu video e inténtalo de nuevo. |
 | `part_action_refused` | El texto de «Video por partes» (`part_actions`) |
 
+**«Sigue a la anterior» después de rehacer la parte anterior** (Deivid, 2026-11-27): la parte no se rehace sola. `parts_view` la marca con `follows_old_version: true`, el aviso `follows_old_version` y el texto «Esta parte sigue a una versión anterior. Rehazla para que continúe la nueva.». El dueño elige qué hacer. La marca se calcula cada vez con la regla de «Video por partes» (`part_extend.extend_is_stale`: el archivo que continuó ya no es el de la parte anterior), así que desaparece cuando el dueño la rehace o le cambia el modo.
+
 El texto de una parte fallida sin palabras propias (`PART_FAILED_TEXT`, en `parts_view`): «Esta parte no salió. Puedes intentarla de nuevo, cambiarla o quitarla. Tu video te espera 3 días.»
 
 Además, con sus textos de siempre: `PartChangeRefused` (programado, publicándose, purgado, la parte que sigue se está haciendo), `PartsExtendUnavailable`, `PartsSourceInvalid`, `PartsOverBudget`, `LocalDailyCapReached`, `NotEnoughCreations` y `RecipeRefused`.
