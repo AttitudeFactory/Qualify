@@ -1218,7 +1218,10 @@ ADDRESS_SKIP: Final = "skip"
 _ADDRESS_FIELD = "direccion"
 
 # Step 3 → Catálogo saves first (guide N6); «Guardar y seguir después» says why it is off.
-CATALOG_SAVED_HINT: Final = "Guardamos tu menú. Cuando termines, vuelve a WhatsApp → Menú."
+#: m-25027373: the place's name only (there is no «WhatsApp» menu entry any more).
+CATALOG_SAVED_HINT: Final = (
+    "Guardamos tu menú. Cuando termines, vuelve a Ajustes de chats › Tu menú de bienvenida."
+)
 CATALOG_FIX_FIRST: Final = (
     "Corrige lo marcado en rojo antes de salir, o se pierde lo que escribiste."
 )

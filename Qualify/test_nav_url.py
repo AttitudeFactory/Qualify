@@ -78,11 +78,12 @@ def test_every_whatsapp_tab_has_an_address_and_reads_back() -> None:
             # m-25017861: the menu's page draws only the menu; no parameter.
             assert key == TAB_MENU
         else:
-            assert url.startswith("/whatsapp?tab=")
-            assert resolve_panel(query["tab"], query.get("sub", "")) == key
+            # m-25027373: «Tu número»'s panels, each on its own page, no parameter.
+            assert not url.startswith("/whatsapp") and "?" not in url
+            assert resolve_panel("numero", "") == DEFAULT_TAB
     assert tab_url(TAB_TEMPLATES) == "/whatsapp/promociones?sub=aprobados"
-    # m-25029799: no «Chats» tab — the screen opens on «Tu número › Estado».
-    assert tab_url("junk") == tab_url(DEFAULT_TAB) == "/whatsapp?tab=numero&sub=estado"
+    # m-25027373: «Tu número › Estado» is the number's card in «Tus redes».
+    assert tab_url("junk") == tab_url(DEFAULT_TAB) == "/connections"
     assert "chats" not in TAB_KEYS
 
 
@@ -105,12 +106,18 @@ def test_inbox_detail_address() -> None:
 
 
 def test_whatsapp_tab_change_writes_the_address() -> None:
+    """m-25027373: «Tu número»'s panels are pages of their own, so opening one (the
+    menu's «Crear mi código QR») is a navigation to its page; the arriving page's
+    `enter_page` sets the panel."""
     state = WhatsAppState()
+    state.active_tab = TAB_MENU
     spec = WhatsAppState.select_tab.fn(state, TAB_QR)  # type: ignore[attr-defined]
-    assert state.active_tab == TAB_QR
-    assert "/whatsapp?tab=numero&sub=qr" in _script_of(spec)
-    assert "pushState" in _script_of(spec)
-    # Junk over the wire changes nothing and writes nothing.
+    assert "/chats/ajustes/whatsapp/codigos-qr" in str(spec)
+    assert "pushState" not in str(spec)
+    assert state.active_tab == TAB_MENU
+    # The panel on screen: nothing to do. Junk over the wire changes and writes nothing.
+    state.active_tab = TAB_QR
+    assert WhatsAppState.select_tab.fn(state, TAB_QR) is None  # type: ignore[attr-defined]
     assert WhatsAppState.select_tab.fn(state, "nope") is None  # type: ignore[attr-defined]
     assert WhatsAppState.select_tab.fn(state, ["qr"]) is None  # type: ignore[attr-defined]
     assert state.active_tab == TAB_QR
@@ -127,7 +134,7 @@ def test_whatsapp_tab_on_the_other_page_is_a_navigation() -> None:
     assert state.active_tab == DEFAULT_TAB
     state.active_tab = TAB_TEMPLATES
     back = WhatsAppState.select_tab.fn(state, TAB_CONNECTION)  # type: ignore[attr-defined]
-    assert "/whatsapp?tab=numero" in str(back) and "pushState" not in str(back)
+    assert "/connections" in str(back) and "pushState" not in str(back)
     # Inside «Promociones por WhatsApp», a sub-tab stays an in-place history step.
     inside = WhatsAppState.select_tab.fn(state, TAB_CONTACTS)  # type: ignore[attr-defined]
     assert "/whatsapp/promociones?sub=clientes" in _script_of(inside)
@@ -213,7 +220,7 @@ def test_select_reel_pushes_the_detail_address() -> None:
 def test_entry_handlers_read_their_parameter() -> None:
     # WhatsApp: read for real, from the address (m-25017862 split it over two pages).
     for url, panel in (
-        ("/whatsapp?tab=numero&sub=qr", TAB_QR),
+        ("/chats/ajustes/whatsapp/codigos-qr", TAB_QR),  # m-25027373
         ("/whatsapp/promociones?sub=clientes", TAB_CONTACTS),
     ):
         state = WhatsAppState()

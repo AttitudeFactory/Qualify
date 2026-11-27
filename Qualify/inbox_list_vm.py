@@ -205,10 +205,11 @@ EMPTY_EXPIRED: Final = (
 )
 EMPTY_BACK: Final = "Ver por responder"
 #: m-25029799 (UX review): the WhatsApp view's way out — WhatsApp's own empty list's
-#: words («Crear un código QR», unchanged) and «Tu número › Códigos QR».
+#: words («Crear un código QR», unchanged) and «Ajustes de chats › Códigos QR» (its own
+#: page since m-25027373).
 EMPTY_QR_ACTION: Final = "qr"
 EMPTY_QR_LABEL: Final = "Crear un código QR"
-EMPTY_QR_HREF: Final = "/whatsapp?tab=numero&sub=qr"
+EMPTY_QR_HREF: Final = "/chats/ajustes/whatsapp/codigos-qr"
 
 NOTHING_CONNECTED_TITLE: Final = "Aún no tienes WhatsApp ni Instagram conectados"
 NOTHING_CONNECTED_BODY: Final = (

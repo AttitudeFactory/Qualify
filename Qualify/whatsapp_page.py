@@ -1,5 +1,18 @@
-"""`/whatsapp` (WA-12): the WhatsApp module's page shell + the «Tu número» panels
-(Estado, Perfil, Códigos QR, Actividad).
+"""The WhatsApp number's pages (WA-12): the shared shell + the panels of what was «Tu
+número» (Estado, Perfil, Formas de pago, Códigos QR, Actividad).
+
+**«Tu número» left `/whatsapp` (m-25027373, BU-A10).** Founder: «el otro módulo solo
+sería … para configuración». Each panel has its own page, served by `WhatsAppState`:
+
+    Estado          → the number's card in «Tus redes» (`number_card_status`,
+                      `number_card_details`, drawn by `connections_page`)
+    Actividad       → `/connections/whatsapp/actividad` (`whatsapp_activity_index`)
+    Perfil          → `/chats/ajustes/whatsapp/perfil` (`whatsapp_profile_index`)
+    Códigos QR      → `/chats/ajustes/whatsapp/codigos-qr` (`whatsapp_qr_index`)
+    Formas de pago  → `/chats/ajustes/formas-de-pago` (`whatsapp_payments_index`)
+
+`/whatsapp` draws nothing (`whatsapp_index`): every address of it redirects once to the
+new place (`whatsapp_vm.legacy_panel_target`) and the menu has no «WhatsApp» entry.
 
 Layout, per docs/design-system.md §9.1: `app_shell(page_header(...), page_body(...))`;
 every state is a TONE (`ok`/`warn`/`error`/`info`/`neutral`) through `signal_pill` /
@@ -7,14 +20,14 @@ every state is a TONE (`ok`/`warn`/`error`/`info`/`neutral`) through `signal_pil
 `platform_badge("whatsapp")`.
 
 **The shell** (m-24842998). Header + number selector (only when the tenant has more than
-one number) + «Tu número»'s strip of panels + the active panel's body. From `md` up the
-strip is a segmented control; on a phone it is a grid of 44 px buttons, so it fits at
-360 px without sliding sideways (N12).
+one number) + the page's strip of panels, if it has one (only «Promociones por
+WhatsApp» does) + the active panel's body. From `md` up the strip is a segmented control;
+on a phone it is a grid of 44 px buttons, so it fits at 360 px without sliding sideways
+(N12).
 
-**No chats here (m-25029799, BU-A11).** The «Chats» tab is gone: WhatsApp's chats are
-attended only in «Por responder», beside Instagram's (`whatsapp_tab_chats` keeps the open
-chat that pane mounts). An old address of the list redirects there
-(`whatsapp_vm.legacy_chat_target`), so this page draws «Tu número» only.
+**No chats here (m-25029799, BU-A11).** WhatsApp's chats are attended only in «Por
+responder», beside Instagram's (`whatsapp_tab_chats` keeps the open chat that pane
+mounts). An old address of the list redirects there (`whatsapp_vm.legacy_chat_target`).
 
 **«Promociones por WhatsApp»** (m-25017862, decision D3): the promotions panels (Enviadas
 · Mensajes aprobados · Clientes que aceptaron) left the strip for their own menu entry,
@@ -52,6 +65,8 @@ from .ui.route_history import route_history
 from .whatsapp_location_ui import back_to_chat_link, map_point_block
 from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
+from .whatsapp_payments_vm import HELP as PAYMENTS_HELP
+from .whatsapp_payments_vm import TITLE as PAYMENTS_TITLE
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
 from .whatsapp_tab_contacts import contacts_tab
@@ -59,11 +74,14 @@ from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
+    ACCOUNT_PARAM,
+    ACTIVITY_ROUTE,
+    ACTIVITY_SUBTITLE,
+    ACTIVITY_TITLE,
     CHAT_SETTINGS_ROUTE,
     CHAT_SETTINGS_TITLE,
-    CHATS_MOVED_ACTION,
-    CHATS_MOVED_NOTICE,
-    DETAILS_TOGGLE,
+    CONNECTIONS_ROUTE,
+    CONNECTIONS_TITLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
     MAX_DESCRIPTION_CHARS,
@@ -76,14 +94,15 @@ from .whatsapp_vm import (
     NO_NUMBER_GAINS,
     NO_NUMBER_NEXT,
     NO_NUMBER_TITLE,
-    NUMBER_SUBS,
-    NUMBER_TITLE,
+    PROFILE_SUBTITLE,
+    PROFILE_TITLE,
     PROMOTION_SUBS,
     PROMOTIONS_SUBTITLE,
     PROMOTIONS_TITLE,
     QR_CHANNELS,
+    QR_SUBTITLE,
+    QR_TITLE,
     REVIEW_ACTION,
-    SECTION_NUMBER,
     SECTION_PROMOTIONS,
     TAB_ACTIVITY,
     TAB_CAMPAIGNS,
@@ -95,7 +114,6 @@ from .whatsapp_vm import (
     TAB_QR,
     TAB_TEMPLATES,
     VERTICALS,
-    WHATSAPP_SUBTITLE,
     QrCodeVM,
     WhatsAppNumberVM,
 )
@@ -177,12 +195,6 @@ def number_selector() -> rx.Component:
     )
 
 
-def whatsapp_header() -> rx.Component:
-    """No back button: no chat opens on this screen (m-25029798/m-25029799: they open
-    and are attended in «Por responder»)."""
-    return page_header("WhatsApp", WHATSAPP_SUBTITLE, number_selector())
-
-
 def _phone_choice(
     key: str, label: str, value: rx.Var[str], on_pick: rx.event.EventHandler
 ) -> rx.Component:
@@ -239,83 +251,43 @@ def _choice_strip(
 
 def sub_strip() -> rx.Component:
     """Promociones por WhatsApp › Enviadas · Mensajes aprobados · Clientes que aceptaron
-    (its page's only strip); Tu número › Estado · Perfil · Formas de pago · Códigos QR ·
-    Actividad — `/whatsapp`'s only strip since its «Chats» tab left (m-25029799)."""
-    return rx.match(
-        WhatsAppState.active_section,
-        (
-            SECTION_PROMOTIONS,
-            _choice_strip(
-                PROMOTION_SUBS,
-                WhatsAppState.active_sub,
-                WhatsAppState.select_sub,
-                label=PROMOTIONS_TITLE,
-                phone_columns="3",
-                size="2",
-            ),
-        ),
-        (
-            SECTION_NUMBER,
-            _choice_strip(
-                NUMBER_SUBS,
-                WhatsAppState.active_sub,
-                WhatsAppState.select_sub,
-                label=NUMBER_TITLE,
-                phone_columns="2",
-                size="2",
-            ),
+    — the one strip left: «Tu número»'s sub-tabs are pages of their own (m-25027373)."""
+    return rx.cond(
+        WhatsAppState.active_section == SECTION_PROMOTIONS,
+        _choice_strip(
+            PROMOTION_SUBS,
+            WhatsAppState.active_sub,
+            WhatsAppState.select_sub,
+            label=PROMOTIONS_TITLE,
+            phone_columns="3",
+            size="2",
         ),
         rx.fragment(),
     )
 
 
-def chats_moved_notice() -> rx.Component:
-    """m-25029799 (UX review): where the chats went — one line above «Tu número», the
-    design system's info callout, with «Ir a Por responder» (this number's chats)."""
-    return callout(
-        rx.flex(
-            rx.text(CHATS_MOVED_NOTICE, size="2", flex="1", min_width="12rem"),
-            rx.link(
-                rx.button(
-                    CHATS_MOVED_ACTION,
-                    variant="soft",
-                    size="2",
-                    type="button",
-                    **_TAP,
-                    **T.tone_scheme("info"),
-                ),
-                href=WhatsAppState.chats_href,
-            ),
-            align="center",
-            wrap="wrap",
-            gap="0.5rem",
-            width="100%",
-        ),
-        "info",
-        size="1",
-    )
-
-
 def activity_tab() -> rx.Component:
-    """Tu número › Actividad: the number's metrics (WA-14), moved out of «Estado»."""
+    """Actividad: the number's metrics (WA-14) — a page under «Tus redes» since
+    m-25027373."""
     return rx.vstack(metrics_block(), spacing="4", width="100%", align_items="start")
 
 
 def tab_body() -> rx.Component:
-    """Only the active panel is in the tree; the key remounts it on a number switch."""
+    """Only the active panel is in the tree; the key remounts it on a number switch.
+    «Estado» (`TAB_CONNECTION`) has no panel here: it is the number's card in «Tus
+    redes» (m-25027373)."""
     return rx.box(
         rx.match(
             WhatsAppState.active_tab,
-            (TAB_CONNECTION, connection_tab()),
             (TAB_PROFILE, profile_tab()),
-            (TAB_PAYMENTS, payments_tab()),
+            (TAB_PAYMENTS, payments_tab(heading=False)),
             (TAB_QR, qr_tab()),
             (TAB_ACTIVITY, activity_tab()),
             (TAB_MENU, menu_tab()),
             (TAB_TEMPLATES, templates_tab()),
             (TAB_CONTACTS, contacts_tab()),
             (TAB_CAMPAIGNS, campaigns_tab()),
-            connection_tab(),
+            rx.fragment(),
         ),
         key=f"{WhatsAppState.selected_connection_id}:{WhatsAppState.active_tab}",
         class_name="q-settle q-content-ready",
@@ -365,6 +337,46 @@ def _no_numbers_state() -> rx.Component:
             width="100%",
             max_width="440px",
         ),
+    )
+
+
+def whatsapp_invite_card() -> rx.Component:
+    """No WhatsApp number yet (UX review U1, m-25027373): one more card in «Tus redes»,
+    read like the Instagram invite — the network, what the owner gains, the one way to
+    get it. The texts and the request are the no-number state's own (WhatsApp numbers
+    are connected by the Qualify team, WA-05). Soft, never the page's one solid (P3)."""
+    return card(
+        rx.vstack(
+            platform_badge("whatsapp"),
+            rx.heading(NO_NUMBER_TITLE, size="4", as_="h2"),
+            rx.text("Con tu número conectado:", size="2"),
+            rx.vstack(*[_gain(text) for text in NO_NUMBER_GAINS], spacing="2", width="100%"),
+            rx.text(NO_NUMBER_NEXT, size="2", color=T.TEXT_MUTED),
+            rx.cond(
+                WhatsAppState.connect_request_notice != "",
+                callout(WhatsAppState.connect_request_notice, "ok"),
+                rx.button(
+                    rx.icon("send", size=16),
+                    NO_NUMBER_ACTION,
+                    on_click=WhatsAppState.request_connection,
+                    loading=WhatsAppState.connect_request_sending,
+                    variant="soft",
+                    size="3",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                    **_TAP,
+                ),
+            ),
+            rx.cond(
+                WhatsAppState.connect_request_error != "",
+                callout(WhatsAppState.connect_request_error, "error"),
+                rx.fragment(),
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        padding="1.25rem",
+        custom_attrs={"data-invite": "whatsapp"},
     )
 
 
@@ -420,15 +432,21 @@ def _whatsapp_body(*strips: rx.Component, mine: rx.Var[bool]) -> rx.Component:
     )
 
 
+def _history() -> rx.Component:
+    return route_history(
+        WhatsAppState.enter_history,
+        ack=WhatsAppState.history_ack,
+        on_leave=WhatsAppState.leave_page_flows,
+    )
+
+
 def whatsapp_index() -> rx.Component:
+    """`/whatsapp` (m-25027373): nothing is drawn here any more. The page's history
+    handler (`WhatsAppState.enter_history`, its mount) sends every address of it, once
+    and with `replace`, to where that content lives now; meanwhile, a skeleton."""
     return app_shell(
-        route_history(
-            WhatsAppState.enter_history,
-            ack=WhatsAppState.history_ack,
-            on_leave=WhatsAppState.leave_page_flows,
-        ),
-        whatsapp_header(),
-        _whatsapp_body(chats_moved_notice(), sub_strip(), mine=_on_whatsapp_page()),
+        _history(),
+        page_body(rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_card(5), width="100%")),
     )
 
 
@@ -437,21 +455,23 @@ def _on_settings_page() -> rx.Var[bool]:
     return WhatsAppState.active_tab == TAB_MENU
 
 
-def _on_whatsapp_page() -> rx.Var[bool]:
-    """Whether the panel in the shared state is one `/whatsapp` draws."""
-    return ~_on_promotions_page() & ~_on_settings_page()
+def _on_panel(panel: str) -> rx.Var[bool]:
+    """Whether the panel in the shared state is `panel` — the gate of a page that draws
+    one panel (m-25027373): until the arriving page's `enter_page` sets it, the page
+    shows a skeleton, never the previous page's panel nor its `on_mount` load."""
+    return WhatsAppState.active_tab == panel
 
 
-def back_to_chat_settings() -> rx.Component:
-    """«‹ Ajustes de chats» (N7): the way back to the hub this page hangs from."""
+def _back_link(label: str, href: str) -> rx.Component:
+    """«‹ <the place this page hangs from>» (N7)."""
     return rx.link(
         rx.hstack(
             rx.icon("chevron-left", size=T.ICON_SM),
-            rx.text(CHAT_SETTINGS_TITLE, size="2"),
+            rx.text(label, size="2"),
             spacing="1",
             align="center",
         ),
-        href=CHAT_SETTINGS_ROUTE,
+        href=href,
         underline="none",
         color=T.TEXT_MUTED,
         display="inline-flex",
@@ -460,17 +480,64 @@ def back_to_chat_settings() -> rx.Component:
     )
 
 
+def back_to_chat_settings() -> rx.Component:
+    """«‹ Ajustes de chats» (N7): the way back to the hub this page hangs from."""
+    return _back_link(CHAT_SETTINGS_TITLE, CHAT_SETTINGS_ROUTE)
+
+
+def back_to_connections() -> rx.Component:
+    """«‹ Tus redes» (N7): Actividad hangs from the number's card there (m-25027373)."""
+    return _back_link(CONNECTIONS_TITLE, CONNECTIONS_ROUTE)
+
+
+def _panel_page(
+    panel: str, title: str, subtitle: str, back: rx.Component, *, selector: bool = True
+) -> rx.Component:
+    """m-25027373: one of the number's old panels on its own page — the same panel,
+    state, number selector (with two or more numbers; not where `selector` is False)
+    and loading, error and no-number states as before; only the header and the way
+    back are the page's."""
+    return app_shell(
+        _history(),
+        page_header(title, subtitle, *([number_selector()] if selector else []), kicker=back),
+        _whatsapp_body(mine=_on_panel(panel)),
+    )
+
+
+def whatsapp_profile_index() -> rx.Component:
+    """`/chats/ajustes/whatsapp/perfil`: the number's profile and «Tu local en el mapa»
+    (what «Cómo llegar» sends)."""
+    return _panel_page(TAB_PROFILE, PROFILE_TITLE, PROFILE_SUBTITLE, back_to_chat_settings())
+
+
+def whatsapp_qr_index() -> rx.Component:
+    """`/chats/ajustes/whatsapp/codigos-qr` (founder's decision: a setting)."""
+    return _panel_page(TAB_QR, QR_TITLE, QR_SUBTITLE, back_to_chat_settings())
+
+
+def whatsapp_payments_index() -> rx.Component:
+    """`/chats/ajustes/formas-de-pago`: the row «Formas de pago» of «Para todos tus
+    chats» opens the editor itself (before, a pointer to `/whatsapp`)."""
+    # UX review U4: no number selector — the methods are the same for every number
+    # (`SAME_FOR_ALL`, said on the page).
+    return _panel_page(
+        TAB_PAYMENTS, PAYMENTS_TITLE, PAYMENTS_HELP, back_to_chat_settings(), selector=False
+    )
+
+
+def whatsapp_activity_index() -> rx.Component:
+    """`/connections/whatsapp/actividad`: the number's activity, reached from its card
+    in «Tus redes»."""
+    return _panel_page(TAB_ACTIVITY, ACTIVITY_TITLE, ACTIVITY_SUBTITLE, back_to_connections())
+
+
 def whatsapp_settings_index() -> rx.Component:
     """`/chats/ajustes/whatsapp` (m-25017861, decision D1): «Tu menú de bienvenida», out
     of the WhatsApp messages screen and into «Ajustes de chats». The same panel, state
     and number selector as before; with a menu, its four guided steps take the page.
     An old `/whatsapp?tab=respuesta` lands here (`legacy_settings_target`)."""
     return app_shell(
-        route_history(
-            WhatsAppState.enter_history,
-            ack=WhatsAppState.history_ack,
-            on_leave=WhatsAppState.leave_page_flows,
-        ),
+        _history(),
         rx.cond(
             _on_settings_page()
             & (WhatsAppMenuState.loaded_for == WhatsAppState.selected_connection_id)
@@ -499,11 +566,7 @@ def whatsapp_promotions_index() -> rx.Component:
     next to «Anuncios». The same three panels and states as before, under their own
     header; the sub-tab strip is the page's only strip."""
     return app_shell(
-        route_history(
-            WhatsAppState.enter_history,
-            ack=WhatsAppState.history_ack,
-            on_leave=WhatsAppState.leave_page_flows,
-        ),
+        _history(),
         # The menu's own word (N1); `test_nav_one_name` reads it here, as a literal.
         page_header("Promociones por WhatsApp", PROMOTIONS_SUBTITLE, number_selector()),
         _whatsapp_body(sub_strip(), mine=_on_promotions_page()),
@@ -511,16 +574,29 @@ def whatsapp_promotions_index() -> rx.Component:
 
 
 # ======================================================================================
-# Conexión
+# Estado — the number's card in «Tus redes» (m-25027373)
 # ======================================================================================
 
+#: The line under «Verificar ahora» (unchanged from «Tu número › Estado»).
+VERIFY_NOTE = (
+    "«Verificar ahora» le pregunta a WhatsApp si tu número sigue bien conectado. Solo "
+    "se hace cuando tú lo tocas."
+)
 
-def verify_button() -> rx.Component:
+
+def _is_shown(number: WhatsAppNumberVM) -> rx.Var[bool]:
+    """Whether `number` is the one the shared state acts on (its last tapped card)."""
+    return WhatsAppState.selected_connection_id == number.connection_id
+
+
+def verify_button(number: WhatsAppNumberVM) -> rx.Component:
+    """«Verificar ahora» for THIS number (`verify_number` checks the id is the
+    business's); busy only on its own card."""
     return rx.button(
         rx.icon("shield-check", size=14),
         "Verificar ahora",
-        on_click=WhatsAppState.verify_now,
-        loading=WhatsAppState.verifying,
+        on_click=WhatsAppState.verify_number(number.connection_id),
+        loading=WhatsAppState.verifying & _is_shown(number),
         variant="soft",
         size="2",
         **_TAP,
@@ -538,68 +614,68 @@ def _kv_pill(label: str, value: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
     )
 
 
-def _details(number: rx.Var) -> rx.Component:
-    """The ten Meta facts, folded behind «Ver detalles» (m-24842998)."""
-    return rx.accordion.root(
-        rx.accordion.item(
-            header=DETAILS_TOGGLE,
-            content=rx.grid(
-                rx.vstack(
-                    kv("Número", number.display_phone_number, mono=True),
-                    kv("Nombre verificado", number.verified_name),
-                    _kv_pill(
-                        "Estado del nombre", number.name_status_label, number.name_status_tone
-                    ),
-                    _kv_pill("Calidad", number.quality_label, number.quality_tone),
-                    kv("Límite de mensajes", number.tier_label),
-                    spacing="3",
-                    width="100%",
-                ),
-                rx.vstack(
-                    _kv_pill(
-                        "Estado en WhatsApp",
-                        number.platform_status_label,
-                        number.platform_status_tone,
-                    ),
-                    kv("Marca", number.brand),
-                    kv("Última verificación", number.last_health_checked_at),
-                    kv("Datos de WhatsApp al día", number.last_synced_at),
-                    kv("Último mensaje recibido", number.last_inbound_at),
-                    spacing="3",
-                    width="100%",
-                ),
-                columns=rx.breakpoints(initial="1", md="2"),
-                spacing="4",
-                width="100%",
-                padding_top="0.5rem",
-            ),
-            value="detalles",
-            style={"& button": {"min_height": "44px", "width": "100%"}},
+def number_facts(number: rx.Var) -> rx.Component:
+    """The Meta facts of what was «Tu número › Estado» (m-24842998); in «Tus redes»
+    they sit behind the card's own «Más detalles» (m-25027373)."""
+    return rx.grid(
+        rx.vstack(
+            kv("Número", number.display_phone_number, mono=True),
+            kv("Nombre verificado", number.verified_name),
+            _kv_pill("Estado del nombre", number.name_status_label, number.name_status_tone),
+            _kv_pill("Calidad", number.quality_label, number.quality_tone),
+            kv("Límite de mensajes", number.tier_label),
+            spacing="3",
+            width="100%",
         ),
-        collapsible=True,
-        variant="ghost",
+        rx.vstack(
+            _kv_pill(
+                "Estado en WhatsApp",
+                number.platform_status_label,
+                number.platform_status_tone,
+            ),
+            kv("Marca", number.brand),
+            # «Última verificación» is not repeated here: the card already says
+            # «Última comprobación» (review C4).
+            kv("Datos de WhatsApp al día", number.last_synced_at),
+            kv("Último mensaje recibido", number.last_inbound_at),
+            spacing="3",
+            width="100%",
+        ),
+        columns=rx.breakpoints(initial="1", md="2"),
+        spacing="4",
         width="100%",
     )
 
 
 def _review_request() -> rx.Component:
     """N8 for a number that fails: the same support request as the no-number state."""
+    return _review_block(WhatsAppState.request_connection, shown=True)
+
+
+def _review_block(on_click: rx.event.EventSpec, *, shown: rx.Var[bool] | bool) -> rx.Component:
+    """«Avisar al equipo de Qualify», or what came of it. The request's result is the
+    shared state's, so on a card of «Tus redes» it shows only on the card that sent it
+    (`shown`)."""
+
+    def gate(condition: rx.Var[bool]) -> rx.Var[bool]:
+        return condition if shown is True else shown & condition  # type: ignore[operator]
+
     return rx.vstack(
         rx.cond(
-            WhatsAppState.connect_request_notice != "",
+            gate(WhatsAppState.connect_request_notice != ""),
             callout(WhatsAppState.connect_request_notice, "ok"),
             rx.button(
                 rx.icon("send", size=16),
                 REVIEW_ACTION,
-                on_click=WhatsAppState.request_connection,
-                loading=WhatsAppState.connect_request_sending,
+                on_click=on_click,
+                loading=gate(WhatsAppState.connect_request_sending),
                 size="3",
                 width=rx.breakpoints(initial="100%", sm="auto"),
                 **_TAP,
             ),
         ),
         rx.cond(
-            WhatsAppState.connect_request_error != "",
+            gate(WhatsAppState.connect_request_error != ""),
             callout(WhatsAppState.connect_request_error, "error"),
             rx.fragment(),
         ),
@@ -609,41 +685,121 @@ def _review_request() -> rx.Component:
     )
 
 
-def connection_tab() -> rx.Component:
-    """Tu número › Estado: one line first (it works, or what to do), details folded."""
-    number = WhatsAppState.selected_number
+def _for_number(connection_id: rx.Var[str], build: object) -> rx.Component:
+    """`build(number)` for the WhatsApp number behind a «Tus redes» card (its
+    `social_connections` id is the number's `connection_id`); nothing for any other."""
+    return rx.foreach(
+        WhatsAppState.numbers,
+        lambda number: rx.cond(
+            number.connection_id == connection_id,
+            build(number),  # type: ignore[operator]
+            rx.fragment(),
+        ),
+    )
+
+
+def _troubled(number: WhatsAppNumberVM) -> rx.Var[bool]:
+    """A connected number whose line warns (marked as unwanted) or fails (paused by
+    WhatsApp): its «Verificar ahora» moves up, next to the line (UX review U3)."""
+    return (number.status == "active") & (
+        (number.health_tone == "warn") | (number.health_tone == "error")
+    )
+
+
+def _verify_block(number: WhatsAppNumberVM) -> rx.Component:
+    """«Verificar ahora», what it found right under it (UX review U2: never far from
+    the button) and its note."""
     return rx.vstack(
-        banner(WhatsAppState.connection_banner, WhatsAppState.connection_banner_tone),
-        card(
-            rx.vstack(
-                rx.hstack(
-                    platform_badge("whatsapp"),
-                    rx.heading(number.label, size="4", as_="h2", min_width="0"),
-                    rx.spacer(),
-                    rx.cond(number.status == "active", verify_button(), rx.fragment()),
-                    width="100%",
-                    align="center",
-                    wrap="wrap",
-                    spacing="3",
-                ),
-                banner(number.health_label, number.health_tone),
-                rx.cond(WhatsAppState.number_needs_help, _review_request(), rx.fragment()),
-                _details(number),
-                spacing="3",
-                width="100%",
-                align_items="start",
+        verify_button(number),
+        rx.cond(
+            _is_shown(number),
+            banner(WhatsAppState.connection_banner, WhatsAppState.connection_banner_tone),
+            rx.fragment(),
+        ),
+        rx.text(VERIFY_NOTE, size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _card_status(number: WhatsAppNumberVM) -> rx.Component:
+    """What the owner reads first on the number's card: the number's line when it says
+    something the card's «Conectada» does not (a number still connecting, paused by
+    WhatsApp or marked as unwanted) and, then, «Verificar ahora» and — when the owner
+    cannot fix it alone — «Avisar al equipo de Qualify». A disconnected number's card
+    already carries its own notice and help button (`connections_page`)."""
+    active = number.status == "active"
+    return rx.vstack(
+        rx.cond(
+            (active | (number.status == "pending")) & (number.health_tone != "ok"),
+            banner(number.health_label, number.health_tone),
+            rx.fragment(),
+        ),
+        rx.cond(_troubled(number), _verify_block(number), rx.fragment()),
+        rx.cond(
+            active & (number.health_tone == "error"),
+            _review_block(
+                WhatsAppState.request_review(number.connection_id), shown=_is_shown(number)
             ),
-            padding=rx.breakpoints(initial="1rem", md="1.25rem 1.5rem"),
+            rx.fragment(),
         ),
-        rx.text(
-            "«Verificar ahora» le pregunta a WhatsApp si tu número sigue bien conectado. Solo "
-            "se hace cuando tú lo tocas.",
-            size="1",
-            color=T.TEXT_MUTED,
-        ),
-        spacing="4",
+        spacing="3",
         width="100%",
         align_items="start",
+    )
+
+
+def _card_details(number: WhatsAppNumberVM) -> rx.Component:
+    """The facts and — unless it is already above (U3) — «Verificar ahora»."""
+    return rx.vstack(
+        number_facts(number),
+        rx.cond(
+            (number.status == "active") & ~_troubled(number),
+            _verify_block(number),
+            rx.fragment(),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def number_card_status(connection_id: rx.Var[str]) -> rx.Component:
+    """«Tu número › Estado» on the WhatsApp card of «Tus redes» (m-25027373): the part
+    above the card's divider."""
+    return _for_number(connection_id, _card_status)
+
+
+def number_card_details(connection_id: rx.Var[str]) -> rx.Component:
+    """…and the part behind the card's «Más detalles»: the ten facts and «Verificar
+    ahora» (`/debug_token` plus the number's own read — it also covers the card's
+    «Comprobar ahora», which a WhatsApp card does not show)."""
+    return _for_number(connection_id, _card_details)
+
+
+def activity_href(connection_id: rx.Var[str]) -> rx.Var[str]:
+    """`/connections/whatsapp/actividad?cuenta=<the number>`."""
+    return f"{ACTIVITY_ROUTE}?{ACCOUNT_PARAM}=" + connection_id
+
+
+def number_card_activity_link(connection_id: rx.Var[str]) -> rx.Component:
+    """«Actividad»: the number's metrics, a page that hangs from its card."""
+    return rx.link(
+        rx.button(
+            rx.icon("chart-no-axes-column", size=15),
+            ACTIVITY_TITLE,
+            variant="ghost",
+            size="2",
+            color_scheme="gray",
+            type="button",
+            # a ghost button pulls itself out by its padding: keep it clear of the
+            # «Más detalles» beside it (seen at 360 px)
+            margin="0",
+            **_TAP,
+        ),
+        href=activity_href(connection_id),
+        underline="none",
     )
 
 

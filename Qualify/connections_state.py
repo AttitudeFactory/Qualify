@@ -161,6 +161,12 @@ class ConnectionsState(rx.State):
         return any(conn.platform != "whatsapp" for conn in self.connections)
 
     @rx.var
+    def has_whatsapp(self) -> bool:
+        """m-25027373 (review N1): a WhatsApp connection has its card here, even without
+        its phone row — then the WhatsApp invite is never drawn beside it."""
+        return any(conn.platform == "whatsapp" for conn in self.connections)
+
+    @rx.var
     def show_instagram_invite(self) -> bool:
         """The «Instagram y Facebook» card with «Conectar cuenta» (m-24945912): one more
         card in the list, like WhatsApp's and TikTok's, for a business without Instagram.

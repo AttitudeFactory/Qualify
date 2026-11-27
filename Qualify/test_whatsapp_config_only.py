@@ -295,16 +295,15 @@ async def test_a_dropped_number_tidies_the_address(fake: _Fake) -> None:  # noqa
 # --- UX review ------------------------------------------------------------------------------
 
 
-def test_whatsapp_says_where_the_chats_went_with_this_numbers_way_there() -> None:
+def test_the_chats_notice_left_with_the_whatsapp_screen() -> None:
+    """m-25027373: `/whatsapp` draws nothing, so its «Tus chats de WhatsApp se responden
+    en Por responder» notice (and its link) left with it."""
+    from . import whatsapp_vm
     from .whatsapp_state import WhatsAppState
-    from .whatsapp_vm import CHATS_MOVED_ACTION, CHATS_MOVED_NOTICE, WHATSAPP_SUBTITLE
 
-    assert CHATS_MOVED_NOTICE == "Tus chats de WhatsApp se responden en Por responder."
-    assert CHATS_MOVED_ACTION == "Ir a Por responder"
-    assert WHATSAPP_SUBTITLE.startswith("Revisa que tu WhatsApp funcione")
-    state = WhatsAppState()
-    state.selected_connection_id = FIRST
-    assert state.chats_href == f"/responder?tab=mensajes&canal=whatsapp&numero={FIRST}"
+    for gone in ("CHATS_MOVED_NOTICE", "CHATS_MOVED_ACTION", "WHATSAPP_SUBTITLE"):
+        assert not hasattr(whatsapp_vm, gone), gone
+    assert "chats_href" not in WhatsAppState.computed_vars
 
 
 def test_the_header_number_select_fits_a_phone_row_with_the_theme_button() -> None:
@@ -328,7 +327,7 @@ def test_an_empty_whatsapp_view_offers_a_qr_code() -> None:
     assert empty_for(FILTER_CLOSED, connected, CHANNEL_WHATSAPP).action == "awaiting"
     assert (EMPTY_QR_LABEL, EMPTY_QR_HREF) == (
         "Crear un código QR",
-        "/whatsapp?tab=numero&sub=qr",
+        "/chats/ajustes/whatsapp/codigos-qr",  # m-25027373
     )
     from .whatsapp_vm import TAB_QR, tab_url
 

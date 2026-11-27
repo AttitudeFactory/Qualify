@@ -1201,3 +1201,80 @@ async def test_poller_skips_abandoned_promotions_but_reads_activated_ones(
         )
     await service.poll_promotion_results(tenant_id=ids["tenant_id"])
     assert read == [promotion.id]  # Activated once: read even after the preview expired.
+
+
+@pytest.mark.asyncio
+async def test_traffic_light_is_read_and_kept_with_provenance_only_when_on(
+    result_world, monkeypatch
+):
+    """m-25091390: off (the default) makes no extra Meta read and shows nothing; on, the
+    learning, whole-period and recommendation reads are kept with the rules version."""
+    ids, login, _, _, promotion, api = result_world
+    recommendations = f"act_{ids['meta_account_id']}/recommendations"
+    api.responses["GET", "2"] = {
+        "id": "2",
+        "learning_stage_info": {
+            "status": "LEARNING",
+            "conversions": 3,
+            "dynamic_lp_conversions_threshold": 25,
+        },
+    }
+    api.responses["GET", recommendations] = {
+        "data": [{"type": "CREATIVE_FATIGUE", "object_ids": ["3"], "recommendation_signature": "f"}]
+    }
+    monkeypatch.delenv("QUALIFY_ADS_TRAFFIC_LIGHT", raising=False)
+    with acting_login(login):
+        off = await service._refresh(ids["tenant_id"], promotion.id, api=api)
+    assert off.advice is None
+    assert not [c for c in api.calls if c[1] in {"2", recommendations}]
+    monkeypatch.setenv("QUALIFY_ADS_TRAFFIC_LIGHT", "1")
+    with acting_login(login):
+        on = await service._refresh(ids["tenant_id"], promotion.id, api=api)
+        loaded = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+    assert on.advice is not None and loaded.advice == on.advice
+    assert (on.advice.action, on.advice.reason, on.advice.meta) == (
+        "wait",
+        "learning",
+        ("CREATIVE_FATIGUE",),
+    )
+    assert not on.advice.can_raise
+    with tenant_session(ids["tenant_id"]) as s:
+        stored = s.scalar(
+            text("SELECT advice FROM ad_promotion_observations WHERE promotion_id=:id"),
+            {"id": promotion.id},
+        )
+    assert stored["rules_version"] == "semaforo-v1"
+    assert stored["inputs"]["learning"]["conversions_threshold"] == 25
+    assert stored["inputs"]["recommendations"][0]["type"] == "CREATIVE_FATIGUE"
+    assert datetime.fromisoformat(stored["observed_at"]) == on.updated_at
+    # Reading the light never writes to Meta.
+    assert not [c for c in api.calls if c[0] == "POST"]
+
+
+def test_hourly_budget_edit_count_reads_this_promotions_last_hour(result_world):
+    from qualify_api.ads import live_management as management
+
+    ids, login, user, _, promotion, _ = result_world
+    now = datetime.now(UTC)
+    with tenant_session(ids["tenant_id"]) as s:
+        for n, (action, age) in enumerate(
+            [("budget", 5), ("budget", 30), ("budget", 59), ("end_time", 10), ("budget", 61)]
+        ):
+            s.execute(
+                text("""INSERT INTO ad_promotion_operations (tenant_id,promotion_id,request_key,
+                  actor_id,action,payload,approval_evidence,state,created_at,pipeline_version)
+                  VALUES (:tenant,:id,:key,:actor,:action,'{}','{}','completed',:at,'test')"""),
+                {
+                    "tenant": ids["tenant_id"],
+                    "id": promotion.id,
+                    "key": f"hourly-{n}",
+                    "actor": user,
+                    "action": action,
+                    "at": now - timedelta(minutes=age),
+                },
+            )
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+    assert management._budget_edits_last_hour(scope) == 3

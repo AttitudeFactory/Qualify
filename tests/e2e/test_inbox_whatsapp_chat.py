@@ -174,9 +174,9 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
                     "fit": page.evaluate(_FIT),
                     "room": page.evaluate(_ROOM),
                 }
-            # m-25029799: `/whatsapp` keeps «Tu número» only.
+            # m-25027373: `/whatsapp` lands on the number's card in «Tus redes».
             page.goto(_origin(page) + "/whatsapp")
-            expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
+            expect(page.get_by_text("Más detalles").first).to_be_visible(timeout=60_000)
             page.wait_for_timeout(600)
             page.screenshot(path=str(out / f"{label}-whatsapp-tab-{size_name}-{scheme}.png"))
     (out / f"{label}-where.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
@@ -399,7 +399,8 @@ def test_old_whatsapp_chat_addresses_land_in_por_responder(chats_page) -> None: 
         expect(page.locator(".q-chat-head").first.get_by_role("heading")).to_have_text(
             "Laura Gómez"
         )
-    # The WhatsApp screen itself stays put (no loop): «Tu número» and the settings.
+    # Nothing else lands in «Por responder» (no loop): «Tu número»'s old addresses go to
+    # «Tus redes» / «Ajustes de chats» (m-25027373), the settings stay.
     for stays in ("/whatsapp", "/whatsapp?tab=numero&sub=qr", "/chats/ajustes/whatsapp"):
         page.goto(_origin(page) + stays)
         page.wait_for_timeout(2_000)

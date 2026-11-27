@@ -1886,7 +1886,7 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def pick_profile_href(self) -> str:
-        """Tu número › Perfil (the address and the map point), with the way back to this
+        """«Ajustes de chats › Perfil» (the address and the map point), with the way back to this
         chat (`?volver=`, m-24945889 §1)."""
         back, account = self.chat_return_href, self.chat_account
         if not back and self.open_thread_id:  # opened before the address was known

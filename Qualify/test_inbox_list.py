@@ -1044,15 +1044,14 @@ def test_the_chips_are_44_px_pressed_and_wrap() -> None:
         assert text in rendered or escaped in rendered, text
 
 
-def test_the_whatsapp_entry_opens_tu_numero_with_no_chats_badge() -> None:
-    """m-25029799: WhatsApp's chats are attended (and counted) only in «Por responder»;
-    the «WhatsApp» entry leads to «Tu número» with no number of its own."""
+def test_no_whatsapp_entry_and_no_chats_badge() -> None:
+    """m-25029799: WhatsApp's chats are attended (and counted) only in «Por responder».
+    m-25027373: the «WhatsApp» entry is gone with «Tu número»."""
     from .ui.layout import NAV_COUNTERS, NAV_ZONES, sidebar
 
     assert "WhatsApp" not in NAV_COUNTERS and "Por responder" in NAV_COUNTERS
     atiende = {zone: items for zone, _t, items in NAV_ZONES}["listen"]
-    assert [label for label, *_ in atiende] == ["Por responder", "WhatsApp", "Ajustes de chats"]
-    assert ("WhatsApp", "message-circle", "/whatsapp", True) in atiende
+    assert [label for label, *_ in atiende] == ["Por responder", "Ajustes de chats"]
     rendered = str(sidebar())
     assert "tab=chats" not in rendered and "filtro=por-responder" not in rendered
     assert "whatsapp_badge" not in rendered

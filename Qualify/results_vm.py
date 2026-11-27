@@ -66,9 +66,12 @@ CONNECTIONS_URL = "/connections"
 CREATE_URL = "/create"
 # m-25029799: WhatsApp's chats are attended in «Por responder», narrowed to WhatsApp.
 WHATSAPP_CHATS_URL = WHATSAPP_CHATS_HREF
-WHATSAPP_MODULE_URL = "/whatsapp"
-WHATSAPP_NUMBERS_URL = "/whatsapp?tab=conexion"
-WHATSAPP_QR_URL = "/whatsapp?tab=qr"
+# m-25027373 (BU-A10): `/whatsapp` draws nothing. Without a number: «Tus redes», whose
+# WhatsApp card offers «Pedir que conecten mi WhatsApp»; the number's state is its card
+# there too; its QR codes are a page of «Ajustes de chats».
+WHATSAPP_MODULE_URL = "/connections"
+WHATSAPP_NUMBERS_URL = "/connections"
+WHATSAPP_QR_URL = "/chats/ajustes/whatsapp/codigos-qr"
 
 
 def resolve_tab(requested: str) -> str:

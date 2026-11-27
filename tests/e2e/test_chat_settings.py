@@ -174,13 +174,11 @@ def test_the_menus_old_address_lands_in_ajustes(chats_page) -> None:  # noqa: AN
     _no_sideways_scroll(page)
     _shot(page, "whatsapp-menu-360-v2")
 
-    # m-25029799: the WhatsApp screen keeps only «Tu número» (its chats are in «Por
-    # responder»): one strip, «Tu número»'s own.
+    # m-25027373: «Tu número» left the WhatsApp screen — its Estado is the number's
+    # card in «Tus redes», where its old address lands.
     page.goto(f"{base}/whatsapp?tab=numero&sub=estado")
-    strip = page.get_by_role("group", name="Tu número")
-    expect(strip.get_by_role("button")).to_have_text(
-        ["Estado", "Perfil", "Formas de pago", "Códigos QR", "Actividad"], timeout=60_000
-    )
+    expect(page).to_have_url(f"{base}/connections", timeout=60_000)
+    expect(page.get_by_role("group", name="Tu número")).to_have_count(0)
     expect(page.get_by_role("group", name="Secciones de WhatsApp")).to_have_count(0)
     _shot(page, "whatsapp-mensajes-360-despues-v2")
 

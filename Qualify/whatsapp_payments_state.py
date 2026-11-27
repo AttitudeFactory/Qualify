@@ -1,4 +1,5 @@
-"""Reflex state for «Formas de pago» (WhatsApp → Tu número, m-24955648, first PR).
+"""Reflex state for «Formas de pago» (m-24955648, first PR; a page of «Ajustes de chats»
+since m-25027373, `/chats/ajustes/formas-de-pago`).
 
 The owner manages the business's payment methods: the list (order, «La ofreces»,
 «Borrar») and a four-step flow to add or edit one (name, currency and when the customer
@@ -85,28 +86,9 @@ from .whatsapp_payments_vm import (
 )
 from .whatsapp_state import WhatsAppState
 
-
-def chat_return_path(params: Any) -> str:
-    """`?volver=` only when it is one of the app's own chat addresses
-    (`catalog_vm.safe_return_path`): an open chat in «Por responder»
-    (`/responder?tab=mensajes&…&chat=…`, m-25029798) or an old `/whatsapp?tab=chats`
-    address OF A CHAT (it redirects to that chat) — never WhatsApp's retired list
-    (m-25029799), never a link off Qualify."""
-    from urllib.parse import parse_qs, urlsplit  # noqa: PLC0415
-
-    from .catalog_vm import return_path_from_query  # noqa: PLC0415
-
-    path = return_path_from_query(params)  # safe_return_path first: same-origin only
-    if not path:
-        return ""
-    parts = urlsplit(path)
-    query = parse_qs(parts.query)
-    tabs = query.get("tab", [])
-    if parts.path == "/whatsapp" and tabs == ["chats"] and "chat" in query:
-        return path
-    inbox_chat = parts.path == "/responder" and tabs == ["mensajes"] and "chat" in query
-    return path if inbox_chat else ""
-
+# m-25027373: the rule moved to the pure view model, so `/whatsapp`'s redirects apply it
+# too; re-exported here for the panels that already read it from this module.
+from .whatsapp_vm import chat_return_path as chat_return_path
 
 logger = logging.getLogger(__name__)
 

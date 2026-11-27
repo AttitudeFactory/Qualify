@@ -5,7 +5,7 @@ prepares once lives apart from the messages, in «Ajustes de chats» under «Ati
 screen, three cards, no tabs (mockup `docs/mockups/chats-unificados.html`, part F):
 
     Para todos tus chats   Mensajes guardados · Formas de pago · Cómo llegar
-    WhatsApp               Tu menú de bienvenida · Preguntas iniciales
+    WhatsApp               Tu menú de bienvenida · Perfil · Códigos QR
     Instagram              Preguntas iniciales (one row per connected account)
 
 Each row opens the screen that already exists. Names: «Tu menú de bienvenida» is the
@@ -15,10 +15,14 @@ both channels (`STARTER_QUESTIONS_LINE`).
 
 What is NOT built here, on purpose (each its own ticket): one saved-messages library for
 every channel (BU-A8: today they are Instagram's «Plantillas»), payments and «Cómo
-llegar» as data of the business (BU-A14: today they are kept with the WhatsApp number,
-under «Tu número», which moves to «Tus redes» in BU-A10). Those rows say which network
-each works on today and take the owner to it; the two kept with the WhatsApp number
-are hidden without one.
+llegar» as data of the business (BU-A14: today they are kept with the WhatsApp number).
+Those rows say which network each works on today and take the owner to it; the two kept
+with the WhatsApp number are hidden without one.
+
+m-25027373 (BU-A10): «Tu número» left `/whatsapp`. Its Perfil, Códigos QR and Formas de
+pago are pages of this hub (`SETTINGS_PROFILE_ROUTE`, `SETTINGS_QR_ROUTE`,
+`SETTINGS_PAYMENTS_ROUTE`, served by `WhatsAppState` like the menu's); its Estado and
+Actividad live in «Tus redes» (`whatsapp_vm.CONNECTIONS_ROUTE`, `ACTIVITY_ROUTE`).
 
 Pure: no Reflex, no database; `test_chat_settings.py` pins it.
 """
@@ -35,6 +39,12 @@ SETTINGS_WHATSAPP_ROUTE: Final = "/chats/ajustes/whatsapp"
 #: The hub, with an Instagram account's «Preguntas iniciales» open (the drawer). The
 #: target of the Instagram chat's «⋯» › «Ajustes de este canal».
 SETTINGS_INSTAGRAM_ROUTE: Final = "/chats/ajustes/instagram"
+#: m-25027373 (BU-A10): the WhatsApp number's profile (with «Tu local en el mapa», what
+#: «Cómo llegar» sends), its QR codes and the payment methods — once «Tu número»'s
+#: sub-tabs, now pages of «Ajustes de chats».
+SETTINGS_PROFILE_ROUTE: Final = "/chats/ajustes/whatsapp/perfil"
+SETTINGS_QR_ROUTE: Final = "/chats/ajustes/whatsapp/codigos-qr"
+SETTINGS_PAYMENTS_ROUTE: Final = "/chats/ajustes/formas-de-pago"
 
 CHAT_SETTINGS_TITLE: Final = "Ajustes de chats"
 CHAT_SETTINGS_SUBTITLE: Final = (
@@ -53,8 +63,8 @@ INSTAGRAM_TITLE: Final = "Instagram"
 
 #: Where each thing is kept today (the rows of «Para todos tus chats» point there).
 SAVED_MESSAGES_HREF: Final = "/responder?tab=mensajes"
-PAYMENTS_HREF: Final = "/whatsapp?tab=numero&sub=pagos"
-DIRECTIONS_HREF: Final = "/whatsapp?tab=numero&sub=perfil"
+PAYMENTS_HREF: Final = SETTINGS_PAYMENTS_ROUTE
+DIRECTIONS_HREF: Final = SETTINGS_PROFILE_ROUTE
 CONNECTIONS_HREF: Final = "/connections"
 #: The chats, for the way back (N7) and the header line.
 CHATS_HREF: Final = "/responder"
@@ -115,7 +125,11 @@ WHATSAPP_ONLY_KEYS: Final = frozenset({"formas-de-pago", "como-llegar"})
 ALWAYS_ROWS: Final = tuple(r for r in ALL_CHATS_ROWS if r.key not in WHATSAPP_ONLY_KEYS)
 WHATSAPP_NUMBER_ROWS: Final = tuple(r for r in ALL_CHATS_ROWS if r.key in WHATSAPP_ONLY_KEYS)
 
-#: One row (UX review U3): the starter questions are part of the menu.
+#: The menu (UX review U3: the starter questions are part of it), then — m-25027373 —
+#: the number's profile and QR codes, which left «Tu número».
+#: m-25027373 — the two `detail` lines are NEW TEXT, NOT DECIDED BY THE FOUNDER.
+PROFILE_TITLE: Final = "Perfil"
+QR_TITLE: Final = "Códigos QR"
 WHATSAPP_ROWS: Final[tuple[SettingRowVM, ...]] = (
     SettingRowVM(
         "menu",
@@ -125,13 +139,27 @@ WHATSAPP_ROWS: Final[tuple[SettingRowVM, ...]] = (
         SETTINGS_WHATSAPP_ROUTE,
         "list",
     ),
+    SettingRowVM(
+        "perfil",
+        PROFILE_TITLE,
+        "Tu foto, tu descripción y tus datos de contacto, como los ven tus clientes en WhatsApp.",
+        SETTINGS_PROFILE_ROUTE,
+        "store",
+    ),
+    SettingRowVM(
+        "codigos-qr",
+        QR_TITLE,
+        "Códigos que abren un chat contigo: para el mostrador, el empaque o tu Instagram.",
+        SETTINGS_QR_ROUTE,
+        "qr-code",
+    ),
 )
 
 NO_WHATSAPP: Final = "Todavía no tienes tu número de WhatsApp conectado."
 NO_WHATSAPP_ACTION: Final = "Ver cómo conectarlo"
-#: The no-number state, with its «Pedir que conecten mi WhatsApp», is also on the menu's
-#: page — so this hub never depends on `/whatsapp` (whose Chats tab is leaving, BU-A11).
-NO_WHATSAPP_HREF: Final = SETTINGS_WHATSAPP_ROUTE
+#: m-25027373 (UX review U1): «Tus redes» has a WhatsApp card with «Pedir que conecten
+#: mi WhatsApp» when the business has no number — where every other network connects.
+NO_WHATSAPP_HREF: Final = CONNECTIONS_HREF
 NO_INSTAGRAM: Final = "Todavía no tienes una cuenta de Instagram conectada."
 NO_INSTAGRAM_ACTION: Final = "Conectar en Tus redes"
 CONNECTIONS_NOTE: Final = "¿Tu WhatsApp o tu Instagram dejó de funcionar?"

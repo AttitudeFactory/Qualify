@@ -76,6 +76,15 @@ def max_cost_per_client_minor(average_ticket_minor: int, margin_basis_points: in
     return average_ticket_minor * margin_basis_points // 10_000
 
 
+def shown_max_cost_minor(average_ticket_minor: int, margin_basis_points: int, currency: str) -> int:
+    """The maximum the profile screen shows: rounded down to the shown step."""
+    exact = max_cost_per_client_minor(average_ticket_minor, margin_basis_points)
+    step = display_step_minor(currency)
+    # below one rounding step (a $3.000 ticket), round to the whole unit, never to 0
+    step = step if exact >= step else 100
+    return exact // step * step
+
+
 @dataclass(frozen=True)
 class InvestmentProfile:
     brand_id: UUID
@@ -96,11 +105,9 @@ class InvestmentProfile:
 
     @property
     def max_cost_per_client_minor(self) -> int:
-        exact = max_cost_per_client_minor(self.average_ticket_minor, self.margin_basis_points)
-        step = display_step_minor(self.currency)
-        # below one rounding step (a $3.000 ticket), round to the whole unit, never to 0
-        step = step if exact >= step else 100
-        return exact // step * step
+        return shown_max_cost_minor(
+            self.average_ticket_minor, self.margin_basis_points, self.currency
+        )
 
 
 def _money(value: object, message: str) -> int:

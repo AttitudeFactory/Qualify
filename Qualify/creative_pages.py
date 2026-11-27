@@ -70,9 +70,8 @@ from .promotion_entry import promotion_link
 from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
 from .seasonal_ui import fold_summary
-from .stories_page import story_share_button_id, story_share_from_url
-from .stories_vm import STORY_SHARE_BUSY, STORY_SHARE_HELP, STORY_SHARE_LABEL
-from .story_mark_ui import story_mark_control
+from .stories_page import story_share_block, story_share_button_id
+from .story_mark_ui import story_mark_control, story_page_phone_actions
 from .ui import (
     app_shell,
     callout,
@@ -1009,31 +1008,10 @@ def _story_share(post) -> rx.Component:
     the historia's own page, as before."""
     return rx.cond(
         (post.story_share_url != "") & GalleryState.story_share_here,
-        rx.vstack(
-            rx.button(
-                rx.icon("share-2", size=15),
-                # the script swaps these two while the file downloads (`data-busy`)
-                rx.text(STORY_SHARE_LABEL, as_="span", class_name="q-share-idle"),
-                rx.text(STORY_SHARE_BUSY, as_="span", class_name="q-share-busy"),
-                id=story_share_button_id(post.post_id),
-                variant="soft",
-                size="2",
-                width="100%",
-                min_height="44px",
-                style={
-                    "& .q-share-busy": {"display": "none"},
-                    "&[data-busy] .q-share-idle": {"display": "none"},
-                    "&[data-busy] .q-share-busy": {"display": "inline"},
-                },
-                on_click=story_share_from_url(
-                    post.story_share_url,
-                    story_share_button_id(post.post_id),
-                    GalleryState.handle_story_share,
-                ),
-            ),
-            rx.text(STORY_SHARE_HELP, size="1", color=T.TEXT_MUTED),
-            spacing="1",
-            width="100%",
+        story_share_block(
+            post.story_share_url,
+            story_share_button_id(post.post_id),
+            GalleryState.handle_story_share,
         ),
     )
 
@@ -1104,7 +1082,9 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
             ),
         ),
         rx.cond(
-            (post.used_count > 0) & (post.kind != "story"),
+            # a historia never: the ads wizard has nothing to offer for it (m-25026350
+            # keeps the story ad as its own entry, `?formato=historia`, in Tu semana)
+            (post.used_count > 0) & ~post.is_story,
             promotion_link(post.post_id),
         ),
         class_name="q-gcard-actions",
@@ -2757,6 +2737,9 @@ def _review_panel() -> rx.Component:
         rx.box(
             rx.box(
                 _media_column(),
+                # founder 2026-11-26: a historia's «Abrir en Instagram» (Android) or how
+                # to finish it from «Descargar» (iPhone), right under its picture
+                story_page_phone_actions(draft.draft_id),
                 # m-25019220: a view-only upload is Instagram's copy — said by its picture
                 rx.cond(
                     draft.view_only_note != "",
@@ -3539,6 +3522,8 @@ def _parts_parent_made() -> rx.Component:
         # one status line and the parts that wait for a decision (the generator keeps
         # the panel above the card: `content_generator._parts_video_result`)
         final_video_card(draft.draft_id, layout=COLUMNS),
+        # founder 2026-11-26: the same phone actions as a single piece, under the video
+        story_page_phone_actions(draft.draft_id),
         part_progress_panel(draft.draft_id),
         _parts_post_text(),
         # m-24921083 (Deivid, 2026-11-13): the reel it is inspired by, above «Campaña»
@@ -3552,7 +3537,7 @@ def _parts_parent_made() -> rx.Component:
             | (draft.status == "published"),
         ),
         # m-25040496: the owner marks a piece he uses as an Instagram historia
-        story_mark_control(draft.draft_id),
+        story_mark_control(draft.draft_id, draft.status),
         spacing="4",
         width="100%",
     )
@@ -3709,7 +3694,7 @@ def _single_piece_detail() -> rx.Component:
                         | (CreativeState.draft.status == "published"),
                     ),
                     # m-25040496: «Es una historia», in any approval state
-                    story_mark_control(CreativeState.draft.draft_id),
+                    story_mark_control(CreativeState.draft.draft_id, CreativeState.draft.status),
                     # m-24921091: an approved video can also go to the
                     # owner's TikTok (never published from here).
                     tiktok_draft_card(),

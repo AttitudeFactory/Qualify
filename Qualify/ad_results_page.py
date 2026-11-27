@@ -8,6 +8,7 @@ from qualify_api.ads.status_webhook import SUBSCRIBE_OFFER
 from .ad_month_plan_ui import month_plan_card
 from .ad_results_state import AdResultsState as S
 from .ad_results_vm import (
+    ADVICE_NOTE,
     EDIT_STOP_SPEND,
     PAUSE_HERE,
     URGENT_PAUSE,
@@ -542,6 +543,57 @@ def _management() -> rx.Component:
     )
 
 
+def _advice() -> rx.Component:
+    """The traffic light (m-25091390): one recommendation, at most one raise button that
+    opens the usual check-and-confirm edit. Shown only when the backend has a current one."""
+    advice = S.detail.advice
+    return rx.cond(
+        advice.shown,
+        card(
+            rx.vstack(
+                rx.heading("Qué te recomendamos", size="4", as_="h2"),
+                signal_pill(advice.label, advice.tone, size="2"),
+                rx.text(advice.message, size="3"),
+                rx.foreach(advice.meta, lambda line: rx.text(line, size="2")),
+                rx.cond(
+                    advice.can_raise,
+                    rx.button(
+                        advice.raise_label,
+                        on_click=S.open_advised_raise,
+                        disabled=S.busy | ~S.detail.promotion.can_manage | S.change_pending,
+                        min_height="44px",
+                        size="3",
+                        width=rx.breakpoints(initial="100%", sm="auto"),
+                    ),
+                ),
+                rx.cond(
+                    advice.new_piece,
+                    rx.link(
+                        rx.button("Crear publicación", variant="outline", min_height="44px"),
+                        href="/create",
+                    ),
+                ),
+                rx.cond(
+                    advice.profile_link,
+                    rx.link(
+                        rx.button(
+                            "Calcular cuánto puedo pagar por cliente",
+                            variant="outline",
+                            min_height="44px",
+                        ),
+                        href="/promotions/perfil",
+                    ),
+                ),
+                rx.text(ADVICE_NOTE, size="1", color=T.TEXT_MUTED),
+                spacing="3",
+                align_items="start",
+                width="100%",
+            ),
+            width="100%",
+        ),
+    )
+
+
 def _detail_facts() -> rx.Component:
     return rx.vstack(
         _fact("Cuenta para anuncios", S.detail.promotion.account),
@@ -623,6 +675,7 @@ def _detail() -> rx.Component:
             ),
             width="100%",
         ),
+        _advice(),
         card(
             rx.vstack(
                 _fact("Conversaciones vinculadas en Qualify", S.detail.observed_conversations),

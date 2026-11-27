@@ -1,5 +1,7 @@
 """m-25029799 (BU-A11, second part): WhatsApp's chats are attended only in «Por
-responder»; the WhatsApp screen keeps its configuration («Tu número»).
+responder». m-25027373 (BU-A10): the WhatsApp screen's configuration («Tu número») moved
+to «Tus redes» and «Ajustes de chats» too, so `/whatsapp` only redirects
+(`test_tu_numero_moved.py`).
 
 Seeded by `chat_fixtures.seed_chats` (`chats_page`) plus a second WhatsApp number
 (`seed_second_number`); nothing reaches Meta or R2 and nothing is sent: no test taps
@@ -121,14 +123,15 @@ def _menu_entry(page, name: str):  # noqa: ANN001, ANN202
 
 
 @pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["360", "1280"])
-def test_whatsapp_keeps_only_tu_numero(chats_page, size: dict[str, int]) -> None:  # noqa: ANN001
+def test_whatsapp_lands_on_the_numbers_card(chats_page, size: dict[str, int]) -> None:  # noqa: ANN001
+    """m-25027373: `/whatsapp` lands in «Tus redes», where the number's state is now."""
     page = chats_page
     page.set_viewport_size(size)
     page.goto(_origin(page) + "/whatsapp")
-    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible(timeout=60_000)
-    expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
+    expect(page).to_have_url(re.compile(r"/connections$"), timeout=60_000)
+    expect(page.get_by_role("heading", level=1, name="Tus redes")).to_be_visible(timeout=60_000)
     page.wait_for_timeout(1_500)
-    assert "/whatsapp" in page.url and "/responder" not in page.url
+    assert "/responder" not in page.url
     for gone in ("Filtrar chats", "Secciones de WhatsApp"):
         expect(page.get_by_role("group", name=gone)).to_have_count(0)
     expect(page.locator(".q-conv-row")).to_have_count(0)
@@ -152,8 +155,8 @@ def test_every_old_list_address_lands_in_por_responder(  # noqa: ANN001
 ) -> None:
     page = chats_page
     page.set_viewport_size(DESKTOP)
-    page.goto(_origin(page) + "/whatsapp?tab=numero&sub=qr")
-    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible(timeout=60_000)
+    page.goto(_origin(page) + "/chats/ajustes/whatsapp/codigos-qr")  # m-25027373
+    expect(page.get_by_role("heading", level=1, name="Códigos QR")).to_be_visible(timeout=60_000)
     before = page.url
     page.goto(_origin(page) + old)
     expect(page).to_have_url(
@@ -234,12 +237,11 @@ def test_one_number_draws_no_choice(chats_page) -> None:  # noqa: ANN001
 def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> None:  # noqa: ANN001
     page = chats_page
     page.set_viewport_size(DESKTOP)
-    page.goto(_origin(page) + "/whatsapp")
-    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible(timeout=60_000)
+    page.goto(_origin(page) + "/connections")
+    expect(page.get_by_role("heading", level=1, name="Tus redes")).to_be_visible(timeout=60_000)
     page.wait_for_timeout(2_000)  # the menu's counts poll lands
-    whatsapp = _menu_entry(page, "WhatsApp")
-    expect(whatsapp).to_have_attribute("href", "/whatsapp")
-    assert re.fullmatch(r"\s*WhatsApp\s*", whatsapp.inner_text()), whatsapp.inner_text()  # no badge
+    # m-25027373: no «WhatsApp» entry any more.
+    expect(page.locator('nav a[href="/whatsapp"]')).to_have_count(0)
     respond = _menu_entry(page, "Por responder")
     expect(respond).to_have_attribute("href", "/responder")
     respond.click()
@@ -316,24 +318,22 @@ def test_an_empty_whatsapp_list_offers_a_qr_code(signed_up_page) -> None:  # noq
     link = page.get_by_role("link", name="Crear un código QR")
     expect(link).to_be_visible(timeout=60_000)
     link.click()
-    expect(page).to_have_url(re.compile(r"/whatsapp\?tab=numero&sub=qr"), timeout=60_000)
+    expect(page).to_have_url(re.compile(r"/chats/ajustes/whatsapp/codigos-qr$"), timeout=60_000)
+    expect(page.get_by_role("heading", level=1, name="Códigos QR")).to_be_visible(timeout=60_000)
 
 
-def test_whatsapp_says_where_the_chats_went(chats_page) -> None:  # noqa: ANN001
+def test_the_number_select_shares_the_header_row_on_a_phone(chats_page) -> None:  # noqa: ANN001
+    """U4 (m-25029799), on the pages that kept the number select (m-25027373: the
+    `/whatsapp` notice «Tus chats de WhatsApp se responden en Por responder» left with
+    that screen)."""
     from .chat_fixtures import seed_second_number
 
     page = chats_page
     # Two numbers, so the header's number select is drawn (U4).
     seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size(PHONE)
-    page.goto(_origin(page) + "/whatsapp")
-    expect(page.get_by_text("Tus chats de WhatsApp se responden en Por responder.")).to_be_visible(
-        timeout=60_000
-    )
-    page.get_by_role("link", name="Ir a Por responder").click()
-    expect(page).to_have_url(re.compile(r"/responder\?tab=mensajes&canal=whatsapp"), timeout=60_000)
     # U4: the header's number select and the theme button share one row at 360 px.
-    page.goto(_origin(page) + "/whatsapp")
+    page.goto(_origin(page) + "/chats/ajustes/whatsapp/codigos-qr")
     trigger = page.locator(".q-page-header [role=combobox]").first
     toggle = page.locator(".q-page-header button").last
     expect(trigger).to_be_visible(timeout=60_000)

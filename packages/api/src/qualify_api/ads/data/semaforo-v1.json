@@ -1,0 +1,17 @@
+{
+  "version": "semaforo-v1",
+  "status": "PROVISIONAL — every threshold here is our rule, not Meta's: Meta documents how much the ad set still has to learn (learning_stage_info, per ad set) and its own recommendations, never how much or how often to raise a budget nor a fatigue frequency (docs/discovery-asesor-inversion-meta.md §3, §4, §6). Review with the live test m-24828971 and with our own approved changes (did last_sig_edit_ts move after a raise?).",
+  "source": "m-25091390; Raul / backend, 2026-11-26, hypotheses",
+  "raise_percent": 20,
+  "raise_percent_source": "«sube ~20 % cada 3–4 días» is agency practice [S, discovery §4], not a Meta rule; Meta's own limits (4 budget changes per hour per ad set, a decrease ≥ 10 % above what was spent) are enforced in live_management, not here",
+  "cheap_share_of_max_cost": "0.7",
+  "cheap_share_source": "cost per result at or under 70 % of what a client can cost (investment profile: ticket × margin) = «súbele»; up to 100 % = «mantén»; above = «no subas»",
+  "min_results": 5,
+  "min_results_source": "fewer results than this in the period = too few to judge cost (our statistical minimum; Meta documents none for cost or frequency, discovery §6)",
+  "fatigue_frequency": "3",
+  "fatigue_cost_rise": "0.25",
+  "fatigue_window_days": 3,
+  "fatigue_source": "period frequency ≥ 3 and the cost per click of the last 3 closed days ≥ 25 % above the first 3 = the same people saw it too often; Meta publishes no fatigue threshold (discovery §6)",
+  "saturation_share_of_audience_lower": "0.7",
+  "saturation_source": "people reached in the period ≥ 70 % of the lower bound of Meta's audience size saved before approval (ad_promotion_market_estimates) = «amplía la zona»; the same share as mercado-v1's saturation"
+}

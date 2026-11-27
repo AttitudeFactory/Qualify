@@ -1,5 +1,8 @@
-"""Reflex state for the `/whatsapp` screen (WA-12): the shell (numbers, selector, tabs)
-and the Conexión / Perfil / QR tabs.
+"""Reflex state for the WhatsApp number's pages (WA-12): the shell (numbers, selector,
+panels) and the Conexión / Perfil / QR panels. Since m-25027373 (BU-A10) `/whatsapp`
+draws nothing: Estado is the number's card in «Tus redes» (which reads the numbers from
+here, with `verify_number` / `request_review` per card), Actividad a page under it, and
+Perfil, Códigos QR and Formas de pago pages of «Ajustes de chats» (`PAGE_PANELS`).
 
 Holds only the frozen VMs of `whatsapp_vm.py` — never an ORM row, never a Graph client,
 never a token — so nothing credential-bearing can be serialized to the browser. The
@@ -22,7 +25,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import httpx
@@ -64,13 +68,12 @@ from .whatsapp_vm import (
     EMPTY_PROFILE,
     GRAPH_UNAVAILABLE,
     MAX_QR_MESSAGE_CHARS,
+    PAGE_PANELS,
     PROMOTIONS_ROUTE,
     QR_DEFAULT_CHANNEL,
-    SETTINGS_WHATSAPP_ROUTE,
     SUB_PARAM,
     TAB_KEYS,
-    TAB_MENU,
-    TAB_PARAM,
+    WHATSAPP_ROUTE,
     BusinessProfileVM,
     ProfileForm,
     QrCodeVM,
@@ -83,7 +86,6 @@ from .whatsapp_vm import (
     panel_section,
     panel_sub,
     promotions_panel,
-    resolve_panel,
     resolve_tab,
     sub_panel,
     tab_url,
@@ -196,6 +198,17 @@ class WhatsAppState(rx.State):
     # Backend-only: Meta returns a code's PNG on create only; keep it for this session.
     _qr_images: dict[str, str] = {}
 
+    # -- m-25027373: what the page on screen asked for -----------------------------------
+    # Backend-only. The number its address names (`?cuenta=`, a canonical UUID), read from
+    # the browser's own address by `enter_history` (the router data of an event can still
+    # be the previous page's), and whether the page is one of this state's panel pages:
+    # «Tus redes» only reads the numbers, never a panel's leftover loads.
+    _requested_number: str = ""
+    _panel_page: bool = False
+    #: The numbers were read at least once for this session (U1: «Tus redes» offers to
+    #: connect WhatsApp only once it KNOWS there is no number, never while loading).
+    numbers_loaded: bool = False
+
     # ==================================================================================
     # Computed vars
     # ==================================================================================
@@ -207,6 +220,23 @@ class WhatsAppState(rx.State):
     @rx.var
     def has_many_numbers(self) -> bool:
         return len(self.numbers) > 1
+
+    @rx.var
+    def number_ids(self) -> list[str]:
+        """m-25027373 (review C5): the numbers read, so a «Tus redes» card without its
+        number (the read failed) keeps the card's own check instead of losing it."""
+        return [n.connection_id for n in self.numbers]
+
+    @rx.var
+    def show_connect_invite(self) -> bool:
+        """U1: «Tus redes» offers to connect WhatsApp once the numbers were read and
+        there is none (never while loading, never after a failed read)."""
+        return (
+            self.numbers_loaded
+            and not self.is_loading
+            and not self.load_error
+            and len(self.numbers) == 0
+        )
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -221,11 +251,6 @@ class WhatsAppState(rx.State):
     @rx.var
     def active_sub(self) -> str:
         return panel_sub(self.active_tab)
-
-    @rx.var
-    def chats_href(self) -> str:
-        """m-25029799: this number's chats in «Por responder» (`/whatsapp`'s notice)."""
-        return whatsapp_chats_href(self.selected_connection_id)
 
     @rx.var
     def selected_number(self) -> WhatsAppNumberVM:
@@ -283,36 +308,62 @@ class WhatsAppState(rx.State):
     # Shell
     # ==================================================================================
 
-    def _read_address(self) -> str | None:
+    def _address(self, href: str = "") -> tuple[str, Mapping[str, object]]:
+        """(path, query) of the page on screen. `href` is the browser's own
+        `location.href` (the route history's lease): after a client-side navigation the
+        router data an event carries can still be the PREVIOUS page's, and since
+        m-25027373 a wrong path would send the owner away. Only a same-origin path is
+        read from it; anything else falls back to the router."""
+        parts = urlsplit(href) if isinstance(href, str) and href else None
+        if parts is not None and parts.path.startswith("/") and not parts.path.startswith("//"):
+            query: dict[str, object] = {
+                key: values[0] if len(values) == 1 else values
+                for key, values in parse_qs(parts.query, keep_blank_values=True).items()
+            }
+            return parts.path.rstrip("/"), query
+        url = self.router.url
+        return url.path.rstrip("/"), url.query_parameters
+
+    def _read_address(self, href: str = "") -> str | None:
         """Set the panel from the address, or return where an old address now lives.
 
-        `/whatsapp/promociones` (m-25017862) shows a promotions panel from `?sub=`;
-        `/chats/ajustes/whatsapp` (m-25017861) the menu; `/whatsapp` reads `?tab=`/`?sub=`,
-        except an old address of a panel that moved (promotions, the menu), which is
-        answered with its new place (the caller redirects, nothing is set)."""
-        url = self.router.url
-        params = url.query_parameters
-        path = url.path.rstrip("/")
+        `/whatsapp/promociones` (m-25017862) shows a promotions panel from `?sub=`; each
+        page of `PAGE_PANELS` its one panel — the menu (m-25017861), and «Tu número»'s
+        Perfil, Códigos QR, Formas de pago and Actividad (m-25027373). `/whatsapp` draws
+        nothing since m-25027373: every address of it is answered with its new place
+        (the caller redirects, nothing is set). Any other path (not one of these pages)
+        changes nothing and sends nowhere."""
+        path, params = self._address(href)
         if path == PROMOTIONS_ROUTE:
             self.active_tab = promotions_panel(str(params.get(SUB_PARAM, "") or ""))
+            self._enter_panel_page(params)
             return None
-        if path == SETTINGS_WHATSAPP_ROUTE:
-            # m-25017861: «Ajustes de chats › WhatsApp» draws the menu panel only.
-            self.active_tab = TAB_MENU
+        panel = PAGE_PANELS.get(path)
+        if panel is not None:
+            self.active_tab = panel
+            self._enter_panel_page(params)
             return None
-        moved = legacy_panel_target(params)
-        if moved is not None:
-            return moved
-        self.active_tab = resolve_panel(
-            str(params.get(TAB_PARAM, "") or ""), str(params.get(SUB_PARAM, "") or "")
-        )
+        if path == WHATSAPP_ROUTE:
+            return legacy_panel_target(params)
         return None
+
+    def _enter_panel_page(self, params: Mapping[str, object]) -> None:
+        self._panel_page = True
+        self._requested_number = uuid_param(params, "cuenta")
+
+    @rx.event
+    def enter_connections(self) -> rx.event.EventHandler:
+        """m-25027373: on_load of «Tus redes», where each number has its card: read the
+        numbers only — no panel's flow or list is restored there."""
+        self._panel_page = False
+        self._requested_number = ""
+        return WhatsAppState.load_numbers
 
     @rx.event
     def enter_page(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
-        """`/whatsapp` and `/whatsapp/promociones` on_load: pick the panel from the
-        address and load the numbers. Also runs on «atrás» (a real navigation), so the
-        previous tab comes back."""
+        """on_load of `/whatsapp`, `/whatsapp/promociones` and every page of
+        `PAGE_PANELS`: pick the panel from the address and load the numbers. Also runs
+        on «atrás» (a real navigation), so the previous tab comes back."""
         if self._read_address() is not None:
             # An old address of a panel that moved (promotions, the menu, the chats of
             # m-25029799). `enter_history` (the page's mount, and every «atrás») is the
@@ -355,7 +406,8 @@ class WhatsAppState(rx.State):
 
     @rx.event
     async def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
-        moved = self._read_address()
+        href = lease.get("href", "") if isinstance(lease, dict) else ""
+        moved = self._read_address(href if isinstance(href, str) else "")
         if moved is not None:
             # m-25017862: «Promociones» left this screen; a bookmark lands on its page —
             # once signed in. Without a session `require_login` sends the visitor to log
@@ -488,8 +540,36 @@ class WhatsAppState(rx.State):
         if connection_id not in {n.connection_id for n in self.numbers}:
             return  # arrived over the wire; refuse an id the list does not hold
         self.selected_connection_id = connection_id
+        self._requested_number = connection_id  # a later re-read keeps the owner's pick
         self._reset_number_scoped()
         return rx.call_script(push_url_script(self._panel_address(self.active_tab)))
+
+    def _pick_number(self, connection_id: object) -> bool:
+        """m-25027373: «Tus redes» shows one card per number, each with its own buttons;
+        a tap there acts on THAT number. Only an id the business's list holds is taken
+        (it arrived over the wire); the address is not touched (one page, many cards)."""
+        if not isinstance(connection_id, str):
+            return False
+        if connection_id not in {n.connection_id for n in self.numbers}:
+            return False
+        if connection_id != self.selected_connection_id:
+            self.selected_connection_id = connection_id
+            self._requested_number = connection_id
+            self._reset_number_scoped()
+            self.connect_request_notice = ""
+            self.connect_request_error = ""
+        return True
+
+    @rx.event
+    def verify_number(self, connection_id: str) -> rx.event.EventHandler | None:
+        """«Verificar ahora» on a number's card in «Tus redes» (m-25027373)."""
+        return WhatsAppState.verify_now if self._pick_number(connection_id) else None
+
+    @rx.event
+    def request_review(self, connection_id: str) -> rx.event.EventHandler | None:
+        """«Avisar al equipo de Qualify» on a number's card in «Tus redes» (m-25027373):
+        the same support request as before, for that number."""
+        return WhatsAppState.request_connection if self._pick_number(connection_id) else None
 
     def _reset_number_scoped(self) -> None:
         self.connection_banner = ""
@@ -515,6 +595,9 @@ class WhatsAppState(rx.State):
             if self.is_loading:
                 return
             self.is_loading = True
+            # Re-read for whoever is in session now (a business switch keeps this
+            # state): until it lands, «Tus redes» offers nothing (review N1).
+            self.numbers_loaded = False
             self.load_error = ""
             session_tenant_id, tenant_id = await self._session_tenant()
         if tenant_id is None:
@@ -533,11 +616,16 @@ class WhatsAppState(rx.State):
         async with self:
             auth = await self.get_state(AuthState)
             if session_tenant_id != auth.session_tenant_id:
-                return  # a logout/login raced this load
+                # a logout/login raced this load; free the guard so the next one runs
+                self.is_loading = False
+                return
             self.numbers = data
             self.is_loading = False
+            self.numbers_loaded = True
             ids = {n.connection_id for n in data}
-            requested = uuid_param(self.router.url.query_parameters, "cuenta")
+            # m-25027373: what the page asked for (`_enter_panel_page`), never the
+            # router data of this event, which can still be the previous page's.
+            requested = self._requested_number
             if requested in ids and requested != self.selected_connection_id:
                 self.selected_connection_id = requested
                 self._reset_number_scoped()
@@ -547,6 +635,9 @@ class WhatsAppState(rx.State):
 
         # m-25029798: Chats is only the number's list here; a chat (and its drawers)
         # opens in «Por responder» — an old chat address was redirected there already.
+        # m-25027373: only on a panel page — «Tus redes» reads the numbers alone.
+        if not self._panel_page:
+            return
         if self.active_tab == "menu":
             from .whatsapp_menu_state import WhatsAppMenuState
 
@@ -592,6 +683,7 @@ class WhatsAppState(rx.State):
                 self.verifying = False
                 self.connection_banner, self.connection_banner_tone = message, tone
             yield WhatsAppState.load_numbers
+            yield WhatsAppState.refresh_connection_cards
             return
         except _INFRA_ERRORS as exc:
             logger.error("whatsapp verify failed: %s", type(exc).__name__)
@@ -606,6 +698,16 @@ class WhatsAppState(rx.State):
             else:
                 self.connection_banner, self.connection_banner_tone = _VERIFY_DEGRADED, "warn"
         yield WhatsAppState.load_numbers
+        yield WhatsAppState.refresh_connection_cards
+
+    @rx.event
+    def refresh_connection_cards(self) -> rx.event.EventHandler:
+        """m-25027373 (review C1): «Verificar ahora» on a card of «Tus redes» can degrade
+        the connection; the card's own badge, notice and «Última comprobación» come from
+        `ConnectionsState`, so re-read them too (a no-op cost elsewhere: one query)."""
+        from .connections_state import ConnectionsState  # noqa: PLC0415 — import cycle
+
+        return ConnectionsState.load_connections
 
     # ==================================================================================
     # Perfil

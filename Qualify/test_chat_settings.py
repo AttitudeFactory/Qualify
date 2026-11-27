@@ -30,7 +30,15 @@ from .chat_settings_vm import (
     instagram_settings_href,
 )
 from .ui.layout import NAV_ITEMS, NAV_ZONES
-from .whatsapp_vm import TAB_MENU, legacy_panel_target, legacy_settings_target, tab_url
+from .whatsapp_vm import (
+    TAB_MENU,
+    TAB_PAYMENTS,
+    TAB_PROFILE,
+    TAB_QR,
+    legacy_panel_target,
+    legacy_settings_target,
+    tab_url,
+)
 
 _HERE = Path(__file__).parent
 _A = "00000000-0000-4000-8000-0000000000aa"
@@ -75,14 +83,23 @@ def test_the_hub_has_three_cards_and_every_setting_of_today() -> None:
     ]
     assert [row.key for row in WHATSAPP_NUMBER_ROWS] == ["formas-de-pago", "como-llegar"]
     assert "S.has_whatsapp" in (_HERE / "chat_settings_page.py").read_text("utf-8")
+    # m-25027373 (BU-A10): «Formas de pago» opens the editor itself and «Cómo llegar»
+    # the profile — pages of this hub now, no longer pointers to `/whatsapp`.
     assert {row.href for row in ALL_CHATS_ROWS} == {
         "/responder?tab=mensajes",
-        "/whatsapp?tab=numero&sub=pagos",
-        "/whatsapp?tab=numero&sub=perfil",
+        "/chats/ajustes/formas-de-pago",
+        "/chats/ajustes/whatsapp/perfil",
     }
-    # UX review U3: one WhatsApp row; its starter questions are part of the menu.
-    assert [(row.title, row.href) for row in WHATSAPP_ROWS] == [(MENU_TITLE, tab_url(TAB_MENU))]
+    assert tab_url(TAB_PAYMENTS) == "/chats/ajustes/formas-de-pago"
+    # UX review U3: the menu's row holds its starter questions. m-25027373: then the
+    # number's profile and QR codes, which left «Tu número».
+    assert [(row.title, row.href) for row in WHATSAPP_ROWS] == [
+        (MENU_TITLE, tab_url(TAB_MENU)),
+        ("Perfil", tab_url(TAB_PROFILE)),
+        ("Códigos QR", tab_url(TAB_QR)),
+    ]
     assert "tus preguntas iniciales" in WHATSAPP_ROWS[0].detail
+    assert not any(row.href.startswith("/whatsapp") for row in (*ALL_CHATS_ROWS, *WHATSAPP_ROWS))
     # The Instagram drawer is on this page (its rows open it in place).
     assert "ice_breakers_panel()" in (_HERE / "chat_settings_page.py").read_text("utf-8")
 
@@ -150,7 +167,10 @@ def test_account_context_is_only_for_the_loaded_accounts() -> None:
 )
 def test_an_old_menu_address_lands_in_ajustes(params: dict, target: str | None) -> None:
     assert legacy_settings_target(params) == target
-    assert legacy_panel_target(params) == target
+    if target is not None:
+        assert legacy_panel_target(params) == target
+    else:  # m-25027373: «Tu número»'s addresses land on their own pages
+        assert legacy_panel_target(params) in {"/chats/ajustes/formas-de-pago", "/connections"}
 
 
 def test_the_promotions_redirect_still_wins_for_its_addresses() -> None:

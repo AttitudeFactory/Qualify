@@ -73,7 +73,8 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/inbox": "Por responder",
     "/conversations": "Por responder",
     "/leads": "Por responder",
-    "/whatsapp": "WhatsApp",
+    # m-25027373: no «WhatsApp» entry any more; `/whatsapp` only redirects.
+    "/whatsapp": None,
     "/create": "Crear publicación",
     "/drafts": "Por aprobar",
     "/drafts/[draft_id]": "Por aprobar",
@@ -90,6 +91,11 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/chats/ajustes": "Ajustes de chats",
     "/chats/ajustes/instagram": "Ajustes de chats",
     "/chats/ajustes/whatsapp": "Ajustes de chats",
+    # m-25027373: «Tu número»'s old panels light the place they now hang from.
+    "/chats/ajustes/whatsapp/perfil": "Ajustes de chats",
+    "/chats/ajustes/whatsapp/codigos-qr": "Ajustes de chats",
+    "/chats/ajustes/formas-de-pago": "Ajustes de chats",
+    "/connections/whatsapp/actividad": "Tus redes",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora
     "/resultados": "Resultados",

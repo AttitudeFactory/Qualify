@@ -9,7 +9,12 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from qualify_api.ads.results import DailyInsight, PromotionResults, PromotionResultSummary
+from qualify_api.ads.results import (
+    DailyInsight,
+    PromotionResults,
+    PromotionResultSummary,
+    ResultsUnavailable,
+)
 from qualify_api.tenancy.acting import current_acting_login
 
 from . import ad_results_provider as provider
@@ -129,6 +134,7 @@ class Context:
     _mark_uncertain = AdResultsState._mark_uncertain
     _edit_snapshot = AdResultsState._edit_snapshot
     _edit_allowed = AdResultsState._edit_allowed
+    _open_edit = AdResultsState._open_edit
 
     def __init__(self) -> None:
         self.auth = SimpleNamespace(
@@ -156,6 +162,7 @@ class Context:
         self._edit_request = ""
         self._edit_token = ""
         self._edit_expires = ""
+        self._advised = False
         self.promotion_id = str(PROMOTION)
         self.floor_label = ""
         self.floor_loading = False
@@ -531,3 +538,127 @@ def test_actual_components_construct_with_dates_unknowns_and_confirmation() -> N
     assert "La falta de datos no significa" in detail_render
     # The app shell owns a trusted static SVG filter; provider content is text only.
     assert "dangerouslySetInnerHTML" not in repr(_detail().render())
+
+
+# --- The traffic light (m-25091390) ---
+
+
+def _advice(**changes: object):
+    from qualify_api.ads.traffic_light import Advice
+
+    return replace(
+        Advice(
+            "raise",
+            "cheap",
+            datetime(2027, 1, 15, tzinfo=UTC).isoformat(),
+            raise_percent=20,
+            cost_per_result_minor=700_000,
+            max_cost_minor=2_000_000,
+            unspent_minor=10_000_000,
+        ),
+        **changes,
+    )
+
+
+def _with_advice(advice: object, **changes: object) -> PromotionResults:
+    row = summary(currency="COP", current_budget_minor=10_000_000, can_manage=True)
+    # (status ACTIVE, ends 2027-01-20: from `summary`)
+    return PromotionResults(
+        promotion=row,
+        daily=(),
+        updated_at=datetime(2027, 1, 15, tzinfo=UTC),
+        advice=advice,
+        **({"insights_stale": False} | changes),
+    )
+
+
+def test_advice_shows_one_light_one_message_and_the_raise_amount() -> None:
+    vm = provider.advice_vm(_with_advice(_advice()))
+    assert (vm.shown, vm.tone, vm.label) == (True, "ok", "Va bien")
+    assert vm.message.startswith(
+        "Súbele 20 % a lo que te queda por invertir. Cada persona interesada te cuesta $7.000 COP"
+    )
+    assert (vm.raise_label, vm.raise_input) == ("Subir a $120.000 COP", "120000")
+    assert not vm.new_piece and not vm.profile_link
+
+
+def test_advice_is_hidden_without_a_current_one() -> None:
+    assert not provider.advice_vm(_with_advice(None)).shown
+    assert not provider.advice_vm(_with_advice(_advice(), insights_stale=True)).shown
+    assert not provider.advice_vm(_with_advice(_advice(), insights_refresh_failed=True)).shown
+
+
+def test_fatigue_and_meta_creative_fatigue_lead_to_a_new_piece_never_a_raise() -> None:
+    fatigue = provider.advice_vm(_with_advice(_advice(action="fatigue", reason="fatigue")))
+    assert fatigue.tone == "error" and fatigue.new_piece and not fatigue.can_raise
+    meta = provider.advice_vm(
+        _with_advice(_advice(action="keep", reason="close", meta=("CREATIVE_FATIGUE",)))
+    )
+    assert meta.new_piece and not meta.can_raise
+    assert meta.meta[0].startswith("Meta sugiere una pieza nueva")
+    profile = provider.advice_vm(_with_advice(_advice(action="keep", reason="no_profile")))
+    assert profile.profile_link and profile.tone == "warn"
+
+
+@pytest.mark.asyncio
+async def test_advised_raise_opens_the_usual_review_and_prepares_from_the_advice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    context.detail = replace(context.detail, advice=provider.advice_vm(_with_advice(_advice())))
+    calls = []
+
+    def prepare(*args: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        raise ResultsUnavailable("stop")
+
+    monkeypatch.setattr(state_module, "prepare_edit", prepare)
+    monkeypatch.setattr(
+        state_module, "confirm_edit", lambda *a: pytest.fail("never confirmed for the owner")
+    )
+    AdResultsState.open_advised_raise.fn(context)
+    assert context.edit_open and context.edit_action == "budget"
+    assert context.edit_budget_total == "120000" and context._advised
+    await AdResultsState.prepare_change.fn(context)
+    assert calls[-1]["advised"] is True and calls[-1]["budget_minor"] == 12_000_000
+    # The owner types another amount: an ordinary edit, not the advice's.
+    AdResultsState.set_edit_budget_total.fn(context, "130000")
+    await AdResultsState.prepare_change.fn(context)
+    assert calls[-1]["advised"] is False and not context._advised
+
+
+def test_advice_card_renders_with_its_buttons() -> None:
+    rendered = repr(_detail().render())
+    assert "te recomendamos" in rendered
+    # repr() escapes the accent («publicaci\u00f3n»), so match the prefix.
+    assert "Crear publicaci" in rendered and "/promotions/perfil" in rendered
+
+
+@pytest.mark.parametrize("new_budget", [12_000_000, 12_100_000])
+def test_provider_prepares_the_advised_raise_and_refuses_another_amount(
+    monkeypatch: pytest.MonkeyPatch, new_budget: int
+) -> None:
+    from qualify_api.ads import traffic_light
+
+    async def advised(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            action="budget",
+            summary="Cambiar el presupuesto total.",
+            approval_token="sealed",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            current_budget_minor=10_000_000,
+            new_budget_minor=new_budget,
+            current_end_time=datetime(2027, 1, 20, tzinfo=UTC),
+            new_end_time=datetime(2027, 1, 20, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(traffic_light, "prepare_advised_raise", advised)
+    call = lambda: provider.prepare_edit(  # noqa: E731
+        TENANT, PROMOTION, "key", "budget", "America/Bogota",
+        currency="COP", budget_minor=12_000_000, advised=True,
+    )  # fmt: skip
+    if new_budget == 12_000_000:
+        assert call().review.new_budget == "$120.000 COP"
+    else:
+        with pytest.raises(ResultsUnavailable):
+            call()

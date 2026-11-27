@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -260,6 +261,7 @@ def _summary(row: Any) -> PromotionResultSummary:
 
 _SUMMARY_SQL = """
     SELECT p.*,o.checked_at,o.insights_checked_at,o.read_failed,o.insights_read_failed,
+      o.advice,
       o.effective_status AS observed_status,
       a.name AS account_name,a.timezone_name,
       CASE WHEN source.id IS NOT NULL AND pub.status='published'
@@ -361,6 +363,13 @@ def _load(tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
                 )
         updated = row["insights_checked_at"] if row["cache_current"] else None
         from qualify_api.ads.messaging_attribution import promotion_conversation_count
+        from qualify_api.ads.traffic_light import Advice, traffic_light_on
+
+        advice = Advice.from_record(row["advice"]) if traffic_light_on() else None
+        if advice is not None and (
+            updated is None or datetime.fromisoformat(advice.observed_at) != updated
+        ):
+            advice = None  # another read's advice: never shown beside these results
 
         return PromotionResults(
             summary,
@@ -374,6 +383,7 @@ def _load(tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
                 tenant_id=tenant_id,
                 promotion_id=promotion_id,
             ),
+            advice=advice,
         )
 
 
@@ -586,6 +596,11 @@ async def _refresh(
         _same(scope, system=system)
         _save_observation(scope, token, status, configured, tuple(daily.values()), now)
         _same(scope, system=system)
+        from qualify_api.ads.traffic_light import traffic_light_on
+
+        if traffic_light_on():
+            await _save_advice(scope, api, token, now, since, until, tuple(daily.values()), status)
+            _same(scope, system=system)
         if client is not None:
             from qualify_api.ads.live_management import reconcile_promotion_edit
 
@@ -597,6 +612,115 @@ async def _refresh(
     finally:
         if client is not None and hasattr(client, "aclose"):
             await client.aclose()
+
+
+async def _save_advice(
+    scope: ResultScope,
+    api: MarketingAPI,
+    token: UUID,
+    now: datetime,
+    since: date,
+    until: date,
+    daily: tuple[DailyInsight, ...],
+    status: str,
+) -> None:
+    """Read Meta's learning, whole-period and recommendation signals and keep the traffic
+    light with its provenance (m-25091390). Read-only. Only for an ad Meta reports ACTIVE (a
+    paused or ended one gets none); a failed or unexpected read or step leaves no advice
+    (the screen shows none) and never fails the results it sits beside."""
+    if status != "ACTIVE":
+        return
+    try:
+        await _advise(scope, api, token, now, since, until, daily)
+    except Exception as exc:  # the light is optional: it never breaks the results read
+        logging.getLogger(__name__).warning("traffic light skipped: %s", type(exc).__name__)
+
+
+async def _advise(
+    scope: ResultScope,
+    api: MarketingAPI,
+    token: UUID,
+    now: datetime,
+    since: date,
+    until: date,
+    daily: tuple[DailyInsight, ...],
+) -> None:
+    from qualify_api.ads.investment_profile import shown_max_cost_minor
+    from qualify_api.ads.live_management import _whole
+    from qualify_api.ads.money import from_meta
+    from qualify_api.ads.traffic_light import (
+        advise,
+        parse_learning,
+        parse_period,
+        parse_recommendations,
+    )
+
+    adset = await api.read_object(scope.adset_id, fields="id,learning_stage_info,budget_remaining")
+    learning = parse_learning(adset, adset_id=scope.adset_id)
+    remaining = _whole(adset.get("budget_remaining"))  # Meta's unit (whole pesos for COP)
+    period = parse_period(
+        (
+            await api.insights(
+                scope.ad_id,
+                params={
+                    # No time_increment: daily reach does not add up to the period's
+                    # (discovery §6), so frequency comes from this one row.
+                    "fields": (
+                        "ad_id,account_id,account_currency,spend,reach,impressions,"
+                        "frequency,results,cost_per_result"
+                    ),
+                    "time_range": {"since": since.isoformat(), "until": until.isoformat()},
+                    "level": "ad",
+                },
+            )
+        ).data,
+        ad_id=scope.ad_id,
+        account_id=scope.meta_account_id,
+        currency=scope.currency,
+    )
+    # shortcut: first page only; Meta returns few per account (§7). Page if that changes.
+    recommendations = parse_recommendations(
+        (await api.recommendations()).data,
+        object_ids=(scope.ad_id, scope.adset_id, scope.campaign_id),
+    )
+    with tenant_session(scope.tenant_id, independent=True) as s:
+        row = (
+            s.execute(
+                text("""SELECT f.currency AS profile_currency,f.average_ticket_minor,
+                  f.margin_basis_points,m.estimate->>'audience_lower' AS audience_lower
+                FROM ad_promotions p
+                LEFT JOIN ad_investment_profiles f ON f.brand_id=p.brand_id
+                  AND f.tenant_id=p.tenant_id
+                LEFT JOIN ad_promotion_market_estimates m ON m.promotion_id=p.id
+                  AND m.tenant_id=p.tenant_id
+                WHERE p.id=:id"""),
+                {"id": scope.promotion_id},
+            )
+            .mappings()
+            .one()
+        )
+        advice = advise(
+            learning=learning,
+            period=period,
+            recommendations=recommendations,
+            daily=daily,
+            # What a client can cost, only in the account's own currency.
+            max_cost_minor=shown_max_cost_minor(
+                row["average_ticket_minor"], row["margin_basis_points"], scope.currency
+            )
+            if row["profile_currency"] == scope.currency
+            else None,
+            audience_lower=nonnegative(row["audience_lower"], integer=True),
+            observed_at=now,
+            unspent_minor=from_meta(remaining, scope.currency) if remaining is not None else None,
+        )
+        s.execute(
+            text(
+                "UPDATE ad_promotion_observations SET advice=CAST(:advice AS jsonb) "
+                "WHERE promotion_id=:id AND refresh_token=:token"
+            ),
+            {"advice": json.dumps(advice.record()), "id": scope.promotion_id, "token": token},
+        )
 
 
 async def refresh_promotion_results(*, tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
@@ -617,6 +741,7 @@ async def prepare_promotion_edit(
     action: str,
     budget_minor: int | None = None,
     end_time: datetime | None = None,
+    advice: dict[str, Any] | None = None,
 ) -> PreparedPromotionEdit:
     from qualify_api.ads.live_management import prepare_promotion_edit as prepare
     from qualify_api.ads.wizard import WizardUnavailable
@@ -629,6 +754,7 @@ async def prepare_promotion_edit(
             action=action,
             budget_minor=budget_minor,
             end_time=end_time,
+            advice=advice,
         )
     except (MarketingError, AdAccountUnavailable, WizardUnavailable):
         raise ResultsUnavailable(UNAVAILABLE) from None
