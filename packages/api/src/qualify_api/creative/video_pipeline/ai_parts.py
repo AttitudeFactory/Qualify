@@ -437,6 +437,10 @@ REFERENCE_SUFFIXES: dict[str, tuple[str, ...]] = {
 #: The old per-part reference fields a brief on the tracks (`references_version` 1) may
 #: not carry (`references_and_old_fields`).
 _OLD_ENTRY_FIELDS = ("clip_image_keys", "clip_video_keys", "clip_audio_keys")
+#: The one old field an entry on the tracks keeps, and only in «Igual al original»
+#: (`edit`): its `clip_video_keys` are the reel's window the part changes — the part's
+#: source, never a reference (m-25142725, PR B).
+REEL_WINDOW_ENTRY_FIELD = "clip_video_keys"
 #: The same old fields on the Clip itself (its photos, videos and audios for its parts).
 _OLD_CLIP_FIELDS = _OLD_ENTRY_FIELDS
 
@@ -758,6 +762,8 @@ def reference_problems(
                 problem("references_and_old_fields", name)
         for entry_at, entry in enumerate(media.ai_parts):
             for name in _OLD_ENTRY_FIELDS:
+                if name == REEL_WINDOW_ENTRY_FIELD and entry.mode == "edit":
+                    continue  # the reel's window «Igual al original» changes, not a reference
                 if getattr(entry, name):
                     problem("references_and_old_fields", f"ai_parts[{entry_at}].{name}")
     if not refs:
@@ -811,6 +817,7 @@ __all__ = [
     "REFERENCE_SUFFIXES",
     "REFERENCE_TEXTS",
     "PartReferences",
+    "REEL_WINDOW_ENTRY_FIELD",
     "ReferenceNote",
     "ReferencesPlan",
     "active_video_model",

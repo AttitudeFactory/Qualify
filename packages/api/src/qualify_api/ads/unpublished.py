@@ -42,6 +42,23 @@ class UnpublishedUnavailable(ValueError):
         self.reason = reason
 
 
+STORY_AD_EXISTS = "story_ad_exists"  # N3 (m-25142902): warn, then let the owner choose
+STORY_DUPLICATE = (
+    "Esta historia ya tiene un anuncio. Puedes ver el que ya tienes o crear otro. "
+    "Cada anuncio se cobra por separado."
+)
+
+
+class StoryAdExists(UnpublishedUnavailable):
+    """Another story ad of this piece was already prepared (another tab, reload or phone).
+    `recipe_id` is what the owner acknowledges to create another one anyway."""
+
+    def __init__(self, recipe_id: UUID, promotion_id: UUID | None) -> None:
+        super().__init__(STORY_DUPLICATE, reason=STORY_AD_EXISTS)
+        self.recipe_id = recipe_id
+        self.promotion_id = promotion_id
+
+
 @dataclass(frozen=True)
 class ImageSelection:
     asset_id: UUID

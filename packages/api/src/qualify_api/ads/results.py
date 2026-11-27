@@ -68,6 +68,9 @@ class PromotionResultSummary:
     operation_pending: bool = False
     # The piece the promotion came from, so a rejected ad can lead back to it (m-25026344).
     content_draft_id: UUID | None = None
+    # N3 (m-25142902): a story-only ad, and the object key of its 9:16 image ("" if none).
+    story: bool = False
+    story_image_key: str = ""
 
 
 @dataclass(frozen=True)

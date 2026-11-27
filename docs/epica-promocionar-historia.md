@@ -264,6 +264,8 @@ Como dueña de un local con historias en video quiero promocionar mi historia si
 
 **Fuera de alcance:** elegir o subir una portada a mano.
 
+**Cómo quedó (2026-11-27):** la portada la hace el `creative-worker` en su pasada de mantenimiento (cada minuto, hasta 5 por pasada): cualquier historia aprobada cuya versión actual tiene un MP4 9:16 y ninguna imagen 9:16 recibe un cuadro del video (ffmpeg, 1 s adentro, tamaño completo). Así sirve para las historias que se aprueben y para las que ya estaban aprobadas, sin tocar la aprobación ni la carga de la galería. Se guarda en su propia tabla `piece_story_covers` (0191), no en `image_assets`, para que ninguna otra pantalla la vea como un archivo más de la pieza; solo la leen el anuncio en historias y su preparación (`creative/story_covers.py`, `PIECE_FILES`). El objeto vive junto al video (misma retención). Si el video no da un cuadro, queda `failed` y la historia sigue con «video_without_cover».
+
 ### N2 · Anuncios: leer de vuelta el anuncio de historia real en pausa ([m-25142901](https://project.larksuite.com/5h2wsx/issue/detail/25142901))
 
 **Prioridad** P2 · **Tamaño** S · **Área** backend · **Depende de** HIS-0.

@@ -17,12 +17,18 @@ from sqlalchemy.exc import IntegrityError
 from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import STEPS, PromotionRequest, step_payload
-from qualify_api.ads.results_service import _scope
-from qualify_api.ads.unpublished import ImageAdForm, UnpublishedUnavailable, creative_payload
+from qualify_api.ads.results_service import _scope, list_promotion_results
+from qualify_api.ads.unpublished import (
+    ImageAdForm,
+    StoryAdExists,
+    UnpublishedUnavailable,
+    creative_payload,
+)
 from qualify_api.ads.unpublished_repository import (
     UnpublishedRepository,
     guard_source,
     load_image_source,
+    story_ads,
 )
 from qualify_api.auth.business import NotAMember
 from qualify_api.tenancy.acting import acting_login
@@ -422,3 +428,161 @@ def test_story_video_source_loads_one_clip_with_its_cover(unpublished_world):
         recipe = UnpublishedRepository().approve(story, form, actor, uuid4())
         assert recipe["pipeline_version"] == "ad-story-video-v1"
         assert recipe["source"]["vertical"]["thumbnail"]["asset_id"] == str(cover)
+
+
+def test_a_second_story_ad_of_a_piece_is_refused_until_the_owner_chooses_it(unpublished_world):
+    """N3 (m-25142902): a reload or another phone gets a new request key; the piece's story
+    ads are checked in the database, under a lock, per business."""
+    source, form, login, actor = unpublished_world
+    repo = UnpublishedRepository()
+    with acting_login(login):
+        story = load_image_source(
+            source.tenant_id, source.draft_id, source.account_id, None, source.vertical.asset_id
+        )
+        # Not a story: never checked, never listed.
+        repo.approve(source, form, actor, uuid4())
+        assert story_ads(source.tenant_id, [source.draft_id]) == {}
+
+    def attempt(key):
+        with acting_login(login):
+            try:
+                return repo.approve(story, form, actor, key)
+            except StoryAdExists as error:
+                return error
+
+    # Two phones at once: exactly one goes through.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(attempt, [uuid4(), uuid4()]))
+    first = next(row for row in outcomes if isinstance(row, dict))
+    refused = next(row for row in outcomes if isinstance(row, StoryAdExists))
+    assert refused.recipe_id == first["id"] and refused.promotion_id is None
+    with acting_login(login):
+        # The same request repeated (a video still processing) is not a duplicate.
+        assert repo.approve(story, form, actor, first["request_key"])["id"] == first["id"]
+        # A reload: refused; once the owner chose to make another, it goes through.
+        with pytest.raises(StoryAdExists):
+            repo.approve(story, form, actor, uuid4())
+        second_key = uuid4()
+        second = repo.approve(story, form, actor, second_key, (first["id"],))
+        # The warning then names the newest; having seen an older one is not enough.
+        with pytest.raises(StoryAdExists) as newer:
+            repo.approve(story, form, actor, uuid4(), (first["id"],))
+        assert newer.value.recipe_id == second["id"]
+        # The session's own earlier request key (even one whose preparation then failed
+        # at Meta) counts as seen; an unknown id acknowledges nothing.
+        third = repo.approve(story, form, actor, uuid4(), (uuid4(), second_key))
+        with pytest.raises(StoryAdExists):
+            repo.approve(story, form, actor, uuid4(), (uuid4(),))
+        # Its paused campaign: «Anuncios» shows it as a story ad with its 9:16 image.
+        promotion = PostgresPromotionRepository().create_or_get(
+            compose_brand_policy(
+                PromotionRequest(
+                    source.tenant_id,
+                    source.brand_id,
+                    str(uuid4()),
+                    source.meta_account_id,
+                    "OUTCOME_TRAFFIC",
+                    "LEARN_MORE",
+                    form.link_url,
+                    "lifetime",
+                    form.budget_minor,
+                    "COP",
+                    form.start_time,
+                    form.end_time,
+                    actor,
+                    second["approved_at"],
+                    content_draft_id=source.draft_id,
+                    creative=creative_payload(story, form, ("hash1",)),
+                ),
+                BrandEnhancementSettings(source.tenant_id, source.brand_id),
+            )
+        )
+        repo.link(source.tenant_id, second["id"], promotion.id)
+        (listed,) = (row for row in list_promotion_results(tenant_id=source.tenant_id) if row.story)
+        assert listed.id == promotion.id and listed.content_draft_id == source.draft_id
+        assert listed.story_image_key == source.vertical.object_key
+    assert story_ads(source.tenant_id, [source.draft_id, uuid4()]) == {
+        source.draft_id: (third["id"], None)
+    }
+    # Another business sees none of it, and its own story ad is its own.
+    other, other_form, other_login, other_actor = make_unpublished_world(make_audience_world())
+    assert story_ads(other.tenant_id, [source.draft_id]) == {}
+    with acting_login(other_login):
+        other_story = load_image_source(
+            other.tenant_id, other.draft_id, other.account_id, None, other.vertical.asset_id
+        )
+        repo.approve(other_story, other_form, other_actor, uuid4())
+    assert set(story_ads(other.tenant_id, [source.draft_id, other.draft_id])) == {other.draft_id}
+
+
+def _story_of(world):
+    source, form, login, actor = world
+    with acting_login(login):
+        story = load_image_source(
+            source.tenant_id, source.draft_id, source.account_id, None, source.vertical.asset_id
+        )
+    return story, form, login, actor
+
+
+def _past_attempt(recipe_id, draft, promotion=None):
+    """An earlier story attempt of `draft`, an hour old (the approval row is immutable)."""
+    with tenant_session(draft[0]) as session:
+        return session.scalar(
+            text("""INSERT INTO ad_unpublished_sources SELECT (jsonb_populate_record(
+              NULL::ad_unpublished_sources, to_jsonb(u) || jsonb_build_object(
+                'id',gen_random_uuid(),'request_key',gen_random_uuid(),
+                'draft_id',CAST(:draft AS text),'approved_at',now()-interval '1 hour',
+                'promotion_id',CAST(:promotion AS text)))).*
+            FROM ad_unpublished_sources u WHERE id=:id RETURNING id"""),
+            {"id": recipe_id, "draft": draft[1], "promotion": promotion},
+        )
+
+
+def test_a_story_attempt_counts_only_if_it_left_something_at_meta(audience_world):
+    """Decision 2026-11-27 (N3): a failed attempt that created nothing at Meta is no ad and
+    warns of nothing; one that sent or created a campaign step still counts."""
+    story, form, login, actor = _story_of(make_unpublished_world(audience_world))
+    repo = UnpublishedRepository()
+    tenant = story.tenant_id
+    with acting_login(login):
+        recipe = repo.approve(story, form, actor, uuid4())
+    # Nothing at Meta: an hour later it neither shows nor warns.
+    empty, _, _, _ = _story_of(make_unpublished_world(audience_world))
+    _past_attempt(recipe["id"], (tenant, empty.draft_id))
+    assert story_ads(tenant, [empty.draft_id]) == {}
+    with acting_login(login):
+        repo.approve(empty, form, actor, uuid4())
+    # A campaign step sent to Meta (left behind paused or unknown): still counts.
+    left, _, _, _ = _story_of(make_unpublished_world(audience_world))
+    promotions = PostgresPromotionRepository()
+    promotion = promotions.create_or_get(
+        compose_brand_policy(
+            PromotionRequest(
+                tenant,
+                left.brand_id,
+                str(uuid4()),
+                left.meta_account_id,
+                "OUTCOME_TRAFFIC",
+                "LEARN_MORE",
+                form.link_url,
+                "lifetime",
+                form.budget_minor,
+                "COP",
+                form.start_time,
+                form.end_time,
+                actor,
+                recipe["approved_at"],
+                content_draft_id=left.draft_id,
+                creative=creative_payload(left, form, ("hash1",)),
+            ),
+            BrandEnhancementSettings(tenant, left.brand_id),
+        )
+    )
+    assert promotions.claim(
+        tenant, promotion.id, "campaigns", step_payload(promotion, "campaigns"), uuid4()
+    )
+    attempt = _past_attempt(recipe["id"], (tenant, left.draft_id), promotion.id)
+    assert story_ads(tenant, [left.draft_id]) == {left.draft_id: (attempt, promotion.id)}
+    with acting_login(login), pytest.raises(StoryAdExists) as refused:
+        repo.approve(left, form, actor, uuid4())
+    assert refused.value.recipe_id == attempt

@@ -72,6 +72,7 @@ from qualify_creative.enums import ContentKind
 from qualify_creative.schemas import (
     CLIP_MODE_OF_PART,
     SEGMENTS_MAX,
+    ClipReference,
     ContentBrief,
     EffectUse,
     SourceSegment,
@@ -83,11 +84,13 @@ from qualify_api.creative.clip_ai_parts import (
     AiPartRow,
     ClipAiPartsRefused,
     ClipAiPartsService,
+    entry_in_mode,
     entry_slots,
     has_ai_part_blocks,
     owner_deadline,
     part_state,
     virtual_brief,
+    without_tracks,
 )
 from qualify_api.creative.clip_avatar import ClipRow, is_generated_file
 from qualify_api.creative.fsm import (
@@ -841,6 +844,7 @@ class ClipAiPartActions(ClipAiPartsService):
             NEEDS_DESCRIPTION_CODE,
             PlannedPart,
             child_brief,
+            part_references,
         )
         from qualify_api.creative.creations import PreviewCharge, summed_price  # noqa: PLC0415
         from qualify_api.creative.local_cap import check_local_daily_cap  # noqa: PLC0415
@@ -946,7 +950,17 @@ class ClipAiPartActions(ClipAiPartsService):
             assert previous is not None
             split = [previous, entry]
         check_split_parts_for_tenant(tenant_id=tenant_id, parts=split)
-        made = child_brief(fresh, PlannedPart(position, 0, slot, fresh.media.ai_parts[0]))
+        planned = PlannedPart(position, 0, slot, fresh.media.ai_parts[0])
+        on_tracks = self._with_asked_tracks(tenant_id, fresh)
+        if on_tracks is None:
+            made = child_brief(fresh, planned)
+        else:
+            # m-25142725 + m-25142982: a Clip asked on the reference tracks — the new part
+            # takes the tracks' items under its block (`part_references`), as «Crear» gave
+            # each part, recorded on `PartRef.references` with the Pinterest origins of
+            # the photos it took; it never inherits the Clip's tracks (version 0). Over
+            # its model's caps: `RecipeRefused`, before anything is written
+            made = child_brief(on_tracks, planned, part_references(on_tracks, 0))
         part = made.media.part
         if part is not None and part.extend_own is not None:
             # it continues the AI part before it, never the stretch that plays it
@@ -1046,6 +1060,31 @@ class ClipAiPartActions(ClipAiPartsService):
             return duplicate.draft_id
         logger.info("clip %s: AI part %s added by its owner at block %d", clip_id, ids[0], position)
         return ids[0]
+
+    def _with_asked_tracks(self, tenant_id: UUID, fresh: ContentBrief) -> ContentBrief | None:
+        """`fresh` (a made Clip's recipe with the new block) with the reference tracks of
+        the brief its owner asked for (`derived_from_brief_id`: the assembly drops them,
+        `without_tracks`) and their Pinterest origins — only to work out what the new part
+        takes from them, never stored. The tracks' times are read on the timeline the
+        owner sees now. None for a Clip asked without tracks (version 0)."""
+        origin = fresh.media.derived_from_brief_id
+        if origin is None:
+            return None
+        asked = self._content.repository.get_brief(tenant_id=tenant_id, brief_id=origin)
+        if asked is None or asked.media.references_version < 1:
+            return None
+        pins = {p.image_key: p for p in (*asked.media.source_pins, *fresh.media.source_pins)}
+        return fresh.model_copy(
+            update={
+                "media": fresh.media.model_copy(
+                    update={
+                        "clip_references": asked.media.clip_references,
+                        "references_version": asked.media.references_version,
+                        "source_pins": tuple(pins.values()),
+                    }
+                )
+            }
+        )
 
     def _added_before(self, tenant_id: UUID, clip_id: UUID, request_key: UUID) -> UUID | None:
         """The part an earlier tap with `request_key` added to this Clip, None for none.
@@ -1515,22 +1554,40 @@ class ClipAiPartActions(ClipAiPartsService):
                 "mode_changed_by_owner": True,
             }
         )
-        parent = seen.brief.model_copy(
-            update={"media": seen.brief.media.model_copy(update={"ai_parts": ()})}
+        # m-25142725: a part that took references from the tracks keeps only what its new
+        # mode uses, and never carries the Clip's tracks
+        old = seen.child_brief.media
+        on_tracks = bool(part.references) or seen.brief.media.references_version >= 1
+        taken: tuple[ClipReference, ...] = ()
+        if on_tracks:
+            entry, taken = entry_in_mode(part, entry)
+        photos = set(entry.clip_image_keys or ()) & set(old.clip_image_keys)
+        parent = without_tracks(
+            seen.brief.model_copy(
+                update={"media": seen.brief.media.model_copy(update={"ai_parts": ()})}
+            ),
+            photos=photos,
         )
         made = _child_brief(parent, entry, seen.row.slot, None)
-        old = seen.child_brief.media
-        return ContentBrief.model_validate(
-            {
-                **made.model_dump(),
-                "media": {
-                    **made.media.model_dump(),
-                    "ai_parts": (),
-                    "clip_image_keys": old.clip_image_keys,
-                    "clip_image_roles": old.clip_image_roles,
-                },
-            }
-        )
+        media: dict[str, Any] = {
+            **made.media.model_dump(),
+            "ai_parts": (),
+            "clip_image_keys": old.clip_image_keys,
+            "clip_image_roles": old.clip_image_roles,
+        }
+        if on_tracks:
+            # the Pinterest origins the part had, for the photos it keeps (another
+            # part's track photo never comes with them)
+            media["source_pins"] = [
+                p.model_dump() for p in old.source_pins if p.image_key in old.clip_image_keys
+            ] + [
+                p.model_dump()
+                for p in made.media.source_pins
+                if p.image_key not in {*old.clip_image_keys, *made.media.clip_image_keys}
+            ]
+        if taken and media["part"] is not None:
+            media["part"] = {**media["part"], "references": [r.model_dump() for r in taken]}
+        return ContentBrief.model_validate({**made.model_dump(), "media": media})
 
     # -- writes, inside `_write_and_dispatch` ----------------------------------------------
 

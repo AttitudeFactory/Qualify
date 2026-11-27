@@ -58,6 +58,12 @@ such a Clip exist and be assembled:
   `PartRef.extend_own` names the owner's video stretch right before it; the producer
   continues that file. Behind `QUALIFY_CLIP_EXTEND_OWN_VIDEO` (off) until the paid
   measurement Deivid approves (`just eval-extender-propio`).
+- **The reference tracks** (m-25142725, PR B; contract §3.4): on a brief with
+  `references_version` 1 each child's photos, videos and audios are the tracks' items
+  under its block (`ai_parts.references_for_parts`, on the owner's timeline at «Crear»,
+  never recomputed after the assembly moves anything), recorded on `PartRef.references`;
+  a part under no photo takes none — it no longer inherits the Clip's. A brief with
+  `references_version` 0 makes its children exactly as before.
 
 Seconds of video are charged when the Clip is approved — PR 4 (§13.4, with §12.4). Until
 then a Clip with AI parts cannot be approved (`approve_unavailable`): nothing is ever
@@ -69,15 +75,22 @@ entry is checked to be the business's before any row. No migration: the children
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
 from qualify_creative.creations import weight_for
 from qualify_creative.enums import ContentFormat, ContentKind
-from qualify_creative.schemas import ContentBrief, SourceSegment, VideoPartPlan
+from qualify_creative.scene_plan import unroled_image_role
+from qualify_creative.schemas import (
+    ClipReference,
+    ContentBrief,
+    PartRef,
+    SourceSegment,
+    VideoPartPlan,
+)
 
 from qualify_api.creative.clip_avatar import (
     ClipAvatarRefused,
@@ -85,8 +98,10 @@ from qualify_api.creative.clip_avatar import (
     _mapper,
 )
 from qualify_api.creative.video_pipeline.ai_parts import (
+    PartReferences,
     ai_part_blocks,
     ai_part_slots,
+    references_for_parts,
 )
 
 logger = logging.getLogger(__name__)
@@ -332,8 +347,12 @@ def virtual_brief(brief: ContentBrief, tenant_id: UUID) -> ContentBrief:
         segments.append(
             _placeholder(tenant_id, entry_at, segment, media.ai_parts[entry_at].seconds)
         )
-    return brief.model_copy(
-        update={"media": media.model_copy(update={"segments": tuple(segments), "ai_parts": ()})}
+    # m-25142725: the tracks only feed the children; the recipe checked here is the
+    # assembly's, which never reads them (`without_tracks`)
+    return without_tracks(
+        brief.model_copy(
+            update={"media": media.model_copy(update={"segments": tuple(segments), "ai_parts": ()})}
+        )
     )
 
 
@@ -399,22 +418,137 @@ def planned_parts(
     return tuple(found)
 
 
-def child_brief(clip: ContentBrief, planned: PlannedPart) -> ContentBrief:
+def part_references(clip: ContentBrief, entry_at: int) -> PartReferences | None:
+    """m-25142725: what the AI part of `clip`'s entry `entry_at` takes from the reference
+    tracks (`references_for_parts`, the active video model's caps), None when its block
+    is not on the timeline. Pure."""
+    return next((r for r in references_for_parts(clip) if r.entry_at == entry_at), None)
+
+
+def _entry_from_references(
+    clip: ContentBrief, entry: VideoPartPlan, references: PartReferences | None
+) -> tuple[VideoPartPlan, tuple[ClipReference, ...]]:
+    """m-25142725 (PR B): `entry` with its `clip_*_keys` derived from the tracks' items
+    under its block — always an explicit photo tuple, empty when none applies, so the
+    part never inherits the Clip's photos; a product's photo is the `product`, any other
+    photo `unroled_image_role` — and the items it took, for `PartRef.references`. Over
+    its model's caps it is refused (`RecipeRefused`), never cut. Pure."""
+    from qualify_api.creative.video_pipeline.recipe import RecipeRefused  # noqa: PLC0415
+
+    if references is not None and references.problems:
+        raise RecipeRefused(references.problems)
+    photos = references.photos if references is not None else ()
+    videos = references.videos if references is not None else ()
+    audios = references.audios if references is not None else ()
+    unroled = unroled_image_role(clip)
+    derived = VideoPartPlan.model_validate(
+        {
+            **entry.model_dump(),
+            "clip_image_keys": tuple(ref.key for ref in photos),
+            "clip_image_roles": tuple(
+                "product" if ref.origin == "product" else unroled for ref in photos
+            ),
+            # «Igual al original»: its `clip_video_keys` are the reel's window it changes
+            # (the part's source, never a reference: `REEL_WINDOW_ENTRY_FIELD`) — kept
+            "clip_video_keys": (
+                entry.clip_video_keys if entry.mode == "edit" else tuple(ref.key for ref in videos)
+            ),
+            "clip_audio_keys": tuple(ref.key for ref in audios),
+        }
+    )
+    return derived, (*photos, *videos, *audios)
+
+
+def entry_in_mode(
+    old: PartRef, entry: VideoPartPlan
+) -> tuple[VideoPartPlan, tuple[ClipReference, ...]]:
+    """m-25142725: a part of a Clip on the tracks made again in another mode
+    (`clip_ai_part_actions`, «Cambiar a…» / «Hacerla nueva»): `entry` (from `old`) with
+    the videos and audios it took at «Crear» only while it stays «Nueva» — never a
+    reference turned into the source of «Igual al original» — and the items it still
+    uses, for `PartRef.references`. Its photos stay as given. Pure."""
+    keeps_av = entry.mode == "reference"
+    videos = tuple(r for r in old.references if r.kind == "video" and keeps_av)
+    audios = tuple(r for r in old.references if r.kind == "audio" and keeps_av)
+    photos = tuple(
+        r for r in old.references if r.kind == "photo" and r.key in (entry.clip_image_keys or ())
+    )
+    window = entry.clip_video_keys if entry.mode == "edit" and old.mode == "edit" else ()
+    derived = VideoPartPlan.model_validate(
+        {
+            **entry.model_dump(),
+            "clip_video_keys": window or tuple(r.key for r in videos),
+            "clip_audio_keys": tuple(r.key for r in audios),
+        }
+    )
+    return derived, (*photos, *videos, *audios)
+
+
+def without_tracks(brief: ContentBrief, *, photos: Iterable[str] = ()) -> ContentBrief:
+    """`brief` without the Clip's reference tracks (`clip_references`, and version 0):
+    they only feed «Crear»; a child, a recipe checked after it, and the assembled Clip
+    carry what they took instead. A Pinterest origin (`source_pins`) of a photo only the
+    tracks held goes with them — kept only for `photos`, the track photos a part took
+    (its own `clip_image_keys`). Pure; `brief` itself when it has no tracks."""
+    media = brief.media
+    if not media.clip_references and not media.references_version:
+        return brief
+    tracks = {ref.key for ref in media.clip_references if ref.kind == "photo"}
+    kept = (media.pinterest_image_keys - tracks) | set(photos)
+    return brief.model_copy(
+        update={
+            "media": media.model_copy(
+                update={
+                    "clip_references": (),
+                    "references_version": 0,
+                    "source_pins": tuple(p for p in media.source_pins if p.image_key in kept),
+                }
+            )
+        }
+    )
+
+
+def child_brief(
+    clip: ContentBrief, planned: PlannedPart, references: PartReferences | None = None
+) -> ContentBrief:
     """An AI part's own brief: the child of a video by parts (`parts._child_brief`, a
     9:16 `CLIP` of the part's generation length in its mode, no logo, no subtitles, no
     texts — the Clip carries them once), under a Clip instead of a `SHOT_VIDEO`. It never
     carries the Clip's `ai_parts`. An «extend» right after the owner's own video names
-    that stretch (`PartRef.extend_own`, m-25129406) — the producer continues it. Pure."""
+    that stretch (`PartRef.extend_own`, m-25129406) — the producer continues it.
+
+    m-25142725 (PR B): on a Clip with `references_version` 1 the part's photos, videos
+    and audios are the tracks' items under its block (`references`, else
+    `part_references` of `clip`), recorded on `PartRef.references`; the child never
+    carries the Clip's tracks. A Clip with `references_version` 0 is made as before. Pure."""
     from qualify_api.creative.parts import _child_brief  # noqa: PLC0415
 
+    on_tracks = clip.media.references_version >= 1
+    taken: tuple[ClipReference, ...] = ()
+    if on_tracks:
+        if references is None:
+            references = part_references(clip, planned.entry_at)
+        entry, taken = _entry_from_references(clip, planned.entry, references)
+        planned = replace(planned, entry=entry)
     own: SourceSegment | None = None
     if planned.entry.mode == "extend" and planned.at > 0:
         before = clip.media.segments[planned.at - 1]
         if before.kind == "video":
             own = before.model_copy(update={"transition_in": None})
     parent = clip.model_copy(update={"media": clip.media.model_copy(update={"ai_parts": ()})})
+    if on_tracks:
+        # the child's tracks are resolved into its own keys (provenance on `PartRef`): it
+        # is a brief before the tracks, never one whose keys `references_and_old_fields`
+        # would refuse; a Pinterest origin of a track photo goes only to the part that
+        # took it
+        parent = without_tracks(parent, photos=planned.entry.clip_image_keys or ())
     made = _child_brief(parent, planned.entry, planned.slot, None, extend_own=own)
-    return made.model_copy(update={"media": made.media.model_copy(update={"ai_parts": ()})})
+    update: dict[str, Any] = {"ai_parts": ()}
+    if on_tracks and made.media.part is not None:
+        update["part"] = PartRef.model_validate(
+            {**made.media.part.model_dump(), "references": [r.model_dump() for r in taken]}
+        )
+    return made.model_copy(update={"media": made.media.model_copy(update=update)})
 
 
 @dataclass(frozen=True)
@@ -519,6 +653,9 @@ def _retimed(
     """`brief` with `segments` and its texts and effects moved from the planned timeline
     to the real one through `points` (`(planned, real)` at each block's end). The first
     block never keeps a join (nothing before it to join with). Pure."""
+    # m-25142725: the tracks fed the parts; the assembled Clip has none left, nor a
+    # Pinterest origin of a photo only they held
+    brief = without_tracks(brief)
     media = brief.media
     segments = list(segments)
     if segments and segments[0].transition_in is not None:
@@ -823,6 +960,14 @@ class ClipAiPartsService(ClipAvatarService):
         problems = validate_brief_recipe(brief, tenant_id=tenant_id)
         if problems:
             raise RecipeRefused(problems)
+        # m-25142725 (PR B): each part's items of the reference tracks, on the owner's
+        # timeline, once — over a cap the Clip is refused here, before any read or write
+        references: dict[int, PartReferences] = {}
+        if media.references_version >= 1:
+            references = {r.entry_at: r for r in references_for_parts(brief)}
+            over = tuple(p for r in references.values() for p in r.problems)
+            if over:
+                raise RecipeRefused(over)
         planned = planned_parts(brief)
         if not planned:
             raise ValueError("a Clip with AI parts has at least one")
@@ -860,7 +1005,9 @@ class ClipAiPartsService(ClipAvatarService):
             raise RuntimeError("a Clip's AI parts were lost while being prepared")
         prepared: list[tuple[PlannedPart, ContentBrief, int, str]] = []
         for p in planned:
-            child = child_brief(clip_brief, p)
+            # a part missing from `references` (v0, or no span) is worked out by
+            # `child_brief` itself: on v1 the same `references_for_parts`, no item
+            child = child_brief(clip_brief, p, references.get(p.entry_at))
             stamped, voice_version, pipeline_version = self._content.prepare_new_generation(
                 tenant_id=tenant_id, brand_id=brand_id, brief=child
             )
@@ -986,11 +1133,14 @@ __all__ = [
     "ai_parts_gate",
     "child_brief",
     "entry_slots",
+    "entry_in_mode",
     "has_ai_part_blocks",
     "is_added_part_brief",
     "part_stretch",
+    "part_references",
     "planned_parts",
     "refuse_ai_parts_approval",
     "resolve",
     "virtual_brief",
+    "without_tracks",
 ]

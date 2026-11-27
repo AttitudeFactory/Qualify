@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from qualify_api.ads.unpublished import ImageAdForm
 from qualify_api.ads.unpublished_repository import NOT_PUBLISHED_BY_QUALIFY
 from qualify_api.ads.wizard import _saved_ad_destination
+from qualify_api.creative.story_covers import PIECE_FILES
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -72,8 +73,9 @@ WHERE a.brand_id=:brand AND a.selected AND a.available
   AND a.credential_version=c.current_credential_version AND c.status='active'
   AND c.purged_at IS NULL AND c.purge_started_at IS NULL
 ORDER BY a.id""")
-_ASSETS = text("""SELECT id,object_key,content_type,media_type,width,height
-FROM image_assets WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
+# N1 (m-25142900): with the automatic covers of the piece's videos, offered as covers.
+_ASSETS = text(f"""SELECT id,object_key,content_type,media_type,width,height,auto_cover
+FROM {PIECE_FILES} WHERE draft_id=:draft AND version_id=:version AND object_key IS NOT NULL
 ORDER BY position NULLS LAST,id""")
 
 
@@ -152,7 +154,13 @@ def story_kinds(assets: list[dict]) -> list[str]:
     vertical_images = _pick(assets, "image", VERTICAL)
     if not vertical_images:
         return []
-    return ["videos", "images"] if _pick(assets, "video", VERTICAL) else ["images"]
+    photos = ["images"] if _own(vertical_images) else []  # N1: an automatic frame is no photo
+    return ["videos", *photos] if _pick(assets, "video", VERTICAL) else photos
+
+
+def _own(rows: list[dict]) -> list[dict]:
+    """The piece's own files: without the automatic covers of its videos (m-25142900)."""
+    return [row for row in rows if not row.get("auto_cover")]
 
 
 def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
@@ -204,6 +212,24 @@ def story_ads_ready(tenant_id: UUID, draft_ids: list[UUID]) -> set[UUID]:
     }
 
 
+def existing_story_ad(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
+    """N3 (m-25142902): (newest story ad of the piece, where to see it) or ("", ""). Only a
+    warning: a failed read shows none, and the backend still refuses a duplicate."""
+    from qualify_api.ads.unpublished_repository import story_ads  # noqa: PLC0415
+
+    try:
+        found = story_ads(tenant_id, [draft_id]).get(draft_id)
+    except Exception as exc:  # noqa: BLE001 — the preparation re-checks under a lock
+        logger.warning("story ad lookup failed: %s", type(exc).__name__)
+        return "", ""
+    return ("", "") if found is None else (str(found[0]), promotion_href(found[1]))
+
+
+def promotion_href(promotion_id: UUID | None) -> str:
+    """A story ad still being prepared has no campaign yet: the whole «Anuncios» list."""
+    return f"/promotions/{promotion_id}" if promotion_id else "/promotions"
+
+
 def unpublished_sources(
     tenant_id: UUID, draft_id: UUID, *, check_health: bool = False, story: bool = False
 ) -> list[PromotionSourceVM]:
@@ -222,7 +248,7 @@ def unpublished_sources(
         kinds = []
         if feed_videos and vertical_videos and feed_images and vertical_images:
             kinds.append("videos")
-        if feed_images and vertical_images:
+        if feed_images and _own(vertical_images):
             kinds.append("images")
     if not kinds or not accounts:
         return []
@@ -280,7 +306,7 @@ def unpublished_sources(
                     else media(feed_videos if video else feed_images, "Opción"),
                     vertical_media=[]
                     if carousel
-                    else media(vertical_videos if video else vertical_images, "Opción"),
+                    else media(vertical_videos if video else _own(vertical_images), "Opción"),
                     feed_covers=media(feed_images, "Portada") if video else [],
                     vertical_covers=media(vertical_images, "Portada") if video else [],
                     products=products if carousel else [],
@@ -318,10 +344,12 @@ def prepare_unpublished(
     source: PromotionSourceVM,
     timezone_name: str,
     request_key: str,
+    seen: tuple[str, ...] = (),
 ) -> PromotionReviewVM:
     """Creates the ad paused and returns its two previews (one, 9:16, for a story ad).
     While Meta processes a video this raises; the caller repeats it with the SAME
-    `request_key` (never a re-upload)."""
+    `request_key` (never a re-upload). `seen` (N3): the story ads of this piece the owner
+    chose to repeat and this session's own request keys; a newer one raises `StoryAdExists`."""
     from .promotion_provider import safe_preview_url  # noqa: PLC0415
 
     if form.media_kind == "carousel":
@@ -340,6 +368,7 @@ def prepare_unpublished(
             actor=actor,
             request_key=UUID(request_key),
             confirm_preparation=True,
+            seen_story_ads=tuple(UUID(value) for value in seen) if form.story else (),
         )
     )
     vertical = safe_preview_url(preview.vertical_html)

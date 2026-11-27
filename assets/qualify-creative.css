@@ -906,6 +906,26 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   padding-block: var(--space-2);
   background: var(--color-panel-solid);
 }
+/* m-25026638 (second live test): what follows the sticky preview in the flow is its own
+   stacking context at z 0, UNDER the preview (z 3) and the step's head (z 5). Inside the
+   timeline the chosen block (z 3), the playhead (z 4), a lifted block (z 6) and the
+   drop line (z 7) were raised in the editor's own context: the chosen AI part's dashed
+   edge and «Parte con IA 1 · 5 s» rode over the pinned preview, and the playhead's line
+   crossed it, even with the Clip empty. Their order among themselves stays. */
+.q-edit > :is(.q-edit__timeline, .q-edit__main, .q-edit__parts) {
+  position: relative;
+  z-index: 0;
+}
+/* … and a panel or a field brought into view (`__qTimeline.reveal`, a field's focus)
+   stops under the step's head and the pinned preview, never behind them
+   (`--q-edit-preview-h`: the preview's height while it is sticky, `assets/edit-room.js`;
+   0 on a wide step, where the preview scrolls with the page). */
+.q-edit--timeline > .q-edit__main,
+.q-edit--timeline > .q-edit__main * {
+  scroll-margin-top: calc(
+    var(--q-sticky-header-height, 0px) + var(--q-edit-preview-h, 0px) + var(--space-2)
+  );
+}
 .q-edit__main {
   container: edit-main / inline-size;
   display: flex;

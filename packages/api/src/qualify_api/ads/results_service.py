@@ -232,6 +232,8 @@ def _summary(row: Any) -> PromotionResultSummary:
         review_reason(status, specific),
         caption=row["source_caption"],
         content_draft_id=row.get("content_draft_id"),
+        story=row.get("story") is True,
+        story_image_key=row.get("story_image_key") or "",
         account_name=row["account_name"] or "",
         timezone_name=row["timezone_name"] or "",
         stale=stale,
@@ -283,7 +285,14 @@ _SUMMARY_SQL = """
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',x.id,'state',x.state,
         'action',x.action,'payload',x.payload,'approval_evidence',x.approval_evidence)
         ORDER BY x.created_at,x.id) FROM ad_promotion_operations x
-        WHERE x.promotion_id=p.id AND x.tenant_id=p.tenant_id),'[]'::jsonb) AS edit_operations
+        WHERE x.promotion_id=p.id AND x.tenant_id=p.tenant_id),'[]'::jsonb) AS edit_operations,
+      -- N3 (m-25142902): a story ad and its 9:16 image (a video's cover), while the piece
+      -- keeps its files.
+      COALESCE(u.source->>'pipeline' IN ('ad-story-image-v1','ad-story-video-v1'),false)
+        AS story,
+      CASE WHEN sd.media_purged_at IS NULL THEN COALESCE(
+        u.source#>>'{vertical,thumbnail,object_key}',u.source#>>'{vertical,object_key}')
+      END AS story_image_key
     FROM ad_promotions p LEFT JOIN ad_promotion_observations o ON o.promotion_id=p.id
       AND o.tenant_id=p.tenant_id
     LEFT JOIN ad_accounts a ON a.id=o.account_id AND a.tenant_id=p.tenant_id
@@ -294,6 +303,8 @@ _SUMMARY_SQL = """
     LEFT JOIN social_connections source ON source.id=pub.connection_id
       AND source.tenant_id=p.tenant_id AND source.brand_id=p.brand_id
       AND source.purged_at IS NULL AND source.purge_started_at IS NULL
+    LEFT JOIN ad_unpublished_sources u ON u.promotion_id=p.id AND u.tenant_id=p.tenant_id
+    LEFT JOIN content_drafts sd ON sd.id=u.draft_id AND sd.tenant_id=u.tenant_id
 """
 
 

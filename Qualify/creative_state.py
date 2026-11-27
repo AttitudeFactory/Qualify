@@ -12009,7 +12009,7 @@ class CreativeState(rx.State):
         # ED-10 (N3/N5): `?bloque=video-2` chooses that block of «Arma tu video»; an
         # address without it (the phone's «atrás») lets the chosen block go first
         reveal, sideways = self._clip_block_from_address(
-            params.get(clip_editor_vm.BLOCK_PARAM, [""])[0]
+            params.get(clip_editor_vm.BLOCK_PARAM, [""])[0], same_step=step == old
         )
         # a step reached through the history: the live line does not come back with it.
         # Only `?bloque=` changing (choosing or letting go a block — «Quitar», «Listo» walk
@@ -12084,7 +12084,7 @@ class CreativeState(rx.State):
             events.append(rx.call_script(_clear_part_query_script(params["parte"])))
         return events
 
-    def _clip_block_from_address(self, slug: str) -> tuple[str, str]:
+    def _clip_block_from_address(self, slug: str, *, same_step: bool = True) -> tuple[str, str]:
         """`?bloque=` read back (a reload, a deep link, «atrás»/«adelante»): the block it
         names is chosen; no word lets a chosen block go — and closes a flow «Agregar»
         opened in the side panel (with the media drawer it opened: «atrás» closes the
@@ -12098,10 +12098,16 @@ class CreativeState(rx.State):
             self.clip_edit_block = ""
             self.clip_join_open = ""
             self.clip_general_open = True
+            # m-25026638: the address carries it, so «atrás» from here closes it
+            self._clip_general_addressed = True
             return "", ""
-        if not slug and self.clip_general_open:
+        if not slug and self.clip_general_open and (self._clip_general_addressed or not same_step):
             # ED-06 (UX review P1): «atrás» closes the general panel; the focus goes back
-            # to its row's «Cambiar» / «Escribir» (`reconcile_reel_editor_route`)
+            # to its row's «Cambiar» / «Escribir» (`reconcile_reel_editor_route`).
+            # m-25026638 (live test): opened by «Editar» (no address of its own) it stays
+            # open when the address of its own step comes back — «Editar»'s own step
+            # change walks back through the history (`__qStepGo`) and that `popstate` is
+            # not the owner's «atrás»
             self.clip_general_open = False
             self._clip_general_left = True
             return "", ""
