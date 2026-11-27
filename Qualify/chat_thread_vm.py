@@ -9,8 +9,8 @@ its own state words) and hands the result here.
 
 Words fixed elsewhere and kept: «Cerrar» / «Reabrir» and the «Cerrado» tag
 (m-25026457), «Quedan {N} min para responder» (`chat_row_vm`, founder 2026-11-13).
-«Puedes escribirle hasta las {hora}» (WhatsApp's header since m-24842994) now says the
-hour in the bubbles' 24 h clock («17:47») instead of «5:47 p. m.» (review of m-25027371).
+«Puedes escribirle hasta las {hora}» (WhatsApp's header since m-24842994) says the hour
+in the bubbles' clock: 12 h, «5:47 p. m.» (founder, 2026-11-27, m-25131413; `clock_12h`).
 """
 
 from __future__ import annotations
@@ -137,13 +137,21 @@ def _local(value: datetime, zone: tzinfo) -> datetime:
     return value.astimezone(zone) if value.tzinfo is not None else value
 
 
+#: The 12 h clock's joints are non-breaking spaces (U+00A0), so «5:47 p. m.» never
+#: wraps into «5:47 p.» / «m.» on a phone.
+NBSP: Final = " "
+AM: Final = f"a.{NBSP}m."
+PM: Final = f"p.{NBSP}m."
+
+
 def clock_12h(local: datetime) -> str:
     """The open chat's clock (founder, 2026-11-27, m-25131413): 12 h Spanish, no leading
-    zero — «5:47 p. m.», «12:05 p. m.» at noon, «12:05 a. m.» at midnight. `local` is
-    already in the business's time zone. Used by the header, the bubbles and the cards
-    of an open chat (both channels), nothing else."""
+    zero — «5:47 p. m.», «12:05 p. m.» at noon, «12:05 a. m.» at midnight — in one
+    unbreakable piece (`NBSP`). `local` is already in the business's time zone. Used by
+    the header, the bubbles and the cards of an open chat (both channels), nothing else
+    (the planner's and the reels' 12 h clocks keep their own, breakable, output)."""
     hour = local.hour % 12 or 12
-    return f"{hour}:{local.minute:02d} {'a. m.' if local.hour < 12 else 'p. m.'}"
+    return f"{hour}:{local.minute:02d}{NBSP}{AM if local.hour < 12 else PM}"
 
 
 # ======================================================================================

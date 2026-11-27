@@ -131,7 +131,7 @@ WINDOW_CLOSED_NOTICE = (
 NO_INBOUND_NOTICE = (
     "Ya no puedes responder: no queda ningún mensaje de esta persona. " + REPLY_LATER_LINE
 )
-#: The rule itself, said once, so «hasta mañana a las 19:27» is never a bare deadline.
+#: The rule itself, said once, so «hasta mañana a las 7:27 p. m.» is never a bare deadline.
 WINDOW_RULE = (
     "Instagram solo permite responder durante las 24 h siguientes al último mensaje de la persona."
 )

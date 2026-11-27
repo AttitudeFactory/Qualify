@@ -357,11 +357,13 @@ def test_window_words_are_plain_spanish() -> None:
     closes = NOW + timedelta(hours=5)
     sentence, tone = window_words(True, closes, NOW, ZONE)
     assert sentence.startswith("Instagram solo permite responder durante las 24 h")
-    assert sentence.endswith("En esta conversación, hasta las 5:00 p. m.") and tone == "ok"
+    assert (
+        sentence.endswith("En esta conversación, hasta las 5:00\u00a0p.\u00a0m.") and tone == "ok"
+    )
     assert not sentence.endswith("..")  # the abbreviation's period ends the sentence
     tomorrow = NOW + timedelta(hours=13)
     sentence, tone = window_words(True, tomorrow, NOW, ZONE)
-    assert sentence.endswith("hasta mañana a las 1:00 a. m.") and tone == "ok"
+    assert sentence.endswith("hasta mañana a las 1:00\u00a0a.\u00a0m.") and tone == "ok"
     sentence, tone = window_words(True, NOW + timedelta(minutes=42), NOW, ZONE)
     assert sentence.startswith("Quedan 42 min para responder: Instagram")
     assert tone == "warn"  # m-25017844: the row's short pill lives in chat_row_vm
@@ -476,7 +478,11 @@ def test_newly_pending_announces_only_what_changed_after_a_first_load() -> None:
 
 def test_bubbles_word_direction_receipts_and_media() -> None:
     inbound = build_message_vm(_message(), now=NOW, zone=ZONE)
-    assert not inbound.is_outbound and inbound.tick == "" and inbound.time_label == "11:50 a. m."
+    assert (
+        not inbound.is_outbound
+        and inbound.tick == ""
+        and inbound.time_label == "11:50\u00a0a.\u00a0m."
+    )
     sent = build_message_vm(_message(direction="outbound", delivery="sent"), now=NOW, zone=ZONE)
     assert sent.is_outbound and (sent.tick, sent.tick_label) == ("sent", "Enviado")
     seen = build_message_vm(_message(direction="outbound", delivery="read"), now=NOW, zone=ZONE)
@@ -643,7 +649,7 @@ def test_stickers_hearts_and_voice_names() -> None:
     )
     assert vm.media_control == MEDIA_STICKER and vm.media_src == "" and vm.text == ""
     assert outbox_text({"message": {"attachment": {"type": "like_heart"}}}) == ""
-    assert voice_note_name(42, NOW, ZONE) == "Nota de voz 0:42 · 12:00 p. m."
+    assert voice_note_name(42, NOW, ZONE) == "Nota de voz 0:42 · 12:00\u00a0p.\u00a0m."
     assert voice_note_name(125, NOW, ZONE).startswith("Nota de voz 2:05")
 
 
