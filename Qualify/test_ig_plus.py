@@ -111,7 +111,7 @@ def test_directions_text_is_whatsapps_text_with_the_right_link() -> None:
     assert directions_text(NumberLocation()) == ""
     assert directions_text(ADDRESS) == (
         "Estamos en Calle 10 # 5-20, Cúcuta.\n"
-        "https://maps.google.com/?q=Calle%2010%20%23%205-20%2C%20C%C3%BAcuta"
+        "https://maps.google.com/?q=Calle+10+5-20%2C+C%C3%BAcuta"
     )
     # with a point the link IS the point (Instagram has no location message)
     pinned = NumberLocation(

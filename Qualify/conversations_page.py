@@ -1594,7 +1594,7 @@ def _live_composer() -> rx.Component:
         tools=tuple(tools),
         # m-25143229: «Formas de pago» and «Cómo llegar» (the rows `SEND_DOORS` opens);
         # each opens the panel at its first step and never sends.
-        plus=plus_menu(box, IGP.open_pick, disabled=~S.can_compose | S.busy),
+        plus=plus_menu(box, IGP.open_pick, disabled=~S.can_compose | S.busy | IGP.pick_busy),
         field=reply_field(
             S.draft_text,
             S.set_draft_text,

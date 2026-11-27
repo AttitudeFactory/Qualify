@@ -13,10 +13,12 @@ import reflex as rx
 
 from .chat_plus_picks import link_button, pick_directions, pick_list, pick_payments
 from .chat_thread import TAP_MIN
+from .conversations_pick_state import IG_PICK_FLOW
 from .conversations_pick_state import InstagramPickState as P
 from .conversations_state import ConversationsState
 from .ui import callout, chat_bubble, drawer, media_thumb, skeleton_rows
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
 from .whatsapp_chats_vm import (
     PAYMENTS_CHANGE,
@@ -124,6 +126,8 @@ def _footer() -> rx.Component:
 def instagram_pick_drawer() -> rx.Component:
     """Open only while the chat it opened on is the open one."""
     return drawer(
+        # U2: the phone's «atrás» steps back / closes, as in WhatsApp (`?flujo=`)
+        flow_sync(IG_PICK_FLOW, P.pick_step, ready=P.pick_open),
         _body(),
         open=P.pick_open & (ConversationsState.open_thread_id == P.pick_thread),
         on_open_change=P.set_picker_open,

@@ -300,6 +300,16 @@ class Conversation:
     pending_draft: ConversationDraft | None = None
 
 
+class PaymentTextNotQueued(Exception):
+    """«Formas de pago»: the QR was queued, its text was not (`cause` says why)."""
+
+    qr_queued = True
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(type(cause).__name__)
+        self.cause = cause
+
+
 @dataclass(frozen=True)
 class PaymentPreview:
     """«Formas de pago» › «Revisa y envía» on Instagram: the QR's `/r2media` path ("" =
@@ -747,16 +757,23 @@ class ConversationsGateway:
         thread_id: UUID,
         user_id: UUID,
         method_id: UUID,
+        *,
+        include_qr: bool = True,
     ) -> list[UUID]:
         """«Formas de pago» › «Enviar» — only ever the owner's tap. The QR goes as an
         image reply (Instagram's image message carries no text), then the text. The
         method is re-read now: one turned off meanwhile is `PaymentMethodNotFound`.
-        `WindowClosed` refuses before anything is written."""
+        `WindowClosed` refuses before anything is written.
+
+        The two rows are two outbox writes (the service has no batch door): when the
+        text fails AFTER the QR was queued, `PaymentTextNotQueued` says so (`qr_queued`,
+        the cause chained), and the retry of the same intent passes `include_qr=False`
+        so the customer never gets the QR twice (m-25143229, review C2)."""
         self._owned(tenant_id, connection_id, thread_id)
         method = self._method(tenant_id, connection_id, method_id)
         approval = self._approval(user_id)
         queued: list[UUID] = []
-        if method.qr_media_key:
+        if include_qr and method.qr_media_key:
             key = method.qr_media_key
             queued.append(
                 self.service.reply_media(
@@ -768,14 +785,19 @@ class ConversationsGateway:
                     approval=approval,
                 )
             )
-        queued.extend(
-            self.service.reply_text(
-                tenant_id=tenant_id,
-                thread_id=thread_id,
-                text=payment_text(method),
-                approval=approval,
+        try:
+            queued.extend(
+                self.service.reply_text(
+                    tenant_id=tenant_id,
+                    thread_id=thread_id,
+                    text=payment_text(method),
+                    approval=approval,
+                )
             )
-        )
+        except Exception as exc:
+            if queued:
+                raise PaymentTextNotQueued(exc) from exc
+            raise
         return queued
 
     def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> DirectionsVM:

@@ -22,6 +22,7 @@ from qualify_api.attention import PendingCounts
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .conversations_pick_state import InstagramPickState
 from .conversations_state import ConversationsState
 from .followups_state import FollowupsState
 from .inbox_list_state import InboxListState
@@ -99,6 +100,8 @@ class ResponderState(rx.State):
             events.append(InboxListState.enter)
             events.append(ConversationsState.enter_page)
             events.append(WhatsAppChatsState.restore_inbox_address)
+            # m-25143229 U2: the Instagram «+» panel follows the address too
+            events.append(InstagramPickState.restore_picker)
         elif self.active_tab == TAB_BUYERS:
             events.append(FollowupsState.enter_page)
         elif self.active_tab == TAB_COMMENTS:

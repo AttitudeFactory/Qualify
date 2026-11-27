@@ -9,10 +9,16 @@ steps of `chat_plus_picks.py`.
 - **Only inside the 24 h window**: the «+» lives in the live reply box (a closed window
   has no box), `open_pick` refuses when `ConversationsState.can_compose` is false, and
   the service refuses a send once the window closed (`WindowClosed`, nothing written).
-- **One send per tap**: `_begin_send` freezes the plan under the lock and refuses while
-  one is in flight; on success the panel resets, so a second «Enviar» has nothing to
-  send. (Instagram's outbox has no request key: this is the same in-flight guard as
+- **One send per tap** (review C1): `_begin_send` freezes the plan under the lock and
+  sets `pick_busy`, which `_reset` never clears: while it is set the panel cannot be
+  closed (✕, Esc, backdrop, «Volver al chat», the phone's «atrás») nor the «+» opened
+  again, and its result is always told (in the panel, or a toast when the chat
+  changed). (Instagram's outbox has no request key: this is an in-flight guard, like
   every other send of this screen.)
+- **The QR once** (review C2): when the QR was queued and its text was not, the retry
+  of that method in that chat sends the text alone (`_qr_queued_for`).
+- **The phone's «atrás»** (review U2): WhatsApp's `?flujo=` mechanism with its own flow
+  name (`IG_PICK_FLOW`): one step back, or closed on step 1, in the same chat.
 - **Scoped**: every read and send goes through `conversations_provider.gateway()` with
   the session's tenant and the account on screen; the thread is re-checked against that
   account (`_owned`) on every call. A result that lands after the panel closed or the
@@ -26,6 +32,7 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -37,11 +44,11 @@ from qualify_api.tenancy.acting import acting_login
 from qualify_api.whatsapp.payments import PaymentMethodNotFound
 
 from .auth_state import AuthState
-from .conversations_provider import gateway
+from .conversations_provider import PaymentTextNotQueued, gateway
 from .conversations_state import WINDOW_CLOSED_NEUTRAL, ConversationsState
 from .conversations_vm import NO_INBOUND_NOTICE, WINDOW_CLOSED_NOTICE, reply_sent_message
 from .ig_plus_provider import DirectionsUnavailable
-from .nav_url import inbox_chat_href
+from .nav_url import close_flow_script, flow_param, inbox_chat_href
 from .pending_state import PendingState
 from .ui.primitives import ORBIT_FOCUS_SCRIPT
 from .ui.steps import settle_step
@@ -71,6 +78,14 @@ logger = logging.getLogger(__name__)
 
 #: The rows Instagram's «+» opens here (`reply_box_vm.SEND_DOORS`).
 IG_PICK_SOURCES = frozenset({PICK_PAYMENTS, PICK_DIRECTIONS})
+#: The panel's `?flujo=` (WhatsApp's is «enviar»: a distinct name, so one chat's
+#: restore never closes the other's panel).
+IG_PICK_FLOW = "enviar-ig"
+#: Review U3 (texto nuevo, pendiente de aprobación del fundador): Instagram has no
+#: location message — the customer always gets the address with a link to the map.
+IG_DIRECTIONS_HELP = (
+    "Le llega tu dirección con un enlace al mapa. Nada sale sin que toques «Enviar»."
+)
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
@@ -156,6 +171,7 @@ class _Plan:
     thread_id: str
     connection_id: str
     item_id: str
+    include_qr: bool = True
 
 
 class InstagramPickState(rx.State):
@@ -178,10 +194,14 @@ class InstagramPickState(rx.State):
     pick_send_error: str = ""
     #: The business's WhatsApp number (its «Formas de pago» and «Perfil» pages), "" if none.
     pick_number: str = ""
+    #: A send is in flight (C1): never cleared by `_reset`, only by the send itself.
+    pick_busy: bool = False
 
     _session: int = 0
     _connection: str = ""
     _zone_name: str = ""
+    #: "<thread>:<method>" whose QR is queued but whose text is not (C2).
+    _qr_queued_for: str = ""
 
     # --- computed ------------------------------------------------------------------------
 
@@ -207,6 +227,8 @@ class InstagramPickState(rx.State):
 
     @rx.var
     def pick_help(self) -> str:
+        if self.pick_source == PICK_DIRECTIONS:
+            return IG_DIRECTIONS_HELP  # U3: WhatsApp's line promises the map pin
         return pick_step_help(self.pick_step, self.pick_source, single=self.pick_single_payment)
 
     @rx.var
@@ -214,7 +236,7 @@ class InstagramPickState(rx.State):
         return ig_pick_can_send(
             source=self.pick_source,
             reviewing=self.pick_reviewing,
-            sending=self.pick_sending,
+            sending=self.pick_sending or self.pick_busy,
             payment_id=self.pick_selected,
             payment_text=self.pick_payment_text,
             payment_loading=self.pick_payment_loading,
@@ -267,10 +289,16 @@ class InstagramPickState(rx.State):
         self.pick_number = ""
         self._connection = ""
 
-    def _close(self) -> list[rx.event.EventSpec]:
-        """Closed (Volver al chat, ✕, Esc, the backdrop): the focus goes back to the «+»."""
+    def _close(self) -> list[rx.event.EventSpec] | None:
+        """Closed (Volver al chat, ✕, Esc, the backdrop): the focus goes back to the «+».
+        Refused while a send is in flight (C1): its result must reach this panel."""
+        if self.pick_busy:
+            return None
         self._reset()
-        return [rx.call_script(ORBIT_FOCUS_SCRIPT)]
+        return [
+            rx.call_script(close_flow_script(IG_PICK_FLOW)),
+            rx.call_script(ORBIT_FOCUS_SCRIPT),
+        ]
 
     async def _tenant(self) -> UUID | None:
         conv = await self.get_state(ConversationsState)
@@ -286,6 +314,8 @@ class InstagramPickState(rx.State):
         chat may get a message; choosing a row never sends anything."""
         if not isinstance(source, str) or source not in IG_PICK_SOURCES:
             return None
+        if self.pick_busy:
+            return None  # C1: the last «Enviar» has not come back yet
         conv = await self.get_state(ConversationsState)
         if not conv.can_compose or conv.busy or not conv.open_thread_id:
             return None
@@ -310,13 +340,36 @@ class InstagramPickState(rx.State):
         return None
 
     @rx.event
-    def pick_back(self) -> rx.event.EventSpec | list[rx.event.EventSpec]:
+    def pick_back(self) -> rx.event.EventSpec | list[rx.event.EventSpec] | None:
         """«Atrás»; on step 1 it is «Volver al chat» and closes the panel."""
+        if self.pick_busy:
+            return None
         if self.pick_step <= 1:
             return self._close()
         self.pick_step -= 1
         self.pick_send_error = ""
         return settle_step("drawer")
+
+    @rx.event
+    def restore_picker(self) -> rx.event.EventSpec | None:
+        """The phone's «atrás» (WhatsApp's `restore_picker`, U2): the address moved under
+        the panel — one step back, or closed on step 1, in the same chat. An address
+        that names the panel while it is closed (a reload) is tidied; nothing reopens
+        by itself. While a send is in flight the panel stays (C1)."""
+        params = self.router.url.query_parameters
+        requested = flow_param(params, IG_PICK_FLOW, 2)
+        if not self.pick_open:
+            return rx.call_script(close_flow_script(IG_PICK_FLOW)) if requested else None
+        if self.pick_busy:
+            return None
+        if not requested:
+            self._reset()
+            return rx.call_script(ORBIT_FOCUS_SCRIPT)
+        if requested < self.pick_step:
+            self.pick_step = requested
+            self.pick_send_error = ""
+            return settle_step("drawer")
+        return None
 
     @rx.event
     def choose_payment(
@@ -326,6 +379,8 @@ class InstagramPickState(rx.State):
         if not isinstance(method_id, str) or self.pick_source != PICK_PAYMENTS:
             return None
         if not any(c.id == method_id for c in self.pick_payments):
+            return None
+        if self.pick_busy:
             return None
         if method_id != self.pick_selected:
             self.pick_selected = method_id
@@ -459,8 +514,9 @@ class InstagramPickState(rx.State):
     # --- «Enviar» --------------------------------------------------------------------------
 
     def _begin_send(self) -> _Plan | None:
-        if not self.pick_open or not self.pick_can_send:
+        if not self.pick_open or not self.pick_can_send or self.pick_busy:
             return None
+        self.pick_busy = True
         self.pick_sending = True
         self.pick_send_error = ""
         return _Plan(
@@ -469,15 +525,25 @@ class InstagramPickState(rx.State):
             thread_id=self.pick_thread,
             connection_id=self._connection,
             item_id=self.pick_selected,
+            include_qr=self._qr_queued_for != f"{self.pick_thread}:{self.pick_selected}",
         )
 
     @rx.event(background=True)
-    async def send_pick(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+    async def send_pick(self) -> AsyncIterator[_Event]:
         """The owner's «Enviar» — the only path this panel queues by."""
         async with self:
             plan = self._begin_send()
             if plan is None:
                 return
+        try:
+            async for event in self._send(plan):
+                yield event
+        finally:
+            async with self:
+                self.pick_busy = False  # C1: whatever happened, the «+» works again
+
+    async def _send(self, plan: _Plan) -> AsyncIterator[_Event]:
+        async with self:
             conv = await self.get_state(ConversationsState)
             # the chat the panel opened on is still the one on screen
             same_chat = conv.open_thread_id == plan.thread_id
@@ -488,10 +554,11 @@ class InstagramPickState(rx.State):
             email = (await self.get_state(AuthState)).user_email
         if not same_chat:
             async with self:
+                self.pick_busy = False
                 self._reset()
             return
         thread, connection = _uuid(plan.thread_id), _uuid(plan.connection_id)
-        error, window_closed = "", False
+        error, window_closed, qr_now = "", False, False
         try:
             if tenant_id is None or thread is None or connection is None:
                 raise _NoSession
@@ -506,12 +573,28 @@ class InstagramPickState(rx.State):
                         if method is None:
                             raise PaymentMethodNotFound(plan.item_id)
                         await asyncio.to_thread(
-                            gw.send_payment_method, tenant_id, connection, thread, user, method
+                            partial(gw.send_payment_method, include_qr=plan.include_qr),
+                            tenant_id,
+                            connection,
+                            thread,
+                            user,
+                            method,
                         )
                     else:
                         await asyncio.to_thread(
                             gw.send_directions, tenant_id, connection, thread, user
                         )
+        except PaymentTextNotQueued as half:
+            # C2: the QR is queued; the retry of this method sends the text alone
+            qr_now = True
+            cause = half.cause
+            if isinstance(cause, (WindowClosed, DispatchWindowClosed)):
+                window_closed = True
+            elif isinstance(cause, NotAMember):
+                error = cause.message
+            else:
+                logger.error("instagram plus payment text failed: %s", type(cause).__name__)
+                error = ig_send_error(cause, plan.source)
         except _NoSession:
             error = _NO_SESSION
         except NotAMember as gone:
@@ -522,24 +605,39 @@ class InstagramPickState(rx.State):
             if not isinstance(exc, LookupError):
                 logger.error("instagram plus send failed: %s", type(exc).__name__)
             error = ig_send_error(exc, plan.source)
+        async with self:
+            key = f"{plan.thread_id}:{plan.item_id}"
+            if qr_now:
+                self._qr_queued_for = key
+            elif not error and not window_closed and self._qr_queued_for == key:
+                self._qr_queued_for = ""
         if window_closed:
             notice = await _window_closed_cause(tenant_id, connection, thread)
             async with self:
-                if self._session == plan.session:
-                    self._reset()
+                self.pick_busy = False
+                self._reset()
                 conv = await self.get_state(ConversationsState)
                 conv._set_banner(notice, "warn")
+            yield rx.call_script(close_flow_script(IG_PICK_FLOW))
             yield ConversationsState.refresh
             return
         async with self:
-            if self._session != plan.session:
-                return  # closed meanwhile: the refresh shows what really went
+            here = self._session == plan.session
             if error:
                 self.pick_sending = False
-                self.pick_send_error = error
-                return
-            self._reset()
-        yield rx.call_script(ORBIT_FOCUS_SCRIPT)
+                if here:
+                    self.pick_send_error = error
+            else:
+                self.pick_busy = False
+                if here:
+                    self._reset()
+        if error:
+            if not here:  # C1: the panel is gone (another chat): the owner still hears it
+                yield rx.toast.error(error, duration=_TOAST_MS)
+            return
+        if here:
+            yield rx.call_script(close_flow_script(IG_PICK_FLOW))
+            yield rx.call_script(ORBIT_FOCUS_SCRIPT)
         yield rx.toast.info(reply_sent_message(who), duration=_TOAST_MS)
         yield PendingState.refresh_now
         yield ConversationsState.refresh

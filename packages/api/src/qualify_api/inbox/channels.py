@@ -50,7 +50,10 @@ class ChannelCapabilities:
     - `window_hours` / `after_window`: the free-form window after the customer's last
       message, and what may still be sent once it closes;
     - `menu_handoff`: an automatic menu answers and can hand the chat to a person;
-    - `payments`: payment methods and «Pago por revisar» exist for the chat;
+    - `payments`: the order's payment flow exists for the chat («Pago por revisar»,
+      «Pago recibido»). It does NOT gate SENDING the business's payment methods: the
+      «+» row «Formas de pago» is drawn on every channel whose screen has that door
+      (`Qualify/reply_box_vm.SEND_DOORS`, m-25143229) and ignores this flag;
     - `suggest_reply`: Qualify can draft a reply with AI;
     - `close_reopen`: the owner can close a chat and reopen it;
     - `assign`: the owner can hand a chat to a member of the business (m-25027372: the

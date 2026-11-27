@@ -202,9 +202,18 @@ def test_without_a_point_the_address_goes_with_a_maps_link(world: World) -> None
     body = world.only_row().payload["text"]["body"]
     assert body == (
         "Estamos en Av. 5 #12-34, Cúcuta.\n"
-        "https://maps.google.com/?q=Av.%205%20%2312-34%2C%20C%C3%BAcuta"
+        # m-25143229 U4 (was `?q=Av.%205%20%2312-34%2C%20C%C3%BAcuta`); the address
+        # in the sentence keeps its «#», only the link loses it
+        "https://maps.google.com/?q=Av.+5+12-34%2C+C%C3%BAcuta"
     )
-    assert maps_link("a b&c") == "https://maps.google.com/?q=a%20b%26c"
+    assert maps_link("a b&c") == "https://maps.google.com/?q=a+b%26c"
+    # m-25143229 U4: readable in the chat — no «#», spaces as «+», still one valid URL
+    assert maps_link(" Calle 10 # 5-20, Cúcuta ") == (
+        "https://maps.google.com/?q=Calle+10+5-20%2C+C%C3%BAcuta"
+    )
+    assert maps_link("Cra 7 #45-12 / Local 3?x=1") == (
+        "https://maps.google.com/?q=Cra+7+45-12+%2F+Local+3%3Fx%3D1"
+    )
 
 
 def test_without_point_or_address_nothing_is_sent(world: World) -> None:

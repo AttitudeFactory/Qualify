@@ -192,9 +192,11 @@ def _allowed(box: ReplyBoxVM, key: str) -> bool:
         PLUS_OFFER: box.can_photo,
         # WhatsApp's menu is a list message answered by the automatic menu.
         PLUS_MENU: box.has_menu_handoff,
-        # The business's payment data is a text (and its QR an image): any chat channel
-        # can carry it. `has_payments` (the «Pago por revisar» flow, WhatsApp's) is NOT
-        # needed to SEND it (m-25143229).
+        # m-25143229 (review C3): the row SENDS the business's payment data — a text, and
+        # the method's QR as an image where the channel takes one — so the descriptor
+        # never removes it: `has_payments` (`ChannelCapabilities.payments`, the order's
+        # «Pago por revisar» flow) is ignored here on purpose, and only `SEND_DOORS`
+        # decides whether a screen draws it.
         PLUS_PAYMENTS: True,
         # A text with the place: any chat channel can carry it.
         PLUS_DIRECTIONS: True,
