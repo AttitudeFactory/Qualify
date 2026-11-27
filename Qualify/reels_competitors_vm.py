@@ -49,6 +49,8 @@ SECTION_EMPTY = "Aún no tienes competidores. Márcalos abajo con «Compite cont
 #: Inside the panel: a competitor taken back to the board's «sin clasificar», and the
 #: board's other accounts, each with «Compite contigo» (the board's own words).
 REMOVE_LABEL = "Quitar"
+#: «Quitar» is only its × in the row (Deivid, 2026-11-27): its name says it in full.
+REMOVE_NAME = "Quitar a {account} de tus competidores"
 ADD_TITLE = "Agregar competidores"
 ADD_BUTTON = "Compite contigo"
 NO_CANDIDATES = (
@@ -219,6 +221,7 @@ __all__ = [
     "NO_CANDIDATES",
     "OPENER_LABEL",
     "REMOVE_LABEL",
+    "REMOVE_NAME",
     "PICKED_COUNT",
     "PICKER_BODY",
     "PICKER_SHORT",

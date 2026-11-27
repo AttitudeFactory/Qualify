@@ -601,6 +601,32 @@ def test_unmark_takes_the_account_back_to_the_board_and_saves() -> None:
     assert board.unmark_account("bad") is None
 
 
+def test_a_rows_actions_are_one_block_that_never_splits() -> None:
+    """Deivid's live test (2026-11-27, 768 px): «Quitar» fell alone onto its own line. A
+    row's actions — «Ver sus reels ahora» (outside the 6) and the × of «Quitar» — are ONE
+    `nowrap` block: beside the account when it fits, else the whole block on a second line
+    under the account's words. «Quitar» is its × only, named in full."""
+    import inspect
+
+    from . import competitors_panel
+
+    row = inspect.getsource(competitors_panel._competitor_row)
+    block = row[row.index("actions = rx.hstack(") : row.index("return rx.vstack(")]
+    assert "rx.cond(weekly, rx.fragment(), read_now)" in block and "remove," in block
+    assert 'wrap="nowrap"' in block and 'flex="0 0 auto"' in block
+    assert "margin_inline_start=_ACTIONS_INDENT" in block
+    line = row[row.index("return rx.vstack(") :]
+    assert "            actions," in line and 'wrap="wrap"' in line
+    assert "read_now," not in line and "            remove," not in line  # never on their own
+    remove = row[row.index("remove = rx.icon_button(") : row.index("actions = rx.hstack(")]
+    assert 'min_width="44px"' in remove and 'min_height="44px"' in remove
+    assert "aria_label=remove_name" in remove and "title=remove_name" in remove
+    assert reels_competitors_vm.REMOVE_NAME.format(account="@rival") == (
+        "Quitar a @rival de tus competidores"
+    )
+    assert competitors_panel._ACTIONS_INDENT == "calc(0.75rem + 18px + 0.6rem)"
+
+
 def test_the_copy_of_the_panel_is_plain_spanish() -> None:
     assert reels_competitors_vm.SECTION_EMPTY == (
         "Aún no tienes competidores. Márcalos abajo con «Compite contigo» o elígelos aquí."

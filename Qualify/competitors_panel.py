@@ -35,6 +35,9 @@ from .discover_reels import (
 from .ui import callout, drawer, loading_spinner, signal_pill
 from .ui import tokens as T
 
+#: Where a row's actions start when they drop to a second line: under the account's words,
+#: past the option row's padding (0.75rem), its 18 px mark and its gap (0.6rem).
+_ACTIONS_INDENT = f"calc(0.75rem + {T.ICON_MD}px + 0.6rem)"
 #: The section's opener: the drawer gives the focus back to it when it closes.
 COMPETITORS_OPENER_ID = "competitors-panel"
 RIVALS_FOCUS_SCRIPT = (
@@ -77,18 +80,34 @@ def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
         aria_busy=rx.cond(busy, "true", "false"),
         aria_label=reels_competitors_vm.READ_NOW + ": " + row["label"].to(str),
     )
-    # back to the board's «sin clasificar» (the board saves it: set/clear label)
-    remove = rx.button(
-        rx.icon("x", size=14, aria_hidden="true"),
-        reels_competitors_vm.REMOVE_LABEL,
+    # back to the board's «sin clasificar» (the board saves it: set/clear label). Only its
+    # ×, the 44 px square: «Quitar a @x de tus competidores» is its name and its `title`
+    remove_name = reels_competitors_vm.REMOVE_NAME.format(account=row["label"].to(str))
+    remove = rx.icon_button(
+        rx.icon("x", size=T.ICON_SM, aria_hidden="true"),
+        type="button",
         variant="ghost",
         color_scheme="gray",
         size="2",
         min_height="44px",
+        min_width="44px",
         margin="0",
         on_click=BrandConnectState.unmark_account(key),
         disabled=S.competitor_busy != "",
-        aria_label=reels_competitors_vm.REMOVE_LABEL + ": " + row["label"].to(str),
+        aria_label=remove_name,
+        title=remove_name,
+    )
+    # Deivid's live test (2026-11-27): «Ver sus reels ahora» and «Quitar» are ONE block that
+    # never splits — beside the account when it fits, else the whole block on a second
+    # line, under the account's words; «Quitar» is never alone on a line
+    actions = rx.hstack(
+        rx.cond(weekly, rx.fragment(), read_now),
+        remove,
+        spacing="2",
+        align="center",
+        flex="0 0 auto",
+        wrap="nowrap",
+        margin_inline_start=_ACTIONS_INDENT,
     )
     return rx.vstack(
         rx.flex(
@@ -103,10 +122,10 @@ def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
                 flex="1 1 14rem",
                 min_width="0",
             ),
-            rx.cond(weekly, rx.fragment(), read_now),
-            remove,
+            actions,
             wrap="wrap",
             align="center",
+            justify="between",
             spacing="2",
             width="100%",
         ),
