@@ -4,6 +4,7 @@ story ad source — against real Postgres and RLS, with two businesses."""
 from __future__ import annotations
 
 import io
+import subprocess
 from uuid import uuid4
 
 import pytest
@@ -154,14 +155,20 @@ def test_one_failing_video_never_stops_the_others(gate) -> None:
     def slow_once(*args, **kwargs) -> bytes:
         if not timeouts["count"]:
             timeouts["count"] += 1
-            raise VideoStillError("ffmpeg timed out after 30 s")
+            raise VideoStillError("ffmpeg timed out") from subprocess.TimeoutExpired("ffmpeg", 30)
         return _frame()
 
-    # the lost file is recorded once; the timeout is the machine's: not recorded, retried
-    assert sweep([broken.tenant_id, fine.tenant_id], gate, grab=slow_once) == 0
+    # the lost file is recorded once; the timeout is the machine's: not recorded, it rests
+    resting: dict = {}
+    tenants = [broken.tenant_id, fine.tenant_id]
+    assert sweep(tenants, gate, grab=slow_once, resting=resting) == 0
     assert [c["failure_reason"] for c in _covers(broken.tenant_id)] == ["source_missing"]
     assert _covers(fine.tenant_id) == [] and len(pending(fine.tenant_id)) == 1
-    assert sweep([broken.tenant_id, fine.tenant_id], gate, grab=slow_once) == 1
+    assert list(resting) == [fine.vertical.asset_id]
+    assert sweep(tenants, gate, grab=slow_once, resting=resting) == 0  # still resting
+    for asset in resting:
+        resting[asset] = 0.0  # its rest is over
+    assert sweep(tenants, gate, grab=slow_once, resting=resting) == 1 and not resting
     with acting_login(login):
         assert story_block(fine.tenant_id, fine.draft_id) is None
 

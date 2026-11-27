@@ -30,7 +30,9 @@ from __future__ import annotations
 import io
 import logging
 import shutil
+import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -80,7 +82,13 @@ WHERE d.status='approved' AND d.approved_revision=d.revision AND d.parent_draft_
     WHERE c.tenant_id=a.tenant_id AND c.source_asset_id=a.id
       AND c.source_object_key=a.object_key)"""
 _TENANTS = text(f"SELECT DISTINCT tenant_id FROM ({_CANDIDATES}) AS c ORDER BY tenant_id")
-_WORK = text(f"{_CANDIDATES} ORDER BY d.approved_at DESC NULLS LAST,a.id LIMIT :limit")
+_WORK = text(
+    f"""{_CANDIDATES} AND NOT a.id=ANY(CAST(:resting AS uuid[]))
+ORDER BY d.approved_at DESC NULLS LAST,a.id LIMIT :limit"""
+)
+#: A video that failed for a reason of the machine waits this long before another try, so
+#: a few stubborn ones never take every pass's slots.
+REST_SECONDS = 30 * 60
 _INSERT = text("""INSERT INTO piece_story_covers (tenant_id,draft_id,version_id,source_asset_id,
   source_object_key,state,object_key,content_type,width,height,pipeline_version,failure_reason)
 VALUES (:tenant,:draft,:version,:asset,:source,:state,:key,:type,:width,:height,:pipeline,
@@ -160,9 +168,8 @@ def make_cover(gate: Any, work: Mapping[str, Any], grab: Grab | None = None) -> 
         except ObjectNotFound:  # the video's own file is gone: no frame to take, ever
             values |= {"state": "failed", "reason": "source_missing"}
         except VideoStillError as exc:
-            # shortcut: a timeout is told apart by its text (still.py has no type for it);
-            # it is the machine's, so the next pass tries again instead of recording it
-            if "timed out" in str(exc):
+            # a timeout is the machine's: not recorded, the video is tried again later
+            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
                 raise
             logger.info("story_cover.no_frame error_type=%s", type(exc).__name__)
             values |= {"state": "failed", "reason": "no_frame"}
@@ -184,24 +191,37 @@ def discover_tenants() -> list[UUID]:
         return list(session.scalars(_TENANTS))
 
 
-def pending(tenant_id: UUID, limit: int = PER_PASS) -> list[dict[str, Any]]:
-    """This business's videos waiting for a cover, newest approval first."""
+def pending(
+    tenant_id: UUID, limit: int = PER_PASS, resting: Iterable[UUID] = ()
+) -> list[dict[str, Any]]:
+    """This business's videos waiting for a cover, newest approval first, except those
+    resting after a failure of the machine."""
+    values = {"limit": limit, "resting": list(resting)}
     with tenant_session(tenant_id) as session:
-        return [dict(row) for row in session.execute(_WORK, {"limit": limit}).mappings()]
+        return [dict(row) for row in session.execute(_WORK, values).mappings()]
 
 
 def sweep(
-    tenant_ids: Iterable[UUID], gate: Any, limit: int = PER_PASS, grab: Grab | None = None
+    tenant_ids: Iterable[UUID],
+    gate: Any,
+    limit: int = PER_PASS,
+    grab: Grab | None = None,
+    resting: dict[UUID, float] | None = None,
 ) -> int:
     """At most `limit` attempts over these businesses; how many covers were stored. A video
-    that fails (R2, database, timeout) is logged and skipped, never the rest of the pass."""
-    made = 0
+    that fails (R2, database, timeout) is logged and rests `REST_SECONDS` in `resting` (the
+    worker's memory: a restart simply tries it again), never stopping the rest of the pass."""
+    made, now = 0, time.monotonic()
+    resting = {} if resting is None else resting
+    for asset in [a for a, until in resting.items() if until <= now]:
+        del resting[asset]
     for tenant in tenant_ids:
-        for work in pending(tenant, limit):
+        for work in pending(tenant, limit, resting):
             try:
                 made += make_cover(gate, work, grab)
-            except Exception as exc:  # noqa: BLE001 — retried next pass; the others go on
+            except Exception as exc:  # noqa: BLE001 — tried again later; the others go on
                 logger.warning("story_cover.failed error_type=%s", type(exc).__name__)
+                resting[work["asset_id"]] = now + REST_SECONDS
             limit -= 1
             if limit <= 0:
                 return made
@@ -212,6 +232,7 @@ def cover_chore(scope: list[UUID] | None) -> Callable[[], int]:
     """The worker's pass (`None` = every business). The R2 gate is built on the first pass
     (after `.env`); any error is logged by type only and the next pass starts over."""
     built: dict[str, Any] = {}
+    resting: dict[UUID, float] = {}
 
     def run() -> int:
         try:
@@ -220,7 +241,7 @@ def cover_chore(scope: list[UUID] | None) -> Callable[[], int]:
 
                 built["gate"] = default_gate()
             tenants = discover_tenants() if scope is None else scope
-            return sweep(tenants, built["gate"])
+            return sweep(tenants, built["gate"], resting=resting)
         except Exception as exc:  # noqa: BLE001 — a pass never stops the worker
             logger.warning("story_cover.pass_failed error_type=%s", type(exc).__name__)
             return 0
