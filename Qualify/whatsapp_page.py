@@ -6,7 +6,9 @@ sería … para configuración». Each panel has its own page, served by `WhatsA
 
     Estado          → the number's card in «Tus redes» (`number_card_status`,
                       `number_card_details`, drawn by `connections_page`)
-    Actividad       → `/connections/whatsapp/actividad` (`whatsapp_activity_index`)
+    Actividad       → «Resultados › WhatsApp» since m-25143230 (`whatsapp_activity`,
+                      drawn by `results_page`); its old page only redirects
+                      (`whatsapp_activity_index`)
     Perfil          → `/chats/ajustes/whatsapp/perfil` (`whatsapp_profile_index`)
     Códigos QR      → `/chats/ajustes/whatsapp/codigos-qr` (`whatsapp_qr_index`)
     Formas de pago  → `/chats/ajustes/formas-de-pago` (`whatsapp_payments_index`)
@@ -75,9 +77,7 @@ from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     ACCOUNT_PARAM,
-    ACTIVITY_PAGE_TITLE,
-    ACTIVITY_ROUTE,
-    ACTIVITY_SUBTITLE,
+    ACTIVITY_HOME,
     ACTIVITY_TITLE,
     CHAT_SETTINGS_ROUTE,
     CHAT_SETTINGS_TITLE,
@@ -105,7 +105,6 @@ from .whatsapp_vm import (
     QR_TITLE,
     REVIEW_ACTION,
     SECTION_PROMOTIONS,
-    TAB_ACTIVITY,
     TAB_CAMPAIGNS,
     TAB_CONNECTION,
     TAB_CONTACTS,
@@ -267,10 +266,44 @@ def sub_strip() -> rx.Component:
     )
 
 
-def activity_tab() -> rx.Component:
-    """Actividad: the number's metrics (WA-14) — a page under «Tus redes» since
-    m-25027373."""
-    return rx.vstack(metrics_block(), spacing="4", width="100%", align_items="start")
+_LEASE_SCRIPT = "({href: window.location.href})"
+
+
+def whatsapp_activity() -> rx.Component:
+    """m-25143230: «Actividad» — the number's metrics (WA-14/WA-17/WA-21) — inside
+    «Resultados › WhatsApp», where the owner looks for how the business is doing. The
+    same block and state as on its old page, with the number selector when there are
+    two or more numbers.
+
+    Its mount hands `WhatsAppState.enter_results` the browser's own address (the number
+    it names, `?cuenta=`, is taken only if it is this business's) and loads the numbers
+    from our own table. Without a number nothing is drawn — the tab keeps its own
+    «not connected yet» state — and nothing reads Meta: the block (whose reads go to
+    Meta through the number's credential) only mounts once a number of this business
+    is selected, keyed by it so a switch remounts and reloads it."""
+    return rx.box(
+        rx.box(
+            display="none",
+            on_mount=rx.call_script(_LEASE_SCRIPT, callback=WhatsAppState.enter_results),
+        ),
+        rx.cond(
+            WhatsAppState.numbers_loaded & WhatsAppState.has_numbers,
+            rx.vstack(
+                number_selector(),
+                rx.box(metrics_block(), key=WhatsAppState.selected_connection_id, width="100%"),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+            rx.cond(
+                WhatsAppState.load_error != "",
+                callout(WhatsAppState.load_error, "error"),
+                rx.cond(WhatsAppState.is_loading, skeleton_card(4), rx.fragment()),
+            ),
+        ),
+        width="100%",
+        custom_attrs={"data-activity": "whatsapp"},
+    )
 
 
 def tab_body() -> rx.Component:
@@ -283,7 +316,6 @@ def tab_body() -> rx.Component:
             (TAB_PROFILE, profile_tab()),
             (TAB_PAYMENTS, payments_tab(heading=False)),
             (TAB_QR, qr_tab()),
-            (TAB_ACTIVITY, activity_tab()),
             (TAB_MENU, menu_tab()),
             (TAB_TEMPLATES, templates_tab()),
             (TAB_CONTACTS, contacts_tab()),
@@ -527,9 +559,11 @@ def whatsapp_payments_index() -> rx.Component:
 
 
 def whatsapp_activity_index() -> rx.Component:
-    """`/connections/whatsapp/actividad`: the number's activity, reached from its card
-    in «Tus redes»."""
-    return _panel_page(TAB_ACTIVITY, ACTIVITY_PAGE_TITLE, ACTIVITY_SUBTITLE, back_to_connections())
+    """`/connections/whatsapp/actividad` (m-25143230): nothing is drawn here any more —
+    the number's activity is in «Resultados › WhatsApp». The page's history handler
+    (`WhatsAppState.enter_history`) sends the address there once, with `replace` and
+    the number (`legacy_activity_target`); meanwhile, a skeleton."""
+    return whatsapp_index()
 
 
 def whatsapp_settings_index() -> rx.Component:
@@ -780,12 +814,13 @@ def number_card_details(connection_id: rx.Var[str]) -> rx.Component:
 
 
 def activity_href(connection_id: rx.Var[str]) -> rx.Var[str]:
-    """`/connections/whatsapp/actividad?cuenta=<the number>`."""
-    return f"{ACTIVITY_ROUTE}?{ACCOUNT_PARAM}=" + connection_id
+    """`/resultados?tab=whatsapp&cuenta=<the number>` (m-25143230)."""
+    return f"{ACTIVITY_HOME}&{ACCOUNT_PARAM}=" + connection_id
 
 
 def number_card_activity_link(connection_id: rx.Var[str]) -> rx.Component:
-    """«Actividad»: the number's metrics, a page that hangs from its card."""
+    """«Actividad»: the number's metrics, in «Resultados › WhatsApp» on that number
+    (m-25143230)."""
     return rx.link(
         rx.button(
             rx.icon("chart-no-axes-column", size=15),

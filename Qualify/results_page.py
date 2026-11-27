@@ -12,6 +12,9 @@ N1, N5, N8, N11, N12).
    heartbeat stops when another tab opens):
    - «Redes» / «WhatsApp»: the week's figures, each a whole card linking to its list
      (N11); without the connection, what to connect (N8); a quiet week, a way out.
+     m-25143230: under WhatsApp's figures, the number's «Actividad» (its metrics block,
+     with the number selector when there are two or more numbers) — before, a page that
+     hung from the number's card in «Tus redes», where the founder could not find it.
    - «Tu página web»: the Clarity reading screen (`clarity_page.clarity_content`).
    - «Quién habla de ti»: the mentions listing (`components`).
 
@@ -55,6 +58,7 @@ from .ui import (
     skeleton_card,
 )
 from .ui import tokens as T
+from .whatsapp_page import whatsapp_activity
 
 _TARGET = "44px"
 
@@ -232,6 +236,17 @@ def _social_tab() -> rx.Component:
 
 
 def _whatsapp_tab() -> rx.Component:
+    return rx.vstack(
+        _whatsapp_week(),
+        # The number's activity (m-25143230). Not while the figures' read failed: that
+        # error already says what to do (and a lost session would be said twice).
+        rx.cond(R.error == "", whatsapp_activity(), rx.fragment()),
+        spacing="5",
+        width="100%",
+    )
+
+
+def _whatsapp_week() -> rx.Component:
     return section(
         "Tu WhatsApp esta semana",
         _figures(

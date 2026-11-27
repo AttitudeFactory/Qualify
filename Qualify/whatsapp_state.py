@@ -43,7 +43,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .connections_provider import request_support
-from .nav_url import flow_param, push_url_script, scalar_param, uuid_param, whatsapp_chats_href
+from .nav_url import (
+    flow_param,
+    push_url_script,
+    replace_url_script,
+    scalar_param,
+    uuid_param,
+    whatsapp_chats_href,
+)
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .whatsapp_provider import (
@@ -58,6 +65,7 @@ from .whatsapp_provider import (
     verify_number,
 )
 from .whatsapp_vm import (
+    ACTIVITY_ROUTE,
     CONNECT_REQUEST_FAILED,
     CONNECT_REQUEST_MESSAGE,
     CONNECT_REQUEST_NO_EMAIL,
@@ -71,6 +79,7 @@ from .whatsapp_vm import (
     PAGE_PANELS,
     PROMOTIONS_ROUTE,
     QR_DEFAULT_CHANNEL,
+    RESULTS_PATH,
     SUB_PARAM,
     TAB_KEYS,
     WHATSAPP_ROUTE,
@@ -78,8 +87,10 @@ from .whatsapp_vm import (
     ProfileForm,
     QrCodeVM,
     WhatsAppNumberVM,
+    activity_url,
     compose_qr_message,
     graph_error_notice,
+    legacy_activity_target,
     legacy_panel_target,
     needs_help,
     panel_route,
@@ -205,6 +216,9 @@ class WhatsAppState(rx.State):
     # «Tus redes» only reads the numbers, never a panel's leftover loads.
     _requested_number: str = ""
     _panel_page: bool = False
+    #: m-25143230: the page on screen is «Resultados › WhatsApp», which draws the
+    #: number's activity: the number selector writes that page's address, not a panel's.
+    _on_results: bool = False
     #: The numbers were read at least once for this session (U1: «Tus redes» offers to
     #: connect WhatsApp only once it KNOWS there is no number, never while loading).
     numbers_loaded: bool = False
@@ -345,17 +359,40 @@ class WhatsAppState(rx.State):
             return None
         if path == WHATSAPP_ROUTE:
             return legacy_panel_target(params)
+        if path == ACTIVITY_ROUTE:
+            # m-25143230: Actividad left this page for «Resultados › WhatsApp».
+            return legacy_activity_target(params)
         return None
 
     def _enter_panel_page(self, params: Mapping[str, object]) -> None:
         self._panel_page = True
+        self._on_results = False
         self._requested_number = uuid_param(params, "cuenta")
+
+    @rx.event
+    def enter_results(self, lease: dict) -> rx.event.EventHandler | None:
+        """m-25143230: the mount of «Resultados › WhatsApp», which draws the number's
+        activity. Reads `?cuenta=` from the browser's own address (`lease["href"]`, as
+        `enter_history`: an event's router data can still be the previous page's) and
+        loads the numbers — our own table only, nothing from Meta; the load takes the
+        number only if it is this business's. No panel's flow or list is restored here."""
+        href = lease.get("href", "") if isinstance(lease, dict) else ""
+        path, params = self._address(href if isinstance(href, str) else "")
+        if path != RESULTS_PATH:
+            return None
+        self._panel_page = False
+        self._on_results = True
+        self._requested_number = uuid_param(params, "cuenta")
+        # Until the load lands, the block waits (it never mounts on a stale number).
+        self.numbers_loaded = False
+        return WhatsAppState.load_numbers
 
     @rx.event
     def enter_connections(self) -> rx.event.EventHandler:
         """m-25027373: on_load of «Tus redes», where each number has its card: read the
         numbers only — no panel's flow or list is restored there."""
         self._panel_page = False
+        self._on_results = False
         self._requested_number = ""
         return WhatsAppState.load_numbers
 
@@ -542,6 +579,11 @@ class WhatsAppState(rx.State):
         self.selected_connection_id = connection_id
         self._requested_number = connection_id  # a later re-read keeps the owner's pick
         self._reset_number_scoped()
+        if self._on_results:
+            # m-25143230: «Resultados › WhatsApp» keeps the number in its address, so a
+            # reload stays on it. Replaced, not pushed: Resultados restores no number
+            # on «atrás», so a history step would change the address and not the screen.
+            return rx.call_script(replace_url_script(activity_url(connection_id)))
         return rx.call_script(push_url_script(self._panel_address(self.active_tab)))
 
     def _pick_number(self, connection_id: object) -> bool:

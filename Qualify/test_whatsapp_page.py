@@ -30,6 +30,7 @@ from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_state import WhatsAppState
 from .whatsapp_templates_vm import NEXT_STEP_CHATS
 from .whatsapp_vm import (
+    ACTIVITY_HOME,
     ACTIVITY_ROUTE,
     CONNECTIONS_ROUTE,
     DEFAULT_TAB,
@@ -407,6 +408,9 @@ def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
         assert url.startswith(f"{PROMOTIONS_ROUTE}?sub=")
         assert panel_route(panel) == PROMOTIONS_ROUTE
         assert promotions_panel(query["sub"]) == panel
+    elif panel == TAB_ACTIVITY:  # m-25143230: «Resultados › WhatsApp», not a page of ours
+        assert url == panel_route(panel) == ACTIVITY_HOME
+        assert panel not in PANEL_PAGES and ACTIVITY_ROUTE not in PAGE_PANELS
     else:  # m-25027373: «Tu número»'s panels, each on its own page
         assert url == panel_route(panel) == PANEL_PAGES[panel]
         assert not url.startswith("/whatsapp")
@@ -524,7 +528,6 @@ def _mounts(component: rx.Component, gates: tuple[tuple[str, bool], ...] = ()) -
         (whatsapp_page.whatsapp_profile_index, TAB_PROFILE),
         (whatsapp_page.whatsapp_qr_index, TAB_QR),
         (whatsapp_page.whatsapp_payments_index, TAB_PAYMENTS),
-        (whatsapp_page.whatsapp_activity_index, TAB_ACTIVITY),
     ],
 )
 def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) -> None:
@@ -592,7 +595,7 @@ def test_addresses_are_the_owner_words() -> None:
     assert tab_url(TAB_QR) == "/chats/ajustes/whatsapp/codigos-qr"
     assert tab_url(TAB_PROFILE) == "/chats/ajustes/whatsapp/perfil"
     assert tab_url(TAB_PAYMENTS) == "/chats/ajustes/formas-de-pago"
-    assert tab_url(TAB_ACTIVITY) == "/connections/whatsapp/actividad"
+    assert tab_url(TAB_ACTIVITY) == "/resultados?tab=whatsapp"  # m-25143230
     assert tab_url(TAB_CONNECTION) == "/connections"
     assert tab_url("<script>") == "/connections"
 
@@ -721,7 +724,6 @@ def _signed_in(monkeypatch: pytest.MonkeyPatch, tenant: str) -> None:
         ("/chats/ajustes/whatsapp/perfil", TAB_PROFILE),
         ("/chats/ajustes/whatsapp/codigos-qr?tab=numero&sub=perfil", TAB_QR),
         ("/chats/ajustes/formas-de-pago/", TAB_PAYMENTS),
-        ("/connections/whatsapp/actividad?cuenta=x", TAB_ACTIVITY),
         ("/whatsapp/promociones", TAB_CAMPAIGNS),
         ("/whatsapp/promociones?sub=aprobados", TAB_TEMPLATES),
         ("/whatsapp/promociones/?sub=clientes", TAB_CONTACTS),
@@ -764,7 +766,18 @@ _OLD = [
         f"/whatsapp?tab=numero&sub=qr&cuenta={_UUID}",
         f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_UUID}",
     ),
-    ("/whatsapp?tab=numero&sub=actividad", "/connections/whatsapp/actividad"),
+    # m-25143230: the number's activity is «Resultados › WhatsApp», with the number.
+    ("/whatsapp?tab=numero&sub=actividad", "/resultados?tab=whatsapp"),
+    (
+        f"/whatsapp?tab=numero&sub=actividad&cuenta={_UUID}&x=<b>",
+        f"/resultados?tab=whatsapp&cuenta={_UUID}",
+    ),
+    ("/connections/whatsapp/actividad", "/resultados?tab=whatsapp"),
+    (
+        f"/connections/whatsapp/actividad?cuenta={_UUID}&tab=numero&volver=/x",
+        f"/resultados?tab=whatsapp&cuenta={_UUID}",
+    ),
+    ("/connections/whatsapp/actividad?cuenta=<script>", "/resultados?tab=whatsapp"),
 ]
 
 
@@ -819,7 +832,6 @@ def _present(rendered: str, text: str) -> bool:
             ("Códigos QR", "Crear código", "Copiar enlace", "Descargar PNG", "Eliminar"),
         ),
         (whatsapp_page.whatsapp_payments_index, ("Formas de pago", "Agregar forma de pago")),
-        (whatsapp_page.whatsapp_activity_index, ("Actividad de tu WhatsApp", "Tus redes")),
     ],
 )
 def test_each_moved_panel_renders_on_its_page(page: typing.Any, texts: tuple[str, ...]) -> None:
@@ -866,7 +878,8 @@ def test_the_number_card_of_tus_redes_carries_estado() -> None:
         assert _present(details, text), text
     # Each action is the number's own event, with the card's id.
     assert "verify_number" in details and "request_review" in rendered
-    assert ACTIVITY_ROUTE in rendered
+    # m-25143230: «Actividad» opens «Resultados › WhatsApp» on the card's number.
+    assert "/resultados?tab=whatsapp&cuenta=" in rendered and ACTIVITY_ROUTE not in rendered
     # Review C4: one «last check» line, the card's own.
     assert _present(details, "Última comprobación: ")
     assert not _present(details, "Última verificación")
@@ -896,7 +909,6 @@ def test_route_is_registered_behind_login() -> None:
         ("whatsapp_profile_index", "/chats/ajustes/whatsapp/perfil"),
         ("whatsapp_qr_index", "/chats/ajustes/whatsapp/codigos-qr"),
         ("whatsapp_payments_index", "/chats/ajustes/formas-de-pago"),
-        ("whatsapp_activity_index", "/connections/whatsapp/actividad"),
     ],
 )
 def test_every_new_page_is_registered_behind_login(page: str, route: str) -> None:
@@ -1096,7 +1108,7 @@ _QS_BACK = "%2Fresponder%3Ftab%3Dmensajes%26cuenta%3D" + _C + "%26chat%3D" + _T
         ({"tab": "perfil"}, "/chats/ajustes/whatsapp/perfil"),
         (
             {"tab": "actividad", "cuenta": _C},
-            f"/connections/whatsapp/actividad?cuenta={_C}",
+            f"/resultados?tab=whatsapp&cuenta={_C}",  # m-25143230
         ),
         # The chat's way back rides along to Perfil and Formas de pago only — and only an
         # app's own chat address; junk, a foreign site, a non-UUID number never do.
@@ -1270,10 +1282,10 @@ async def test_the_number_comes_from_the_browsers_address(monkeypatch: pytest.Mo
     _loadable(monkeypatch, _C, _T)
     state = _visit("/connections")
     await WhatsAppState.enter_history.fn(  # type: ignore[attr-defined]
-        state, {"visit": "v", "href": f"http://x/connections/whatsapp/actividad?cuenta={_T}"}
+        state, {"visit": "v", "href": f"http://x/chats/ajustes/whatsapp/codigos-qr?cuenta={_T}"}
     )
     await _drain_load(state)
-    assert state.active_tab == TAB_ACTIVITY and state.selected_connection_id == _T
+    assert state.active_tab == TAB_QR and state.selected_connection_id == _T
     # A foreign or junk id selects nothing of it: the business's first number.
     for junk in ("00000000-0000-4000-8000-0000000000ff", "<script>"):
         state = _visit("/connections")
@@ -1287,7 +1299,7 @@ async def test_the_number_comes_from_the_browsers_address(monkeypatch: pytest.Mo
 
 async def test_the_owners_pick_survives_a_re_read(monkeypatch: pytest.MonkeyPatch) -> None:
     _loadable(monkeypatch, _C, _T)
-    state = _visit(f"/connections/whatsapp/actividad?cuenta={_C}")
+    state = _visit(f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_C}")
     WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
     await _drain_load(state)
     assert state.selected_connection_id == _C
@@ -1430,3 +1442,98 @@ async def test_a_raced_load_frees_the_guard(monkeypatch: pytest.MonkeyPatch) -> 
     state = _visit("/connections")
     await _drain_load(state)
     assert state.is_loading is False and state.numbers == []
+
+
+# --- m-25143230: «Actividad» lives in «Resultados › WhatsApp» ---------------------------
+
+
+def test_activity_home_is_resultados_whatsapp() -> None:
+    """`whatsapp_vm` spells Resultados' address itself (no backend import); both agree."""
+    from .results_vm import TAB_WHATSAPP
+    from .results_vm import tab_url as results_tab_url
+    from .whatsapp_vm import activity_url, legacy_activity_target
+
+    assert ACTIVITY_HOME == results_tab_url(TAB_WHATSAPP) == "/resultados?tab=whatsapp"
+    assert activity_url(_C) == f"/resultados?tab=whatsapp&cuenta={_C}"
+    for junk in ("", "<script>", "not-a-uuid", f"{_C}&x=1"):
+        assert activity_url(junk) == ACTIVITY_HOME, junk
+    # Only the number rides along, never anything else of the old address.
+    assert legacy_activity_target({"cuenta": _C, "sub": "x", "volver": "/responder"}) == (
+        f"/resultados?tab=whatsapp&cuenta={_C}"
+    )
+    assert legacy_activity_target({"cuenta": [_C, _T]}) == ACTIVITY_HOME
+
+
+async def test_resultados_takes_the_number_from_the_browsers_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The block's mount reads `?cuenta=` from the browser (the event's router data can
+    still be «Tus redes»'), and the load keeps it only if it is this business's."""
+    _loadable(monkeypatch, _C, _T)
+    state = _visit("/connections")
+    state.numbers_loaded = True
+    state._panel_page = True  # noqa: SLF001 — the last page was a panel page
+    handler = WhatsAppState.enter_results.fn(  # type: ignore[attr-defined]
+        state, {"href": f"http://x/resultados?tab=whatsapp&cuenta={_T}"}
+    )
+    assert handler is WhatsAppState.load_numbers
+    assert not state.numbers_loaded  # the block waits for the load: never a stale number
+    assert await _drain_load(state) == []  # no panel's flow or list restored here
+    assert state.selected_connection_id == _T and state.numbers_loaded
+    for junk in ("00000000-0000-4000-8000-0000000000ff", "<script>"):
+        state = _visit("/connections")
+        WhatsAppState.enter_results.fn(  # type: ignore[attr-defined]
+            state, {"href": f"http://x/resultados?tab=whatsapp&cuenta={junk}"}
+        )
+        await _drain_load(state)
+        assert state.selected_connection_id == _C, junk
+    # Another page's address (a late mount after leaving) changes nothing.
+    state = _visit("/connections")
+    assert WhatsAppState.enter_results.fn(state, {"href": "http://x/connections"}) is None  # type: ignore[attr-defined]
+    assert WhatsAppState.enter_results.fn(state, "junk") is None  # type: ignore[attr-defined]
+
+
+async def test_the_selector_on_resultados_keeps_its_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Switching number on «Resultados › WhatsApp» rewrites Resultados' own address (no
+    new step: Resultados restores no number on «atrás»), never a panel's page."""
+    _loadable(monkeypatch, _C, _T)
+    state = _visit("/resultados?tab=whatsapp")
+    WhatsAppState.enter_results.fn(  # type: ignore[attr-defined]
+        state, {"href": "http://x/resultados?tab=whatsapp"}
+    )
+    await _drain_load(state)
+    assert state.selected_connection_id == _C
+    event = WhatsAppState.select_connection.fn(state, _T)  # type: ignore[attr-defined]
+    script = str(event.args)
+    assert f"/resultados?tab=whatsapp&cuenta={_T}" in script and "replaceState" in script
+    # Back on a panel page, the selector writes that page's address again.
+    state = _visit(f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_C}")
+    WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
+    await _drain_load(state)
+    script = str(WhatsAppState.select_connection.fn(state, _T).args)  # type: ignore[attr-defined]
+    assert f"/chats/ajustes/whatsapp/codigos-qr?cuenta={_T}" in script and "pushState" in script
+
+
+def test_resultados_whatsapp_draws_the_activity_block() -> None:
+    """The same block and state as before, plus the number selector; mounted only once
+    a number of this business is selected (no number: nothing, so no Meta read)."""
+    from . import results_page
+
+    tab = str(results_page._whatsapp_tab().render())  # noqa: SLF001
+    for text in ("Actividad del número", "Conversaciones nuevas", "Elige un número"):
+        assert _present(tab, text), text
+    assert "has_many_numbers" in tab
+    # The mount that hands the browser's address over sits outside every gate.
+    mounts = _mounts(whatsapp_page.whatsapp_activity())
+    lease = [gates for c, gates in mounts if "enter_results" in str(c.event_triggers["on_mount"])]
+    assert lease == [()]
+    block = str(whatsapp_page.whatsapp_activity().render())
+    gate = block.index("numbers_loaded")
+    assert gate < block.index("Conversaciones nuevas")
+    assert "has_numbers" in block[gate : block.index("Conversaciones nuevas")]
+    # The old page draws nothing of it any more: it only redirects.
+    old = str(whatsapp_page.whatsapp_activity_index().render())
+    assert not _present(old, "Actividad del número")
+    assert not _present(old, "Conversaciones nuevas")

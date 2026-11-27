@@ -3,7 +3,8 @@
 Founder: «el otro módulo solo sería … para configuración». Where each sub-tab went:
 
     Estado          → the number's card in «Tus redes» (`/connections`)
-    Actividad       → `/connections/whatsapp/actividad`, from that card
+    Actividad       → «Resultados › WhatsApp» (m-25143230), from that card; its old
+                      address `/connections/whatsapp/actividad` only redirects there
     Perfil          → «Ajustes de chats» › `/chats/ajustes/whatsapp/perfil`
     Códigos QR      → «Ajustes de chats» › `/chats/ajustes/whatsapp/codigos-qr`
     Formas de pago  → «Ajustes de chats» › `/chats/ajustes/formas-de-pago`
@@ -82,23 +83,26 @@ def test_tus_redes_shows_the_numbers_state(chats_page, size: dict[str, int]) -> 
         expect(card.get_by_text(fact, exact=True)).to_be_visible()
     expect(card.get_by_role("button", name="Comprobar ahora")).to_have_count(0)
     _no_sideways_scroll(page)
-    # Actividad hangs from the card.
+    # m-25143230: «Actividad» opens «Resultados › WhatsApp» on the card's number.
     activity = card.get_by_role("link", name="Actividad")
     expect(activity).to_have_attribute(
-        "href", f"/connections/whatsapp/actividad?cuenta={ids['whatsapp_connection']}"
+        "href", f"/resultados?tab=whatsapp&cuenta={ids['whatsapp_connection']}"
     )
     activity.click()
     expect(page).to_have_url(
-        re.compile(rf"/connections/whatsapp/actividad\?cuenta={ids['whatsapp_connection']}$"),
+        re.compile(rf"/resultados\?tab=whatsapp&cuenta={ids['whatsapp_connection']}$"),
         timeout=60_000,
     )
-    expect(
-        page.get_by_role("heading", level=1, name="Actividad de tu WhatsApp", exact=True)
-    ).to_be_visible(timeout=60_000)
-    expect(page.get_by_role("link", name="Tus redes").first).to_be_visible()
-    expect(page.get_by_text("Conversaciones nuevas").first).to_be_visible(timeout=60_000)
+    expect(page.get_by_role("heading", level=1, name="Resultados", exact=True)).to_be_visible(
+        timeout=60_000
+    )
+    block = page.locator('[data-activity="whatsapp"]')
+    expect(block.get_by_text("Actividad del número")).to_be_visible(timeout=60_000)
+    expect(block.get_by_text("Conversaciones nuevas").first).to_be_visible(timeout=60_000)
+    # The week's figures stay above it.
+    expect(page.get_by_text("Tu WhatsApp esta semana")).to_be_visible()
     if size is DESKTOP:
-        expect(_lit(page).first).to_contain_text("Tus redes")
+        expect(_lit(page).first).to_contain_text("Resultados")
     _no_sideways_scroll(page)
 
 
@@ -113,7 +117,7 @@ def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
     expect(first_card).to_be_visible(timeout=60_000)
     expect(second_card).to_be_visible()
     expect(second_card.get_by_role("link", name="Actividad")).to_have_attribute(
-        "href", f"/connections/whatsapp/actividad?cuenta={second['connection']}"
+        "href", f"/resultados?tab=whatsapp&cuenta={second['connection']}"
     )
 
 
@@ -136,7 +140,6 @@ def test_every_number_has_its_own_card(chats_page) -> None:  # noqa: ANN001
             "Ajustes de chats",
         ),
         ("/chats/ajustes/formas-de-pago", "Formas de pago", "Ajustes de chats", "Ajustes de chats"),
-        ("/connections/whatsapp/actividad", "Actividad de tu WhatsApp", "Tus redes", "Tus redes"),
     ],
 )
 @pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["360", "1280"])
@@ -223,10 +226,17 @@ def test_the_hub_opens_the_moved_sections(chats_page) -> None:  # noqa: ANN001
             r"/chats/ajustes/whatsapp/codigos-qr\?cuenta={c}$",
         ),
         ("/whatsapp?tab=qr", r"/chats/ajustes/whatsapp/codigos-qr$"),
+        # m-25143230: the number's activity is «Resultados › WhatsApp», both old addresses.
         (
             "/whatsapp?tab=numero&sub=actividad&cuenta={c}",
-            r"/connections/whatsapp/actividad\?cuenta={c}$",
+            r"/resultados\?tab=whatsapp&cuenta={c}$",
         ),
+        ("/whatsapp?tab=numero&sub=actividad", r"/resultados\?tab=whatsapp$"),
+        (
+            "/connections/whatsapp/actividad?cuenta={c}&volver=/x&tab=y",
+            r"/resultados\?tab=whatsapp&cuenta={c}$",
+        ),
+        ("/connections/whatsapp/actividad", r"/resultados\?tab=whatsapp$"),
         ("/whatsapp?tab=x&sub=<b>&otro=1", r"/connections$"),
         # The redirects that already existed keep working.
         ("/whatsapp?tab=respuesta&cuenta={c}", r"/chats/ajustes/whatsapp\?cuenta={c}$"),
@@ -322,19 +332,26 @@ def test_a_foreign_number_opens_nothing(chats_page, app_server, context) -> None
     other.close()
     page.set_viewport_size(DESKTOP)
     selector = page.locator(".q-page-header [role=combobox]").first
+    # m-25143230: the activity's selector sits in «Resultados › WhatsApp», not a header.
+    selectors = {
+        "/resultados?tab=whatsapp": page.locator('[data-activity="whatsapp"] [role=combobox]'),
+        "/chats/ajustes/whatsapp/codigos-qr": selector,
+    }
 
-    def shown(address: str) -> str:
-        page.goto(_origin(page) + address)
-        expect(selector).to_be_visible(timeout=60_000)
+    def shown(route: str, number: str = "") -> str:
+        joint = "&" if "?" in route else "?"
+        page.goto(_origin(page) + route + (f"{joint}cuenta={number}" if number else ""))
+        here = selectors[route].first
+        expect(here).to_be_visible(timeout=60_000)
         page.wait_for_timeout(2_000)
-        return selector.inner_text()
+        return here.inner_text()
 
-    for route in ("/connections/whatsapp/actividad", "/chats/ajustes/whatsapp/codigos-qr"):
+    for route in selectors:
         default = shown(route)
         # positive control: my own second number is taken
-        assert "+57 311" in shown(f"{route}?cuenta={second['connection']}"), route
+        assert "+57 311" in shown(route, second["connection"]), route
         for junk in (theirs["whatsapp_connection"], "<script>", "not-a-uuid"):
-            assert shown(f"{route}?cuenta={junk}") == default, (route, junk)
+            assert shown(route, junk) == default, (route, junk)
     # The old address with their number lands on the page, which ignores it the same way.
     page.goto(_origin(page) + f"/whatsapp?tab=numero&sub=qr&cuenta={theirs['whatsapp_connection']}")
     expect(page).to_have_url(re.compile(r"/chats/ajustes/whatsapp/codigos-qr\?cuenta="))
@@ -348,22 +365,37 @@ def test_a_foreign_number_opens_nothing(chats_page, app_server, context) -> None
 
 
 def test_actividad_from_the_second_card_shows_that_number(chats_page) -> None:  # noqa: ANN001
-    """Review C2: «Actividad» on the SECOND number's card opens with that number selected
-    (an in-app navigation, where the event's router data can lag behind the address)."""
+    """Review C2 / m-25143230: «Actividad» on the SECOND number's card opens «Resultados ›
+    WhatsApp» with that number selected (an in-app navigation, where the event's router
+    data can lag behind the address)."""
     from .chat_fixtures import seed_second_number
 
     page = chats_page
+    ids = page._qualify_e2e_chats  # noqa: SLF001
     second = seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size(DESKTOP)
     page.goto(_origin(page) + "/connections")
     card = _number_card(page, r"Sede Norte")
     expect(card).to_be_visible(timeout=60_000)
     card.get_by_role("link", name="Actividad").click()
-    expect(page).to_have_url(re.compile(rf"actividad\?cuenta={second['connection']}$"))
-    selector = page.locator(".q-page-header [role=combobox]").first
-    expect(selector).to_contain_text("+57 311", timeout=60_000)
+    expect(page).to_have_url(
+        re.compile(rf"/resultados\?tab=whatsapp&cuenta={second['connection']}$"), timeout=60_000
+    )
+    block = page.locator('[data-activity="whatsapp"]')
+    activity_selector = block.locator("[role=combobox]").first
+    expect(activity_selector).to_contain_text("+57 311", timeout=60_000)
+    expect(block.get_by_text("Conversaciones nuevas").first).to_be_visible(timeout=60_000)
     page.wait_for_timeout(2_000)  # a late load must not switch it back
-    expect(selector).to_contain_text("+57 311")
+    expect(activity_selector).to_contain_text("+57 311")
+    # Switching number keeps Resultados' address, now on the other number.
+    activity_selector.click()
+    page.get_by_role("option").filter(has_not_text="+57 311").first.click()
+    expect(page).to_have_url(
+        re.compile(rf"/resultados\?tab=whatsapp&cuenta={ids['whatsapp_connection']}$"),
+        timeout=30_000,
+    )
+    expect(activity_selector).not_to_contain_text("+57 311")
+    selector = page.locator(".q-page-header [role=combobox]").first
     # The same for another page reached with `cuenta`.
     page.goto(_origin(page) + f"/chats/ajustes/whatsapp/perfil?cuenta={second['connection']}")
     expect(
@@ -487,7 +519,7 @@ def test_capture_tu_numero_moved(chats_page) -> None:  # noqa: ANN001
         ("perfil", "/whatsapp?tab=numero&sub=perfil", False),
         ("codigos-qr", "/whatsapp?tab=numero&sub=qr", False),
         ("formas-de-pago", "/whatsapp?tab=numero&sub=pagos", False),
-        ("actividad", "/whatsapp?tab=numero&sub=actividad", False),
+        ("actividad", "/resultados?tab=whatsapp", False),
     ]
     report: dict[str, object] = {}
     for scheme in ("light", "dark"):
@@ -519,3 +551,29 @@ def test_capture_tu_numero_moved(chats_page) -> None:  # noqa: ANN001
     (out / f"{label}-where.json").write_text(
         json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8"
     )
+
+
+@pytest.mark.skipif(not os.environ.get("QUALIFY_E2E_SHOTS"), reason="QUALIFY_E2E_SHOTS not set")
+def test_capture_actividad_en_resultados(chats_page) -> None:  # noqa: ANN001
+    """m-25143230: «Resultados › WhatsApp» (with two numbers, so the selector shows) and
+    the number's card in «Tus redes», at 360 and 1280, light."""
+    from .chat_fixtures import seed_second_number
+
+    page = chats_page
+    seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
+    out = Path(os.environ["QUALIFY_E2E_SHOTS"])
+    out.mkdir(parents=True, exist_ok=True)
+    label = os.environ.get("QUALIFY_E2E_SHOTS_LABEL", "shot")
+    for size_name, size in (("360", PHONE), ("1280", DESKTOP)):
+        page.set_viewport_size(size)
+        page.goto(_origin(page) + "/resultados?tab=whatsapp")
+        expect(page.locator("h1").first).to_be_visible(timeout=60_000)
+        page.wait_for_timeout(4_000)
+        page.screenshot(
+            path=str(out / f"{label}-resultados-whatsapp-{size_name}.png"), full_page=True
+        )
+        page.goto(_origin(page) + "/connections")
+        card = _number_card(page)
+        expect(card).to_be_visible(timeout=60_000)
+        page.wait_for_timeout(2_000)
+        card.screenshot(path=str(out / f"{label}-tarjeta-tus-redes-{size_name}.png"))
