@@ -163,17 +163,30 @@ PHOTO_NOT_OWNED_TEXT = (
 #: A new AI block sent with «rearrange» (the order, cuts and joins of a made Clip):
 #: m-25142982 — a new part comes one at a time through «Agregar → Parte con IA».
 AI_PART_ADDED_TEXT = (
-    "Para sumar una parte con IA a tu video, usa «Agregar» y elige «Parte con IA». "
-    "Agrégala así y luego ordena tu video."
+    "No guardamos el cambio. Para sumar una parte con IA, toca «Agregar» y elige "
+    "«Parte con IA». Después ordena tu video."
 )
 #: m-25142982: a part added to an approved Clip (its finals are made, or being made).
 CLIP_APPROVED_TEXT = (
-    "Este video ya está aprobado y no se le pueden agregar partes. "
+    "Este video ya está aprobado, así que no puedes agregarle partes. "
     "Crea un video nuevo para usar otra parte con IA."
+)
+#: m-25142982: 6 AI parts kept in the Clip already (a removed one keeps its place, so
+#: removing one is no way out: never «Quita una»).
+ADD_MAX_PARTS_TEXT = (
+    "Tu video ya tiene 6 partes con IA, el máximo. Crea un video nuevo para agregar más."
 )
 #: m-25142982: every child place of the Clip is taken (6, removed parts included).
 NO_PLACE_LEFT_TEXT = (
-    "Este video ya no tiene lugar para otra parte con IA. Crea un video nuevo para agregar más."
+    "Ya usaste las 6 partes con IA de este video, contando las que quitaste. "
+    "Crea un video nuevo para agregar más."
+)
+#: m-25142982: a new part with nothing to make it from.
+ADD_NEEDS_DESCRIPTION_TEXT = "Cuéntanos qué se ve en esta parte con IA antes de agregarla."
+#: m-25142982: the Clip has its 8 blocks already.
+ADD_TOO_MANY_BLOCKS_TEXT = (
+    "Tu video ya tiene 8 fotos, videos o partes con IA. "
+    "Quita una de tu video y vuelve a agregar esta."
 )
 #: m-25142982: a Clip a part cannot go into (not vertical, not made of your blocks, or
 #: with your character or avatar in it).
@@ -821,7 +834,6 @@ class ClipAiPartActions(ClipAiPartsService):
         meanwhile (`clip_moved`)."""
         from qualify_api.creative.clip_ai_parts import (  # noqa: PLC0415
             NEEDS_DESCRIPTION_CODE,
-            NEEDS_DESCRIPTION_TEXT,
             PlannedPart,
             child_brief,
         )
@@ -839,7 +851,6 @@ class ClipAiPartActions(ClipAiPartsService):
             PIPELINE_VERSION,
             DuplicateDraftRequest,
         )
-        from qualify_api.creative.video_pipeline.ai_parts import AI_PART_TEXTS  # noqa: PLC0415
         from qualify_api.creative.video_pipeline.recipe import (  # noqa: PLC0415
             RecipeRefused,
             refuse_unbuilt_recipe,
@@ -882,13 +893,17 @@ class ClipAiPartActions(ClipAiPartsService):
             raise ClipAiPartsRefused(*problem)
         slot = max((place for place, _ in places), default=0) + 1
         if len(current.media.segments) >= SEGMENTS_MAX:
-            raise ClipAiPartsRefused("too_many_blocks", AI_PART_TEXTS["too_many_blocks"])
+            raise ClipAiPartsRefused("too_many_blocks", ADD_TOO_MANY_BLOCKS_TEXT)
 
         # 2. the part: what it is made from, its files, its mode, the recipe with it
         if not entry.description.strip() and entry.analysis_id is None:
-            raise ClipAiPartsRefused(NEEDS_DESCRIPTION_CODE, NEEDS_DESCRIPTION_TEXT, block=position)
+            raise ClipAiPartsRefused(
+                NEEDS_DESCRIPTION_CODE, ADD_NEEDS_DESCRIPTION_TEXT, block=position
+            )
         if "describe_it" in entry.notices and not entry.description.strip():
-            raise ClipAiPartsRefused(NEEDS_DESCRIPTION_CODE, NEEDS_DESCRIPTION_TEXT, block=position)
+            raise ClipAiPartsRefused(
+                NEEDS_DESCRIPTION_CODE, ADD_NEEDS_DESCRIPTION_TEXT, block=position
+            )
         self._refuse_foreign_photos(
             tenant_id, PartChanges(photo_keys=tuple(entry.clip_image_keys or ()))
         )
@@ -1097,11 +1112,10 @@ class ClipAiPartActions(ClipAiPartsService):
         its place: its charges and versions stay). Pure."""
         from qualify_api.creative.video_pipeline.ai_parts import (  # noqa: PLC0415
             AI_CHILDREN_MAX,
-            AI_PART_TEXTS,
         )
 
         if sum(1 for _, removed in places if not removed) >= AI_CHILDREN_MAX:
-            return "too_many_ai_children", AI_PART_TEXTS["too_many_ai_children"]
+            return "too_many_ai_children", ADD_MAX_PARTS_TEXT
         if max((place for place, _ in places), default=0) >= AI_CHILDREN_MAX:
             return "no_place_left", NO_PLACE_LEFT_TEXT
         return None
@@ -1674,6 +1688,9 @@ def _plan_of(brief: ContentBrief) -> VideoPartPlan:
 
 
 __all__ = [
+    "ADD_MAX_PARTS_TEXT",
+    "ADD_NEEDS_DESCRIPTION_TEXT",
+    "ADD_TOO_MANY_BLOCKS_TEXT",
     "ADD_UNAVAILABLE_TEXT",
     "AI_PART_ADDED_TEXT",
     "CLIP_APPROVED_TEXT",
