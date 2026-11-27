@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6 · Seis pistas en el celular — m-25142725</title>
+<link rel="stylesheet" href="editor-unico.css">
+<link rel="stylesheet" href="referencias.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <a href="01-pistas.html">1 · Pistas</a> · <a href="02-referencia-elegida.html">2 · Referencia elegida</a> · <a href="03-agregar.html">3 · Agregar</a> · <a href="04-tope.html">4 · Tope</a> · <a href="05-panel-parte.html">5 · Panel de la parte</a> · <b>6 · Celular</b> · <a href="07-usar-tambien.html">7 · Usar también</a></nav>
+  <h1 class="mk-title">6 · Cómo caben seis pistas en un celular de 375 px</h1>
+  <p class="mk-sub">Sin plegar, la línea mide unos 400 px (regla 24, medios 56, separador 22, cuatro filas de 44 y textos y efectos), más la vista previa de unos 300 px: no cabe con el pie fijo. Propongo dos reglas, las dos solo de dibujo (no cambian lo que se guarda):</p>
+  <ol class="mk-sub" style="padding-left:20px">
+    <li><b>Las pistas de referencias vacías se pliegan</b> en una sola fila de 44 px que dice qué falta y sirve para agregar: «Sin videos ni audios de referencia · Agregar». Se despliega sola cuando el dueño agrega una. Textos y Efectos no se pliegan (regla firmada de §5.10: la pista vacía queda).</li>
+    <li><b>Sin ninguna parte con IA no se dibuja el grupo «Para la IA»</b>: las referencias no servirían para nada. Si había fotos del producto, se guardan y vuelven a verse al agregar una parte con IA.</li>
+  </ol>
+  <p class="mk-sub">Con eso, el caso común (producto elegido, sin videos ni audios) suma solo dos filas a la línea de hoy: el separador y «Fotos de referencia».</p>
+
+  <div class="mk-variants">
+  <section class="mk-variant">
+    <h2>A · El caso común: fotos del producto, sin videos ni audios</h2>
+    <template id="s6a">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar" aria-hidden="true"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body"><div class="ed">
+        <div class="preview"><div class="preview__frame pic-reel"><span class="preview__ai"><span class="ai-mark poster"><span data-i="sparkles" data-c="sm"></span>Parte con IA 1 · se crea al tocar «Crear»</span></span><span class="preview__play"><span data-i="play"></span></span></div></div>
+        <script type="application/json" data-tl>
+        {"total":17,"t":4,"chosen":"",
+         "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":2,"len":5},{"id":"v1","kind":"video","name":"Video 1","start":7,"len":4,"pic":"pic-b"},{"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"new","start":11,"len":4},{"id":"f2","kind":"photo","name":"Foto 2","start":15,"len":2,"pic":"pic-c"}],
+         "refs":{"photo":[{"id":"rp0","name":"Combo Vecino · 2 fotos","start":0,"len":17,"row":0,"pic":"pic-c","prod":true}],"video":[],"audio":[]},
+         "fold":true,"texts":[{"id":"t1","name":"«2×1 hoy»","start":2,"len":5}],"effects":[],"status":""}
+        </script>
+        <div class="q-island q-tl-actions" style="grid-template-columns:1fr"><div class="row"><button class="orbit__plus" type="button" aria-label="Agregar"><span data-i="plus"></span></button><span style="font-weight:700">Agregar</span></div></div>
+      </div></div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div><button class="btn ghost sm step-foot__later" type="button">Seguir después</button></footer>
+    </template>
+    <div class="mk-row" data-pair="s6a"
+      data-note-phone="Regla, medios, separador, fotos, la fila plegada, textos y efectos. La fila plegada abre la pestaña «Referencia» de la pantalla 3 con «Video» elegido. Su texto queda pegado a la izquierda al deslizar, como la línea «Para la IA»."
+      data-note-desk="En escritorio también se pliega (el mismo componente), y la columna de nombres dice «Más referencias». En escritorio sobra espacio, pero dos filas rayadas vacías no dicen nada que la fila plegada no diga mejor."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>B · Sin referencias todavía <small>— partes con IA sin producto elegido</small></h2>
+    <template id="s6b">
+      <div class="step-body"><div class="ed">
+        <script type="application/json" data-tl>
+        {"total":17,"t":4,"chosen":"",
+         "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":2,"len":5},{"id":"v1","kind":"video","name":"Video 1","start":7,"len":4,"pic":"pic-b"},{"id":"ai2","kind":"ai","name":"Parte con IA 2","mode":"new","start":11,"len":4},{"id":"f2","kind":"photo","name":"Foto 2","start":15,"len":2,"pic":"pic-c"}],
+         "refs":{"photo":[],"video":[],"audio":[]},
+         "fold":true,"texts":[],"effects":[],"status":""}
+        </script>
+      </div></div>
+    </template>
+    <div class="mk-row" data-pair="s6b" data-only="phone"
+      data-note-phone="Las tres vacías caben en una fila: «Sin fotos, videos ni audios de referencia · Agregar». Es también la invitación: la IA hace mejor la parte si ve el producto."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>C · Sin ninguna parte con IA <small>— solo fotos y videos tuyos</small></h2>
+    <template id="s6c">
+      <div class="step-body"><div class="ed">
+        <script type="application/json" data-tl>
+        {"total":12,"t":4,"chosen":"",
+         "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"v1","kind":"video","name":"Video 1","start":2,"len":6,"pic":"pic-b"},{"id":"f2","kind":"photo","name":"Foto 2","start":8,"len":4,"pic":"pic-c"}],
+         "refs":{"photo":[{"id":"rp0","name":"Combo Vecino · 2 fotos","start":0,"len":12,"row":0,"pic":"pic-c","prod":true}]},
+         "fold":true,"texts":[{"id":"t1","name":"«2×1 hoy»","start":2,"len":5}],"effects":[],"status":""}
+        </script>
+      </div></div>
+    </template>
+    <div class="mk-row" data-pair="s6c" data-only="phone"
+      data-note-phone="La línea queda exactamente como hoy: tres pistas. Las fotos del producto siguen guardadas aunque no se dibujen."></div>
+  </section>
+  </div>
+</div>
+</body>
+</html>

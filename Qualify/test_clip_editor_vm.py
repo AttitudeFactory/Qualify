@@ -64,7 +64,9 @@ def test_fixed_words() -> None:
         "¿Qué dice tu video?",
         "¿Qué le pones a tu video?",
         "¿De qué trata tu video?",
+        "¿Qué le mostramos a la IA?",  # m-25142725: its tab only with the AI parts on
     ]
+    assert vm.REF_TAB not in vm.FLOW_TABS
     assert vm.NO_EFFECTS_YET == (
         "Todavía no hay efectos para tu video. Mientras tanto, agrega un texto."
     )

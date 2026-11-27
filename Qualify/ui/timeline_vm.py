@@ -68,6 +68,17 @@ HELP_IDS = {
     TIME_HELP: "q-tl-help-time",
     EFFECT_HELP: "q-tl-help-effect",
 }
+#: m-25142725: the reference tracks' group under «Fotos y videos» — drawn only while a
+#: screen passes it (the Clip with AI parts); its words are the screen's
+#: (`Qualify.clip_refs_vm`), its help is read once from its own hidden span.
+REF_SEPARATOR = "✦ Para la IA · no sale en tu video"
+REF_GROUP_LABEL = "Referencias para la IA (no salen en tu video)"
+REF_HELP = (
+    "Usa las flechas izquierda y derecha para moverla medio segundo, y arriba y abajo para "
+    "pasarla a otra fila."
+)
+REF_HELP_ID = "q-tl-help-ref"
+REF_FOLDED_ADD = "Agregar"
 DONE_LABEL = "Listo"
 MINUS_HALF = "− ½ s"
 PLUS_HALF = "+ ½ s"
