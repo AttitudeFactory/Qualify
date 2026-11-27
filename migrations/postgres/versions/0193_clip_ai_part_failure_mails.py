@@ -1,11 +1,10 @@
 """clip_avatar_failure_mails: the email of a Clip's AI part that failed (m-25142979)
 
 Revision ID: 0193
-Revises: 0191
+Revises: 0192
 Create Date: 2026-11-27
 
-0192 is reserved for m-25129386: whichever of the two reaches `main` second moves its
-`down_revision` onto the other (`just migration-guard`).
+On top of 0192 (`usage_event_subject_key`, m-25129386, #879), which reached `main` first.
 
 ## Why this exists
 
@@ -39,7 +38,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "0193"
-down_revision = "0191"
+down_revision = "0192"
 branch_labels = None
 depends_on = None
 
