@@ -204,3 +204,19 @@ Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, 
   - **Memoria medida (2026-11-24):** `deploy/measure/upload-preview-memory.sh run k5_hevc10_112.mp4 advice` en Docker con el tope del `media-worker` (768 MiB, 1 CPU), con el aviso encendido y un cliente de Anthropic falso, sin red. La copia de 480p llegó a 410 MiB de memoria anónima. El aviso, después, llegó a 102 MiB (138 MiB de RSS del proceso) y tardó 12,5 s, casi todo en leer los 3 cuadros de un video de 112 s. Sin eventos de falta de memoria (`oom` 0).
     - Medido otra vez con el SDK `anthropic` importado (lo que carga el cliente de producción): la copia llegó a 409 MiB y el aviso a 135 MiB de memoria anónima (172 MiB de RSS), en 17,1 s. Sigue lejos del tope de 768 MiB; sin `oom`.
   - **Pendiente:** el conteo de la flota filtra `creative_usage_events` por `unit` y `occurred_at` sin un índice propio. Con el volumen de hoy no pesa; si crece, hace falta un índice parcial `(occurred_at) WHERE unit = 'video_placement_token'`, que sería una migración.
+
+## Uso LINEA-001 — «Sugerir con IA» lo que dice el personaje en su escena (m-25129386, épica m-25129420) — 2026-11-27
+
+- **Qué hace:** propone UNA frase que el personaje guardado del negocio le dice a la cámara en una escena de 5 a 10 s, sobre un producto del Catálogo. El dueño la ve, la puede editar y solo entonces entra en la escena (`line_suggested` + `line_prompt_version`). Gratis para el dueño: no usa creaciones ni vistas previas.
+- **Modelo:** `claude-haiku-5-5`, esfuerzo `low` (pensamiento adaptativo; sus tokens cuentan dentro de `max_tokens` = 2048), herramienta estricta `propose_line`. Una sola llamada, nunca se reintenta (cliente con `max_retries=0`).
+- **Precio:** US$0,10 por millón de tokens de entrada y US$0,50 de salida (`claude_tools.PRICES`, tabla `v7`; verificado contra el código el 2026-11-27).
+- **Módulo:** `packages/api/src/qualify_api/creative/character_line_ai.py`, prompt `personaje-linea-v1`, función del registro de consumo `sugerir-linea-personaje`.
+- **Largo:** el prompt pide `max_chars − 5` (32, 77 y 107 caracteres a 5, 8 y 10 s); la respuesta se valida contra el límite de la escena (37, 82 y 112). Una frase larga, vacía, rechazada, con cifras o con un hecho inventado falla (`line_suggestion_failed`) y cuenta para el día, porque se pagó.
+- **Topes:** 10 sugerencias por escena y 30 por negocio al día del negocio (`tenants.timezone`); medidor de US$0,01 por llamada y el tope mensual en dólares de la marca.
+- **Estimado offline (2026-11-27, gratis):** `packages/api/evals/linea_personaje/run_once.py --count-tokens` (contador de tokens de Anthropic, sin costo) sobre un negocio ficticio escrito para la medición («Heladería La Nube», el personaje «Mango», la «Copa de mango»):
+  - **1.340 tokens de entrada** con el prompt y la herramienta reales, igual a 5, 8 y 10 s (solo cambian dos números).
+  - Entrada: **US$0,00013** (US$0,000134) por sugerencia.
+  - Peor caso, con los 2.048 tokens de salida: **US$0,00116** por sugerencia, por debajo del medidor de US$0,01.
+  - Esperado, con 100 a 400 tokens de salida (pensamiento corto y una frase): **US$0,00018–0,00033** por sugerencia.
+  - Un negocio que usa su tope entero, 30 al día durante 30 días, gastaría a lo sumo US$1,04 al mes (peor caso) y unos US$0,16–0,30 con el esperado.
+- **Llamada real única (autorizada por Deivid en la sesión, tope US$0,01):** no se hizo el 2026-11-27, porque el sistema de permisos de la sesión bloqueó el comando. Pendiente: `packages/api/evals/linea_personaje/run_once.py --env-file .env --live-once`. Los tokens y el costo reales se anotan aquí cuando se haga.

@@ -913,6 +913,15 @@ class CreativeUsageEvent(Base):
             unique=True,
             postgresql_where=text("vendor_task_id IS NOT NULL"),
         ),
+        # 0192 (m-25129386): the per-scene cap of «Sugerir con IA» counts by subject
+        Index(
+            "ix_usage_event_tenant_unit_subject",
+            "tenant_id",
+            "unit",
+            "subject_key",
+            "created_at",
+            postgresql_where=text("subject_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -932,6 +941,9 @@ class CreativeUsageEvent(Base):
     #: The vendor's own id of the task this row paid for (Seedance `cgt-…`, OmniHuman's
     #: `task_id`); NULL for a call without one (Claude, Seedream, Seed Speech, Remotion).
     vendor_task_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 0192 (m-25129386): what a draft-less row was asked for — the scene's key of a
+    #: «Sugerir con IA» line (`unit = 'character_line'`); NULL for every other row.
+    subject_key: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     unit: Mapped[str] = mapped_column(Text, nullable=False)  # 'piece' | 'token'
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

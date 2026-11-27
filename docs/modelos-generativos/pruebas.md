@@ -2981,3 +2981,14 @@ Las partes suman las versiones de prompt 3 (`PART_PROMPT_VERSION_V5`) y 4 (`PART
 - **Fotos de Estilo:** con el compilador 5, `shows_product` no cuenta las fotos «Estilo» (rol `composition`). Si una pieza (avatar, imagen o carrusel) solo tiene fotos de estilo, recibe la redacción sin producto. Se agregaron 3 entradas a `_NO_PRODUCT_WORDING_V5` para que las líneas que protegen la guía no digan «product».
 - **Carrusel:** una diapositiva solo con estilo, sin foto de producto, usa el campo nuevo `CarouselSlide.guide_alone` (por defecto `False`). No cambia el prompt, el compilador ni la base.
 - **Medición:** la corrida pagada fue anterior a estos dos cambios. Estas rutas no se midieron con generación real.
+
+## LINEA-001 — Costo de «Sugerir con IA» lo que dice el personaje (m-25129386, épica m-25129420) — 2026-11-27
+
+- **Modelo y prompt:** `claude-haiku-5-5`, esfuerzo `low`, prompt `personaje-linea-v1`, herramienta estricta `propose_line`, `max_tokens` 2048, medidor de US$0,01 por llamada.
+- **Material:** un negocio ficticio escrito para la medición («Heladería La Nube», el personaje «Mango», la «Copa de mango»), en `packages/api/evals/linea_personaje/run_once.py`. Nada de clientes.
+- **Estimado offline (gratis):** `run_once.py --env-file .env --count-tokens`, con el contador de tokens de Anthropic sobre el prompt y la herramienta reales.
+  - 1.340 tokens de entrada a 5, 8 y 10 s (medido después del ajuste de UX del prompt; antes eran 1.294).
+  - Entrada: US$0,000134. Peor caso, con los 2.048 de salida: US$0,00116. Esperado, con 100 a 400 de salida: US$0,00018–0,00033 por sugerencia.
+  - Con el tope de 30 sugerencias por negocio al día: a lo sumo US$1,04 por negocio al mes (peor caso).
+- **Llamada real única:** Deivid la autorizó en la sesión, a lo sumo una llamada y un tope de US$0,01. **No se hizo:** el sistema de permisos de la sesión bloqueó el comando. Queda pendiente, con el mismo comando: `run_once.py --env-file .env --live-once`. Gasto de hoy: US$0.
+- Detalle y uso: [claude-haiku-5-5.md](claude-haiku-5-5.md), «Uso LINEA-001».
