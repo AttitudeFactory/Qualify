@@ -20,7 +20,9 @@ from qualify_shared.objects.public import reel_frame_key
 
 from qualify_api.creative import left_out
 from qualify_api.creative.left_out import (
+    LEFT_OUT_REASON_TEXTS,
     SPAN_EXTEND_ORDER,
+    SPAN_IN_CLIP,
     SPAN_TEXTS,
     SPAN_UNKNOWN,
     UNCOVERED_END,
@@ -378,14 +380,107 @@ def test_a_tail_without_its_head_is_refused() -> None:
     assert refused.value.reason == SPAN_EXTEND_ORDER
 
 
-@pytest.mark.parametrize("span_id", ["cut:99", "cut:5.9", "nada", "cut:1"])
-def test_a_stretch_that_is_not_left_out_is_unknown(span_id: str) -> None:
+@pytest.mark.parametrize("span_id", ["cut:99", "cut:5.9", "nada", "uncovered:start"])
+def test_a_stretch_that_is_not_in_the_analysis_is_unknown(span_id: str) -> None:
     reel = _long_reel()
     blocks = _blocks(plan_from_analysis(reel, extend_on=True), reel)
     with pytest.raises(SpanRefused) as refused:
         span_entry(reel, span_id, used=blocks, extend_on=True)
     assert refused.value.reason == SPAN_UNKNOWN
     assert refused.value.text == "Ese tramo del reel ya no está disponible. Elige otro."
+
+
+def test_a_stretch_already_in_the_video_says_so() -> None:
+    reel = _long_reel()
+    blocks = _blocks(plan_from_analysis(reel, extend_on=True), reel)
+    with pytest.raises(SpanRefused) as refused:
+        span_entry(reel, "cut:1", used=blocks, extend_on=True)
+    assert refused.value.reason == SPAN_IN_CLIP
+    assert refused.value.text == "Ese tramo ya está en tu video. Elige otro."
+    # with bare cut indexes too
+    with pytest.raises(SpanRefused):
+        span_entry(reel, "cut:1", used=[0, 1, 2], extend_on=True)
+    assert span_entry(reel, "cut:3", used=[0, 1, 2], extend_on=True).shot_indexes == (3,)
+
+
+def test_a_tail_made_new_stands_on_its_own() -> None:
+    """Switch off: a split tail is `reference` (new), so it needs no head before it."""
+    reel = _long_reel()
+    blocks = _blocks(plan_from_analysis(reel, extend_on=False), reel)
+    entry = span_entry(reel, "cut:5.2", used=_without(blocks, 5), extend_on=False)
+    assert (entry.mode, entry.original_mode, entry.mode_reason) == (
+        "reference",
+        "extend",
+        "extend_unavailable",
+    )
+
+
+def test_tails_are_counted_so_a_middle_one_taken_out_leaves_the_last_one_out() -> None:
+    """A tail carries no piece number: the Clip's tails of a cut are its first tails."""
+    reel = analysis(shot(0, 0.0, 6.0), shot(1, 6.0, 12.0), shot(2, 12.0, 37.0))
+    plan = plan_from_analysis(reel, extend_on=False)
+    assert [p.shot_indexes for p in plan] == [(0,), (1,), (2,), (2,), (2,)]
+    blocks = _blocks(plan, reel)
+    found = left_out_spans(reel, _without(blocks, 3), extend_on=False)
+    assert [s.id for s in found.spans] == ["cut:2.2"]
+    # the part that comes back is the same tail, made new from the same description
+    assert span_entry(reel, "cut:2.2", used=_without(blocks, 3), extend_on=False) == plan[3]
+
+
+def test_an_owner_who_made_a_tail_new_still_uses_it() -> None:
+    reel = _long_reel()
+    plan = list(plan_from_analysis(reel, extend_on=True))
+    plan[5] = plan[5].model_copy(update={"mode_changed_by_owner": True})
+    blocks = _blocks(tuple(plan), reel)
+    extended = list(blocks.ai_parts)
+    extended.append(
+        span_entry(reel, "cut:5.1", used=blocks, extend_on=True).model_copy(
+            update={"mode": "reference", "mode_changed_by_owner": True}
+        )
+    )
+    found = left_out_spans(reel, extended, extend_on=True)
+    assert [s.id for s in found.spans] == ["cut:5.2"]
+
+
+def test_clip_blocks_without_blocks_count_their_entries() -> None:
+    reel = _long_reel()
+    plan = plan_from_analysis(reel, extend_on=True)
+    found = left_out_spans(reel, ClipBlocks(ai_parts=plan), extend_on=True)
+    assert [s.id for s in found.spans] == ["cut:5.1", "cut:5.2"]
+    assert (found.used_seconds, found.ai_parts) == (39.0, 6)
+
+
+def test_the_seconds_used_are_the_blocks_as_the_owner_left_them() -> None:
+    reel = _long_reel()
+    blocks = _blocks(plan_from_analysis(reel, extend_on=True), reel)
+    trimmed = replace(
+        blocks,
+        segments=tuple(
+            s.model_copy(update={"end_s": 3.0}) if s.ai_part_at == 0 else s for s in blocks.segments
+        ),
+    )
+    assert left_out_spans(reel, trimmed, extend_on=True).used_seconds == 36.0
+
+
+def test_the_notice_carries_the_caps_that_explain_it() -> None:
+    found = left_out_spans(_long_reel(), [], extend_on=True)
+    assert (found.max_seconds, found.max_parts) == (60.0, PARTS_MAX)
+    assert set(LEFT_OUT_REASON_TEXTS) == {"parts_cap", "split_tail", "not_analyzed"}
+
+
+def test_each_piece_of_a_long_take_shows_a_frame_of_its_own_seconds() -> None:
+    keys = tuple(reel_frame_key("instagram", "p1", ANALYSIS_ID, 0, n) for n in range(6))
+    long_take = replace(
+        shot(0, 0.0, 25.0), frame_keys=keys, frame_times_s=(1.0, 4.0, 12.0, 15.0, 20.0, 23.0)
+    )
+    reel = analysis(long_take)
+    found = left_out_spans(reel, [], extend_on=True)
+    assert [(s.id, s.start_s, s.end_s) for s in found.spans] == [
+        ("cut:0", 0.0, 9.0),
+        ("cut:0.1", 9.0, 17.0),
+        ("cut:0.2", 17.0, 25.0),
+    ]
+    assert [s.thumbnail_key for s in found.spans] == [keys[1], keys[3], keys[5]]
 
 
 @pytest.mark.usefixtures("ai_parts_on")
@@ -405,7 +500,7 @@ def test_over_sixty_seconds_the_contract_refuses_it_after_the_swap() -> None:
             SourceSegment(key="ai_part:5", kind="ai_part", start_s=0.0, end_s=10.0),
         ),
     )
-    codes = {p.code for p in check_after_swap(longer)}
+    codes = {p.code for p in check_after_swap(longer, tenant_id=TENANT_ID)}
     assert "local_length_out_of_range" in codes
 
 
