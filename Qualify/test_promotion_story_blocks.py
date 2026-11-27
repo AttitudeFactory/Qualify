@@ -27,7 +27,12 @@ def test_every_cause_has_one_text_with_its_next_step() -> None:
         # No jargon, no impossible step: no «9:16», no cover picker, no «publica primero».
         for word in ("9:16", "Elige una portada", "Publica primero", "story", "post"):
             assert word not in message
-        assert action is None or action[1] in {"/connections", "/brand/kit#permisos-de-meta"}
+        assert action is None or action[1] in {
+            "/connections",
+            "/brand/kit#permisos-de-meta",
+            "/drafts",
+        }
+    assert "published" not in STORY_BLOCKS  # epic D1: never a cause on the story path
 
 
 def test_the_action_is_where_the_text_sends_the_owner() -> None:
@@ -111,3 +116,10 @@ async def test_a_ready_historia_shows_no_block_and_an_empty_one_still_says_why(m
 def test_the_empty_screen_shows_the_cause_and_its_action() -> None:
     rendered = repr(story_empty().render())
     assert "story_block" in rendered and "story_block_href" in rendered
+
+
+def test_a_missing_piece_has_no_way_back_to_it_only_to_por_aprobar() -> None:
+    assert story_block_text("missing")[1:] == ("Ir a Por aprobar", "/drafts")
+    rendered = repr(story_empty().render())
+    # «Volver a la pieza» sits behind the missing piece's href.
+    assert '"/drafts"' in rendered.replace('\\"', '"')

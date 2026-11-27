@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from packages.api.tests.test_ad_audience_db import audience_world as shared_audience_world
+from packages.api.tests.test_ad_unpublished_db import publish
 from packages.api.tests.test_ad_unpublished_db import unpublished_world as shared_unpublished
 from qualify_shared.db.connection_purge import connection_purge_session
 from qualify_shared.db.session import tenant_session
@@ -25,8 +26,6 @@ unpublished_world = shared_unpublished
 _CASES = [
     (StoryBlock.NOT_APPROVED, "UPDATE content_drafts SET status='draft' WHERE id=:draft"),
     (StoryBlock.EDITED, "UPDATE content_drafts SET revision=revision+1 WHERE id=:draft"),
-    (StoryBlock.PUBLISHED, "UPDATE content_drafts SET published_media_id='1' WHERE id=:draft"),
-    (StoryBlock.PUBLISHED, "UPDATE content_drafts SET status='published' WHERE id=:draft"),
     (StoryBlock.FILES_DELETED, "UPDATE content_drafts SET media_purged_at=now() WHERE id=:draft"),
     (StoryBlock.NO_VERTICAL, "UPDATE image_assets SET height=width WHERE id=:vertical"),
     (
@@ -108,3 +107,11 @@ def test_missing_permission_to_advertise(unpublished_world) -> None:
         )
     with acting_login(login):
         assert story_block(source.tenant_id, source.draft_id) == StoryBlock.AD_PERMISSION
+
+
+def test_a_historia_qualify_published_can_still_be_a_story_ad(unpublished_world) -> None:
+    """Epic D1: the story ad is a new 9:16 creative, so publication is never a cause."""
+    source, _, login, actor = unpublished_world
+    publish(source, actor)
+    with acting_login(login):
+        assert story_block(source.tenant_id, source.draft_id) is None

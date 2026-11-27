@@ -31,9 +31,6 @@ class StoryBlock(StrEnum):
     MISSING = "missing"  # no such top-level piece for this business, or no active version
     NOT_APPROVED = "not_approved"
     EDITED = "edited"  # changed after its approval
-    # The wizard's rule today (`content_drafts.published_media_id`); HIS-3 (m-25130283)
-    # may move «published» elsewhere — keep both reads in step.
-    PUBLISHED = "published"
     FILES_DELETED = "files_deleted"  # retention purge (ADR 39), its objects deleted or pending
     NO_VERTICAL = "no_vertical"  # no 9:16 JPG/PNG image nor 9:16 MP4 video
     VIDEO_WITHOUT_COVER = "video_without_cover"  # a 9:16 video with no 9:16 image as cover
@@ -49,7 +46,7 @@ VERTICAL = (9, 16)
 _IMAGE_TYPES, _VIDEO_TYPES = {"image/jpeg", "image/png"}, {"video/mp4"}
 
 _PIECE = text("""SELECT d.brand_id,d.status,d.revision,d.approved_revision,d.media_purged_at,
-  d.published_media_id,pv.id AS version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
+  pv.id AS version_id,COALESCE(v.edited_copy,v.copy) AS ad_copy
 FROM content_drafts d LEFT JOIN piece_versions pv ON pv.id=d.active_version_id
   AND pv.tenant_id=d.tenant_id AND pv.draft_id=d.id AND pv.status='active'
 LEFT JOIN copy_variants v ON v.id=d.selected_variant_id AND v.tenant_id=d.tenant_id
@@ -91,9 +88,10 @@ def files_block(assets: Iterable[Mapping[str, Any]]) -> StoryBlock | None:
 def piece_block(piece: Mapping[str, Any] | None) -> StoryBlock | None:
     if piece is None or piece["version_id"] is None:
         return StoryBlock.MISSING
-    # The draft FSM moves approved → staged → published: those are past approval.
-    if piece["status"] in {"staged", "published"} or piece["published_media_id"] is not None:
-        return StoryBlock.PUBLISHED
+    # Published by Qualify is never a cause: a story ad is always a new 9:16 creative (epic
+    # D1, m-25130283). Publishing leaves the draft 'approved' (the FSM's staged/published
+    # edges have no caller; the calendar event and publish attempt carry it), so the
+    # wizard's `status='approved'` holds for a published historia too.
     if piece["status"] != "approved":
         return StoryBlock.NOT_APPROVED
     if piece["approved_revision"] != piece["revision"]:

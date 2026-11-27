@@ -30,6 +30,7 @@ from .promotion_vm import (
     STORY_LEFT_WEEK,
     STORY_NO_CHARGE,
     STORY_PLACEMENT,
+    STORY_POR_APROBAR,
     STORY_SAFE_BOTTOM,
     STORY_SAFE_HINT,
     STORY_SAFE_TOP,
@@ -353,14 +354,17 @@ def story_empty() -> rx.Component:
                             href=S.story_block_href,
                         ),
                     ),
-                    rx.link(
-                        rx.button(
-                            STORY_BACK_TO_PIECE,
-                            size="3",
-                            min_height="44px",
-                            variant=rx.cond(S.story_block_href != "", "outline", "solid"),
+                    rx.cond(
+                        S.story_block_href != STORY_POR_APROBAR[1],  # a missing piece: no way back
+                        rx.link(
+                            rx.button(
+                                STORY_BACK_TO_PIECE,
+                                size="3",
+                                min_height="44px",
+                                variant=rx.cond(S.story_block_href != "", "outline", "solid"),
+                            ),
+                            href=S.piece_href,
                         ),
-                        href=S.piece_href,
                     ),
                     spacing="4",
                     align_items="start",

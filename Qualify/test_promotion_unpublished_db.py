@@ -98,3 +98,11 @@ def test_batched_readiness_never_crosses_businesses(unpublished_world):
         assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}
     # Another business asking for the same id sees nothing of it (RLS).
     assert story_ads_ready(uuid4(), [source.draft_id]) == set()
+
+
+def test_the_cards_offer_a_historia_qualify_already_published(unpublished_world):
+    """HIS-1 + epic D1: the gallery's batched readiness never hides a published historia."""
+    source, _, login, actor = unpublished_world
+    publish(source, actor)
+    with acting_login(login):
+        assert story_ads_ready(source.tenant_id, [source.draft_id]) == {source.draft_id}

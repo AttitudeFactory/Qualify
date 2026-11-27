@@ -85,6 +85,7 @@ STORY_BACK_TO_PIECE = "Volver a la pieza"
 #: backend names (`qualify_api.ads.story_readiness.StoryBlock`) with its next step, and
 #: the link to where that step happens (None: the piece, «Volver a la pieza»).
 STORY_TUS_REDES = ("Ir a Tus redes", "/connections")
+STORY_POR_APROBAR = ("Ir a Por aprobar", "/drafts")
 STORY_TU_MARCA = ("Ir a Tu marca", "/brand/kit#permisos-de-meta")
 STORY_COP_ONLY = (
     "Por ahora, este anuncio solo funciona con cuentas publicitarias en pesos colombianos. "
@@ -93,7 +94,7 @@ STORY_COP_ONLY = (
 STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
     "missing": (
         "No encontramos esta historia. Búscala de nuevo en Por aprobar.",
-        None,
+        STORY_POR_APROBAR,  # the piece itself is gone: no «Volver a la pieza»
     ),
     "not_approved": (
         "Esta historia todavía no está aprobada. Apruébala y vuelve a tocar «Promocionar "
@@ -102,11 +103,6 @@ STORY_BLOCKS: dict[str, tuple[str, tuple[str, str] | None]] = {
     ),
     "edited": (
         "Cambiaste esta historia después de aprobarla. Apruébala otra vez para anunciarla.",
-        None,
-    ),
-    "published": (
-        "Esta historia ya está publicada, y por ahora este anuncio solo se hace con una "
-        "historia sin publicar. Mientras tanto, anuncia otra historia aprobada.",
         None,
     ),
     "files_deleted": (

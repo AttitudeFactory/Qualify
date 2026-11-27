@@ -185,7 +185,7 @@ def story_ads_ready(tenant_id: UUID, draft_ids: list[UUID]) -> set[UUID]:
     if not draft_ids:
         return set()
     with tenant_session(tenant_id) as session:
-        pieces = list(session.execute(_PIECES, {"drafts": draft_ids}).mappings())
+        pieces = list(session.execute(_PIECES, {"drafts": draft_ids, "story": True}).mappings())
         if not pieces:
             return set()
         brands = {piece["brand_id"] for piece in pieces}

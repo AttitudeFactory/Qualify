@@ -83,11 +83,25 @@ def image_bytes(gate: ObjectGate, source: ImageSource, asset: ImageSelection) ->
     return checked_image(data, asset)
 
 
+IMAGE_TOO_LARGE = "Cada imagen del anuncio debe ocupar como máximo 8 MB."
+VIDEO_DURATION = "Cada video del anuncio debe durar entre 1 y 60 segundos. Recórtalo o elige otro."
+# HIS-2 (m-25130282): a story ad has one file and nothing else to choose; the way out is
+# the historia itself.
+STORY_LIMITS = {
+    IMAGE_TOO_LARGE: "La foto de esta historia pesa más de 8 MB. Crea la historia de nuevo "
+    "con una foto más liviana para anunciarla.",
+    VIDEO_DURATION: "El video de esta historia debe durar entre 1 y 60 segundos. Crea la "
+    "historia de nuevo con un video de esa duración para anunciarla.",
+    TOO_LARGE: "El video de esta historia pesa más de 100 MB. Crea la historia de nuevo con "
+    "un video más liviano para anunciarla.",
+}
+
+
 def checked_image(data: bytes, asset: ImageSelection) -> bytes:
     """The bytes, once their size, MIME and dimensions match the server-resolved row."""
     try:
         if not 0 < len(data) <= MAX_IMAGE_BYTES:
-            raise UnpublishedUnavailable("Cada imagen del anuncio debe ocupar como máximo 8 MB.")
+            raise UnpublishedUnavailable(IMAGE_TOO_LARGE)
         with Image.open(io.BytesIO(data)) as image:
             if (
                 image.size != (asset.width, asset.height)
@@ -152,9 +166,7 @@ def video_facts(gate: ObjectGate, source: ImageSource, asset: VideoSelection) ->
         stream = RangedObject(gate, source.tenant_id, asset.object_key)
         size, seconds, width, height = mp4_facts(stream)
         if not MIN_VIDEO_SECONDS <= seconds <= MAX_VIDEO_SECONDS:
-            raise UnpublishedUnavailable(
-                "Cada video del anuncio debe durar entre 1 y 60 segundos. Recórtalo o elige otro."
-            )
+            raise UnpublishedUnavailable(VIDEO_DURATION)
         if (width, height) != (asset.width, asset.height):
             raise UnpublishedUnavailable("El video cambió. Vuelve a elegir sus formatos.")
         hasher = hashlib.sha256()
@@ -451,16 +463,21 @@ class UnpublishedImageService:
         self._guard(source, actor)
         source.snapshot()  # every format rule (ratio, type, covers) before any network call
         facts: list[tuple[str, int]] = []
-        if source.is_video:
-            # Every local limit (size, duration, dimensions, covers) before any network call.
-            facts = [
-                await asyncio.to_thread(video_facts, self.gate, source, asset)
-                for asset in source.assets
-            ]
-            for asset in source.assets:
-                await asyncio.to_thread(image_bytes, self.gate, source, asset.thumbnail)
-        elif source.is_story:
-            await asyncio.to_thread(image_bytes, self.gate, source, source.vertical)
+        try:
+            if source.is_video:
+                # Every local limit (size, duration, dimensions, covers) before any network call.
+                facts = [
+                    await asyncio.to_thread(video_facts, self.gate, source, asset)
+                    for asset in source.assets
+                ]
+                for asset in source.assets:
+                    await asyncio.to_thread(image_bytes, self.gate, source, asset.thumbnail)
+            elif source.is_story:
+                await asyncio.to_thread(image_bytes, self.gate, source, source.vertical)
+        except UnpublishedUnavailable as error:
+            if source.is_story and str(error) in STORY_LIMITS:
+                raise UnpublishedUnavailable(STORY_LIMITS[str(error)]) from None
+            raise
         recipe = self.recipes.approve(source, form, actor, request_key)
         access = await self._account(source, actor)
         client = access.client
