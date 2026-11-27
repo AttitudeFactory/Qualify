@@ -5,10 +5,12 @@ import logging
 import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.creative.queue_dispatch import warn_if_inline
+from qualify_api.http.effect_preview_routes import router as effect_preview_router
 from qualify_api.planner.embedded import calendar_worker
 
 from .ad_forms_page import ad_forms_index
 from .ad_forms_state import AdFormsState
+from .ad_month_plan_state import AdMonthPlanState
 from .ad_results_page import ad_result_detail_index, ad_results_index
 from .ad_results_state import AdResultsState
 from .approved_page import approved_index
@@ -58,6 +60,9 @@ from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
+from .investment_profile_page import investment_profile_index
+from .investment_profile_state import InvestmentProfileState
+from .monthly_post_state import MonthlyPostState
 from .not_found_page import not_found_index
 from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
@@ -125,6 +130,8 @@ avatar_api.include_router(r2_media_router)
 avatar_api.include_router(seasonal_media_router)
 # «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
 avatar_api.include_router(piece_download_router)
+# m-25120474: the effects' «Así se ve» video, read-only from R2 `platform/effects/`.
+avatar_api.include_router(effect_preview_router)
 
 
 # Type faces + the `--q-*` tokens (assets/qualify.css) layer on top of the Radix theme
@@ -610,7 +617,13 @@ app.add_page(
 app.add_page(
     approved_index,
     route="/aprobados",
-    on_load=[AuthState.require_login, GalleryState.load_approved, SeasonalState.read_kind_filter],
+    on_load=[
+        AuthState.require_login,
+        # m-25040496: a «Subir historia» dialog left open never comes back open
+        PlannerState.leave_story_upload,
+        GalleryState.load_approved,
+        SeasonalState.read_kind_filter,
+    ],
     title="Qualify · Aprobados",
 )
 app.add_page(
@@ -629,13 +642,19 @@ app.add_page(
 app.add_page(
     promotion_index,
     route="/drafts/[draft_id]/promote",
-    on_load=[AuthState.require_login, PromotionState.load],
+    # m-25091387: a brand with no profile and no promotion is offered the questions first
+    on_load=[AuthState.require_login, InvestmentProfileState.offer_gate, PromotionState.load],
     title="Qualify · Promocionar publicación",
 )
 app.add_page(
     ad_results_index,
     route="/promotions",
-    on_load=[AuthState.require_login, AdResultsState.load_list],
+    on_load=[
+        AuthState.require_login,
+        AdResultsState.load_list,
+        InvestmentProfileState.load,
+        AdMonthPlanState.load,
+    ],
     title="Qualify · Anuncios",
 )
 app.add_page(
@@ -643,6 +662,17 @@ app.add_page(
     route="/promotions/forms",
     on_load=[AuthState.require_login, AdFormsState.load, AdFormsState.read_step],
     title="Qualify · Formularios",
+)
+# m-25091387: «¿Cuánto te conviene pagar por un cliente?»
+app.add_page(
+    investment_profile_index,
+    route="/promotions/perfil",
+    on_load=[
+        AuthState.require_login,
+        InvestmentProfileState.load,
+        InvestmentProfileState.read_step,
+    ],
+    title="Qualify · Anuncios",
 )
 app.add_page(
     ad_result_detail_index,
@@ -658,9 +688,12 @@ app.add_page(
     route="/planner",
     on_load=[
         AuthState.require_login,
+        # m-25040496: the «Subir historia» dialog's file never reaches the drawer
+        PlannerState.leave_story_upload,
         WeekBackState.read,  # m-24986801: «‹ Aprobados» when opened from there
         PlannerState.load_current_week,
         FinalReviewState.from_route,
+        MonthlyPostState.load,  # m-25120704
     ],
     title="Qualify · Tu semana",
 )

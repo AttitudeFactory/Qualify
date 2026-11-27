@@ -60,8 +60,14 @@ class GenGalleryPickState(rx.State):
     #: token → the key an earlier «Agregar» copied a business medium to (review #4: a
     #: second «Agregar» of the same medium never copies it again).
     _copied: dict[str, str] = {}
-    #: The tokens already among the slot's files (marked «Ya está»).
+    #: The tokens already among the slot's files (marked «Ya está», drawn chosen).
     held: list[str] = []
+    #: token → the slot's key it is held as (`_sync_held`), to take it out on a tap.
+    _held_keys: dict[str, str] = {}
+    #: ED-03: the Clip editor's panel adds on the tap — the tokens being added right now,
+    #: and the ones tapped again meanwhile (they leave once they are in).
+    _in_flight: list[str] = []
+    _unpick: list[str] = []
 
     def _marked(self, choices: list[ChoiceVM] | tuple[ChoiceVM, ...]) -> list[ChoiceVM]:
         held = set(self.held)
@@ -84,6 +90,12 @@ class GenGalleryPickState(rx.State):
             for g in self._products
         ]
 
+    def _posters(self, picks: list[Any]) -> dict[str, str]:
+        """ED-11 (m-25026650): each business video's poster — the `/r2media` picture its
+        tile already showed — by the key it was added as (a product's video has none)."""
+        shown = {c.token: c.thumb for c in self._business if c.media_type == "video" and c.thumb}
+        return {p.key: shown[p.token] for p in picks if p.token in shown}
+
     def _sync_held(self, creative: CreativeState, target: str) -> None:
         """Which tiles the slot already holds: a product's medium by its own key, a
         business one by the copy an earlier «Agregar» made (`_copied`)."""
@@ -95,12 +107,13 @@ class GenGalleryPickState(rx.State):
         else:
             keys = set(creative.picker_selected.get(target, []))
         keys.discard("")
-        held = []
+        held: dict[str, str] = {}
         for c in [*self._business, *(c for g in self._products for c in g.choices)]:
             key = self._copied.get(c.token) or c.thumb or c.video
-            if key in keys or self._copied.get(c.token) in keys:
-                held.append(c.token)
-        self.held = held
+            if key in keys:
+                held[c.token] = key
+        self.held = list(held)
+        self._held_keys = held
 
     @rx.event
     async def reset_choice(self) -> None:
@@ -172,16 +185,39 @@ class GenGalleryPickState(rx.State):
             self.loaded = True
 
     @rx.event
-    async def pick(self, token: str, target: str = "") -> None:
+    async def pick(self, token: str, target: str = "") -> Any:
         """A tap on a tile: in or out, within the slot's room. `target`: the slot of an
-        in-line selector (a part's sheet, UI-4); "" = the media drawer's."""
-        if token not in self._media_of or self.adding:
-            return
+        in-line selector (a part's sheet, UI-4); "" = the media drawer's.
+
+        ED-03 (Deivid 2026-11-19: «quiero que funcione al seleccionarlo»): in the Clip
+        editor's ONE side panel (`target` = the Clip's, in line) a tap puts the file in
+        the Clip — and on the timeline — at once (`finish`), with no «Agregar» nor
+        «Listo»; tapped again it leaves (it is held). Every other selector is as it was."""
+        now = target == MEDIA_DRAWER_CLIP
+        if token not in self._media_of or (self.adding and not now):
+            return None
+        if now and token in self._in_flight:
+            # tapped again while it is being added: it leaves once it is in (a third tap
+            # keeps it)
+            if token in self._unpick:
+                self._unpick = [t for t in self._unpick if t != token]
+            else:
+                self._unpick = [*self._unpick, token]
+            return None
         creative = await self.get_state(CreativeState)
         target = target or creative.media_drawer_target
         if target != self._target:
             self._target = target
             self.chosen = []
+        if token in self.held and target == MEDIA_DRAWER_CLIP:
+            # m-25026648 (Deivid: «no aparecen seleccionadas»): a tile already among the
+            # Clip's references is drawn chosen, and a tap takes it out — as a tap does
+            # in «Tus productos» and «Publicaciones» — instead of choosing it twice
+            self.chosen = [t for t in self.chosen if t != token]
+            self.error = ""
+            if creative.drop_clip_reference(self._held_keys.get(token, "")):
+                self._sync_held(creative, target)
+            return None
         photo_room, video_room = creative.gallery_room(target)
         self.chosen, self.error = pick_limit(
             self.chosen,
@@ -191,14 +227,31 @@ class GenGalleryPickState(rx.State):
             video_room=video_room,
             clip=target == MEDIA_DRAWER_CLIP,
         )
+        if now and token in self.chosen:
+            return GenGalleryPickState.finish(target)
+        return None
+
+    def _settle_clip_now(self, tokens: list[str]) -> list[Any]:
+        """ED-03, the Clip editor's panel (adds on the tap): what was being added is done
+        — added or failed, it is not chosen any more (a failure keeps its error); a tap
+        made meanwhile goes in next (`finish` again)."""
+        self.chosen = [t for t in self.chosen if t not in tokens]
+        self._in_flight = []
+        return [GenGalleryPickState.finish(MEDIA_DRAWER_CLIP)] if self.chosen else []
 
     @rx.event(background=True)
     async def finish(self, target: str = "") -> AsyncIterator[Any]:
         """«Agregar»: what is chosen here goes into the slot (resolved on the server under
         RLS, copied when it is the business's) and the drawer closes. Nothing chosen
         here: the drawer just closes (the other tabs add on the tap). `target`: an
-        in-line selector's slot (a part's sheet): nothing closes, the sheet stays."""
+        in-line selector's slot (a part's sheet): nothing closes, the sheet stays.
+
+        ED-03: in the Clip editor's panel (`target` = the Clip's) it runs on every tap: a
+        failure drops what failed from the choice (its error stays) and what was tapped
+        meanwhile goes in next, never twice; a file tapped again while it was added
+        leaves once it is in."""
         inline = bool(target)
+        now = target == MEDIA_DRAWER_CLIP
         async with self:
             if self.adding:
                 return
@@ -213,12 +266,17 @@ class GenGalleryPickState(rx.State):
                 return
             self.adding = True
             self.error = ""
+            self._in_flight = list(tokens) if now else []
             copied = dict(self._copied)
         ids = await self._ids()
         if ids is None:
             async with self:
                 self.adding = False
                 self.error = _NO_SESSION
+                follow: list[Any] = self._settle_clip_now(tokens) if now else []
+                self._unpick = []
+            for event in follow:
+                yield event
             return
         try:
             picks = await asyncio.to_thread(resolve_picks, ids[0], ids[1], tokens, copied)
@@ -227,21 +285,40 @@ class GenGalleryPickState(rx.State):
             async with self:
                 self.adding = False
                 self.error = FAILED
+                follow = self._settle_clip_now(tokens) if now else []
+                self._unpick = []
+            for event in follow:
+                yield event
             return
         async with self:
             self.adding = False
             self._copied = {**self._copied, **{p.token: p.key for p in picks if p.token}}
             creative = await self.get_state(CreativeState)
-            added = creative.add_gallery_picks(picks, target)
-            note = added_note(len(tokens), added)
+            added = creative.add_gallery_picks(picks, target, posters=self._posters(picks))
+            # ED-12: «Arma tu video»'s 8 photos or videos left some out — said as such
+            note = creative._clip_cap_note() or added_note(len(tokens), added)
             if added == 0:
                 self.error = note
-                return
-            creative.gallery_pick_note = note
-            self.chosen = []
-            self.error = ""
-            self._sync_held(creative, target)
-            follow = [] if inline else [creative.close_media_drawer()]
+                follow = self._settle_clip_now(tokens) if now else []
+                self._unpick = []
+                if not now:
+                    return
+            else:
+                creative.gallery_pick_note = note
+                self.error = ""
+                if now:
+                    follow = self._settle_clip_now(tokens)
+                else:
+                    self.chosen = []
+                    follow = [] if inline else [creative.close_media_drawer()]
+                self._sync_held(creative, target)
+                # tapped again while it was added: it leaves now that it is in
+                gone = [t for t in self._unpick if t in tokens]
+                self._unpick = [t for t in self._unpick if t not in tokens]
+                for token in gone:
+                    creative.drop_clip_reference(self._held_keys.get(token, ""))
+                if gone:
+                    self._sync_held(creative, target)
         if target in ("part_images", "part_videos"):
             # UI-4: what a part's files trigger when they change (as `pick_media`)
             follow += [CreativeState.inspect_part_videos, CreativeState.inspect_part_merge]

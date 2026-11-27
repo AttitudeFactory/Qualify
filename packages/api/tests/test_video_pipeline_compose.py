@@ -194,7 +194,7 @@ def test_three_texts_are_composed_with_their_provenance_and_no_cost(tmp_path: Pa
         "job_id",
     ):
         assert key in first, key
-    assert first["template"] == "video_text@1"
+    assert first["template"] == "video_text@2"  # every text is drawn centred, by v2
     assert first["provider"] == "remotion" and first["cost_usd"] == "0"
     assert [layer["place"] for layer in block["layers"]] == ["top", "middle", "bottom"]
     assert block["layers"][2]["end_s"] is None
@@ -259,13 +259,14 @@ def test_a_text_the_render_refuses_names_which_one(tmp_path: Path) -> None:
     assert not (tmp_path / "out.mp4").exists()
 
 
-def test_the_fade_lasts_its_fixed_time_or_half_a_short_text() -> None:
+def test_the_fade_lasts_its_fixed_time_or_a_third_of_a_short_text() -> None:
+    """ED-13 (Deivid, 2026-11-23): an animation takes at most a THIRD of the text's time on
+    screen (the fade in used to take up to half)."""
     assert 0.3 <= FADE_IN_SECONDS <= 1.0
     assert fade_in_seconds(VideoTextLayer(text="a", start_s=0, end_s=3)) == FADE_IN_SECONDS
-    assert fade_in_seconds(VideoTextLayer(text="a", start_s=1, end_s=1.6)) == pytest.approx(0.3)
-    assert fade_in_seconds(VideoTextLayer(text="a", start_s=2), video_seconds=2.4) == pytest.approx(
-        0.2
-    )
+    assert fade_in_seconds(VideoTextLayer(text="a", start_s=1, end_s=1.6)) == pytest.approx(0.2)
+    late = VideoTextLayer(text="a", start_s=2)
+    assert fade_in_seconds(late, video_seconds=2.4) == pytest.approx(0.4 / 3, abs=1e-6)
     assert fade_in_seconds(VideoTextLayer(text="a", start_s=2)) == FADE_IN_SECONDS
 
 
@@ -345,7 +346,7 @@ def test_the_input_video_is_fingerprinted_in_the_provenance(tmp_path: Path) -> N
 
 def test_the_fade_counts_until_the_video_ends_when_that_comes_first() -> None:
     late = VideoTextLayer(text="a", start_s=2.0, end_s=10.0)
-    assert fade_in_seconds(late, video_seconds=2.4) == pytest.approx(0.2)
+    assert fade_in_seconds(late, video_seconds=2.4) == pytest.approx(0.4 / 3, abs=1e-6)
     assert fade_in_seconds(late, video_seconds=20.0) == FADE_IN_SECONDS
 
 
@@ -356,14 +357,18 @@ def test_each_text_fades_over_its_own_chosen_time_recorded_in_the_provenance(
     src = _video(tmp_path / "in.mp4", 3.0)
     layers = (
         VideoTextLayer(text="Pan fresco", place="top", start_s=0.0, fade_s=0.3),
-        VideoTextLayer(text="Abrimos a las 7", place="bottom", start_s=0.0, end_s=2.4, fade_s=1.0),
-        VideoTextLayer(text="Hoy", place="middle", start_s=2.0, end_s=2.5, fade_s=1.0),
+        VideoTextLayer(text="Abrimos a las 7", place="bottom", start_s=0.0, end_s=3.0, fade_s=1.0),
+        VideoTextLayer(text="Hoy", place="middle", start_s=2.0, end_s=2.6, fade_s=1.0),
     )
     result = compose_text_layers(
         src, tmp_path / "out.mp4", layers, BRAND, render_client=FakeService()
     )
     block = result.params["text_layers"]["layers"]
-    assert [(x["fade_s"], x["fade_in_s"]) for x in block] == [(0.3, 0.3), (1.0, 1.0), (1.0, 0.25)]
+    assert [(x["fade_s"], x["fade_in_s"]) for x in block] == [(0.3, 0.3), (1.0, 1.0), (1.0, 0.2)]
+    # a text from before ED-13 enters with a fade and is cut at its end
+    assert {(x["motion_in"], x["motion_out"], x["fade_out_s"]) for x in block} == {
+        ("fade", "none", 0.0)
+    }
     # the fade never reaches the render: same PNG job for any fade
     other = compose_text_layers(
         src,
@@ -384,7 +389,8 @@ def _block_level(path: Path, rows: slice) -> list[float]:
 
 
 def test_a_different_fade_gives_a_different_alpha_ramp(tmp_path: Path) -> None:
-    src = _video(tmp_path / "in.mp4", 1.5)
+    # 3 s: the 1.0 s fade fits in a third of the text's time (ED-13)
+    src = _video(tmp_path / "in.mp4", 3.0)
     rows = slice(62, 74)  # the fake's white block of «top» (canvas 300-380) at 216×384
     levels = {}
     for fade in (0.3, 1.0):

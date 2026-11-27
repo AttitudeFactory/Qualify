@@ -21,6 +21,7 @@ async def test_busy_lease_never_calls_observation_helpers(monkeypatch):
     monkeypatch.setattr(reads_cli, "admin_session", lease)
     monkeypatch.setattr(reads_cli, "refresh_daily_account_health", forbidden)
     monkeypatch.setattr(reads_cli, "poll_promotion_results", forbidden)
+    monkeypatch.setattr(reads_cli, "record_reference_facts", forbidden)
     assert (await reads_cli.tick(uuid4()))["busy"] == 1
 
 
@@ -50,14 +51,22 @@ async def test_tick_releases_lease_and_passes_tenant_limit(monkeypatch):
     monkeypatch.setattr(reads_cli, "admin_session", lease)
     monkeypatch.setattr(reads_cli, "refresh_daily_account_health", health)
     monkeypatch.setattr(reads_cli, "poll_promotion_results", results)
+
+    def facts(*, tenant_id):
+        assert tenant_id == tenant
+        calls.append("facts")
+        return 4
+
+    monkeypatch.setattr(reads_cli, "record_reference_facts", facts)
     assert await reads_cli.tick(tenant, limit=3) == {
         "health_checked": 1,
         "health_blocked": 1,
         "checked": 2,
         "unavailable": 1,
+        "reference_facts": 4,
         "busy": 0,
     }
-    assert calls == ["enter", "health", "results", "exit"]
+    assert calls == ["enter", "health", "results", "facts", "exit"]
 
 
 @pytest.mark.asyncio

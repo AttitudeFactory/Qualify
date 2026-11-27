@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -17,7 +18,12 @@ from sqlalchemy.exc import IntegrityError
 
 from qualify_api.ads import lead_forms_repository as repo
 from qualify_api.ads import lead_forms_service as service
-from qualify_api.ads.lead_forms import LeadFormDraft, LeadFormQuestion, LeadFormUnavailable
+from qualify_api.ads.lead_forms import (
+    LeadFormDraft,
+    LeadFormQuestion,
+    LeadFormUnavailable,
+    LeadNotVerifiable,
+)
 from qualify_api.ads.lead_forms_client import LeadPage
 from qualify_api.ads.lead_forms_webhook import owned_form
 from qualify_api.connections.ad_accounts import PostgresAdsGrantRecorder
@@ -28,6 +34,15 @@ from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 from qualify_api.webhooks.repository import ClaimedEvent
 
 pytestmark = pytest.mark.db
+
+SCOPES = (
+    "ads_management",
+    "ads_read",
+    "pages_manage_ads",
+    "pages_manage_metadata",
+    "leads_retrieval",
+    "pages_show_list",
+)
 
 
 def world() -> tuple[UUID, UUID, UUID, UUID, UUID]:
@@ -60,14 +75,7 @@ def world() -> tuple[UUID, UUID, UUID, UUID, UUID]:
         session.flush()
         session.add(TenantMember(tenant_id=tenant, user_id=user, role="owner"))
         app_id = app.id
-    scopes = (
-        "ads_management",
-        "ads_read",
-        "pages_manage_ads",
-        "pages_manage_metadata",
-        "leads_retrieval",
-        "pages_show_list",
-    )
+    scopes = SCOPES
     with tenant_session(tenant) as session:
         session.add(
             SocialConnection(
@@ -209,7 +217,7 @@ def test_duplicate_webhook_and_backup_concurrently_create_one_inquiry_without_wa
     data = lead(form)
 
     def persist(via: str) -> bool:
-        return service._persist(values[0], form, data, received_via=via)
+        return service._persist(values[0], form, data, received_via=via, credential_version=1)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(persist, ("webhook", "backup")))
@@ -245,8 +253,8 @@ def test_frozen_webhook_form_binding_cannot_acquire_new_tenant() -> None:
     )
 
 
-@pytest.mark.parametrize("change", ["status='revoked'", "current_credential_version=2"])
-def test_revoked_or_rotated_connection_cannot_persist_fetched_pii(change: str) -> None:
+@pytest.mark.parametrize("change", ["status='revoked'", "linked_page_id='201'"])
+def test_revoked_or_relinked_connection_cannot_persist_fetched_pii(change: str) -> None:
     values = world()
     form = published(values)
     with tenant_session(values[0]) as session:
@@ -254,15 +262,136 @@ def test_revoked_or_rotated_connection_cannot_persist_fetched_pii(change: str) -
             text(f"UPDATE social_connections SET {change} WHERE id=:id"), {"id": values[3]}
         )
     with pytest.raises(LeadFormUnavailable):
-        service._persist(values[0], form, lead(form), received_via="webhook")
+        service._persist(values[0], form, lead(form), received_via="webhook", credential_version=1)
     assert repo.list_inquiries(values[0]) == ()
+
+
+def rotate(values: tuple) -> None:
+    with tenant_session(values[0]) as session:
+        session.execute(
+            text("UPDATE social_connections SET current_credential_version=2 WHERE id=:id"),
+            {"id": values[3]},
+        )
+    encryptor = DevEncryptor()
+    PostgresAdsGrantRecorder().record(
+        tenant_id=values[0],
+        connection_id=values[3],
+        version=2,
+        ciphertext=encryptor.encrypt("SYNTHETIC_RENEWED_TOKEN"),
+        key_id=encryptor.key_id,
+        granted_scopes=SCOPES,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+
+
+def test_token_renewal_keeps_receiving_leads_and_records_current_version() -> None:
+    """m-25072004: a published form outlives a credential rotation of the same Page."""
+    values = world()
+    form = published(values)
+    rotate(values)
+    assert service._persist(
+        values[0], form, lead(form), received_via="webhook", credential_version=2
+    )
+    assert repo.get_form(values[0], form["id"])["credential_version"] == 1
+    with tenant_session(values[0]) as session:
+        assert session.scalar(text("SELECT credential_version FROM meta_lead_submissions")) == 2
+
+
+def test_rotation_between_fetch_and_save_rejects_that_attempt_only() -> None:
+    """m-25072004: PII fetched under v1 is never saved once v2 is current; a refetch is."""
+    values = world()
+    form = published(values)
+    rotate(values)
+    with pytest.raises(LeadFormUnavailable):
+        service._persist(values[0], form, lead(form), received_via="webhook", credential_version=1)
+    assert repo.list_inquiries(values[0]) == ()
+    assert service._persist(
+        values[0], form, lead(form), received_via="webhook", credential_version=2
+    )
+    assert len(repo.list_inquiries(values[0])) == 1
+
+
+def test_context_tells_disconnected_apart_from_changed_access() -> None:
+    # A purge is caught by _connection first; its own row-missing branch only covers a race.
+    values = world()
+    with pytest.raises(LeadFormUnavailable, match="Vuelve a revisar el formulario"):
+        service._context(values[0], values[3], version=99)
+    with tenant_session(values[0]) as session:
+        session.execute(
+            text("UPDATE social_connections SET purge_started_at=now() WHERE id=:id"),
+            {"id": values[3]},
+        )
+    with pytest.raises(LeadFormUnavailable, match="ya no está disponible"):
+        service._context(values[0], values[3])
+
+
+@pytest.mark.asyncio
+async def test_webhook_lead_after_token_renewal_is_saved_with_current_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.ads import lead_forms_webhook as webhook
+
+    values = world()
+    form = published(values)
+    rotate(values)
+    fake = AsyncMock()
+    fake.read.return_value = {
+        "id": "903",
+        "form_id": form["meta_form_id"],
+        "created_time": "2026-01-01T00:00:00Z",
+        "field_data": [{"name": "email", "values": ["synthetic@example.invalid"]}],
+    }
+    client = AsyncMock(return_value=fake)
+    monkeypatch.setattr(webhook, "_client", client)
+    monkeypatch.setattr(webhook, "_page_access", AsyncMock())
+    monkeypatch.setattr(webhook, "_remote_form", AsyncMock())
+    event = ClaimedEvent(
+        uuid4(),
+        None,
+        "page",
+        "200",
+        "leadgen",
+        {"leadgen_id": "903", "form_id": form["meta_form_id"], "page_id": "200"},
+        1,
+        owners=((values[0], values[3]),),
+    )
+    assert (await webhook.leadgen_handler(event)).status == "processed"
+    assert client.call_args.args[1]["current_credential_version"] == 2
+    assert len(repo.list_inquiries(values[0])) == 1
+
+
+@pytest.mark.asyncio
+async def test_backup_sync_after_token_renewal_saves_leads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = world()
+    form = published(values)
+    rotate(values)
+    raw = {
+        "id": "904",
+        "form_id": form["meta_form_id"],
+        "created_time": "2026-01-01T00:00:00Z",
+        "field_data": [{"name": "email", "values": ["synthetic@example.invalid"]}],
+    }
+    fake = AsyncMock()
+    fake.leads.side_effect = [LeadPage((raw,), None)]
+    client = AsyncMock(return_value=fake)
+    monkeypatch.setattr(service, "_client", client)
+    monkeypatch.setattr(service, "_page_access", AsyncMock())
+    monkeypatch.setattr(service, "_remote_form", AsyncMock())
+    with acting_login(values[4]):
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (1, 0)
+    assert client.call_args.args[1]["current_credential_version"] == 2
+    assert repo.get_form(values[0], form["id"])["last_synced_at"] is not None
 
 
 def test_connection_purger_cascades_only_its_own_meta_inquiries() -> None:
     owner, foreign = world(), world()
     form, other_form = published(owner), published(foreign)
-    service._persist(owner[0], form, lead(form), received_via="webhook")
-    service._persist(foreign[0], other_form, lead(other_form), received_via="webhook")
+    service._persist(owner[0], form, lead(form), received_via="webhook", credential_version=1)
+    service._persist(
+        foreign[0], other_form, lead(other_form), received_via="webhook", credential_version=1
+    )
     with connection_purge_session(owner[0]) as session:
         deleted = session.execute(
             text("DELETE FROM ad_lead_forms WHERE tenant_id=:tid AND connection_id=:cid"),
@@ -297,7 +426,7 @@ async def test_backup_failure_resumes_exact_cursor_without_advancing_window(
     assert len(repo.list_inquiries(values[0])) == 1
     fake.leads.side_effect = [LeadPage(({**raw, "id": "902"},), None)]
     with acting_login(values[4]):
-        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == 1
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (1, 0)
     assert fake.leads.call_args.kwargs["after"] == "next"
     final = repo.get_form(values[0], form["id"])
     assert final["last_synced_at"] == stored["backup_started_at"]
@@ -380,15 +509,158 @@ def test_lead_from_our_lead_ad_is_attributed_to_its_promotion() -> None:
     )
     request = compose_brand_policy(request, BrandEnhancementSettings(tenant, brand))
     promotion = PostgresPromotionRepository().create_or_get(request)
+    ad_id = str(uuid4().int % 10**15)  # meta_ad_id is unique across runs on a shared DB
     with tenant_session(tenant) as session:
         session.execute(
-            text("UPDATE ad_promotions SET meta_ad_id='4242' WHERE id=:id"), {"id": promotion.id}
+            text("UPDATE ad_promotions SET meta_ad_id=:ad WHERE id=:id"),
+            {"ad": ad_id, "id": promotion.id},
         )
-    data = {**lead(form), "meta_ad_id": "4242"}
-    assert service._persist(tenant, form, data, received_via="webhook")
+    data = {**lead(form), "meta_ad_id": ad_id}
+    assert service._persist(tenant, form, data, received_via="webhook", credential_version=1)
     with tenant_session(tenant) as session:
         attributed = session.scalar(
             text("SELECT promotion_id FROM meta_lead_submissions WHERE leadgen_id=:id"),
             {"id": data["leadgen_id"]},
         )
     assert attributed == promotion.id
+
+
+def raw_lead(form: dict, identity: str, **changes: object) -> dict:
+    return {
+        "id": identity,
+        "form_id": form["meta_form_id"],
+        "created_time": "2026-01-01T00:00:00Z",
+        "field_data": [{"name": "email", "values": ["synthetic@example.invalid"]}],
+        **changes,
+    }
+
+
+def backup_client(monkeypatch: pytest.MonkeyPatch, fake: AsyncMock) -> None:
+    monkeypatch.setattr(service, "_client", AsyncMock(return_value=fake))
+    monkeypatch.setattr(service, "_page_access", AsyncMock())
+    monkeypatch.setattr(service, "_remote_form", AsyncMock())
+
+
+def stored_leads(tenant: UUID) -> dict:
+    with tenant_session(tenant) as session:
+        rows = session.execute(
+            text(
+                "SELECT leadgen_id,meta_ad_id,promotion_id,pipeline_version"
+                " FROM meta_lead_submissions"
+            )
+        ).all()
+    return {row.leadgen_id: row for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_backup_skips_bad_leads_saves_the_rest_and_moves_the_window(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """m-25072672: an unreadable lead is skipped once; an unverifiable ad only loses attribution."""
+    caplog.set_level(logging.INFO)
+    values = world()
+    form = published(values)
+    fake = AsyncMock()
+    fake.read_ad.side_effect = LeadNotVerifiable("gone")
+    bad = raw_lead(form, "912", field_data="not a list")
+    fake.leads.side_effect = [
+        LeadPage((raw_lead(form, "911"), bad, raw_lead(form, "913", ad_id="77")), "next"),
+        # The window overlap hands back a saved lead and the bad one: neither counts twice.
+        LeadPage((bad, raw_lead(form, "911"), raw_lead(form, "914")), None),
+    ]
+    backup_client(monkeypatch, fake)
+    with acting_login(values[4]):
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (3, 1)
+    stored = repo.get_form(values[0], form["id"])
+    assert stored["last_synced_at"] is not None and stored["backup_after"] is None
+    rows = stored_leads(values[0])
+    assert set(rows) == {"911", "913", "914"}
+    assert rows["911"].meta_ad_id is None and rows["911"].pipeline_version == "meta-lead-v1"
+    assert rows["913"].meta_ad_id is None and rows["913"].promotion_id is None
+    assert rows["913"].pipeline_version == "meta-lead-v1:ad-unverified"
+    assert caplog.text.count("912 (unparseable)") == 1
+    assert "913 saved without ad attribution" in caplog.text
+    assert "synthetic@example.invalid" not in caplog.text
+    fake.leads.side_effect = [LeadPage((), None)]
+    with acting_login(values[4]):
+        assert await service.sync_lead_form(tenant_id=values[0], form_id=form["id"]) == (0, 0)
+    # The next window starts after the bad lead, so Meta does not hand it back.
+    since = fake.leads.call_args.kwargs["since"]
+    assert since > datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+
+
+@pytest.mark.asyncio
+async def test_webhook_lead_from_unverifiable_ad_is_saved_unattributed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.ads import lead_forms_webhook as webhook
+
+    values = world()
+    form = published(values)
+    fake = AsyncMock()
+    fake.read.return_value = raw_lead(form, "941", ad_id="77")
+    fake.read_ad.side_effect = LeadNotVerifiable("gone")
+    monkeypatch.setattr(webhook, "_client", AsyncMock(return_value=fake))
+    monkeypatch.setattr(webhook, "_page_access", AsyncMock())
+    monkeypatch.setattr(webhook, "_remote_form", AsyncMock())
+    value = {"leadgen_id": "941", "form_id": form["meta_form_id"], "page_id": "200"}
+    event = ClaimedEvent(
+        uuid4(), None, "page", "200", "leadgen", value, 1, owners=((values[0], values[3]),)
+    )
+    assert (await webhook.leadgen_handler(event)).status == "processed"
+    row = stored_leads(values[0])["941"]
+    assert row.meta_ad_id is None and row.pipeline_version == "meta-lead-v1:ad-unverified"
+    # A transient ad read still raises, so the webhook retries as before.
+    fake.read.return_value = raw_lead(form, "942", ad_id="77")
+    fake.read_ad.side_effect = LeadFormUnavailable("rate limited")
+    with pytest.raises(LeadFormUnavailable):
+        await webhook.leadgen_handler(replace(event, value={**value, "leadgen_id": "942"}))
+    assert "942" not in stored_leads(values[0])
+
+
+@pytest.mark.asyncio
+async def test_backup_transient_ad_read_aborts_without_moving_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = world()
+    form = published(values)
+    fake = AsyncMock()
+    fake.read_ad.side_effect = LeadFormUnavailable("rate limited")
+    fake.leads.side_effect = [LeadPage((raw_lead(form, "921", ad_id="77"),), None)]
+    backup_client(monkeypatch, fake)
+    with acting_login(values[4]), pytest.raises(LeadFormUnavailable, match="rate limited"):
+        await service.sync_lead_form(tenant_id=values[0], form_id=form["id"])
+    stored = repo.get_form(values[0], form["id"])
+    assert stored["last_synced_at"] is None and stored["backup_after"] is None
+    assert repo.list_inquiries(values[0]) == ()
+
+
+@pytest.mark.asyncio
+async def test_backup_credential_rotation_mid_run_aborts_without_moving_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = world()
+    form = published(values)
+
+    async def rotated_page(*_: object, **__: object) -> LeadPage:
+        rotate(values)
+        return LeadPage((raw_lead(form, "931"),), None)
+
+    fake = AsyncMock()
+    fake.leads.side_effect = rotated_page
+    backup_client(monkeypatch, fake)
+    with acting_login(values[4]), pytest.raises(LeadFormUnavailable, match="acceso con Meta"):
+        await service.sync_lead_form(tenant_id=values[0], form_id=form["id"])
+    assert repo.get_form(values[0], form["id"])["last_synced_at"] is None
+    assert repo.list_inquiries(values[0]) == ()
+
+
+def test_lead_with_unusable_ad_id_is_saved_marked_unverified() -> None:
+    values = world()
+    form = published(values)
+    data = service.parse_lead(
+        raw_lead(form, "951", ad_id="not-an-id"), form_id=form["meta_form_id"]
+    )
+    service._persist(values[0], form, data, received_via="backup", credential_version=1)
+    row = stored_leads(values[0])["951"]
+    assert row.meta_ad_id is None and row.pipeline_version == "meta-lead-v1:ad-unverified"

@@ -39,6 +39,7 @@ from typing import Any, Protocol
 
 from PIL import Image
 
+from qualify_creative.render.font_asset import font_type
 from qualify_creative.seasonal.backing import (
     REASON_UNMEASURED,
     WHITE,
@@ -162,13 +163,8 @@ def _hex(rgb: tuple[int, int, int]) -> str:
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
-def _font_type(data: bytes) -> str:
-    head = data[:4]
-    if head == b"wOF2":
-        return "font/woff2"
-    if head == b"OTTO":
-        return "font/otf"
-    return "font/ttf"
+#: ED-13 (m-25029108): shared with the video text (`render.font_asset`)
+_font_type = font_type
 
 
 def art_png(art: Image.Image) -> bytes:

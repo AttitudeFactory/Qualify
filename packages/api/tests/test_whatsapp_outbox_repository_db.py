@@ -39,6 +39,7 @@ from qualify_api.whatsapp.outbox import (
     PostgresOutboxRepository,
     phone_number_id_for,
 )
+from qualify_api.whatsapp.repository import PostgresWhatsAppInboxRepository
 
 pytestmark = pytest.mark.db
 
@@ -155,6 +156,33 @@ def test_claim_moves_the_row_to_sending_with_the_lock_and_returns_it(seeded) -> 
     # A second claim (same worker, later) must not see it again: it is no longer pending.
     again = repo.claim(tenant_id=TENANT, worker_id="w:1", now=now, limit=LIMIT)
     assert item_id not in {c.id for c in again}
+
+
+def test_rows_queued_in_one_transaction_are_claimed_in_the_order_they_were_queued(
+    seeded,
+) -> None:
+    """m-25049598: the menu engine queues a whole step (greeting, then menu) in ONE
+    transaction, so its rows share `created_at` (`now()` is the transaction's start). The
+    claim must hand them back in the order they were queued (`seq`, 0172), never in the
+    order of their random ids — with 30 rows a random order matches by chance 1 in 30!."""
+    with PostgresWhatsAppInboxRepository().transaction() as tx:
+        queued = [
+            tx.enqueue_outbox(
+                tenant_id=TENANT,
+                connection_id=seeded["connection"],
+                thread_id=seeded["thread"],
+                kind="automation",
+                payload=build_text_body(TO, f"paso {n}", False),
+            )
+            for n in range(30)
+        ]
+    assert len({_row(item_id).created_at for item_id in queued}) == 1  # the tie is real
+
+    claimed = PostgresOutboxRepository().claim(
+        tenant_id=TENANT, worker_id="w:order", now=datetime.now(UTC), limit=LIMIT
+    )
+    mine = set(queued)
+    assert [c.id for c in claimed if c.id in mine] == queued
 
 
 def test_skip_locked_never_hands_one_row_to_two_workers(seeded, app_engine: Engine) -> None:

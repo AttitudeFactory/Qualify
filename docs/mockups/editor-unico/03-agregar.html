@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3 · Agregar — Editor único</title>
+<link rel="stylesheet" href="editor-unico.css">
+<script src="mock.js"></script>
+</head>
+<body>
+<div class="mk">
+  <nav class="mk-nav"><a href="index.html">← Índice</a> · <a href="01-pista.html">1 · Pista</a> · <a href="02-panel-bloque-ia.html">2 · Panel del bloque IA</a> · <b>3 · Agregar</b> · <a href="04-crear.html">4 · Crear</a> · <a href="05-resultado.html">5 · Resultado</a> · <a href="06-hacer-uno-parecido.html">6 · Hacer uno parecido</a></nav>
+  <h1 class="mk-title">3 · «Agregar»: tu material, una parte con IA o una idea</h1>
+  <p class="mk-sub">El mismo «+» de hoy (<code>orbit_menu</code>, 2 a 6 opciones). Se suma una sola opción, <b>«Parte con IA»</b> (13 caracteres, entra en la píldora). Solo se ve con el interruptor <code>QUALIFY_CLIP_AI_PARTS</code> encendido; apagado, el menú queda como hoy. Los topes se dicen <b>antes</b> de que el servidor rechace: la opción queda apagada y el motivo va en su propia línea encima del «+».</p>
+
+  <div class="mk-variants">
+  <section class="mk-variant">
+    <h2>A · El menú abierto</h2>
+    <template id="s3a">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body">
+        <div class="ed">
+          <script type="application/json" data-tl>
+          {"total":7,"t":5,"chosen":"",
+           "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"v1","kind":"video","name":"Video 1","start":2,"len":5,"pic":"pic-b"}],
+           "joins":[{"at":2,"kind":"corte","label":"Unión: Corte"}],
+           "status":""}
+          </script>
+          <div class="orbit-wrap">
+            <div class="orbit" role="menu" aria-label="Agregar">
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="image"></span></span>Foto o video</button>
+              <button class="orbit__pill ai" role="menuitem" type="button"><span class="ic"><span data-i="sparkles"></span></span>Parte con IA</button>
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="type"></span></span>Texto</button>
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="cloud"></span></span>Efecto</button>
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="bulb"></span></span>Pedir una idea</button>
+            </div>
+            <div class="q-island" style="width:max-content"><div class="row"><button class="orbit__plus" type="button" aria-label="Cerrar" aria-expanded="true"><span data-i="x"></span></button><span style="font-weight:700;padding-right:12px">Agregar</span></div></div>
+          </div>
+        </div>
+      </div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div><button class="btn ghost sm step-foot__later" type="button">Seguir después</button></footer>
+    </template>
+    <div class="mk-row" data-pair="s3a"
+      data-note-phone="«Parte con IA» va segunda, junto a «Foto o video»: las dos ponen un pedazo de video en la pista. Su círculo lleva el ✦ y el tono del bloque IA, para que el dueño reconozca lo que va a aparecer en la pista."
+      data-note-desk="Hoy las opciones se abren hacia la derecha (Deivid, 2026-11-16). Aquí se dibujan en columna solo para leerlas; el gesto no cambia."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>B · Después de tocar «Parte con IA» <small>— la parte aparece en el cabezal, vacía, con su panel abierto</small></h2>
+    <template id="s3b">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body">
+        <div class="ed">
+          <script type="application/json" data-tl>
+          {"total":12,"t":9,"chosen":"ai1",
+           "media":[{"id":"f1","kind":"photo","name":"Foto 1","start":0,"len":2,"pic":"pic-a"},{"id":"v1","kind":"video","name":"Video 1","start":2,"len":5,"pic":"pic-b"},{"id":"ai1","kind":"ai","name":"Parte con IA 1","mode":"new","start":7,"len":5,"pic":"pic-c"}],
+           "joins":[{"at":2,"kind":"corte","label":"Unión: Corte"},{"at":7,"kind":"corte","label":"Unión: Corte"}],
+           "status":"Pusiste una parte con IA. Cuéntanos qué pasa en ella."}
+          </script>
+          <div class="q-island q-tl-actions"><button class="btn surface" type="button"><span data-i="trash"></span>Quitar</button></div>
+          <section class="q-tl-panel">
+            <div class="q-tl-panel__head"><h2 class="q-tl-panel__title"><span data-i="sparkles"></span>Parte con IA 1 <span class="muted" style="font-weight:400">· de 0:07 a 0:12</span></h2><span class="pill" data-tone="neutral">Sin crear · gratis hasta «Crear»</span></div>
+            <div class="panel-grid">
+              <div class="stack">
+                <label class="field-label" for="d3b">¿Qué pasa en esta parte?</label>
+                <textarea class="field" id="d3b" rows="3" autofocus></textarea>
+                <p class="field-help">Ej.: «Una mano acerca el vaso».</p>
+                <div><span class="field-label">Fotos de tu producto</span><div class="thumbs"><span class="thumb pic-c" role="img" aria-label="Foto 1 de tu producto"></span><button class="thumb thumb--add" type="button" aria-label="Agregar una foto de tu producto"><span data-i="plus"></span></button></div><p class="field-help">Pusimos la foto de tu producto elegido. Puedes cambiarla.</p></div>
+              </div>
+              <div class="stack">
+                <span class="field-label">¿Cómo la hacemos?</span>
+                <div class="choice" aria-checked="true" role="radio" style="cursor:default"><span class="choice__dot"></span><span class="choice__title">Nueva, con tu producto</span><span class="choice__help">Creamos una parte nueva con tu producto y tu marca.</span></div>
+                <p class="field-help">Sin un reel de inspiración, la parte se hace nueva. «Igual al original» aparece cuando tu video nace de un reel.</p>
+                <div><span class="field-label">Cuánto dura en tu video</span><div class="row"><button class="btn soft" type="button">− 1 s</button><span class="q-nums" style="font-weight:700;min-width:3rem;text-align:center">5 s</span><button class="btn soft" type="button">+ 1 s</button></div></div>
+              </div>
+              <div class="span2 q-tl-panel__done"><button class="btn solid sm" type="button" style="min-height:44px">Listo</button></div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <footer class="step-foot"><p class="step-foot__why">Falta contar qué pasa en la parte con IA 1.</p><div class="step-foot__row"><button class="btn solid off" aria-disabled="true" type="button">Siguiente</button></div><button class="btn ghost sm step-foot__later" type="button">Seguir después</button></footer>
+    </template>
+    <div class="mk-row" data-pair="s3b"
+      data-note-phone="Un toque y la parte ya está en la pista, en el cabezal, con 5 s, la foto del producto elegido y el foco en «¿Qué pasa en esta parte?». No cuesta nada y se quita con «Quitar». Es una excepción a la regla de hoy («cada opción abre el panel lateral, nunca agrega sola»): ver la pregunta 1."
+      data-note-desk="Sin reel, «¿Cómo la hacemos?» tiene una sola forma posible: se muestra como dato, no como pregunta (una decisión menos)."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>C · «Pedir una idea» <small>— el panel lateral de hoy, pestaña «Pedir una idea»; propone partes en la pista</small></h2>
+    <template id="s3c">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body">
+        <div class="ed">
+          <div class="preview"><div class="preview__frame" style="background:var(--gray-3);display:grid;place-items:center"><span class="muted" style="font-size:12px;padding:12px;text-align:center">Agrega una foto o un video para ver cómo va quedando.</span></div></div>
+          <script type="application/json" data-tl>{"total":10,"t":0,"chosen":"","media":[],"status":""}</script>
+          <div class="q-island q-tl-actions" style="grid-template-columns:1fr"><div class="row"><button class="orbit__plus" type="button" aria-label="Agregar"><span data-i="plus"></span></button><span style="font-weight:700">Agregar</span></div></div>
+        </div>
+      </div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div></footer>
+      <div class="drawer-layer">
+        <aside class="drawer" role="dialog" aria-labelledby="dr3">
+          <div class="drawer__head"><h2 id="dr3" style="margin:0;font-size:17px">Agregar a tu video</h2><button class="btn ghost" type="button" aria-label="Cerrar"><span data-i="x"></span></button></div>
+          <div class="drawer__body">
+            <div class="tabs" role="tablist" aria-label="Qué agregar">
+              <button role="tab" aria-selected="false" aria-label="¿Con qué lo armamos?" type="button"><span data-i="image"></span></button>
+              <button role="tab" aria-selected="false" aria-label="Parte con IA" type="button"><span data-i="sparkles"></span></button>
+              <button role="tab" aria-selected="false" aria-label="Texto en pantalla" type="button"><span data-i="type"></span></button>
+              <button role="tab" aria-selected="false" aria-label="Efecto" type="button"><span data-i="cloud"></span></button>
+              <button role="tab" aria-selected="true" type="button"><span data-i="bulb"></span>Pedir una idea</button>
+            </div>
+            <label class="field-label" for="q3c" style="font-size:16px;font-weight:600">¿De qué trata tu video?</label>
+            <textarea class="field" id="q3c" rows="3">Promoción de 2×1 los martes en yogur con fresas</textarea>
+            <p class="field-help">Esto guía el texto de todo tu video. Ej.: «Promoción de 2×1 los martes».</p>
+            <div class="card stack" style="padding:12px">
+              <p style="font-weight:600">Armando tu propuesta</p>
+              <div class="proposal-steps"><span class="done">✓ Pensando el comienzo</span><span>Mostrando tu producto</span></div>
+              <div class="bar"><i style="width:55%"></i></div>
+            </div>
+          </div>
+          <div class="drawer__foot">
+            <button class="btn solid block" type="button" disabled style="opacity:.7">Proponerme las partes</button>
+            <p class="cost"><span data-i="wallet" data-c="sm"></span><span>Proponer es gratis. Las partes se ponen en tu línea de tiempo y las revisas antes de crear nada.</span></p>
+          </div>
+        </aside>
+      </div>
+    </template>
+    <div class="mk-row" data-pair="s3c"
+      data-note-phone="En el celular el panel lateral ocupa la pantalla (como hoy). Al terminar se cierra solo y las partes aparecen en la pista con la línea viva «Te propusimos 4 partes. Revísalas: hasta «Crear» no gastas nada.»"
+      data-note-desk="La pestaña «Parte con IA» existe en el panel lateral para quien entra por ahí, pero su cuerpo es el mismo panel del bloque (no hay dos formularios). Ver la pregunta 2 sobre qué pasa si la pista ya tiene bloques."></div>
+  </section>
+
+  <section class="mk-variant">
+    <h2>D · Los topes, dichos antes del choque <small>— 6 partes con IA</small></h2>
+    <template id="s3d">
+      <header class="step-head"><div class="step-head__row"><a class="step-back" href="#"><span data-i="left"></span>Inicio</a><span class="step-count">Paso 1 de 3</span></div><div class="step-bar"><i style="width:33%"></i></div><h1 class="step-h1">Arma tu video</h1></header>
+      <div class="step-body">
+        <div class="ed">
+          <script type="application/json" data-tl>
+          {"total":31,"t":20,"chosen":"",
+           "media":[{"id":"a1","kind":"ai","name":"Parte con IA 1","mode":"same","start":0,"len":5},{"id":"a2","kind":"ai","name":"Parte con IA 2","mode":"follow","start":5,"len":5},{"id":"v1","kind":"video","name":"Video 1","start":10,"len":5,"pic":"pic-b"},{"id":"a3","kind":"ai","name":"Parte con IA 3","mode":"new","start":15,"len":4,"pic":"pic-c"},{"id":"a4","kind":"ai","name":"Parte con IA 4","mode":"new","start":19,"len":4,"pic":"pic-a"},{"id":"a5","kind":"ai","name":"Parte con IA 5","mode":"new","start":23,"len":4,"pic":"pic-d"},{"id":"a6","kind":"ai","name":"Parte con IA 6","mode":"same","start":27,"len":4}],
+           "joins":[{"at":5,"kind":"corte","label":"Unión"},{"at":10,"kind":"corte","label":"Unión"},{"at":15,"kind":"corte","label":"Unión"},{"at":19,"kind":"corte","label":"Unión"},{"at":23,"kind":"corte","label":"Unión"},{"at":27,"kind":"corte","label":"Unión"}],
+           "status":""}
+          </script>
+          <div class="orbit-wrap">
+            <div class="orbit" role="menu" aria-label="Agregar">
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="image"></span></span>Foto o video</button>
+              <button class="orbit__pill ai" role="menuitem" aria-disabled="true" aria-describedby="cap3d" type="button"><span class="ic"><span data-i="sparkles"></span></span>Parte con IA</button>
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="type"></span></span>Texto</button>
+              <button class="orbit__pill" role="menuitem" type="button"><span class="ic"><span data-i="cloud"></span></span>Efecto</button>
+            </div>
+            <p class="orbit__why" id="cap3d">Tu video ya tiene 6 partes con IA, el máximo. Quita una para agregar otra.</p>
+            <div class="q-island" style="width:max-content"><div class="row"><button class="orbit__plus" type="button" aria-label="Cerrar" aria-describedby="cap3d" aria-expanded="true"><span data-i="x"></span></button><span style="font-weight:700;padding-right:12px">Agregar</span></div></div>
+          </div>
+        </div>
+      </div>
+      <footer class="step-foot"><div class="step-foot__row"><button class="btn solid" type="button">Siguiente</button></div></footer>
+    </template>
+    <div class="mk-row" data-pair="s3d"
+      data-note-phone="«Pedir una idea» no se dibuja con la pista llena de partes con IA (regla 5 del orbit: fuera de sus condiciones no se dibuja). «Parte con IA» sí se ve apagada, con su motivo, como «Foto o video» con 8 bloques hoy (ED-12)."
+      data-note-desk="Los tres topes usan el mismo lugar y la misma forma. Textos abajo."></div>
+
+    <div class="card cap-list" style="margin-top:16px;max-width:760px">
+      <h3 class="sec">Los textos de los topes (propuesta)</h3>
+      <p><span class="pill" data-tone="warn">8 bloques</span> Tu video ya tiene 8 fotos o videos. Quita una para agregar otra. <span class="muted">(texto de hoy, ED-12; las partes con IA cuentan como videos)</span></p>
+      <p><span class="pill" data-tone="warn">6 con IA</span> Tu video ya tiene 6 partes con IA, el máximo. Quita una para agregar otra. <span class="muted">Si hay escenas con personaje, se suma: «Las escenas con personaje también cuentan.»</span></p>
+      <p><span class="pill" data-tone="warn">60 s</span> Tu video ya dura 60 s, el máximo. Acorta o quita una parte para agregar otra.</p>
+      <p><span class="pill" data-tone="info">Cerca de 60 s</span> En la línea viva, al agregar: «Solo quedaban 3 s: la parte nueva dura 3 s.» y en «+ 1 s» apagado: «Tu video pasaría de 60 s.»</p>
+      <p><span class="pill" data-tone="warn">Juntar</span> «Juntar con la siguiente» apagado con motivo cuando la suma pasaría de 10 s: «Juntas durarían 12 s y una parte dura 10 s como máximo.»</p>
+    </div>
+  </section>
+  </div>
+</div>
+</body>
+</html>

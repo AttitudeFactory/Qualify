@@ -38,22 +38,26 @@ parent's `VideoRecipe` holds it) and is re-exported here under the same name.
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Sequence
 from uuid import UUID
 
 from qualify_creative.effects import (
     EffectsLibrary,
     RecipeProblem,
+    block_transition_problems,
     load_effects,
     part_effect_problems,
     text_layers_problems,
     transition_problems,
 )
-from qualify_creative.enums import ContentKind
+from qualify_creative.enums import ContentFormat, ContentKind
 from qualify_creative.schemas import (
     LOCAL_TOTAL_MAX_S,
     LOCAL_TOTAL_MIN_S,
     PART_TRIM_TOLERANCE_S,
+    SEGMENT_SOURCE_MAX_S,
     ContentBrief,
     EffectUse,
     MediaInputs,
@@ -64,9 +68,23 @@ from qualify_creative.schemas import (
     VideoTextLayer,
     _PartSource,
 )
+from qualify_creative.video.join import JOIN_FPS
+from qualify_creative.video.speed import SPEED_FPS
+from qualify_creative.video.speed import segment_frames as speed_frames
 
 from qualify_api.creative.media import owned_by, parse_tenant_key
+from qualify_api.creative.video_pipeline.ai_parts import (
+    ai_children_of,
+    ai_part_blocks,
+    ai_part_problems,
+    switched_off_problems,
+)
 
+logger = logging.getLogger(__name__)
+
+#: Float noise allowed over `SEGMENT_SOURCE_MAX_S` («Usar el video entero» of a 60.03 s file
+#: whose browser length was rounded): under a frame at 30 fps.
+_SOURCE_SLACK_S = 0.03
 #: A Clip's `clip_reference_mode` read as the part mode the engine works with.
 _PART_MODE_OF_CLIP: dict[str, PartMode] = {
     "motion": "reference",
@@ -131,6 +149,8 @@ def _key_problems(part: PartRecipe, tenant_id: UUID) -> list[RecipeProblem]:
     found: list[RecipeProblem] = []
     for at, segment in enumerate(part.segments):
         field = f"segments[{at}].key"
+        if at in ai_part_blocks(part.segments):
+            continue  # m-25129405: an AI block names its `ai_parts` entry, never a file
         if parse_tenant_key(segment.key) is None:
             found.append(RecipeProblem(code="malformed_key", part=part.index, field=field))
         elif not owned_by(tenant_id, segment.key):
@@ -147,9 +167,13 @@ def clip_seconds(part: PartRecipe) -> float:
     """How long a normal Clip that comes out lasts, in seconds of its output: a `local`
     Clip IS its stretches at their speed (`segments_seconds`); any other mode makes a
     video of `duration_seconds` (`PartRecipe.seconds`), where a stretch is only a
-    reference."""
+    reference.
+
+    m-25114465: the blocks of a `local` Clip OVERLAP for each transition between them
+    (`block_overlaps`), so it lasts its stretches minus those overlaps — with only cuts,
+    exactly its stretches as before."""
     if part.mode == "local" and part.segments:
-        return segments_seconds(part)
+        return segments_seconds(part) - block_transitions_seconds(part)
     return part.seconds
 
 
@@ -164,6 +188,11 @@ def _length_problems(part: PartRecipe, number: int | None, *, in_clip: bool) -> 
     # EF-06 (option A, Deivid 2026-11-16): the refusal says how long it came out
     duration = round(total, 1)
     if in_clip:
+        # m-25114465: the speed step lays the blocks end to end first (at most 60 s), then
+        # their transitions overlap them — what comes out must still last 3 s or more
+        joined = clip_seconds(part)
+        if joined < LOCAL_TOTAL_MIN_S:
+            total, duration = joined, round(joined, 1)
         if not LOCAL_TOTAL_MIN_S <= total <= LOCAL_TOTAL_MAX_S:
             return [
                 RecipeProblem(
@@ -192,6 +221,25 @@ def _length_problems(part: PartRecipe, number: int | None, *, in_clip: bool) -> 
     return found
 
 
+def _source_problems(part: PartRecipe, number: int | None) -> list:
+    """m-25042483: every VIDEO stretch of a `local` piece takes at most
+    `SEGMENT_SOURCE_MAX_S` of its source (`segment_source_too_long`, once per piece, with
+    the longest stretch's source seconds in `duration_s`). Photos have their own 1-5 s."""
+    if part.mode != "local" or not part.segments:
+        return []
+    longest = max((s.end_s - s.start_s for s in part.segments if s.kind == "video"), default=0.0)
+    if longest <= SEGMENT_SOURCE_MAX_S + _SOURCE_SLACK_S:
+        return []
+    return [
+        RecipeProblem(
+            code="segment_source_too_long",
+            part=number,
+            field="segments",
+            duration_s=round(longest, 1),
+        )
+    ]
+
+
 def part_length(part: PartRecipe, *, video_by_parts: bool) -> float:
     """The length a part's (or Clip's) times are read in, from 0: a part's `seconds`; a
     normal Clip's `clip_seconds`."""
@@ -204,13 +252,24 @@ def validate_recipe(
     video_by_parts: bool,
     tenant_id: UUID | None = None,
     library: EffectsLibrary | None = None,
+    ai_parts: Sequence[VideoPartPlan] = (),
+    other_ai_children: int = 0,
 ) -> tuple[RecipeProblem, ...]:
     """Every problem of a recipe, in part order — `()` when it may be made. Pure: no
     network, no database; the library is the process's cached one unless given.
 
+    m-25129405 (ADR 50 §13.2): `ai_parts` — a normal Clip's `MediaInputs.ai_parts`, what
+    its `ai_part` blocks are made from; `other_ai_children` — its character scenes and
+    avatar blocks (`ai_parts.ai_children_of`). With `QUALIFY_CLIP_AI_PARTS` off, any AI
+    block is only `switched_off`, before the library is even loaded; on, its rules are
+    `ai_parts.ai_part_problems`'.
+
     `video_by_parts`: the parts of a video by parts (a transition is allowed between
-    them, never on the first) — False for a normal Clip (any transition is
-    `transition_on_clip`). `tenant_id`: also check that every stretch's file is this
+    them, never on the first) — False for a normal Clip, whose transitions go between its
+    blocks (`SourceSegment.transition_in`, m-25114465; never on the first block, each
+    block at least as long as the transitions eating into it:
+    `block_transition_room_problems`) and anywhere else are `transition_on_clip`.
+    `tenant_id`: also check that every stretch's file is this
     business's (`malformed_key`, `foreign_key`); None skips it (the screen before it
     knows the business, a test of the library alone).
 
@@ -218,15 +277,19 @@ def validate_recipe(
     effect and text must fall in `[0, part_length]` (`span_outside_part`) — a part's
     `seconds`, a Clip's `clip_seconds`. What crosses parts (seconds of the whole video)
     belongs to the parent's recipe (`validate_video_recipe`, ED-15), not here."""
+    in_clip = not video_by_parts
+    switched_off = switched_off_problems(parts, ai_parts, in_clip=in_clip)
+    if switched_off:
+        return switched_off  # §13.6: before anything is read
     library = library or load_effects()
     found: list[RecipeProblem] = []
-    in_clip = not video_by_parts
     windows = [(0.0, part_length(part, video_by_parts=video_by_parts)) for part in parts]
     for at, (part, window) in enumerate(zip(parts, windows, strict=True)):
         number = None if in_clip else part.index
         if part.mode == "local" and not part.has_own_video:
             found.append(RecipeProblem(code="local_needs_own_video", part=number, field="mode"))
         found.extend(_length_problems(part, number, in_clip=in_clip))
+        found.extend(_source_problems(part, number))
         found.extend(
             part_effect_problems(
                 part.effects,
@@ -243,11 +306,29 @@ def validate_recipe(
                 part.transition_in, library, part=number, first=at == 0, in_clip=in_clip
             )
         )
+        # m-25114465: how each block blends with the one before it (a Clip's transitions)
+        found.extend(block_transition_problems(part.segments, library, part=number))
+        if in_clip:
+            found.extend(block_transition_room_problems(part, library))
         found.extend(text_layers_problems(part.text_layers, part=number, window=window))
         if tenant_id is not None:
             found.extend(
                 p.model_copy(update={"part": number}) for p in _key_problems(part, tenant_id)
             )
+        # m-25129405: the «parte con IA» blocks (only a normal Clip has `ai_parts`)
+        found.extend(
+            ai_part_problems(
+                part,
+                ai_parts if in_clip else (),
+                in_clip=in_clip,
+                other_children=other_ai_children,
+                tenant_id=tenant_id,
+            )
+        )
+    if ai_parts and not (in_clip and len(parts) == 1):
+        found.append(RecipeProblem(code="ai_part_outside_clip", part=None, field="ai_parts"))
+    if video_by_parts:
+        found.extend(transition_room_problems(parts, library))
     return tuple(found)
 
 
@@ -308,6 +389,17 @@ def validate_video_recipe(
     )
 
 
+def _switched_off(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
+    """m-25129405 (§13.6): `switched_off` for every AI block anywhere in `brief`'s recipe
+    (a parent's `video_recipe` too) or for its `ai_parts`, while the switch is off. Pure."""
+    media = brief.media
+    parts = recipe_of(brief)
+    if media.video_recipe is not None:
+        parts = (*parts, *media.video_recipe.parts)
+    in_clip = brief.kind is ContentKind.CLIP and media.part is None
+    return switched_off_problems(parts, media.ai_parts, in_clip=in_clip)
+
+
 def validate_brief_recipe(
     brief: ContentBrief,
     *,
@@ -318,11 +410,23 @@ def validate_brief_recipe(
     a video by parts; a normal Clip is not. A parent's own texts over the WHOLE video
     (`media.text_layers` of a `SHOT_VIDEO`) are checked too, as `part=None`, and so is
     its `video_recipe` (ED-15) when it has one: its parts, and what crosses them against
-    the length of the plan that is made (`media.parts`)."""
-    library = library or load_effects()
+    the length of the plan that is made (`media.parts`). A normal Clip with subtitles is
+    checked against its texts too (`subtitle_overlap_problems`).
+
+    m-25129405: a normal Clip's `ai_parts` and its other AI children go with it; with
+    `QUALIFY_CLIP_AI_PARTS` off, an AI block is only `switched_off` (nothing is read)."""
     by_parts = brief.kind is ContentKind.SHOT_VIDEO or brief.media.part is not None
+    switched_off = _switched_off(brief)
+    if switched_off:
+        return switched_off
+    library = library or load_effects()
     problems = validate_recipe(
-        recipe_of(brief), video_by_parts=by_parts, tenant_id=tenant_id, library=library
+        recipe_of(brief),
+        video_by_parts=by_parts,
+        tenant_id=tenant_id,
+        library=library,
+        ai_parts=brief.media.ai_parts,
+        other_ai_children=ai_children_of(brief.media),
     )
     if brief.kind is ContentKind.SHOT_VIDEO:
         media = brief.media
@@ -350,7 +454,36 @@ def validate_brief_recipe(
                     texts_field="video_recipe.text_layers",
                 ),
             )
-    return problems
+    return (*problems, *subtitle_overlap_problems(brief))
+
+
+#: m-25026592 (decision 2026-11-23): what the owner reads when a Clip asks for its
+#: subtitles and also carries a text at the bottom (`text_bottom_with_subtitles`), for the
+#: screen to show (`qualify-copy-es`).
+TEXT_BOTTOM_WITH_SUBTITLES_TEXT = (
+    "Abajo se ven los subtítulos y tu texto se taparía. Elige otra posición o apaga los subtítulos."
+)
+
+
+def subtitle_overlap_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
+    """m-25026592 (decision 2026-11-23): a normal Clip with its copy as subtitles
+    (`media.clip_subtitles`) may not also carry an owner's text at the `bottom` — the
+    subtitles are laid at y≈1360-1459 of 1920 and a `bottom` text at y≈1410-1536, so
+    they would cover each other. One `text_bottom_with_subtitles` problem
+    (`field="text_layers"`, `part=None`: the Clip), whatever the Clip's mode (`local`
+    or made by Seedance). Pure.
+
+    Only a normal Clip gets subtitles: a part of a video by parts is born with
+    `clip_subtitles` False (`parts`), the producer lays them only when `media.part` is
+    None, and `create_draft` drops the switch on any other kind. Like every rule here it
+    runs on a NEW request only (`refuse_unbuilt_recipe`), never when a stored piece is
+    read."""
+    media = brief.media
+    if brief.kind is not ContentKind.CLIP or media.part is not None or not media.clip_subtitles:
+        return ()
+    if not any(layer.place == "bottom" for layer in media.text_layers):
+        return ()
+    return (RecipeProblem(code="text_bottom_with_subtitles", part=None, field="text_layers"),)
 
 
 class RecipeRefused(ValueError):
@@ -378,6 +511,237 @@ def is_built_layer(use: EffectUse, library: EffectsLibrary | None = None) -> boo
     )
 
 
+#: EF-16 (m-25026594): the library transitions the join blends, `(effect_id, version)` →
+#: the join's kind (`qualify_creative.video.join.JoinTransition`). Their version 1 (ranges
+#: the join does not draw) is not here: it stays `recipe_unavailable`.
+DRAWN_TRANSITIONS: dict[tuple[str, int], str] = {("fundido", 2): "fade", ("barrido", 2): "wipe"}
+#: The transitions the join makes, as `(effect_id, version)` of the library (ADR 50 D9):
+#: `corte` is the hard cut the join has always made, plus the ones it blends (EF-16).
+BUILT_TRANSITIONS: frozenset[tuple[str, int]] = frozenset({("corte", 1), *DRAWN_TRANSITIONS})
+
+
+#: EF-16: what the owner reads when a part is shorter than the transitions that eat
+#: into it (`transitions_longer_than_part`), for the screen to show (`qualify-copy-es`).
+TRANSITIONS_LONGER_THAN_PART_TEXT = (
+    "La parte {part} es más corta que sus transiciones. "
+    "Hazla más larga o elige transiciones más cortas."
+)
+
+
+def transitions_longer_than_part_text(part: int | None) -> str:
+    """`TRANSITIONS_LONGER_THAN_PART_TEXT` for the part the owner sees as `part`."""
+    return TRANSITIONS_LONGER_THAN_PART_TEXT.format(part=part if part is not None else "")
+
+
+def transition_frames(
+    use: EffectUse | None, library: EffectsLibrary | None = None, *, rate: int = JOIN_FPS
+) -> int:
+    """EF-16: the frames a part's `transition_in` overlaps the part before it at the
+    join's rate (`JoinTransition.frames`): 0 for no transition, `corte`, or one the join
+    does not draw. The owner's `duration_s`, else the library's default. Pure.
+    m-25114465: `rate` — a Clip's blocks are joined at the speed step's 30 fps."""
+    if use is None or (use.effect_id, use.version) not in DRAWN_TRANSITIONS:
+        return 0
+    entry = (library or load_effects()).get(use.effect_id, use.version)
+    spec = entry.params.get("duration_s") if entry is not None else None
+    seconds = use.param_values.get("duration_s", spec.default if spec is not None else None)
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        return 0
+    return max(1, round(float(seconds) * rate))
+
+
+def transition_room_problems(
+    parts: Sequence[PartRecipe], library: EffectsLibrary | None = None
+) -> tuple[RecipeProblem, ...]:
+    """EF-16, before anything is charged: every part of a video by parts (in plan order)
+    lasts at least the transitions that eat into it — the one blending it with the part
+    before and the one blending the next part into it — counted in the join's frames, as
+    the join counts them. A part too short is `transitions_longer_than_part`, with its
+    length (`duration_s`); otherwise the join would refuse it after the parts are paid."""
+    library = library or load_effects()
+    overlaps = [transition_frames(part.transition_in, library) for part in parts]
+    found: list[RecipeProblem] = []
+    for at, part in enumerate(parts):
+        before = overlaps[at] if at > 0 else 0
+        after = overlaps[at + 1] if at + 1 < len(parts) else 0
+        if before + after > round(part_length(part, video_by_parts=True) * JOIN_FPS):
+            found.append(
+                RecipeProblem(
+                    code="transitions_longer_than_part",
+                    part=part.index,
+                    field="seconds",
+                    duration_s=round(float(part.seconds), 1),
+                )
+            )
+    return tuple(found)
+
+
+#: m-25114465: what the owner reads about a Clip's transitions between its blocks, for
+#: the screen to show (`qualify-copy-es`; the screen calls the blocks «bloques» and the
+#: place where two meet «la unión»). `{block}` is the block as the owner counts it, from 1.
+TRANSITIONS_LONGER_THAN_BLOCK_TEXT = (
+    "El bloque {block} es muy corto para sus transiciones. Alárgalo, acorta sus "
+    "transiciones o deja una de sus uniones con «Corte»."
+)
+#: `transition_on_first_block`: the screen offers no join before the first block.
+TRANSITION_ON_FIRST_BLOCK_TEXT = "Antes del primer bloque no hay nada que unir. Déjalo con «Corte»."
+#: `transition_on_clip`: a transition chosen as an effect of the whole Clip.
+TRANSITION_ON_CLIP_TEXT = (
+    "Las transiciones van en la unión entre dos bloques. "
+    "Toca esa unión y elige «Fundido» o «Barrido»."
+)
+#: `recipe_unavailable` on `segments[i].transition_in`: a join the server does not blend
+#: (a Clip not made from the owner's photos and videos, a part of a video by parts, or
+#: `QUALIFY_CLIP_BLOCK_TRANSITIONS` off).
+BLOCK_TRANSITION_UNAVAILABLE_TEXT = (
+    "Por ahora las transiciones solo funcionan en videos armados con tus fotos y videos. "
+    "Deja esa unión con «Corte»."
+)
+#: m-25114465: the coordinator's switch while ADR 50 §10 is unsigned — `off` (the default)
+#: refuses every block transition but «Corte» (`recipe_unavailable`); `on` lets the
+#: drawn ones through. Read on every new request (`unbuilt_recipe_problems`).
+CLIP_BLOCK_TRANSITIONS_SWITCH = "QUALIFY_CLIP_BLOCK_TRANSITIONS"
+#: m-25114465 (review): a block keeps at least this many frames of its own — shown alone,
+#: not blended — besides the transitions eating into it (0.3 s at 30 fps, the shortest
+#: transition): with fewer, the join's middle segment is empty or a few frames and the
+#: assembly fails. The room checks and the join's safety net use the same number.
+BLOCK_MIN_FREE_FRAMES = 9
+
+
+def clip_block_transitions_on() -> bool:
+    """Whether `QUALIFY_CLIP_BLOCK_TRANSITIONS` is `on`. Anything but `off`/empty/`on` is
+    logged and read as off: never a transition by a typo."""
+    value = os.environ.get(CLIP_BLOCK_TRANSITIONS_SWITCH, "off").strip().lower()
+    if value in ("", "off"):
+        return False
+    if value == "on":
+        return True
+    logger.error("%s must be off or on, not %r: read as off", CLIP_BLOCK_TRANSITIONS_SWITCH, value)
+    return False
+
+
+def transition_duration_range(
+    effect_id: str, library: EffectsLibrary | None = None
+) -> tuple[float, float] | None:
+    """m-25114465: the `duration_s` range the screen may offer for a drawn transition
+    (`fundido`, `barrido`), read from the library — its newest offered entry the join
+    draws (`DRAWN_TRANSITIONS`) — so the library is the only source. None when there is
+    none (`corte`, an unknown id). Pure (the library is cached)."""
+    library = library or load_effects()
+    drawn = [
+        entry
+        for entry in library.offered()
+        if entry.id == effect_id and (entry.id, entry.version) in DRAWN_TRANSITIONS
+    ]
+    if not drawn:
+        return None
+    spec = max(drawn, key=lambda entry: entry.version).params.get("duration_s")
+    if spec is None or spec.min is None or spec.max is None:
+        return None
+    return (float(spec.min), float(spec.max))
+
+
+def transitions_longer_than_block_text(block: int) -> str:
+    """`TRANSITIONS_LONGER_THAN_BLOCK_TEXT` for the block the owner sees as `block` (from
+    1: the problem's `segments[i]` is block `i + 1`)."""
+    return TRANSITIONS_LONGER_THAN_BLOCK_TEXT.format(block=block)
+
+
+def block_frames(part: PartRecipe) -> tuple[int, ...]:
+    """m-25114465: the frames each block (stretch) lasts in a `local` Clip, at the speed
+    step's 30 fps and rounded as it rounds them (`speed.segment_frames`). Pure."""
+    return tuple(speed_frames(s.start_s, s.end_s, s.speed) for s in part.segments)
+
+
+def block_overlaps(part: PartRecipe, library: EffectsLibrary | None = None) -> tuple[int, ...]:
+    """m-25114465: the frames each block overlaps the block before it, at 30 fps — 0 for
+    a cut, for the first block (nothing before it) and for a transition the join does not
+    draw (`transition_frames`). Pure (the library is cached)."""
+    library = library or load_effects()
+    return tuple(
+        0 if at == 0 else transition_frames(segment.transition_in, library, rate=SPEED_FPS)
+        for at, segment in enumerate(part.segments)
+    )
+
+
+def block_transitions_seconds(part: PartRecipe, library: EffectsLibrary | None = None) -> float:
+    """m-25114465: how much shorter a `local` Clip comes out because its blocks overlap at
+    their transitions (0.0 with only cuts). Pure."""
+    return sum(block_overlaps(part, library)) / SPEED_FPS
+
+
+def block_transition_room_problems(
+    part: PartRecipe, library: EffectsLibrary | None = None
+) -> tuple[RecipeProblem, ...]:
+    """m-25114465, before anything is made: every block of a normal Clip that blends
+    lasts the transitions that eat into it — the one blending it with the block before
+    and the one blending the next block into it — plus `BLOCK_MIN_FREE_FRAMES` of its
+    own, counted in the speed step's frames as the block join counts them. A block too
+    short is `transitions_longer_than_block` on `segments[i]` (block `i + 1`:
+    `transitions_longer_than_block_text`), with its length in `duration_s`. Pure — the
+    screen may call it on every change to warn first."""
+    overlaps = block_overlaps(part, library)
+    found: list[RecipeProblem] = []
+    for at, frames in enumerate(block_frames(part)):
+        after = overlaps[at + 1] if at + 1 < len(overlaps) else 0
+        eaten = overlaps[at] + after
+        if eaten and eaten + BLOCK_MIN_FREE_FRAMES > frames:
+            found.append(
+                RecipeProblem(
+                    code="transitions_longer_than_block",
+                    part=None,
+                    field=f"segments[{at}]",
+                    duration_s=round(frames / SPEED_FPS, 1),
+                )
+            )
+    return tuple(found)
+
+
+def block_transition_room_s(
+    part: PartRecipe, block: int, library: EffectsLibrary | None = None
+) -> float:
+    """m-25114465: the longest transition, in seconds, the join INTO `block` (0-based
+    index of `part.segments`, 1 or more) may last while both of its blocks keep
+    `BLOCK_MIN_FREE_FRAMES` of their own, given the other transitions as they are now —
+    so the screen can offer only what fits (0.0 when it is the first block or out of
+    range; under the library's shortest, `transition_duration_range`, nothing fits: only
+    «Corte»). Pure."""
+    frames = block_frames(part)
+    if not 1 <= block < len(frames):
+        return 0.0
+    overlaps = block_overlaps(part, library)
+    after = overlaps[block + 1] if block + 1 < len(overlaps) else 0
+    room = min(frames[block - 1] - overlaps[block - 1], frames[block] - after)
+    return max(0, room - BLOCK_MIN_FREE_FRAMES) / SPEED_FPS
+
+
+def is_built_transition(use: EffectUse | None) -> bool:
+    """Whether a part's `transition_in` is one the join draws (`BUILT_TRANSITIONS`). Pure.
+    Whether it is offered and its params are valid is `validate_recipe`'s."""
+    return use is not None and (use.effect_id, use.version) in BUILT_TRANSITIONS
+
+
+def _part_references(brief: ContentBrief) -> tuple[bool, ...]:
+    """Whether each part of `recipe_of(brief)` carries references Seedance follows
+    (photos, videos or audio), in its order — a child its own `clip_*` keys; a parent's
+    plan entry its own, its photos inherited from the parent when it names none (UI-4:
+    `clip_image_keys` None), as `parts` builds the child. A normal Clip: `(False,)`. Pure."""
+    media = brief.media
+    if brief.kind is ContentKind.SHOT_VIDEO:
+        inherited = bool(media.clip_image_keys or media.product_keys)
+        return tuple(
+            bool(
+                (bool(plan.clip_image_keys) if plan.clip_image_keys is not None else inherited)
+                or plan.clip_video_keys
+                or plan.clip_audio_keys
+            )
+            for plan in media.parts
+        )
+    if brief.kind is ContentKind.CLIP and media.part is not None:
+        return (media.clip_has_references,)
+    return (False,)
+
+
 def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     """What a valid recipe still cannot be made with today (pure), so the owner never
     pays for a video without what he chose.
@@ -388,30 +752,104 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     are refused any more (a text's design is still checked: only the `scrim` is drawn,
     `unknown_layout`). EF-08 lays the library's recorded layers (`is_built_layer`: an
     entry of stage `compose` with an `asset`) over a `local` piece, so those uses are not
-    refused either. Still refused (`recipe_unavailable`) until the effects engine draws
-    them: any other effect (a Seedance template, `camara_rapida` as an effect, an unknown
-    one) and any effect on a piece that is not `local` (no compose runs after Seedance),
-    a text over a piece that is not `local`, a transition (`fundido`/`barrido`),
-    stretches of a piece that is not `local` (Seedance would only follow them), the
-    parent's whole-video texts and its `video_recipe` (ED-15).
+    refused either. EF-14 composes them over a 9:16 `reference` Clip made by Seedance,
+    and m-25103284 over a `reference` PART too (a child is always 9:16): `recompose`.
+    EF-13 (m-25026589): a Seedance template over a `reference` part or Clip, covering the
+    whole part, is asked in its own prompt (`seedance_effect`) — only with the switch
+    `QUALIFY_SEEDANCE_EFFECTS` on; off (the default) it stays refused as before.
+    Still refused (`recipe_unavailable`) until the effects engine draws them: any other
+    effect (a Seedance template otherwise, `camara_rapida` as an effect, an unknown one), any
+    effect or text over a piece that is neither `local` nor such a `reference` piece
+    (`edit`, `extend`, a Clip that is not 9:16), a transition the join does not make
+    (`is_built_transition`: EF-16 draws `fundido`/`barrido` v2) — and, m-25114465, a
+    block's `transition_in` anywhere but in a normal `local` Clip —, stretches of an `edit`
+    or `extend` piece (D4: an own video is never edited by Seedance; EF-11 lets a
+    `reference` piece open on its first stretch, prepared — a `reference` PART with
+    references too only with `QUALIFY_PARTS_PREPARED_FRAME_REFS` on), the parent's
+    whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
-    producing is refused."""
+    producing is refused.
+
+    m-25129405 (ADR 50 §13): an AI block (`kind="ai_part"`) is `switched_off` while
+    `QUALIFY_CLIP_AI_PARTS` is off — that alone, before anything is read. On, it is still
+    `recipe_unavailable` on `segments[i]` until the Clip with AI parts is created by its
+    own service (§13.7, PR 2: `create_clip_with_ai_parts`): `create_draft` never makes one."""
+    switched_off = _switched_off(brief)
+    if switched_off:
+        return switched_off
+    from qualify_api.creative.video_pipeline.prepared_frame import (  # noqa: PLC0415
+        stretches_wait_for_switch,
+    )
+    from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+        seedance_composes,
+    )
+    from qualify_api.creative.video_pipeline.seedance_effect import (  # noqa: PLC0415
+        is_built_seedance_effect,
+    )
+
     found: list[RecipeProblem] = []
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
-    for part in recipe_of(brief):
+    references = _part_references(brief)
+    # a parent's parts are made as children, always 9:16 (`parts._child_brief`)
+    made_at = ContentFormat.REELS_9_16 if brief.kind is ContentKind.SHOT_VIDEO else brief.format
+    for at, part in enumerate(recipe_of(brief)):
         number = None if in_clip else part.index
-        local = part.mode == "local"
-        unbuilt = tuple(use for use in part.effects if not (local and is_built_layer(use)))
+        # EF-14: a 9:16 `reference` Clip made by Seedance is composed too (its preview and
+        # its 1080p final, `recompose`); m-25103284: so is a `reference` part
+        local = part.mode == "local" or seedance_composes(part.mode, made_at)
+        unbuilt = tuple(
+            use
+            for use in part.effects
+            if not (
+                (local and is_built_layer(use))
+                # EF-13: a measured Seedance template, asked in the part's own prompt
+                # (`seedance_effect`), only with `QUALIFY_SEEDANCE_EFFECTS` on
+                or is_built_seedance_effect(use, part.mode)
+            )
+        )
+        # EF-11: a `reference` piece opens on its first stretch, prepared
+        # (`prepared_frame`); D4: never an `edit` (or `extend`) of own video. A
+        # `reference` PART that also carries references opens on it only with
+        # `QUALIFY_PARTS_PREPARED_FRAME_REFS` on: off, it is refused as before EF-11
+        stretches_refused = part.mode not in ("local", "reference") or (
+            part.mode == "reference"
+            and not in_clip
+            and stretches_wait_for_switch(references[at] if at < len(references) else False)
+        )
         for field, value in (
             # EF-08: a library layer over a `local` piece is laid (`video_pipeline.local`)
             ("effects", unbuilt),
             # EF-05: the compose step draws the texts over a `local` piece's built video
             ("text_layers", part.text_layers if not local else ()),
-            ("segments", part.segments if not local else ()),
-            ("transition_in", part.transition_in),
+            ("segments", part.segments if stretches_refused else ()),
+            # D9 + EF-16: the join makes `corte` and blends `fundido`/`barrido` v2
+            (
+                "transition_in",
+                None if is_built_transition(part.transition_in) else part.transition_in,
+            ),
         ):
             if value:
                 found.append(RecipeProblem(code="recipe_unavailable", part=number, field=field))
+        # m-25114465: the block join blends a normal `local` Clip's blocks — never a part's
+        # (its stretches are joined with cuts) nor a Clip made by Seedance
+        # m-25114465: only with `QUALIFY_CLIP_BLOCK_TRANSITIONS` on (ADR 50 §10 unsigned)
+        blends = in_clip and part.mode == "local" and clip_block_transitions_on()
+        # m-25129405: an AI block is not made through this gate yet (§13.7, PR 2)
+        found.extend(
+            RecipeProblem(code="recipe_unavailable", part=number, field=f"segments[{block}]")
+            for block in ai_part_blocks(part.segments)
+        )
+        for block, segment in enumerate(part.segments):
+            use = segment.transition_in
+            if use is not None and not (blends and is_built_transition(use)):
+                found.append(
+                    RecipeProblem(
+                        code="recipe_unavailable",
+                        part=number,
+                        field=f"segments[{block}].transition_in",
+                        effect_id=use.effect_id,
+                    )
+                )
     if brief.kind is ContentKind.SHOT_VIDEO and brief.media.text_layers:
         found.append(RecipeProblem(code="recipe_unavailable", part=None, field="text_layers"))
     if brief.kind is ContentKind.SHOT_VIDEO and brief.media.video_recipe is not None:
@@ -423,7 +861,11 @@ def refuse_unbuilt_recipe(brief: ContentBrief, *, tenant_id: UUID) -> None:
     """The service's gate on a NEW request (`create_draft`, a part's
     `prepare_new_generation`), before any row, charge or vendor call: `RecipeRefused`
     when `validate_brief_recipe` finds a problem or `unbuilt_recipe_problems` does. A
-    brief with no recipe — every brief before EF-02 — passes untouched."""
+    brief with no recipe — every brief before EF-02 — passes untouched. m-25129405: an AI
+    block with `QUALIFY_CLIP_AI_PARTS` off is refused first, `switched_off` alone."""
+    switched_off = _switched_off(brief)
+    if switched_off:
+        raise RecipeRefused(switched_off)
     problems = validate_brief_recipe(brief, tenant_id=tenant_id)
     problems = (*problems, *unbuilt_recipe_problems(brief))
     if problems:
@@ -431,11 +873,27 @@ def refuse_unbuilt_recipe(brief: ContentBrief, *, tenant_id: UUID) -> None:
 
 
 __all__ = [
+    "BLOCK_MIN_FREE_FRAMES",
+    "BLOCK_TRANSITION_UNAVAILABLE_TEXT",
+    "CLIP_BLOCK_TRANSITIONS_SWITCH",
     "PartRecipe",
+    "clip_block_transitions_on",
+    "transition_duration_range",
     "RecipeRefused",
+    "TRANSITIONS_LONGER_THAN_BLOCK_TEXT",
+    "TRANSITION_ON_CLIP_TEXT",
+    "TRANSITION_ON_FIRST_BLOCK_TEXT",
+    "block_frames",
+    "block_overlaps",
+    "block_transition_room_problems",
+    "block_transition_room_s",
+    "block_transitions_seconds",
+    "transitions_longer_than_block_text",
     "recipe_of",
     "clip_seconds",
     "segments_seconds",
+    "subtitle_overlap_problems",
+    "TEXT_BOTTOM_WITH_SUBTITLES_TEXT",
     "part_length",
     "recipe_of_parts",
     "refuse_unbuilt_recipe",

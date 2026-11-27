@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from qualify_api.ads.money import budget_field, money_display
 
 from .ad_health_vm import checked_label
 
@@ -25,6 +27,8 @@ URGENT_PAUSE = (
     "Si necesitas detener el gasto, pausa el anuncio directamente en el Administrador "
     "de anuncios de Meta."
 )
+PAUSE_HERE = "Aunque otro cambio siga en curso, puedes pausar el anuncio aquí."
+EDIT_STOP_SPEND = "Si necesitas detener el gasto, usa «Pausar anuncio»."
 EDIT_EXPIRED = "La comprobación venció. Vuelve a comprobar el cambio antes de confirmarlo."
 EDIT_ACTION_LABELS = {
     "budget": "Aumentar presupuesto",
@@ -46,19 +50,22 @@ def backend_action(action: str) -> str:
     return BACKEND_ACTIONS.get(action, action)
 
 
-def pesos(minor: int) -> str:
-    return "$" + f"{minor // 100:,}".replace(",", ".")
+def floor_label(floor_minor: int, spent_minor: int, currency: str) -> str:
+    floor, spent = money_display(floor_minor, currency), money_display(spent_minor, currency)
+    return f"Mínimo: {floor} (ya gastaste {spent})"
 
 
-def floor_label(floor_minor: int, spent_minor: int) -> str:
-    return f"Mínimo: {pesos(floor_minor)} (ya gastaste {pesos(spent_minor)})"
-
-
-def budget_down_summary(current_minor: int, new_minor: int) -> str:
+def budget_down_summary(current_minor: int, new_minor: int, currency: str) -> str:
     return (
-        f"Tu anuncio podrá gastar hasta {pesos(new_minor)} en total, "
-        f"en vez de {pesos(current_minor)}."
+        f"Tu anuncio podrá gastar hasta {money_display(new_minor, currency)} en total, "
+        f"en vez de {money_display(current_minor, currency)}."
     )
+
+
+def budget_unit(currency: str) -> str:
+    """«pesos colombianos», «dólares», «pesos uruguayos» for the edit field and its errors."""
+    unit = budget_field(currency)
+    return unit.unit_name if unit else currency
 
 
 def rejection_text(status: str, reason: str) -> str:
@@ -171,11 +178,15 @@ def money_label(value: Decimal | None, currency: str) -> str:
         or not currency.isupper()
     ):
         return "Moneda por comprobar"
-    if currency == "COP":  # whole pesos, the same «$200.000» as everywhere else
-        amount = number_label(value, decimals=0)
-        return "$" + amount if amount != UNAVAILABLE else UNAVAILABLE
-    amount = number_label(value, decimals=2)
-    return f"{amount} {currency}" if amount != UNAVAILABLE else UNAVAILABLE
+    try:
+        amount = Decimal(value)  # type: ignore[arg-type]
+    except (InvalidOperation, TypeError, ValueError):
+        return UNAVAILABLE
+    if not amount.is_finite() or amount < 0:
+        return UNAVAILABLE
+    # The app-wide «$200.000 COP» / «$12,50 USD»; COP in whole pesos (qualify-copy-es §5).
+    places = Decimal(1) if currency == "COP" else Decimal("0.01")
+    return money_display(int(amount.quantize(places, ROUND_HALF_UP) * 100), currency)
 
 
 def day_label(value: date, timezone_name: str, now: datetime | None = None) -> str:
@@ -210,7 +221,7 @@ class EditInputError(ValueError):
 
 
 def budget_input(value: object, currency: str) -> str:
-    if currency != "COP" or type(value) is not int or value <= 0 or value % 100:
+    if budget_field(currency) is None or type(value) is not int or value <= 0 or value % 100:
         return ""
     return str(value // 100)
 
@@ -224,9 +235,13 @@ def end_input(value: datetime | None, timezone_name: str) -> str:
         return ""
 
 
-def edit_budget(value: str, current: str) -> int:
+def _whole_units(currency: str) -> str:
+    return f"Escribe el presupuesto total en {budget_unit(currency)} enteros, sin puntos ni comas."
+
+
+def edit_budget(value: str, current: str, currency: str) -> int:
     if not value or not value.isascii() or not value.isdigit() or len(value) > 12:
-        raise EditInputError("Escribe el presupuesto total en pesos enteros, sin puntos ni comas.")
+        raise EditInputError(_whole_units(currency))
     if not current or not current.isascii() or not current.isdigit():
         raise EditInputError("Actualiza con Meta para comprobar el presupuesto actual.")
     if int(value) <= int(current):
@@ -234,17 +249,18 @@ def edit_budget(value: str, current: str) -> int:
     return int(value) * 100
 
 
-def edit_budget_down(value: str, current: str, floor: str) -> int:
+def edit_budget_down(value: str, current: str, floor: str, currency: str) -> int:
     """A lower total, never under the floor read from Meta when it is known."""
     if not value or not value.isascii() or not value.isdigit() or len(value) > 12:
-        raise EditInputError("Escribe el presupuesto total en pesos enteros, sin puntos ni comas.")
+        raise EditInputError(_whole_units(currency))
     if not current or not current.isascii() or not current.isdigit():
         raise EditInputError("Actualiza con Meta para comprobar el presupuesto actual.")
     if not 0 < int(value) < int(current):
         raise EditInputError("El nuevo presupuesto total debe ser menor que el actual.")
     if floor.isascii() and floor.isdigit() and int(value) < int(floor):
         raise EditInputError(
-            f"Puedes bajarlo hasta {pesos(int(floor) * 100)}. Escribe ese monto o uno mayor."
+            f"Puedes bajarlo hasta {money_display(int(floor) * 100, currency)}. "
+            "Escribe ese monto o uno mayor."
         )
     return int(value) * 100
 

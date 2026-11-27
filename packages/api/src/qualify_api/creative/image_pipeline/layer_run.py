@@ -56,7 +56,7 @@ from uuid import UUID
 from qualify_creative.layer_spec import LayerSpec
 from qualify_creative.schemas import ContentBrief, CopyPayload
 
-from qualify_api.claude_tools import DollarMeter
+from qualify_api.claude_tools import CallStats, ClaudeToolError, DollarMeter
 from qualify_api.creative import pipeline
 from qualify_api.creative.image_pipeline.base import BaseScene
 from qualify_api.creative.image_pipeline.layer import (
@@ -74,7 +74,7 @@ from qualify_api.creative.image_pipeline.layer import (
     layer_enabled,
     write_layers,
 )
-from qualify_api.creative.media import LayerWrite, _MediaPending
+from qualify_api.creative.media import LayerWrite, MediaUsage, _MediaPending
 from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
 
 if TYPE_CHECKING:
@@ -106,6 +106,8 @@ class LayerOutcome:
     prices: Mapping[str, str] = field(default_factory=dict)
     #: how the piece's price was decided (for the compose provenance and the Pillow cover)
     price: PiecePrice | None = None
+    #: the piece's usage list (m-25042157): the rewrite books its call into it too
+    usage: list[MediaUsage] | None = None
 
 
 def _default_writer(request: LayerRequest, *, budget: DollarMeter) -> LayerResult:
@@ -236,7 +238,101 @@ def _result_json(result: LayerResult) -> dict[str, Any]:
         "model_id": result.model_id,
         "prompt_version": result.prompt_version,
         "repairs": result.repairs,
+        # m-25042157: what the call consumed, so every pass (a replay too) books it
+        "usage": _stats_json(result.stats),
     }
+
+
+def _stats_json(stats: CallStats | None) -> dict[str, Any] | None:
+    if stats is None:
+        return None
+    return {
+        "model_id": stats.model_id,
+        "input_tokens": stats.input_tokens,
+        "output_tokens": stats.output_tokens,
+        "cache_read_tokens": stats.cache_read_tokens,
+        "cache_creation_tokens": stats.cache_creation_tokens,
+    }
+
+
+def _media_usage(producer: Any, stats: Mapping[str, Any]) -> MediaUsage:
+    """One layer call as a `MediaUsage` (`creative_usage_events`, the `creative.cost` line):
+    priced like the copy's Claude call (`service.call_cost`, the versioned pricing table)."""
+    from qualify_creative.providers import Usage  # noqa: PLC0415
+
+    from qualify_api.claude_tools import cost_breakdown  # noqa: PLC0415
+
+    used = Usage(
+        input_tokens=int(stats.get("input_tokens", 0)),
+        output_tokens=int(stats.get("output_tokens", 0)),
+        cache_read_tokens=int(stats.get("cache_read_tokens", 0)),
+        cache_creation_tokens=int(stats.get("cache_creation_tokens", 0)),
+    )
+    model_id = str(stats.get("model_id") or LAYER_MODEL.model_id)
+    pricing = getattr(producer, "_pricing", None)
+    if pricing is not None:
+        from qualify_api.creative.service import call_cost  # noqa: PLC0415 - no cycle at import
+
+        cost = call_cost(pricing, used, model_id)
+    else:  # a producer without a table (tests): the same per-token rates
+        cost = Decimal(
+            repr(
+                sum(
+                    cost_breakdown(
+                        model_id,
+                        input_tokens=used.input_tokens,
+                        output_tokens=used.output_tokens,
+                        cache_read_tokens=used.cache_read_tokens,
+                        cache_creation_tokens=used.cache_creation_tokens,
+                    ).values()
+                )
+            )
+        )
+    return MediaUsage(
+        provider="anthropic",
+        model_id=model_id,
+        unit="token",
+        quantity=used.input_tokens + used.output_tokens,
+        cost_usd=cost,
+        output_tokens=used.output_tokens,
+        input_tokens=used.input_tokens,
+        cache_read_tokens=used.cache_read_tokens,
+        cache_creation_tokens=used.cache_creation_tokens,
+    )
+
+
+def _append(producer: Any, usage: list[MediaUsage] | None, stats: Mapping[str, Any] | None) -> None:
+    """One usage line for a call that consumed tokens (a budget refused before any turn
+    consumed none: no line)."""
+    if usage is None or not stats:
+        return
+    if int(stats.get("input_tokens", 0)) + int(stats.get("output_tokens", 0)) <= 0:
+        return
+    usage.append(_media_usage(producer, stats))
+
+
+def _book(producer: Any, usage: list[MediaUsage] | None, saved: Mapping[str, Any] | None) -> None:
+    """Add a saved layer call to the piece's usage — on every pass, the replay included:
+    the usage list is rebuilt each pass and only the pass that finishes is written."""
+    _append(producer, usage, ((saved or {}).get("layer") or {}).get("usage"))
+
+
+def _booker(producer: Any, usage: list[MediaUsage] | None) -> Callable[[Mapping[str, Any]], None]:
+    """What `_checkpointed` calls with a FAILED step's saved usage on a replay."""
+    return lambda stats: _append(producer, usage, stats)
+
+
+def _paid(
+    producer: Any, usage: list[MediaUsage] | None, call: Callable[[], LayerResult]
+) -> LayerResult:
+    """`call()`; when it fails after paying (`ClaudeToolError.stats`), that spend still
+    goes into this pass's usage before the error goes on (and `_checkpointed` saves it with
+    the step's error, so a later pass books it too)."""
+    try:
+        return call()
+    except ClaudeToolError as exc:
+        _append(producer, usage, _stats_json(exc.stats))
+        raise
 
 
 def _result_from_json(data: Mapping[str, Any]) -> LayerResult:
@@ -252,11 +348,16 @@ def _result_from_json(data: Mapping[str, Any]) -> LayerResult:
 
 
 def _checkpointed(
-    step: int, request: LayerRequest, compute: Callable[[], dict[str, Any]]
+    step: int,
+    request: LayerRequest,
+    compute: Callable[[], dict[str, Any]],
+    book_failed: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any] | None:
     """`compute()` once per preparation: outside the queue it just runs; inside, its
     value is the step's saved result. None: an earlier pass left the step in flight or
-    failed — a paid call may have been billed, so it is never made again."""
+    failed — a paid call may have been billed, so it is never made again. A call that
+    failed AFTER paying keeps its tokens with the error (`failed_usage`), and every later
+    pass books them through `book_failed` (m-25042157): the pass that finishes writes them."""
     run = pipeline.current_preparation()
     if run is None:
         return compute()
@@ -274,9 +375,10 @@ def _checkpointed(
             },
             None,
         )
-    if row["result"] is not None:
-        return dict(row["result"])
     if row["error"] is not None:
+        failed = (row["result"] or {}).get("failed_usage") if row["result"] else None
+        if failed and book_failed is not None:
+            book_failed(failed)
         logger.warning(
             "draft %s: layer step %s was left %s, no layer this time",
             run.draft_id,
@@ -284,6 +386,8 @@ def _checkpointed(
             row["error"],
         )
         return None
+    if row["result"] is not None:
+        return dict(row["result"])
     store.intent(run, step)
     identity = {**run.params(), "s": step}
     try:
@@ -291,10 +395,12 @@ def _checkpointed(
     except QUEUE_SIGNALS:
         raise
     except Exception as exc:
+        paid = _stats_json(getattr(exc, "stats", None))
         store.complete_step(
             run.tenant_id,
             identity=identity,
-            result=None,
+            # the error row keeps what the failed call consumed (read only on that branch)
+            result={"failed_usage": paid} if paid else None,
             error=f"layer failed: {type(exc).__name__}",
             run=run,
         )
@@ -331,6 +437,7 @@ def run_layer_stage(
     slide_count: int | None = None,
     title_font: str = "",
     price_line: str = "",
+    usage: list[MediaUsage] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> LayerOutcome:
     """The layers of `scenes` (position → base), regenerating a base once when Claude saw
@@ -347,7 +454,7 @@ def run_layer_stage(
         """The stage failed: no layers. The request and the price, once known, still ride
         along, so a priced piece fails (`require_price_drawn`, founder's D5: never published
         without its price) instead of falling back; a piece without price goes on as before."""
-        return LayerOutcome(scenes, {}, (), request, budget, {}, price)
+        return LayerOutcome(scenes, {}, (), request, budget, {}, price, usage)
 
     try:
         facts, found = context(tenant_id, brief.brand_id, brief.product_ref)
@@ -373,7 +480,7 @@ def run_layer_stage(
         )
 
         def first() -> dict[str, Any]:
-            result = writer(request, budget=budget)
+            result = _paid(producer, usage, lambda: writer(request, budget=budget))
             claimed: list[int] = []
             for position in result.invented_text:
                 if claim(
@@ -397,10 +504,11 @@ def run_layer_stage(
                 "spent_usd": str(budget.spent_usd),
             }
 
-        saved = _checkpointed(LAYER_STEPS[0], request, first)
+        saved = _checkpointed(LAYER_STEPS[0], request, first, _booker(producer, usage))
         if saved is None:
             return without_layers()
         _charge_back(budget, saved)  # a replay: this meter has not seen the first call yet
+        _book(producer, usage, saved)
         result = _result_from_json(saved["layer"])
         regenerated: list[int] = []
         for position in saved["regenerate"]:
@@ -416,11 +524,14 @@ def run_layer_stage(
             try:
 
                 def second() -> dict[str, Any]:
-                    answer = writer(again_request, budget=budget)
+                    answer = _paid(producer, usage, lambda: writer(again_request, budget=budget))
                     return {"layer": _result_json(answer), "spent_usd": str(budget.spent_usd)}
 
-                again = _checkpointed(LAYER_STEPS[1], again_request, second)
+                again = _checkpointed(
+                    LAYER_STEPS[1], again_request, second, _booker(producer, usage)
+                )
                 _charge_back(budget, again)
+                _book(producer, usage, again)
             except QUEUE_SIGNALS:
                 raise
             except Exception:  # noqa: BLE001 - as a replay of the failed step: None
@@ -442,7 +553,9 @@ def run_layer_stage(
             logger.warning("draft %s: no layer for %s", draft_id, sorted(result.failed))
         # only the piece's own price can be drawn (`resolve_piece_price`)
         prices = {price.product_id: price.label} if price.label else {}
-        return LayerOutcome(scenes, layers, tuple(regenerated), request, budget, prices, price)
+        return LayerOutcome(
+            scenes, layers, tuple(regenerated), request, budget, prices, price, usage
+        )
     except QUEUE_SIGNALS:
         raise
     except Exception:  # noqa: BLE001 - the layer never costs the paid piece
@@ -479,13 +592,14 @@ def rewrite_layers(
     )
 
     def call() -> dict[str, Any]:
-        answer = writer(again, budget=budget)
+        answer = _paid(producer, outcome.usage, lambda: writer(again, budget=budget))
         return {"layer": _result_json(answer), "spent_usd": str(budget.spent_usd)}
 
-    saved = _checkpointed(LAYER_STEPS[2], again, call)
+    saved = _checkpointed(LAYER_STEPS[2], again, call, _booker(producer, outcome.usage))
     if saved is None:
         raise RuntimeError("the layer rewrite was left unfinished in an earlier pass")
     _charge_back(budget, saved)
+    _book(producer, outcome.usage, saved)
     result = _result_from_json(saved["layer"])
     result = replace(result, prompt_version=result.prompt_version + REWRITE_SUFFIX)
     return {p: w for p in notes if (w := _layer_write(result, p)) is not None}

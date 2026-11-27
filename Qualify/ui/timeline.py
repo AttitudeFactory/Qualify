@@ -23,7 +23,7 @@ and the edits are the screen's state: rows from `ui.timeline_vm` (strings only).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import reflex as rx
@@ -34,14 +34,33 @@ from .primitives import OrbitItem, asset_script, media_thumb, orbit_menu
 
 #: The script's name under `assets/`.
 SCRIPT = "timeline.js"
+#: ED-10 m-25026648: drag and drop — the pure math (tested with node) and the DOM half.
+DRAG_CORE_SCRIPT = "timeline-drag-core.js"
+DRAG_SCRIPT = "timeline-drag.js"
+#: ED-12 m-25029107: photos and videos of the computer dropped on the timeline, with
+#: the line that marks where they land.
+INSERT_SCRIPT = "timeline-insert.js"
+#: ED-12 UX review S4: the id of «Agregar»'s why (above the «+»), which the «+» names in
+#: `aria-describedby` while it says something.
+ADD_NOTE_ID = "q-tl-add-note"
 
 Rows = rx.Var[list[dict[str, str]]]
 Row = rx.Var[dict[str, str]]
+#: ED-11b: each video block's strip cells, by the block's id.
+Frames = rx.Var[dict[str, list[dict[str, str]]]]
 
 
 def timeline_script() -> rx.Component:
-    """Mount `assets/timeline.js` once (its guard keeps one set of listeners)."""
-    return rx.box(display="none", on_mount=rx.call_script(asset_script(SCRIPT)))
+    """Mount `assets/timeline.js` and the drag and drop (ED-10). Their guards keep one set
+    of document listeners; a second mount only attaches the timelines now on the page,
+    and the unmount lets go of the observers of a timeline that left (ED-10 review)."""
+    names = (DRAG_CORE_SCRIPT, DRAG_SCRIPT, INSERT_SCRIPT, SCRIPT)
+    script = ";".join(asset_script(name) for name in names)
+    return rx.box(
+        display="none",
+        on_mount=rx.call_script(script),
+        on_unmount=rx.call_script("window.__qTimeline && window.__qTimeline.sweep();"),
+    )
 
 
 #: The global the script fills before pressing the hidden key button.
@@ -66,8 +85,36 @@ def _key_trigger(on_key: Callable[[str, str, str], Any]) -> rx.Component:
     )
 
 
+#: The global the drag script fills before pressing the hidden drop button.
+DROP_GLOBAL = "window.__qTimelineDrop"
+
+
+def _drag_trigger(on_drag: Callable[[str, str, float], Any]) -> rx.Component:
+    """The hidden button `assets/timeline-drag.js` presses when a block is dropped: the
+    handler receives `(id, what, value)` — «move» and the new index of a video or photo,
+    «time» and the new start (seconds) of a text or effect, or (ED-03) «start»/«end» and
+    where a handle was released."""
+    block_id = rx.Var(f"String(({DROP_GLOBAL} || {{}}).id || '')", _var_type=str)
+    what = rx.Var(f"String(({DROP_GLOBAL} || {{}}).what || '')", _var_type=str)
+    value = rx.Var(f"Number(({DROP_GLOBAL} || {{}}).value || 0)", _var_type=float)
+    return rx.el.button(
+        type="button",
+        on_click=on_drag(block_id, what, value),
+        tab_index=-1,
+        aria_hidden="true",
+        display="none",
+        custom_attrs={"data-tl-drag-trigger": ""},
+    )
+
+
 def _handle(row: Any, edge: str) -> rx.Component:
-    """One handle of the chosen block: a slider the keyboard moves ½ s with ←/→."""
+    """One handle of the chosen block: a slider the keyboard moves ½ s with ←/→, and —
+    ED-03 m-25026623 — a finger or a mouse drags at once (`assets/timeline-drag.js`; no
+    long press: it is not the block's move). Its value is in the handle's own unit —
+    seconds of the video for a video's piece, of the final video for a text or effect —
+    within `aria-valuemin`/`-max`; ``data-tl-at`` (where the block starts on the track),
+    ``data-tl-from`` (the value its start handle has) and ``data-tl-speed`` place it on
+    the track."""
     return rx.el.div(
         rx.el.span(class_name="q-tl__grip", aria_hidden="true"),
         tab_index=0,
@@ -75,13 +122,76 @@ def _handle(row: Any, edge: str) -> rx.Component:
         custom_attrs={
             "role": "slider",
             "aria-label": row[f"{edge}_handle"],
-            "aria-valuetext": row[f"{edge}_text"],
+            # «Desde 0:04» / «Hasta 0:09» (ED-03 UX review)
+            "aria-valuetext": row[f"{edge}_value"],
             "aria-valuenow": row[f"{edge}_now"],
             "aria-valuemin": row[f"{edge}_min"],
             "aria-valuemax": row[f"{edge}_max"],
             "aria-orientation": "horizontal",
+            # ED-14: why it stops at an edge, when the row says it (``*_why``, an id; ""
+            # points at nothing)
+            "aria-describedby": row[f"{edge}_why"],
             "data-tl-handle": edge,
             "data-tl-id": row["id"],
+            "data-tl-at": row["start"],
+            "data-tl-from": row["start_now"],
+            "data-tl-speed": row["speed"],
+            # the bubble's word while it is dragged («Desde», «Hasta», «Empieza»…)
+            "data-tl-word": row[f"{edge}_label"],
+        },
+    )
+
+
+def _picture(src: rx.Var[str]) -> rx.Component:
+    """ED-11 (m-25026650): a block's picture — one `<img alt="">` at its start (the
+    block's name already says what it is) and the same picture repeated along the rest
+    (`background-repeat: repeat-x`, `.q-tl__pic`), so a wide block reads as a strip
+    and a narrow one shows only the picture. Never a new frame: ``src`` is a picture the
+    screen already holds."""
+    return rx.el.span(
+        rx.el.img(
+            src=src,
+            alt="",
+            class_name="q-tl__pic-img",
+            loading="lazy",
+            decoding="async",
+            draggable=False,
+        ),
+        class_name="q-tl__pic",
+        aria_hidden="true",
+        style={"backgroundImage": rx.Var.create('url("') + src + '")'},
+    )
+
+
+def _strip(row: Any, cells: Any, thumb_base: rx.Var[str] | str) -> rx.Component:
+    """ED-11b (m-25029110): a video block's frame strip — the server's ONE JPEG of a tile
+    per second, cut into cells by CSS (`.q-tl__strip`), each placed in SECONDS from the
+    block's start (``--c-at`` / ``--c-len`` over the block's ``--b-len``, as the blocks
+    themselves are placed), so it holds on a phone and a desktop and at any scale. Each
+    cell crops its tile out of the image with ``background-position`` (percentages:
+    ``strip_size`` makes one tile the cell's picture) and centres it. Decorative: the
+    block's name says what it is. Drawn under the whole block — also under the veil of a
+    transition in, so every frame stays on its second of the ruler."""
+    image = rx.Var.create('url("') + thumb_base + row["strip"] + '")'
+    return rx.el.span(
+        rx.foreach(
+            cells,
+            lambda cell: rx.el.span(
+                rx.el.span(
+                    class_name="q-tl__frame-pic",
+                    style={"backgroundPosition": cell["pos"]},
+                ),
+                class_name="q-tl__frame-cell",
+                style={"--c-at": cell["at"], "--c-len": cell["len"]},
+            ),
+        ),
+        class_name="q-tl__strip",
+        aria_hidden="true",
+        style={
+            "--s-img": image,
+            "--s-size": row["strip_size"],
+            "--s-ratio": row["strip_ratio"],
+            "--s-w": row["strip_w"],
         },
     )
 
@@ -91,21 +201,58 @@ def _block(
     *,
     selected: rx.Var[str],
     on_select: Callable[[str], Any],
+    thumb_base: rx.Var[str] | str = "",
+    overlap: bool = False,
+    frames: Frames | None = None,
 ) -> rx.Component:
     chosen = row["id"] == selected
-    # A video or a photo shows its picture (`media_thumb`; ``thumb`` "" = the frame with
-    # the film / photo icon until ED-11 brings the real frame); a text «Aa», an effect ✦.
-    thumb = {"size": "40px", "icon_size": T.ICON_MD, "alt": ""}
+    # ED-11: a video or a photo with a picture shows it under its name and seconds
+    # (`_picture`); without one, the frame with the film / photo icon and its name — never
+    # an empty box. A text «Aa», an effect ✦. ED-11b: a video whose file has the server's
+    # frame strip shows it instead (`_strip`, only on «Fotos y videos»).
+    strip = (row["strip"] != "") if frames is not None else None
+    pic = row["thumb"] != ""
+    if strip is not None:
+        pic = pic | strip
+    thumb = {"size": "40px", "icon_size": T.ICON_MD}
     icon = rx.match(
         row["kind"],
-        ("video", media_thumb(row["thumb"], icon="film", **thumb)),
-        ("photo", media_thumb(row["thumb"], icon="image", **thumb)),
+        ("video", media_thumb("", icon="film", **thumb)),
+        ("photo", media_thumb("", icon="image", **thumb)),
         ("text", rx.el.span("Aa", class_name="q-tl__aa")),
         rx.icon("sparkles", size=T.ICON_SM),
     )
+    # ED-11 review: under the picture, its film / photo icon centred on the block — it
+    # shows through when the picture does not load (a `/r2media` token past its hour) or
+    # is hidden (high contrast), so the block is never a bare grey box. No script.
+    under = rx.el.span(
+        rx.cond(
+            row["kind"] == "photo",
+            rx.icon("image", size=T.ICON_MD),
+            rx.icon("film", size=T.ICON_MD),
+        ),
+        class_name="q-tl__pic-fallback",
+        aria_hidden="true",
+    )
+    picture: rx.Component = _picture(thumb_base + row["thumb"])
+    if strip is not None and frames is not None:
+        # UX review: the strip goes OVER the picture of before (transparent), which shows
+        # until its frames load and whenever they do not
+        picture = rx.fragment(
+            rx.cond(row["thumb"] != "", picture),
+            rx.cond(strip, _strip(row, frames[row["id"]], thumb_base)),  # type: ignore[index]
+        )
     button = rx.el.button(
-        rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
+        rx.cond(
+            pic,
+            rx.fragment(under, picture),
+            rx.el.span(icon, class_name="q-tl__icon", aria_hidden="true"),
+        ),
         rx.el.span(row["label"], class_name="q-tl__label", aria_hidden="true"),
+        rx.cond(
+            pic & (row["secs"] != ""),
+            rx.el.span(row["secs"], class_name="q-tl__secs", aria_hidden="true"),
+        ),
         rx.cond(
             row["speed_tag"] != "",
             rx.el.span(row["speed_tag"], class_name="q-tl__speed", aria_hidden="true"),
@@ -116,15 +263,46 @@ def _block(
         aria_label=row["name"],
         aria_pressed=rx.cond(chosen, "true", "false"),
         custom_attrs={
-            "aria-description": row["help"],
+            # its help is read once, from the timeline's hidden span (`vm.HELP_IDS`)
+            "aria-describedby": row["help_id"],
             "data-tl-block": row["kind"],
             "data-tl-id": row["id"],
+            # where it sits and how long, in seconds (the drag reads them)
+            "data-tl-start": row["start"],
+            "data-tl-len": row["length"],
+            # ED-11: it shows its picture (the name and seconds go over it)
+            "data-tl-pic": rx.cond(pic, "1", "0"),
+            # ED-11b: its picture is the server's frame strip
+            **({"data-tl-strip": rx.cond(strip, "1", "0")} if strip is not None else {}),
+            # ED-13: in a clash (two texts in one place at once) — the warning tone
+            "data-tl-warn": rx.cond(row["warn"] == "1", "1", "0"),
         },
+    )
+    # m-25114465 («bloques enteros, encimados»): the start of a «Fotos y videos» block
+    # laid over the block before it — its transition in — marked with the transition's
+    # stripes (Deivid, option A: its icon goes on the join's point). Only a picture: the
+    # join's point says it in words (`_join`'s name), nothing here takes the focus or is
+    # read twice. The block's name and picture start after it (`data-tl-in`).
+    overlay = (
+        [
+            rx.cond(
+                row["join_kind"] != "",
+                rx.el.span(
+                    class_name="q-tl__overlap",
+                    aria_hidden="true",
+                    style={"--b-in": row["join_in"]},
+                ),
+            )
+        ]
+        if overlap
+        else []
     )
     return rx.el.div(
         button,
+        *overlay,
+        # a row may say it has no handles the screen moves yet (``handles`` "")
         rx.cond(
-            chosen,
+            chosen & (row["handles"] != ""),
             rx.fragment(
                 rx.cond(row["has_start"] != "", _handle(row, "start")),
                 _handle(row, "end"),
@@ -132,35 +310,267 @@ def _block(
         ),
         role="listitem",
         class_name="q-tl__item",
-        style={"--b-start": row["start"], "--b-len": row["length"]},
-        custom_attrs={"data-tl-chosen": rx.cond(chosen, "true", "false")},
+        style={
+            "--b-start": row["start"],
+            "--b-len": row["length"],
+            **({"--b-in": row["join_in"]} if overlap else {}),
+        },
+        custom_attrs={
+            "data-tl-chosen": rx.cond(chosen, "true", "false"),
+            **({"data-tl-in": rx.cond(row["join_kind"] != "", "1", "")} if overlap else {}),
+            # ED-14: it starts / ends the track — that handle sits inside the block
+            "data-tl-at-start": row["at_start"],
+            "data-tl-at-end": row["at_end"],
+        },
     )
 
 
 def _lane(
     track: str,
     rows: Rows,
-    *,
-    empty_hint: bool,
     **block_props: Any,
 ) -> rx.Component:
-    blocks = rx.foreach(rows, lambda row: _block(row, **block_props))
-    content: rx.Component = blocks
-    if empty_hint:
-        content = rx.cond(
-            rows.length() > 0,  # type: ignore[attr-defined]
-            blocks,
-            rx.el.div(
-                rx.el.span(vm.EMPTY_HINT_PHONE[track], class_name="q-tl__hint-phone"),
-                rx.el.span(vm.EMPTY_HINT_DESKTOP[track], class_name="q-tl__hint-desk"),
-                class_name="q-tl__empty",
-            ),
-        )
+    """One track. An empty one stays a blank row of the same height (no hint text); its
+    accessible name says it is empty."""
+    label = vm.TRACK_LABELS[track]
+    media = track == vm.TRACK_MEDIA
     return rx.el.div(
-        content,
+        rx.foreach(rows, lambda row: _block(row, overlap=media, **block_props)),
         role="list",
-        aria_label=vm.TRACK_LABELS[track],
+        aria_label=rx.cond(
+            rows.length() > 0,  # type: ignore[attr-defined]
+            label,
+            vm.EMPTY_TRACK_NAMES[track],
+        ),
         class_name=f"q-tl__lane q-tl__lane--{track}",
+    )
+
+
+def _effect_lane(rows: Any, names: Any, **block_props: Any) -> rx.Component:
+    """ED-04 (m-25026627): one row of «Efectos»: its blocks, named «Efectos
+    2» (``names["name"]``) or, empty, «Pista de efectos 2 vacía» (``names["empty"]``)."""
+    return rx.el.div(
+        rx.foreach(rows, lambda row: _block(row, **block_props)),
+        role="list",
+        aria_label=rx.cond(rows.length() > 0, names["name"], names["empty"]),
+        class_name=f"q-tl__lane q-tl__lane--{vm.TRACK_EFFECT}",
+        # the row a block dragged up or down lands on (`assets/timeline-drag.js`)
+        custom_attrs={"data-tl-lane": names["index"]},
+    )
+
+
+def _join(row: Any, on_join: Callable[[str], Any], selected: rx.Var[str]) -> rx.Component:
+    """m-25114465 «la unión»: the point between two blocks of «Fotos y videos», a button
+    named with its choice («Unión entre Video 1 y Foto 2: Corte»), centred on the overlap
+    of the two blocks (``row["at"]``, seconds) and riding the track's TOP edge, as
+    CapCut's transition button (`.q-tl__join`: absolute, it takes no room). While a block
+    touching it is chosen (the one after, the one before it in the recipe or on the track)
+    its trim handles sit right there and win: the point hides and leaves the tab order
+    (``data-join-off``); one a handle only reaches is dimmed by `assets/timeline.js`
+    (``data-join-near``). ``aria-expanded`` while its panel shows."""
+    off = (selected != "") & (
+        (row["id"] == selected) | (row["before"] == selected) | (row["beside"] == selected)
+    )
+    # Deivid (option A): a «Fundido» / «Barrido» point carries its icon, white on the
+    # accent, CapCut-like; a «Corte» point is empty. A picture only: the name says it
+    icon = rx.match(
+        row["kind"],
+        ("fundido", rx.icon("blend", size=12, class_name="q-tl__join-icon")),
+        ("barrido", rx.icon("arrow-left-right", size=12, class_name="q-tl__join-icon")),
+        rx.fragment(),
+    )
+    return rx.el.button(
+        rx.el.span(icon, class_name="q-tl__join-dot", aria_hidden="true"),
+        type="button",
+        class_name="q-tl__join",
+        on_click=on_join(row["id"]),
+        aria_label=row["name"],
+        title=row["name"],
+        aria_expanded=rx.cond(row["open"] == "1", "true", "false"),
+        style={"--j-at": row["at"]},
+        custom_attrs={
+            "data-join-kind": row["kind"],
+            "data-join-warn": row["warn"],
+            "data-join-id": row["id"],
+            "data-join-off": rx.cond(off, "1", ""),
+        },
+        tab_index=rx.cond(off, -1, 0),
+    )
+
+
+def _joins(joins: Rows, on_join: Callable[[str], Any], selected: rx.Var[str]) -> rx.Component:
+    """Every join, as a layer laid OVER «Fotos y videos» (Deivid 2026-11-26: «las pistas
+    se mueven hacia abajo, no me gusta» — no row of its own): absolute, no height, no
+    margin, so every track stays exactly where it was. Each point rides the track's top
+    edge (half of it in the gap above), its target 24 px wide (WCAG 2.5.8's minimum, ~12
+    px over each block at 375 px) and 44 px tall; the layer itself lets every other tap
+    through to the blocks."""
+    return rx.el.div(
+        rx.foreach(joins, lambda row: _join(row, on_join, selected)),
+        class_name="q-tl__joins",
+    )
+
+
+def _direction_item(way: Any) -> rx.Component:
+    """One of «← Izquierda · → Derecha · ↑ Arriba · ↓ Abajo»: its arrow (the way the
+    block moves in, `clip_joins_vm.DIRECTION_ICONS`) before its word."""
+    arrow = rx.match(
+        way["value"],
+        ("right", rx.icon("arrow-right", size=16, aria_hidden="true")),
+        ("up", rx.icon("arrow-up", size=16, aria_hidden="true")),
+        ("down", rx.icon("arrow-down", size=16, aria_hidden="true")),
+        rx.icon("arrow-left", size=16, aria_hidden="true"),
+    )
+    return rx.segmented_control.item(
+        rx.el.span(arrow, way["label"], class_name="q-tl-join-way"),
+        value=way["value"],
+        min_height="44px",
+        aria_label=way["label"],
+        title=way["label"],
+    )
+
+
+def timeline_join_panel(
+    row: Row,
+    choices: rx.Var[list[dict[str, str]]],
+    *,
+    on_change: Callable[[Any], Any],
+    on_done: Any,
+    help_text: str,
+    seconds: rx.Var[float] | float = 0.0,
+    seconds_min: rx.Var[float] | float = 0.0,
+    seconds_max: rx.Var[float] | float = 1.0,
+    seconds_step: float = 0.1,
+    on_seconds: Callable[[Any], Any] | None = None,
+    directions: rx.Var[list[dict[str, str]]] | None = None,
+    on_direction: Callable[[Any], Any] | None = None,
+) -> rx.Component:
+    """m-25114465: the open join's panel — its title («Unión entre el bloque 1 y el 2»),
+    ``help_text``, its choices on the kit's segmented menu («Corte · Fundido ·
+    Barrido», only those that fit: ``choices`` rows ``{value, label}``), why only
+    «Corte» when that is all (``row["why"]``), the server's warning when a block is too
+    short for its transitions (``row["problem"]``), how much longer the video takes to
+    be ready with the choice (``row["slower"]``) and «Listo»."""
+    return rx.el.div(
+        rx.text(row["title"], size="2", weight="bold"),
+        rx.text(help_text, size="1", color=T.TEXT_MUTED),
+        rx.box(
+            rx.segmented_control.root(
+                rx.foreach(
+                    choices,
+                    lambda choice: rx.segmented_control.item(
+                        choice["label"],
+                        value=choice["value"],
+                        min_height="44px",
+                        aria_label=choice["label"],
+                        title=choice["label"],
+                    ),
+                ),
+                value=row["kind"],
+                on_change=on_change,
+                size="2",
+                aria_label=row["title"],
+                class_name="q-source-seg q-tl-seg q-seg-fill",
+            ),
+            width="100%",
+            min_width="0",
+        ),
+        rx.cond(row["why"] != "", rx.text(row["why"], size="1", color=T.TEXT_MUTED)),
+        *(
+            [
+                # Deivid 2026-11-26: the duration on the same bar as a text's fade
+                # (`ui.text_panel._fade_row`): «Dura 0,5 s» over a Radix slider, 0,1 s a
+                # step, the arrows move it, named by its own words; never past what fits
+                rx.cond(
+                    row["has_seconds"] == "1",
+                    rx.el.div(
+                        rx.text(
+                            row["seconds_line"],
+                            size="2",
+                            weight="medium",
+                            class_name="q-nums",
+                            id="clip-join-seconds-line",
+                        ),
+                        rx.text(row["overlap_line"], size="1", color=T.TEXT_MUTED),
+                        rx.slider(
+                            default_value=[seconds],
+                            value=[seconds],
+                            min=seconds_min,
+                            max=seconds_max,
+                            step=seconds_step,
+                            on_change=on_seconds,
+                            size="2",
+                            width="100%",
+                            aria_label=row["seconds_label"],
+                            # «0,5 segundos»: `assets/timeline.js` puts it on the thumb
+                            # (Radix Themes passes no props to it)
+                            custom_attrs={"data-join-seconds": ""},
+                        ),
+                        class_name="q-tl-panel__field",
+                    ),
+                )
+            ]
+            if on_seconds is not None
+            else []
+        ),
+        *(
+            [
+                # a wipe's way: «Izquierda · Derecha · Arriba · Abajo», a named group on
+                # the kit's segmented menu (Radix radios: 44 px, the arrows move)
+                rx.cond(
+                    row["has_direction"] == "1",
+                    rx.el.div(
+                        rx.text(row["direction_title"], size="2", weight="medium"),
+                        rx.box(
+                            rx.segmented_control.root(
+                                rx.foreach(directions, _direction_item),
+                                value=row["direction"],
+                                on_change=on_direction,
+                                size="2",
+                                aria_label=row["direction_title"],
+                                class_name="q-source-seg q-tl-seg q-seg-fill",
+                            ),
+                            width="100%",
+                            min_width="0",
+                        ),
+                        class_name="q-tl-panel__field",
+                    ),
+                )
+            ]
+            if directions is not None and on_direction is not None
+            else []
+        ),
+        rx.cond(
+            row["problem"] != "",
+            rx.text(
+                row["problem"],
+                size="2",
+                weight="medium",
+                role="status",
+                class_name="q-tl-panel__warn",
+            ),
+        ),
+        rx.cond(
+            row["slower"] != "",
+            rx.hstack(
+                rx.icon("clock", size=T.ICON_SM, aria_hidden="true"),
+                rx.text(row["slower"], size="1"),
+                spacing="1",
+                align="center",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        rx.el.div(
+            rx.button(
+                vm.DONE_LABEL, type="button", on_click=on_done, class_name="q-tl-actions__btn"
+            ),
+            class_name="q-tl-panel__done",
+        ),
+        class_name="q-tl-panel",
+        tab_index=-1,
+        role="group",
+        aria_label=row["title"],
+        custom_attrs={"data-tl-join-panel": row["id"]},
     )
 
 
@@ -175,8 +585,20 @@ def timeline(
     on_select: Callable[[str], Any],
     status: rx.Var[str] | str = "",
     on_key: Callable[[str, str, str], Any] | None = None,
+    on_drag: Callable[[str, str, float], Any] | None = None,
+    status_action: rx.Component | None = None,
+    effect_lanes: rx.Var[list[list[dict[str, str]]]] | None = None,
+    effect_lane_names: rx.Var[list[dict[str, str]]] | None = None,
+    thumb_base: rx.Var[str] | str = "",
+    joins: Rows | None = None,
+    on_join: Callable[[str], Any] | None = None,
+    frames: Frames | None = None,
 ) -> rx.Component:
     """The timeline of one video.
+
+    m-25114465: with ``joins`` (rows `{id, at, kind, name, open, warn}`) and ``on_join(id)``
+    a point sits on the line between every two blocks of «Fotos y videos» — «la unión»
+    (`_join`); tapped, the screen shows its panel (`timeline_join_panel`).
 
     ``media`` / ``texts`` / ``effects``: rows of `timeline_vm.media_blocks` /
     `overlay_blocks`; ``ticks``: `timeline_vm.ticks`; ``total``: the length in seconds
@@ -185,17 +607,58 @@ def timeline(
     clicked (or Enter). ``on_key(id, edge, key)``: ←/→/Escape on a block (``edge`` "":
     ←/→ move it, Escape lets it go — §3.7) or on a handle (``edge`` "start"/"end": ←/→ =
     ½ s).
-    ``status``: the live line («Moviste el video 2.»). The playhead is the browser's
-    (`timeline_script`, mounted by the screen once)."""
-    block_props = {"selected": selected, "on_select": on_select}
+    ``status``: the live line («Moviste el video 2.»), a polite `role="status"`;
+    ``status_action`` sits beside it (the editor's hint). ``on_drag(id, what,
+    value)``: a block dropped (ED-10, `assets/timeline-drag.js`) — «move» with the new
+    index of a video or photo, «time» with the new start of a text or effect, and
+    (ED-03) «start»/«end» with a handle's new value in its own unit; without it nothing
+    drags. The playhead is the browser's (`timeline_script`, mounted by the screen).
+
+    ED-04 (m-25026627): with ``effect_lanes`` (its rows' blocks, row by row) and
+    ``effect_lane_names`` (``{"name", "empty"}`` each) «Efectos» is several rows — the
+    owner's effects never overlapping on a row; an effect dragged up or down changes
+    row (`assets/timeline-drag.js`).
+
+    ED-11 (m-25026650): ``thumb_base`` goes before each media row's ``thumb`` path (the
+    browser's backend origin; "" when the rows carry whole addresses).
+
+    ED-11b (m-25029110): ``frames`` — each video block's strip cells by the block's id
+    (`timeline_vm.strip_cells`) — draws the server's frame strip under a video block whose
+    row has a ``strip`` path (also after ``thumb_base``); a block without one keeps its
+    picture."""
+    block_props = {"selected": selected, "on_select": on_select, "thumb_base": thumb_base}
+    lanes = effect_lanes is not None and effect_lane_names is not None
+    effect_names: list[rx.Component] = [
+        rx.foreach(
+            effect_lane_names,  # type: ignore[arg-type]
+            lambda names: rx.el.span(
+                names["name"], class_name=f"q-tl__name q-tl__name--{vm.TRACK_EFFECT}"
+            ),
+        )
+        if lanes
+        else rx.el.span(
+            vm.TRACK_LABELS[vm.TRACK_EFFECT], class_name=f"q-tl__name q-tl__name--{vm.TRACK_EFFECT}"
+        )
+    ]
     names = rx.el.div(
         rx.el.span(class_name="q-tl__name q-tl__name--ruler"),
-        *(
-            rx.el.span(vm.TRACK_LABELS[track], class_name=f"q-tl__name q-tl__name--{track}")
-            for track in (vm.TRACK_MEDIA, vm.TRACK_TEXT, vm.TRACK_EFFECT)
+        rx.el.span(
+            vm.TRACK_LABELS[vm.TRACK_MEDIA], class_name=f"q-tl__name q-tl__name--{vm.TRACK_MEDIA}"
         ),
+        rx.el.span(
+            vm.TRACK_LABELS[vm.TRACK_TEXT], class_name=f"q-tl__name q-tl__name--{vm.TRACK_TEXT}"
+        ),
+        *effect_names,
         class_name="q-tl__names",
         aria_hidden="true",
+    )
+    effect_rows = (
+        rx.foreach(
+            effect_lanes,  # type: ignore[arg-type]
+            lambda rows, i: _effect_lane(rows, effect_lane_names[i], **block_props),  # type: ignore[index]
+        )
+        if lanes
+        else _lane(vm.TRACK_EFFECT, effects, **block_props)
     )
     ruler = rx.el.div(
         rx.foreach(
@@ -216,12 +679,19 @@ def timeline(
         class_name="q-tl__scrub",
         aria_label=vm.PLAYHEAD_LABEL,
     )
+    media_lane = _lane(vm.TRACK_MEDIA, media, frames=frames, **block_props)
+    if joins is not None and on_join is not None:
+        # m-25114465: the joins lie over the media track — its box is the track's own
+        # height (`.q-tl__media`), so nothing below it moves
+        media_lane = rx.el.div(
+            media_lane, _joins(joins, on_join, selected), class_name="q-tl__media"
+        )
     canvas = rx.el.div(
         ruler,
         scrub,
-        _lane(vm.TRACK_MEDIA, media, empty_hint=False, **block_props),
-        _lane(vm.TRACK_TEXT, texts, empty_hint=True, **block_props),
-        _lane(vm.TRACK_EFFECT, effects, empty_hint=True, **block_props),
+        media_lane,
+        _lane(vm.TRACK_TEXT, texts, **block_props),
+        effect_rows,
         rx.el.div(class_name="q-tl__head q-tl__head--move", aria_hidden="true"),
         class_name="q-tl__canvas",
     )
@@ -236,13 +706,27 @@ def timeline(
             rx.el.div(class_name="q-tl__head q-tl__head--fixed", aria_hidden="true"),
             class_name="q-tl__frame",
         ),
-        rx.el.p(status, role="status", class_name="q-tl__status"),
+        rx.el.div(
+            rx.el.p(status, role="status", class_name="q-tl__status"),
+            *([status_action] if status_action is not None else []),
+            class_name="q-tl__live",
+        ),
+        # the blocks' help, read through `aria-describedby` (never shown)
+        rx.el.div(
+            *(rx.el.span(text, id=help_id) for text, help_id in vm.HELP_IDS.items()),
+            class_name="q-edit-sr",
+        ),
         *([_key_trigger(on_key)] if on_key is not None else []),
+        *([_drag_trigger(on_drag)] if on_drag is not None else []),
         role="group",
         aria_label=vm.GROUP_LABEL,
         class_name="q-tl",
         style={"--tl-total": total, "--tl-px": f"{vm.PX_PER_SECOND}px"},
-        custom_attrs={"data-q-timeline": ""},
+        custom_attrs={
+            "data-q-timeline": "",
+            "data-tl-lift-text": vm.LIFT_HINT,
+            **({} if on_drag is not None else {"data-tl-no-drag": ""}),
+        },
     )
 
 
@@ -260,15 +744,41 @@ def _action_button(label: str, icon: str, on_action: Callable[[str], Any] | None
     )
 
 
-def timeline_add(on_add: Callable[[str], Any]) -> rx.Component:
+def timeline_add(
+    on_add: Callable[[str], Any],
+    *,
+    off: Mapping[str, Any] | None = None,
+    note: rx.Var[str] | str = "",
+) -> rx.Component:
     """«Agregar» with nothing chosen: the kit's `orbit_menu` — «+» turns into «×» and
-    opens «Foto o video · Texto · Efecto · Idea» above it. ``on_add(key)`` OPENS the
+    opens «Foto o video · Texto · Efecto · Idea» to its right. ``on_add(key)`` OPENS the
     flow of that option (the drawer, the text field, the effects list), never adds by
-    itself."""
+    itself. ``off``: an option's key → a `Var[bool]` that turns it off; ``note``: why,
+    said on its own line ABOVE the «+» while it is not "" — never beside it, where the
+    options open over it (ED-12: «Tu video ya tiene 8 fotos o videos. Quita una para
+    agregar otra.») —, with an id the «+» names in `aria-describedby` (`ADD_NOTE_ID`)."""
+    shut = dict(off or {})
+    saying = rx.Var.create(note) != ""
     return rx.el.div(
-        orbit_menu(
-            vm.ADD_LABEL,
-            [OrbitItem(key, icon, text, on_add(key)) for key, icon, text in vm.ADD_OPTIONS],
+        rx.cond(
+            saying,
+            rx.text(
+                note, size="2", color=T.TEXT_MUTED, class_name="q-tl-add__note", id=ADD_NOTE_ID
+            ),
+        ),
+        rx.el.div(
+            orbit_menu(
+                vm.ADD_LABEL,
+                [
+                    OrbitItem(key, icon, text, on_add(key), disabled=shut.get(key, False))
+                    for key, icon, text in vm.ADD_OPTIONS
+                ],
+                # Deivid, 2026-11-16: the options open to the right of the «+», not above it
+                direction="right",
+                # the «+» is described by its why while there is one (UX review S4)
+                described_by=rx.cond(saying, ADD_NOTE_ID, ""),
+            ),
+            class_name="q-tl-add__row",
         ),
         class_name="q-tl-add",
     )
@@ -279,23 +789,40 @@ def timeline_actions(
     *,
     on_add: Callable[[str], Any],
     on_action: Callable[[str], Any] | None = None,
+    label: rx.Var[str] | str = "",
+    actions: dict[str, tuple[tuple[str, str], ...]] | None = None,
+    add_off: Mapping[str, Any] | None = None,
+    add_note: rx.Var[str] | str = "",
 ) -> rx.Component:
     """What the owner can do now (§2): with nothing chosen (``kind`` ""), «Agregar»
     (`timeline_add`); with a video, a photo, a text or an effect chosen, its up-to-4
-    `surface` buttons floating in a glass island (`.q-island`). ``on_action(label)``."""
+    `surface` buttons floating in a glass island (`.q-island`). ``on_action(label)``.
+    ``label``: the chosen block's short name — the bar is «Acciones de Video 1»
+    (`aria-label`). ``actions``: a screen's own buttons by kind (default `vm.ACTIONS`;
+    a kind with none shows no island). ``add_off`` / ``add_note``: «Agregar»'s options
+    turned off and why (`timeline_add`)."""
+    by_kind = vm.ACTIONS if actions is None else actions
+    name: rx.Var[str] | str = (
+        vm.actions_label(label)
+        if isinstance(label, str)
+        else rx.cond(label != "", vm.ACTIONS_PREFIX + label, "Acciones")
+    )
 
     def bar(key: str) -> rx.Component:
+        items = by_kind.get(key, ())
+        if not items:
+            return rx.fragment()
         return rx.el.div(
-            *(_action_button(label, icon, on_action) for label, icon in vm.ACTIONS[key]),
+            *(_action_button(text, icon, on_action) for text, icon in items),
             class_name="q-island q-tl-island q-tl-actions",
             role="toolbar",
-            aria_label="Acciones",
+            aria_label=name,
         )
 
     return rx.match(
         kind,
         *((key, bar(key)) for key in ("video", "photo", "text", "effect")),
-        timeline_add(on_add),
+        timeline_add(on_add, off=add_off, note=add_note),
     )
 
 
@@ -325,7 +852,7 @@ def _segmented(
             on_change=on_change,
             size="2",
             aria_label=label,
-            class_name="q-source-seg q-tl-seg",
+            class_name="q-source-seg q-tl-seg q-seg-fill",
         ),
         width="100%",
         min_width="0",
@@ -335,8 +862,15 @@ def _segmented(
 def _nudge_row(
     label: rx.Var[str], row: Row, edge: str, on_nudge: Callable[[str, str, float], Any]
 ) -> rx.Component:
+    """«Desde 0:04 [− ½ s] [+ ½ s]»: the value beside its buttons (ED-10 UX note), so the
+    owner sees what each tap did; the group is named by the plain label («Desde»)."""
     return rx.el.div(
-        rx.text(label, size="2", weight="medium", class_name="q-tl-panel__label"),
+        rx.text(
+            row[f"{edge}_value"],
+            size="2",
+            weight="medium",
+            class_name="q-tl-panel__label q-nums",
+        ),
         rx.button(
             vm.MINUS_HALF,
             variant="soft",
@@ -366,12 +900,17 @@ def timeline_panel(
     on_done: Any,
     on_speed: Callable[[str, str], Any] | None = None,
     on_place: Callable[[str, str], Any] | None = None,
+    extra: rx.Component | None = None,
+    nudges: rx.Var[bool] | bool = True,
 ) -> rx.Component:
     """The chosen block's panel (§1.2/§1.3): its title, «Desde/Hasta» (a video),
     «Duración» (a photo) or «Empieza/Termina» (a text or effect) with «− ½ s / + ½ s»,
     «Velocidad» Normal · ×5 · ×10 · ×20 for a video (``on_speed(id, value)``), the
     text's place «Arriba · En el medio · Abajo» (``on_place(id, value)``), and «Listo»,
-    which lets the block go. ``on_nudge(id, edge, delta)``."""
+    which lets the block go. ``on_nudge(id, edge, delta)``; ``nudges`` False hides the
+    «− ½ s / + ½ s» rows (a block whose times the screen cannot change yet). ``extra``:
+    the screen's own fields, before «Listo». Escape inside the panel lets the block go
+    too (`assets/timeline.js`, `data-tl-panel`)."""
     extras: list[rx.Component] = []
     if on_speed is not None:
         extras.append(
@@ -405,14 +944,18 @@ def timeline_panel(
                 ),
             )
         )
-    return rx.el.div(
-        rx.text(row["panel"], size="2", weight="bold"),
+    rows = rx.fragment(
         rx.cond(
             row["start_label"] != "",
             _nudge_row(row["start_label"], row, "start", on_nudge),
         ),
         _nudge_row(row["end_label"], row, "end", on_nudge),
+    )
+    return rx.el.div(
+        rx.text(row["panel"], size="2", weight="bold"),
+        rows if isinstance(nudges, bool) and nudges else rx.cond(nudges, rows),
         *extras,
+        *([extra] if extra is not None else []),
         rx.el.div(
             rx.button(
                 vm.DONE_LABEL, type="button", on_click=on_done, class_name="q-tl-actions__btn"
@@ -420,6 +963,10 @@ def timeline_panel(
             class_name="q-tl-panel__done",
         ),
         class_name="q-tl-panel",
+        tab_index=-1,
+        role="group",
+        aria_label=row["panel"],
+        custom_attrs={"data-tl-panel": row["id"]},
     )
 
 
@@ -427,13 +974,17 @@ def timeline_layout(
     timeline_view: rx.Component,
     actions: rx.Component,
     panel: rx.Component | None = None,
+    *,
+    bar_below: bool = False,
 ) -> rx.Component:
     """The timeline with its action bar and its panel, in their places: on a phone the
     bar sits ABOVE the tracks (in the flow: it never covers the tracks nor the
-    playhead), on a desktop under them; the panel always last (`.q-tl-stack`)."""
+    playhead), on a desktop under them; the panel always last (`.q-tl-stack`).
+    ``bar_below``: the bar under the tracks at every size (the editor, ED-10: preview,
+    tracks, bar, panel — top to bottom)."""
     return rx.el.div(
         rx.el.div(actions, class_name="q-tl-stack__actions"),
         rx.el.div(timeline_view, class_name="q-tl-stack__track"),
         *([rx.el.div(panel, class_name="q-tl-stack__panel")] if panel is not None else []),
-        class_name="q-tl-stack",
+        class_name="q-tl-stack q-tl-stack--bar-below" if bar_below else "q-tl-stack",
     )

@@ -92,15 +92,16 @@ FIRST_PART: tuple[int, ...] = (1,)
 
 
 def refusal_duration(exc: BaseException | None) -> float | None:
-    """EF-06 (option A): how long a `local` part refused for its length lasts
-    (`RecipeProblem.duration_s` of `local_length_out_of_range`) — only when that IS the
+    """EF-06 (option A) and m-25042483: how long a `local` part refused for its length lasts
+    (`local_length_out_of_range`), or how much source its longest stretch takes
+    (`segment_source_too_long`), from `RecipeProblem.duration_s` — only when that IS the
     code kept (`refusal_of`); None otherwise. Pure."""
     if not isinstance(exc, RecipeRefused):
         return None
     kept = refusal_of(exc)
-    if kept is None or kept[0] != "local_length_out_of_range":
+    if kept is None or kept[0] not in ("local_length_out_of_range", "segment_source_too_long"):
         return None
-    return next((p.duration_s for p in exc.problems if p.code == "local_length_out_of_range"), None)
+    return next((p.duration_s for p in exc.problems if p.code == kept[0]), None)
 
 
 def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | None:
@@ -127,6 +128,12 @@ def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | Non
             # EF-06 (option A): the length keeps its own code, said with `duration_s`
             else "local_length_out_of_range"
             if "local_length_out_of_range" in codes
+            # m-25042483: a stretch over 60 s of its video, said with `duration_s` too
+            else "segment_source_too_long"
+            if "segment_source_too_long" in codes
+            # EF-16: a part shorter than its transitions, said with the part's number
+            else "transitions_longer_than_part"
+            if "transitions_longer_than_part" in codes
             else "effects_invalid"
         )
         about = [p for p in exc.problems if p.code == code] or list(exc.problems)

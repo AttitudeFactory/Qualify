@@ -46,6 +46,19 @@ Three doors, and only one of them pays:
 - `view(tenant, brand)` — only reads: the latest run (its progress) and the latest `ok`
   run with its ideas. Never calls the vendor nor the model, never writes.
 
+RF-05 (m-25119465, amends R4/R8): the Monday run (`weekly`) reads, after the referentes, the
+6 competitors of `reels.brand_competitors` on a client charged with the `competencia`
+label — the gate books them under `competitor_reels_*` and the run counts them apart
+(`competitor_credits`, `competitor_cost_usd`). Their candidates, transcripts
+(`COMPETITOR_PAID_TRANSCRIPTS`) and verdicts are their own; a cap or a failed check on them
+never stops the referentes' ideas, which stay the referentes' only. A `competitor_now`
+run (the owner's «Ver sus reels ahora», `competitors.read_now`) reads its one account the
+same way (`_read_competitor_now`) and keeps no idea.
+
+RF-14 (m-25129383): the owner's «Buscar reels nuevos» (`manual_search.search_now`) is a
+`manual` run — at most one per brand and local day — that reads the same accounts as the
+Monday run, the 6 competitors included, and leaves its ideas like it.
+
 A gate refusal (ADR 42 R2: switch off, floor, 402) ends the run `budget_stopped`, with
 what was read kept. Anything unexpected ends it `error` (logged), never stuck `running`.
 
@@ -95,6 +108,8 @@ from qualify_api.referentes.reel_store import (
     STATUS_RUNNING,
     TRANSCRIPT_TIKTOK,
     TRANSCRIPT_VENDOR,
+    TRIGGER_COMPETITOR_NOW,
+    TRIGGER_MANUAL,
     TRIGGER_OPERATOR_90D,
     TRIGGER_WEEKLY,
     TRIGGERS,
@@ -180,6 +195,16 @@ CHECK_RETRY_AFTER = timedelta(minutes=15)
 #: (R8 re-review, N1): a worker that was down past the retries, or a row older than 0134
 #: (whose attempts start at 0), never re-runs an old week's check on today's data.
 CHECK_RETRY_WITHIN = timedelta(hours=24)
+#: RF-05 (m-25119465): Instagram transcripts the Monday run may pay for its competitors'
+#: candidates, on top of `reels.MAX_PAID_TRANSCRIPTS` for the referentes. Worst case of a
+#: weekly attempt: 12 × 4 + 40 (referentes) + 6 × 4 + 18 (competitors) = 130 credits,
+#: under the business's 150 a day (`usage.DAILY_CAP`).
+COMPETITOR_PAID_TRANSCRIPTS = 18
+#: RF-05 «Ver sus reels ahora»: the most viewed reels of the one account the check reads,
+#: and the Instagram transcripts it may pay — at most 4 + 2 credits and 8 verdicts,
+#: ≈ USD 0.01-0.02 per account.
+READ_NOW_REVIEWED = 8
+READ_NOW_PAID_TRANSCRIPTS = 2
 
 
 class RunInterrupted(BaseException):
@@ -228,13 +253,18 @@ def enqueue_run(
     *,
     run_date: date | None = None,
     retry: bool = False,
+    account: tuple[str, str] | None = None,
     store: ReelRunStore | None = None,
     clock: Callable[[], float] = time.time,
 ) -> RunRecord:
     """The brand's run of `trigger` for `run_date` (today, UTC, by default), queued once.
     Calling it again returns the same run; `retry=True` re-queues it when it ended
-    `check_failed` or `error`. Never calls the vendor nor the model."""
+    `check_failed` or `error`. `account` (network, handle) names the one competitor a
+    `competitor_now` run reads (RF-05) — one such run per account and day. Never calls the
+    vendor nor the model."""
     now = _utc(clock())
+    if account is not None:
+        account = (account[0], _handle(account[1]))
     return (store or default_store()).enqueue(
         tenant_id,
         brand_id,
@@ -244,6 +274,7 @@ def enqueue_run(
         pipeline_version=PIPELINE_VERSION,
         now=now,
         retry=retry,
+        account=account,
     )
 
 
@@ -448,6 +479,11 @@ class RunOutcome:
     verdicts_reused: int = 0
     ideas: int = 0
     cost_usd: Decimal = Decimal("0")
+    #: RF-05: the `competencia` accounts read, and the part of `credits` / `cost_usd`
+    #: spent on them (all of it for a `competitor_now` run).
+    competitors_read: int = 0
+    competitor_credits: int = 0
+    competitor_cost_usd: Decimal = Decimal("0")
     #: False when the run was no longer this claim's when it ended (the worker recovered
     #: it meanwhile): its status was not written and its ideas not analyzed.
     recorded: bool = True
@@ -513,6 +549,11 @@ class _Context:
     #: operator's 90-day read too (founder decision 2026-11-04, «incluir todo»).
     charge: usage.UsageCharge | None = None
     credits: int = 0
+    #: RF-05: what the run is (its trigger) and, for `competitor_now`, the one account.
+    trigger: str = TRIGGER_WEEKLY
+    account: tuple[str, str] | None = None
+    #: The part of `credits` read for `competencia` accounts (RF-05).
+    competitor_credits: int = 0
     #: The gate's refusal reason, when one stopped a paid read.
     stopped: str = ""
     #: reel key → the TikTok subtitles URL of this run's read (not stored: it expires).
@@ -612,17 +653,28 @@ def _reel_dict(reel: PublicReel, ref: reels.Referente | None, caption_url: str) 
     }
 
 
-def _counting_client(ctx: _Context, timeout: float) -> httpx.Client:
+def _counting_client(ctx: _Context, timeout: float, *, competitor: bool = False) -> httpx.Client:
     """An HTTP client that counts every answer of the vendor's API — the credits of this
     run (a cached answer is counted too: the vendor does not say which were free) — bound
     to the business that pays them (R5): the transcripts fan out to worker threads, which
-    a context variable would not reach."""
+    a context variable would not reach.
+
+    `competitor` (RF-05): the reads of `competencia` accounts — counted apart too
+    (`competitor_credits`) and charged with the label, so the gate books them under the
+    competitor features of `vendor_usage_events`, inside the same caps."""
+    lock = threading.Lock()
 
     def count(response: httpx.Response) -> None:
         if scrapecreators.is_vendor_host(response.request.url.host) and response.is_success:
-            ctx.credits += 1
+            with lock:
+                ctx.credits += 1
+                if competitor:
+                    ctx.competitor_credits += 1
 
-    return usage.bind(httpx.Client(timeout=timeout, event_hooks={"response": [count]}), ctx.charge)
+    charge = ctx.charge
+    if competitor and charge is not None:
+        charge = replace(charge, account_label=usage.LABEL_COMPETITOR)
+    return usage.bind(httpx.Client(timeout=timeout, event_hooks={"response": [count]}), charge)
 
 
 def _refresh_account(
@@ -757,9 +809,18 @@ def _kept(transcript: scrapecreators.Transcript) -> KeptAnswer | None:
     return KeptAnswer(path=raw.path, params=raw.params, body=raw.body, credits=raw.credits)
 
 
-def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: TranscribeFn) -> int:
+def _transcribe(
+    ctx: _Context,
+    ranked: Sequence[dict[str, Any]],
+    fetch: TranscribeFn,
+    *,
+    cap: int | None = None,
+    competitor: bool = False,
+) -> int:
     """Transcribe the candidates that never were, store each one, return how many
-    Instagram ones were paid. Only the `reels.MAX_PAID_TRANSCRIPTS` most viewed Instagram
+    Instagram ones were paid. Only the `cap` (`reels.MAX_PAID_TRANSCRIPTS`; RF-05 passes
+    its own for competitors, whose calls are then booked under the competitor feature)
+    most viewed Instagram
     candidates are eligible, transcribed or not — so a retry (Claude down) never reaches
     further down the ranking and pays nothing already-eligible again. A failed one is left
     unknown (a later run retries); a gate refusal stops the paid ones and the review goes
@@ -783,7 +844,7 @@ def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: Transcri
     instagram = 0
     for reel in ranked:
         if reel["network"] == "instagram":
-            if instagram >= reels.MAX_PAID_TRANSCRIPTS:
+            if instagram >= (reels.MAX_PAID_TRANSCRIPTS if cap is None else cap):
                 continue
             instagram += 1
         if reel["transcriptKnown"]:
@@ -857,7 +918,9 @@ def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: Transcri
             if claim is not None and not answered:
                 _release_transcript(ctx, reel, claim)
 
-    with _counting_client(ctx, scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
+    with _counting_client(
+        ctx, scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS, competitor=competitor
+    ) as client:
         with ThreadPoolExecutor(max_workers=reels._TRANSCRIPT_WORKERS) as pool:
             done = list(pool.map(one, todo))
     _read_back(ctx, elsewhere)
@@ -943,7 +1006,7 @@ def _check(
             missing.append(item)
         else:
             known[key] = verdict
-    outcome.verdicts_reused = len(known)
+    outcome.verdicts_reused += len(known)
     if not missing:
         return known, Decimal("0")
     size = reels._REVIEW_BATCH
@@ -1009,7 +1072,7 @@ def _check(
         last = failures[-1] if failures else None
         cause = reels.check_failure_cause(last) if last else "the model gave no answer"
         raise _CheckFailed(cause, cost)
-    outcome.verdicts_new = len(fresh)
+    outcome.verdicts_new += len(fresh)
     for verdict in fresh.values():
         known[f"{verdict.network}:{verdict.reel_id}"] = verdict
     return known, cost
@@ -1085,6 +1148,10 @@ def run(
         sleep=sleep,
         claimed_at=claimed_at,
         charge=usage.UsageCharge(tenant_id, claimed.brand_id),
+        trigger=claimed.trigger,
+        account=(claimed.account_network, claimed.account_handle)
+        if claimed.account_network and claimed.account_handle
+        else None,
     )
     b_hash: str | None = None
     try:
@@ -1105,6 +1172,7 @@ def run(
             status = STATUS_ERROR
         outcome.status = status
         outcome.credits = ctx.credits
+        outcome.competitor_credits = ctx.competitor_credits
         outcome.stopped = ctx.stopped
         outcome.recorded = active.finish(
             tenant_id,
@@ -1115,6 +1183,8 @@ def run(
             cost_usd=outcome.cost_usd,
             brief_hash=b_hash,
             started_at=claimed_at,
+            competitor_credits=ctx.competitor_credits,
+            competitor_cost_usd=outcome.competitor_cost_usd,
         )
     except RunInterrupted:
         if active.release(tenant_id, run_id, started_at=claimed_at):
@@ -1130,7 +1200,7 @@ def run(
         _analyze(ctx, analyze, outcome)
     logger.info(
         "reels run %s: %s (accounts %d read, %d credits, %d transcripts paid, "
-        "%d verdicts new / %d reused, %d ideas)",
+        "%d verdicts new / %d reused, %d ideas; competitors %d read, %d credits)",
         run_id,
         status,
         outcome.accounts_read,
@@ -1139,6 +1209,8 @@ def run(
         outcome.verdicts_new,
         outcome.verdicts_reused,
         outcome.ideas,
+        outcome.competitors_read,
+        outcome.competitor_credits,
     )
     return outcome
 
@@ -1172,12 +1244,34 @@ def _run_claimed(
         logger.warning("reels run %s: no Anthropic key configured, nothing read", ctx.run_id)
         return STATUS_CHECK_FAILED, b_hash
 
-    # 3. the accounts, each refreshed at most once across every business
+    if ctx.trigger == TRIGGER_COMPETITOR_NOW:
+        return _read_competitor_now(
+            ctx,
+            outcome,
+            brand,
+            b_hash,
+            api_key=key,
+            repository=repository,
+            fetch=fetch,
+            transcribe_fetch=transcribe_fetch,
+            review=review,
+            config=config,
+        )
+
+    # 3. the accounts, each refreshed at most once across every business — the referentes
+    # first, then (RF-05) the competitors the owner picked — on the Monday run and on the
+    # owner's «Buscar reels nuevos» (RF-14), which reads the same accounts
     referentes = reels.brand_referentes(ctx.tenant_id, ctx.brand_id, repository=repository)
+    competitors = (
+        reels.brand_competitors(ctx.tenant_id, ctx.brand_id, repository=repository)
+        if ctx.trigger in (TRIGGER_WEEKLY, TRIGGER_MANUAL)
+        else []
+    )
+    total = len(referentes) + len(competitors)
     ctx.store.progress(
         ctx.tenant_id,
         ctx.run_id,
-        accounts_total=len(referentes),
+        accounts_total=total,
         accounts_done=0,
         started_at=ctx.claimed_at,
     )
@@ -1192,7 +1286,7 @@ def _run_claimed(
                 ctx.store.progress(
                     ctx.tenant_id,
                     ctx.run_id,
-                    accounts_total=len(referentes),
+                    accounts_total=total,
                     accounts_done=done,
                     started_at=ctx.claimed_at,
                 )
@@ -1201,54 +1295,68 @@ def _run_claimed(
     outcome.accounts_read = len(readable)
 
     # the candidates, from what is STORED (this read and every earlier one)
-    by_account = {(ref.network, _handle(ref.handle)): ref for ref in referentes}
-    stored = ctx.store.reels_of(
-        ctx.tenant_id,
-        list(by_account),
-        since=ctx.now - timedelta(days=ctx.days),
-    )
-    reel_dicts = [
-        _reel_dict(
-            r,
-            by_account.get((r.network, r.handle)),
-            ctx.caption_urls.get(f"{r.network}:{r.reel_id}", ""),
-        )
-        for r in stored
-    ]
-    moment = ctx.now.timestamp()
-    windows = {
-        name: moment - span * 24 * 3600
-        for name, span in reels.WINDOW_DAYS.items()
-        if span <= ctx.days
-    }
-    widest = moment - ctx.days * 24 * 3600
-    candidates = {
-        f"{r['network']}:{r['id']}": r
-        for since in windows.values()
-        for r in reels._candidates(reel_dicts, since, per_account=since == widest)
-    }
-    if not candidates:
-        # no idea this time: and none left over from an earlier attempt of this run
-        ctx.store.save_ideas(ctx.tenant_id, ctx.brand_id, ctx.run_id, [], started_at=ctx.claimed_at)
-        return STATUS_OK, b_hash
-    ranked = sorted(candidates.values(), key=reels._views_rank, reverse=True)
+    ranked = _ranked(ctx, referentes)
 
-    # 4. what they say — stored, never paid twice
-    outcome.transcripts_paid = _transcribe(ctx, ranked, transcribe_fetch)
+    # 4. what they say — stored, never paid twice. The referentes' transcripts are paid
+    # BEFORE any competitor is read (RF-05): with little room left in the day, the
+    # competitors never take the credits the ideas need
+    if ranked:
+        outcome.transcripts_paid = _transcribe(ctx, ranked, transcribe_fetch)
+    if competitors:
+        _read_competitors(ctx, outcome, competitors, fetch, done=len(referentes), total=total)
+    ranked_rivals = _ranked(ctx, competitors)
+    if ranked_rivals:
+        outcome.transcripts_paid += _transcribe(
+            ctx,
+            ranked_rivals,
+            transcribe_fetch,
+            cap=COMPETITOR_PAID_TRANSCRIPTS,
+            competitor=True,
+        )
 
     # 5. the check — stored verdicts reused; a failure keeps everything read
-    try:
-        verdicts, cost = _check(
-            ctx, brand, b_hash, ranked, api_key=key, review=review, config=config, outcome=outcome
-        )
-    except _CheckFailed as exc:
-        outcome.check = CHECK_UNAVAILABLE
-        outcome.cost_usd += exc.cost
-        logger.warning("reels run %s: check unavailable: %s", ctx.run_id, exc.cause)
-        return STATUS_CHECK_FAILED, b_hash
-    outcome.cost_usd += cost
+    verdicts: dict[str, StoredVerdict] = {}
+    if ranked:
+        try:
+            verdicts, cost = _check(
+                ctx,
+                brand,
+                b_hash,
+                ranked,
+                api_key=key,
+                review=review,
+                config=config,
+                outcome=outcome,
+            )
+        except _CheckFailed as exc:
+            outcome.check = CHECK_UNAVAILABLE
+            outcome.cost_usd += exc.cost
+            logger.warning("reels run %s: check unavailable: %s", ctx.run_id, exc.cause)
+            return STATUS_CHECK_FAILED, b_hash
+        outcome.cost_usd += cost
+    if ranked_rivals:
+        # the competitors' verdicts feed «Más reels revisados» (RF-01), never the ideas: a
+        # failure here is logged and the referentes' ideas still land
+        try:
+            _, rival_cost = _check(
+                ctx,
+                brand,
+                b_hash,
+                ranked_rivals,
+                api_key=key,
+                review=review,
+                config=config,
+                outcome=outcome,
+            )
+        except _CheckFailed as exc:
+            rival_cost = exc.cost
+            logger.warning(
+                "reels run %s: competitors' check unavailable: %s", ctx.run_id, exc.cause
+            )
+        outcome.cost_usd += rival_cost
+        outcome.competitor_cost_usd += rival_cost
 
-    # 6. the ideas
+    # 6. the ideas — of the referentes only (R11 unchanged by RF-05)
     ideas = _ideas(ctx, ranked, verdicts)
     if not ctx.store.save_ideas(
         ctx.tenant_id,
@@ -1262,6 +1370,154 @@ def _run_claimed(
         return STATUS_OK, b_hash
     outcome.ideas = len(ideas)
     ctx.idea_reels = [r for _, r in ideas]
+    return STATUS_OK, b_hash
+
+
+def _stored_dicts(ctx: _Context, accounts: Sequence[reels.Referente]) -> list[dict[str, Any]]:
+    """The stored reels of `accounts` in the run's span, as the pipeline's reel dicts."""
+    by_account = {(ref.network, _handle(ref.handle)): ref for ref in accounts}
+    if not by_account:
+        return []
+    stored = ctx.store.reels_of(
+        ctx.tenant_id,
+        list(by_account),
+        since=ctx.now - timedelta(days=ctx.days),
+    )
+    return [
+        _reel_dict(
+            r,
+            by_account.get((r.network, r.handle)),
+            ctx.caption_urls.get(f"{r.network}:{r.reel_id}", ""),
+        )
+        for r in stored
+    ]
+
+
+def _ranked(ctx: _Context, accounts: Sequence[reels.Referente]) -> list[dict[str, Any]]:
+    """The candidates of `accounts` for the check, most viewed first: each window's top
+    plus every account's own top in the widest (`reels._candidates`), from what is STORED
+    (this read and every earlier one). The referentes and the competitors are ranked
+    apart, so the competitors never take a referente's place among the candidates."""
+    reel_dicts = _stored_dicts(ctx, accounts)
+    if not reel_dicts:
+        return []
+    moment = ctx.now.timestamp()
+    windows = {
+        name: moment - span * 24 * 3600
+        for name, span in reels.WINDOW_DAYS.items()
+        if span <= ctx.days
+    }
+    widest = moment - ctx.days * 24 * 3600
+    candidates = {
+        f"{r['network']}:{r['id']}": r
+        for since in windows.values()
+        for r in reels._candidates(reel_dicts, since, per_account=since == widest)
+    }
+    return sorted(candidates.values(), key=reels._views_rank, reverse=True)
+
+
+def _read_competitors(
+    ctx: _Context,
+    outcome: RunOutcome,
+    competitors: Sequence[reels.Referente],
+    fetch: FetchFn,
+    *,
+    done: int,
+    total: int,
+) -> None:
+    """RF-05: read the Monday run's competitors after the referentes, on a client whose
+    every credit is booked under the competitor features and counted apart. A gate refusal
+    (a cap the referentes already neared) stops the competitors only: the run goes on with
+    what is stored, so the referentes' ideas never pay for them."""
+    try:
+        with _counting_client(ctx, READ_TIMEOUT_SECONDS, competitor=True) as client:
+            for step, ref in enumerate(competitors, done + 1):
+                if _refresh_account(ctx, ref, fetch, client):
+                    outcome.competitors_read += 1
+                else:
+                    outcome.accounts_failed.append(f"@{ref.handle}")
+                ctx.store.progress(
+                    ctx.tenant_id,
+                    ctx.run_id,
+                    accounts_total=total,
+                    accounts_done=step,
+                    started_at=ctx.claimed_at,
+                )
+    except _Blocked as exc:
+        logger.warning("reels run %s: competitors not read, gate refused: %s", ctx.run_id, exc)
+
+
+def _read_competitor_now(
+    ctx: _Context,
+    outcome: RunOutcome,
+    brand: review_ai.BrandBrief,
+    b_hash: str,
+    *,
+    api_key: str,
+    repository: Any,
+    fetch: FetchFn,
+    transcribe_fetch: TranscribeFn,
+    review: ReviewFn,
+    config: ModelConfig,
+) -> tuple[str, str | None]:
+    """RF-05 «Ver sus reels ahora»: steps 3-5 for the ONE competitor the run names —
+    its reels (page 1 / the 30-day walk only when not fresh: an account read in the last
+    24 h / 72 h, by this business or another, costs nothing), up to
+    `READ_NOW_PAID_TRANSCRIPTS` Instagram transcripts, Claude's verdict of its
+    `READ_NOW_REVIEWED` most viewed (stored ones reused). No idea is kept: the verdicts
+    feed «Más reels revisados». Every credit and dollar is the competitors'."""
+    if ctx.account is None:
+        raise RuntimeError(f"competitor read {ctx.run_id} names no account")
+    network, handle = ctx.account
+    rivals = {
+        (a.network, a.handle): a
+        for a in reels.competitor_accounts(ctx.tenant_id, ctx.brand_id, repository=repository)
+    }
+    rival = rivals.get((network, handle))
+    if rival is None:
+        logger.info("competitor read %s: the account is no longer a competitor", ctx.run_id)
+        return STATUS_OK, b_hash
+    ref = reels.Referente(network=network, handle=handle, kind=rival.kind, note=rival.note)
+    ctx.store.progress(
+        ctx.tenant_id, ctx.run_id, accounts_total=1, accounts_done=0, started_at=ctx.claimed_at
+    )
+    try:
+        with _counting_client(ctx, READ_TIMEOUT_SECONDS, competitor=True) as client:
+            if _refresh_account(ctx, ref, fetch, client):
+                outcome.competitors_read = 1
+            else:
+                outcome.accounts_failed.append(f"@{handle}")
+    except _Blocked:
+        return STATUS_BUDGET_STOPPED, b_hash
+    ctx.store.progress(
+        ctx.tenant_id, ctx.run_id, accounts_total=1, accounts_done=1, started_at=ctx.claimed_at
+    )
+    widest = ctx.now.timestamp() - ctx.days * 24 * 3600
+    ranked = reels._top(_stored_dicts(ctx, [ref]), widest, READ_NOW_REVIEWED)
+    if not ranked:
+        return STATUS_OK, b_hash
+    outcome.transcripts_paid = _transcribe(
+        ctx, ranked, transcribe_fetch, cap=READ_NOW_PAID_TRANSCRIPTS, competitor=True
+    )
+    try:
+        _, cost = _check(
+            ctx,
+            brand,
+            b_hash,
+            ranked,
+            api_key=api_key,
+            review=review,
+            config=config,
+            outcome=outcome,
+        )
+    except _CheckFailed as exc:
+        outcome.check = CHECK_UNAVAILABLE
+        outcome.cost_usd += exc.cost
+        outcome.competitor_cost_usd += exc.cost
+        logger.warning("competitor read %s: check unavailable: %s", ctx.run_id, exc.cause)
+        return STATUS_CHECK_FAILED, b_hash
+    outcome.cost_usd += cost
+    outcome.competitor_cost_usd += cost
     return STATUS_OK, b_hash
 
 

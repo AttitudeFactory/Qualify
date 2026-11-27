@@ -126,6 +126,26 @@ def refused_text(kind: str, refused: int, *, held: int, reel_video: bool = False
     return f"No agregamos {audios}: ya tienes {MAX_AUDIOS}, el máximo. Quita uno para cambiarlo."
 
 
+def gallery_partial_text(added: int, total: int, *, images_full: bool, videos_full: bool) -> str:
+    """A publication's carousel picked whole that did not fit (ED-10): «Agregamos 3 de 5
+    archivos del carrusel: llegaste al máximo de 9 fotos. Toca de nuevo para quitarlo.»
+    (a second tap takes it out, `pick_clip_piece`) — "" when all of it went
+    in. `images_full`/`videos_full`: which limit stopped it."""
+    if total <= 0 or added >= total:
+        return ""
+    limits = [
+        *([f"{MAX_IMAGES} fotos"] if images_full else []),
+        *([f"{MAX_VIDEOS} videos"] if videos_full else []),
+    ]
+    limit = f"máximo de {' y '.join(limits)}" if limits else "máximo"
+    if added <= 0:
+        return f"No agregamos el carrusel: ya tienes el {limit}. Quita alguno para hacer espacio."
+    return (
+        f"Agregamos {added} de {total} archivos del carrusel: llegaste al {limit}. "
+        "Toca de nuevo para quitarlo."
+    )
+
+
 def _short(name: str) -> str:
     return name if len(name) <= NAME_MAX else name[: NAME_MAX - 1].rstrip() + "…"
 

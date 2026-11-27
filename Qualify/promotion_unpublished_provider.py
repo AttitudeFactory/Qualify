@@ -11,6 +11,7 @@ import logging
 import uuid
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -22,14 +23,17 @@ from sqlalchemy import text
 from .ad_enhancements_provider import load_policy
 from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_provider import account_health_for, refresh_health
+from .catalog_provider import list_products
 from .promotion_vm import (
+    CAROUSEL_MIN,
     AdMediaVM,
+    CarouselProductVM,
     PromotionDraftVM,
     PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
-    cop_label,
-    cop_minor,
+    budget_minor,
+    budget_money,
     local_datetime,
     promotion_result,
 )
@@ -51,6 +55,12 @@ WHERE d.id=:draft AND d.status='approved' AND d.approved_revision=d.revision
   AND d.published_media_id IS NULL AND d.parent_draft_id IS NULL
   AND d.media_purged_at IS NULL AND d.media_objects_pending_at IS NULL
   AND d.part_removed_at IS NULL""")
+# The unpublished-piece flow stays in pesos in the backend (unpublished_service checks COP).
+UNPUBLISHED_COP_ONLY = (
+    "Por ahora, «Anunciar sin publicar» solo funciona con cuentas publicitarias en pesos "
+    "colombianos. Publica primero la publicación y luego promociónala desde Anuncios, o elige "
+    "una cuenta en pesos colombianos en Tus redes."
+)
 _ACCOUNTS = text("""SELECT a.id,COALESCE(a.name,'') AS name,COALESCE(a.currency,'') AS currency,
   COALESCE(a.timezone_name,'') AS timezone_name,
   COALESCE(c.external_username,c.external_account_id) AS account_label
@@ -112,6 +122,26 @@ def _read(tenant_id: UUID, draft_id: UUID) -> tuple[dict | None, list[dict], lis
     return dict(piece), accounts, assets
 
 
+def carousel_products(tenant_id: UUID, brand_id: UUID) -> list[CarouselProductVM]:
+    """The brand's active products that can be a card: a photo, a name and a price.
+    The backend re-reads and re-checks each one (format, brand, owner) before Meta."""
+    try:
+        products = list_products(tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001 — no carousel offer beats a failed step
+        logger.warning("carousel products read failed: %s", type(exc).__name__)
+        return []
+    return [
+        CarouselProductVM(
+            id=row.product_id,
+            name=row.name,
+            price_label=row.price_label,
+            photo_key=row.primary_photo_key,
+        )
+        for row in products
+        if row.primary_photo_key and row.name.strip() and row.price_label.strip()
+    ]
+
+
 def story_kinds(assets: list[dict]) -> list[str]:
     """A story ad's kinds: its 9:16 images; a 9:16 video only with a 9:16 image as cover."""
     vertical_images = _pick(assets, "image", VERTICAL)
@@ -149,6 +179,10 @@ def unpublished_sources(
             kinds.append("images")
     if not kinds or not accounts:
         return []
+    # m-25113484: a carousel of Catálogo products, offered next to the piece's own files.
+    products = [] if story else carousel_products(tenant_id, piece["brand_id"])
+    if len(products) >= CAROUSEL_MIN:
+        kinds.append("carousel")
     copy = piece["ad_copy"] if isinstance(piece["ad_copy"], dict) else {}
     message = str(copy.get("ads_primary_text") or copy.get("caption") or "")
     headline = str(copy.get("ads_headline") or copy.get("hook") or "")[:100]
@@ -171,7 +205,7 @@ def unpublished_sources(
             tenant_id, account["id"], account["timezone_name"]
         )
         for kind in kinds:
-            video = kind == "videos"
+            video, carousel = kind == "videos", kind == "carousel"
             sources.append(
                 PromotionSourceVM(
                     # Stable and distinct per account and kind; never a publish attempt.
@@ -184,16 +218,23 @@ def unpublished_sources(
                     default_cta_type=button,
                     fix_in_piece=not any(policy.values.values()) and bool(button_problem),
                     timezone_name=account["timezone_name"],
-                    unavailable_reason=blocked,
+                    unavailable_reason=blocked
+                    if account["currency"] == "COP"
+                    else UNPUBLISHED_COP_ONLY,
                     health=health,
                     ad_account_id=str(account["id"]),
                     enhancements=policy,
                     brand_id=str(brand),
                     media_kind=kind,
-                    feed_media=media(feed_videos if video else feed_images, "Opción"),
-                    vertical_media=media(vertical_videos if video else vertical_images, "Opción"),
+                    feed_media=[]
+                    if carousel
+                    else media(feed_videos if video else feed_images, "Opción"),
+                    vertical_media=[]
+                    if carousel
+                    else media(vertical_videos if video else vertical_images, "Opción"),
                     feed_covers=media(feed_images, "Portada") if video else [],
                     vertical_covers=media(vertical_images, "Portada") if video else [],
+                    products=products if carousel else [],
                     default_message=message[:2200],
                     default_headline=headline,
                     story=story,
@@ -202,13 +243,18 @@ def unpublished_sources(
     return sources
 
 
-def _service():  # noqa: ANN202 — production composition, built per call
-    from qualify_api.ads.unpublished_service import UnpublishedImageService  # noqa: PLC0415
+def _service(carousel: bool = False):  # noqa: ANN202 — production composition, per call
+    from qualify_api.ads.unpublished_service import (  # noqa: PLC0415
+        CarouselAdService,
+        UnpublishedImageService,
+    )
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
-    return UnpublishedImageService(ObjectGate(R2ObjectStore(R2Settings.from_env())))
+    # The carousel's `confirm` re-reads its products, so both calls use its own class.
+    service = CarouselAdService if carousel else UnpublishedImageService
+    return service(ObjectGate(R2ObjectStore(R2Settings.from_env())))
 
 
 def _id(value: str) -> UUID | None:
@@ -229,6 +275,8 @@ def prepare_unpublished(
     `request_key` (never a re-upload)."""
     from .promotion_provider import safe_preview_url  # noqa: PLC0415
 
+    if form.media_kind == "carousel":
+        return _prepare_carousel(tenant_id, actor, form, source, timezone_name, request_key)
     video = form.media_kind == "videos"
     preview = asyncio.run(
         _service().prepare(
@@ -239,16 +287,7 @@ def prepare_unpublished(
             vertical_asset_id=UUID(form.vertical_asset_id),
             feed_thumbnail_asset_id=_id(form.feed_cover_id) if video and not form.story else None,
             vertical_thumbnail_asset_id=_id(form.vertical_cover_id) if video else None,
-            form=ImageAdForm(
-                message=form.message,
-                headline=form.headline.strip(),
-                link_url=form.link_url.strip(),
-                budget_minor=cop_minor(form.budget),
-                start_time=local_datetime(form.start_local, timezone_name),
-                end_time=local_datetime(form.end_local, timezone_name),
-                country=form.country,
-                cta_type=form.cta_type,
-            ),
+            form=_form(form, timezone_name, form.headline.strip()),
             actor=actor,
             request_key=UUID(request_key),
             confirm_preparation=True,
@@ -259,6 +298,62 @@ def prepare_unpublished(
     feed = vertical if form.story else safe_preview_url(preview.feed_html)
     if not feed or not vertical:
         raise ValueError("unsafe or unavailable unpublished preview")
+    return _review(preview, feed, vertical, form, timezone_name)
+
+
+def _form(form: PromotionDraftVM, timezone_name: str, headline: str) -> ImageAdForm:
+    return ImageAdForm(
+        message=form.message,
+        headline=headline,
+        link_url=form.link_url.strip(),
+        budget_minor=budget_minor(form.budget, "COP"),
+        start_time=local_datetime(form.start_local, timezone_name),
+        end_time=local_datetime(form.end_local, timezone_name),
+        country=form.country,
+        cta_type=form.cta_type,
+    )
+
+
+def carousel_headline(form: PromotionDraftVM, source: PromotionSourceVM) -> str:
+    """Meta never shows it (each card has its own title) but the form requires one:
+    the piece's title, else the first card's product name."""
+    names = {row.id: row.name for row in source.products}
+    first = names.get(form.product_ids[0], "") if form.product_ids else ""
+    return (form.headline.strip() or first.strip())[:100]
+
+
+def _prepare_carousel(
+    tenant_id: UUID,
+    actor: UUID,
+    form: PromotionDraftVM,
+    source: PromotionSourceVM,
+    timezone_name: str,
+    request_key: str,
+) -> PromotionReviewVM:
+    """The chosen products as cards, in the tapped order; every card opens the ad's own
+    page (an empty link = `form.link_url`). Only the Instagram feed preview exists."""
+    from .promotion_provider import safe_preview_url  # noqa: PLC0415
+
+    preview = asyncio.run(
+        _service(carousel=True).prepare(
+            tenant_id=tenant_id,
+            ad_account_id=UUID(source.ad_account_id),
+            products=tuple((UUID(product_id), "") for product_id in form.product_ids),
+            form=_form(form, timezone_name, carousel_headline(form, source)),
+            actor=actor,
+            request_key=UUID(request_key),
+            confirm_preparation=True,
+        )
+    )
+    feed = safe_preview_url(preview.feed_html)
+    if not feed:
+        raise ValueError("unsafe or unavailable carousel preview")
+    return _review(preview, feed, "", form, timezone_name)
+
+
+def _review(
+    preview: Any, feed: str, vertical: str, form: PromotionDraftVM, timezone_name: str
+) -> PromotionReviewVM:
     expires: datetime = preview.expires_at
     return PromotionReviewVM(
         promotion_id=str(preview.promotion_id),
@@ -266,17 +361,17 @@ def prepare_unpublished(
         recipe_id=str(preview.recipe_id),
         preview_url=feed,
         vertical_preview_url=vertical,
-        charge_notice=f"Si lo autorizas, Meta podrá cobrar hasta {cop_label(form.budget)} "
-        "a tu método de pago.",
+        charge_notice="Si lo autorizas, Meta podrá cobrar hasta "
+        f"{budget_money(form.budget, 'COP')} a tu método de pago.",
         expires_label=expires.astimezone(ZoneInfo(timezone_name)).strftime("%d/%m/%Y %H:%M"),
     )
 
 
 def confirm_unpublished(
-    tenant_id: UUID, actor: UUID, review: PromotionReviewVM
+    tenant_id: UUID, actor: UUID, review: PromotionReviewVM, carousel: bool = False
 ) -> PromotionResultVM:
     status = asyncio.run(
-        _service().confirm(
+        _service(carousel).confirm(
             tenant_id=tenant_id,
             recipe_id=UUID(review.recipe_id),
             review_id=UUID(review.review_id),

@@ -5,7 +5,13 @@ from __future__ import annotations
 import reflex as rx
 
 from .ad_forms_state import AdFormsState as S
-from .ad_forms_vm import FORM_NOTICE, WHATSAPP_NOTICE, AdFormVM, FormConnectionVM
+from .ad_forms_vm import (
+    FORM_NOTICE,
+    META_LEADS_URL,
+    WHATSAPP_NOTICE,
+    AdFormVM,
+    FormConnectionVM,
+)
 from .ui import (
     app_shell,
     callout,
@@ -360,7 +366,22 @@ def ad_forms_index() -> rx.Component:
         page_body(
             rx.link("Volver a Anuncios", href="/promotions", min_height="44px"),
             rx.cond(S.error != "", callout(S.error, "error")),
-            rx.cond(S.notice != "", callout(S.notice, "info")),
+            rx.cond(
+                S.notice_skipped,
+                rx.vstack(
+                    callout(S.notice, "warn"),
+                    rx.link(
+                        "Ver en Meta",
+                        href=META_LEADS_URL,
+                        is_external=True,
+                        min_height="44px",
+                        display="inline-flex",
+                        align_items="center",
+                    ),
+                    width="100%",
+                ),
+                rx.cond(S.notice != "", callout(S.notice, "info")),
+            ),
             rx.cond(
                 S.loading,
                 skeleton_rows(3),

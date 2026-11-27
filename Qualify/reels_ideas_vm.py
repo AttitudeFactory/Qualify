@@ -33,13 +33,16 @@ from qualify_api.referentes.reel_store import (
     STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
+    TRIGGER_MANUAL,
     TRIGGER_WEEKLY,
     Idea,
     PublicReel,
     RunRecord,
 )
+from qualify_api.referentes.reviewed_reels import ReviewedReel, ReviewedReels
 from qualify_api.vendors.cdn_media import cover_url_fresh
 
+from . import reels_filters_vm
 from .avatar_proxy import reel_cover_path, stored_reel_cover_path
 
 # --------------------------------------------------------------------------------------
@@ -92,6 +95,9 @@ OLD_BODY = "Pueden haber salido reels nuevos desde entonces."
 #: so the weekly run comes) — left out when a notice above already names that Monday
 #: (UX re-check 3: «el lunes 9» said twice).
 NEXT_ONES = "Las próximas llegan el lunes {d}."
+#: RF-13 (ux-designer, approved by Deivid 2026-11-26): under the one list, once nothing
+#: is left to page — the list has no heading, so the next Monday is said here.
+END_OF_LIST = "Eso es todo por ahora. Las próximas ideas llegan el lunes {d}."
 
 NO_ACCOUNTS_TITLE = "Aún no hay cuentas que te inspiren"
 NO_ACCOUNTS_BODY = (
@@ -211,6 +217,11 @@ class StoredIdeas:
     #: Every stored reel of the ideas' accounts in the shown run's window — what each
     #: idea's «x3 sobre su media» is measured against (`reels.account_lifts`).
     account_reels: Sequence[PublicReel] = ()
+    #: RF-02 (m-25119460): the filtered read of RF-01 (`reviewed_reels.reviewed_reels`) —
+    #: the ideas to show (`reviewed.ideas`, filtered, never a detractor's) and one page of
+    #: the reviewed reels after the ideas (RF-13). None only for a caller that does not
+    #: filter (the ideas are then `view.ideas`, as before RF-02).
+    reviewed: ReviewedReels | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +247,15 @@ class IdeasScreen:
     #: worker to try it again (`RunView.next_retry_at`, for up to `PREPARING_LIMIT` past
     #: that moment).
     waiting: bool = False
+    #: RF-13: `END_OF_LIST` with the next Monday in the business's zone, for the end of
+    #: the list ("" when there is no date to give).
+    end_note: str = ""
+    #: RF-02: one page of the reviewed reels after the ideas in the card shape, and whether a next
+    #: page exists (`ReviewedReels.has_more`).
+    more_cards: list[dict[str, str]] = field(default_factory=list)
+    has_more: bool = False
+    #: RF-02: the accounts «Cuenta» offers, `reels_filters_vm.accounts_by_key`'s shape.
+    accounts: dict[str, str] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------------------
@@ -415,14 +435,42 @@ def idea_card(idea: Idea, *, now: datetime, lift: float | None = None) -> dict[s
     return card
 
 
+def _fits(idea: Idea) -> bool:
+    return idea.verdict is not None and idea.verdict.fits and idea.verdict.affinity in reels_ai.FITS
+
+
 def idea_cards(stored: StoredIdeas, *, now: datetime) -> list[dict[str, str]]:
     """The shown run's ideas that the check kept for the product or its category (the
-    run stores only those; checked again so another product never reaches the screen)."""
+    run stores only those; checked again so another product never reaches the screen).
+    RF-02: the filtered ideas of RF-01 (`reviewed.ideas`) when the screen read them."""
     lifts = idea_lifts(stored.account_reels)
+    ideas = stored.reviewed.ideas if stored.reviewed is not None else stored.view.ideas
     return [
         idea_card(idea, now=now, lift=lifts.get(f"{idea.reel.network}:{idea.reel.reel_id}"))
-        for idea in stored.view.ideas
-        if idea.verdict is not None and idea.verdict.fits and idea.verdict.affinity in reels_ai.FITS
+        for idea in ideas
+        if _fits(idea)
+    ]
+
+
+def more_card(item: ReviewedReel, *, now: datetime) -> dict[str, str]:
+    """One reviewed reel after the ideas (RF-02/RF-13) in the ideas' card shape: its cover only
+    while the CDN link is fresh (`cover_path`: no copy in R2 — the placeholder otherwise),
+    no lift (measured for the ideas only) and never «Hacer uno parecido» (its video was
+    not kept)."""
+    idea = Idea(rank=0, window_days=0, reel=item.reel, verdict=item.verdict)
+    card = idea_card(idea, now=now)
+    card["rank"] = ""
+    card["can_replicate"] = ""
+    return card
+
+
+def more_cards(items: Sequence[ReviewedReel], *, now: datetime) -> list[dict[str, str]]:
+    """The page's reels that keep the strict product filter (RF-01 already asks for it;
+    checked again so another product never reaches the screen)."""
+    return [
+        more_card(item, now=now)
+        for item in items
+        if item.verdict.fits and item.verdict.affinity in reels_ai.FITS
     ]
 
 
@@ -472,6 +520,11 @@ def _notice(stored: StoredIdeas, now: datetime, zone: tzinfo) -> tuple[str, str]
     shown, latest = view.shown, view.latest
     if shown is None or latest is None or latest.id == shown.id:
         return "", ""
+    if latest.trigger == TRIGGER_MANUAL:
+        # RF-14 (Deivid, 2026-11-26): an owner's search that found nothing new, or that the
+        # cap stopped, is no error — the list keeps what is stored, and the button's own
+        # notice (once) says the day's or the cap's sentence
+        return "", ""
     retry = retry_sentence(view, now, zone)
     if latest.status == STATUS_CHECK_FAILED and stored.has_brief:
         body = CHECK_FAILED_BODY.format(retry=retry)
@@ -502,8 +555,12 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
     zone = business_zone(stored.timezone)
     view = stored.view
     shown, latest = view.shown, view.latest
+    reviewed = stored.reviewed
     cards = idea_cards(stored, now=now) if shown is not None else []
-    if shown is not None and cards:
+    more = more_cards(reviewed.more, now=now) if shown is not None and reviewed else []
+    # RF-02: the run HAS ideas whatever the filters leave — the screen stays on them (with
+    # the bar and an empty message) instead of saying the run found none
+    if shown is not None and (cards or more or any(_fits(i) for i in view.ideas)):
         notice_title, notice_body = _notice(stored, now, zone)
         title, body = header(shown, now, zone, next_ones=not notice_title)
         return IdeasScreen(
@@ -514,6 +571,11 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
             notice_body=notice_body,
             cards=cards,
             data_iso=run_moment(shown).astimezone(UTC).isoformat(),
+            more_cards=more,
+            has_more=bool(reviewed and reviewed.has_more),
+            # never «el lunes N» twice (UX re-check 3): a notice above already names a day
+            end_note="" if notice_title else END_OF_LIST.format(d=next_monday(now, zone).day),
+            accounts=reels_filters_vm.accounts_by_key(reviewed.accounts) if reviewed else {},
         )
     if stored.accounts == 0:
         return IdeasScreen(
@@ -585,6 +647,7 @@ __all__ = [
     "SIMILAR_HELP",
     "SIMILAR_LABEL",
     "NEXT_ONES",
+    "END_OF_LIST",
     "CHECK_FAILED_BODY",
     "CHECK_FAILED_TITLE",
     "IN_FLIGHT",
@@ -637,6 +700,8 @@ __all__ = [
     "idea_card",
     "idea_cards",
     "idea_lifts",
+    "more_card",
+    "more_cards",
     "ideas_screen",
     "next_monday",
     "retries_soon",

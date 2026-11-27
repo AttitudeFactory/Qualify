@@ -36,6 +36,34 @@ la búsqueda trajo. La excepción son 4 cuentas `synthetic` en el caso del resta
 - **traps** = cuentas `n` que quedaron. Es el error que esta función existe para evitar.
 - **kind** = el `tipo` cae dentro de lo aceptado.
 
+## Rubro y país (REFERENTES-RUBRO-001, m-25119461, 2026-11-25)
+
+Cada cuenta de `cases.json` lleva cuatro campos más. Los puso un agente. El oro de **rubro**
+tuvo después un muestreo humano de Deivid (2026-11-25), con reglas que están en el `_doc`. El
+de **país** sigue sin revisión humana: sus dudas son de RF-12.
+
+- `rubro`: una clave de `discovery_seed.NICHE_LABELS`, u `otro`.
+- `pais`: código ISO de dos letras, solo si el texto de la cuenta lo dice; si no, `""`.
+- `split`: `dev` o `test`, por cuenta única (la misma cuenta nunca queda en los dos) y
+  estratificado por rubro.
+- `dudoso`: las etiquetas de país menos seguras, pendientes de revisión (RF-12).
+- `rubro_sin_evidencia`: nada en los textos de la cuenta sostiene un rubro; queda fuera del
+  puntaje de rubro.
+
+Para volver a puntuar resultados guardados contra el oro actual, sin llamar al modelo y sin
+costo: `run_eval.py --rescore results/<a>.json results/<b>.json`. Escribe
+`results/rescore-<fecha>.json`.
+
+Las reglas están en el `_doc` del archivo. `run_eval.py` las puntúa con `score_rubro_pais`,
+por partición (`dev`, `test` y todo el set):
+
+- exactitud del rubro, por clase y con matriz de confusión;
+- precisión estricta del país (un país donde el oro dice `""` cuenta como error);
+- precisión solo donde el oro tiene país;
+- cobertura del país.
+
+Resultado y decisión: `docs/modelos-generativos/pruebas.md#referentes-rubro-001`.
+
 ## Experimento en Langfuse — 2026-10-14 (`results/langfuse-20261014-065507.json`) — ACTUAL
 
 Los mismos casos y el mismo puntaje, como corridas de dataset en Langfuse (dataset

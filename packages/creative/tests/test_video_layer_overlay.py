@@ -5,6 +5,7 @@ seam, black, neutral greys); the compose over small synthetic 9:16 videos. Offli
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from qualify_creative.video.layer_overlay import (
     zone_shift,
 )
 from qualify_creative.video.text_overlay import (
+    OVERLAY_X264,
     TextOverlayError,
     TimedLayer,
     decoded_frame_hashes,
@@ -55,26 +57,16 @@ def yuv_to_rgb(frame: object) -> np.ndarray:
     return np.clip(np.stack([r, g, b], axis=-1) * 255.0, 0.0, 255.0)
 
 
-#: Why the LAYER path's encodes are compared with a tolerance and not byte for byte
-#: (m-25029128, CI run 44005325893 on Linux: two runs gave different hashes). What was
-#: measured in Docker (python:3.12-slim, PyAV 19.0.1) limited to 2 cores
-#: (`--cpuset-cpus=0-1`), 12 runs each, on the 216×384 test video with smoke + embers:
-#: - the TEXT-only path (`overlay_text_layers`): identical every time (24/24);
-#: - the LAYER path as shipped: 5-6 distinct outputs in 12 (none in 4 runs on 8 cores, none
-#:   seen on Windows);
-#: - the same with `graph.threads = 1` (read back as 1; the default reads 3): still 6 in 12 —
-#:   not the filter graph's slice threads;
-#: - the same with the loop decoder on one thread: still varies — not the VP9 decoder;
-#: - the same with x264 `rc-lookahead=0`: identical 12/12 (twice) — but that changes the
-#:   published quality (no mb-tree), so it is not used;
-#: - pushing a fresh copy of every loop frame instead of the decoded one: 1-2 distinct in 12.
-#: The differences start at frame 0 (one level on a few pixels) and x264 carries them on
-#: (at most 6 levels, mean ≈ 0.002 a frame). HYPOTHESIS, not proven: a lifetime/timing
-#: interaction between the frames the layer path hands on (the reused loop frame, the
-#: filters' buffer pools) and x264's delayed encode; the root cause is not identified.
-#: PSNR ≥ 45 dB and a mean ≤ 0.5 per plane is far below what an eye sees and far above
-#: that noise. The text-only path stays byte for byte (its tests use exact hashes).
-PSNR_MIN_DB = 45.0
+#: Two runs of the same compose are compared byte for byte, under the `reproducible_x264`
+#: fixture (conftest.py, m-25029128): with production's
+#: `OVERLAY_X264` libx264 can write other bytes for the same frames — on a 2-core Linux
+#: runner 5-6 distinct outputs in 12 (CI run 44005325893) — because the SIMD assembly of
+#: its macroblock-tree propagation in the lookahead depends on the state of the process's
+#: memory. That is also why `rc-lookahead=0` made it stable here and copying the loop
+#: frames changed how often it drifted; it is not the filter graph, the loop decoder or the
+#: threads. The fixture's `cpu-independent=1` makes it stable without touching what is
+#: published. `MEAN_ABS_MAX` is the tolerance left for comparing an encode with its
+#: SOURCE (a mean ≤ 0.5 per plane is far below what an eye sees).
 MEAN_ABS_MAX = 0.5
 
 
@@ -87,20 +79,6 @@ def planes_of(path: Path) -> list[list[np.ndarray]]:
             h = frame.height
             out.append([stacked[:h], stacked[h : h + h // 4], stacked[h + h // 4 :]])
     return out
-
-
-def assert_same_frames(a: Path, b: Path) -> None:
-    """The same video within the x264 tolerance above: same frame count, and per plane a
-    PSNR ≥ `PSNR_MIN_DB` and a mean absolute difference ≤ `MEAN_ABS_MAX`."""
-    first, second = planes_of(a), planes_of(b)
-    assert len(first) == len(second)
-    for index, (x, y) in enumerate(zip(first, second, strict=True)):
-        for plane, (p, q) in enumerate(zip(x, y, strict=True)):
-            diff = (p - q).astype(np.float64)
-            mse = float(np.mean(diff * diff))
-            psnr = float("inf") if mse == 0 else 10 * np.log10(255.0**2 / mse)
-            assert psnr >= PSNR_MIN_DB, (index, plane, psnr)
-            assert float(np.mean(np.abs(diff))) <= MEAN_ABS_MAX, (index, plane)
 
 
 def rgb_frames(path: Path) -> list[np.ndarray]:
@@ -207,7 +185,8 @@ def test_smoke_and_steam_are_neutral_grey(effect: str) -> None:
 
 def test_v3_offers_the_three_layers_free_with_their_preview() -> None:
     library = load_effects("v3")  # loads: every preview file exists (no MissingPreviewAsset)
-    assert load_effects() is library
+    # ADR 50 D9: new requests use v4, which offers the same layers, unchanged
+    assert all(load_effects().get(name, 1) == library.get(name, 1) for name in LAYERS)
     labels = {"humo_capa": "Humo", "brasas_capa": "Brasas", "vapor_capa": "Vapor"}
     for effect, label in labels.items():
         entry = library.get(effect, 1)
@@ -303,12 +282,15 @@ def test_on_grey_a_grey_layer_never_tints(tmp_path: Path, effect: str) -> None:
 # Time: deterministic, and only inside its span
 
 
-def test_the_same_layers_give_the_same_frames(tmp_path: Path) -> None:
+def test_the_same_layers_give_the_same_frames(
+    tmp_path: Path, reproducible_x264: Callable[..., None]
+) -> None:
+    reproducible_x264(OVERLAY_X264)
     src = make_video(tmp_path / "black.mp4", (20, 20, 20))
     uses = [layer("brasas_capa"), layer("humo_capa", start_s=0.3, end_s=0.8)]
     a = overlay_effect_layers(src, tmp_path / "a.mp4", uses)
     b = overlay_effect_layers(src, tmp_path / "b.mp4", uses)
-    assert_same_frames(a.path, b.path)  # not bytes: see PSNR_MIN_DB (m-25029128)
+    assert a.path.read_bytes() == b.path.read_bytes()  # x264 reproducible (m-25029128)
 
 
 def test_a_span_changes_only_the_frames_inside_it(tmp_path: Path) -> None:
@@ -350,15 +332,21 @@ def text_png(rows: tuple[int, int]) -> bytes:
     return out.getvalue()
 
 
-def test_one_pass_with_no_text_is_the_layers_alone(tmp_path: Path) -> None:
+def test_one_pass_with_no_text_is_the_layers_alone(
+    tmp_path: Path, reproducible_x264: Callable[..., None]
+) -> None:
+    reproducible_x264(OVERLAY_X264)
     src = make_video(tmp_path / "dark.mp4", (30, 20, 10))
     uses = [layer("humo_capa"), layer("brasas_capa", start_s=0.2, end_s=0.7)]
     alone = overlay_effect_layers(src, tmp_path / "a.mp4", uses)
     single = overlay_layers_and_texts(src, tmp_path / "b.mp4", uses, ())
-    assert_same_frames(alone.path, single.path)  # not bytes: see PSNR_MIN_DB
+    assert alone.path.read_bytes() == single.path.read_bytes()  # x264 reproducible
 
 
-def test_one_pass_with_no_layer_is_the_texts_alone(tmp_path: Path) -> None:
+def test_one_pass_with_no_layer_is_the_texts_alone(
+    tmp_path: Path, reproducible_x264: Callable[..., None]
+) -> None:
+    reproducible_x264(OVERLAY_X264)  # exact comparison of two encodes (m-25029128)
     src = make_video(tmp_path / "dark.mp4", (30, 20, 10))
     texts = [TimedLayer(png=text_png((200, 500)), start_s=0.0, end_s=None, fade_in_s=0.2)]
     alone = overlay_text_layers(src, tmp_path / "a.mp4", texts)

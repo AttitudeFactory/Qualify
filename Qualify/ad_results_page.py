@@ -5,8 +5,17 @@ from __future__ import annotations
 import reflex as rx
 from qualify_api.ads.status_webhook import SUBSCRIBE_OFFER
 
+from .ad_month_plan_ui import month_plan_card
 from .ad_results_state import AdResultsState as S
-from .ad_results_vm import URGENT_PAUSE, AdDayVM, AdResultVM, AlertAccountVM
+from .ad_results_vm import (
+    EDIT_STOP_SPEND,
+    PAUSE_HERE,
+    URGENT_PAUSE,
+    AdDayVM,
+    AdResultVM,
+    AlertAccountVM,
+)
+from .investment_profile_page import investment_profile_card
 from .ui import (
     app_shell,
     callout,
@@ -161,8 +170,10 @@ def ad_results_index() -> rx.Component:
                 ),
                 width="100%",
             ),
+            investment_profile_card(),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.loading, rx.fragment(), _alerts()),
+            month_plan_card(),
             rx.cond(
                 S.loading,
                 skeleton_card(4),
@@ -290,12 +301,12 @@ def _edit_confirmation() -> rx.Component:
             rx.vstack(
                 rx.cond(S.error != "", callout(S.error, "error")),
                 rx.cond(S.edit_warning != "", callout(S.edit_warning, "warn")),
-                rx.cond(S.change_pending, callout(URGENT_PAUSE, "warn")),
+                rx.cond(S.change_pending, callout(EDIT_STOP_SPEND, "warn")),
                 rx.cond(
                     S.edit_action == "budget",
                     rx.vstack(
                         rx.text(
-                            "Nuevo presupuesto total en pesos colombianos",
+                            "Nuevo presupuesto total en " + S.edit_unit,
                             as_="label",
                             html_for="ad-edit-budget",
                         ),
@@ -309,7 +320,7 @@ def _edit_confirmation() -> rx.Component:
                             width="100%",
                         ),
                         rx.text(
-                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Escribe el monto en " + S.edit_unit + " enteros, sin puntos ni comas. "
                             "El nuevo total debe ser mayor al actual.",
                             size="2",
                         ),
@@ -321,7 +332,7 @@ def _edit_confirmation() -> rx.Component:
                     S.edit_action == "budget_down",
                     rx.vstack(
                         rx.text(
-                            "Nuevo presupuesto total en pesos colombianos",
+                            "Nuevo presupuesto total en " + S.edit_unit,
                             as_="label",
                             html_for="ad-edit-budget-down",
                         ),
@@ -346,7 +357,7 @@ def _edit_confirmation() -> rx.Component:
                             weight="medium",
                         ),
                         rx.text(
-                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Escribe el monto en " + S.edit_unit + " enteros, sin puntos ni comas. "
                             "Es el total para todo el anuncio, no por día.",
                             size="2",
                         ),
@@ -450,11 +461,18 @@ def _management() -> rx.Component:
         rx.vstack(
             rx.heading("Controla este anuncio", size="4", as_="h2"),
             rx.cond(
-                S.change_pending
-                | S.detail.promotion.operation_pending
-                | S.detail.promotion.stale
-                | S.detail.promotion.refresh_failed,
-                callout(URGENT_PAUSE, "warn"),
+                ~S.detail.promotion.can_pause,
+                rx.cond(
+                    S.change_pending
+                    | S.detail.promotion.operation_pending
+                    | S.detail.promotion.stale
+                    | S.detail.promotion.refresh_failed,
+                    callout(URGENT_PAUSE, "warn"),
+                ),
+                rx.cond(
+                    S.change_pending | S.detail.promotion.operation_pending,
+                    callout(PAUSE_HERE, "info"),
+                ),
             ),
             rx.button(
                 "Pausar anuncio",

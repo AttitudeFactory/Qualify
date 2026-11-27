@@ -19,8 +19,9 @@ La integración debe proporcionar negocio, pieza, cuenta seleccionada y los iden
 de las dos imágenes existentes. Nunca admite una URL, clave de R2 ni identificador de
 imagen publicitaria suministrados por el cliente. Requiere la sesión real y el usuario
 interno que aprueba. La selección tiene que pertenecer a la versión activa y aprobada
-de esa misma pieza y marca. Rechaza mezclas de imagen y video, carruseles, piezas
-purgadas y partes de video.
+de esa misma pieza y marca. Rechaza mezclas de imagen y video, carruseles hechos con
+una pieza, piezas purgadas y partes de video. El carrusel de productos del Catálogo es otra
+entrada (ver «Carrusel de productos del Catálogo»).
 
 La solicitud `ImageAdForm` lleva mensaje, título, enlace HTTPS, presupuesto total interno,
 fechas y país. En esta primera entrega admite COP, visitas al sitio web, «Más información»,
@@ -177,6 +178,62 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
   en vivo m-24828971 y ajustar la comparación solo a lo que Meta añada de verdad. En esa misma
   prueba se decide si una historia ya publicada puede promocionarse por su id.
 
+## Carrusel de productos del Catálogo (m-25113484)
+
+Un anuncio en carrusel de Instagram cuyas tarjetas son productos del Catálogo del negocio,
+creado **en pausa** con la misma aprobación, cargas con intención previa, `validate_only`,
+lectura de vuelta, vista previa y confirmación que el anuncio desde una pieza.
+
+**Entrada para la pantalla.** `CarouselAdService(gate, store=None)` en
+`qualify_api/ads/unpublished_service.py` (`store` lee las fotos del Catálogo; si falta usa el
+mismo almacén del Catálogo, R2 más el volumen local para claves antiguas).
+
+- `await prepare(*, tenant_id, ad_account_id, products, form, actor, request_key,
+  confirm_preparation) -> UnpublishedPreview`. `products` es una tupla de
+  `(id del producto, enlace de la tarjeta)` en el orden de las tarjetas; un enlace vacío usa
+  `form.link_url`. `form` es el mismo `ImageAdForm`: el mensaje, el enlace «ver más», el botón,
+  el presupuesto, las fechas y el país; el `headline` no se envía a Meta (cada tarjeta lleva el
+  suyo), pero el formulario lo sigue exigiendo. La vista previa del feed de Instagram llega
+  en `feed_html`; `vertical_html` queda vacío.
+- `await confirm(*, tenant_id, recipe_id, review_id, actor, confirm_charge) -> str`, heredado
+  sin cambios: `"active"` o `"unknown"`.
+- Errores: `UnpublishedUnavailable` (texto en español para la persona dueña, `reason` igual
+  que en las imágenes). Entre 2 y 10 productos, si no: «Elige entre 2 y 10 productos de tu
+  Catálogo para el carrusel.».
+
+**Reglas.** Cada producto se lee con `CatalogService.get_product` bajo la sesión del negocio
+(RLS); tiene que estar activo, ser de la marca de la cuenta publicitaria, tener foto JPG o
+PNG con medidas y nombre y precio. La tarjeta lleva la foto principal del producto, el título
+«Nombre · $precio» (el precio con `price_label` del Catálogo), el precio en `description` y su
+propio enlace HTTPS. El cliente solo envía ids de producto y enlaces: nunca claves, URLs de
+imagen ni `image_hash`. Una clave de foto que no sea del negocio se rechaza antes de leerla.
+Si el producto cambia (nombre, precio, foto) entre preparar y confirmar, no se activa.
+
+**Carga a Meta y procedencia.** Cada foto se sube con la misma intención previa de
+`ad_unpublished_uploads` (`asset_id` = id de la foto en `product_media`), así que repetir la
+preparación no vuelve a subir. La aprobación queda en `ad_unpublished_sources` sin pieza
+(`draft_id` nulo, solo con `pipeline_version = ad-catalog-carousel-v1`, migración 0181) y con
+los productos, fotos y enlaces en `source`. La promoción guarda como procedencia
+`source_media_id = catalog-carousel:<id de la aprobación>` y los enlaces de las tarjetas en
+`card_links`: la regla de que todo `link` de la creatividad sea uno aprobado se mantiene.
+
+**Carga útil (SDK 26.0.0, `adobjects/`).** `object_story_spec.link_data` con `link`, `message`,
+`call_to_action`, `child_attachments` (cada una: `link`, `image_hash`, `name`, `description`,
+`call_to_action`), `multi_share_optimized: false` (Meta no reordena las tarjetas que la persona
+aprobó) y `multi_share_end_card: false`. Campos comprobados en
+[AdCreativeLinkData](https://github.com/facebook/facebook-python-business-sdk/blob/26.0.0/facebook_business/adobjects/adcreativelinkdata.py)
+y
+[AdCreativeLinkDataChildAttachment](https://github.com/facebook/facebook-python-business-sdk/blob/26.0.0/facebook_business/adobjects/adcreativelinkdatachildattachment.py)
+el 24 de noviembre de 2026. Ubicación: solo el feed de Instagram (`instagram_positions:
+["stream"]`); vista previa `INSTAGRAM_STANDARD`.
+
+**Sin verificar en vivo** (hace falta una cuenta real, prueba m-24828971):
+- que `validate_only` acepte fotos del Catálogo que no sean cuadradas (no se recortan; Meta
+  muestra el carrusel en 1:1);
+- qué texto de la tarjeta muestra Instagram: por eso el precio va también en el título;
+- que la lectura de vuelta de `object_story_spec` con `child_attachments` coincida exacta (si
+  Meta añade campos, se niega a activar: falla cerrada).
+
 ## Pendiente del ticket completo
 
 - Integración en una pantalla de anuncios con selección de imágenes o videos y su portada,
@@ -187,6 +244,6 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
 
 Este backend no añade un botón a la pieza ni completa por sí solo m-24828982. No requiere
 un token nuevo ni activa procesos periódicos al desplegarse. Las migraciones 0150 y 0161
-añaden los registros de fuente y carga con RLS forzado, procedencia e invariantes
+(y 0181 para el carrusel) añaden los registros de fuente y carga con RLS forzado, procedencia e invariantes
 reversibles. El lector
 periódico de resultados conserva su configuración y preparación operativa existentes.

@@ -153,3 +153,54 @@ Detalle en la [bitácora, NIVELES-006](pruebas.md#niveles-006).
 - **Rúbrica v4:** para most_aware, el horario y el lugar cuentan como parte de «cómo comprar». La v3 los marcaba como falla, en contra del ejemplo del fundador.
 - **Fuentes:** el juez ahora recibe lo de «Debe mencionar» y los ejemplos del kit como datos dados. Sin ellos marcó «al amanecer» como inventado en 6 de 7 clips de viajes.
 - Las salidas guardadas se volvieron a juzgar con la misma vara (US$0,049 por 81 copias, en dos tandas).
+
+## Uso LUGAR-001 — lugar del texto y del logo según lo que muestra el video (m-25026599, EF-20) — 2026-11-23 · MEDIDO
+
+Decisión de Deivid (2026-11-23, vía «creacion de tickets»): IA con visión, igual que el análisis de reels, con Claude Haiku 5.5.
+
+- **Modelo:** `claude-haiku-5-5`, esfuerzo `low`, pensamiento adaptativo por defecto (sus tokens cuentan dentro de `max_tokens` = 2048).
+- **Precio:** US$0,10 por millón de tokens de entrada y US$0,50 de salida (prompts de hasta 100K tokens). Fuente: el skill `claude-api` (tabla en caché del 2026-11-03) y `qualify_creative/pricing_data/v10.json`, que ya tenía la entrada; no hace falta una versión nueva de la tabla.
+- **Módulo:** `packages/api/src/qualify_api/creative/placement_ai.py`, prompt `placement-prompt-1`. Envía de 1 a 3 cuadros del video preparado (720×1280 como máximo) y devuelve la franja (`top`, `middle`, `bottom`) para el texto y para el logo, con un motivo y las franjas que ocupa el sujeto. Ante cualquier falla vuelve al lugar de hoy: texto abajo, logo arriba.
+- **Tope por llamada:** US$0,001943 con 3 cuadros (cada imagen contada a 1.600 tokens, prefijo como escritura de caché, 2.048 de salida); fijado en `MAX_REQUEST_USD` = US$0,0021.
+- **Costo esperado por pieza** (estimado, sin medir): unos 5.900 tokens de entrada (3 cuadros de ~1.229 tokens más ~2.200 de prompt) = US$0,0006, y de 300 a 800 de salida = US$0,00015–0,0004. Total: **US$0,0007–0,001 por pieza** con 3 cuadros; unos US$0,0005 con 1 cuadro.
+- **Guardas:** el tope por llamada; hasta 2 llamadas por pieza; 1.500 llamadas al día para todos los negocios (`QUALIFY_VIDEO_PLACEMENT_FLEET_DAILY`), o sea, como mucho US$3,15 al día.
+- **Prueba en seco (2026-11-23):** `just eval-lugar` con el material del repo (2 fotos de muestra y 2 videos de efectos) y con un archivo de casos de prueba fuera del repo. Se armaron todas las solicitudes con el módulo real, se cotizaron y no se envió nada: 0 llamadas a Anthropic, US$0 gastado.
+- **Material (2026-11-23):** 10 videos de comida tomados de la base de desarrollo, solo lectura. No hay videos que el dueño haya subido de su propio producto, así que se usaron:
+  - 4 videos que Qualify generó para una hamburguesería cliente: una hamburguesa smash, unas manos armando una hamburguesa, una mascota con una hamburguesa y un video de presentador con la foto del plato;
+  - 5 reels de otras cuentas, que el dueño subió como referencia: sándwich de pollo, hamburguesa con papas, pollo frito, papas con queso y un local con bocados;
+  - 1 video de banco de imágenes: una hamburguesa.
+- **Cuadros:** 3 por video, al 20, 50 y 80 % de su duración (`sample_placement_frames`). Son 30 en total.
+- **Etiquetado:** lo hizo un agente (creative-engineer), mirando cada cuadro y marcando las franjas que ocupa el sujeto. Una franja cuenta cuando el sujeto ocupa una parte visible de ella, no cuando solo toca el borde. Deivid aprobó la muestra de 8 cuadros el 2026-11-23: «está perfecto, las posiciones y la detección de los sujetos».
+- **Criterio, cambiado por decisión de Deivid del 2026-11-23:**
+  - En 13 de los 30 cuadros el sujeto ocupa las tres franjas.
+  - Como el texto mantiene su franja durante todo el video, el máximo posible es 17 de 30.
+  - El criterio principal pasa a ser: **el texto no tapa el sujeto en ≥ 90 % de los cuadros con alguna franja libre** (17 cuadros).
+  - Se informan también los 30 cuadros, el máximo posible y la línea base de hoy: texto abajo, 10 de 30 (10 de 17 con franja libre); logo arriba, 13 de 30.
+- **Método:** `just eval-lugar --cases <archivo fuera del repo> --i-have-spend-authorization --max-usd 2`, con 2 variantes (`3f`, los 3 cuadros; `1f`, solo el del medio), 3 repeticiones cada una. Son 60 llamadas, cotizadas al tope en US$0,107.
+- **Resultados (corrida pagada del 2026-11-23, autorizada por Deivid en la sesión):** 60 llamadas, 0 fallas, **US$0,0396 gastados** (cotizado US$0,107), 441 s en total (unos 7 s por llamada).
+
+  | Variante | Texto sin tapar, cuadros con franja libre (meta ≥ 90 %) | Texto sin tapar, los 30 cuadros | Logo sin tapar | Costo por llamada |
+  |---|---|---|---|---|
+  | Hoy (texto abajo, logo arriba) | 10/17 (58,8 %), no cumple | 10/30 (33,3 %) | 13/30 (43,3 %) | US$0 |
+  | `3f` (3 cuadros) | **48/51 (94,1 %), cumple** | 48/90 (53,3 %) | 42/90 (46,7 %) | US$0,00081 |
+  | `1f` (cuadro del medio) | **47/51 (92,2 %), cumple** | 47/90 (52,2 %) | 44/90 (48,9 %) | US$0,00051 |
+
+  - Las 3 repeticiones dieron 16, 16 y 16 aciertos (`3f`) y 15, 16 y 16 (`1f`) sobre 17, así que el resultado es estable.
+  - El máximo posible sobre los 30 cuadros es 17 (56,7 %); las dos variantes quedan a menos de un cuadro de ese techo.
+  - El logo mejora poco sobre hoy (de 43 % a 47–49 %): el modelo suele mandar el logo a la franja contraria al texto aunque el sujeto también esté ahí.
+- **Veredicto: apto para encenderse como aviso del texto**, con la variante `3f`. Empata con `1f` dentro del ruido (1 cuadro de 51), mira el video entero, que es lo que dura el texto, y cuesta menos de US$0,001 por pieza. La recomendación del logo se muestra solo como sugerencia secundaria, porque apenas supera el lugar de hoy.
+- **Uso en la fase 2, decidido por Deivid el 2026-11-23:** «no quiero que bloquee si se pone el texto, sino que haya una advertencia de que puede tapar el producto y que muestre la mejor posición».
+  - El servidor **nunca mueve** el texto ni el logo por su cuenta.
+  - Devuelve las franjas del producto, la posición recomendada para el texto y para el logo, si la posición elegida por el dueño tapa el producto, y el motivo en español.
+  - La pantalla muestra el aviso con «Usar esta posición».
+- **Fase 2 construida (2026-11-24, sin llamadas reales, todo con dobles):** `packages/api/src/qualify_api/creative/placement_advice.py`.
+  - Se calcula una vez por video que el dueño sube al generador, sobre su copia liviana de 480p (ED-09), justo después de que el `media-worker` la termina. Va detrás de `QUALIFY_VIDEO_PLACEMENT_AI` (apagado). Si falla, no hay aviso y la pieza sigue igual.
+  - El aviso queda en el `result` del trabajo `upload_preview` de ese video (`placement_advice`), sin migración. La pantalla lo lee con `placement_advice_for(tenant_id, claves)` y decide sola si la franja elegida tapa el producto (`covers_product`).
+  - Guardas en Postgres: cada llamada se reserva en `creative_usage_events` (unidad `video_placement_token`) antes de hacerse, al tope de US$0,0021, bajo un candado de aviso. Hasta 2 llamadas por video y 1.500 al día para toda la flota (el conteo de la flota es un solo número leído por `admin_session` en el `media-worker`).
+  - Después de la llamada, la reserva se ajusta a lo cobrado solo si hubo uso medido. Si la llamada falló en la red (`request_error`) o no midió nada, la reserva queda en el tope: se cuenta de más, nunca de menos.
+  - La paga la plataforma (`paid_by=platform`): no toca `budget_spent_usd` de la marca. El costo queda solo en `creative_usage_events` (`Numeric(12,6)`) y, como toda llamada a Claude, en el `consumption_ledger`. Ningún reporte suma las dos tablas.
+  - El cliente de Anthropic del `media-worker` espera como mucho 60 s y reintenta una vez, para no frenar la cola de un solo trabajo a la vez.
+  - El `media-worker` lee el mismo archivo de entorno que la app (`QUALIFY_ANTHROPIC_API_KEY`); sin la llave no hay aviso (`no_key`). Para encenderlo basta con `QUALIFY_VIDEO_PLACEMENT_AI=on` y reiniciar el `media-worker`. Tope de la flota: `QUALIFY_VIDEO_PLACEMENT_FLEET_DAILY` (1500).
+  - **Memoria medida (2026-11-24):** `deploy/measure/upload-preview-memory.sh run k5_hevc10_112.mp4 advice` en Docker con el tope del `media-worker` (768 MiB, 1 CPU), con el aviso encendido y un cliente de Anthropic falso, sin red. La copia de 480p llegó a 410 MiB de memoria anónima. El aviso, después, llegó a 102 MiB (138 MiB de RSS del proceso) y tardó 12,5 s, casi todo en leer los 3 cuadros de un video de 112 s. Sin eventos de falta de memoria (`oom` 0).
+    - Medido otra vez con el SDK `anthropic` importado (lo que carga el cliente de producción): la copia llegó a 409 MiB y el aviso a 135 MiB de memoria anónima (172 MiB de RSS), en 17,1 s. Sigue lejos del tope de 768 MiB; sin `oom`.
+  - **Pendiente:** el conteo de la flota filtra `creative_usage_events` por `unit` y `occurred_at` sin un índice propio. Con el volumen de hoy no pesa; si crece, hace falta un índice parcial `(occurred_at) WHERE unit = 'video_placement_token'`, que sería una migración.

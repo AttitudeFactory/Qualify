@@ -46,7 +46,14 @@ from ..pending_state import HEARTBEAT_MS, PendingState
 from ..r2_media import BACKEND_BASE
 from . import tokens as T
 from .nav_vm import FROM_APPROVED, FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
-from .primitives import MARK_Q, MARK_WAVES, loading_spinner, media_thumb, tone_badge
+from .primitives import (
+    MARK_Q,
+    MARK_WAVES,
+    loading_spinner,
+    media_thumb,
+    theme_toggle,
+    tone_badge,
+)
 from .state import NavState
 
 LANDING_URL = "https://qualify.la"
@@ -1012,7 +1019,7 @@ def page_header(
         rx.spacer(),
         *actions,
         # Ghost: the toggle is a page control, never the page's one solid action (P3).
-        rx.color_mode.button(variant="ghost", color_scheme="gray"),
+        theme_toggle(),
         width="100%",
         padding=T.PAD_HEADER,
         align="center",

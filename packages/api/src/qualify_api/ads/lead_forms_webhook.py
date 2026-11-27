@@ -10,12 +10,13 @@ from sqlalchemy import text
 from qualify_api.ads.lead_forms import LeadFormUnavailable
 from qualify_api.ads.lead_forms_client import meta_id
 from qualify_api.ads.lead_forms_service import (
+    _attribution,
     _client,
     _form_guard,
     _page_access,
     _persist,
     _remote_form,
-    _verify_ad,
+    _unattributed,
     parse_lead,
 )
 from qualify_api.webhooks.processor import Outcome
@@ -76,9 +77,16 @@ async def leadgen_handler(event: ClaimedEvent) -> Outcome:
         # Never attribute from the notification; compare it only when provided.
         claimed_ad = event.value.get("ad_id")
         if claimed_ad is not None and claimed_ad != data["meta_ad_id"]:
-            return Outcome(STATUS_DEAD, "leadgen_ad_mismatch")
-        await _verify_ad(client, form, data)
-        _persist(tenant_id, form, data, received_via="webhook")
+            data = _unattributed(data)  # The contact is the owner's; only the ad is unsure.
+        else:
+            data = await _attribution(client, form, data)
+        _persist(
+            tenant_id,
+            form,
+            data,
+            received_via="webhook",
+            credential_version=context["current_credential_version"],
+        )
         return Outcome(STATUS_PROCESSED)
     finally:
         await client.aclose()

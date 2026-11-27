@@ -271,6 +271,9 @@
   background: var(--q-control-fill);
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
+/* m-25120706: the date label may be long («Para el Día de los Enamorados (14 de febrero)»):
+   it wraps on a narrow card instead of overflowing. */
+.q-gcard-occasion .rt-Badge { white-space: normal; height: auto; }
 .q-gcard-note { color: var(--amber-11); background: var(--amber-a2); border-radius: var(--q-radius-control); padding: 0.35rem 0.5rem; }
 /* m-24842981: ONE main button per card, full width, and «Descartar» under it as a quiet
    text button when the publication can still be thrown out. */
@@ -487,6 +490,35 @@ a.q-gcard-media { display: block; text-decoration: none; color: inherit; }
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
 .q-cr-ghost-check { position: absolute; top: 0.6rem; right: 0.6rem; z-index: 1; }
+/* «Publicaciones»: what each publication is — video, gallery (carousel) or image — as
+   an icon chip in the thumbnail's bottom-left corner (Deivid 2026-11-17). */
+.q-cr-kind {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 9999px;
+  color: var(--gray-12);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+/* A whole gallery in the Clip's «Publicaciones» (ED-10): its number of files beside
+   the icon, so the chip grows into a pill. */
+.q-cr-kind--count {
+  width: auto;
+  gap: 0.2rem;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .q-choice-card--on .q-cr-ghost-head { color: var(--accent-11); background: var(--accent-a3); }
 .q-cr-ghost::after {
   content: "";
@@ -649,6 +681,38 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-dr-figures { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.75rem; width: 100%; }
 .q-dr-figures-line { line-height: 1.2; }
 .q-dr-transcript { display: block; max-height: 8rem; overflow-y: auto; line-height: 1.45; }
+/* RF-02 (m-25119460): a reel with no picture left says so under the film glyph. */
+.q-dr-cover-empty { padding: 0.75rem; }
+/* RF-02's filter bar (m-25119460): its buttons, popovers, sheet and option rows are Radix
+   components under the Liquid Glass skin (`assets/qualify.css`) and the `drawer` primitive
+   (RF-13, m-25120327 — see docs/design-system.md §5.8). The one rule of its own: which of
+   its two rows shows depends on the width of the BAR, not of the window (Deivid's live
+   tests, 2026-11-26: at 1024 px the sidebar and «¿Qué creamos?» leave the bar ~376 px).
+   The bar is a size container; below 760 px of it, the two buttons («Filtros» +
+   «Competidores»); from 760 px, ONE line that fills the bar — the four filters share it
+   (`flex: 1 1 auto`: the longest value takes more), then «Competidores» and «Quitar
+   filtros»: at 760 px each filter still has ~107 px for its short word and chevron.
+   Two classes, so it beats Radix's `.rt-Flex` display. */
+.q-reels-bar { container-type: inline-size; }
+.q-reels-bar .q-reels-bar__wide { display: none; }
+.q-reels-bar .q-reels-bar__narrow { display: flex; }
+@container (min-width: 760px) {
+  .q-reels-bar .q-reels-bar__wide { display: flex; }
+  .q-reels-bar .q-reels-bar__narrow { display: none; }
+}
+/* The option rows of the «Filtros» sheet, the dropdowns and «Tus competidores» (Deivid,
+   2026-11-26): mark, name and second line («Instagram · Te inspira») on the left edge, at
+   the group name's indent (both 0.75rem), not centred as Radix's base button does. */
+.q-reels-option.rt-Button { justify-content: flex-start; text-align: start; }
+.q-reels-option.rt-Button > .rt-Flex { align-items: flex-start; text-align: start; }
+/* RF-14 (m-25129383): «Buscar reels nuevos» goes after «Competidores», before «Quitar
+   filtros». Its words show from 1000 px of bar; between 760 and 1000 px it is its icon only
+   (44 px, its words in `aria-label` and `title`), so the line never wraps (measured live at
+   ~780 px: the chips keep 92-117 px). */
+.q-reels-bar .q-reels-bar__search-words { display: none; }
+@container (min-width: 1000px) {
+  .q-reels-bar .q-reels-bar__search-words { display: inline; }
+}
 /* Stock on the product screen (plan-integracion-stock R2, 2026-10-16): the bank's name
    over each thumbnail, the author under it (one line, ellipsis) and the credit line the
    banks ask for wherever their results show. */
@@ -824,10 +888,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 
 /* ── «Arma tu video» (ED-01…ED-05): the Clip's first step as an editor ─────────────
-   The live preview on top (fixed while the tools scroll, ~36svh tall; ~20svh while a
-   field of the editor has the focus, so the keyboard leaves room), the card «Tu video»,
-   then the tools (`.q-edit-tools` on the `lq-segmented` of `.q-source-seg`). Preview and
-   tools sit side by side only when the STEP is wide enough (`.q-edit-host` is the size
+   The live preview on top (fixed while the panel scrolls; ~20svh while a field of the
+   editor has the focus, so the keyboard leaves room), then — ED-10 — the timeline, its
+   bar and the chosen block's panel (`.q-edit--timeline`, below). Preview and panel
+   sit side by side only when the STEP is wide enough (`.q-edit-host` is the size
    container, never the window: a narrow desktop with the side panel stacks them).
    `ui.edit_preview` + `assets/edit-preview.js`. */
 .q-edit-host { container: edit-host / inline-size; width: 100%; min-width: 0; }
@@ -850,6 +914,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-edit { grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr); align-items: start; }
   .q-edit__preview { top: var(--space-3); background: transparent; padding-block: 0; }
   .q-edit-preview__frame { height: auto; width: 100%; max-height: 70vh; }
+  /* «Arma tu video» (ED-10) on a wide step: ONE column, the preview centred on top and
+     scrolling with the page (Deivid, 2026-11-16: «quiero que esté centrado») */
+  .q-edit--timeline { grid-template-columns: minmax(0, 1fr); }
+  .q-edit--timeline > .q-edit__preview { position: static; }
 }
 /* a field of the editor with the focus (the keyboard is up on a phone): the frame
    shrinks and the note hides, only while stacked */
@@ -862,65 +930,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   }
 }
 
-/* The tools: the chosen one's name and the others' icon (`.q-source-seg`) while the
-   tools' column is narrow (a phone; the 305 px column at 1280); every name from 30rem. */
-@container edit-main (min-width: 30rem) {
-  .radix-themes .q-edit-tools .rt-SegmentedControlItem[data-state="off"] .q-source-seg__text { display: inline; }
-}
 
-/* «Cortar»: Radix's two-handle slider, each handle a 44 px target around a 22 px dot. */
-/* Radix's PRIMITIVE slider ships no styles at all (Reflex's `add_style` does not reach
-   it here): the root, the track and the range get the layout Radix expects — a relative
-   flex row, a growing relative track, an absolute full-height range. Provisional: ED-03
-   retires it. */
-.q-edit-cut.q-edit-cut {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 44px;
-  user-select: none;
-  touch-action: none;
-}
-.q-edit-cut .q-edit-cut__track {
-  position: relative;
-  flex-grow: 1;
-  height: 6px;
-  overflow: hidden;
-  border-radius: 9999px;
-  background-color: var(--gray-a6);
-}
-.q-edit-cut .q-edit-cut__range {
-  position: absolute;
-  height: 100%;
-  border-radius: 9999px;
-  background-color: var(--accent-9);
-}
-.q-edit-cut .q-edit-cut__thumb,
-.q-edit-cut .q-edit-cut__thumb:hover,
-.q-edit-cut .q-edit-cut__thumb:focus {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
-  background-color: transparent;
-  box-shadow: none;
-  cursor: grab;
-}
-.q-edit-cut .q-edit-cut__thumb::after {
-  content: "";
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  background: var(--accent-9);
-  box-shadow: 0 0 0 3px var(--color-panel-solid), 0 1px 4px var(--black-a6);
-}
-.q-edit-cut .q-edit-cut__thumb:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
-
-/* The live line of «Deshacer» (D-E6). */
-.q-edit-undo { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%; min-height: 44px; }
+/* The editor's panel (D-E6). */
 .q-edit__panel { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 
 /* ── The live edit preview (ED-01, m-25026605): the video's stretch, turned and cropped to
@@ -997,7 +1008,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
    white text, no outline nor text shadow, over a black gradient 0 → 75 % across 45 % of
    the height of its side; inside the 9:16 safe zone (x 64–1016, y 270–1536 of
    1080×1920: 5.93 %, 14.06 % and 20 %); bold, 112 px → 76 px of 1080 (10.37 → 7.04 cqw).
-   The catalog has no middle for `scrim`: «En el medio» centres the same gradient. */
+   The catalog has no middle for `scrim`: «En el medio» centres the same gradient.
+   ED-13 (m-25029108, Deivid 2026-11-24 «que siempre esté centrado»): CENTRED — every line
+   and the box — as the final video draws it (`layout.ts` `centred`), in the brand's typography (`--q-text-font`, set on the
+   editor's preview from the Brand Kit; the page's title typography without one). */
 .q-edit-preview__text {
   position: absolute;
   left: 0;
@@ -1008,20 +1022,91 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   padding-inline: 5.93%;
   pointer-events: none;
 }
-.q-edit-preview__text[data-place="top"] {
+/* The text block: its two lines share one cell (the whole one, and the one «Letra por
+   letra» fills), and it is what a slide or a zoom moves (centred on it). */
+.q-edit-preview__text-box {
+  display: grid;
+  /* never wider than the safe zone (Deivid 2026-11-24): an `auto` column grew to the
+     widest word, so every line wrapped past the right margin */
+  grid-template-columns: minmax(0, max-content);
+  /* the column in the middle of the box: «Franja» is wider than its text (Deivid 2026-11-24) */
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  transform-origin: center;
+}
+.q-edit-preview__text-box > * { grid-area: 1 / 1; }
+/* ED-13 C: «Franja», «Recuadro de tu color» and «Sin fondo» — the same text block as
+   `scrim`, only what is behind it changes (the contract's px at 1080 wide: the box hugs
+   the text by 48 px = 4.44cqw, its corners 24 px = 2.22cqw). The text's top sits at the
+   safe zone's top (270/1920 = 14.06 % of the height), its bottom at 384/1920 = 20 %. */
+.q-edit-preview__text[data-layout="band"],
+.q-edit-preview__text[data-layout="brand_fill"],
+.q-edit-preview__text[data-layout="shadow"] {
+  height: auto;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: none;
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="top"] {
+  top: 14.06%;
+  bottom: auto;
+  align-items: flex-start;
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="bottom"] {
+  top: auto;
+  bottom: 20%;
+  align-items: flex-end;
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="middle"] {
+  top: 0;
+  bottom: 0;
+  align-items: center;
+}
+.q-edit-preview__text[data-layout="band"] { padding-inline: 0; }
+.q-edit-preview__text[data-layout="band"][data-place="top"] { top: calc(14.06% - 4.44cqw); }
+.q-edit-preview__text[data-layout="band"][data-place="bottom"] { bottom: calc(20% - 4.44cqw); }
+.q-edit-preview__text[data-layout="band"] .q-edit-preview__text-box {
+  width: 100%;
+  max-width: none;
+  padding: 4.44cqw 5.93cqw;
+  background: var(--q-text-bg, #111111);
+}
+.q-edit-preview__text[data-layout="brand_fill"] .q-edit-preview__text-box {
+  margin: -4.44cqw;
+  padding: 4.44cqw;
+  max-width: calc(100% + 8.88cqw);
+  border-radius: 2.22cqw;
+  background: var(--q-text-bg, #0f766e);
+}
+.q-edit-preview__text:is([data-layout="band"], [data-layout="brand_fill"]) .q-edit-preview__text-line {
+  color: var(--q-text-ink, white);
+}
+/* «Sin fondo» (Deivid 2026-11-23): only the letters, clean — no shadow, no outline — in the
+   colour the owner picked (round 3, `--q-text-ink` from `text_color`), white without one */
+.q-edit-preview__text[data-layout="shadow"] .q-edit-preview__text-line {
+  color: var(--q-text-ink, white);
+  text-shadow: none;
+}
+/* The gradient by place is `scrim`'s («Sombra») ONLY (Deivid 2026-11-23): «Franja»,
+   «Recuadro de tu color» and «Sin fondo» never get it. Scoped with `:not(…)` — (0,3,0),
+   so it can never win over the backgrounds' own rules above again by coming later, as
+   the old (0,2,0) `[data-place]` rules did: they repainted the dark gradient (and its
+   45 % height and padding) behind the other three. A text without a layout is `scrim`. */
+.q-edit-preview__text:not([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="top"] {
   top: 0;
   height: 45%;
   align-items: flex-start;
   padding-top: 14.06%;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.6) 60%, transparent);
 }
-.q-edit-preview__text[data-place="middle"] {
+.q-edit-preview__text:not([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="middle"] {
   top: 27.5%;
   height: 45%;
   align-items: center;
   background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.6) 30%, rgba(0, 0, 0, 0.75) 50%, rgba(0, 0, 0, 0.6) 70%, transparent);
 }
-.q-edit-preview__text[data-place="bottom"] {
+.q-edit-preview__text:not([data-layout="band"], [data-layout="brand_fill"], [data-layout="shadow"])[data-place="bottom"] {
   bottom: 0;
   height: 45%;
   align-items: flex-end;
@@ -1031,15 +1116,24 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-edit-preview__text-line {
   margin: 0;
   max-width: 100%;
-  font-family: var(--heading-font-family, inherit);
+  font-family: var(--q-text-font, var(--heading-font-family, inherit));
   font-size: 10.37cqw;
   font-weight: 700;
   line-height: 1.15;
   text-align: center;
   color: white;
-  overflow-wrap: break-word;
+  /* a word wider than the screen breaks inside the box instead of spilling out; the
+     panel says why the final video refuses it (`text-fit.js`) */
+  overflow-wrap: anywhere;
 }
 .q-edit-preview__text[data-long="true"] .q-edit-preview__text-line { font-size: 7.04cqw; }
+/* ED-13 round 4 (Deivid 2026-11-23: «3 tamaños»): «Pequeña» ×0.75 and «Grande» ×1.25 of
+   both title sizes (112/76 px of 1080 → 84/57 and 140/95), as the final video's
+   `layout.ts` `SIZE_SCALE`; «Mediana» keeps the sizes above. */
+.q-edit-preview__text[data-size="small"] .q-edit-preview__text-line { font-size: 7.78cqw; }
+.q-edit-preview__text[data-size="small"][data-long="true"] .q-edit-preview__text-line { font-size: 5.28cqw; }
+.q-edit-preview__text[data-size="large"] .q-edit-preview__text-line { font-size: 12.96cqw; }
+.q-edit-preview__text[data-size="large"][data-long="true"] .q-edit-preview__text-line { font-size: 8.8cqw; }
 .q-edit-preview__play {
   z-index: 4;
   top: 50%;
@@ -1139,6 +1233,97 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-tl__item { z-index: 2; }
 .q-tl__item[data-tl-chosen="true"] { z-index: 3; }
+/* m-25114465 «la unión»: a point on the line between two blocks of «Fotos y videos»,
+   riding the track's TOP edge like CapCut's transition button (Deivid 2026-11-26: «las
+   pistas se mueven hacia abajo, no me gusta» — no row of its own). The layer lies over
+   the track (`.q-tl__media` is the track's own height; `.q-tl__joins` is absolute,
+   inset 0, no height, no margin): no track moves a pixel. The dot is 20 px, half of it in
+   the gap above the track as a picture only. Its target is 44 px tall but 24 px wide
+   (WCAG 2.5.8's minimum: ~12 px over each block at 375 px) and starts at the canvas' 4 px
+   gap above the track (`.q-tl__canvas` `gap: 4px`): never over the ruler nor the
+   playhead's head, on a phone and on a desktop. The layer lets every other tap through
+   to the blocks, and it is hidden while blocks are reordered. */
+.q-tl__media { position: relative; }
+.q-tl__joins { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+/* while a block of «Fotos y videos» is lifted and moved, the points stay out of the way */
+[data-tl-dragging="move"] .q-tl__joins { opacity: 0; visibility: hidden; }
+.q-tl__join {
+  position: absolute;
+  top: -4px;
+  left: calc(var(--j-at) * var(--tl-px));
+  width: 24px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: start center;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+/* ux review: a point touching the chosen block is hidden (its trim handles sit right
+   there; the screen also takes it out of the tab order); one that really sits under a
+   handle — measured in px by `assets/timeline.js` `markJoins` — dims and lets it have
+   the taps. */
+.q-tl__join[data-join-off="1"] { visibility: hidden; pointer-events: none; }
+.q-tl__join[data-join-near] { pointer-events: none; opacity: 0.35; }
+.q-tl-join-way { display: inline-flex; align-items: center; gap: 4px; }
+/* the dot rides the track's top edge: it overflows the target upwards as a picture only,
+   so the ruler keeps its taps and clicks */
+.q-tl__join .q-tl__join-dot { margin-top: -6px; pointer-events: none; }
+.q-tl__join-dot {
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 2px solid var(--gray-a9);
+  background: var(--color-panel-solid);
+  box-shadow: 0 1px 3px var(--black-a6);
+  transition: transform 120ms ease;
+}
+/* Deivid (option A): «Fundido» / «Barrido» fill the point with the accent and carry their
+   icon in the accent's contrast colour (white on teal-9: 3.1:1, WCAG 1.4.11's 3:1 for a
+   graphic); «Corte» stays empty. A block too short keeps the warning tone. */
+.q-tl__join[data-join-kind="fundido"] .q-tl__join-dot,
+.q-tl__join[data-join-kind="barrido"] .q-tl__join-dot { border-color: var(--accent-9); background: var(--accent-9); color: var(--accent-contrast); }
+.q-tl__join-icon { display: block; }
+.q-tl__join[data-join-warn="1"] .q-tl__join-dot { border-color: var(--amber-9); background: var(--amber-9); color: var(--amber-contrast); }
+.q-tl__join[aria-expanded="true"] .q-tl__join-dot { transform: scale(1.2); box-shadow: 0 0 0 3px var(--accent-a6); }
+.q-tl__join:hover .q-tl__join-dot { transform: scale(1.1); }
+.q-tl__join:focus-visible { outline: 2px solid var(--focus-8); outline-offset: 0; }
+.q-tl-panel__warn { color: var(--amber-11); }
+@media (prefers-reduced-motion: reduce) { .q-tl__join-dot { transition: none; } }
+/* Deivid 2026-11-26 («bloques enteros, encimados»): every block is drawn whole; the next
+   one starts where it really starts and lies over the end of this one (it comes later,
+   so it is drawn over it; a chosen block comes on top, z 3). Its first `--b-in` seconds —
+   the transition — carry a veil with the transition's icon, CapCut-like: a picture only
+   (the join's point names it), never in the way of a tap. */
+.q-tl__overlap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  z-index: 1;
+  width: calc(var(--b-in) / var(--b-len) * (100% - 2px));
+  border-radius: var(--q-radius-control) 0 0 var(--q-radius-control);
+  background: repeating-linear-gradient(135deg, var(--accent-a7) 0 4px, var(--accent-a4) 4px 8px);
+  pointer-events: none;
+}
+/* ux review: the block's name, seconds and picture start AFTER its overlap — the stripes
+   never cover them (percentages of the block's own width, phone and desktop alike). */
+.q-tl__item[data-tl-in="1"] .q-tl__block {
+  padding-left: calc(var(--b-in) / var(--b-len) * 100% + var(--space-2));
+}
+.q-tl__item[data-tl-in="1"] .q-tl__pic { left: calc(var(--b-in) / var(--b-len) * 100%); }
+@container q-tl (min-width: 52rem) {
+  .q-tl__join { left: calc(var(--j-at) / var(--tl-total) * 100%); }
+}
 .q-tl__block {
   display: flex;
   align-items: center;
@@ -1163,6 +1348,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl__block[data-tl-block="text"] { border-color: var(--gray-a7); background: var(--gray-a3); color: var(--gray-12); }
 .q-tl__block[data-tl-block="effect"] { border-style: dashed; border-color: var(--accent-a7); background: var(--accent-a3); }
 .q-tl__block[aria-pressed="true"] { border: 2px solid var(--accent-9); }
+/* ED-13: a text in a clash (two in one place at once) — the design system's warn tone */
+.q-tl__block[data-tl-warn="1"] { border: 2px solid var(--amber-9); background: var(--amber-a3); color: var(--amber-12); }
 .q-tl__block:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
 .q-tl__icon { display: inline-flex; flex: none; }
 .q-tl__aa { font-weight: 700; }
@@ -1182,27 +1369,53 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-tl__handle--start { right: 100%; justify-content: flex-end; }
 .q-tl__handle--end { left: 100%; justify-content: flex-start; }
+/* ED-14 (Deivid 2026-11-24: «no me gusta que el slider pueda salir de pantalla y de la
+   linea del tiempo»): a block that starts or ends the track keeps that handle INSIDE it,
+   its grip on the block's edge — never past the track, at rest or dragged
+   (`timeline-drag.js` stops the drag there too, `core.trimDrawing`). */
+.q-tl__item[data-tl-at-start="1"] > .q-tl__handle--start { right: auto; left: 0; justify-content: flex-start; }
+.q-tl__item[data-tl-at-end="1"] > .q-tl__handle--end { left: auto; right: 0; justify-content: flex-end; }
+/* …and never wider than half its block (review): a 1 s block (44 px on a phone) keeps half
+   of itself free to be held and moved, and its two inner handles never overlap. */
+.q-tl__item[data-tl-at-start="1"] > .q-tl__handle--start,
+.q-tl__item[data-tl-at-end="1"] > .q-tl__handle--end { max-width: 50%; }
+/* ED-11 review (Deivid): with a mouse the zone that grabs is the bar itself, so the
+   `ew-resize` cursor, the hover and the time bubble sit on what the owner sees; a finger
+   (`pointer: coarse`) keeps the 44 px target of §3.8 — and so does a touch laptop, whose
+   primary pointer is fine but which also has a finger (`any-pointer: coarse`). */
+@media (pointer: fine) and (not (any-pointer: coarse)) {
+  .q-tl__handle { width: 16px; }
+}
+/* ED-03 (Deivid 2026-11-19: «lo de los tiradores no lo entendí»): a thick accent bar the
+   whole height of the track, hugging the block's edge, with a notch (two short lines) that
+   reads «grab me» — always shown while the block is chosen. */
 .q-tl__grip {
-  width: 12px;
-  height: 70%;
-  border-radius: 4px;
-  background: var(--accent-9);
-  box-shadow: 0 0 0 2px var(--color-panel-solid);
-}
-.q-tl__handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; border-radius: var(--q-radius-control); }
-.q-tl__empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-2);
-  border: 1px dashed var(--gray-a7);
+  position: relative;
+  width: 16px;
+  height: 100%;
   border-radius: var(--q-radius-control);
-  font-size: var(--font-size-1);
-  color: var(--gray-11);
-  white-space: nowrap;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 2px var(--color-panel-solid), 0 2px 6px var(--black-a5);
 }
-.q-tl__hint-desk { display: none; }
+.q-tl__handle--start .q-tl__grip { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
+.q-tl__handle--end .q-tl__grip { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
+.q-tl__grip::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border-inline: 2px solid var(--accent-contrast);
+  box-sizing: border-box;
+  opacity: 0.9;
+}
+.q-tl__handle:hover .q-tl__grip,
+.q-tl__handle:focus-visible .q-tl__grip,
+.q-tl__handle[data-tl-time] .q-tl__grip { background: var(--accent-10); }
+.q-edit__hint { min-width: 0; }
+.q-tl__handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; border-radius: var(--q-radius-control); }
 .q-tl__head {
   position: absolute;
   top: 0;
@@ -1211,6 +1424,8 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   width: 2px;
   transform: translateX(-1px);
   background: var(--accent-9);
+  /* ED-11b UX review: a thin dark edge, so the line reads over any frame of a strip */
+  box-shadow: 0 0 0 1px var(--black-a8);
   pointer-events: none;
 }
 .q-tl__head::before {
@@ -1229,6 +1444,22 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl:has(.q-tl__scrub:focus-visible) .q-tl__head { outline: 2px solid var(--accent-8); outline-offset: 2px; }
 .q-tl:has(.q-tl__scrub:focus-visible) .q-tl__clock { text-decoration: underline; }
 .q-tl__status { min-height: 1.25rem; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
+/* ED-04 (m-25026627): the effects of «+ Efecto» as full-width rows; while an effect is
+   held (Deivid 2026-11-20) the canvas shows one more row under the last one — dropped
+   there, it opens a new row of «Efectos». */
+.q-tl[data-tl-new-lane] .q-tl__canvas { padding-bottom: 48px; }
+.q-tl[data-tl-new-lane] .q-tl__canvas::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 44px;
+  border: 1px dashed var(--accent-a7);
+  border-radius: var(--q-radius-control);
+  pointer-events: none;
+}
+.q-edit-effect-choice.rt-Button { justify-content: flex-start; height: auto; white-space: normal; }
 
 @container q-tl (min-width: 52rem) {
   .q-tl__top { justify-content: flex-end; }
@@ -1244,8 +1475,6 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-tl__scrub { pointer-events: auto; }
   .q-tl__head--fixed { display: none; }
   .q-tl__head--move { display: block; }
-  .q-tl__hint-phone { display: none; }
-  .q-tl__hint-desk { display: inline; }
 }
 
 /* The action bar and the chosen block's panel: every target ≥ 44 px, 8 px from the
@@ -1286,6 +1515,133 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-tl__canvas > .q-glass-blob .q-glass-blob__surface { transition: none; animation: none; }
 }
 .q-tl__block .q-thumb { flex: none; }
+/* ED-11 (m-25026650): a video or photo block with a picture shows it — one <img alt="">
+   at its start, the same picture repeated along the rest (never a frame drawn here) —
+   with its name and seconds over it on a dark chip. The block is its own container: a
+   narrow one shows only the picture, a medium one drops the seconds first. Trimmed, cut
+   or sped up, the picture just repeats over the new width. */
+.q-tl__block { position: relative; isolation: isolate; container: q-tl-block / inline-size; }
+.q-tl__pic {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: block;
+  overflow: hidden;
+  background-color: var(--gray-a4);
+  background-repeat: repeat-x;
+  background-position: left center;
+  background-size: auto 100%;
+  pointer-events: none;
+}
+.q-tl__pic-img { display: block; width: auto; max-width: none; height: 100%; }
+/* ED-11 review: the film / photo icon under the picture (z -2, below `.q-tl__pic`): it
+   shows through only when the picture is missing or hidden. */
+.q-tl__pic-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gray-a11);
+  pointer-events: none;
+}
+/* Two similar pictures side by side: a stronger edge between them. It ties with
+   `[aria-pressed="true"]` (0,2,0) and comes later, so the chosen block's accent colour is
+   restored right after with one attribute more (0,3,0): it keeps its 2 px accent border. */
+.q-tl__block[data-tl-pic="1"] { border-color: var(--gray-a8); }
+.q-tl__block[aria-pressed="true"][data-tl-pic="1"] { border-color: var(--accent-9); }
+/* ED-11b (m-25029110): an uploaded video's frame strip — the server's ONE JPEG, a tile per
+   second of the video — under the whole block (never shifted by a transition's veil: each
+   frame stays on its second of the ruler). Each cell is placed in seconds from the block's
+   start, as a share of the block (`--c-at` / `--b-len`), so it follows the phone's 44 px a
+   second, the desktop's fitted width and any scale. Its picture crops one tile out of the
+   image (`--s-size` = the image over one tile, `background-position` in percentages),
+   at its own aspect and the track's height (`--s-w`), centred; a cell wider than a tile
+   grows it and crops it top and bottom. Static: nothing moves.
+   UX review: the strip is drawn OVER the block's picture of before (same z, later in the
+   tree) with no background of its own, so that picture shows until the frames load — and
+   whenever they do not (a `/r2media` path past its hour): no grey flash, no bare box. */
+.q-tl__strip {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: block;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+/* UX review: over real frames the transition's veil needs stronger stripes to read */
+.q-tl__item:has(.q-tl__block[data-tl-strip="1"]) .q-tl__overlap {
+  background: repeating-linear-gradient(135deg, var(--accent-a8) 0 4px, var(--black-a5) 4px 8px);
+}
+.q-tl__frame-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--c-at) / var(--b-len) * 100%);
+  width: calc(var(--c-len) / var(--b-len) * 100%);
+  overflow: hidden;
+}
+.q-tl__frame-pic {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, var(--s-w));
+  aspect-ratio: var(--s-ratio);
+  transform: translate(-50%, -50%);
+  background-image: var(--s-img);
+  background-repeat: no-repeat;
+  background-size: var(--s-size);
+}
+/* High contrast: no picture under the name (it would sit on a photo); the icon shows. */
+@media (forced-colors: active) {
+  .q-tl__strip { display: none; }
+  .q-tl__pic { display: none; }
+  .q-tl__pic-fallback { color: CanvasText; }
+}
+.q-tl__block[data-tl-pic="1"] .q-tl__label,
+.q-tl__block[data-tl-pic="1"] .q-tl__secs {
+  flex: none;
+  max-width: 100%;
+  padding: 0 var(--space-1);
+  border-radius: var(--q-radius-control);
+  background: var(--black-a9);
+  color: var(--white-a12);
+  line-height: 1.5;
+}
+.q-tl__block[data-tl-pic="1"] .q-tl__label { flex: 0 1 auto; }
+.q-tl__secs { font-variant-numeric: tabular-nums; font-weight: 500; }
+.q-tl__block[data-tl-pic="1"] .q-tl__speed { background: var(--accent-9); color: var(--accent-contrast); }
+/* ED-11 review (Deivid: «el efecto de vidrio lo veo pero muy poco»): the liquid lens
+   (`.q-tl__canvas > .q-glass-blob`, z 1) rests under the chosen block, and a block with a
+   picture covers it whole. So the chosen one wears the lens's own material ON its
+   picture: the island's sheen and top highlight, the glass edge just inside the 2 px
+   accent border, a soft accent glow along the rim (the blob's accent tint) and a light
+   veil — no blur, no fill, so the frames stay sharp. `z-index: -1` after `.q-tl__pic`
+   in tree order paints it over the picture and under the name, seconds and «×10»
+   (in-flow, inside the block's own stacking context). Static: nothing to animate. */
+.q-tl__block[aria-pressed="true"][data-tl-pic="1"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--q-glass-sheen), var(--white-a3);
+  box-shadow:
+    inset 0 1px 0 var(--q-glass-hi),
+    inset 0 0 0 1px var(--q-glass-edge),
+    inset 0 -1px 0 var(--q-glass-lo),
+    inset 0 0 10px var(--accent-a7);
+  pointer-events: none;
+}
+@container q-tl-block (max-width: 7.5rem) {
+  .q-tl__block[data-tl-pic="1"] .q-tl__secs { display: none; }
+}
+@container q-tl-block (max-width: 4.5rem) {
+  .q-tl__block[data-tl-pic="1"] .q-tl__label,
+  .q-tl__block[data-tl-pic="1"] .q-tl__speed { display: none; }
+}
 .q-tl__speed {
   flex: none;
   margin-left: auto;
@@ -1307,7 +1663,30 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl-island { padding: var(--space-2); }
 /* The island's depth layer (`::before`, z 0) is positioned: the buttons go above it. */
 .q-tl-island > * { position: relative; z-index: 1; }
-.q-tl-add { display: flex; align-items: center; min-height: 44px; }
+/* ED-12 (m-25029107): why «Foto o video» is off (8 photos or videos) goes on its own
+   line ABOVE the «+», in the flow — never beside it, where the options open over it
+   (Deivid review). */
+.q-tl-add { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); min-height: 44px; }
+.q-tl-add__row { display: flex; align-items: center; min-height: 44px; }
+.q-tl-add__note { min-width: 0; }
+/* The option that is off: a solid, flat pill (no glass, no opacity — nothing behind it
+   shows through), grey text with the contrast Radix's steps 3/11 keep in light and dark
+   mode, and the «not allowed» pointer. */
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled],
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled][data-highlighted] {
+  opacity: 1;
+  background: var(--gray-3);
+  box-shadow: inset 0 0 0 1px var(--gray-a6);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  color: var(--gray-11);
+  cursor: not-allowed;
+}
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled] .q-orbit-dot {
+  background: var(--gray-a3);
+  color: var(--gray-11);
+}
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-disabled]:active { transform: none; }
 .q-tl-panel__field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 
 /* ── The preview in sequence (ED-01b m-25029106): `ui.edit_sequence_preview` ──────────
@@ -1325,7 +1704,115 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 .q-edit-seq .q-edit-seq__layer { visibility: hidden; }
 .q-edit-seq .q-edit-seq__layer[data-on] { visibility: visible; }
+/* m-25114465 «la unión»: while a block fades or wipes in, the block before it goes on
+   playing UNDER it (`data-under`, z 0) and the one coming in is drawn over it (z 1) —
+   both seen at once, as the final video blends them. */
+.q-edit-seq .q-edit-preview__poster.q-edit-seq__layer { z-index: 1; }
+.q-edit-seq .q-edit-seq__layer[data-under] { z-index: 0; }
 .q-edit-seq .q-edit-seq__overlay:not([data-on]) { display: none; }
+/* ED-13 D (m-25029108; replaces B6's fixed 0,5 s transition): a text enters and leaves
+   as the final video draws it — `assets/edit-preview.js` computes, on the clock, its
+   alpha (`--q-a`), how far down it is (`--q-dy`, a share of the 9:16 frame's height =
+   16/9 of its width) and its scale (`--q-s`) with the contract's curves and its own
+   `fade` (`edit-sequence-core.js` `textFrame`), so it is right paused and while dragging
+   too. Kept in the layout while off. With prefers-reduced-motion the script sends only
+   the alpha. «Letra por letra»: `data-typing` hides the whole line and shows the one the
+   script lays out a span per character, the letters not typed yet hidden. */
+.q-edit-seq .q-edit-seq__overlay[data-seq-text]:not([data-on]) {
+  display: flex; opacity: 0; visibility: hidden;
+}
+.q-edit-seq .q-edit-seq__overlay[data-seq-text][data-on] {
+  opacity: var(--q-a, 1); visibility: visible;
+}
+.q-edit-seq [data-seq-text] .q-edit-preview__text-box {
+  transform: translateY(calc(var(--q-dy, 0) * 177.78cqw)) scale(var(--q-s, 1));
+}
+.q-edit-preview .q-edit-seq__type { visibility: hidden; }
+.q-edit-seq [data-seq-text][data-typing] .q-edit-seq__full { visibility: hidden; }
+.q-edit-seq [data-seq-text][data-on][data-typing] .q-edit-seq__type { visibility: visible; }
+/* ED-13 C/D: the text panel's choices, two by two (`ui.text_panel`) */
+.q-text-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  width: 100%;
+}
+/* Every section of the text panel folds (Deivid 2026-11-23, round 3): Radix's accordion,
+   as Crear's. Its header is a ≥ 44 px button — the title in the accent (it reads as a
+   control), what is chosen under it in grey, the chevron that turns when it opens —
+   and what opens keeps the panel's own text colour (Radix paints it in the accent).
+   Reflex names the accordion's parts without Radix Themes' `rt-` prefix. */
+.q-text-acc { width: 100%; }
+.q-text-acc .AccordionTrigger {
+  min-height: 44px;
+  gap: var(--space-3);
+  text-align: left;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.q-text-acc .AccordionTrigger:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+.q-text-acc__head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.q-text-acc__title { font-size: var(--font-size-2); font-weight: 500; }
+.q-text-acc__summary { font-size: var(--font-size-1); color: var(--gray-11); overflow-wrap: anywhere; }
+.q-text-acc .AccordionChevron { flex: none; }
+.q-text-acc .AccordionContent { color: var(--gray-12); }
+/* EF-20 (m-25026599), UX review: «el texto puede tapar tu producto» arrives a moment after
+   the text's panel opens. It unfolds (a grid row from 0 to its own height) instead of
+   pushing «Dónde va el texto» down at once; with reduced motion it simply appears. The
+   inner box's 3 px padding (taken back by a −3 px margin, so it stays aligned) keeps
+   the button's focus ring inside the clipped box. */
+.q-place-warn {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 100%;
+  transition: grid-template-rows 220ms ease-out;
+}
+.q-place-warn[data-open="1"] { grid-template-rows: 1fr; }
+.q-place-warn__inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 3px;
+  margin: -3px;
+}
+.q-place-warn__inner > [role="status"] { width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .q-place-warn { transition: none; }
+}
+/* The box's colour (Deivid 2026-11-23): the campaign picker's round swatches (`.q-swatch`,
+   `qualify.css`) at a 44 px target, 8 px apart; the chosen one is ringed (`.q-swatch--on`)
+   and checked in the letters' colour. */
+.q-text-colors { display: flex; flex-wrap: wrap; gap: 8px; }
+.q-swatch.q-swatch--box {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 1px var(--gray-a7);
+}
+.q-swatch.q-swatch--box.q-swatch--on {
+  box-shadow: inset 0 0 0 1px var(--gray-a7), 0 0 0 2px var(--color-panel-solid, var(--gray-1)), 0 0 0 4px var(--accent-9);
+}
+/* «Listo» stays at hand on a phone while the text's panel scrolls: fixed at its foot,
+   over the page's bottom bar (the save bar's sticky pattern). */
+@media (max-width: 767px) {
+  .q-text-panel__done {
+    position: sticky;
+    bottom: calc(var(--q-bottom-bar-h, 0px) + var(--space-2) + env(safe-area-inset-bottom, 0px));
+    z-index: 2;
+    padding-block: var(--space-2);
+    background: var(--color-panel-solid);
+  }
+}
+/* «Ver cómo se mueve»: only where nothing moves by itself */
+.q-text-show-motion { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .q-text-show-motion { display: inline-flex; }
+}
 /* Each block carries its own turn — the video's AND the photo's (both share the
    centred base above: top/left 50% and translate(-50%, -50%)). */
 .q-edit-seq .q-edit-preview__video[data-rotate="90"],
@@ -1374,4 +1861,300 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   text-align: center;
   color: var(--gray-12);
   background: var(--color-panel-solid);
+}
+
+/* ── ED-10 m-25026648: the timeline in «Arma tu video» (`clip_editor_view`) ──────────
+   Phone (stacked): preview · timeline (tracks, then the bar) · the chosen block's
+   panel. The preview takes the height the step leaves (`--q-edit-frame-h`, measured by
+   `assets/edit-room.js`; the fallback guesses the rest of the step at ~38rem), never
+   under 9rem: head, preview, tracks, bar and foot without scrolling the page. With a
+   block chosen it gives room to its panel (30svh). Wide step (Deivid, 2026-11-16): the
+   same column, the preview centred and min(62svh, 40rem) tall whatever is chosen; what
+   «Agregar» opens goes in the side panel (`ui.drawer`), never beside the preview. */
+.q-edit--timeline { grid-template-areas: "preview" "timeline" "main" "parts"; }
+/* ED-12 (m-25029107): files of the computer dragged over «Fotos y videos» — the line
+   marks the gap they land in (`assets/timeline-insert.js`); no animation, so reduced
+   motion needs nothing. */
+.q-tl__insert {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  margin-left: -1.5px;
+  z-index: 7;
+  border-radius: 2px;
+  background: var(--accent-9);
+  pointer-events: none;
+}
+.q-edit--timeline > .q-edit__parts { grid-area: parts; min-width: 0; }
+.q-edit--timeline > .q-edit__preview { grid-area: preview; }
+.q-edit--timeline > .q-edit__main { grid-area: main; }
+.q-edit--timeline > .q-edit__timeline { grid-area: timeline; min-width: 0; }
+.q-edit--timeline .q-edit-seq .q-edit-preview__frame {
+  height: var(--q-edit-frame-h, clamp(9rem, calc(100dvh - 38rem), 70svh));
+  max-height: calc(100cqw * 16 / 9);
+}
+.q-edit--timeline[data-chosen="true"] .q-edit-seq .q-edit-preview__frame {
+  height: min(var(--q-edit-frame-h, 30svh), 30svh);
+}
+@container edit-host (min-width: 46rem) {
+  .q-edit--timeline .q-edit-seq .q-edit-preview__frame,
+  .q-edit--timeline[data-chosen="true"] .q-edit-seq .q-edit-preview__frame {
+    /* `width: auto`: the wide step's `width: 100%` would stretch the 9:16 frame */
+    width: auto;
+    height: min(62svh, 40rem, 100cqw * 16 / 9);
+    max-height: none;
+  }
+}
+/* A chosen block's panel scrolled into view clears a phone's fixed foot. */
+.q-edit--timeline .q-tl-panel { scroll-margin-bottom: calc(var(--q-bottom-bar-h, 0px) + 2 * var(--q-gap)); }
+
+/* The bar under the tracks at every size (`timeline_layout(bar_below=True)`). */
+.q-tl-stack--bar-below .q-tl-stack__track { order: 1; }
+.q-tl-stack--bar-below .q-tl-stack__actions { order: 2; }
+.q-tl-stack--bar-below .q-tl-stack__panel { order: 3; }
+
+/* The live line and the editor's hint beside it (the line is the `role="status"`). */
+.q-tl__live { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 1.25rem; }
+.q-tl__live .q-tl__status { flex: 1 1 auto; min-width: 0; }
+.q-tl__live .rt-Button { flex: none; }
+
+/* Drag and drop (`assets/timeline-drag.js`): no grip (D-T6); a long press never selects
+   text nor opens the phone's menu; the lifted block rises over the others, which make
+   room live; a text or effect shows the time it would start at. */
+.q-tl__block { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.q-tl__item--shifting,
+.q-tl__item--settle,
+.q-tl__item--return { transition: transform var(--q-dur-fast, 150ms) var(--q-ease, ease); }
+.q-tl__item--lifted { z-index: 6; cursor: grabbing; }
+.q-tl__item--lifted .q-tl__block {
+  border: 2px solid var(--accent-9);
+  box-shadow: 0 6px 18px var(--black-a5);
+}
+.q-tl__item[data-tl-time]::after {
+  content: attr(data-tl-time);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  padding: 0 var(--space-1);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+  font-size: var(--font-size-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+[data-q-timeline][data-tl-dragging] { -webkit-user-select: none; user-select: none; }
+/* ED-03 (m-25026623): a trim handle moving — what is kept is drawn over the block (the
+   rest dims), the handle follows the finger with a bubble of its time, nothing selects. */
+[data-q-timeline][data-tl-trimming] { -webkit-user-select: none; user-select: none; }
+.q-tl__handle { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.q-tl__item--trimming .q-tl__block { opacity: 0.45; }
+.q-tl__trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 2px solid var(--accent-9);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a5);
+  pointer-events: none;
+}
+/* «Desde 0:06» over the handle: the panel's colour, accent text and border (UX review).
+   ED-14 (Deivid 2026-11-24): `--tl-bubble-x` (`timeline-drag.js`, `core.bubbleShift`)
+   moves it sideways so it never leaves the screen, also at 375 px. */
+.q-tl__handle[data-tl-time]::after {
+  content: attr(data-tl-time);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(calc(-50% + var(--tl-bubble-x, 0px)));
+  padding: 0 var(--space-1);
+  border: 1px solid var(--accent-9);
+  border-radius: var(--q-radius-control);
+  background: var(--color-panel-solid);
+  color: var(--accent-12);
+  font-size: var(--font-size-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.q-tl__lift { margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
+.q-tl__lift:empty { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .q-tl__item--shifting,
+  .q-tl__item--settle,
+  .q-tl__item--return { transition: none; }
+}
+
+/* ED-13 (Deivid 2026-11-24): «palabra demasiado larga» under the text's field, filled by
+   `assets/text-fit.js` with the final video's criterion; empty = not shown */
+.q-text-fit-note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-1);
+  color: var(--amber-11);
+  overflow-wrap: anywhere;
+}
+.q-text-fit-note:empty { display: none; }
+
+/* ── The AI part on the timeline (m-25026602, docs/design-system.md §5.10.1) ──────────
+   Signed by Deivid on 2026-11-26 (mockups `docs/mockups/editor-unico/`, notas.md §2).
+   A variant of `.q-tl__block` on «Fotos y videos»: `data-tl-block="ai"` plus its state in
+   `data-ai-state` — `plan` (not created yet) and the `PartState` ones: queued, creating,
+   review, ready, failed, refused, redo, expired. Two lines over its poster: line 1 the ✦
+   and the mode badge (`.q-tl__mode`, a category); line 2 its name and seconds before
+   «Crear» (`.q-tl__ai-name`) or its state after (`.q-tl__state`, a signal: dot + word).
+   Never colour alone (P1). The role «hecho con IA» is the `--q-ai-*` tokens (iris) of
+   `assets/qualify.css`. Over the picture, the words sit on black chips with white letters
+   — the same as ED-11's name chip — so they read in the dark and the light theme. */
+.q-tl__block[data-tl-block="ai"] {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  /* review: `@container q-tl-block` measures the CONTENT box, so a narrow inline padding
+     (4 px, not the 8 px of other blocks) leaves a 1 s part (44 px) room for the ✦ and the
+     mode's icon, and a 2 s part (88 px) room for its name or its state */
+  padding: 4px;
+  border: 1px solid var(--q-ai-edge);
+  background: var(--q-ai-fill);
+  color: var(--q-ai-ink);
+}
+/* not created yet: dashed — what is still free to change */
+.q-tl__block[data-tl-block="ai"][data-ai-state="plan"] {
+  border-style: dashed;
+  border-width: 2px;
+  border-color: var(--q-ai-edge-plan);
+}
+/* plan, in line or being made: still the poster (the reel's cut or the product), dimmed */
+.q-tl__block[data-tl-block="ai"]:is([data-ai-state="plan"], [data-ai-state="queued"], [data-ai-state="creating"]) .q-tl__pic {
+  opacity: 0.45;
+  filter: saturate(0.4);
+}
+/* an iris veil over the picture so the chips read on any frame */
+.q-tl__block[data-tl-block="ai"] .q-tl__pic::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, var(--black-a6), transparent 80%),
+    linear-gradient(var(--q-ai-fill), var(--q-ai-fill));
+}
+/* decisions waiting for the owner: error and warn edges (their word says which) */
+.q-tl__block[data-tl-block="ai"][data-ai-state="failed"] { border: 2px solid var(--tomato-9); }
+.q-tl__block[data-tl-block="ai"]:is([data-ai-state="refused"], [data-ai-state="redo"], [data-ai-state="expired"]) {
+  border: 2px solid var(--amber-9);
+}
+/* chosen, as any block: a 2 px accent edge. Last, and width + colour only, so a block not
+   created yet keeps its dashes (chosen AND still free to change). */
+.q-tl__block[data-tl-block="ai"][aria-pressed="true"] {
+  border-width: 2px;
+  border-color: var(--accent-9);
+}
+/* lifted by the drag (`.q-tl__item--lifted`, 0,2,0, earlier in this file): the same accent
+   edge, restored after the AI block's own border (width + colour: the dashes stay) */
+.q-tl__item--lifted .q-tl__block[data-tl-block="ai"] {
+  border-width: 2px;
+  border-color: var(--accent-9);
+}
+.q-tl__ai-line { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.q-tl__mode,
+.q-tl__state,
+.q-tl__ai-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--black-a10);
+  color: var(--white-a12);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.q-tl__mode { box-shadow: inset 0 0 0 1px var(--q-ai-ring); letter-spacing: 0.02em; }
+.q-tl__mode svg,
+.q-tl__state svg { flex: none; width: 11px; height: 11px; }
+.q-tl__mode-word,
+.q-tl__state-word,
+.q-tl__ai-name .q-tl__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.q-tl__ai-name { border-radius: var(--q-radius-control); }
+/* the name and seconds are ONE chip: undo ED-11's per-word chips if the block has a picture */
+.q-tl__block[data-tl-block="ai"] .q-tl__ai-name :is(.q-tl__label, .q-tl__secs) {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+/* review: the track sets `data-tl-pic="1"` on every block with a picture, and ED-11 hides
+   `[data-tl-pic="1"] .q-tl__label` under 4.5rem — inside the AI chip that would leave an
+   empty black chip. The AI block's name hides only at ITS cut (3.25rem, the whole
+   `.q-tl__ai-name`): 0,5,0 beats ED-11's 0,3,0, container or not. */
+.q-tl__block[data-tl-block="ai"][data-tl-pic="1"] .q-tl__ai-name .q-tl__label { display: revert; }
+/* a block with a transition in: its content starts after the overlap, as any block
+   (`.q-tl__item[data-tl-in="1"] .q-tl__block`, 0,3,0), with the AI block's 4 px */
+.q-tl__item[data-tl-in="1"] .q-tl__block[data-tl-block="ai"] {
+  padding-left: calc(var(--b-in) / var(--b-len) * 100% + 4px);
+}
+/* the state: dot (or clock / loader) in its tone + its word, as `signal_pill` */
+.q-tl__state { gap: 4px; --q-ai-tone: var(--gray-9); }
+.q-tl__state[data-tone="info"] { --q-ai-tone: var(--blue-9); }
+.q-tl__state[data-tone="ok"] { --q-ai-tone: var(--grass-9); }
+.q-tl__state[data-tone="warn"] { --q-ai-tone: var(--amber-9); }
+.q-tl__state[data-tone="error"] { --q-ai-tone: var(--tomato-9); }
+.q-tl__state svg { color: var(--q-ai-tone); }
+.q-tl__state-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--q-ai-tone); }
+/* the system's loader, small enough for a 17 px chip (its own size is inline) */
+.q-tl__state-spin { display: inline-flex; flex: none; }
+.q-tl__state-spin .q-spinner { width: 12px !important; height: 12px !important; }
+/* Widths, measured on the block's CONTENT box (block − 4 px padding − border each side):
+   - up to 7.5rem (a 2 s part on a phone, 88 px → ~78 px of content): the mode's word and
+     the seconds go; the icons stay and the name or the state still shows (with «…»);
+   - up to 3.25rem (~52 px; a 1 s part, 44 px → ~34 px): the state's word and the name go
+     too, and the mode chip drops its inline padding so the ✦ and the mode's icon fit;
+   - up to 1.5rem: only the ✦.
+   The full name is always in the block's `aria-label` and in the panel. */
+@container q-tl-block (max-width: 7.5rem) {
+  .q-tl__block[data-tl-block="ai"] :is(.q-tl__mode-word, .q-tl__secs) { display: none; }
+}
+@container q-tl-block (max-width: 3.25rem) {
+  .q-tl__block[data-tl-block="ai"] :is(.q-tl__state-word, .q-tl__ai-name) { display: none; }
+  .q-tl__block[data-tl-block="ai"] :is(.q-tl__mode, .q-tl__state) { padding-inline: 1px; gap: 2px; }
+}
+@container q-tl-block (max-width: 1.5rem) {
+  .q-tl__block[data-tl-block="ai"] .q-tl__mode svg + svg { display: none; }
+}
+/* the mark on the preview while the playhead is on an AI part not created yet */
+.q-ai-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--black-a10);
+  box-shadow: inset 0 0 0 1px var(--q-ai-ring);
+  color: var(--white-a12);
+  font-size: var(--font-size-1);
+  font-weight: 650;
+}
+.q-ai-mark svg { flex: none; }
+/* the /design sample (m-25026602): each block in a box as wide as its seconds on a phone
+   (1 s = 44 px) and as tall as the media track (56 px) */
+.q-ai-samples { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-5); }
+.q-ai-sample { display: flex; flex-direction: column; gap: var(--space-1); max-width: 15rem; }
+.q-ai-sample__box { height: 56px; width: calc(var(--b-len) * 44px); }
+.q-ai-sample__cap { font-size: var(--font-size-1); color: var(--gray-11); }
+@media (forced-colors: active) {
+  .q-tl__block[data-tl-block="ai"] .q-tl__pic::after { display: none; }
+  .q-tl__state-dot { background: CanvasText; }
 }

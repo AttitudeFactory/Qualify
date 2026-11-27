@@ -1002,7 +1002,13 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
     transaction. VE-10a: OPENS the run when there is none yet (the first part to settle
     does), so the parent never waits in `drafting` for its parts (risk N1); a run
     already there is dirtied. Two parts settling together only bump the same row: the
-    run's lease (`PipelineStore.acquire`) gives one join."""
+    run's lease (`PipelineStore.acquire`) gives one join.
+
+    m-25112920: only a video by parts joins — an avatar block settling under its Clip
+    opens no join (the Clip takes the block when the owner places it, `clip_avatar`).
+    m-25119867: but a Clip still WAITING for the blocks of its first «Crear» (`drafting`,
+    a plan) gets its `generation` run opened or dirtied, so it is made as soon as its
+    last block is."""
     session.execute(
         text("""
         INSERT INTO creative_pipeline_runs AS r
@@ -1010,7 +1016,26 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
         SELECT p.tenant_id, p.id, p.revision, 'join', p.pipeline_version
         FROM content_drafts c
         JOIN content_drafts p ON p.tenant_id = c.tenant_id AND p.id = c.parent_draft_id
+        JOIN content_briefs pb ON pb.id = p.brief_id AND pb.kind = 'shot_video'
         WHERE c.id = :child
+        ON CONFLICT (tenant_id, draft_id, revision, phase)
+        DO UPDATE SET dirty_version = r.dirty_version + 1
+        """),
+        {"child": child_id},
+    )
+    # m-25119867: an avatar block chosen at its Clip's first «Crear» settled — the Clip,
+    # still waiting for its blocks (`clip_avatar.ClipBlocksWait`), tries again: its
+    # `generation` run is opened or dirtied (it is also retried on its own every 30 s)
+    session.execute(
+        text("""
+        INSERT INTO creative_pipeline_runs AS r
+            (tenant_id, draft_id, revision, phase, pipeline_version)
+        SELECT p.tenant_id, p.id, p.revision, 'generation', p.pipeline_version
+        FROM content_drafts c
+        JOIN content_drafts p ON p.tenant_id = c.tenant_id AND p.id = c.parent_draft_id
+        JOIN content_briefs pb ON pb.id = p.brief_id AND pb.kind = 'clip'
+        WHERE c.id = :child AND p.status = 'drafting'
+          AND jsonb_array_length(COALESCE(pb.media->'clip_avatar_plan', '[]'::jsonb)) > 0
         ON CONFLICT (tenant_id, draft_id, revision, phase)
         DO UPDATE SET dirty_version = r.dirty_version + 1
         """),

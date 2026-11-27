@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -87,6 +88,7 @@ from qualify_creative.schemas import (
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -109,9 +111,11 @@ from qualify_api.creative.draft_mode import (
     DRAFT_READY,
     DRAFT_RENDERING,
     FINAL_NOT_ORDERED_TEXT,
+    FINAL_USAGE_DUE,
     draft_expired,
     draft_state,
     final_retryable,
+    raw_final_task_id,
 )
 from qualify_api.creative.fsm import (
     APPROVED,
@@ -124,6 +128,7 @@ from qualify_api.creative.fsm import (
     InvalidTransition,
     apply_transition,
 )
+from qualify_api.creative.heartbeat import beating
 from qualify_api.creative.local_cap import check_local_daily_cap
 from qualify_api.creative.media import (
     KEPT_FROM_REVISION,
@@ -159,6 +164,7 @@ from qualify_api.creative.vendor_tasks import (
 from qualify_api.creative.versions import visible_version
 from qualify_api.creative.video_pipeline.local import effects_version_for, is_local_recipe
 from qualify_api.creative.video_pipeline.recipe import RecipeRefused, refuse_unbuilt_recipe
+from qualify_api.creative.video_pipeline.recompose import composes_over_seedance
 from qualify_api.plans.packs import legacy_seconds_per_video
 
 logger = logging.getLogger(__name__)
@@ -167,6 +173,18 @@ logger = logging.getLogger(__name__)
 #: terminal para auditarlos"). Its own logger, so it can be filtered or routed; the
 #: same facts are stored durably in `creative_usage_events`.
 cost_logger = logging.getLogger("qualify_api.creative.costs")
+
+#: m-25103284: how often a queued final restarts its `rendering_at` while it is made
+#: (well under `draft_mode.FINAL_STALE_SECONDS`, 20 min). Tests shorten it.
+FINAL_HEARTBEAT_EVERY_S = 60.0
+
+
+def _beating(beat: Callable[[], None], every_s: float) -> AbstractContextManager[None]:
+    """Call `beat` every `every_s` seconds on a daemon thread while the block runs; it
+    stops (and is waited for) when the block ends, so no beat lands after it. Shared with
+    the local assembly since m-25119832 (`heartbeat.beating`)."""
+    return beating(beat, every_s, name="creative-final-beat")
+
 
 #: Stamped on every draft this service creates; provenance, per the hard architectural
 #: rule that every model-written artifact carries the pipeline that wrote it.
@@ -481,6 +499,18 @@ class VariantWrite:
 
 
 @dataclass(frozen=True)
+class NewDraftInputs:
+    """What `ContentService.new_draft_inputs` hands back: the stamped brief, the voice
+    profile and pipeline versions the draft is born with, and its price (None without a
+    monthly quota)."""
+
+    brief: ContentBrief
+    voice_version: int
+    pipeline_version: str
+    price: Any
+
+
+@dataclass(frozen=True)
 class UsageWrite:
     """One ``creative_usage_events`` row: cost provenance for one vendor call."""
 
@@ -496,6 +526,9 @@ class UsageWrite:
     pricing_table_version: str
     #: Pieces or seconds for a per-piece / per-second vendor (0 for token-priced calls).
     pieces: int = 0
+    #: m-25112161: the vendor's id of the task this row paid for (Seedance, OmniHuman).
+    #: Set → the row is written once per `(tenant, task)` and a repeat adds no spend.
+    vendor_task_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -807,7 +840,20 @@ class ContentRepository(Protocol):
         spent_usd: Decimal,
         claim: str | None = None,
         draft_changes: Mapping[str, object] | None = None,
-    ) -> None: ...
+        held_usage: tuple[UsageWrite, ...] = (),
+        final_task_id: str | None = None,
+        raw_usage: tuple[UsageWrite, ...] = (),
+    ) -> None:
+        """m-25111780: `raw_usage` is what THIS pass paid for the raw 1080p
+        `final_task_id` (apart from `usage`, always recorded; `spent_usd` covers both),
+        `held_usage` what an earlier pass paid for it. `held_usage` is recorded only
+        while the stored draft block still marks the task due (`FINAL_USAGE_DUE` ==
+        `final_task_id`); `raw_usage` is dropped when the block names that task in its
+        `raw_final` with no mark (another pass recorded it). The mark is cleared in the
+        same transaction that records that task's spend. m-25112161: a row naming a
+        vendor task adds a row and spend only the first time for its `(tenant, task)`;
+        a `held_usage` row of another task than `final_task_id` is recorded on that key."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -855,8 +901,10 @@ def _with_server_effects_version(brief: ContentBrief) -> ContentBrief:
 def refuse_local_without_queue(brief: ContentBrief) -> None:
     """EF-06: a `local` video is made only in the creative worker — with the dispatcher
     `inline` (Reflex request threads) it is refused before any row, charge or decode,
-    like a video by parts (VE-08, `parts.PartsUnavailable`): `local_unavailable`."""
-    if not is_local_recipe(brief):
+    like a video by parts (VE-08, `parts.PartsUnavailable`): `local_unavailable`. EF-14:
+    so is a Clip made by Seedance with texts or layers to compose — the compose decodes
+    and encodes, which never runs in a Reflex thread."""
+    if not (is_local_recipe(brief) or composes_over_seedance(brief)):
         return
     try:
         on = queue_enabled()
@@ -871,8 +919,25 @@ def check_part_link(
 ) -> None:
     """VE-08 (criterion 6): a child's brief names its part (`media.part`) exactly when the
     draft has a parent, and the part's index is the draft's `part_index` — a part never
-    exists loose, and a loose piece never carries a part."""
+    exists loose, and a loose piece never carries a part.
+
+    m-25112920: an avatar block of a Clip (`media.clip_avatar_block`, an avatar kind) is
+    the other child: always under its Clip, in a slot (`part_index`), never with a part —
+    and a block is never created loose."""
     part = brief.media.part
+    if brief.kind is ContentKind.CHARACTER_SCENE:
+        # m-25128784 (ADR 50 §12.2): a character's scene lives under its Clip, in a slot
+        if part is not None:
+            raise ValueError("a character scene of a Clip is a scene, never a part")
+        if parent_draft_id is None or part_index is None:
+            raise ValueError("a character scene of a Clip lives under its Clip, in a slot")
+        return
+    if brief.media.clip_avatar_block:
+        if part is not None or not brief.kind.is_video:
+            raise ValueError("an avatar block of a Clip is an avatar, never a part")
+        if parent_draft_id is None or part_index is None:
+            raise ValueError("an avatar block of a Clip lives under its Clip, in a slot")
+        return
     if (part is None) != (parent_draft_id is None) or (parent_draft_id is None) != (
         part_index is None
     ):
@@ -1390,8 +1455,8 @@ class PostgresContentRepository:
             ) or (new_status == DRAFTING):
                 # Record paid work, but neither a pending checkpoint nor a stale worker
                 # is a completed version of the current publication.
-                _add_usage(session, tenant_id, brand_id, draft_id, usage)
-                _add_spend(session, brand_id, spent_usd)
+                skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd - skipped)
                 return
             initial_partial = (
                 draft.status == DRAFTING and draft.revision == 1 and draft.active_version_id is None
@@ -1427,6 +1492,9 @@ class PostgresContentRepository:
                         if requires_ai_disclosure is not None
                         else draft.requires_ai_disclosure
                     ),
+                    # gross on purpose: what THIS version cost, all of it — a vendor task
+                    # recorded already (m-25112161) is not added to the budget again, but
+                    # it is still part of what made this version
                     spent_usd=spent_usd,
                     failure_reason=failure_reason,
                     failure_detail=failure_detail,
@@ -1438,8 +1506,8 @@ class PostgresContentRepository:
                 session.flush()
             else:
                 # A completed generation is immutable: retries cannot overwrite its history.
-                _add_usage(session, tenant_id, brand_id, draft_id, usage)
-                _add_spend(session, brand_id, spent_usd)
+                skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd - skipped)
                 return
             for write in variants:
                 session.add(
@@ -1454,7 +1522,7 @@ class PostgresContentRepository:
                         model_revision=write.model_revision,
                     )
                 )
-            _add_usage(session, tenant_id, brand_id, draft_id, usage)
+            skipped = _add_usage(session, tenant_id, brand_id, draft_id, usage)
             if template_run is not None:
                 # The render job as Python saw it (0038) — written before the assets that
                 # reference it, and also when the run failed: the attempt is the evidence.
@@ -1555,7 +1623,7 @@ class PostgresContentRepository:
                                 partial.version_id = version.id
             if template_run is not None:
                 version.template_run_id = template_run.id
-            _add_spend(session, brand_id, spent_usd)
+            _add_spend(session, brand_id, spent_usd - skipped)
             if draft is not None and succeeded and (media or variants):
                 draft.preview_key = preview_of(media)
             if draft is not None and succeeded and requires_ai_disclosure is not None:
@@ -1916,33 +1984,105 @@ class PostgresContentRepository:
         spent_usd: Decimal,
         claim: str | None = None,
         draft_changes: Mapping[str, object] | None = None,
+        held_usage: tuple[UsageWrite, ...] = (),
+        final_task_id: str | None = None,
+        raw_usage: tuple[UsageWrite, ...] = (),
     ) -> None:
         """One transaction: the final's spend (also when it failed — the money went
         either way) and either the final in place of its draft, in the SAME row every
         reader already reads, or the draft marked failed with why. With `claim`, the
         row is written only while that claim still holds it (a final ordered again
         meanwhile belongs to its new run); the spend is recorded either way. A failure
-        keeps `draft_changes` in the draft block (the paid raw final a retry reuses)."""
+        keeps `draft_changes` in the draft block (the paid raw final a retry reuses).
+
+        m-25111780: the raw 1080p `final_task_id` is recorded exactly once whichever
+        pass gets here, decided on the row read locked: `held_usage` (paid by an earlier
+        pass whose settle was rolled back) only while the row still marks the task due;
+        `raw_usage` (paid by this pass) unless the row names that task in its
+        `raw_final` with no mark — another pass recorded it (this run lost its claim and
+        settles last). The mark goes in the same write that records the spend.
+        `spent_usd` includes `raw_usage`; `usage` is everything else this pass paid.
+
+        m-25112161: every row naming a vendor task is written once per `(tenant, task)`
+        (0179); a repeat adds neither a row nor spend. A `held_usage` row of a task other
+        than `final_task_id` (an earlier raw file, due and then unreadable) is recorded on
+        that key alone — also when `final_task_id` is None (the raw file was lost and
+        the 1080p paid in its place never came back, so nothing names a new task): then
+        every held row naming a task is such a row. When the stored mark names a task
+        recorded that way, the mark goes with this write too (the block is never left
+        marking a spend that is in the table)."""
         with tenant_session(tenant_id) as session:
-            _add_usage(session, tenant_id, brand_id, draft_id, usage)
-            _add_spend(session, brand_id, spent_usd)
-            row = session.get(orm.ImageAsset, asset_id, with_for_update=claim is not None)
+            row = session.get(
+                orm.ImageAsset,
+                asset_id,
+                with_for_update=claim is not None or bool(held_usage or raw_usage),
+            )
+            stored = dict((row.params or {}).get("draft") or {}) if row is not None else {}
+            ours = row is not None and (claim is None or _final_held_by(stored, claim))
+            stored_raw = stored.get("raw_final")
+            due = final_task_id is not None and stored.get(FINAL_USAGE_DUE) == final_task_id
+            recorded_before = (
+                final_task_id is not None
+                and not due
+                and isinstance(stored_raw, Mapping)
+                and raw_final_task_id(stored_raw) == final_task_id
+            )
+            paid = () if recorded_before else tuple(raw_usage)
+            # m-25112161: a held row of ANOTHER task — a raw 1080p kept, still due, then
+            # unreadable, so this pass paid `final_task_id` in its place — has no mark
+            # left to gate it (the block names one task): it is recorded on its task id
+            # alone, whichever pass gets here, and a repeat adds nothing (0179)
+            lost = tuple(
+                h
+                for h in held_usage
+                if h.vendor_task_id is not None and h.vendor_task_id != final_task_id
+            )
+            # a run that lost its claim leaves a held spend to the run that owns it now
+            held = (
+                tuple(h for h in held_usage if not any(h is other for other in lost))
+                if ours and due
+                else ()
+            )
+            dropped = sum((u.cost_usd for u in raw_usage), Decimal(0)) if recorded_before else 0
+            if recorded_before and raw_usage:
+                logger.info("final of asset %s: task %s recorded already", asset_id, final_task_id)
+            skipped = _add_usage(
+                session, tenant_id, brand_id, draft_id, (*usage, *paid, *held, *lost)
+            )
+            _add_spend(
+                session,
+                brand_id,
+                spent_usd
+                - dropped
+                - skipped
+                + sum((h.cost_usd for h in (*held, *lost)), Decimal(0)),
+            )
+            # the mark as it stands once this commits: gone when this write recorded the
+            # spend it named — its own task's (`paid`/`held`) or, m-25112161, a lost
+            # task's (written now or found on the key: recorded either way) — else as
+            # stored (never revived from a stale in-memory block)
+            mark = stored.get(FINAL_USAGE_DUE)
+            recorded_mark = (due and bool(paid or held)) or (
+                mark is not None and any(h.vendor_task_id == mark for h in lost)
+            )
+            due_after = None if recorded_mark else mark
             if row is None:
                 return
-            if claim is not None and not _final_held_by(
-                dict((row.params or {}).get("draft") or {}), claim
-            ):
+            if not ours:
                 logger.warning("final of asset %s settled after it was ordered again", asset_id)
+                if due_after != stored.get(FINAL_USAGE_DUE):
+                    # the new run would find the raw file still marked due: recorded here
+                    row.params = _with_usage_due(dict(row.params or {}), due_after)
                 return
             if media is None:
                 params = dict(row.params or {})
                 params["draft"] = {
-                    **dict(params.get("draft") or {}),
+                    **stored,
                     **dict(draft_changes or {}),
                     "status": DRAFT_FAILED,
                     "error": error,
                 }
-                row.params = params
+                row.params = _with_usage_due(params, due_after)
                 return
             row.media_url = media.media_url
             row.object_key = media.object_key
@@ -1951,7 +2091,7 @@ class PostgresContentRepository:
             row.height = media.height
             row.model_id = media.model_id
             row.provider = media.provider
-            row.params = dict(media.params)
+            row.params = _with_usage_due(dict(media.params), due_after)
             row.content_type = media.content_type
             row.updated_at = datetime.now(UTC)
             session.flush()
@@ -2062,36 +2202,63 @@ def _drop_purged_generation(
                 brief_id=draft.brief_id,
             )
         )
-    _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
-    _add_spend(session, brand_id, spent_usd)
+    skipped = _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
+    _add_spend(session, brand_id, spent_usd - skipped)
     logger.info("generation of purged piece %s dropped", draft.id)
 
 
 def _add_usage(
     session: Any, tenant_id: UUID, brand_id: UUID, draft_id: UUID, usage: Sequence[UsageWrite]
-) -> None:
+) -> Decimal:
+    """The usage rows, and what of their cost was NOT written: a row naming a vendor task
+    already recorded for this tenant (m-25112161, the partial key of 0179) adds nothing,
+    so the caller takes the returned amount off the spend it adds to the budget."""
+    skipped = Decimal(0)
     for event in usage:
-        session.add(
-            orm.CreativeUsageEvent(
-                tenant_id=tenant_id,
-                brand_id=brand_id,
-                draft_id=draft_id,
-                provider=event.provider,
-                model_id=event.model_id,
-                unit=event.unit,
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                cache_read_tokens=event.cache_read_tokens,
-                cache_creation_tokens=event.cache_creation_tokens,
-                # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
-                # calls) and `occurred_at` NOT NULL with no server default.
-                pieces=event.pieces,
-                cost_usd=event.cost_usd,
-                paid_by=event.paid_by,
-                pricing_table_version=event.pricing_table_version,
-                occurred_at=datetime.now(UTC),
+        values = {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "draft_id": draft_id,
+            "provider": event.provider,
+            "model_id": event.model_id,
+            "unit": event.unit,
+            "input_tokens": event.input_tokens,
+            "output_tokens": event.output_tokens,
+            "cache_read_tokens": event.cache_read_tokens,
+            "cache_creation_tokens": event.cache_creation_tokens,
+            # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
+            # calls) and `occurred_at` NOT NULL with no server default.
+            "pieces": event.pieces,
+            "cost_usd": event.cost_usd,
+            "paid_by": event.paid_by,
+            "pricing_table_version": event.pricing_table_version,
+            "occurred_at": datetime.now(UTC),
+        }
+        if event.vendor_task_id is None:
+            session.add(orm.CreativeUsageEvent(**values))
+            continue
+        if session.scalar(_usage_once(values, event.vendor_task_id)) is None:
+            logger.info(
+                "usage of vendor task %s recorded already: %s USD not added again",
+                event.vendor_task_id,
+                event.cost_usd,
             )
+            skipped += event.cost_usd
+    return skipped
+
+
+def _usage_once(values: Mapping[str, Any], vendor_task_id: str) -> Any:
+    """`INSERT … ON CONFLICT (tenant_id, vendor_task_id) WHERE vendor_task_id IS NOT NULL
+    DO NOTHING RETURNING id` — the id when written, no row when the task was recorded."""
+    return (
+        pg_insert(orm.CreativeUsageEvent)
+        .values(**values, vendor_task_id=vendor_task_id)
+        .on_conflict_do_nothing(
+            index_elements=["tenant_id", "vendor_task_id"],
+            index_where=text("vendor_task_id IS NOT NULL"),
         )
+        .returning(orm.CreativeUsageEvent.id)
+    )
 
 
 def _add_spend(session: Any, brand_id: UUID, spent_usd: Decimal) -> None:
@@ -2127,6 +2294,18 @@ def _final_claimable(block: Mapping[str, Any], attempt: str | None) -> bool:
 
 def _final_held_by(block: Mapping[str, Any], claim: str) -> bool:
     return block.get("status") == DRAFT_RENDERING and block.get("claim") == claim
+
+
+def _with_usage_due(params: dict[str, Any], due: object) -> dict[str, Any]:
+    """`params` whose draft block carries `due` as its `FINAL_USAGE_DUE` (m-25111780),
+    the key dropped when None; params without a draft block are returned as they are."""
+    block = params.get("draft")
+    if not isinstance(block, Mapping):
+        return params
+    block = {key: value for key, value in block.items() if key != FINAL_USAGE_DUE}
+    if due is not None:
+        block[FINAL_USAGE_DUE] = due
+    return {**params, "draft": block}
 
 
 def preview_of(media: tuple[MediaWrite, ...]) -> str | None:
@@ -2267,8 +2446,25 @@ class ContentService:
         creations: CreationsLedger | None = None,
         progress: Callable[[UUID, UUID], None] | None = None,
         vendor_tasks: VendorTaskStore | None = None,
+        clip_avatar_sources: Callable[[UUID, Sequence[str]], Mapping[str, Any]] | None = None,
+        clip_avatar_store: Any = None,
+        clip_avatar_clock: Callable[[], datetime] | None = None,
+        clip_failure_outbox: Any = None,
     ) -> None:
         self._media = media
+        #: m-25120319: where the email of a failed avatar is staged, in the same write as
+        #: its `failed_at` (`clip_avatar_mail.AvatarFailureOutbox`; Postgres when None on a
+        #: Postgres repository; none at all on an in-memory one unless injected).
+        self._clip_failure_outbox = clip_failure_outbox
+        #: m-25119867 PR 2: the clock the owner's 72 h are measured with (tests inject it).
+        self._clip_avatar_clock = clip_avatar_clock or (lambda: datetime.now(UTC))
+        #: m-25119867: the avatar blocks a Clip waits for (`clip_avatar.ClipAvatarStore`;
+        #: `PostgresClipAvatarStore` on Postgres when None).
+        self._clip_avatar_store = clip_avatar_store
+        #: m-25112920: which stretches of a Clip's recipe are its avatar blocks' videos
+        #: (`clip_avatar.db_generated_sources` on Postgres when None) — what approving the
+        #: Clip charges of the month's video seconds.
+        self._clip_avatar_sources = clip_avatar_sources
         #: The vendor tasks a generation created, kept by id (m-24852154): None = a
         #: task that outlives the wait cannot be resumed (tests, scripts).
         self._vendor_tasks = vendor_tasks
@@ -2334,6 +2530,103 @@ class ContentService:
         version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
         return brief, voice.version, version
 
+    def new_draft_inputs(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        brief: ContentBrief,
+        recipe_brief: ContentBrief | None = None,
+    ) -> NewDraftInputs:
+        """Everything `create_draft` checks and stamps before a top-level draft's row
+        exists — readiness, route policy, the parts' text cap, the recipe, the queue, the
+        local daily cap, the server-owned versions, the producer's stamp and the month's
+        price — refused with nothing written. m-25119867: `recipe_brief` is the recipe
+        the owner sees when it differs from the stored one (a Clip whose avatar blocks are
+        still to be made: their stretches at their estimated length); it is the one
+        `refuse_unbuilt_recipe` checks."""
+        kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
+        voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
+        missing = tuple(
+            name
+            for name, present in (
+                ("brand_kit", kit is not None),
+                ("voice_profile", voice is not None),
+            )
+            if not present
+        )
+        if missing or kit is None or voice is None:
+            raise BrandNotReady(missing=missing)
+        blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
+        if blocked is not None:
+            raise RouteBlockedByPolicy(blocked.detail)
+        if brief.kind.is_parts_parent:
+            from qualify_api.creative.parts import check_parent_text_cap
+
+            # Deivid, 2026-11-09 (m-24921081): a video by parts' FIRST text is a Claude
+            # call the platform pays too — the same daily cap per business as «Pedir otra
+            # versión», before any row exists (a retry with the same key returned above)
+            check_parent_text_cap(self._repo, tenant_id=tenant_id)
+        # EF-02: the recipe (effects, video text, stretches of own video, `local`) is
+        # checked against the effects library before any row, charge or vendor call —
+        # what the engine does not draw yet fails closed (`RecipeRefused`, codes in
+        # `problems`; a `local` Clip lasting under 3 s or over 60 s says its
+        # `duration_s`). EF-06: a `local` Clip is made only in the creative worker.
+        refuse_unbuilt_recipe(recipe_brief or brief, tenant_id=tenant_id)
+        refuse_local_without_queue(brief)
+        if is_local_recipe(brief):
+            # EF-15 (m-25026575): a business builds at most `local_daily_cap()` local
+            # pieces a day — before any row, charge or job, like `check_parent_text_cap`
+            # (D3: a local piece uses no video seconds and no vista previa, so nothing
+            # else limits the CPU it takes)
+            check_local_daily_cap(self._repo, tenant_id=tenant_id)
+        # Caller cannot select an internal compiler version through MediaInputs.
+        brief = brief.model_copy(
+            update={
+                "media": brief.media.model_copy(
+                    update={
+                        "brand_application_version": 0,
+                        # m-25119867: server-owned provenance, never the caller's
+                        "derived_from_brief_id": None,
+                        "prompt_compiler_version": 0,
+                        "script_word_budget": None,
+                        "script_rewrites": 0,
+                        # EF-02: server-owned, like the prompt compiler's (EF-06: 1
+                        # for a `local` recipe with stretches)
+                        "effects_pipeline_version": effects_version_for(brief),
+                        # m-24820842: the Brand Kit wording option belongs to reel replicas only
+                        "replication_brand_text": brief.media.replication_brand_text
+                        and brief.kind is ContentKind.CLIP
+                        and brief.media.clip_reference_mode == "edit",
+                        # founder, 2026-11-03: the copy as subtitles belongs to clips only
+                        "clip_subtitles": brief.media.clip_subtitles
+                        and brief.kind is ContentKind.CLIP,
+                    }
+                )
+            }
+        )
+        execution_version = getattr(
+            self._media, "new_generation_pipeline_version", PIPELINE_VERSION
+        )
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        if callable(prepare_new):
+            brief = prepare_new(brief, kit)
+        # CREAR-5: priced and checked against the month BEFORE any row exists — without
+        # enough creations, or (v2) videos, nothing is created (`CreationNotOffered` /
+        # `NotEnoughCreations`)
+        price = weight_for(brief) if self._creations is not None else None
+        if price is not None and self._creations is not None:
+            balance = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+            short = balance.shortfall(price)
+            if short is not None:
+                raise short
+        return NewDraftInputs(
+            brief=brief,
+            voice_version=voice.version,
+            pipeline_version=execution_version,
+            price=price,
+        )
+
     # -- create -------------------------------------------------------------
 
     @transactional_dispatch
@@ -2369,80 +2662,30 @@ class ContentService:
             existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
             if existing is not None:
                 return existing
-        kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
-        voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
-        missing = tuple(
-            name
-            for name, present in (
-                ("brand_kit", kit is not None),
-                ("voice_profile", voice is not None),
-            )
-            if not present
-        )
-        if missing or kit is None or voice is None:
-            raise BrandNotReady(missing=missing)
-        blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
-        if blocked is not None:
-            raise RouteBlockedByPolicy(blocked.detail)
-        if brief.kind.is_parts_parent:
-            from qualify_api.creative.parts import check_parent_text_cap
-
-            # Deivid, 2026-11-09 (m-24921081): a video by parts' FIRST text is a Claude
-            # call the platform pays too — the same daily cap per business as «Pedir otra
-            # versión», before any row exists (a retry with the same key returned above)
-            check_parent_text_cap(self._repo, tenant_id=tenant_id)
-        # EF-02: the recipe (effects, video text, stretches of own video, `local`) is
-        # checked against the effects library before any row, charge or vendor call —
-        # what the engine does not draw yet fails closed (`RecipeRefused`, codes in
-        # `problems`; a `local` Clip lasting under 3 s or over 60 s says its
-        # `duration_s`). EF-06: a `local` Clip is made only in the creative worker.
-        refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
-        refuse_local_without_queue(brief)
-        if is_local_recipe(brief):
-            # EF-15 (m-25026575): a business builds at most `local_daily_cap()` local
-            # pieces a day — before any row, charge or job, like `check_parent_text_cap`
-            # (D3: a local piece uses no video seconds and no vista previa, so nothing
-            # else limits the CPU it takes)
-            check_local_daily_cap(self._repo, tenant_id=tenant_id)
         received_middle = len(brief.media.clip_image_keys)
-        # Caller cannot select an internal compiler version through MediaInputs.
-        brief = brief.model_copy(
-            update={
-                "media": brief.media.model_copy(
-                    update={
-                        "brand_application_version": 0,
-                        "prompt_compiler_version": 0,
-                        "script_word_budget": None,
-                        "script_rewrites": 0,
-                        # EF-02: server-owned, like the prompt compiler's (EF-06: 1
-                        # for a `local` recipe with stretches)
-                        "effects_pipeline_version": effects_version_for(brief),
-                        # m-24820842: the Brand Kit wording option belongs to reel replicas only
-                        "replication_brand_text": brief.media.replication_brand_text
-                        and brief.kind is ContentKind.CLIP
-                        and brief.media.clip_reference_mode == "edit",
-                        # founder, 2026-11-03: the copy as subtitles belongs to clips only
-                        "clip_subtitles": brief.media.clip_subtitles
-                        and brief.kind is ContentKind.CLIP,
-                    }
-                )
-            }
-        )
-        execution_version = getattr(
-            self._media, "new_generation_pipeline_version", PIPELINE_VERSION
-        )
-        prepare_new = getattr(self._media, "prepare_new_brief", None)
-        if callable(prepare_new):
-            brief = prepare_new(brief, kit)
-        # CREAR-5: priced and checked against the month BEFORE any row exists — without
-        # enough creations, or (v2) videos, nothing is created (`CreationNotOffered` /
-        # `NotEnoughCreations`)
-        price = weight_for(brief) if self._creations is not None else None
-        if price is not None and self._creations is not None:
-            balance = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
-            short = balance.shortfall(price)
-            if short is not None:
-                raise short
+        if brief.media.character_scenes:
+            # m-25128784: a Clip with a «Personajes» track is created with its scenes by
+            # `character_scene.CharacterSceneService.create_clip_with_scenes` (switch,
+            # daily cap, vistas previas, seconds) — never as a plain draft
+            raise ValueError("a Clip with character scenes is created by its own service")
+        if brief.media.clip_avatar_plan:
+            # m-25119867: server-owned — only `clip_avatar.create_clip_with_blocks` plans; a
+            # brief sent with one (by hand, or «Crearla otra vez» of such a Clip) is refused
+            # with a stable code (PR 2)
+            from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+                RECREATE_FROM_EDITOR_CODE,
+                RECREATE_FROM_EDITOR_TEXT,
+                ClipAvatarRefused,
+            )
+
+            raise ClipAvatarRefused(
+                RECREATE_FROM_EDITOR_CODE,
+                RECREATE_FROM_EDITOR_TEXT,
+                raw="a Clip's avatar blocks are planned by their own service",
+            )
+        inputs = self.new_draft_inputs(tenant_id=tenant_id, brand_id=brand_id, brief=brief)
+        brief, price = inputs.brief, inputs.price
+        voice_version, execution_version = inputs.voice_version, inputs.pipeline_version
 
         # the key only reaches repositories that know it (every other caller sends none)
         keyed: dict[str, UUID] = {"request_key": request_key} if request_key else {}
@@ -2451,7 +2694,7 @@ class ContentService:
                 tenant_id=tenant_id,
                 user_id=user_id,
                 brief=brief,
-                voice_profile_version=voice.version,
+                voice_profile_version=voice_version,
                 pipeline_version=execution_version,
                 **keyed,
             )
@@ -2515,6 +2758,8 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return None
+        from qualify_api.creative.brand_references import BrandReferenceError  # noqa: PLC0415
+
         try:
             prepare_new = getattr(self._media, "prepare_new_brief", None)
             if callable(prepare_new):
@@ -2523,6 +2768,10 @@ class ContentService:
                     brief = prepare_new(brief, kit)
             return weight_for(brief)
         except CreationNotOffered:
+            return None
+        except BrandReferenceError:
+            # EF-13: a remake the producer would refuse before the copy (an effect
+            # that no longer fits or was not measured on the model) has no price
             return None
 
     def regeneration_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
@@ -2537,6 +2786,8 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return None
+        from qualify_api.creative.brand_references import BrandReferenceError  # noqa: PLC0415
+
         try:
             prepare_new = getattr(self._media, "prepare_new_brief", None)
             if callable(prepare_new):
@@ -2545,6 +2796,10 @@ class ContentService:
                     brief = prepare_new(brief, kit)
             return weight_for(brief, redo=True)
         except CreationNotOffered:
+            return None
+        except BrandReferenceError:
+            # EF-13: a remake the producer would refuse before the copy (an effect
+            # that no longer fits or was not measured on the model) has no price
             return None
 
     def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
@@ -2851,10 +3106,241 @@ class ContentService:
             logger.warning("brand context unreadable for %s: %s", brand_id, type(exc).__name__)
             return None
 
+    def _clip_plan_ready(
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief
+    ) -> tuple[DraftRecord, ContentBrief] | None:
+        """m-25119867: a Clip with avatar blocks still in its plan. Every block made →
+        the Clip gets ONE new brief with their videos as stretches (texts and effects
+        moved to their real lengths) and is made from it. Otherwise it waits: its sign of
+        life is stamped and `ClipBlocksWait` (a `LocalVideoWait`) leaves the worker's run
+        not done, nothing read past the blocks, written or paid; a block that would pass
+        the 60 s is marked refused (`clip_too_long`) on a new brief first, and a failure
+        seen for the first time is stamped (`failed_at`). PR 2 (ADR 50 §11 P2): once the
+        owner's 72 h after the latest failure ran out, the Clip fails
+        (`avatar_block_failed`) and None is returned — the run settles it and gives its
+        creations back. Every write is fenced by the run's lease and the Clip's revision."""
+        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            AVATAR_BLOCK_FAILED,
+            AVATAR_BLOCK_FAILED_TEXT,
+            ClipBlocksWait,
+            PlanExpired,
+            PlanReady,
+            PlanRefused,
+            PostgresClipAvatarStore,
+            plan_gate,
+        )
+
+        store = self._clip_avatar_store
+        if store is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                raise RuntimeError("a Clip waiting for avatar blocks needs the blocks' store")
+            store = PostgresClipAvatarStore()
+        verdict = plan_gate(
+            tenant_id=tenant_id,
+            clip_id=draft.id,
+            brief=brief,
+            store=store,
+            now=self._clip_avatar_clock(),
+        )
+        if isinstance(verdict, PlanExpired):
+            self._fail_waiting_clip(
+                tenant_id, draft, reason=AVATAR_BLOCK_FAILED, detail=AVATAR_BLOCK_FAILED_TEXT
+            )
+            logger.info("clip %s: its owner chose nothing for a failed avatar; failed", draft.id)
+            return None
+        if isinstance(verdict, PlanReady):
+            fresh, made_from = self._replace_clip_brief(tenant_id, draft, verdict.brief)
+            # rule 6: the brief the owner sent stays (estimated times); this log says
+            # how many texts and effects moved to the blocks' real lengths, or were cut
+            logger.info(
+                "clip %s: its avatar blocks are made; assembled now (%d moved, %d dropped)",
+                draft.id,
+                verdict.moved,
+                verdict.dropped,
+            )
+            return fresh, made_from
+        if isinstance(verdict, PlanRefused):
+            # a made block the Clip cannot take (over 60 s), or a failure seen for the
+            # first time: kept on the plan, so the screen shows it and the owner's 72 h
+            # run from it; the Clip waits for the owner. m-25120319: failures seen for
+            # the first time, or a block refused as too long, stage ONE email in that
+            # same write (one per Clip and pass: per `failed_at`)
+            failures: tuple[Any, ...] = ()
+            if verdict.code in ("failure_seen", "clip_too_long"):
+                from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
+                    mailable_failures,
+                )
+
+                failures = mailable_failures(verdict.seen)
+            self._replace_clip_brief(tenant_id, draft, verdict.brief, failures=failures)
+        beat = self._heartbeat(tenant_id, draft.id)
+        if beat is not None:
+            beat()
+        raise ClipBlocksWait(f"clip {draft.id} waits for its avatar blocks ({verdict.reason})")
+
+    def _fail_waiting_clip(
+        self, tenant_id: UUID, draft: DraftRecord, *, reason: str, detail: str
+    ) -> None:
+        """A waiting Clip fails (`generate_fail`) with the owner's words, in a transaction
+        fenced as `_replace_clip_brief` is (still `drafting`, same revision). Its
+        creations come back with the run's own refund (`_refund_if_not_delivered`); its
+        blocks were never charged, and a failed Clip's blocks owe nothing (P6)."""
+        repo = self._repo
+        new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=reason)
+        if isinstance(repo, PostgresContentRepository):
+            from qualify_shared.db.session import tenant_unit_of_work  # noqa: PLC0415
+
+            from qualify_api.creative.pipeline import PipelineStore  # noqa: PLC0415
+
+            run = current_preparation()
+            with tenant_unit_of_work(tenant_id) as session:
+                if run is not None:
+                    PipelineStore().fence(session, run)
+                row = session.execute(
+                    text("""
+                    SELECT status, revision, brief_id FROM content_drafts
+                    WHERE id = :d FOR UPDATE
+                """),
+                    {"d": draft.id},
+                ).first()
+                # «Intentar de nuevo» changes the Clip's brief, not its revision: a retry
+                # between this pass's read and its write keeps the Clip waiting
+                if (
+                    row is None
+                    or str(row.status) != DRAFTING
+                    or int(row.revision) != draft.revision
+                    or row.brief_id != draft.brief_id
+                ):
+                    raise CheckpointError("the Clip moved while it was failed")
+                session.execute(
+                    text("""
+                    UPDATE content_drafts SET status = :s, failure_reason = :r,
+                        failure_detail = :t, updated_at = now()
+                    WHERE id = :d
+                """),
+                    {"s": new_status, "r": reason, "t": detail, "d": draft.id},
+                )
+            return
+        now = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
+        if (
+            now is None
+            or now.status != DRAFTING
+            or now.revision != draft.revision
+            or now.brief_id != draft.brief_id
+        ):
+            raise CheckpointError("the Clip moved while it was failed")
+        repo.update_status(
+            tenant_id=tenant_id, draft_id=draft.id, new_status=new_status, failure_reason=reason
+        )
+        drafts = getattr(repo, "drafts", None)
+        if isinstance(drafts, dict) and draft.id in drafts:
+            from dataclasses import replace as _replace  # noqa: PLC0415
+
+            drafts[draft.id] = _replace(drafts[draft.id], failure_detail=detail)
+
+    def _replace_clip_brief(
+        self,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        brief: ContentBrief,
+        *,
+        failures: Sequence[Any] = (),
+    ) -> tuple[DraftRecord, ContentBrief]:
+        """The Clip's new brief, in a transaction fenced by the worker's lease and the
+        Clip's row (still `drafting`, same revision) — never a second writer. The brief
+        the owner sent stays as the record of what he asked for, and the new one points
+        to it (`media.derived_from_brief_id`, provenance). The Clip as it reads now, and
+        the brief as written. m-25120319: `failures` (avatars whose `failed_at` this
+        brief stamps) stage their emails in the SAME transaction — the stamp and the
+        email commit together, or neither does."""
+        outbox = self._clip_failure_outbox
+        if failures and outbox is None and isinstance(self._repo, PostgresContentRepository):
+            from qualify_api.creative.clip_avatar_mail import (  # noqa: PLC0415
+                PostgresAvatarFailureOutbox,
+            )
+
+            outbox = PostgresAvatarFailureOutbox()
+        origin = brief.media.derived_from_brief_id or draft.brief_id
+        brief = brief.model_copy(
+            update={"media": brief.media.model_copy(update={"derived_from_brief_id": origin})}
+        )
+        repo = self._repo
+        if isinstance(repo, PostgresContentRepository):
+            from qualify_shared.db.session import tenant_unit_of_work  # noqa: PLC0415
+
+            from qualify_api.creative.pipeline import PipelineStore  # noqa: PLC0415
+
+            run = current_preparation()
+            with tenant_unit_of_work(tenant_id) as session:
+                if run is not None:
+                    PipelineStore().fence(session, run)
+                row = session.execute(
+                    text("""
+                    SELECT d.status, d.revision, d.brief_id, b.created_by
+                    FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id
+                    WHERE d.id = :d FOR UPDATE OF d
+                """),
+                    {"d": draft.id},
+                ).first()
+                # PR 2: «Intentar de nuevo» may have changed the plan meanwhile — never
+                # written over with a brief read before it
+                if (
+                    row is None
+                    or str(row.status) != DRAFTING
+                    or int(row.revision) != draft.revision
+                    or row.brief_id != draft.brief_id
+                ):
+                    raise CheckpointError("the Clip moved while its avatar blocks were placed")
+                repo.replace_brief(
+                    tenant_id=tenant_id, draft_id=draft.id, user_id=row.created_by, brief=brief
+                )
+                if failures and outbox is not None:
+                    outbox.stage(
+                        session,
+                        tenant_id=tenant_id,
+                        clip_id=draft.id,
+                        user_id=row.created_by,
+                        failures=failures,
+                    )
+        else:
+            repo.replace_brief(  # type: ignore[attr-defined]
+                tenant_id=tenant_id, draft_id=draft.id, user_id=UUID(int=0), brief=brief
+            )
+            if failures and outbox is not None:
+                outbox.stage(
+                    None,
+                    tenant_id=tenant_id,
+                    clip_id=draft.id,
+                    user_id=UUID(int=0),
+                    failures=failures,
+                )
+        fresh = repo.get_draft(tenant_id=tenant_id, draft_id=draft.id)
+        if fresh is None:
+            raise UnknownDraft(str(draft.id))
+        return fresh, brief
+
     def _generate(self, *, tenant_id: UUID, draft: DraftRecord) -> None:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft.id} has no readable brief")
+        if brief.media.clip_avatar_plan:
+            # m-25119867: a Clip waits for the avatar blocks chosen at its first «Crear»
+            # (`ClipBlocksWait`, before any read or paid call), then is made ONCE from a
+            # brief with their videos as stretches
+            ready = self._clip_plan_ready(tenant_id, draft, brief)
+            if ready is None:
+                return  # the owner's time ran out: failed, its creations given back
+            draft, brief = ready
+        if brief.kind is ContentKind.CLIP and brief.media.character_scenes:
+            # m-25128784 (ADR 50 §12): a Clip with a «Personajes» track is never assembled
+            # without its scenes. Until the scenes' wait and assembly land (the next PR of
+            # the ticket) it waits — its sign of life stamped, nothing read nor paid
+            from qualify_api.creative.clip_avatar import ClipBlocksWait  # noqa: PLC0415
+
+            beat = self._heartbeat(tenant_id, draft.id)
+            if beat is not None:
+                beat()
+            raise ClipBlocksWait(f"clip {draft.id} waits for its character scenes")
         # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
         # draft is the session, so its regenerations sit together; every vendor call the
         # router makes inside is nested here (`observed.TracedProvider`). A no-op unless
@@ -3016,7 +3502,7 @@ class ContentService:
         elif draft.parent_draft_id is not None:
             # VE-08: a part of a video by parts asks Claude nothing — it carries one of
             # its parent's texts (cost 0), which its approval with the parent selects
-            stage = self._inherited_copy(tenant_id, draft)
+            stage = self._inherited_copy(tenant_id, draft, brief)
         else:
             # m-24820842: a Seedance 2.x talking video sizes its generated script before it
             # is written (the words its prompt leaves under the 1,000-word ceiling)
@@ -3135,7 +3621,7 @@ class ContentService:
         return attempt
 
     def _inherited_copy(
-        self, tenant_id: UUID, draft: DraftRecord
+        self, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief | None = None
     ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
         """A part's text: ONE variant of its parent, copied as it reads now (the edit
         merged over it), with the provenance of the call that wrote it. No vendor call,
@@ -3148,6 +3634,42 @@ class ContentService:
             (v for v in variants if parent is not None and v.id == parent.selected_variant_id),
             None,
         ) or next((v for v in variants if (v.fidelity or {}).get("passed")), None)
+        if chosen is None and brief is not None and brief.kind is ContentKind.CHARACTER_SCENE:
+            # m-25128784: a character's scene is made before its Clip has a text and is
+            # never published alone — an empty text, no vendor call, cost 0; what the
+            # character says is the owner's approved line
+            line = brief.media.character_scenes[0].line if brief.media.character_scenes else ""
+            empty = VariantWrite(
+                ordinal=0,
+                copy={"hook": "", "caption": "", "script": line},
+                fidelity={
+                    "passed": True,
+                    "hard_failures": [],
+                    "inherited_from": None,
+                    "character_scene_without_text": True,
+                },
+                model_id="none",
+                model_revision=None,
+            )
+            return [empty], [], Decimal(0), True
+        if chosen is None and brief is not None and brief.media.clip_avatar_block:
+            # m-25119867 (P3, Deivid 2026-11-25): an avatar block chosen at its Clip's
+            # first «Crear» is made before the Clip has a text. A block is never published
+            # alone — the Clip carries the text — so it takes an empty one: no vendor
+            # call, cost 0; its script is the owner's own words.
+            empty = VariantWrite(
+                ordinal=0,
+                copy={"hook": "", "caption": "", "script": brief.media.own_script or ""},
+                fidelity={
+                    "passed": True,
+                    "hard_failures": [],
+                    "inherited_from": None,
+                    "clip_avatar_block_without_text": True,
+                },
+                model_id="none",
+                model_revision=None,
+            )
+            return [empty], [], Decimal(0), True
         if chosen is None:
             # `create_parts` refuses a parent without its text: a broken invariant
             raise ValueError(f"part {draft.id}: its video by parts has no text to carry")
@@ -3557,6 +4079,7 @@ class ContentService:
                 # EF-06: a local video names its own table (v10, `local_video` 0.00)
                 pricing_table_version=item.pricing_table_version or self._pricing.version,
                 pieces=0 if item.unit == "token" else item.quantity,
+                vendor_task_id=item.vendor_task_id,
             )
             for item in items
         ]
@@ -3997,6 +4520,8 @@ class ContentService:
         # the piece's videos are counted — all or nothing; without enough videos left
         # (`NotEnoughCreations`) nothing is written and the piece waits as it was
         charge_id = self._charge_videos(tenant_id, record)
+        # m-25112920: the seconds of the Clip's avatar blocks, each once, on its own row
+        blocks = self._charge_clip_blocks(tenant_id, record, charge_id)
         try:
             self._repo.set_approved(
                 tenant_id=tenant_id,
@@ -4014,6 +4539,11 @@ class ContentService:
                     draft_id=draft_id,
                     revision=record.revision,
                 )
+            for block in blocks:
+                if self._creations is not None:
+                    self._creations.uncharge_videos(
+                        tenant_id=tenant_id, draft_id=block.draft_id, revision=block.revision
+                    )
             raise
         # the operator's verdict, on the generation's Langfuse trace (plan §8)
         review.score_approval(
@@ -4316,6 +4846,57 @@ class ContentService:
             return 0, 0
         return price.videos, price.video_seconds
 
+    def _clip_avatar_charges(self, tenant_id: UUID, record: DraftRecord) -> tuple[Any, ...]:
+        """m-25112920: the `VideoCharge` of each avatar block of this Clip its recipe
+        plays and no approval charged yet — on the BLOCK's own charge row, so approving
+        another version of the Clip never charges it twice. Empty without blocks, for
+        anything but a top-level Clip, or without a quota; no lookup at all unless a
+        stretch can be a block. (D3 still holds for the owner's own stretches.)"""
+        if self._creations is None or record.parent_draft_id is not None:
+            return ()
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None or brief.kind is not ContentKind.CLIP:
+            return ()
+        from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+            clip_block_charges,
+            db_generated_sources,
+        )
+
+        resolver = self._clip_avatar_sources
+        if resolver is None:
+            if not isinstance(self._repo, PostgresContentRepository):
+                return ()
+            resolver = db_generated_sources
+        return clip_block_charges(
+            tenant_id=tenant_id,
+            clip_id=record.id,
+            brief=brief,
+            sources=lambda keys: resolver(tenant_id, keys),
+        )
+
+    def _charge_clip_blocks(
+        self, tenant_id: UUID, record: DraftRecord, clip_charge: UUID | None
+    ) -> tuple[Any, ...]:
+        """Charge the Clip's uncharged avatar blocks with its approval, all or nothing;
+        when the month cannot pay them, what the Clip's own approval charged is undone
+        too (`NotEnoughCreations`, nothing written). Only the blocks THIS call charged
+        (`charged_videos_many`) — what a failed approval undoes; a block another approval
+        charged meanwhile is never undone here."""
+        charges = self._clip_avatar_charges(tenant_id, record)
+        if not charges or self._creations is None:
+            return ()
+        try:
+            charged = self._creations.charged_videos_many(
+                tenant_id=tenant_id, brand_id=record.brand_id, charges=charges
+            )
+        except Exception:
+            if clip_charge is not None:
+                self._creations.uncharge_videos(
+                    tenant_id=tenant_id, draft_id=record.id, revision=record.revision
+                )
+            raise
+        return tuple(charged)
+
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
         quota, or already charged by an earlier approval of the same generation)."""
@@ -4351,6 +4932,10 @@ class ContentService:
         elif record.status != GENERATED:
             return None
         videos, seconds = self._videos_of(tenant_id, record)
+        # m-25112920: the Clip's avatar blocks no approval charged yet, as `approve`
+        blocks = self._clip_avatar_charges(tenant_id, record)
+        videos += sum(block.videos for block in blocks)
+        seconds += sum(block.seconds for block in blocks)
         if not videos:
             return None
         balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
@@ -4412,6 +4997,21 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft_id} has no readable brief")
+        if (
+            brief.media.clip_avatar_plan
+            or brief.media.character_scenes
+            or brief.media.derived_from_brief_id is not None
+        ):
+            # m-25119867 (R6): a Clip with avatar blocks — waiting for them, or made from
+            # them (their videos belong to THIS Clip) — is made again from the editor,
+            # never copied: refused before anything is written or charged
+            from qualify_api.creative.clip_avatar import (  # noqa: PLC0415
+                RECREATE_FROM_EDITOR_CODE,
+                RECREATE_FROM_EDITOR_TEXT,
+                ClipAvatarRefused,
+            )
+
+            raise ClipAvatarRefused(RECREATE_FROM_EDITOR_CODE, RECREATE_FROM_EDITOR_TEXT)
         return self.create_draft(
             tenant_id=tenant_id, brand_id=record.brand_id, brief=brief, user_id=user_id
         )
@@ -4692,18 +5292,50 @@ class ContentService:
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
         )
-        outcome = self._media.finalize(
-            tenant_id=tenant_id,
-            draft_id=draft_id,
-            brief=brief,
-            kit=kit,
-            asset=asset,
-            budget=BudgetContext(remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop),
-            revision=draft.revision,
-            on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
-        )
+        # m-25103284: a part's final composed again takes minutes; its `rendering_at` is
+        # stamped while it runs, so the screen never reads it as stuck
+        # (`FINAL_STALE_SECONDS`). The beat stops before the final is settled.
+        with _beating(self._rendering_stamp(tenant_id, asset.id), FINAL_HEARTBEAT_EVERY_S):
+            outcome = self._media.finalize(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                brief=brief,
+                kit=kit,
+                asset=asset,
+                budget=BudgetContext(
+                    remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop
+                ),
+                revision=draft.revision,
+                on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
+            )
         if not outcome.pending:
             self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, None, outcome)
+
+    def queued_final_composes(self, *, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> bool:
+        """m-25103284: whether this queued final is a part's raw 1080p composed again with
+        its preview's recipe (`recompose.part_final_composes`) — the creative worker runs
+        it off its main loop, its lease kept. False when the asset is gone."""
+        from qualify_api.creative.video_pipeline.recompose import (  # noqa: PLC0415
+            part_final_composes,
+        )
+
+        assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        asset = next((a for a in assets if a.id == asset_id), None)
+        return asset is not None and part_final_composes(asset.params)
+
+    def _rendering_stamp(self, tenant_id: UUID, asset_id: UUID) -> Callable[[], None]:
+        """A beat that restarts the final's `rendering_at` (as `_final_binding.keep_fresh`);
+        a write that fails is logged, never a reason to stop the final."""
+
+        def stamp() -> None:
+            try:
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id, asset_id=asset_id, changes={"rendering_at": time.time()}
+                )
+            except Exception:  # noqa: BLE001 — a sign of life, never the final
+                logger.warning("final of asset %s: rendering_at not renewed", asset_id)
+
+        return stamp
 
     def _final_binding(
         self, tenant_id: UUID, draft: DraftRecord, asset_id: UUID
@@ -4734,12 +5366,21 @@ class ContentService:
         final whose last write never lands — the process died, the database was down —
         is finished by the next try from the saved file instead of being paid again.
         Never raises: when this write fails, the outcome still carries the raw file
-        (`FinalOutcome.draft_changes`) to the final write."""
+        (`FinalOutcome.draft_changes`) to the final write. m-25111780: it also marks the
+        raw file's spend as not recorded yet (`FINAL_USAGE_DUE`, its task id) — the
+        settle that records it clears the mark in the same transaction, and a later pass
+        that finishes the final from this file records it while the mark stands."""
 
         def record(raw: Mapping[str, Any]) -> None:
+            task = raw_final_task_id(raw)
             try:
                 self._repo.set_video_draft(
-                    tenant_id=tenant_id, asset_id=asset_id, changes={"raw_final": dict(raw)}
+                    tenant_id=tenant_id,
+                    asset_id=asset_id,
+                    changes={
+                        "raw_final": dict(raw),
+                        **({FINAL_USAGE_DUE: task} if task is not None else {}),
+                    },
                 )
             except Exception:
                 logger.exception("final of asset %s: raw final not recorded yet", asset_id)
@@ -4778,14 +5419,36 @@ class ContentService:
         """The final (or its failure) and its spend in one write — and when that write
         fails, the spend again with the video marked failed: money spent is never lost
         silently."""
-        usage = tuple(self._media_usage(outcome.usage))
-        for item in usage:
+        # m-25111780: what paid this pass's raw 1080p goes apart (`raw_usage`): the
+        # repository drops it when another pass already recorded that task
+        raw_paid = tuple(outcome.raw_usage)
+        usage = tuple(
+            self._media_usage([u for u in outcome.usage if not any(u is paid for paid in raw_paid)])
+        )
+        raw_usage = tuple(self._media_usage(raw_paid))
+        for item in (*usage, *raw_usage):
             cost_logger.info(
                 "draft %s final: %s %s %s USD",
                 draft_id,
                 item.provider,
                 item.model_id,
                 item.cost_usd,
+            )
+        # m-25111780: a raw 1080p an earlier pass paid for, its settle rolled back (lease
+        # lost): its spend goes with this settle, once — the repository records it only
+        # while the row still marks that task due
+        held = tuple(self._media_usage(outcome.held_usage))
+        raw = (outcome.draft_changes or {}).get("raw_final")
+        final_task_id = raw_final_task_id(raw) if isinstance(raw, Mapping) else None
+        for item in held:
+            cost_logger.info(
+                "draft %s final: %s %s %s USD paid by an earlier pass (task %s), recorded "
+                "now if still due",
+                draft_id,
+                item.provider,
+                item.model_id,
+                item.cost_usd,
+                final_task_id,
             )
         first_error = None if outcome.media is not None else outcome.detail
         writes: tuple[tuple[MediaWrite | None, str | None], ...] = (
@@ -4805,6 +5468,9 @@ class ContentService:
                     spent_usd=outcome.spent_usd,
                     claim=claim,
                     draft_changes=outcome.draft_changes,
+                    held_usage=held,
+                    final_task_id=final_task_id,
+                    raw_usage=raw_usage,
                 )
                 if media is None:
                     # the vendor failed it, or it could not be saved: no final for the
@@ -4813,6 +5479,18 @@ class ContentService:
                         tenant_id, draft_id, error or "final_failed", (asset_id,)
                     )
                 return
+            except CheckpointError:
+                # m-25103284: the run's lease is gone (`fence`) — another pass owns the
+                # final now. Nothing is failed or refunded here: the run stays undone and
+                # the next pass finishes it from what is kept (the raw 1080p, a composed
+                # final already under its key: `_held_final`), never paying it again.
+                cost_logger.error(
+                    "draft %s final: lease lost before it was saved; %s USD spent, the "
+                    "next pass records the final from the kept file",
+                    draft_id,
+                    outcome.spent_usd,
+                )
+                raise
             except Exception:
                 logger.exception("final of draft %s: could not save it", draft_id)
         cost_logger.error(
@@ -4978,6 +5656,17 @@ class ContentService:
         if regenerate:
             # before the FSM, the charge and the dispatch: nothing is written
             self._refuse_own_media(tenant_id=tenant_id, draft_id=draft_id, brief_id=record.brief_id)
+            if record.parent_draft_id is not None:
+                stored = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+                if stored is not None and stored.kind is ContentKind.CHARACTER_SCENE:
+                    # m-25128784: a scene is made again with «Intentar de nuevo» of its
+                    # Clip (the daily cap counts it), never regenerated on its own here
+                    raise ValueError("a character scene of a Clip is not made again on its own")
+                if stored is not None and stored.media.clip_avatar_block:
+                    # m-25112920: a Clip's avatar block is paid OmniHuman with no charge of
+                    # its own — never made again here, past the quota check of
+                    # `clip_avatar.create_block` (a new block is asked for instead)
+                    raise ValueError("an avatar block of a Clip is not made again on its own")
         if regenerate and record.status == REJECTED:
             # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
             # Applying REJECT again is not a legal edge (rejected → rejected) and used to

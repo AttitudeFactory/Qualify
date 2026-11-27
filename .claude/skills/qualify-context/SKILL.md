@@ -15,9 +15,12 @@ exists** — `ls`, `git log`, `gh pr list` beat any paragraph here, including th
 
 ## 1. The business
 
-- **Who:** Attitude Factory (founder: Herwin). Qualify is its product. Team in Lark: Herwin
-  (founder), Darwin (cofounder), and developers Yesika, Deivid and Raul. Realtor-side clients sit
-  in a separate Lark department and stay out of internal channels.
+- **Who:** Attitude Factory (founder: Herwin). Qualify is its product. **The team is 3
+  people** (Deivid, 2026-11-20: «Somos 3») — the count that keeps Remotion on its free licence
+  (ADR 50 D1, `docs/adr-50-video-efectos-por-pasos.md`; it reopens if the team grows past 3).
+  Accounts in Lark: Herwin (founder), Darwin (cofounder), Yesika, Deivid and Raul — having an
+  account is not the same as being on the team. Realtor-side clients sit in a separate Lark
+  department and stay out of internal channels.
 - **Model (signed 2026-08-16):** the *multi-business operator* — one installation serving N
   businesses, each a tenant. The 2026-08-16 rule «`1 login = 1 tenant`, no switcher» was
   **reversed by the founder on 2026-10-23**: one login may own several businesses and switch
@@ -52,7 +55,7 @@ GitHub Actions (`deploy.yml`), runbook in `README.md` and `docs/despliegue-hetzn
 | Cuentas conectadas | `qualify_api.connections` | Meta OAuth (Facebook Login for Business), FSM, encrypted credentials |
 | Brand Kit | `qualify_api.creative.brand_*`, `Qualify/brand_*` | Logo, palette, typography, tone, avatar |
 | Catálogo | `qualify_api.catalog` | Products + photos/clips normalized at upload |
-| Crear pieza / generador | `qualify_api.creative`, `packages/creative`, `packages/render` | Angles proposed by Claude (ADR 32 «Motor de Ángulos»), images/video/voice via BytePlus (Seedream, Seedance, OmniHuman, Seed Speech), Remotion templates, Pixabay stock, Canva; pricing table versioned in `qualify_creative/pricing_data/` |
+| Crear pieza / generador | `qualify_api.creative`, `packages/creative`, `packages/render` | Angles proposed by Claude (ADR 32 «Motor de Ángulos»), images/video/voice via BytePlus (Seedream, Seedance, OmniHuman, Seed Speech), Remotion templates, Pixabay stock, Canva; pricing table versioned in `qualify_creative/pricing_data/`. **«Tu video, con efectos»** (ADR 50 §1.5, `creative/video_pipeline/local.py`): the `local` mode — the owner's own videos/photos with text (Remotion `video_text`) and the effect loops of `qualify_creative/effects_data/v3.json`, built in the `creative-worker` (never inline) at US$0, no quota; capped at **10 local builds per business per day** (ADR 50 §1.5, D3; `creative/local_cap.py`, `QUALIFY_LOCAL_DAILY_CAP`). **«Arma tu video»** (ADR 50 §1.7, `Qualify/clip_editor_view.py`, `Qualify/ui/timeline.py`): the Clip's step 1 as a guided editor with a timeline (preview, three tracks «Fotos y videos» / «Textos» / «Efectos», «Agregar»), behind `QUALIFY_CLIP_EDITOR` — **off in production** until the end-to-end test with Deivid (ADR 50 §6.1 #13; `off` in `deploy/.env.prod.example`) |
 | Planificador | `qualify_api.planner`, `publishing` | Calendar + worker that publishes approved pieces to IG/FB |
 | Interacciones | `qualify_api.inbox`, `intent`, `replies` | Comments on own media, commercial intent by Claude Haiku (golden set: `docs/intencion-comercial-medicion.md`) |
 | Conversaciones | `qualify_api.conversations`, `followups` | Instagram Direct, assisted replies through an approved outbox |

@@ -53,6 +53,7 @@ def _offering(root: Path, names: tuple[str, ...], measured: bool = False) -> Eff
         "wilson_low": 0.5,
         "wilson_high": 1.0,
         "measured_on": "2026-11-20",
+        "model": "dreamina-seedance-2-5-260628",
     }
     entries = []
     for entry in copy.deepcopy(RAW["entries"]):
@@ -123,6 +124,37 @@ def test_recipe_refusals_are_pinned() -> None:
         "photo_with_speed",
         "photo_length_out_of_range",
         "photo_not_from_start",
+        "segment_source_too_long",
+        "transitions_longer_than_part",
+        "text_bottom_with_subtitles",
+        # ED-13 (m-25029108), appended
+        "unknown_text_motion",
+        "typewriter_text_too_long",
+        "bad_text_box_color",
+        # ED-13 round 3, appended
+        "bad_text_color",
+        # ED-13 round 4, appended
+        "unknown_text_size",
+        "text_too_long_for_large",
+        # m-25114465, appended
+        "transition_on_first_block",
+        "transitions_longer_than_block",
+        # m-25129405 (the «parte con IA» block), appended
+        "switched_off",
+        "too_many_blocks",
+        "too_many_ai_children",
+        "extend_needs_block_before",
+        "edit_needs_reel_window",
+        "ai_part_with_speed",
+        "own_media_too_short",
+        "ai_parts_mismatch",
+        "ai_part_length_mismatch",
+        "ai_part_outside_clip",
+        "ai_part_local",
+        "ai_part_own_recipe",
+        "ai_part_guide_type",
+        "extend_after_own_media",
+        "extend_not_same_moment",
     )
 
 
@@ -164,7 +196,7 @@ def test_every_default_is_within_its_range() -> None:
 
 
 def test_the_library_is_loaded_once() -> None:
-    assert load_effects() is load_effects("v3")  # EF-08: v3 is what new requests use
+    assert load_effects() is load_effects("v5")  # EF-16: v5 is what new requests use
     assert load_effects("v1") is load_effects("v1")
 
 
@@ -432,6 +464,91 @@ def test_a_local_part_with_a_stretch_of_own_video_is_valid() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ED-13 (m-25029108): a text's entrance and exit, closed
+
+
+def test_a_video_text_moves_in_closed_ways_and_a_stored_one_reads_as_before() -> None:
+    from qualify_creative import schemas
+
+    stored = VideoTextLayer.model_validate({"text": "Hoy", "place": "top", "fade_s": 0.5})
+    assert (stored.motion_in, stored.motion_out) == ("fade", "none")
+    for motion_in in schemas.VIDEO_TEXT_MOTIONS_IN:
+        for motion_out in schemas.VIDEO_TEXT_MOTIONS_OUT:
+            layer = VideoTextLayer(text="Hoy", motion_in=motion_in, motion_out=motion_out)
+            assert VideoTextLayer.model_validate_json(layer.model_dump_json()) == layer
+    for bad in ({"motion_in": "spin"}, {"motion_out": "typewriter"}, {"motion_in": None}):
+        with pytest.raises(ValidationError) as caught:
+            VideoTextLayer.model_validate({"text": "Hoy", **bad})
+        assert [e["type"] for e in caught.value.errors()] == ["unknown_text_motion"]
+    # «Letra por letra»: up to 40 characters (the trimmed text), never more
+    limit = schemas.VIDEO_TEXT_TYPEWRITER_MAX_CHARS
+    assert VideoTextLayer(text=" " + "x" * limit + " ", motion_in="typewriter")
+    with pytest.raises(ValidationError) as caught:
+        VideoTextLayer(text="x" * (limit + 1), motion_in="typewriter")
+    assert [e["type"] for e in caught.value.errors()] == ["typewriter_text_too_long"]
+    assert VideoTextLayer(text="x" * (limit + 1), motion_in="zoom")
+    # the contract's numbers
+    assert schemas.VIDEO_TEXT_SLIDE_FRACTION == 0.05 and schemas.VIDEO_TEXT_ZOOM_FROM == 0.9
+    assert schemas.VIDEO_TEXT_TYPEWRITER_S_PER_CHAR == 0.06
+    assert schemas.VIDEO_TEXT_MOTION_MAX_SHARE == pytest.approx(1 / 3)
+
+
+def test_a_video_text_box_colour_is_a_capital_hex_kept_only_when_picked() -> None:
+    """ED-13 (Deivid, 2026-11-23): «Franja» / «Recuadro de tu color» in the owner's colour —
+    `#RRGGBB` in capitals or refused (`bad_text_box_color`); not dumped while None, so a
+    stored text keeps its shape; it counts only on `band` / `brand_fill`."""
+    from qualify_creative import schemas
+
+    plain = VideoTextLayer(text="Hoy", layout_id="band", layout_version=3)
+    assert plain.box_color is None and "box_color" not in plain.model_dump(mode="json")
+    picked = VideoTextLayer(text="Hoy", layout_id="band", layout_version=3, box_color="#FFE600")
+    assert picked.model_dump(mode="json")["box_color"] == "#FFE600"
+    assert VideoTextLayer.model_validate_json(picked.model_dump_json()) == picked
+    assert list(VideoTextLayer.model_fields)[-3:] == ["box_color", "text_color", "text_size"]
+    assert picked.effective_box_color == "#FFE600"
+    fill = VideoTextLayer(text="Hoy", layout_id="brand_fill", layout_version=3, box_color="#111111")
+    assert fill.effective_box_color == "#111111"
+    for layout in ("scrim", "shadow"):
+        ignored = VideoTextLayer(
+            text="Hoy", layout_id=layout, layout_version=3, box_color="#FFE600"
+        )
+        assert ignored.effective_box_color is None
+    assert VideoTextLayer(text="Hoy", box_color="#FFE600").effective_box_color is None
+    for bad in ("#ffe600", "#FFF", "red", "#FFE6001A", 0xFFE600, ""):
+        with pytest.raises(ValidationError) as caught:
+            VideoTextLayer.model_validate({"text": "Hoy", "box_color": bad})
+        assert [e["type"] for e in caught.value.errors()] == ["bad_text_box_color"]
+    assert schemas.VIDEO_TEXT_BOX_COLOR_LAYOUTS == ("band", "brand_fill")
+    assert (schemas.VIDEO_TEXT_INK_LIGHT, schemas.VIDEO_TEXT_INK_DARK) == ("#FFFFFF", "#111111")
+    assert not hasattr(schemas, "VIDEO_TEXT_SHADOW")
+
+
+def test_a_video_text_letters_colour_counts_only_without_a_background() -> None:
+    """ED-13 round 3 (Deivid, 2026-11-23): «Sin fondo»'s letters in the owner's colour —
+    `#RRGGBB` in capitals or refused (`bad_text_color`); not dumped while None; it counts
+    only on `shadow`."""
+    from qualify_creative import schemas
+
+    plain = VideoTextLayer(text="Hoy", layout_id="shadow", layout_version=3)
+    assert plain.text_color is None and "text_color" not in plain.model_dump(mode="json")
+    picked = VideoTextLayer(text="Hoy", layout_id="shadow", layout_version=3, text_color="#111111")
+    assert picked.model_dump(mode="json")["text_color"] == "#111111"
+    assert VideoTextLayer.model_validate_json(picked.model_dump_json()) == picked
+    assert picked.effective_text_color == "#111111"
+    for layout in ("scrim", "band", "brand_fill"):
+        ignored = VideoTextLayer(
+            text="Hoy", layout_id=layout, layout_version=3, text_color="#111111"
+        )
+        assert ignored.effective_text_color is None
+    assert VideoTextLayer(text="Hoy", text_color="#111111").effective_text_color is None
+    for bad in ("#111", "#2563eb", "black", "#1111111A", 0x111111, ""):
+        with pytest.raises(ValidationError) as caught:
+            VideoTextLayer.model_validate({"text": "Hoy", "text_color": bad})
+        assert [e["type"] for e in caught.value.errors()] == ["bad_text_color"]
+    assert schemas.VIDEO_TEXT_TEXT_COLOR_LAYOUTS == ("shadow",)
+
+
+# ---------------------------------------------------------------------------
 # D1: the video text names an ADR 49 design, never a style of its own
 
 
@@ -445,12 +562,20 @@ def test_a_video_text_names_its_design_with_both_fields() -> None:
     assert text_layer_problems(VideoTextLayer(text="Hola"), part=1) == ()
     with pytest.raises(ValidationError, match="layout"):
         VideoTextLayer(text="Hola", layout_id=LayoutId.BAND)
-    # EF-05: a design the video's text layer does not draw (band, plate…) is refused too
+    # ED-13 (m-25029108): the four backgrounds the video's text layer draws are accepted —
+    # `shadow` («Sin fondo») is no ADR 49 design and names the catalog version all the same
+    for layout_id in (LayoutId.SCRIM, LayoutId.BAND, LayoutId.BRAND_FILL, "shadow"):
+        layer = VideoTextLayer(text="Hola", layout_id=layout_id, layout_version=LAYOUT_VERSION)
+        assert text_layer_problems(layer, part=1) == (), layout_id
+        assert VideoTextLayer.model_validate_json(layer.model_dump_json()) == layer
+    # a design the video's text layer does not draw (plate, photo_only…), or a stale
+    # version — of `shadow` too — is refused
     for layout_id, version in (
         (LayoutId.PHOTO_ONLY, LAYOUT_VERSION),
         (LayoutId.BAND, 99),
-        (LayoutId.BAND, LAYOUT_VERSION),
+        ("shadow", 99),
         (LayoutId.PLATE, LAYOUT_VERSION),
+        (LayoutId.INFO_CARD, LAYOUT_VERSION),
     ):
         layer = VideoTextLayer(text="Hola", layout_id=layout_id, layout_version=version)
         problems = text_layer_problems(layer, part=2)
@@ -508,6 +633,7 @@ def test_an_offered_ai_effect_needs_its_bench_and_its_example() -> None:
         "wilson_low": 0.38,
         "wilson_high": 0.96,
         "measured_on": "2026-11-20",
+        "model": "dreamina-seedance-2-5-260628",
     }
     with pytest.raises(ValidationError, match="preview"):
         parse_library(_with(entry))
@@ -695,3 +821,101 @@ def test_no_library_method_filters_by_business() -> None:
             continue
         params = set(inspect.signature(member).parameters) - {"self"}
         assert not params & {"tenant_id", "tenant", "business", "brand_id", "category"}, name
+
+
+# --- ADR 50 D9 (Deivid, 2026-11-20): only `corte` is offered until EF-16 ------------------
+
+
+def test_v4_offers_corte_as_its_only_transition() -> None:
+    """D9: the join does not draw `fundido` nor `barrido` yet, so the library new requests
+    use offers only `corte` among the transitions — the screen never offers what creating
+    would refuse (v4; EF-16 offers them again in v5)."""
+    library = load_effects("v4")
+    assert library.version == 4
+    assert [e.id for e in library.offered() if e.stage == "transition"] == ["corte"]
+    for name in ("fundido", "barrido"):
+        entry = library.get(name, 1)
+        assert entry is not None and not entry.offered
+
+
+def test_v4_is_v3_but_for_the_hidden_transitions() -> None:
+    """v4 only flips `offered` of `fundido` and `barrido` (entry version 1, same params):
+    every other field of every entry is v3's, and v3 still reads as it was."""
+    v3, v4 = load_effects("v3"), load_effects("v4")
+    hidden = ("fundido", "barrido")
+    assert [(e.id, e.version) for e in v3.entries] == [(e.id, e.version) for e in v4.entries]
+    for old, new in zip(v3.entries, v4.entries, strict=True):
+        changed = {"offered"} if new.id in hidden else set()
+        assert old.model_dump(exclude=changed) == new.model_dump(exclude=changed)
+    assert [e.id for e in v3.offered() if e.stage == "transition"] == ["corte", *hidden]
+    assert [e.id for e in v4.offered()] == [e.id for e in v3.offered() if e.id not in hidden]
+
+
+@pytest.mark.parametrize(
+    ("use", "codes"),
+    [
+        (EffectUse(effect_id="corte", version=1), []),
+        (EffectUse(effect_id="fundido", version=1, params={"duration_s": 0.5}), ["not_offered"]),
+        (EffectUse(effect_id="barrido", version=1), ["not_offered"]),
+    ],
+)
+def test_choosing_a_hidden_transition_is_not_offered(use: EffectUse, codes: list[str]) -> None:
+    """D9: between two parts, `corte` passes the library's checks; `fundido` and `barrido`
+    are `not_offered` — refused when the plan is saved, not only when it is created."""
+    problems = transition_problems(use, load_effects("v4"), part=2, first=False, in_clip=False)
+    assert _codes(problems) == codes
+
+
+# --- EF-16 (m-25026594): the join draws them, v5 offers them again -------------------------
+
+
+def test_v5_offers_the_three_transitions_the_join_makes() -> None:
+    library = load_effects()
+    assert library.version == 5
+    offered = [(e.id, e.version) for e in library.offered() if e.stage == "transition"]
+    assert offered == [("corte", 1), ("fundido", 2), ("barrido", 2)]
+    for name in ("fundido", "barrido"):  # version 1 stays, unoffered: old briefs still read
+        old = library.get(name, 1)
+        assert old is not None and not old.offered
+
+
+def test_v5_is_v4_plus_the_two_new_transitions() -> None:
+    v4, v5 = load_effects("v4"), load_effects("v5")
+    added = {("fundido", 2), ("barrido", 2)}
+    assert [(e.id, e.version) for e in v5.entries if (e.id, e.version) not in added] == [
+        (e.id, e.version) for e in v4.entries
+    ]
+    for old in v4.entries:
+        assert v5.get(old.id, old.version) == old  # nothing edited in place
+
+
+def test_v5_transitions_are_what_the_join_draws() -> None:
+    """Drift guard: the library's ranges are the join's (`JoinTransition`), so an owner
+    can never choose a duration or a direction the join refuses."""
+    from qualify_creative.video.join import TRANSITION_MAX_S, TRANSITION_MIN_S, WIPE_DIRECTIONS
+
+    library = load_effects()
+    for name in ("fundido", "barrido"):
+        spec = library.get(name, 2).params["duration_s"]
+        assert (spec.min, spec.max) == (TRANSITION_MIN_S, TRANSITION_MAX_S)
+        assert TRANSITION_MIN_S <= float(spec.default) <= TRANSITION_MAX_S
+    direction = library.get("barrido", 2).params["direction"]
+    assert direction.values == WIPE_DIRECTIONS
+    assert set(library.get("fundido", 2).params) == {"duration_s"}
+
+
+@pytest.mark.parametrize(
+    ("use", "codes"),
+    [
+        (EffectUse(effect_id="fundido", version=2, params={"duration_s": 0.5}), []),
+        (EffectUse(effect_id="barrido", version=2, params={"direction": "up"}), []),
+        (
+            EffectUse(effect_id="fundido", version=2, params={"duration_s": 1.0}),
+            ["param_out_of_range"],
+        ),
+        (EffectUse(effect_id="fundido", version=1), ["not_offered"]),
+    ],
+)
+def test_choosing_a_v5_transition(use: EffectUse, codes: list[str]) -> None:
+    problems = transition_problems(use, load_effects(), part=2, first=False, in_clip=False)
+    assert _codes(problems) == codes

@@ -20,6 +20,7 @@ from typing import IO, Any, Literal, Protocol
 import httpx
 
 from qualify_api.ads.errors import (
+    RATE_LIMIT_CODES,
     READ_ERROR_MESSAGE,
     UNKNOWN_WRITE_MESSAGE,
     MarketingError,
@@ -284,7 +285,7 @@ class MarketingClient:
                     retry_after=delay or None,
                     write=method == "POST",
                 )
-                if error.code in {17, 613, 80004}:
+                if error.code in RATE_LIMIT_CODES:
                     self._not_before = max(self._not_before, self._clock() + 60)
                     error.retry_after = max(error.retry_after or 0, 60)
                 if error.subcode == 4841018:

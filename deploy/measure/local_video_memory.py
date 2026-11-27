@@ -71,8 +71,9 @@ CLIPS: tuple[Clip, ...] = (
     # m-25041163: a SMALL vertical source, to be enlarged to 1080x1920
     Clip("small_480x854_60.mp4", (480, 854), 60, "libx264", 2_000_000),
 )
-#: m-25041163 (not in the code yet): «preparar» always brings the video to 1080x1920 —
-#: measured apart, a PyAV graph `scale=1080:1920:flags=<flag>`, encoded as `prepare` does.
+#: m-25041163, measured before the code: a 480x854 enlarged to 1080x1920 by a PyAV graph
+#: `scale=1080:1920:flags=<flag>`, encoded as `prepare` does. The code enlarges in the speed's
+#: single encode instead (`camara_rapida-v2`): the real path is the `small_x1` case.
 UPSCALE_CASES: dict[str, tuple[str, str]] = {
     "up480_lanczos": ("small_480x854_60.mp4", "lanczos"),
     "up480_bicubic": ("small_480x854_60.mp4", "bicubic"),
@@ -96,6 +97,8 @@ CASES: dict[str, tuple[list[tuple[str, float, float, float, str]], int]] = {
     "hd_30_x2": ([("hd_h264_60.mp4", 0, 30, 2, "video")], 0),
     "hd_60_x10": ([("hd_h264_60.mp4", 0, 60, 10, "video")], 0),
     "hd15_x1": ([("hd_h264_15.mp4", 0, 15, 1, "video")], 0),
+    # m-25041163: the real path, 480x854 enlarged to 1080x1920 by `camara_rapida-v2`
+    "small_x1": ([("small_480x854_60.mp4", 0, 60, 1, "video")], 0),
     "mixed_3x4k_2photos": (
         [
             ("k4_h264_60.mp4", 0, 20, 2, "video"),
@@ -108,7 +111,53 @@ CASES: dict[str, tuple[list[tuple[str, float, float, float, str]], int]] = {
     ),
     "k5_112_x2_3texts": ([("k5_hevc_112.mp4", 0, 112, 2, "video")], 3),
     "k4_60_x2_3texts": ([("k4_h264_60.mp4", 0, 60, 2, "video")], 3),
+    # m-25049580: the stretches that keep their original sound (x1), the longest allowed
+    "k4_60_x1": ([("k4_h264_60.mp4", 0, 60, 1, "video")], 0),
+    "k4_60_x1_3texts": ([("k4_h264_60.mp4", 0, 60, 1, "video")], 3),
+    "mixed_x1_x5_x1": (
+        [
+            ("k4_h264_60.mp4", 0, 15, 1, "video"),
+            ("k4_h264_60.mp4", 15, 45, 5, "video"),
+            ("hd_h264_15.mp4", 0, 15, 1, "video"),
+        ],
+        0,
+    ),
+    # m-25114465: a 1080x1920 Clip of 3 blocks (35 s) — cuts, then 2 joins blended
+    "blocks3_cut": (
+        [
+            ("k4_h264_60.mp4", 0, 20, 2, "video"),
+            ("hd_h264_15.mp4", 0, 15, 1, "video"),
+            ("k4_h264_60.mp4", 20, 40, 2, "video"),
+        ],
+        0,
+    ),
+    # m-25114465 (review #3): the longest Clip, 60 s in 8 blocks of 7.5 s
+    "blocks8_cut": (
+        [
+            ("k4_h264_60.mp4", 0, 15, 2, "video"),
+            ("hd_h264_15.mp4", 0, 7.5, 1, "video"),
+            ("k4_h264_60.mp4", 15, 30, 2, "video"),
+            ("hd_h264_15.mp4", 7.5, 15, 1, "video"),
+            ("k4_h264_60.mp4", 30, 45, 2, "video"),
+            ("hd_h264_15.mp4", 0, 7.5, 1, "video"),
+            ("k4_h264_60.mp4", 45, 60, 2, "video"),
+            ("hd_h264_15.mp4", 7.5, 15, 1, "video"),
+        ],
+        0,
+    ),
 }
+#: m-25114465: the cases whose blocks blend (`SourceSegment.transition_in` of each block,
+#: in order; the first is always None). Same stretches as `blocks3_cut`.
+_FADE = {"effect_id": "fundido", "version": 2, "params": {"duration_s": 0.8}}
+_WIPE = {"effect_id": "barrido", "version": 2, "params": {"duration_s": 0.8}}
+TRANSITIONS: dict[str, tuple[dict[str, Any] | None, ...]] = {
+    "blocks3_fade2": (None, _FADE, _FADE),
+    "blocks3_wipe2": (None, _WIPE, _WIPE),
+    # 7 joins blended, fades and wipes in turn
+    "blocks8_mixed7": (None, _FADE, _WIPE, _FADE, _WIPE, _FADE, _WIPE, _FADE),
+}
+for _name in TRANSITIONS:
+    CASES[_name] = CASES["blocks8_cut" if _name.startswith("blocks8") else "blocks3_cut"]
 
 
 # ---------------------------------------------------------------------------------- make
@@ -337,6 +386,7 @@ def _assemble(
 ) -> tuple[Any, str | None, list[tuple[str, float, float, float, str]], int, dict[str, int]]:
     """EF-06's `render_local_part` over `case` (plus the compose overlay when it has texts)."""
     from qualify_api.creative.video_pipeline import local
+    from qualify_api.creative.video_pipeline.local_sources import InMemoryLocalSourceJobs
     from qualify_creative.schemas import PartRecipe, SourceSegment
     from qualify_creative.video import photo_hold, prepare, speed
 
@@ -349,18 +399,36 @@ def _assemble(
     _wrap(prepare, "apply_prepare", sampler, "prepare")
     _wrap(photo_hold, "render_photo_hold", sampler, "photo_hold")
     _wrap(speed, "render_speed", sampler, "speed")
+    from qualify_api.creative.video_pipeline import block_join
+
+    # m-25114465: the blocks' transitions (looked up at call time by `local`)
+    _wrap(block_join, "blend_block_joins", sampler, "block_join")
+    joins = TRANSITIONS.get(case) or (None,) * len(stretches)
     segments = tuple(
         SourceSegment(
-            key=f"uploads/{TENANT}/{name}", start_s=start, end_s=end, speed=rate, kind=kind
+            key=f"uploads/{TENANT}/{name}",
+            start_s=start,
+            end_s=end,
+            speed=rate,
+            kind=kind,
+            transition_in=how,
         )
-        for name, start, end, rate, kind in stretches
+        for (name, start, end, rate, kind), how in zip(stretches, joins, strict=True)
     )
     out_s = sum((end - start) / rate for _, start, end, rate, _ in stretches)
     part = PartRecipe(index=1, mode="local", seconds=out_s, segments=segments)
     error = None
     made: Any = None
     try:
-        made = local.render_local_part(part, tenant_id=TENANT, store=FolderStore(folder), root=work)
+        # no database here: the normalize jobs' door is the in-memory one (m-25042483) —
+        # the sources measured are what the media-worker hands over (at most 4K 8 bits)
+        made = local.render_local_part(
+            part,
+            tenant_id=TENANT,
+            store=FolderStore(folder),
+            root=work,
+            source_jobs=InMemoryLocalSourceJobs(),
+        )
         if texts:
             from qualify_creative.video.text_overlay import TimedLayer, overlay_text_layers
 
@@ -377,7 +445,7 @@ def _assemble(
 
 
 def _upscale(source: Path, out: Path, flag: str) -> Any:
-    """m-25041163 (not in the code yet): `source` enlarged to 1080x1920 by a PyAV graph
+    """m-25041163 (measured before the code): `source` enlarged to 1080x1920 by a PyAV graph
     `scale=1080:1920:flags=<flag>`, encoded as `prepare` does (H.264 yuv420p, 30 fps,
     `PREPARE_X264`, 2 slice threads for the decoder and the encoder)."""
     from types import SimpleNamespace
@@ -526,7 +594,8 @@ def table(raw: Path) -> None:
             )
     print(
         "| caso | fuente | s fuente | velocidad | rotación | textos | salida s | pico RSS MiB "
-        "| pico anon MiB | pico cgroup MiB | prepare/speed/compose anon MiB | CPU s | pared s "
+        "| pico anon MiB | pico cgroup MiB | prepare/speed/block_join/compose anon MiB | CPU s "
+        "| pared s "
         "| plataforma | OOM |"
     )
     print("|" + "---|" * 15)
@@ -540,7 +609,8 @@ def table(raw: Path) -> None:
             continue
         steps = row["steps"]
         split = "/".join(
-            str(steps.get(p, {}).get("anon", "-")) for p in ("prepare", "speed", "compose")
+            str(steps.get(p, {}).get("anon", "-"))
+            for p in ("prepare", "speed", "block_join", "compose")
         )
         oom = "sí" if row["memory_events"].get("oom_kill") else "no"
         err = f" ({row['error'][:60]})" if row["error"] else ""

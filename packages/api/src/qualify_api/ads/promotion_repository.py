@@ -249,7 +249,8 @@ class PostgresPromotionRepository:
 
                 target = LeadFormTarget.from_snapshot(request.lead_form_snapshot)
                 # A published form is terminal and immutable (0143 trigger); lock it and its
-                # connection so a purge or reconnect cannot race the approval insert.
+                # connection so a purge or reconnect cannot race the approval insert. Its own
+                # credential_version is provenance; a token renewal keeps it usable.
                 bound = session.execute(
                     text("""SELECT 1 FROM ad_lead_forms f
                       JOIN social_connections c ON c.id=f.connection_id
@@ -259,7 +260,6 @@ class PostgresPromotionRepository:
                        AND f.page_id=:page AND f.brand_id=:brand AND f.connection_id=:connection
                        AND f.credential_version=:version AND c.status='active'
                        AND c.linked_page_id=f.page_id
-                       AND c.current_credential_version=f.credential_version
                        AND c.purge_started_at IS NULL AND c.purged_at IS NULL
                        AND p.id=:published AND p.published_media_id=:media
                        FOR SHARE OF f,c,p"""),
@@ -276,6 +276,10 @@ class PostgresPromotionRepository:
                 ).first()
                 if bound is None:
                     raise ValueError("lead form is not a published form of the promoted account")
+                from qualify_api.ads.lead_forms_service import lead_access_reason
+
+                if lead_access_reason(session, target.connection_id):
+                    raise ValueError("lead form connection cannot receive leads")
             columns = [
                 "tenant_id",
                 "brand_id",
@@ -399,7 +403,10 @@ class PostgresPromotionRepository:
                     "INSERT INTO ad_promotion_steps "
                     "(tenant_id,promotion_id,resource,payload,claim_token,state) "
                     "VALUES (:tenant,:id,:resource,CAST(:payload AS jsonb),:token,'in_flight') "
-                    "ON CONFLICT (promotion_id,resource) DO NOTHING RETURNING promotion_id"
+                    # Only a released ('failed') step is reclaimed; nothing reached Meta for it.
+                    "ON CONFLICT (promotion_id,resource) DO UPDATE "
+                    "SET state='in_flight',claim_token=EXCLUDED.claim_token "
+                    "WHERE ad_promotion_steps.state='failed' RETURNING promotion_id"
                 ),
                 {
                     "tenant": tenant_id,
@@ -444,6 +451,20 @@ class PostgresPromotionRepository:
                     {"meta": meta_id, "id": promotion_id, "status": status},
                 )
         return result is not None
+
+    def fail(self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID) -> bool:
+        with tenant_session(tenant_id, independent=True) as session:
+            return (
+                session.execute(
+                    text(
+                        "UPDATE ad_promotion_steps SET state='failed' "
+                        "WHERE promotion_id=:id AND resource=:resource AND state='in_flight' "
+                        "AND claim_token=:token RETURNING promotion_id"
+                    ),
+                    {"id": promotion_id, "resource": resource, "token": token},
+                ).first()
+                is not None
+            )
 
 
 class MemoryPromotionRepository:
@@ -525,7 +546,7 @@ class MemoryPromotionRepository:
             ) or payload != step_payload(row, resource):
                 raise ValueError("invalid creation sequence or payload")
             key = (promotion_id, resource)
-            if key in self.steps:
+            if key in self.steps and self.steps[key].state != "failed":
                 return False
             self.steps[key] = CreationStep(resource, deepcopy(payload), "in_flight", token)
             self.promotions[row.id] = replace(row, status="creating")
@@ -549,4 +570,12 @@ class MemoryPromotionRepository:
                 ids={**row.ids, resource: meta_id},
                 status="paused" if resource == "ads" else "creating",
             )
+            return True
+
+    def fail(self, tenant_id: UUID, promotion_id: UUID, resource: Resource, token: UUID) -> bool:
+        with self._lock:
+            step = self.step(tenant_id, promotion_id, resource)
+            if not step or step.state != "in_flight" or step.claim_token != token:
+                return False
+            self.steps[promotion_id, resource] = replace(step, state="failed")
             return True

@@ -40,6 +40,319 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 - **Defectos míos (entrada):** los huecos que escribí traen «crema soft» (texto del producto en Pedidos) y «toppings» en la cinta, dos anglicismos que el modelo respetó.
 - **Costo:** 17.051 tokens de entrada + 40.588 de salida = **US$1,76**. Tardó 423 s. El render es local, costo 0.
 - **Imágenes de producto:** sin llamadas a Seedream. Las fotos del brandboard van dentro de un disco o un arco, sin recorte.
+<a id="avfoto-002"></a>
+
+## AVFOTO-002 — Personaje ANIMADO dibujado por Seedream desde la foto de una persona real, como referencia de Seedance 2.5 (m-25129385, ADR 50 §12.12) — 2026-11-26 · Seedance 3 de 3 ACEPTADAS; falta el juicio de parecido de Deivid; US$1,69
+
+- **Qué:** las mismas 3 personas con permiso escrito y el mismo material que AVFOTO-001. Por foto, 1 dibujo 3D animado de `dola-seedream-5-0-pro-260628` (imagen a imagen, la foto como única referencia, 1080×1920, prompt `personaje-desde-foto-animado-v1`, `--estilo animado`) y 1 escena e1 de AVESC-001 en `dreamina-seedance-2-5-260628` (5 s, borrador 480p, 9:16, con audio, prompt `avatar-escena-v1`). Tabla `v10`. Corrida `20261126-162258`, con el OK de Deivid («OK US$2, ahora»), tope US$2. Material, videos y revisión solo en `%TEMP%/avatar-foto-real/`.
+- **Resultado:** Seedream dibujó los 3 personajes (US$0,045 c/u, 33 a 34 s). Seedance **aceptó las 3 escenas** (61 a 67 s, 48.437 tokens, US$0,518 c/u), sin el rechazo de persona real de AVFOTO-001. Las tres dicen la frase completa en español; los dos modelos de transcripción oyen «recién hacha» (o «a techa» en p3) en lugar de «recién hecha».
+- **Costo real:** US$1,69 (dibujos 0,135; escenas 1,555).
+- **Juicio preliminar por cuadros** (sin parecido, que es de Deivid): personaje igual al dibujo, producto reconocible y acción cumplida en los 3; labios que se mueven con la voz; en p3, una mancha roja en el delantal que ya venía en el dibujo pese a «no letters, no logos». Creíble 3 / 3 / 2.
+- **Conclusión:** el personaje animado desde una foto real con permiso **pasó 3 de 3 (muestra de 3, una escena de 5 s)**; el realista no (AVFOTO-001). La opción de ADR 50 §12.12 en su versión animada queda **en pausa por decisión de Deivid (2026-11-26)**, sin enmienda al §12: los avatares y personajes no se encienden para los usuarios hasta que cada empresa tenga su propio avatar funcionando junto con su sistema visual (design system); mientras tanto quedan como «Próximamente» en la app y solo se encienden en los servidores de prueba. El juicio de parecido de Deivid sigue pendiente. Detalle en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVFOTO-002»).
+- **Pendiente:** Deivid califica el parecido del dibujo y del video (1 a 3) en `juicio-deivid.csv` de la corrida.
+
+---
+
+<a id="avfoto-001"></a>
+
+## AVFOTO-001 — Personaje realista dibujado por Seedream desde la foto de una persona real, como referencia de Seedance 2.5 (m-25129385, ADR 50 §12.12) — 2026-11-26 · MEDIDO: NO VIABLE · Seedream 6 de 6, Seedance 0 de 3; US$0,27
+
+- **Qué:** 3 personas con permiso escrito (`p1`, `p2`, `p3`). Por foto, 2 dibujos de `dola-seedream-5-0-pro-260628` (imagen a imagen, la foto como única referencia, 1080×1920, prompt `personaje-desde-foto-v1`), y la opción 1 como «Image 1» de la escena e1 de AVESC-001 en `dreamina-seedance-2-5-260628` (5 s, borrador 480p, 9:16, con audio, prompt `avatar-escena-v1`, mismo producto y fondo dibujado). Tabla `v10`. Corrida `20261126-161128`, con el OK de Deivid («OK US$3, ahora»), tope US$3. Banco `packages/api/evals/avatar_escena/personaje_foto.py` (`just eval-avatar-foto`). Fotos, dibujos y planilla solo en `%TEMP%/avatar-foto-real/`.
+- **Resultado:** Seedream aceptó las 3 fotos y dibujó los 6 personajes (US$0,045 cada uno, 26 a 38 s). Seedance **rechazó las 3 escenas** al crear la tarea, en ≈ 5 s y sin cobro: `HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation: The request failed because the input image 'content[1]' may contain real person`. `content[1]` es el dibujo del personaje. Request ids: `02179572409229945c07e4ff35b1f55227084b3d76e9a8042e77d`, `0217957240976109ded32e803badef81244c2c5f5c7f1be339226`, `02179572410267116e812ea4822a09eb3d0e01cc9319ecd7bbb9e`.
+- **Costo real:** US$0,27 (dibujos); escenas US$0.
+- **Conclusión:** el camino «foto real → dibujo de Seedream → Seedance» **no funciona tal como se planteó**. Un dibujo hecho desde una foto no pasa como «salida propia de Seedream»; en AVESC-001 un rostro igual de realista hecho desde texto sí pasó. Por qué lo detecta (el origen imagen a imagen o el parecido con la persona) es **[inferencia]**.
+- **Lo reabriría (sin medir):** la verificación de identidad propia de BytePlus para personas reales (`docs/byteplus-datos-de-clientes.md` §1.4); o, como **hipótesis**, un dibujo estilizado o animado desde la foto. Medido el mismo día en [AVFOTO-002](#avfoto-002): el animado sí pasa (3 de 3).
+- **Pendiente:** el parecido de los 6 dibujos, de 1 a 3, a juicio de Deivid (`juicio-deivid.csv` de la corrida). En las 2 opciones de `p3` Seedream inventó letras en el delantal pese a «No text». Detalle en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVFOTO-001»).
+
+---
+
+<a id="avesc-001"></a>
+
+## AVESC-001 — Avatar como personaje en su escena, camino A: Seedance 2.5 omni en borrador (m-25112921) — 2026-11-26 · 6 de 6 referencias aceptadas; labios bien en las escenas (Deivid), 2 defectos; falta el juicio de Herwin; US$5,02
+
+- **Qué:** 2 personajes dibujados por `dola-seedream-5-0-pro-260628` (realista y animado) × 3 escenas (5, 8 y 10 s) sobre un fondo dibujado, con una foto del catálogo de nibbles usada como super smash por decisión de Deivid (no se confirmó que sea el producto real; la fidelidad se mide contra esa foto), en `dreamina-seedance-2-5-260628`, borrador 480p 9:16 con audio, prompt `avatar-escena-v1`, tabla `v10`. Corrida `20261126-125745`, banco `packages/api/evals/avatar_escena/`.
+- **Costo real:** US$5,02 (dibujos 0,27; escenas 4,75: 0,518 / 0,827 / 1,032 por personaje). La cotización quedó 0,4 a 0,8 % corta. Tiempo por escena: 67 a 78 s.
+- **Resultado:** todas aceptaron las tres referencias, también la cara realista dibujada por Seedream. Las seis dicen la frase completa en español; en 3 la transcripción oye «Splash de Nibles», «hacha» o «cruyente» (para oír). Detalle, juicio preliminar por cuadros y riesgos en [`seedance-2-5.md`](seedance-2-5.md) («Prueba AVESC-001»).
+- **Juicio humano de Deivid (2026-11-26):** labios bien en las escenas (Deivid): «los labios van bien con las escenas». Defectos, en sus palabras: la saturación se exagera en el momento de masticar (e2); en el animado la mano no gira con la hamburguesa, solo gira la hamburguesa (no dijo en qué escena). Anotado en `juicio-deivid.csv` (labios = sí, inferido de su comentario general; los defectos en la nota); lo que no juzgó quedó vacío.
+- **Pendiente:** el juicio de Herwin (`juicio-herwin.csv`, en `%TEMP%`).
+
+---
+
+<a id="referentes-rubro-001"></a>
+
+## REFERENTES-RUBRO-001 — Rubro y país de cada cuenta dentro de la revisión de referentes (RF-04, m-25119461) — 2026-11-25 · MEDIDO EL MISMO DÍA: RUBRO PASA (0,87 en test), PAÍS DE LA IA NO PASA (precisión 0,82 frente a 0,95); `encaja`, `tipo` y trampas sin regresión
+
+- **Qué cambió:** la herramienta `revisar_cuentas` (`qualify_api.referentes.ai`, `claude-sonnet-5` con esfuerzo `low`, sin cambio de modelo) pide además, por cuenta:
+  - `rubro`: una clave del catálogo de rubros del Brand Kit (`discovery_seed.NICHE_LABELS`: `food_drink`, `fashion_beauty`, `fitness_health`, `travel_lifestyle`, `real_estate`, `technology`, `education`, `entertainment`) u `otro`. Es un `enum` en el esquema estricto.
+  - `pais`: código ISO de dos letras, solo si la bio, el nombre, las publicaciones o los hashtags de lugar de la cuenta lo dejan claro; si no, cadena vacía. El prompt prohíbe suponer el país de la marca.
+  - El sistema dice qué es cada clave con la etiqueta en español que ve el dueño. El código descarta un rubro fuera del catálogo y un país que no sea dos letras.
+- **Versión:** `REVIEW_PROMPT_VERSION = "referentes-review-2"`. La versión 1 es la de antes, sin número. Viaja en el `prompt_version` del libro de consumo y en `creators.rubro_version` (`region_version` guarda solo la versión del proceso gratis, `region-free-1`).
+- **Sin llamada nueva:** es la misma llamada del veredicto «encaja / tipo / razón», con la misma `feature` en el libro (`referentes-revision`). El techo de salida sin razonamiento sube de 120 a 140 tokens por cuenta.
+- **Dónde queda (el rubro):** en la fila global de `creators` (0182), con procedencia:
+  - fuente `ai`;
+  - modelo;
+  - versión del prompt;
+  - `review-input:<sha256>` de lo que leyó el modelo;
+  - fecha.
+
+  El país de la IA **no se guarda** (decisión de Deivid del 2026-11-25, abajo). El país sale solo de fuentes gratis (`qualify_api.creators.region_rubro`).
+- **Medición:** se midió el mismo día con la evaluación de abajo (aprobada por Deivid). Al escribir esta entrada todavía no se había corrido nada.
+
+**Costo marginal estimado [S]** (Sonnet 5: USD 2 por millón de tokens de entrada y USD 10 por millón de salida):
+
+| Parte | Cálculo | Por llamada de 10 cuentas |
+|---|---|---|
+| Entrada | ~300 tokens más de sistema y esquema | ≈ USD 0,0006 |
+| Salida | ~15 tokens por cuenta (`"rubro":"food_drink","pais":"CO"`) | ≈ USD 0,0015 |
+| Razonamiento extra con `low` | ~100 tokens, sin medir | ≈ USD 0,001 |
+| **Total** | | **≈ USD 0,002–0,003** (≈ USD 0,0002–0,0003 por cuenta revisada) |
+
+- Frente a la revisión de hoy (USD 0,142 por 164 cuentas en el experimento de 2026-10-14, ≈ USD 0,00087 por cuenta), es ≈ +25–35 % sobre esa función.
+- Por negocio y mes, con unas pocas búsquedas de referentes (≈ 3 fases × 2 llamadas cada una), son ≈ USD 0,015–0,03. Cabe en la opción B firmada (≈ USD 0,6–0,8 en toda la épica).
+- No hay ningún crédito nuevo de ScrapeCreators: el país gratis sale de lo ya guardado.
+
+**Evaluación propuesta (necesita el visto bueno de Deivid antes de gastar):**
+
+1. **Datos:** se reusan los 164 casos reales de `packages/api/evals/referentes_ai/cases.json` (4 marcas). Se agregan a mano dos etiquetas por cuenta:
+   - `rubro`: clave del catálogo, u `otro`;
+   - `pais`: ISO o «no se sabe».
+
+   Se suman las 59 cuentas `referente`/`competencia` de la base local, con su país de `tiktok_region` como referencia cuando lo hay. Partición dev/test según `qualify-measure`.
+2. **Métricas por clase:**
+   - exactitud del rubro y matriz de confusión entre las 8 claves y `otro`;
+   - precisión del país cuando lo da (lo grave es un país inventado) y cobertura (cuántas veces lo da);
+   - qué tan seguido el país de la IA contradice `tiktok_region` en las cuentas que tienen los dos.
+3. **Sin regresión:** precisión, recall, trampas y `kind` de `encaja` iguales a los de 2026-10-14 (Sonnet 5 @ low: 1.000 / 0.758 / 0/106 / 0.917), con 2 repeticiones.
+4. **Umbral para confiar en el filtro Nicho:** exactitud del rubro ≥ 0,85 en test, sin clase por debajo de 0,7. Para Región: precisión del país de la IA ≥ 0,95. Si no se llega, el filtro usa solo los países de fuentes gratis.
+5. **Costo de la evaluación:** ≈ USD 0,15–0,20 por corrida con Sonnet 5 @ low (la corrida de octubre costó USD 0,142), es decir ≈ USD 0,4 con dos repeticiones.
+6. **Comando:** el mismo `just eval-referentes` o `run_eval.py`, con un puntaje nuevo para `rubro`/`pais` en `run_eval.py`. Escrito y corrido el mismo día (abajo).
+
+**Resultado (2026-11-25, aprobado por Deivid en la sesión; tope de gasto USD 0,5):**
+
+- **Modelo:** `claude-sonnet-5`, esfuerzo `low` (el de producción), prompt `referentes-review-2`, lotes de 30 como en las corridas de octubre. Solo Anthropic.
+- **Comando:** `PYTHONUTF8=1 uv run --no-sync python packages/api/evals/referentes_ai/run_eval.py --env-file <ruta del .env> --configs sonnet-5@low`, dos veces (2 repeticiones). Se usó `run_eval.py` y no `just eval-referentes` porque esa receta necesita el servidor de Langfuse; las dos comparten el mismo runner y el mismo puntaje. Resultados: `packages/api/evals/referentes_ai/results/20261125-105447.json` y `20261125-105631.json`.
+- **Datos:** las 164 apariciones de cuenta de los 4 casos de `cases.json` (97 cuentas distintas; una cuenta que aparece en dos marcas lleva las mismas etiquetas). **Las etiquetas de `rubro` y `pais` las puso un agente (Claude), no una persona**, con las reglas escritas en el `_doc` del archivo. Falta un muestreo humano; las 24 cuentas marcadas `dudoso` van primero. No se sumaron las 59 cuentas de la base local (habría que leer la base; queda pendiente).
+- **Partición:** el set no tenía. Se hizo dev/test **sobre cuentas distintas** (la misma cuenta nunca queda a los dos lados), estratificada por rubro: 49 cuentas en dev (79 apariciones) y 48 en test (85). No se ajustó nada con ninguna de las dos.
+- **Clases presentes:** `technology` 60, `food_drink` 48, `otro` 19, `entertainment` 15, `education` 13 y `travel_lifestyle` 9 apariciones. `fashion_beauty`, `fitness_health` y `real_estate` no tienen ningún caso: su exactitud no está medida.
+- **Costo real:** USD 0,2012 + USD 0,1856 = **USD 0,3868** las dos corridas (≈ USD 0,0012 por cuenta revisada, frente a ≈ USD 0,0009 de octubre con lotes de 30: +30 a 35 %, dentro de lo estimado).
+
+| Métrica | Corrida 1 | Corrida 2 | Umbral | ¿Pasa? |
+|---|---|---|---|---|
+| Rubro, exactitud en **test** (n = 85) | 0,882 | 0,859 | ≥ 0,85 | Sí (media 0,870) |
+| Rubro, exactitud en dev (n = 79) | 0,873 | 0,861 | — | — |
+| País de la IA, precisión estricta en **test** (un país donde el texto no lo dice cuenta como error) | 0,815 (44/54) | 0,827 (43/52) | ≥ 0,95 | **No** |
+| País, precisión en todo el set | 0,804 (86/107) | 0,842 (85/101) | — | — |
+| País, precisión solo donde el oro tiene país | 1,000 | 1,000 | — | — |
+| País, cobertura (aciertos ÷ cuentas con país en el oro, todo el set) | 0,989 | 0,977 | — | — |
+
+**Rubro por clase (todo el set, corrida 1 / 2):** `education` 1,00 / 1,00; `food_drink` 0,98 / 0,98; `entertainment` 0,93 / 0,93; `travel_lifestyle` 0,89 / 0,78; `otro` 0,84 / 0,74; `technology` 0,77 / 0,77. En test, `travel_lifestyle` (n = 4) quedó en 0,75 / 0,50 y `technology` en 0,79 / 0,79.
+
+**Matriz de confusión del rubro (oro → respuesta, corrida 2, todo el set):**
+
+| Oro | Respuestas |
+|---|---|
+| `technology` | `technology` 46, `education` 9, `entertainment` 4, `otro` 1 |
+| `food_drink` | `food_drink` 47, `fitness_health` 1 |
+| `otro` | `otro` 14, `technology` 2, `entertainment` 2, `education` 1 |
+| `entertainment` | `entertainment` 14, `fitness_health` 1 |
+| `education` | `education` 13 |
+| `travel_lifestyle` | `travel_lifestyle` 7, `otro` 1, `entertainment` 1 |
+
+La corrida 1 es casi igual (`technology` → `education` 11).
+
+- **Casi todo el error de rubro es una frontera de la taxonomía, no un desvío.** A los creadores que enseñan programación (`brujeriatech`, `leomarisreyes.dev`, `edtecnica`, `josegabrielarape`, `lauratuttman`) el oro los pone en `technology` (el tema) y el modelo en `education`. Si Deivid decide que enseñar un oficio digital es «Educación», la exactitud sube a 0,945 / 0,915. Es una decisión de producto: qué ve el dueño cuando filtra por «Tecnología».
+
+**País: por qué no pasa.** Las mismas cuentas fallan en las dos corridas: es sistemático. En todas, el oro dice «no se sabe» y el modelo puso un país:
+
+- **El país de la marca o de las otras cuentas del lote**, que el prompt prohíbe: `somosisum`, `jacksonmartinez010`, `julianacontrerash` y `carlosdelgadosc` (marca de programación en Venezuela) y `doumatpedro` (hamburguesería en Táchira) salen `VE` sin ciudad, bandera, prefijo ni moneda en su texto.
+- **Lo que el modelo sabe, no lo que dice el texto:** `trt_contigo` y `un24tvoficial` (`VE`, por lo que sabe de esos canales), `diegolesrecomienda` (`VE`, por la dirección «Urb. La Coromoto» sin país) y `phonecellven` (`VE`, por el «ven» del usuario).
+- **El idioma:** `lauratuttman` → `BR` por escribir en portugués; en la corrida 1, `imparkerburton` y `overtime` → `US` por escribir en inglés.
+- **Un lugar visitado:** `iambiggroove` → `DO` por «a flaming steak in the DR».
+
+Aun dando por buenos los cuatro discutibles (`phonecellven`, `diegolesrecomienda`, `trt_contigo`, `un24tvoficial`), la precisión en test queda en 0,926 / 0,942: tampoco llega a 0,95. Cuando el texto sí dice el país, el modelo acierta siempre (1,000) y casi nunca deja de darlo (cobertura 0,98).
+
+**Sin regresión en `encaja`, `tipo` y trampas** (mismo `run_eval.py`, mismos 164 casos; línea base: Sonnet 5 @ low del 2026-10-14):
+
+| Corrida | precision | recall | trampas | kind |
+|---|---|---|---|---|
+| 2026-10-14, Langfuse (versión 1) | 1,000 | 0,758 | 0/106 | 0,917 |
+| 2026-10-14, `run_eval.py` (versión 1) | 0,950 | 0,780 | 1/106 | 0,941 |
+| **2026-11-25, corrida 1 (versión 2)** | 0,958 | 0,935 | 1/106 | 0,940 |
+| **2026-11-25, corrida 2 (versión 2)** | 0,958 | 0,799 | 1/106 | 0,934 |
+
+- La trampa es la misma de octubre: `matsimultiservicios`, un curso de programación automotriz.
+- La caída de recall de la corrida 2 es la tienda de celulares (0,364): el modelo vuelve a descartar a los creadores tech que publican en inglés por «público internacional». Es el criterio inestable que el README ya documentó en octubre (0,455), no algo nuevo de la versión 2.
+
+**Veredicto: NO PASA.** El rubro pasa el umbral (0,870 en test, media de dos corridas) y la revisión no empeoró, pero el país de la IA es inventado en ≈ 1 de cada 6 cuentas a las que les pone país. No se tocó el prompt.
+
+**Revisión humana del oro de rubro (Deivid, 2026-11-25) y nuevo puntaje sin gasto.** Deivid revisó los casos dudosos de rubro y fijó cinco reglas. Están escritas también en el `_doc` de `cases.json`:
+
+1. Quien **enseña** programación o una técnica (cursos, tutoriales, clases magistrales) es `education`, aunque el tema sea tecnología.
+2. El **deporte** (NBA, fútbol) es `entertainment`.
+3. Los **medios de noticias** son `entertainment`.
+4. El rubro sale de lo que la cuenta **es** (su negocio o su tema), no de lo que publica.
+5. Si no hay **evidencia**, la cuenta queda fuera del cálculo de rubro (`rubro_sin_evidencia`).
+
+**Cambios en el oro** (una cuenta puede aparecer en varias marcas):
+
+| Cuenta | Antes → ahora | Regla |
+|---|---|---|
+| `brujeriatech` (las dos redes), `leomarisreyes.dev`, `josegabrielarape`, `edtecnica`, `marjorihaddad` | `technology` → `education` | 1 |
+| `matsimultiservicios` (curso de programación automotriz con instructores) | `otro` → `education` | 1 |
+| `npr`, `un24tvoficial`, `bloombergbusiness` | `otro` → `entertainment` | 3 |
+| `lauratuttman` (las dos redes) | `technology` → `travel_lifestyle` en TikTok; Instagram ya lo era | 4 |
+| `trumpbyryan`, `stellar_908` | fuera del cálculo de rubro | 5 |
+
+- **Sin cambios:** `overtime` (las dos redes), `osmel_cuberos`, `venezuelahablacantando.9`, `trt_contigo` y `vip_phonecity`. Siguen como estaban, por decisión de Deivid.
+- **Sin aplicar:** la regla 3 a `instagram:technology`, una página de noticias de tecnología que sigue en `technology`. Lo decide Deivid.
+- Las 14 cuentas de rubro que revisó Deivid ya no llevan la marca `dudoso`. Las 10 dudosas de **país** la conservan: son de RF-12.
+
+**Nuevo puntaje.** Se calculó con las salidas ya guardadas de las dos corridas, con `run_eval.py --rescore`, sin ninguna llamada a Claude (USD 0). Resultado en `results/rescore-20261125-111923.json`. La muestra quedó en n = 161, porque salen las 3 apariciones sin evidencia.
+
+| Exactitud del rubro | Corrida 1 | Corrida 2 | Media | Umbral |
+|---|---|---|---|---|
+| **test** (n = 85) | 0,894 | 0,847 | **0,871** | ≥ 0,85 |
+| dev (n = 76) | 0,921 | 0,895 | 0,908 | — |
+| todo el set (n = 161) | 0,907 | 0,870 | 0,888 | — |
+
+Exactitud por clase en todo el set (corrida 1 / corrida 2):
+
+| Clase | n | Corrida 1 | Corrida 2 |
+|---|---|---|---|
+| `food_drink` | 48 | 0,98 | 0,98 |
+| `technology` | 44 | 0,95 | 0,91 |
+| `otro` | 13 | 0,92 | 0,92 |
+| `education` | 25 | 0,92 | 0,80 |
+| `entertainment` | 20 | 0,75 | 0,75 |
+| `travel_lifestyle` | 11 | 0,64 | 0,55 |
+
+En test, `travel_lifestyle` (n = 7) queda en 0,43 / 0,29, y `entertainment` (n = 10) en 0,80 / 0,80.
+
+**Lectura del nuevo puntaje:**
+
+- La media en test **pasa** el umbral de 0,85 (0,871), pero la corrida 2 sola queda debajo (0,847).
+- **No se cumple el criterio «ninguna clase por debajo de 0,7».** Falla `travel_lifestyle`.
+  - Casi todo ese error es `lauratuttman`. El oro dice viajes y estilo de vida (regla 4), pero el modelo la ve como `education` o `technology` por sus publicaciones de «aprende a programar».
+  - Es la regla 4, que el prompt no conoce: el prompt dice «para un creador o un medio, el rubro del contenido que publica».
+- En `entertainment`, el modelo pone `otro` o `technology` en los medios de noticias (`npr`, `bloombergbusiness`, `un24tvoficial`). Es la regla 3, que el prompt tampoco conoce.
+- Conclusión: el oro ya refleja las reglas de Deivid, pero el prompt `referentes-review-2` no. Escribir las reglas 1 a 4 en el prompt es trabajo de la versión `referentes-review-3`, y hay que medirlo de nuevo con este mismo oro.
+
+**Regla 6 (Deivid, 2026-11-25):** un medio de noticias de **un solo tema** va al rubro de ese tema. Por eso `instagram:technology` queda en `technology`. `entertainment` es solo para los medios generales, como NPR, UN24 o Bloomberg. Deivid también confirmó `matsimultiservicios` como `education` y `bloombergbusiness` como `entertainment`.
+
+**`referentes-review-3` (2026-11-25) — MEDIDO: NO PASA EL CRITERIO COMPLETO.** El rubro en test pasa (0,941 / 0,906) y no hay regresión, pero `travel_lifestyle` en test queda por debajo de 0,70. Todo ese error es una sola cuenta: `lauratuttman`. Por decisión de Deivid, antes de mergear el PR #807 el prompt lleva sus reglas de rubro y se vuelve a medir.
+
+- **Qué cambió:** solo el párrafo `rubro` de `REVIEW_SYSTEM`, que ahora tiene 5 reglas:
+  1. es lo que la cuenta ES, no una publicación suelta;
+  2. quien enseña programación o una técnica es `education`;
+  3. el deporte es `entertainment`;
+  4. un medio de noticias general es `entertainment`, y uno temático va a su tema;
+  5. si los datos no dejan ver el rubro, `otro`.
+- **Qué no cambió:** `encaja`, `tipo`, `razon`, la herramienta y el párrafo `pais`. El país sigue sin guardarse; su prompt será `referentes-review-4`, en RF-12.
+- **Versión:** `REVIEW_PROMPT_VERSION = "referentes-review-3"`.
+- **Criterio para pasar:** cada corrida ≥ 0,85 en test, ninguna clase con n ≥ 5 por debajo de 0,70, y `encaja`, `tipo` y trampas sin empeorar frente a la v2.
+
+**Medición (2026-11-25):**
+
+- **Quién la corrió:** la sesión coordinadora («creacion de tickets»), con permiso directo de Deivid y tope de USD 0,5. El control de permisos le bloqueó la llamada pagada al agente de backend dos veces.
+- **Modelo:** `claude-sonnet-5`, esfuerzo `low`, lotes de 30. Es la misma configuración que la v2. Versión `referentes-review-3`.
+- **Comando:** `run_eval.py --configs sonnet-5@low`, dos veces.
+- **Resultados:** `packages/api/evals/referentes_ai/results/20261125-112959.json` y `20261125-113129.json`.
+- **Muestra:** el oro corregido con las reglas 1 a 6 de Deivid. n = 161 apariciones: 85 en test y 76 en dev. Quedan fuera las 3 sin evidencia.
+- **Costo real:** USD 0,2305 + USD 0,1982 = **USD 0,4287**.
+
+| Exactitud del rubro | v3, corrida 1 | v3, corrida 2 | v2, mismo oro (`--rescore`) | Umbral |
+|---|---|---|---|---|
+| **test** (n = 85) | **0,941** | **0,906** | 0,894 / 0,847 | ≥ 0,85 cada corrida |
+| dev (n = 76) | 0,947 | 0,947 | 0,921 / 0,895 | — |
+| todo el set (n = 161) | 0,944 | 0,925 | 0,907 / 0,870 | — |
+
+Exactitud por clase, v3 (corrida 1 / corrida 2):
+
+| Clase | test: n | test: exactitud | todo el set: n | todo el set: exactitud |
+|---|---|---|---|---|
+| `food_drink` | 24 | 1,00 / 0,96 | 48 | 0,98 / 0,98 |
+| `technology` | 25 | 1,00 / 0,88 | 44 | 0,98 / 0,89 |
+| `education` | 13 | 0,85 / 1,00 | 25 | 0,88 / 0,96 |
+| `entertainment` | 10 | 1,00 / 1,00 | 20 | 1,00 / 1,00 |
+| `otro` | 6 | 1,00 / 1,00 | 13 | 0,92 / 0,92 |
+| **`travel_lifestyle`** | **7** | **0,57 / 0,43** | 11 | 0,73 / **0,64** |
+
+- **La v3 sí aplica las reglas de Deivid.** `entertainment` pasa de 0,75 a 1,00: los medios generales ya salen como entretenimiento. `education` y `technology` también mejoran.
+- **El único fallo es `travel_lifestyle`.** Todos sus errores son la misma cuenta, `lauratuttman`, que aparece en tres marcas. Por la regla 4 el oro dice viajes y estilo de vida (Instagram: «Muitas dicas e hacks para facilitar sua vida»). El modelo la ve como `education` en TikTok, por «bora aprender a programar», y como `otro` en Instagram.
+  - Sin `lauratuttman`, la clase quedaría en 1,00.
+  - Con una sola cuenta repetida no se puede saber si es un fallo del prompt o una etiqueta discutible. La clase tiene muy pocas cuentas distintas.
+
+**Sin regresión en `encaja`, `tipo` y trampas:**
+
+| Corrida | precision | recall | trampas | kind |
+|---|---|---|---|---|
+| v2, corrida 1 | 0,958 | 0,935 | 1/106 | 0,940 |
+| v2, corrida 2 | 0,958 | 0,799 | 1/106 | 0,934 |
+| **v3, corrida 1** | 0,950 | 0,894 | 1/106 | 0,958 |
+| **v3, corrida 2** | 1,000 | 0,799 | 0/106 | 0,931 |
+
+- Las medias quedan igual o mejor: precision 0,975 frente a 0,958, trampas 1 frente a 2, kind 0,945 frente a 0,937. Recall 0,847 frente a 0,867.
+- **Recall de la corrida 1:** baja porque en `programming-creator` se descartaron `thecodingspacerd` y `jean.iovino`. Son dos de los descartes discutibles que el README ya documentó en septiembre, no algo nuevo de la v3.
+- **Recall de la corrida 2:** es la tienda de celulares (0,364), la misma inestabilidad conocida de la v2.
+
+**Veredicto: NO PASA el criterio completo.**
+
+| Criterio | Resultado |
+|---|---|
+| Cada corrida ≥ 0,85 en test | Cumple (0,941 / 0,906) |
+| Sin regresión en `encaja`, `tipo` y trampas | Cumple |
+| Ninguna clase con n ≥ 5 por debajo de 0,70 | **No cumple:** `travel_lifestyle` en test queda en 0,57 / 0,43 (n = 7), y en todo el set la corrida 2 da 0,64 (n = 11) |
+
+Por instrucción de Deivid, no se ajustó el prompt después de medir. Decide él:
+
+1. Mergear con la v3 y aceptar el fallo de `travel_lifestyle`, que se debe a una sola cuenta.
+2. Revisar la etiqueta de `lauratuttman`.
+3. Sumar cuentas de `travel_lifestyle` al oro antes de juzgar esa clase.
+
+**Decisión de Deivid (2026-11-25): el país sale solo de fuentes gratis.** Aplicada en el PR #807, en el commit «feat(creators): region from free sources only»:
+
+- `creators.region_code` sale solo de `profile`, `tiktok_region`, `reel_location` o `sightings`.
+- `ai` ya no es fuente de país. El CHECK de 0182 lo rechaza, y la columna `region_model` se quitó porque ninguna fuente gratis tiene modelo.
+- El `pais` que devuelve `revisar_cuentas` no se guarda en ninguna parte: `ReviewInference` ya no tiene ese campo. Ni siquiera se guarda «sin mostrarlo», como decía la propuesta de arriba.
+- **El prompt queda igual, `referentes-review-2`, con `pais` dentro.** El rubro se midió con ese prompt; quitar `pais` daría un prompt sin medir. Cuesta unos 5 tokens de salida por cuenta, y `run_eval.py` lo sigue leyendo.
+- El rubro de la IA se guarda tal cual.
+
+**Pendiente: ticket nuevo para el país por IA**, prompt `referentes-review-3`, con los puntos 1 a 3 de abajo y medido con el mismo set.
+
+**Propuesta para `referentes-review-3` (sin aplicar):**
+
+1. **Prompt `referentes-review-3`:** en `pais`, «solo si en el texto de ESTA cuenta aparece escrito un lugar (ciudad, estado, país, bandera, prefijo telefónico o moneda). No sirven: el idioma, lo que sabes de la cuenta o del medio, las abreviaturas del usuario, un lugar que la cuenta visitó, el país de la marca ni el de las otras cuentas de la lista». Además, pedir `pais_evidencia` (las palabras exactas del texto) y que el código descarte el país si esas palabras no están en el bloque de la cuenta. Esa comprobación en código corta el error principal (el país de la marca) aunque el modelo lo intente.
+2. **Rubro:** decidir la frontera «enseñar programación» (`technology` o `education`) y escribirla en el prompt y en el `_doc` del oro.
+3. Medir la versión 3 con el mismo set, después del muestreo humano de las etiquetas (≈ USD 0,4 con dos corridas).
+
+---
+
+<a id="capa-004"></a>
+
+## CAPA-004 — Primera imagen real con la capa encendida en producción: Bianki, «Shawarma mixto», una imagen y un carrusel (m-25040499, m-25042157) — 2026-11-17 · DOS PIEZAS, NO ES UNA MEDICIÓN
+
+- **Qué corrió:** producción, `QUALIFY_IMAGE_LAYER=on` para todos los negocios (decisión del fundador, 2026-11-17 ~03:40 UTC). Bianki, tipo «Imagen» (`static_flyer`, modo producto), producto del catálogo «Shawarma mixto» (precio $22.000, puesto por el dueño en «Datos clave: Precio»), formato 4:5, borrador `0afc545b-113e-4f19-8b49-ac9e73615ecc`. La corrió el fundador desde la app; datos de su reporte y de la fila guardada, no de una evaluación.
+- **Modelos:** texto de la publicación `claude-opus-5-5`; foto base `dola-seedream-5-0-pro-260628` (1280×1600); capa `claude-sonnet-5-5` con `capa-v4` (sin medir antes); composición `layer_still` v1, `engine_revision` 4.
+- **Tiempos:** Seedream 43,2 s; llamada de la capa ~9 s; render `layer_still` 3,0 s (1,18 MB). Resultado: pieza hecha, sin errores.
+- **Costo:** registro `creative.cost.total calls=2 cost_usd=0.090503` = texto US$0,045503 + Seedream US$0,045. **La llamada de la capa no aparece**: su costo es desconocido en este registro (por los datos de CAPA-003, unos US$0,015). Es el error m-25042157: la etapa de la capa nunca agregaba su uso al de la pieza (por lectura del código, el registro de consumo de Claude la anota con el interceptor `_book_consumption`; la fila en producción no se revisó). Arreglado en la rama de m-25042157: cada llamada que consumió tokens (la reescritura incluida) queda como una línea `anthropic` / `claude-sonnet-5-5` con tokens y costo, una sola vez aunque la cola repita la pasada; una llamada que falló después de pagar guarda sus tokens con el error de su paso y los anota la pasada que termina la pieza; una que no consumió nada (tope agotado antes del primer turno) no deja línea.
+- **Lo que guardó la imagen:** `composer: layer_still`, `price_status: "hidden"`, `brief_price_line: ""`, `printed.price: false`, y dos caídas del compositor:
+  - `band: subject does not fit the photo window, photo reduced` (ver A);
+  - `accent_word: below 3:1, drawn in the text colour` (la palabra de acento no llegaba a 3:1 sobre la franja y se dibujó del color del texto; caída prevista en el catálogo, regla de 3:1 del `accent_word`).
+
+**A — La foto se achicó.** La franja de `band` en 4:5 mide entre el 32 y el 40 % del alto (432–540 px de 1350, según cuánto texto lleva). La foto llena el resto: a lo ancho, la base de 1280×1600 se dibuja a 1080×1350, y la ventana deja ver solo el 68 % de su alto (franja mínima) o el 60 % (franja máxima). Si el recuadro del sujeto que Claude marcó (`subject_box`) es más alto que eso, o queda donde ningún recorte lo deja entero, el compositor no corta el sujeto: pasa a «contener» la foto entera en la ventana (`engine.ts`, `tryBand`, ~871). Una foto de 1280×1600 contenida en 1080×918 queda de 734 px de ancho, con bandas a los lados (rellenas con la foto difuminada). Eso ve el dueño: franja roja arriba y la foto más chica con laterales borrosos. En la corrida local de CAPA-003 (16 imágenes de comida) los sujetos medían de 0,40 a 0,85 del alto (mediana 0,55) y 3 de 16 cayeron en «photo reduced»; con fotos de producto de cerca (Seedream suele llenar el cuadro con el plato) pasará a menudo. Opciones para el fundador (no se implementó ninguna):
+  1. **Recortar para llenar con tolerancia:** cortar hasta ~15 % del sujeto por el lado opuesto a la franja (borde del plato o del fondo) antes de achicar; achicar solo si hace falta más. Recomendada: la foto siempre llena el ancho, y lo que se pierde es borde.
+  2. **Franja más baja:** bajar el mínimo de `band` en 4:5 (p. ej. 26 %) con títulos más cortos: más foto, menos texto; cambia el catálogo y sus límites.
+  3. **Otro diseño cuando el sujeto es alto:** que la regla prefiera `plate` o `scrim` (texto sobre la foto) si el sujeto ocupa más del ~60 % del alto; cambia el prompt (`capa-v5`) y hay que medirlo.
+
+**B — El precio no salió en la imagen.** `media.price_line` solo lo pone `angle_brief` (`packages/creative/src/qualify_creative/angles.py` ~757-761), es decir, las piezas de «Variaciones» (motor de ángulos, `AngleSetService`): con producto con precio y un ángulo que no sea `UNAWARE`, el precio va en la línea y en el destacado «precio». El pedido normal de «Imagen» desde la app no la llena nunca: «Datos clave: Precio» es un destacado para el texto de la publicación (`brief_highlights` en `Qualify/creative_state.py`), no `price_line`. Por eso la capa vio `price_line` vacío, `price_status: hidden`, y la imagen salió sin precio mientras el texto sí lo dice. Hoy un pedido normal de «Imagen» no puede llegar al camino del precio; solo «Variaciones». El paso 2 todavía dice «La imagen sale sin letras ni precios: escríbelos en el texto de la publicación» (`Qualify/content_generator.py:4280-4281`), falso con la capa encendida (ahora sí lleva letras). No se cambió el texto (decisión de producto).
+
+**C — Costo de la capa fuera del registro.** Ver «Costo» arriba.
+
+**Segunda pieza, mismo día — carrusel de 3 diapositivas generadas** (Bianki, «Shawarma mixto», 4:5, borrador `70399135-dd5e-4e14-9923-98c63754cc93`): salió bien en ~4 min 10 s. Seedream 70,4 s, 45,6 s y 53,4 s (una tras otra); capa ~12 s; un cuarto Seedream de 36,5 s y una segunda capa de ~6 s (la regeneración de una base, abajo); tres renders `layer_still` de 1,5–2,0 s. Las tres diapositivas `composer: layer_still`, `price_status: hidden`, intento 0, `base_invented_text_kept: false`. Costo en el registro: `calls=5`, US$0,224011 = texto US$0,044 + 4 × Seedream US$0,045; **faltan las dos llamadas de la capa** (el mismo error, m-25042157). Caídas: diapositiva 1 `accent_word below 3:1` y `counter: crosses the subject box (fixed place, not moved)` — el contador «1/3», en una pastilla del color claro de la marca, queda en su lugar fijo abajo a la derecha, encima de una parte del plato (el catálogo no lo mueve: va en el mismo lugar en todas las diapositivas); diapositiva 2 `band: subject does not fit the photo window, photo reduced` (A); diapositiva 3 ninguna.
+
+- **El cuarto Seedream y el aviso de R2.** Justo después, el worker escribió `WARNING R2 key t/<tenant>/generated/70399135-…/r1/base/slide-2.jpg already holds another file: never overwritten`. Leyendo el código: es la única regeneración de la base que permite 0168 (Claude vio letras inventadas en la base de la diapositiva 2, posición 1). La base nueva quería la clave fija de la diapositiva, que ya tenía la primera base; R2 no sobrescribe, y `_Saver` la guarda **al lado**, con una clave con su propio sha256 (`r1/base/slide-2-<12 hex>.jpg`). Esa base nueva es la que se le dio a la segunda llamada de la capa, la que dibujó el compositor y la que la pieza registra (`base` y `base_regenerated: true` en la diapositiva 2). No se tiró: los US$0,045 y la segunda capa compraron la foto que se publica. `base_invented_text_kept: false` es correcto: la segunda capa ya no vio letras en la base nueva. El aviso no era una pérdida: ahora el almacén lo deja en INFO («the new one goes beside it») y `_Saver` dice dónde quedó («kept as …»). Test: `test_image_base_regeneration_r2.py`.
+
+**Lo que no dice:** dos piezas no son una medición; no hay calidad, tasa de caídas ni costo medio que sacar de aquí. Sirven para saber que el camino funciona de punta a punta en producción y para encontrar A, B y C.
 
 ---
 

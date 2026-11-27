@@ -324,10 +324,14 @@ def main(
         return 0
     if chore is None and not args.once:
         from qualify_api.creative.retention_job import daily_chore  # noqa: PLC0415
+        from qualify_api.planner.monthly_post_job import daily_monthly_posts  # noqa: PLC0415
         from qualify_api.plans.cost_alerts import daily_cost_alerts  # noqa: PLC0415
 
-        # m-24852145: the plan's USD cap alert (D18) shares the daily slot — alert only
-        chore = combined_chore(daily_chore(scope_ids), daily_cost_alerts(scope_ids))
+        # m-24852145: the plan's USD cap alert (D18) shares the daily slot — alert only;
+        # m-25120705: «Publicación del mes» drafts (opt-in, once per brand and month)
+        chore = combined_chore(
+            daily_chore(scope_ids), daily_cost_alerts(scope_ids), daily_monthly_posts(scope_ids)
+        )
     if scoped is None or production is None:
         from qualify_api.planner.composition import (  # noqa: PLC0415 — after .env
             production_tick_runner,

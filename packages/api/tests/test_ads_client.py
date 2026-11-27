@@ -336,7 +336,7 @@ ERROR_CASES = [(code, None, text) for code, text in CODE_MESSAGES.items()] + [
 
 
 async def test_ticket_error_inventory_is_complete() -> None:
-    assert {17, 613, 80004, 294, 2654} <= set(CODE_MESSAGES)
+    assert {4, 17, 32, 613, 80000, 80004, 294, 2654} <= set(CODE_MESSAGES)
     assert {
         1885183,
         1815199,
@@ -553,6 +553,9 @@ async def test_cooldown_before_next_request(header: str, value: dict, expected: 
         (17, None, {}, 400, 60),
         (613, None, {}, 400, 60),
         (80004, None, {}, 400, 60),
+        (4, None, {}, 400, 60),
+        (32, None, {}, 400, 60),
+        (80000, None, {}, 400, 60),
         (100, 4841018, {}, 400, 30),
         (1, None, {"Retry-After": "125"}, 429, 125),
     ],

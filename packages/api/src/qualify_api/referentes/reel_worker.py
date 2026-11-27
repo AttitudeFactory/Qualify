@@ -34,8 +34,9 @@ A pass, in order:
    default (`DEFAULT_DESCRIBE`, None until VE-04c): it downloads from the networks' CDNs
    and stores in R2, never a model call nor a ScrapeCreators credit. Before the runs, so
    an analysis a business asked for does not wait behind a run.
-6. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
-   then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
+6. **Run** — up to `batch` runs, one at a time: the next run (`manual`, `operator_90d` and
+   `competitor_now` before `weekly`, then the oldest), then `reel_runs.run`, which claims
+   it and is the only door that pays.
    In the `--all-tenants` service an `ok` run's ideas get their covers copied to R2
    (`reel_covers.copy_idea_covers`, R12) and are then analysed by `analyze_run_ideas`
    (step 7 of `run`), while their CDN links are fresh; a `--tenant` worker (local) runs
@@ -55,7 +56,9 @@ A pass, in order:
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
 runs store, so with the worker off every screen would stay empty. What bounds the spend:
-one attempt reads at most ~88 credits (12 accounts × 4 pages + 40 transcripts); an
+one weekly attempt reads at most ~130 credits (12 referentes × 4 pages + 40 transcripts,
+plus — RF-05, m-25119465 — 6 competitors × 4 pages + 18 transcripts; an owner's
+«Ver sus reels ahora», a `competitor_now` run, at most 4 pages + 2 transcripts); an
 attempt done again re-reads no account read in the last 24 h (page 1) / 72 h (the 30-day
 walk) and never pays a transcript or a verdict twice; every paid read is booked, before
 it leaves, to the business the run is for and held to its caps (ADR 42 R5: 150 credits in

@@ -184,7 +184,7 @@ Formato de `docs/formato-tickets-meegle.md`. Cada historia es un Issue de Meegle
 **Qué hay que hacer**
 - `qualify_api/ads/client.py` (`MarketingClient`), con **versión propia** `QUALIFY_META_ADS_API_VERSION=v26.0`, separada de `QUALIFY_META_API_VERSION`, porque las versiones de la Marketing API caducan antes.
 - Métodos: campañas, conjuntos, creativos, anuncios, `adpreviews`, `minimum_budgets`, `reachestimate`, `targetingsearch`/`search?type=adgeolocation`, estados y `insights`.
-- Errores traducidos **por `error_subcode`, nunca por el texto**, porque Meta responde en el idioma del dueño de la cuenta. Tabla inicial: 1885183, 1815199, 2238055/2446149, 1885272/1885650, 1885621, 1885029, 1885557, 294, 2654/1713092, 17/613/80004, 4841018 (una edición cada 30 s), 1373054, 2446383. Cada uno con un mensaje para el cliente sin jerga.
+- Errores traducidos **por `error_subcode`, nunca por el texto**, porque Meta responde en el idioma del dueño de la cuenta. Tabla inicial: 1885183, 1815199, 2238055/2446149, 1885272/1885650, 1885621, 1885029, 1885557, 294, 2654/1713092, 4/17/32/613/80000/80004 (límites de solicitudes), 4841018 (una edición cada 30 s), 1373054, 2446383. Cada uno con un mensaje para el cliente sin jerga.
 - Leer `X-Business-Use-Case` / `X-Ad-Account-Usage` y esperar antes de saturar la API.
 - Fake en memoria para los tests, siguiendo el patrón de `publishing/`.
 

@@ -158,6 +158,47 @@ mirrored around them. Every line stays inside the 9:16 safe zone (y 270–1536 �
 `place`, `lines`, `size`, `cover`, `text_box`, `engine_revision` (layer_still's — the shared
 engine) and `overlay_revision` (`manifest.video_text.overlay_revision`, bumped with any change
 under `src/templates/video_text/` that moves a pixel); Python puts both revisions AND a digest of the manifest's `video_text` block (title lines, scrim heights, the centre of «middle») in the job id. Because the service hands back a finished job — failed or cancelled too — under its id, Python resubmits a text whose job it gets back already failed or cancelled under a derived id (`uuid5(job_id, "attempt-N")`, at most 5), so a retry renders afresh; a refusal is not retried (the same text is refused again). The attempt is recorded with the piece.
+`video_text` **v2** (ED-13, m-25029108; `manifest.json`, v1 kept as `manifest.v1.json` and
+still registered, drawing the same pixels) lays v1's SAME text block (same engine, sizes, breaks
+and boxes) CENTRED — every line on the canvas' vertical axis, `layout.ts` `centred` (Deivid
+2026-11-24, «que siempre esté centrado»; v1 stays left-aligned) — on one of four backgrounds: `texts.layout_id` ∈ `scrim` (v1's) · `band` (a
+full-width strip from the text block's top − `band.pad` to its bottom + `band.pad`, in the
+FIXED dark neutral `band.color` #111111 with `band.ink` #FFFFFF letters, whatever the brand —
+schemas' `VIDEO_TEXT_BAND_COLOR`/`VIDEO_TEXT_BAND_INK`) · `brand_fill` (the block ± `box.pad`, corners `box.radius`, in
+`palette.accent`) · `shadow` («Sin fondo»: no background, clean `shadow_ink` white letters —
+no text shadow, no outline; Deivid 2026-11-23). On `brand_fill` the ink is engine.ts'
+`textColorOn` (≥ 4.5:1); on `band` it is `band.ink` (18.9:1); both ratios are reported in
+`contrast.text`. `texts.box_color` (optional, `#RRGGBB` in capitals; anything else is a 422)
+is the colour the owner picked for `band` / `brand_fill` (ignored on `scrim` / `shadow`): the
+box is that colour, same geometry, and the letters are `video_text.box_ink.light` (#FFFFFF) or
+`.dark` (#111111), whichever has the higher contrast (`layout.ts` `boxInk`; the vectors in
+`server/box-ink-vectors.json` pin it against the editor preview's mirror). Python sends it only
+when there is one, so a text on its default keeps its job id. `texts.text_color` (optional,
+`#RRGGBB` in capitals; anything else is a 422; v1 refuses it; ED-13 round 3, Deivid
+2026-11-23) is the letters' colour the owner picked for `shadow` («Sin fondo»): the same
+clean letters, no text shadow, no outline, in that colour instead of `shadow_ink` (ignored on
+the other backgrounds, which choose their letters for contrast); Python sends it only when
+there is one, so white keeps its job id. `texts.text_size` (optional, `small` / `medium` / `large`;
+anything else is a 422; v1 refuses any but `medium`; ED-13 round 4, Deivid 2026-11-23) sizes
+the title from what `medium` chooses for that same text (the catalog's 9:16 range, 112 → 76 px)
+by `layout.ts` `SIZE_SCALE` (0.75 / 1 / 1.25, Deivid 2026-11-24 «Siempre más chica»): `small`
+is always 75 % of it; `large` exactly 125 % of it (tried over every cover step first), falling no lower than `max(medium's, 95 px)` when
+that does not fit; a text `medium` cannot draw gets the size's own scaled range (`sizeRange`).
+The same safe zone, width and lines. The scales live in `layout.ts`, not in the manifest's
+`video_text` block, so `config_digest` is unchanged; Python sends it only when it is not
+`medium`, so «Mediana» is the plain text's job. Python refuses `large` past 40
+characters before any job (`text_too_long_for_large`). `brand.fontFiles.heading` (optional, an `asset://` reference to the Brand
+Kit's own font file) draws the letters in that file — loaded strictly: a file that does not
+load fails the render instead of falling back, and the unknown-family warning is not emitted
+for a role drawn from a file. Ports: `overlay` (everything, as v1), `backdrop` (only the
+background) and `letters` (only the letters); one job may ask for all three («Letra por
+letra»), each the same layout. The report adds `letter_boxes` (every drawn character's box in
+reading order, `{x, y, w, h, line}` px; the spaces a line break eats have none) and
+`backdrop_box`. Python asks v2 for EVERY text (2026-11-24: only v2 centres, so the plain
+«Sombra» text has a new job id and v1's left-aligned PNG is never served for it again) and
+checks `/health` lists `video_text` v2 before the job (a service still on v1 answers as a
+service down, 503: deploy the render before the app).
+
 Exporting `Scrim`, `TextBlocks` and `canvasMeasurer` from `LayerStill.tsx` moved no pixel
 (layer_still story renders hash-identical before and after), so layer_still's
 `engine_revision` stays 3.

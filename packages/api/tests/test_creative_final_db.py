@@ -6,22 +6,32 @@ also when it failed."""
 from __future__ import annotations
 
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
+from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from qualify_api.creative import models as creative
-from qualify_api.creative.draft_mode import DRAFT_FAILED, DRAFT_READY, DRAFT_RENDERING
+from qualify_api.creative.draft_mode import (
+    DRAFT_FAILED,
+    DRAFT_READY,
+    DRAFT_RENDERING,
+    FINAL_USAGE_DUE,
+)
 from qualify_api.creative.media import MediaWrite
 from qualify_api.creative.service import PostgresContentRepository, UsageWrite
+from qualify_api.tenancy.models import Brand
 
 from .test_creative_regenerate_db import _brand, _drafting_draft, _variant
 
 pytestmark = pytest.mark.db
 
 TENANT_F = UUID("c0000000-0000-4000-8000-000000001020")
+#: m-25111780: the tests that read a budget get their own tenant (one brand each, with
+#: its config row): `_brand` picks ANY brand of a tenant, so none of them sits in TENANT_F.
+TENANT_G = UUID("c0000000-0000-4000-8000-000000001021")
 MODEL = "dreamina-seedance-2-5-260628"
 
 
@@ -58,11 +68,13 @@ def _usage(cost: str) -> UsageWrite:
     )
 
 
-def _draft_with_video(repo: PostgresContentRepository) -> tuple[UUID, UUID, UUID]:
-    brand_id = _brand(TENANT_F)
-    draft_id = _drafting_draft(TENANT_F, brand_id)
+def _draft_with_video(
+    repo: PostgresContentRepository, brand_id: UUID | None = None, tenant_id: UUID = TENANT_F
+) -> tuple[UUID, UUID, UUID]:
+    brand_id = brand_id or _brand(tenant_id)
+    draft_id = _drafting_draft(tenant_id, brand_id)
     repo.finish_generation(
-        tenant_id=TENANT_F,
+        tenant_id=tenant_id,
         draft_id=draft_id,
         brand_id=brand_id,
         new_status="generated",
@@ -70,14 +82,14 @@ def _draft_with_video(repo: PostgresContentRepository) -> tuple[UUID, UUID, UUID
         variants=(_variant("hola"),),
         usage=(),
         spent_usd=Decimal("0"),
-        media=(_video(TENANT_F, draft_id, "clip.mp4", DRAFT_READY),),
+        media=(_video(tenant_id, draft_id, "clip.mp4", DRAFT_READY),),
     )
-    (asset,) = repo.media_for(tenant_id=TENANT_F, draft_id=draft_id)
+    (asset,) = repo.media_for(tenant_id=tenant_id, draft_id=draft_id)
     return brand_id, draft_id, asset.id
 
 
-def _usage_rows(draft_id: UUID) -> list[creative.CreativeUsageEvent]:
-    with tenant_session(TENANT_F) as session:
+def _usage_rows(draft_id: UUID, tenant_id: UUID = TENANT_F) -> list[creative.CreativeUsageEvent]:
+    with tenant_session(tenant_id) as session:
         return list(
             session.scalars(
                 select(creative.CreativeUsageEvent).where(
@@ -228,6 +240,175 @@ def test_only_the_draft_videos_are_read_and_a_failure_keeps_the_raw_final() -> N
     (asset,) = repo.draft_videos_for(tenant_id=TENANT_F, draft_id=draft_id)
     assert asset.params["draft"]["status"] == DRAFT_FAILED
     assert asset.params["draft"]["raw_final"] == raw
+
+
+def _budgeted_brand() -> UUID:
+    """A brand of its own for one test, with its budget config row. The app role may not
+    delete `creative_engine_config` rows (by design), so the brand this file shares is
+    never given one: a cap on it would outlive the test."""
+    _brand(TENANT_G)  # the tenant itself, made once
+    with admin_session() as session:
+        brand = Brand(tenant_id=TENANT_G, name=f"final-usage-{uuid4().hex[:8]}")
+        session.add(brand)
+        session.flush()
+        brand_id = brand.id
+    with tenant_session(TENANT_G) as session:
+        session.add(
+            creative.CreativeEngineConfig(
+                tenant_id=TENANT_G,
+                brand_id=brand_id,
+                monthly_budget_cap_usd=Decimal("100"),
+                budget_spent_usd=Decimal("0"),
+            )
+        )
+    return brand_id
+
+
+def _budget(brand_id: UUID) -> Decimal:
+    """The brand's spent budget (`_budgeted_brand`)."""
+    with tenant_session(TENANT_G) as session:
+        return Decimal(
+            session.scalars(
+                select(creative.CreativeEngineConfig.budget_spent_usd).where(
+                    creative.CreativeEngineConfig.brand_id == brand_id
+                )
+            ).one()
+        )
+
+
+def _held_final(draft_id: UUID, raw: dict[str, str], tenant_id: UUID = TENANT_F) -> MediaWrite:
+    final = _video(tenant_id, draft_id, "clip-final.mp4", "final")
+    block = {**final.params["draft"], "raw_final": raw, FINAL_USAGE_DUE: raw["task_id"]}
+    return MediaWrite(**{**final.__dict__, "params": {**final.params, "draft": block}})
+
+
+def _raw(draft_id: UUID, task: str, tenant_id: UUID = TENANT_F) -> dict[str, str]:
+    key = f"t/{tenant_id}/generated/{draft_id}/r1/clip-final-raw-{task}.mp4"
+    return {"key": key, "task_id": task, "cost_usd": "2.84"}
+
+
+def test_a_held_raw_final_spend_is_recorded_once_while_its_task_is_due() -> None:
+    """m-25111780: the pass that paid the 1080p lost its lease (its settle rolled back);
+    the raw file stayed in the block marked due. The next settle records its spend once
+    — event and budget — and clears the mark in the same write; a later settle of the
+    same task adds none."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo, _budgeted_brand(), TENANT_G)
+    spent = _budget(brand_id)
+    raw = _raw(draft_id, "cgt-final", TENANT_G)
+    repo.set_video_draft(
+        tenant_id=TENANT_G,
+        asset_id=asset_id,
+        changes={"status": DRAFT_RENDERING, "raw_final": raw, FINAL_USAGE_DUE: "cgt-final"},
+    )
+
+    def settle() -> None:
+        repo.settle_final(
+            tenant_id=TENANT_G,
+            draft_id=draft_id,
+            brand_id=brand_id,
+            asset_id=asset_id,
+            media=_held_final(draft_id, raw, TENANT_G),
+            error=None,
+            usage=(),
+            spent_usd=Decimal("0"),
+            draft_changes={"raw_final": raw},
+            held_usage=(_usage("2.84"),),
+            final_task_id="cgt-final",
+        )
+
+    settle()
+    (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
+    assert asset.params["draft"]["status"] == "final"
+    assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert [row.cost_usd for row in _usage_rows(draft_id, TENANT_G)] == [Decimal("2.84")]
+    assert _budget(brand_id) - spent == Decimal("2.84")
+
+    settle()  # a slower pass with the same kept file: nothing more
+    (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
+    assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert len(_usage_rows(draft_id, TENANT_G)) == 1
+    assert _budget(brand_id) - spent == Decimal("2.84")
+
+
+def test_a_late_settle_that_lost_its_claim_records_its_raw_spend_once() -> None:
+    """Review of 4160220e: run A paid T1 and lost its claim to a new order. If A settles
+    while T1 is still due, A records it and clears the mark; if the new run recorded T1
+    first (no mark, `raw_final` naming T1), A records nothing more."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo, _budgeted_brand(), TENANT_G)
+    spent = _budget(brand_id)
+    raw = _raw(draft_id, "cgt-a", TENANT_G)
+
+    def late_a() -> None:
+        repo.settle_final(
+            tenant_id=TENANT_G,
+            draft_id=draft_id,
+            brand_id=brand_id,
+            asset_id=asset_id,
+            media=_held_final(draft_id, raw, TENANT_G),
+            error=None,
+            usage=(),
+            spent_usd=Decimal("2.84"),
+            claim="claim-a",
+            draft_changes={"raw_final": raw},
+            final_task_id="cgt-a",
+            raw_usage=(_usage("2.84"),),
+        )
+
+    # ordered again: claim gone, T1 still due — A records it and clears the mark
+    repo.set_video_draft(
+        tenant_id=TENANT_G,
+        asset_id=asset_id,
+        changes={
+            "status": DRAFT_RENDERING,
+            "claim": None,
+            "raw_final": raw,
+            FINAL_USAGE_DUE: "cgt-a",
+        },
+    )
+    late_a()
+    (asset,) = repo.media_for(tenant_id=TENANT_G, draft_id=draft_id)
+    assert asset.params["draft"]["status"] == DRAFT_RENDERING  # not A's to write
+    assert FINAL_USAGE_DUE not in asset.params["draft"]
+    assert len(_usage_rows(draft_id, TENANT_G)) == 1 and _budget(brand_id) - spent == Decimal(
+        "2.84"
+    )
+
+    # A again, as if the new run had recorded T1 first: nothing more, budget unchanged
+    late_a()
+    assert len(_usage_rows(draft_id, TENANT_G)) == 1 and _budget(brand_id) - spent == Decimal(
+        "2.84"
+    )
+
+
+def test_a_mark_naming_another_task_is_kept() -> None:
+    """The settle of task T2 never touches a mark naming another task."""
+    repo = PostgresContentRepository()
+    brand_id, draft_id, asset_id = _draft_with_video(repo)
+    repo.set_video_draft(
+        tenant_id=TENANT_F,
+        asset_id=asset_id,
+        changes={"status": DRAFT_RENDERING, FINAL_USAGE_DUE: "cgt-other"},
+    )
+    raw = _raw(draft_id, "cgt-two")
+    repo.settle_final(
+        tenant_id=TENANT_F,
+        draft_id=draft_id,
+        brand_id=brand_id,
+        asset_id=asset_id,
+        media=None,
+        error="No se pudo recodificar.",
+        usage=(),
+        spent_usd=Decimal("0"),
+        draft_changes={"raw_final": raw},
+        held_usage=(_usage("2.84"),),
+        final_task_id="cgt-two",
+    )
+    (asset,) = repo.media_for(tenant_id=TENANT_F, draft_id=draft_id)
+    assert asset.params["draft"][FINAL_USAGE_DUE] == "cgt-other"
+    assert asset.params["draft"]["raw_final"] == raw
+    assert _usage_rows(draft_id) == []
 
 
 # -- review round 4 (m-24820142) --------------------------------------------------------

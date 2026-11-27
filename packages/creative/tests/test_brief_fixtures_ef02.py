@@ -29,7 +29,21 @@ _RECIPE_DEFAULTS: dict[str, Any] = {
     "mode_reason": "",
     "mode_changed_by_owner": False,
 }
-_MEDIA_DEFAULTS = {**_RECIPE_DEFAULTS, "effects_pipeline_version": 0, "video_recipe": None}
+_MEDIA_DEFAULTS = {
+    **_RECIPE_DEFAULTS,
+    "effects_pipeline_version": 0,
+    "video_recipe": None,
+    # m-25129405: a Clip's «partes con IA», empty on every brief stored before them
+    "ai_parts": [],
+    # m-25112920: no stored brief is a Clip's avatar block — an `avatar_video` /
+    # `animated_avatar_video` of before reads (and is made) exactly as it was
+    "clip_avatar_block": False,
+    # m-25119867: the avatar blocks a Clip waits for (option B), empty before it
+    "clip_avatar_plan": [],
+    # m-25128784: the «Personajes» track of a Clip, empty before it
+    "character_scenes": [],
+    "derived_from_brief_id": None,
+}
 _PLAN_DEFAULTS = {**_RECIPE_DEFAULTS, "transition_in": None}
 #: Brief fields main added after the fixtures were taken (`awareness_level`, 94fa4556).
 _LATER_BRIEF_DEFAULTS: dict[str, Any] = {"awareness_level": None}
@@ -62,7 +76,9 @@ def _fixtures() -> list[Path]:
 
 def test_there_is_a_fixture_of_every_kind() -> None:
     kinds = {json.loads(p.read_text(encoding="utf-8"))["kind"] for p in _fixtures()}
-    assert kinds == {kind.value for kind in ContentKind}
+    # m-25128784: a character scene only exists under a Clip made after the recipe
+    newer = {ContentKind.CHARACTER_SCENE.value}
+    assert kinds == {kind.value for kind in ContentKind} - newer
 
 
 @pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.stem)

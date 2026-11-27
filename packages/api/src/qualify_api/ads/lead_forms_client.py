@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from qualify_api.ads.client import MarketingSettings
-from qualify_api.ads.lead_forms import LeadFormUnavailable
+from qualify_api.ads.lead_forms import LeadFormUnavailable, LeadNotVerifiable
 
 
 def meta_id(value: Any) -> str:
@@ -46,6 +46,15 @@ class LeadFormsClient:
         except Exception:
             raise LeadFormUnavailable("No pudimos comprobar el anuncio en Meta.") from None
         if response.status_code != 200 or not isinstance(body, dict) or "error" in body:
+            error = body.get("error") if isinstance(body, dict) else None
+            # Only 100/33 (object does not exist or is not ours) is definite; anything
+            # else (rate limit, 5xx, token) may pass later and must not skip the lead.
+            if (
+                isinstance(error, dict)
+                and error.get("code") == 100
+                and error.get("error_subcode") == 33
+            ):
+                raise LeadNotVerifiable("No pudimos comprobar el anuncio en Meta.")
             raise LeadFormUnavailable("No pudimos comprobar el anuncio en Meta.")
         return body
 

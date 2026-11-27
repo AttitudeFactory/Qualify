@@ -70,6 +70,15 @@ def _uploads_go_to_memory_r2(monkeypatch: pytest.MonkeyPatch, memory_r2) -> None
 
 
 @pytest.fixture(autouse=True)
+def _no_upload_preview_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ED-09 (m-25026643): an uploaded video's 480p copy is never asked of the database
+    offline; `test_upload_preview_provider.py` drives the real door with fakes."""
+    from . import upload_preview_provider
+
+    monkeypatch.setattr(upload_preview_provider, "ask_for_preview", lambda *_a, **_k: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_base_photo_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     """m-25017279: a missing base photo's alert never reaches the real team channel."""
     from qualify_api.creative import base_photos
@@ -95,3 +104,14 @@ def _parts_extend_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
     from qualify_api.creative.part_extend import EXTEND_SWITCH
 
     monkeypatch.delenv(EXTEND_SWITCH, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_upload_preview_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ED-09 (m-25026643): the editor's preview never reads the 480p copy's job offline —
+    it plays the original; `test_upload_preview_state.py` drives the real read."""
+    from . import upload_preview_state
+
+    monkeypatch.setattr(
+        upload_preview_state, "choose_play", lambda _t, key: upload_preview_state.PlayChoice(key)
+    )

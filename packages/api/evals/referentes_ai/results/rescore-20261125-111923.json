@@ -1,0 +1,466 @@
+{
+ "20261125-105447.json/sonnet-5@low": {
+  "dev": {
+   "n": 76,
+   "rubro_accuracy": 0.921,
+   "rubro_per_class": {
+    "education": {
+     "accuracy": 0.917,
+     "n": 12
+    },
+    "entertainment": {
+     "accuracy": 0.7,
+     "n": 10
+    },
+    "food_drink": {
+     "accuracy": 1.0,
+     "n": 24
+    },
+    "otro": {
+     "accuracy": 0.857,
+     "n": 7
+    },
+    "technology": {
+     "accuracy": 0.947,
+     "n": 19
+    },
+    "travel_lifestyle": {
+     "accuracy": 1.0,
+     "n": 4
+    }
+   },
+   "rubro_confusion": {
+    "entertainment": {
+     "entertainment": 7,
+     "otro": 2,
+     "fitness_health": 1
+    },
+    "technology": {
+     "technology": 18,
+     "entertainment": 1
+    },
+    "education": {
+     "education": 11,
+     "technology": 1
+    },
+    "travel_lifestyle": {
+     "travel_lifestyle": 4
+    },
+    "otro": {
+     "otro": 6,
+     "travel_lifestyle": 1
+    },
+    "food_drink": {
+     "food_drink": 24
+    }
+   },
+   "pais_given": 52,
+   "pais_precision": 0.788,
+   "pais_precision_known": 1.0,
+   "pais_coverage": 1.0,
+   "pais_known": 41,
+   "pais_wrong": [
+    "smash-burger-tachira/tiktok:iambiggroove: DO (gold -)",
+    "smash-burger-tachira/tiktok:doumatpedro: VE (gold -)",
+    "programming-creator/tiktok:jacksonmartinez010: VE (gold -)",
+    "programming-creator/tiktok:somosisum: VE (gold -)",
+    "programming-creator/tiktok:julianacontrerash: VE (gold -)",
+    "programming-creator/tiktok:un24tvoficial: VE (gold -)",
+    "programming-creator/tiktok:imparkerburton: US (gold -)",
+    "programming-creator/instagram:imparkerburton: US (gold -)",
+    "programming-creator/tiktok:overtime: US (gold -)",
+    "programming-creator/instagram:overtime: US (gold -)",
+    "fine-dining-bogota/tiktok:iambiggroove: DO (gold -)"
+   ]
+  },
+  "test": {
+   "n": 85,
+   "rubro_accuracy": 0.894,
+   "rubro_per_class": {
+    "education": {
+     "accuracy": 0.923,
+     "n": 13
+    },
+    "entertainment": {
+     "accuracy": 0.8,
+     "n": 10
+    },
+    "food_drink": {
+     "accuracy": 0.958,
+     "n": 24
+    },
+    "otro": {
+     "accuracy": 1.0,
+     "n": 6
+    },
+    "technology": {
+     "accuracy": 0.96,
+     "n": 25
+    },
+    "travel_lifestyle": {
+     "accuracy": 0.429,
+     "n": 7
+    }
+   },
+   "rubro_confusion": {
+    "technology": {
+     "technology": 24,
+     "travel_lifestyle": 1
+    },
+    "travel_lifestyle": {
+     "education": 2,
+     "technology": 2,
+     "travel_lifestyle": 3
+    },
+    "education": {
+     "technology": 1,
+     "education": 12
+    },
+    "entertainment": {
+     "entertainment": 8,
+     "otro": 2
+    },
+    "otro": {
+     "otro": 6
+    },
+    "food_drink": {
+     "food_drink": 23,
+     "fitness_health": 1
+    }
+   },
+   "pais_given": 54,
+   "pais_precision": 0.815,
+   "pais_precision_known": 1.0,
+   "pais_coverage": 0.978,
+   "pais_known": 45,
+   "pais_wrong": [
+    "smash-burger-tachira/tiktok:phonecellven: VE (gold -)",
+    "smash-burger-tachira/tiktok:diegolesrecomienda: VE (gold -)",
+    "smash-burger-tachira/tiktok:trt_contigo: VE (gold -)",
+    "smash-burger-tachira/tiktok:thegoldenbalance: US (gold -)",
+    "programming-creator/tiktok:carlosdelgadosc: VE (gold -)",
+    "programming-creator/tiktok:trt_contigo: VE (gold -)",
+    "programming-creator/tiktok:lauratuttman: BR (gold -)",
+    "programming-creator/instagram:lauratuttman: BR (gold -)",
+    "phone-store-caracas/tiktok:phonecellven: VE (gold -)",
+    "phone-store-caracas/tiktok:diegolesrecomienda: VE (gold -)"
+   ]
+  },
+  "all": {
+   "n": 161,
+   "rubro_accuracy": 0.907,
+   "rubro_per_class": {
+    "education": {
+     "accuracy": 0.92,
+     "n": 25
+    },
+    "entertainment": {
+     "accuracy": 0.75,
+     "n": 20
+    },
+    "food_drink": {
+     "accuracy": 0.979,
+     "n": 48
+    },
+    "otro": {
+     "accuracy": 0.923,
+     "n": 13
+    },
+    "technology": {
+     "accuracy": 0.955,
+     "n": 44
+    },
+    "travel_lifestyle": {
+     "accuracy": 0.636,
+     "n": 11
+    }
+   },
+   "rubro_confusion": {
+    "entertainment": {
+     "entertainment": 15,
+     "otro": 4,
+     "fitness_health": 1
+    },
+    "technology": {
+     "technology": 42,
+     "travel_lifestyle": 1,
+     "entertainment": 1
+    },
+    "travel_lifestyle": {
+     "education": 2,
+     "technology": 2,
+     "travel_lifestyle": 7
+    },
+    "education": {
+     "education": 23,
+     "technology": 2
+    },
+    "otro": {
+     "otro": 12,
+     "travel_lifestyle": 1
+    },
+    "food_drink": {
+     "food_drink": 47,
+     "fitness_health": 1
+    }
+   },
+   "pais_given": 106,
+   "pais_precision": 0.802,
+   "pais_precision_known": 1.0,
+   "pais_coverage": 0.988,
+   "pais_known": 86,
+   "pais_wrong": [
+    "smash-burger-tachira/tiktok:phonecellven: VE (gold -)",
+    "smash-burger-tachira/tiktok:diegolesrecomienda: VE (gold -)",
+    "smash-burger-tachira/tiktok:trt_contigo: VE (gold -)",
+    "smash-burger-tachira/tiktok:thegoldenbalance: US (gold -)",
+    "smash-burger-tachira/tiktok:iambiggroove: DO (gold -)",
+    "smash-burger-tachira/tiktok:doumatpedro: VE (gold -)",
+    "programming-creator/tiktok:jacksonmartinez010: VE (gold -)",
+    "programming-creator/tiktok:somosisum: VE (gold -)",
+    "programming-creator/tiktok:carlosdelgadosc: VE (gold -)",
+    "programming-creator/tiktok:trt_contigo: VE (gold -)",
+    "programming-creator/tiktok:julianacontrerash: VE (gold -)",
+    "programming-creator/tiktok:lauratuttman: BR (gold -)",
+    "programming-creator/instagram:lauratuttman: BR (gold -)",
+    "programming-creator/tiktok:un24tvoficial: VE (gold -)",
+    "programming-creator/tiktok:imparkerburton: US (gold -)",
+    "programming-creator/instagram:imparkerburton: US (gold -)",
+    "programming-creator/tiktok:overtime: US (gold -)",
+    "programming-creator/instagram:overtime: US (gold -)",
+    "fine-dining-bogota/tiktok:iambiggroove: DO (gold -)",
+    "phone-store-caracas/tiktok:phonecellven: VE (gold -)",
+    "phone-store-caracas/tiktok:diegolesrecomienda: VE (gold -)"
+   ]
+  }
+ },
+ "20261125-105631.json/sonnet-5@low": {
+  "dev": {
+   "n": 76,
+   "rubro_accuracy": 0.895,
+   "rubro_per_class": {
+    "education": {
+     "accuracy": 0.833,
+     "n": 12
+    },
+    "entertainment": {
+     "accuracy": 0.7,
+     "n": 10
+    },
+    "food_drink": {
+     "accuracy": 1.0,
+     "n": 24
+    },
+    "otro": {
+     "accuracy": 0.857,
+     "n": 7
+    },
+    "technology": {
+     "accuracy": 0.895,
+     "n": 19
+    },
+    "travel_lifestyle": {
+     "accuracy": 1.0,
+     "n": 4
+    }
+   },
+   "rubro_confusion": {
+    "entertainment": {
+     "entertainment": 7,
+     "fitness_health": 1,
+     "technology": 1,
+     "otro": 1
+    },
+    "technology": {
+     "technology": 17,
+     "entertainment": 2
+    },
+    "education": {
+     "education": 10,
+     "technology": 2
+    },
+    "travel_lifestyle": {
+     "travel_lifestyle": 4
+    },
+    "otro": {
+     "otro": 6,
+     "entertainment": 1
+    },
+    "food_drink": {
+     "food_drink": 24
+    }
+   },
+   "pais_given": 48,
+   "pais_precision": 0.854,
+   "pais_precision_known": 1.0,
+   "pais_coverage": 1.0,
+   "pais_known": 41,
+   "pais_wrong": [
+    "smash-burger-tachira/tiktok:iambiggroove: DO (gold -)",
+    "smash-burger-tachira/tiktok:doumatpedro: VE (gold -)",
+    "programming-creator/tiktok:jacksonmartinez010: VE (gold -)",
+    "programming-creator/tiktok:somosisum: VE (gold -)",
+    "programming-creator/tiktok:julianacontrerash: VE (gold -)",
+    "programming-creator/tiktok:un24tvoficial: VE (gold -)",
+    "fine-dining-bogota/tiktok:iambiggroove: DO (gold -)"
+   ]
+  },
+  "test": {
+   "n": 85,
+   "rubro_accuracy": 0.847,
+   "rubro_per_class": {
+    "education": {
+     "accuracy": 0.769,
+     "n": 13
+    },
+    "entertainment": {
+     "accuracy": 0.8,
+     "n": 10
+    },
+    "food_drink": {
+     "accuracy": 0.958,
+     "n": 24
+    },
+    "otro": {
+     "accuracy": 1.0,
+     "n": 6
+    },
+    "technology": {
+     "accuracy": 0.92,
+     "n": 25
+    },
+    "travel_lifestyle": {
+     "accuracy": 0.286,
+     "n": 7
+    }
+   },
+   "rubro_confusion": {
+    "technology": {
+     "technology": 23,
+     "entertainment": 2
+    },
+    "travel_lifestyle": {
+     "education": 3,
+     "otro": 1,
+     "travel_lifestyle": 2,
+     "entertainment": 1
+    },
+    "education": {
+     "technology": 3,
+     "education": 10
+    },
+    "entertainment": {
+     "entertainment": 8,
+     "technology": 1,
+     "otro": 1
+    },
+    "otro": {
+     "otro": 6
+    },
+    "food_drink": {
+     "food_drink": 23,
+     "fitness_health": 1
+    }
+   },
+   "pais_given": 52,
+   "pais_precision": 0.827,
+   "pais_precision_known": 1.0,
+   "pais_coverage": 0.956,
+   "pais_known": 45,
+   "pais_wrong": [
+    "smash-burger-tachira/tiktok:phonecellven: VE (gold -)",
+    "smash-burger-tachira/tiktok:diegolesrecomienda: VE (gold -)",
+    "smash-burger-tachira/tiktok:trt_contigo: VE (gold -)",
+    "programming-creator/tiktok:carlosdelgadosc: VE (gold -)",
+    "programming-creator/tiktok:trt_contigo: VE (gold -)",
+    "programming-creator/tiktok:lauratuttman: BR (gold -)",
+    "programming-creator/instagram:lauratuttman: BR (gold -)",
+    "phone-store-caracas/tiktok:phonecellven: VE (gold -)",
+    "phone-store-caracas/tiktok:diegolesrecomienda: VE (gold -)"
+   ]
+  },
+  "all": {
+   "n": 161,
+   "rubro_accuracy": 0.87,
+   "rubro_per_class": {
+    "education": {
+     "accuracy": 0.8,
+     "n": 25
+    },
+    "entertainment": {
+     "accuracy": 0.75,
+     "n": 20
+    },
+    "food_drink": {
+     "accuracy": 0.979,
+     "n": 48
+    },
+    "otro": {
+     "accuracy": 0.923,
+     "n": 13
+    },
+    "technology": {
+     "accuracy": 0.909,
+     "n": 44
+    },
+    "travel_lifestyle": {
+     "accuracy": 0.545,
+     "n": 11
+    }
+   },
+   "rubro_confusion": {
+    "entertainment": {
+     "entertainment": 15,
+     "fitness_health": 1,
+     "technology": 2,
+     "otro": 2
+    },
+    "technology": {
+     "technology": 40,
+     "entertainment": 4
+    },
+    "travel_lifestyle": {
+     "education": 3,
+     "otro": 1,
+     "travel_lifestyle": 6,
+     "entertainment": 1
+    },
+    "education": {
+     "education": 20,
+     "technology": 5
+    },
+    "otro": {
+     "otro": 12,
+     "entertainment": 1
+    },
+    "food_drink": {
+     "food_drink": 47,
+     "fitness_health": 1
+    }
+   },
+   "pais_given": 100,
+   "pais_precision": 0.84,
+   "pais_precision_known": 1.0,
+   "pais_coverage": 0.977,
+   "pais_known": 86,
+   "pais_wrong": [
+    "smash-burger-tachira/tiktok:phonecellven: VE (gold -)",
+    "smash-burger-tachira/tiktok:diegolesrecomienda: VE (gold -)",
+    "smash-burger-tachira/tiktok:trt_contigo: VE (gold -)",
+    "smash-burger-tachira/tiktok:iambiggroove: DO (gold -)",
+    "smash-burger-tachira/tiktok:doumatpedro: VE (gold -)",
+    "programming-creator/tiktok:jacksonmartinez010: VE (gold -)",
+    "programming-creator/tiktok:somosisum: VE (gold -)",
+    "programming-creator/tiktok:carlosdelgadosc: VE (gold -)",
+    "programming-creator/tiktok:trt_contigo: VE (gold -)",
+    "programming-creator/tiktok:julianacontrerash: VE (gold -)",
+    "programming-creator/tiktok:lauratuttman: BR (gold -)",
+    "programming-creator/instagram:lauratuttman: BR (gold -)",
+    "programming-creator/tiktok:un24tvoficial: VE (gold -)",
+    "fine-dining-bogota/tiktok:iambiggroove: DO (gold -)",
+    "phone-store-caracas/tiktok:phonecellven: VE (gold -)",
+    "phone-store-caracas/tiktok:diegolesrecomienda: VE (gold -)"
+   ]
+  }
+ }
+}

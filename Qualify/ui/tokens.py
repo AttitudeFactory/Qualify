@@ -171,6 +171,21 @@ def zone_ink(zone: str) -> rx.Var:
 
 
 # ---------------------------------------------------------------------------------------
+# Role «hecho con IA» (m-25026602, docs/design-system.md §5.10.1, signed by Deivid on
+# 2026-11-26): what the AI makes on the timeline wears the iris scale — the one the
+# «publish» zone already loads, so no new colour. A role like a zone, not a state: the
+# state of an AI part keeps its tone (`ok`/`warn`/`error`/`info`/`neutral`). The CSS side
+# is `--q-ai-*` in assets/qualify.css. Never alone: always the ✦ icon and a word.
+# ---------------------------------------------------------------------------------------
+
+AI_SCALE = "iris"
+"""Radix scale of the role «hecho con IA» (``color_scheme=T.AI_SCALE`` on a badge)."""
+
+AI_ICON = "sparkles"
+"""The ✦ that marks anything made with AI (lucide ``sparkles``)."""
+
+
+# ---------------------------------------------------------------------------------------
 # Platform identity → Radix scale names (always used with the ``outline`` badge variant,
 # so identity never looks like a status — see docs/design-system.md §5.3)
 # ---------------------------------------------------------------------------------------

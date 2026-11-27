@@ -490,3 +490,65 @@ def test_the_gallery_lines_read_as_the_owner_would() -> None:
     placeholders = creative_state_module.INSPIRATION_PLACEHOLDERS
     assert placeholders["background"].startswith("Busca un lugar")
     assert placeholders["slide"] == placeholders["slide_media"]
+
+
+# -- ED-10 m-25026648: the chosen inspiration is marked in the side panel ----------------
+
+
+async def test_a_chosen_inspiration_hit_is_marked_and_a_second_tap_takes_it_out(
+    monkeypatch,
+) -> None:
+    """Deivid 2026-11-17: «la inspiración que elija no se ve seleccionada en el slide
+    panel». The slot holds the stored file's key (`t/x/stock/pixabay/10/a.jpg`), the grid
+    lists the bank's id (`pixabay:10`): the tile compared neither — it was marked only
+    while importing. Now each picker knows which of its hits its slot holds."""
+    imported: list[tuple[str, str]] = []
+    _banks(monkeypatch, imported)
+    state = CreativeState()
+    state.choose_category("clip")
+
+    await _search(state, "clip_images", "ciudad de noche")
+    await _tap(state, "clip_images", NIGHT)
+    assert state.inspiration_held_hits["clip_images"] == ["image|" + NIGHT["id"]]
+    assert state.inspiration_held_hits["clip_videos"] == []
+    await _search(state, "clip_videos")
+    await _tap(state, "clip_videos", CLIP, "video")
+    assert state.inspiration_held_hits["clip_videos"] == ["video|" + CLIP["id"]]
+
+    # tapped again: it leaves the slot and is no longer marked — no second import
+    await _tap(state, "clip_images", NIGHT)
+    assert state.clip_images == []
+    assert state.inspiration_held_hits["clip_images"] == []
+    # and once more: back in, marked, still one import
+    await _tap(state, "clip_images", NIGHT)
+    assert [i["key"] for i in state.clip_images] == [_key(NIGHT["id"])]
+    assert state.inspiration_held_hits["clip_images"] == ["image|" + NIGHT["id"]]
+    assert [hit for hit, _q in imported] == [NIGHT["id"], CLIP["id"]]
+    # a file the owner took out elsewhere (its ✕) is not marked either
+    state.clip_videos = []
+    assert state.inspiration_held_hits["clip_videos"] == []
+
+
+def test_an_inspiration_tile_compares_what_its_slot_holds() -> None:
+    """The tile reads `inspiration_held_hits` (border, check and `aria-checked`, as a
+    checkbox), not only the import's wait."""
+    rendered = str(content_generator._clip_inspiration_tab().render())
+    assert "inspiration_held_hits" in rendered
+    assert '"checkbox"' in rendered and "aria-checked" in rendered
+
+
+def test_an_inspiration_tile_is_checked_only_when_its_slot_holds_it() -> None:
+    """Review of ED-10: the import's wait draws the ring, but `aria-checked` (and the
+    check) say «chosen» only for a hit the slot holds — never for one still loading."""
+    import re
+
+    import reflex as rx
+
+    tile = rx.Var(_js_expr="t").to(dict[str, str])
+    for image in (True, False):
+        rendered = str(content_generator._inspiration_hit_tile(tile, "clip_images", image).render())
+        checked = re.findall(r'aria-checked":\((.{0,240}?)\? "true"', rendered)
+        assert checked, image
+        for expression in checked:
+            assert "inspiration_held_hits" in expression, (image, expression)
+            assert "inspiration_importing" not in expression, (image, expression)

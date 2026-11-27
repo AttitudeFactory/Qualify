@@ -220,6 +220,17 @@ Prefijos de ruta:
 | Transcripción | Endpoint aparte, 1 crédito, **texto sin tiempos** | **Gratis y con tiempos (WEBVTT)**: `video.cla_info.caption_infos` en la lista, o `/v2/tiktok/video?get_transcript=true` (solo si el video tiene voz: 6 de 10) | réplica |
 | Comentarios (texto) | `/v2/instagram/post/comments` (1 crédito por página) | `/v1/tiktok/video/comments` (1 crédito por página) | análisis |
 | Ubicación | casi nunca viene | no verificado | — |
+| País de la cuenta (RF-04) | `location.address_json.country_code`, si el reel trae lugar (sin verificar: no hay listas de reels guardadas en la base local) | `region` de cada video, no `author.region` (ver abajo) | filtro Región |
+
+**`region` de TikTok (RF-04, m-25119461, medido el 2026-11-25 sobre la base local, sin
+llamadas):** en las respuestas guardadas de `/v1/tiktok/search/keyword`, los 3 624 videos traen
+`search_item_list[].aweme_info.region` (código ISO de dos letras) y ninguno trae
+`aweme_info.author.region`. `Qualify/creator_discovery._tiktok_author` lee `author.region`, por
+eso `creators.country_code` está vacío en casi todas las cuentas de TikTok (5 de 3 453).
+`/v1/tiktok/search/hashtag` trae el mismo `aweme_list[].region`; las 285 lecturas guardadas de
+`/v1/tiktok/profile` no traen `region`. En `/v3/tiktok/profile/videos` no se verificó (no hay
+respuestas guardadas en local). `qualify_api.creators.region_rubro` lee `region` de lo que ya
+está guardado.
 
 **Las URLs de media caducan:**
 - MP4 de IG en ~33 h y de TikTok en ~24 h;

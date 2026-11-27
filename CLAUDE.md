@@ -161,10 +161,13 @@ Workers (`*-tick`, `*-worker`) **publish or send for real**: locally always `--t
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+A knowledge graph of the repo (god nodes, communities, cross-file relationships) lives at
+graphify-out/. **CI builds it from `main`** (`code-graph.yml`, 3×/day) and a SessionStart
+hook syncs it to every clone and links it into each worktree.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- For codebase questions, first run `graphify query "<question>"`. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- The graph describes `main`: read the files your branch changed directly.
+- **Never run `graphify update` or a `/graphify` rebuild locally** — it takes minutes and, through the worktree symlinks, would overwrite the shared copy with branch code.
+- If `graphify query` says the graph is missing: `just graph-sync`.

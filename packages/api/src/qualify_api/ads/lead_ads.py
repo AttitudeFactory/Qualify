@@ -61,12 +61,12 @@ class LeadFormTarget:
             raise ValueError("invalid lead form snapshot") from exc
 
     def matches(self, source: Any) -> bool:
-        """Same connection, brand, Page and access version as the promoted publication."""
+        """Same connection, brand and Page as the promoted publication. A published form
+        survives a token renewal; its credential_version is provenance (m-25072366)."""
         return (
             self.connection_id == source.connection_id
             and self.brand_id == source.brand_id
             and self.page_id == source.linked_page_id
-            and self.credential_version == source.credential_version
         )
 
     def call_to_action(self, cta_type: str) -> dict[str, Any]:
@@ -99,10 +99,15 @@ class LeadFormTarget:
 
 
 def published_lead_form(tenant_id: UUID, form_id: UUID) -> LeadFormTarget:
-    """Read a form of this tenant that Meta already accepted; drafts and unknowns never pass."""
+    """Read a form of this tenant that Meta already accepted; drafts and unknowns never pass.
+
+    Checked by identity, not by the frozen access version: a published form stays usable
+    across a token renewal of the same active connection, Page and brand (as `_form_guard`).
+    """
     from qualify_shared.db.session import tenant_session
     from sqlalchemy import text
 
+    from qualify_api.ads.lead_forms_service import lead_access_reason
     from qualify_api.ads.wizard import WizardUnavailable
 
     with tenant_session(tenant_id) as session:
@@ -112,10 +117,13 @@ def published_lead_form(tenant_id: UUID, form_id: UUID) -> LeadFormTarget:
               ON c.id=f.connection_id AND c.tenant_id=f.tenant_id AND c.brand_id=f.brand_id
             WHERE f.id=:id AND f.status='published' AND c.status='active'
               AND c.linked_page_id=f.page_id
-              AND c.current_credential_version=f.credential_version
               AND c.purge_started_at IS NULL AND c.purged_at IS NULL"""),
             {"id": form_id},
         ).first()
+        # A renewal may drop leads_retrieval: intake would refuse the leads Meta charges for.
+        reason = row and lead_access_reason(session, row.connection_id)
+        if reason:
+            raise WizardUnavailable(reason)
     if row is None:
         raise WizardUnavailable(
             "Elige un formulario que ya esté listo y sea de la misma cuenta de esta publicación."

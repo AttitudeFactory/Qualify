@@ -20,7 +20,7 @@ from qualify_creative.video.join import JoinClip, JoinError, concat_segments, en
 from qualify_creative.video.join_child import join_in_child, segment_in_child
 
 from qualify_api.creative import part_final
-from qualify_api.creative.draft_mode import draft_pending
+from qualify_api.creative.draft_mode import FINAL_USAGE_DUE, draft_pending
 from qualify_api.creative.fsm import (
     APPROVED,
     GENERATED,
@@ -289,6 +289,48 @@ def test_the_producer_keeps_a_parts_paid_1080p_without_fitting_it() -> None:
     )
     assert retried.media is not None and retried.media.params["draft"]["status"] == PART_FINAL
     assert sum(1 for r in seedance.requests if "draft_task_id" in r.params) == paid
+    assert retried.usage == () and retried.held_usage == ()  # no mark: recorded already
+
+
+def test_a_parts_kept_1080p_whose_spend_is_due_hands_it_to_the_settle() -> None:
+    """m-25111780: the pass that paid a part's 1080p lost its lease before settling; the
+    retry keeps the file as the part's final and hands the spend it still owes."""
+    store, seedance, draft_id = _store(), DraftSeedance(), uuid4()
+    producer = _producer(store, seedance, RecordingFitter())
+    (draft,) = producer.produce(
+        tenant_id=TENANT_ID,
+        draft_id=draft_id,
+        brief=_clip_brief(),
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+    ).media
+    asset = _record(draft)
+    first = _finalize(producer, _part_brief(), asset, draft_id)
+    raw = first.media.params["draft"]["raw_final"]
+    paid = sum(1 for r in seedance.requests if "draft_task_id" in r.params)
+
+    due = {
+        **asset.params["draft"],
+        "raw_final": raw,
+        "status": "rendering",
+        FINAL_USAGE_DUE: raw["task_id"],
+    }
+    retried = _finalize(
+        producer, _part_brief(), replace(asset, params={**asset.params, "draft": due}), draft_id
+    )
+
+    assert retried.media is not None and retried.media.params["draft"]["status"] == PART_FINAL
+    assert sum(1 for r in seedance.requests if "draft_task_id" in r.params) == paid
+    (held,) = retried.held_usage
+    (spent,) = first.usage
+    assert retried.usage == () and held.cost_usd == spent.cost_usd > 0
+    assert (held.model_id, held.quantity, held.output_tokens) == (
+        spent.model_id,
+        spent.quantity,
+        spent.output_tokens,
+    )
+    assert retried.draft_changes == {"raw_final": raw}
 
 
 # ---------------------------------------------------------------------------
