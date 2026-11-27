@@ -437,12 +437,12 @@ def test_picking_a_version_of_the_open_menu_shows_it_in_the_editor_and_the_previ
     the step they were on, and nothing is marked as changed."""
     state = _state()
     monkeypatch.setattr(module, "menu_detail", lambda *a: pytest.fail("read again"))
-    state.guided_step = 3
+    state.guided_step, state.advanced_open = 3, True
     assert state.choose_version(V1) is None
     assert state.editing_version_id == V1 and state.picker.value == V1
     assert state.welcome == "Hola, versión 1" and not state.dirty
     assert state._preview_payload["entry"]["welcome"] == "Hola, versión 1"
-    assert state.guided_step == 3
+    assert state.guided_step == 3 and state.advanced_open
     assert state.picker.trigger_label == "Menú principal · Versión 1"
     assert state.picker.can_publish_version
     state.choose_version(V2)

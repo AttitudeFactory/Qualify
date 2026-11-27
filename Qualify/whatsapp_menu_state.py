@@ -1283,11 +1283,12 @@ class WhatsAppMenuState(rx.State):
             logger.error("whatsapp menu version unreadable: %s", version_id)
             self.banner, self.banner_tone = _MENU_GONE, "warn"
             return False
-        step, direction = self.guided_step, self.guided_direction
+        # The owner stays where they are: same step, same view («Más opciones» or not).
+        kept = (self.guided_step, self.guided_direction, self.advanced_open, self.flow_ready)
         self._load_definition(
             definition, f"Editando a partir de la {version.label.lower()}", version_id
         )
-        self.guided_step, self.guided_direction = step, direction
+        self.guided_step, self.guided_direction, self.advanced_open, self.flow_ready = kept
         return True
 
     # ==================================================================================
