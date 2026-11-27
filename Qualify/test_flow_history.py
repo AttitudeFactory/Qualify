@@ -92,6 +92,10 @@ console.log(JSON.stringify({{href:entries[pos].href,root:window.history.state.qF
         ("/responder?tab=mensajes&cuenta=a&chat=b", "mensaje-chat", True),
         ("/responder?tab=mensajes&cuenta=a&chat=b", "enviar", True),
         ("/responder?tab=comentarios", "mensaje-chat", False),
+        # m-25143229 (U2): the Instagram chat's «+» panel, only beside the single list
+        ("/responder?tab=mensajes&cuenta=a&chat=b", "enviar-ig", True),
+        ("/responder?tab=comentarios", "enviar-ig", False),
+        ("/whatsapp?tab=chats", "enviar-ig", False),
     ],
 )
 def test_the_whatsapp_chat_drawers_write_their_step_in_por_responder(

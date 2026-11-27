@@ -440,6 +440,40 @@ SHOP_ADDRESS = "Calle 10 # 5-20, Cúcuta"
 SHOP_PAYMENT = "Nequi 300 123 4567 a nombre de Arepera E2E"
 
 
+def unlink_whatsapp_numbers(tenant_id: uuid.UUID) -> None:
+    """m-25143229 U1: the business without a WhatsApp number of its own — the seeded
+    number is unlinked from the business (rows that point at it stay valid)."""
+    from qualify_api.whatsapp.models import WhatsAppPhoneNumber
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import update
+
+    with tenant_session(tenant_id) as session:
+        session.execute(update(WhatsAppPhoneNumber).values(brand_id=None))
+
+
+def seed_cash_method(tenant_id: uuid.UUID) -> None:
+    """A second payment method (pay on delivery), so «Formas de pago» has two steps."""
+    from qualify_api.tenancy.models import Brand
+    from qualify_api.whatsapp.models import BrandPaymentMethod
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        brand_id = session.scalar(select(Brand.id).order_by(Brand.created_at))
+        session.add(
+            BrandPaymentMethod(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                name="Efectivo",
+                name_key="efectivo",
+                pay_on_delivery=True,
+                active=True,
+                position=1,
+            )
+        )
+
+
 def seed_shop_details(tenant_id: uuid.UUID) -> None:
     """m-25143229: what the «+» of both chats sends — the business's address (on its
     WhatsApp number, as «Ajustes de chats › Perfil» saves it) and ONE active payment

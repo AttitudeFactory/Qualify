@@ -219,3 +219,75 @@ def test_a_closed_window_offers_nothing_to_send(chats_page) -> None:  # noqa: AN
     _open(page, _instagram(ids, "instagram_closed"))
     expect(_box(page).get_by_role("button", name=PLUS)).to_have_count(0)
     expect(_box(page).get_by_role("button")).to_have_count(0)
+
+
+def test_the_phones_back_steps_the_panel_back_then_closes_it_in_the_chat(chats_page) -> None:  # noqa: ANN001
+    """Review U2: WhatsApp's `?flujo=` mechanism — «atrás» is one step back, then the
+    panel closes, and the owner is still in the same chat."""
+    from .chat_fixtures import seed_cash_method
+
+    page = chats_page
+    ids = page._qualify_e2e_chats
+    tenant = page._qualify_e2e_tenant_id
+    seed_shop_details(tenant)
+    seed_cash_method(tenant)
+    page.set_viewport_size(PHONE)
+    _open(page, _instagram(ids, "instagram_open"))
+    _open_plus(page)
+    _row(page, "Formas de pago")
+    drawer = page.get_by_role("dialog")
+    expect(drawer.get_by_text("¿Cuál forma de pago?")).to_be_visible(timeout=20_000)
+    expect(page).to_have_url(re.compile(r"flujo=enviar-ig"), timeout=10_000)
+    drawer.get_by_text("Nequi", exact=True).click()
+    expect(drawer.get_by_text("Revisa y envía")).to_be_visible(timeout=20_000)
+    expect(page).to_have_url(re.compile(r"paso=2"), timeout=10_000)
+    page.go_back()
+    expect(page.get_by_role("dialog").get_by_text("¿Cuál forma de pago?")).to_be_visible(
+        timeout=20_000
+    )
+    page.go_back()
+    expect(page.get_by_role("dialog")).to_have_count(0, timeout=20_000)
+    assert f"chat={ids['instagram_open']}" in page.url and "flujo=" not in page.url
+    expect(_box(page).get_by_role("button", name=PLUS)).to_be_visible()
+    assert _outbox_texts(tenant, ids["instagram_open"]) == []
+
+
+def test_directions_help_and_link_are_instagrams(chats_page) -> None:  # noqa: ANN001
+    """Review U3 and U4: Instagram's own help line; the link has no «#» nor «%20»."""
+    page = chats_page
+    ids = page._qualify_e2e_chats
+    seed_shop_details(page._qualify_e2e_tenant_id)
+    page.set_viewport_size(PHONE)
+    _open(page, _instagram(ids, "instagram_open"))
+    _open_plus(page)
+    _row(page, "Cómo llegar")
+    drawer = page.get_by_role("dialog")
+    expect(drawer.get_by_text("Le llega tu dirección con un enlace al mapa.")).to_be_visible(
+        timeout=20_000
+    )
+    expect(drawer.get_by_text("Le llega tu local en el mapa")).to_have_count(0)
+    expect(
+        drawer.get_by_text("https://maps.google.com/?q=Calle+10+5-20%2C+C%C3%BAcuta")
+    ).to_be_visible()
+    _shot(page, "despues-instagram-llegar-revisa-360")
+    page.keyboard.press("Escape")
+
+
+def test_without_a_whatsapp_number(chats_page) -> None:  # noqa: ANN001
+    """Review U1, as built: the business has no WhatsApp number of its own. Recorded on
+    screen (`despues-instagram-sin-numero-360`); see the report for what is pending."""
+    from .chat_fixtures import unlink_whatsapp_numbers
+
+    page = chats_page
+    ids = page._qualify_e2e_chats
+    unlink_whatsapp_numbers(page._qualify_e2e_tenant_id)
+    page.set_viewport_size(PHONE)
+    _open(page, _instagram(ids, "instagram_open"))
+    _open_plus(page)
+    _row(page, "Cómo llegar")
+    drawer = page.get_by_role("dialog")
+    expect(drawer.get_by_text("Aún no tienes la dirección de tu local")).to_be_visible(
+        timeout=20_000
+    )
+    _shot(page, "despues-instagram-sin-numero-360")
+    page.keyboard.press("Escape")

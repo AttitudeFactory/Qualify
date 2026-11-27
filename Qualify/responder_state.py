@@ -100,8 +100,12 @@ class ResponderState(rx.State):
             events.append(InboxListState.enter)
             events.append(ConversationsState.enter_page)
             events.append(WhatsAppChatsState.restore_inbox_address)
-            # m-25143229 U2: the Instagram «+» panel follows the address too
-            events.append(InstagramPickState.restore_picker)
+            # m-25143229 U2: the Instagram «+» panel follows the address too — inline,
+            # so its step lands in the same update as the history ack (a chained event
+            # would let the panel's old step write the address back).
+            restored = (await self.get_state(InstagramPickState)).restore_picker()
+            if restored is not None:
+                events.append(restored)
         elif self.active_tab == TAB_BUYERS:
             events.append(FollowupsState.enter_page)
         elif self.active_tab == TAB_COMMENTS:
