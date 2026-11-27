@@ -74,7 +74,16 @@ from .test_content_service import (
 )
 
 queue_on = _local_tests.queue_on
-__all__ = ["assembly_files", "queue_on"]  # fixtures used by name below
+#: the assembly runs offline: 9:16 size and the `normalize_local` jobs in memory, as in
+#: its own suite (never a database read in the offline run)
+assemble_at_the_sources_size = _local_tests.assemble_at_the_sources_size
+no_normalize_jobs = _local_tests.no_normalize_jobs
+__all__ = [  # fixtures used by name, or autouse
+    "assemble_at_the_sources_size",
+    "assembly_files",
+    "no_normalize_jobs",
+    "queue_on",
+]
 
 OTHER = f"uploads/{TENANT_ID}/otro.mp4"
 
