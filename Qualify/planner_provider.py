@@ -475,6 +475,19 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
     return GalleryData(posts=options, categories=category_options(options))
 
 
+def story_share_url_of(tenant_id: UUID, post: PostSummary) -> str:
+    """The file «Abrir en Instagram» hands over for this POST, by the gallery card's own
+    view-model (`_post_option` → `planner_vm.story_share_source`), so the piece's page
+    and its card can never disagree; "" when it is not offered. Mints the same
+    short-lived `/r2media/` paths as the gallery (reads only). Blocking."""
+    option = _post_option(
+        post,
+        thumbnails={str(post.post_id): _thumbnail_url(tenant_id, post.thumbnail_url)},
+        video_url=_video_url(tenant_id, post.video_object_key),
+    )
+    return option.story_share_url
+
+
 def _occasion_labels(tenant_id: UUID, post_ids: list[UUID]) -> dict[UUID, str]:
     """m-25120706: «Te la preparamos para el Día de la Madre (9 de mayo)» for each
     «Publicación del mes» among the posts — one RLS-scoped read. A failed read costs

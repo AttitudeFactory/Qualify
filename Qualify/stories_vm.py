@@ -191,6 +191,16 @@ def story_share_offered(platform: str) -> bool:
     return platform == PLATFORM_ANDROID
 
 
+#: On an iPhone the historia's own page keeps only «Descargar»; this line, next to it,
+#: says how to finish it (founder 2026-11-26). Android has «Abrir en Instagram» instead.
+STORY_DOWNLOAD_HINT_IOS = "Descárgala y súbela a tus historias de Instagram con tu música."
+
+
+def story_download_hint_offered(platform: str) -> bool:
+    """The «Descárgala y súbela…» line is for an iPhone only."""
+    return platform == PLATFORM_IOS
+
+
 def story_share_message(result: str) -> tuple[str, str] | None:
     """`(toast kind, words)` for the gallery handoff's outcome; None when the owner
     closed the share panel themselves. Every error says what to do next."""

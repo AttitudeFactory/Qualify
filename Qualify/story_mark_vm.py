@@ -14,7 +14,9 @@ What a piece's `category` drives downstream (why the rule below is narrow):
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from typing import Final
 
 STORY: Final = "story"
@@ -34,7 +36,9 @@ NO_SESSION: Final = "No hay ninguna sesión de negocio activa. Vuelve a iniciar 
 
 #: Why the switch is off — said under it, in the owner's words.
 REASON_SEVERAL_FILES: Final = "Solo una foto o un video puede ser historia."
-REASON_SCHEDULED: Final = "Está programada. Quítala de Tu semana para cambiarlo."
+REASON_SCHEDULED: Final = (
+    "Está programada. En Tu semana, quítala del calendario y vuelve aquí para cambiarlo."
+)
 REASON_PURGED: Final = "Sus archivos ya se borraron. Crea una nueva o súbela otra vez."
 REASON_TOO_LONG: Final = "Dura más de un minuto. Recórtala a 60 segundos para usarla como historia."
 REASON_OTHER: Final = "No se puede cambiar ahora. Recarga la página y vuelve a intentarlo."
@@ -64,9 +68,37 @@ class StoryMarkVM:
     undo_category: str = ""
     #: Approved by the owner: the mark's toast says where to find it.
     approved: bool = False
+    #: The file «Abrir en Instagram» hands over on this page (`planner_vm.story_share_source`,
+    #: the gallery card's rule): "" unless an approved, publishable historia of one file.
+    share_url: str = ""
+    #: The iPhone line next to «Descargar»: exactly when `share_url` is set (the card's
+    #: rule — approved, publishable, kept, one image or video). Independent of `shown`:
+    #: a template package has no switch.
+    story_ready: bool = False
+    #: With `REASON_SCHEDULED`: Tu semana opened on the next event to go out
+    #: (`scheduled_event_href`), where the owner can remove it.
+    event_href: str = ""
 
 
 HIDDEN = StoryMarkVM()
+
+SCHEDULED_LINK: Final = "Ver en Tu semana"
+SCHEDULED_LINK_ARIA: Final = "Ver en Tu semana cuándo sale y quitarla de ahí"
+
+
+def next_live_event(events: Iterable[tuple[str, datetime]]) -> tuple[str, datetime] | None:
+    """Of the piece's events that may still go out, `(id, when)`, the one that goes out
+    first (an overdue one first of all: it is due); None when there is none."""
+    pending = list(events)
+    return min(pending, key=lambda item: item[1]) if pending else None
+
+
+def scheduled_event_href(event_id: str, local_day: date) -> str:
+    """Tu semana on the week of `local_day` (the business's own day of the event) with
+    that event's panel open — the planner's own `?semana=` and `?ficha=` (it re-reads the
+    event under the tenant, so a foreign or deleted id opens nothing and says so)."""
+    monday = local_day - timedelta(days=local_day.weekday())
+    return f"/planner?semana={monday.isoformat()}&ficha={event_id}"
 
 
 def undo_category(media_types: tuple[str, ...] | list[str]) -> str:

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import inspect
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -128,8 +130,17 @@ def db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(
         provider,
         "_events",
-        lambda _t, _d: [SimpleNamespace(status=status) for status in box["events"]],
+        lambda _t, _d: [
+            SimpleNamespace(
+                id=UUID(int=n + 1),
+                status=status,
+                scheduled_at=datetime(2026, 12, 2, 15, tzinfo=UTC),
+            )
+            for n, status in enumerate(box["events"])
+        ],
     )
+    monkeypatch.setattr(provider, "_share_url", lambda _t, _p: box.get("share_url", ""))
+    monkeypatch.setattr(provider, "_zone", lambda _t: ZoneInfo("America/Bogota"))
     return box
 
 
@@ -221,10 +232,10 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     async def tenant(self: StoryMarkState) -> UUID:
         return TENANT
 
-    def info(tenant_id: UUID, draft: UUID) -> StoryMarkVM:
+    def info(tenant_id: UUID, draft: UUID, _tz: str = "") -> StoryMarkVM:
         return _mark(category="story" if box["story"] else "galeria")
 
-    def write(tenant_id: UUID, draft: UUID, *, story: bool) -> StoryMarkVM:
+    def write(tenant_id: UUID, draft: UUID, *, story: bool, tz_override: str = "") -> StoryMarkVM:
         if box["refuse"]:
             raise StoryMarkRefused(box["refuse"])
         box["story"], box["writes"] = story, box["writes"] + 1
