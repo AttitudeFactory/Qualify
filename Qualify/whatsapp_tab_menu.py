@@ -624,6 +624,9 @@ def _picker_action() -> rx.Component:
 
 ANSWERING_SWITCH_ID = "whatsapp-menu-answering"
 ANSWERING_HELP_ID = "whatsapp-menu-answering-help"
+#: The switch's name comes from its visible label by id: a `<label for>` does not reach
+#: the Radix switch button, which then had no accessible name at all.
+ANSWERING_LABEL_ID = "whatsapp-menu-answering-label"
 
 
 def _answering_switch() -> rx.Component:
@@ -639,6 +642,7 @@ def _answering_switch() -> rx.Component:
                 on_change=S.set_answering,
                 disabled=_busy() | S.opening,
                 size="3",
+                aria_labelledby=ANSWERING_LABEL_ID,
                 aria_describedby=ANSWERING_HELP_ID,
                 flex_shrink="0",
                 margin_top="0.125rem",
@@ -648,6 +652,7 @@ def _answering_switch() -> rx.Component:
                 rx.text(
                     ANSWERING_LABEL,
                     as_="label",
+                    id=ANSWERING_LABEL_ID,
                     html_for=ANSWERING_SWITCH_ID,
                     size="2",
                     weight="medium",
