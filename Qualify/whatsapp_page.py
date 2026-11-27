@@ -270,10 +270,14 @@ def sub_strip() -> rx.Component:
 _LEASE_SCRIPT = "(window.__qActivityLanding = true, {href: window.location.href})"
 #: UX review U2: arriving with `#actividad-numero` (the card's link, an old address), the
 #: page scrolls to the block once it is drawn — once per arrival, not on a number switch.
+#: The block grows as its reads land (skeleton → tiles), and a short page cannot scroll
+#: far enough yet: try again while it settles (seen at 360: the first try stopped short).
 _LAND_SCRIPT = (
     "if (window.__qActivityLanding) { window.__qActivityLanding = false;"
-    f" if (window.location.hash === '#{ACTIVITY_ANCHOR}')"
-    f" document.getElementById('{ACTIVITY_ANCHOR}')?.scrollIntoView({{block: 'start'}}); }}"
+    f" if (window.location.hash === '#{ACTIVITY_ANCHOR}') {{"
+    f" const land = () => document.getElementById('{ACTIVITY_ANCHOR}')"
+    "?.scrollIntoView({block: 'start'});"
+    " [0, 400, 1200, 2500].forEach((ms) => window.setTimeout(land, ms)); } }"
 )
 
 

@@ -102,13 +102,19 @@ def test_tus_redes_shows_the_numbers_state(chats_page, size: dict[str, int]) -> 
     expect(block.get_by_text("Actividad del número")).to_be_visible(timeout=60_000)
     expect(block.get_by_text("Conversaciones nuevas").first).to_be_visible(timeout=60_000)
     # UX review U2: it lands ON the block — its heading on screen, below the header.
-    page.wait_for_timeout(1_000)
+    page.wait_for_timeout(3_000)
     heading = block.get_by_role("heading", name="Actividad del número").bounding_box()
     header = page.locator(".q-page-header").first.bounding_box()
+    whole = block.bounding_box()
     viewport = page.viewport_size
-    assert heading and header and viewport
-    assert heading["y"] >= header["y"] + header["height"] - 1, (heading, header)
-    assert heading["y"] + heading["height"] <= viewport["height"], (heading, viewport)
+    assert heading and header and whole and viewport
+    below_header = header["y"] + header["height"]
+    # Not hidden by the sticky header; just under it — or, when the page is too short to
+    # scroll that far (1280), with the whole block on screen.
+    assert heading["y"] >= below_header - 1, (heading, header)
+    assert (
+        heading["y"] <= below_header + 100 or whole["y"] + whole["height"] <= viewport["height"]
+    ), (heading, header, whole)
     # The week's figures stay above it.
     expect(page.get_by_text("Tu WhatsApp esta semana")).to_have_count(1)
     if size is DESKTOP:
