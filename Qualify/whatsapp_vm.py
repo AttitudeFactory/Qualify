@@ -35,6 +35,15 @@ from .chat_settings_vm import (
     MENU_TITLE as MENU_TITLE,
 )
 from .chat_settings_vm import (
+    SETTINGS_PAYMENTS_ROUTE as SETTINGS_PAYMENTS_ROUTE,
+)
+from .chat_settings_vm import (
+    SETTINGS_PROFILE_ROUTE as SETTINGS_PROFILE_ROUTE,
+)
+from .chat_settings_vm import (
+    SETTINGS_QR_ROUTE as SETTINGS_QR_ROUTE,
+)
+from .chat_settings_vm import (
     SETTINGS_WHATSAPP_ROUTE as SETTINGS_WHATSAPP_ROUTE,
 )
 from .chat_settings_vm import (
@@ -59,6 +68,13 @@ from .nav_url import INBOX_ROUTE, INBOX_TAB, uuid_param, whatsapp_chats_href, wi
 #
 #   Tu número › Estado · Perfil · Formas de pago · Códigos QR · Actividad
 #
+# m-25027373 (BU-A10): «Tu número» left too, so `/whatsapp` draws nothing and leaves the
+# menu. Each panel has its own page (`PANEL_PAGES`): Estado is the number's card in «Tus
+# redes» (`CONNECTIONS_ROUTE`) and Actividad hangs from it (`ACTIVITY_ROUTE`); Perfil,
+# Códigos QR and Formas de pago are pages of «Ajustes de chats». Every address of
+# `/whatsapp` that is not one of the redirects below lands there
+# (`legacy_number_target`).
+#
 # m-25029799: the «Chats» tab is gone — WhatsApp's chats are attended only in «Por
 # responder», beside Instagram's. Every old address of its list (`/whatsapp?tab=chats`,
 # with any `filtro`, `cuenta`) redirects there (`legacy_chat_target`).
@@ -66,8 +82,7 @@ from .nav_url import INBOX_ROUTE, INBOX_TAB, uuid_param, whatsapp_chats_href, wi
 # m-25017861 (BU-A9, decision D1, founder 2026-11-12): the menu («Tu menú de
 # bienvenida», decision vi) is a setting, so it left this screen for «Ajustes de chats ›
 # WhatsApp» (`SETTINGS_WHATSAPP_ROUTE`); `/whatsapp?tab=respuesta` and `?tab=menu`
-# redirect there (`legacy_settings_target`). Once «Tu número» moves into «Tus redes»
-# (m-25027373), nothing is left here.
+# redirect there (`legacy_settings_target`).
 #
 # m-25017862 (BU-A12, decision D3 of docs/ux-chats-unificados.md, founder 2026-11-12):
 # «Promociones» is selling, not a setting, so it left that strip for its own menu entry
@@ -90,8 +105,8 @@ TAB_CONNECTION = "conexion"
 TAB_PROFILE = "perfil"
 TAB_QR = "qr"
 #: m-24955648 «Formas de pago». Registered ONLY in `SUBTABS` below (and drawn by
-#: `whatsapp_tab_payments.payments_tab`): moving it to Configuración, if the founder so
-#: decides, is this one entry.
+#: `whatsapp_tab_payments.payments_tab`); its page is «Ajustes de chats › Formas de
+#: pago» since m-25027373 (`PANEL_PAGES`).
 TAB_PAYMENTS = "pagos"
 TAB_ACTIVITY = "actividad"
 TAB_MENU = "menu"
@@ -107,28 +122,32 @@ SECTION_AUTO_REPLY = "respuesta"
 SECTION_PROMOTIONS = "promociones"
 SECTION_NUMBER = "numero"
 
-# `/whatsapp` draws one section, «Tu número» (m-25029799), so it has no section strip:
-# only «Tu número»'s sub-tab strip. «Promociones» left for `PROMOTIONS_ROUTE`
-# (m-25017862), the menu for «Ajustes de chats › WhatsApp» (m-25017861, D1), the chats
-# for «Por responder» (m-25029799). «Tu número» stays until it moves to «Tus redes»
-# (m-25027373).
-NUMBER_TITLE: Final = "Tu número"
+# «Promociones» left `/whatsapp` for `PROMOTIONS_ROUTE` (m-25017862), the menu for
+# «Ajustes de chats › WhatsApp» (m-25017861, D1), the chats for «Por responder»
+# (m-25029799), «Tu número» for «Tus redes» and «Ajustes de chats» (m-25027373). The
+# section key `numero` stays only so its old addresses resolve, and then redirect.
 #: The menu entry and page title of the promotions panels (D3's name).
 PROMOTIONS_TITLE: Final = "Promociones por WhatsApp"
 PROMOTIONS_SUBTITLE: Final = (
     "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."
 )
-#: `/whatsapp`'s header line: what is left there once «Promociones» (m-25017862), the
-#: menu (m-25017861) and the chats (m-25029799, now in «Por responder») moved out.
-#: m-25029799 — NEW TEXT, NOT DECIDED BY THE FOUNDER (UX review; the old line promised
-#: chats here).
-WHATSAPP_SUBTITLE: Final = (
-    "Revisa que tu WhatsApp funcione y deja listos tu perfil, tus formas de pago y tus códigos QR."
+#: m-25027373 (BU-A10) — the pages of «Tu número»'s old panels: their titles are the
+#: sub-tab labels they had; the subtitles are NEW TEXT, NOT DECIDED BY THE FOUNDER.
+PROFILE_TITLE: Final = "Perfil"
+PROFILE_SUBTITLE: Final = (
+    "Lo que tus clientes ven de tu negocio en WhatsApp: tu foto, tu descripción, tu "
+    "dirección y tus datos de contacto."
 )
-#: m-25029799 (UX review) — NEW TEXTS, NOT DECIDED BY THE FOUNDER: one line above «Tu
-#: número» that says where the chats went, with the way there.
-CHATS_MOVED_NOTICE: Final = "Tus chats de WhatsApp se responden en Por responder."
-CHATS_MOVED_ACTION: Final = "Ir a Por responder"
+QR_TITLE: Final = "Códigos QR"
+QR_SUBTITLE: Final = (
+    "Para que tus clientes te escriban a WhatsApp desde el mostrador, el empaque o tu Instagram."
+)
+ACTIVITY_TITLE: Final = "Actividad"
+ACTIVITY_SUBTITLE: Final = (
+    "Cuántas personas te escribieron por WhatsApp, cuánto tardas en responder y por dónde llegaron."
+)
+#: «‹ Tus redes» (N7): the way back from Actividad to the number's card.
+CONNECTIONS_TITLE: Final = "Tus redes"
 
 # section → ((panel, sub slug, label), …); the first one is the section's default. A
 # section with a single panel has no sub-tab strip and no `?sub=`.
@@ -141,6 +160,8 @@ SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
         (TAB_TEMPLATES, "aprobados", "Mensajes aprobados"),
         (TAB_CONTACTS, "clientes", "Clientes que aceptaron"),
     ),
+    # m-25027373: no page draws this strip any more — each panel has its own page
+    # (`PANEL_PAGES`); kept so `?tab=numero&sub=…` still resolves, and then redirects.
     SECTION_NUMBER: (
         (TAB_CONNECTION, "estado", "Estado"),
         (TAB_PROFILE, "perfil", "Perfil"),
@@ -150,13 +171,10 @@ SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
 }
 
-# The two sub-tab strips (the only sections with more than one panel), as (sub slug,
-# label): what the page builds its controls from.
+# The one sub-tab strip left (`PROMOTIONS_ROUTE`'s), as (sub slug, label): what the page
+# builds its controls from.
 PROMOTION_SUBS: tuple[tuple[str, str], ...] = tuple(
     (slug, label) for _panel, slug, label in SUBTABS[SECTION_PROMOTIONS]
-)
-NUMBER_SUBS: tuple[tuple[str, str], ...] = tuple(
-    (slug, label) for _panel, slug, label in SUBTABS[SECTION_NUMBER]
 )
 
 #: Every section an address may name, «promociones» included (an old link to it still
@@ -168,11 +186,31 @@ _PANEL_PLACE: dict[str, tuple[str, str]] = {
 }
 TAB_KEYS: frozenset[str] = frozenset(_PANEL_PLACE)
 
-# The panel a visit lands on when the address names nothing known: «Tu número › Estado»
-# (m-25029799: the chats, the old default, are attended in «Por responder»).
+# The panel an address lands on when it names nothing known: «Tu número › Estado»
+# (m-25029799: the chats, the old default, are attended in «Por responder»), which is
+# the number's card in «Tus redes» since m-25027373.
 DEFAULT_TAB = TAB_CONNECTION
 
 WHATSAPP_ROUTE: Final = "/whatsapp"
+#: m-25027373 (BU-A10): «Tu número › Estado» is the number's card in «Tus redes», and
+#: «Actividad» (its metrics) a page that hangs from that card — served by `WhatsAppState`
+#: like the pages of «Ajustes de chats».
+CONNECTIONS_ROUTE: Final = "/connections"
+ACTIVITY_ROUTE: Final = "/connections/whatsapp/actividad"
+#: m-25027373: every panel but the promotions' (`PROMOTIONS_ROUTE?sub=…`) → its page.
+PANEL_PAGES: Final[Mapping[str, str]] = {
+    TAB_MENU: SETTINGS_WHATSAPP_ROUTE,
+    TAB_CONNECTION: CONNECTIONS_ROUTE,
+    TAB_PROFILE: SETTINGS_PROFILE_ROUTE,
+    TAB_PAYMENTS: SETTINGS_PAYMENTS_ROUTE,
+    TAB_QR: SETTINGS_QR_ROUTE,
+    TAB_ACTIVITY: ACTIVITY_ROUTE,
+}
+#: The pages `WhatsAppState` draws ONE panel on, by route (`/connections` is
+#: `ConnectionsState`'s page: it only reads the numbers there).
+PAGE_PANELS: Final[Mapping[str, str]] = {
+    route: panel for panel, route in PANEL_PAGES.items() if route != CONNECTIONS_ROUTE
+}
 #: m-25017862: the promotions panels' own address (menu entry «Promociones por WhatsApp»).
 #: Under `/whatsapp` so the shared `WhatsAppState` keeps serving it; the menu lights the
 #: most specific entry, so «WhatsApp» stays dark here.
@@ -249,11 +287,11 @@ def is_settings_panel(panel: str) -> bool:
 
 
 def panel_route(panel: str) -> str:
-    """The page a panel is drawn on: `PROMOTIONS_ROUTE`, `SETTINGS_WHATSAPP_ROUTE` or
-    `/whatsapp`."""
+    """The page a panel is drawn on: `PROMOTIONS_ROUTE` or its own (`PANEL_PAGES`); an
+    unknown key is the default panel's, «Tus redes» (m-25027373)."""
     if is_promotions_panel(panel):
         return PROMOTIONS_ROUTE
-    return SETTINGS_WHATSAPP_ROUTE if is_settings_panel(panel) else WHATSAPP_ROUTE
+    return PANEL_PAGES.get(panel, PANEL_PAGES[DEFAULT_TAB])
 
 
 def promotions_panel(sub: str) -> str:
@@ -263,17 +301,14 @@ def promotions_panel(sub: str) -> str:
 
 
 def tab_url(panel: str) -> str:
-    """The address of a panel (N5): `/whatsapp?tab=numero&sub=qr`, or
-    `/whatsapp/promociones?sub=aprobados` for a promotions panel (m-25017862). An
-    unknown key is the default panel, the same rule `resolve_tab` applies."""
+    """The address of a panel (N5): its page (`/chats/ajustes/whatsapp/codigos-qr`,
+    m-25027373), or `/whatsapp/promociones?sub=aprobados` for a promotions panel
+    (m-25017862). An unknown key is the default panel, the same rule `resolve_tab`
+    applies."""
     known = resolve_tab(panel)
     if is_promotions_panel(known):
         return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(known)})
-    if is_settings_panel(known):
-        return SETTINGS_WHATSAPP_ROUTE
-    return with_query(
-        WHATSAPP_ROUTE, **{TAB_PARAM: panel_section(known), SUB_PARAM: panel_sub(known)}
-    )
+    return panel_route(known)
 
 
 def legacy_promotions_target(params: Mapping[str, object]) -> str | None:
@@ -375,14 +410,68 @@ def legacy_chat_target(params: Mapping[str, object]) -> str | None:
     return with_query(INBOX_ROUTE, tab=INBOX_TAB, cuenta=account, chat=chat, **kept)
 
 
-def legacy_panel_target(params: Mapping[str, object]) -> str | None:
-    """An old `/whatsapp` address of a panel or a chat that moved to another page, or
-    None."""
+#: The way back to a chat (`?volver=`, m-24971198).
+RETURN_PARAM: Final = "volver"
+#: m-25027373: the panels of «Tu número» whose page shows «‹ Volver al chat» after a
+#: chat's «Cambiar estos datos» / «Completar mi dirección» (`?volver=`).
+_PANELS_WITH_WAY_BACK: Final = frozenset({TAB_PROFILE, TAB_PAYMENTS})
+
+
+def legacy_number_target(params: Mapping[str, object]) -> str:
+    """m-25027373 (BU-A10): where any other `/whatsapp` address lands now — «Tu número»
+    left the screen, so nothing is drawn there:
+
+    - `?tab=numero&sub=perfil|pagos|qr|actividad` (or an old flat `?tab=perfil|qr|…`)
+      → that panel's page (`PANEL_PAGES`), with the number (`cuenta`, a canonical UUID)
+      and — Perfil and Formas de pago only — the way back to the chat that sent the
+      owner there (`volver`, only an app's own chat address: `chat_return_path`);
+    - `?tab=numero[&sub=estado]`, a bare `/whatsapp` or junk → «Tus redes», where the
+      number's state is now.
+
+    Same whitelist rule as `legacy_promotions_target`; the ids are only carried: the
+    page checks they are this business's."""
+    panel = resolve_panel(_text(params.get(TAB_PARAM)), _text(params.get(SUB_PARAM)))
+    if panel not in PANEL_PAGES or panel == TAB_CONNECTION:
+        return CONNECTIONS_ROUTE
+    kept = {
+        ACCOUNT_PARAM: uuid_param(params, ACCOUNT_PARAM),
+        RETURN_PARAM: chat_return_path(params) if panel in _PANELS_WITH_WAY_BACK else "",
+    }
+    return with_query(PANEL_PAGES[panel], **kept)
+
+
+def legacy_panel_target(params: Mapping[str, object]) -> str:
+    """Where an address of `/whatsapp` lands now: every panel and chat that was there
+    moved to another page (the last ones, «Tu número»'s, with m-25027373)."""
     return (
         legacy_promotions_target(params)
         or legacy_settings_target(params)
         or legacy_chat_target(params)
+        or legacy_number_target(params)
     )
+
+
+def chat_return_path(params: Mapping[str, object]) -> str:
+    """`?volver=` only when it is one of the app's own chat addresses
+    (`catalog_vm.safe_return_path`): an open chat in «Por responder»
+    (`/responder?tab=mensajes&…&chat=…`, m-25029798) or an old `/whatsapp?tab=chats`
+    address OF A CHAT (it redirects to that chat) — never WhatsApp's retired list
+    (m-25029799), never a link off Qualify. Moved here from `whatsapp_payments_state` by
+    m-25027373, so the redirects apply the same rule as the pages."""
+    from urllib.parse import parse_qs, urlsplit  # noqa: PLC0415
+
+    from .catalog_vm import return_path_from_query  # noqa: PLC0415
+
+    path = return_path_from_query(params)  # safe_return_path first: same-origin only
+    if not path:
+        return ""
+    parts = urlsplit(path)
+    query = parse_qs(parts.query)
+    tabs = query.get("tab", [])
+    if parts.path == "/whatsapp" and tabs == ["chats"] and "chat" in query:
+        return path
+    inbox_chat = parts.path == "/responder" and tabs == ["mensajes"] and "chat" in query
+    return path if inbox_chat else ""
 
 
 def _text(value: object) -> str:
@@ -510,7 +599,6 @@ HEALTH_LOW_QUALITY = (
     "Varios clientes marcaron tus mensajes como no deseados. Envía menos promociones "
     "por unos días y escribe solo a quien aceptó recibirlas."
 )
-DETAILS_TOGGLE = "Ver detalles"
 
 
 def health_display(

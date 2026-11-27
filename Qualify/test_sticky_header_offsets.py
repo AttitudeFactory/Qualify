@@ -10,7 +10,11 @@ from .creative_pages import draft_detail_index
 from .responder_page import responder_header
 from .test_route_history import _node
 from .ui import tokens as T
-from .whatsapp_page import whatsapp_header, whatsapp_settings_index
+from .whatsapp_page import (
+    back_to_chat_settings,
+    back_to_connections,
+    whatsapp_settings_index,
+)
 from .whatsapp_tab_chats import _back_button as chats_back
 from .whatsapp_tab_menu import _advanced
 
@@ -101,8 +105,10 @@ def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() 
     # the WhatsApp screen's header has no back of its own.
     assert _shown(str(chats_back()), "Por responder")
     assert _shown(str(responder_header()), "Por responder")
-    assert not _shown(str(whatsapp_header()), "Por responder")
-    assert not _shown(str(whatsapp_header()), "Chats")
+    # m-25027373: «Tu número»'s pages hang from «Ajustes de chats», not from the chats.
+    # (Actividad, from «Tus redes»).
+    assert _shown(str(back_to_chat_settings()), "Ajustes de chats")
+    assert _shown(str(back_to_connections()), "Tus redes")
     # m-25017861: the menu's long editor lives on «Ajustes de chats › WhatsApp».
     settings = str(whatsapp_settings_index())
     assert _shown(settings, "Volver a los 4 pasos") and _shown(settings, "Ajustes de chats")

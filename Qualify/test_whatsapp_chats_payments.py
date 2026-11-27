@@ -355,7 +355,8 @@ def test_the_menu_invites_to_add_payment_methods_only_when_there_are_none(monkey
     assert "payments_offered" in rendered
     from . import whatsapp_menu_state as menu_module
 
-    assert menu_module.PAYMENTS_HREF == "/whatsapp?tab=numero&sub=pagos"
+    # m-25027373: «Formas de pago» is a page of «Ajustes de chats» now.
+    assert menu_module.PAYMENTS_HREF == "/chats/ajustes/formas-de-pago"
 
 
 def test_pago_recibido_prefills_the_orders_own_text(gw) -> None:
@@ -386,7 +387,9 @@ def test_cambiar_estos_datos_carries_the_way_back_to_this_chat(gw) -> None:
     state = _state()
     href = state.payments_change_href
     query = parse_qs(urlsplit(href).query)
-    assert href.startswith(f"/whatsapp?tab=numero&sub=pagos&cuenta={CONN}&volver=")
+    # m-25027373: «Formas de pago» left «Tu número» for «Ajustes de chats».
+    assert href.startswith(f"/chats/ajustes/formas-de-pago?cuenta={CONN}&volver=")
+    assert chat_return_path(query) == query["volver"][0]
     back = query["volver"][0]
     # m-25029798: the chat lives in «Por responder»; the old address is still accepted.
     assert back == f"/responder?tab=mensajes&cuenta={CONN}&chat={THREAD}"

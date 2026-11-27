@@ -1,4 +1,5 @@
-"""WhatsApp → Tu número → «Formas de pago» (m-24955648, first PR).
+"""«Formas de pago» (m-24955648, first PR) — a page of «Ajustes de chats» since
+m-25027373 (`/chats/ajustes/formas-de-pago`, `whatsapp_page.whatsapp_payments_index`).
 
 Spec: `docs/ux-paso-de-pago.md` §2. Only design-system pieces: `DragCard` rows with the
 `sort_handle` and a «⋯» menu (the same as «Ordenar tu menú»), `media_thumb`, `rx.switch`
@@ -606,8 +607,10 @@ def _flow() -> rx.Component:
     )
 
 
-def payments_tab() -> rx.Component:
-    """The panel: the list (or its empty state), the flow and the delete dialog."""
+def payments_tab(*, heading: bool = True) -> rx.Component:
+    """The panel: the list (or its empty state), the flow and the delete dialog.
+    m-25027373: on its own page (`/chats/ajustes/formas-de-pago`) the page header says
+    `TITLE` and `HELP`, so the panel leaves out its own (`heading=False`)."""
     return rx.vstack(
         rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
         # came from a chat's «Cambiar estos datos» (m-24971198): the way back to it
@@ -628,8 +631,11 @@ def payments_tab() -> rx.Component:
                 **T.tone_scheme("neutral"),
             ),
         ),
-        rx.heading(TITLE, size="4", as_="h2"),
-        rx.text(HELP, size="2", color=T.TEXT_MUTED),
+        *(
+            [rx.heading(TITLE, size="4", as_="h2"), rx.text(HELP, size="2", color=T.TEXT_MUTED)]
+            if heading
+            else []
+        ),
         rx.cond(
             WhatsAppState.numbers.length() > 1,
             rx.text(SAME_FOR_ALL, size="2", color=T.TEXT_MUTED),

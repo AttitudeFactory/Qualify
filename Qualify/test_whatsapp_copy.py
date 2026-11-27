@@ -25,7 +25,12 @@ from .whatsapp_contacts_vm import source_label
 from .whatsapp_menu_vm import NEXT_STEP_QR
 from .whatsapp_metrics_vm import _PRICING_CATEGORY
 from .whatsapp_templates_vm import CATEGORIES
-from .whatsapp_vm import PROMOTIONS_SUBTITLE, WHATSAPP_SUBTITLE
+from .whatsapp_vm import (
+    ACTIVITY_SUBTITLE,
+    PROFILE_SUBTITLE,
+    PROMOTIONS_SUBTITLE,
+    QR_SUBTITLE,
+)
 
 _SCREEN_FILES = sorted(Path(__file__).parent.glob("whatsapp_*.py"))
 
@@ -113,12 +118,17 @@ def test_screens_use_the_proposed_labels() -> None:
     assert '"Cuánto tardas en responder (la mitad de las veces)"' in metrics
     # m-25017862: the promotions left this screen, so its line no longer promises them.
     # «tu menú de bienvenida»: the founder's name (2026-11-14); the tab keeps its own.
-    # m-25029799: the screen keeps «Tu número»; its chats are attended in «Por responder».
-    assert WHATSAPP_SUBTITLE == (
-        "Revisa que tu WhatsApp funcione y deja listos tu perfil, tus formas de pago y tus "
-        "códigos QR."
-    )
-    assert "WHATSAPP_SUBTITLE" in inspect.getsource(whatsapp_page.whatsapp_header)
+    # m-25027373: `/whatsapp` draws nothing (its subtitle is gone with its header);
+    # each of «Tu número»'s old panels has a page, with its own line.
+    assert not hasattr(whatsapp_page, "whatsapp_header")
+    for subtitle, page in (
+        ("PROFILE_SUBTITLE", whatsapp_page.whatsapp_profile_index),
+        ("QR_SUBTITLE", whatsapp_page.whatsapp_qr_index),
+        ("ACTIVITY_SUBTITLE", whatsapp_page.whatsapp_activity_index),
+    ):
+        assert subtitle in inspect.getsource(page), subtitle
+    for line in (PROFILE_SUBTITLE, QR_SUBTITLE, ACTIVITY_SUBTITLE):
+        assert "Tu número" not in line and "Qualify" not in line
     assert PROMOTIONS_SUBTITLE == (
         "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."
     )

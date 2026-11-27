@@ -48,7 +48,7 @@ from .whatsapp_payments_vm import (
     currency_words,
     updated_label,
 )
-from .whatsapp_vm import NUMBER_SUBS, TAB_PAYMENTS, resolve_panel
+from .whatsapp_vm import SUBTABS, TAB_PAYMENTS, resolve_panel, tab_url
 
 _T = UUID("a0000000-0000-4000-8000-000000000001")
 _B = UUID("b0000000-0000-4000-8000-000000000001")
@@ -428,11 +428,13 @@ def test_row_labels_in_words() -> None:
 # the views
 
 
-def test_the_tab_sits_between_perfil_and_qr_with_its_own_address() -> None:
-    labels = [label for _slug, label in NUMBER_SUBS]
-    assert labels.index("Formas de pago") == labels.index("Perfil") + 1
-    assert labels.index("Códigos QR") == labels.index("Formas de pago") + 1
+def test_the_panel_has_its_own_page_in_chat_settings() -> None:
+    """m-25027373: «Formas de pago» left «Tu número» for «Ajustes de chats»; its old
+    address still names it (and then redirects)."""
+    labels = [label for _panel, _slug, label in SUBTABS["numero"]]
+    assert "Formas de pago" in labels
     assert resolve_panel("numero", "pagos") == TAB_PAYMENTS
+    assert tab_url(TAB_PAYMENTS) == "/chats/ajustes/formas-de-pago"
     assert "payments_tab" in str(tab_body()) or OFFERED in str(tab_body())
 
 

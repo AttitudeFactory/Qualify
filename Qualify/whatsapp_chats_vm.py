@@ -1501,8 +1501,8 @@ MENU_SETUP_ROUTE = "/chats/ajustes/whatsapp"
 MENU_RESUMES_NOTE = "Al enviarlo, este cliente vuelve a usar tu menú."
 
 PRODUCTS_ROUTE = "/catalog"
-#: WhatsApp → Tu número → Formas de pago (m-24955648).
-PAYMENTS_ROUTE = "/whatsapp?tab=numero&sub=pagos"
+#: «Ajustes de chats › Formas de pago» (m-24955648; its own page since m-25027373, BU-A10).
+PAYMENTS_ROUTE = "/chats/ajustes/formas-de-pago"
 
 
 def payments_href(return_to: str = "", account: str = "") -> str:
@@ -1515,15 +1515,17 @@ def payments_href(return_to: str = "", account: str = "") -> str:
 
 
 def number_settings_href(route: str, return_to: str = "", account: str = "") -> str:
-    """A «Tu número» panel `route` for the number `account` (a canonical UUID, else
-    left out) with the way back `return_to` (`?volver=`)."""
+    """The page of one of the number's settings, `route` (Perfil, Formas de pago:
+    m-25027373), for the number `account` (a canonical UUID, else left out) with the way
+    back `return_to` (`?volver=`)."""
     from urllib.parse import urlencode  # noqa: PLC0415
 
     from .nav_url import uuid_param  # noqa: PLC0415
 
     params = {"cuenta": uuid_param({"cuenta": account}, "cuenta"), "volver": return_to}
     kept = {k: v for k, v in params.items() if v}
-    return f"{route}&{urlencode(kept)}" if kept else route
+    joint = "&" if "?" in route else "?"
+    return f"{route}{joint}{urlencode(kept)}" if kept else route
 
 
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
@@ -2066,7 +2068,7 @@ DIRECTIONS_HELP = (
 )
 DIRECTIONS_EMPTY = (
     "Aún no tienes la dirección de tu local",
-    "Escríbela una vez en Tu número › Perfil y la mandas con un toque.",
+    "Escríbela una vez en Ajustes de chats › Perfil y la mandas con un toque.",
 )
 DIRECTIONS_COMPLETE = "Completar mi dirección"
 DIRECTIONS_NO_POINT = "Si pones tu local en el mapa, le llega el mapa con la ruta."
@@ -2074,10 +2076,11 @@ DIRECTIONS_PUT_ON_MAP = "Ponerlo en el mapa"
 DIRECTIONS_FAILED = "No pudimos traer la dirección de tu local. Vuelve a intentarlo en un momento."
 #: `AttachmentRefused("no_location")` at send time (the address was removed meanwhile).
 DIRECTIONS_NO_LOCATION = (
-    "Falta la dirección de tu local. Escríbela en Tu número › Perfil y vuelve a intentarlo."
+    "Falta la dirección de tu local. Escríbela en Ajustes de chats › Perfil y vuelve a intentarlo."
 )
-#: WhatsApp → Tu número → Perfil (where the address and the map point live).
-PROFILE_ROUTE = "/whatsapp?tab=numero&sub=perfil"
+#: «Ajustes de chats › Perfil» (where the address and the map point live; its own page
+#: since m-25027373, BU-A10).
+PROFILE_ROUTE = "/chats/ajustes/whatsapp/perfil"
 
 
 def offer_marked_label(marked_at: datetime | None, now: datetime, zone: tzinfo) -> str:
