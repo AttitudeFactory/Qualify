@@ -144,7 +144,12 @@ def _box(page):  # noqa: ANN001, ANN202
 
 def _page_header_steps_aside(page) -> None:  # noqa: ANN001
     header = page.locator(".q-page-header")
-    assert header.evaluate("el => getComputedStyle(el).position") == "static"
+    # m-25142793: on a phone the pinned part is the bar (the sheet has no box); with a
+    # chat open it is not pinned, and the title column is out of sight (still read)
+    bar = page.locator(".q-page-head-bar")
+    assert bar.evaluate("el => getComputedStyle(el).position") != "sticky"
+    column = page.locator(".q-page-head-main").bounding_box()
+    assert column is not None and column["width"] <= 1 and column["height"] <= 1
     expect(header.get_by_role("heading", level=1)).to_have_count(1)  # still read
     expect(page.locator(".q-business-chip")).to_be_hidden()
     expect(page.locator(".q-chat-head__top")).to_be_visible()

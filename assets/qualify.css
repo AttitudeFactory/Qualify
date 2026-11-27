@@ -2486,70 +2486,60 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 }
 
 /* m-25142793 — the page header's layout (`page_header`, Qualify/ui/layout.py;
-   docs/design-system.md «Encabezado de página»). One DOM in reading order: the top
-   (business chip, kicker), the BAR (title + badge, then the actions and the colour
-   toggle), the subtitle. `.q-page-head` scopes it: the wizard's `step_head` shares
-   `.q-page-header` (the sheet) but not this structure.
+   docs/design-system.md «Encabezado de página»). `.q-page-head` scopes it: the
+   wizard's `step_head` shares `.q-page-header` (the sheet) but not this structure.
 
-   Above 640 px the sheet is a grid that puts every piece where the old row put it: the
-   title column on the left (kicker, title, subtitle, 4 px apart), the actions and the
-   toggle on the right, centred against the whole column — the two `1fr` rows above and
-   below take whatever the right side is taller by, half each. The bar adds no box. */
+   Above 640 px the bar IS the old row, item for item: the title column (kicker, title,
+   subtitle, 4 px apart), a spacer, each action and the toggle, 12 px apart, wrapping
+   below the column when they do not fit. The phone-only copies (`.q-page-head-top`,
+   `.q-page-head-sub`) are not drawn. */
 .q-page-head {
-  display: grid;
-  grid-template-columns: minmax(min(10rem, 50%), 1fr) auto;
-  grid-template-rows: 1fr auto auto auto 1fr;
-  grid-template-areas: ". end" "top end" "title end" "sub end" ". end";
-  column-gap: var(--space-3);
   width: 100%;
   box-sizing: border-box;
   padding: 1.5rem var(--q-page-x) 1rem;
 }
-.q-page-head-bar,
-.q-page-head-actions:empty { display: contents; }
-.q-page-head-top {
-  grid-area: top;
+.q-page-head-top,
+.q-page-head-sub { display: none; }
+.q-page-head-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.q-page-head-main {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1);
-  /* a long business name in the chip ends in «…», never pushes the page (ADR 43 S3) */
+  /* a long business name or title never pushes the page sideways (ADR 43 S3) */
   min-width: 0;
   max-width: 100%;
 }
-/* a flex box, as the kicker was when it sat in the old column: no line box around it */
-.q-page-head-kicker { display: flex; margin-bottom: var(--space-1); }
-.q-page-head-title { grid-area: title; min-width: 0; }
+/* a flex box, as the kicker was in the old column: no line box around it */
+.q-page-head-kicker { display: flex; }
 .q-page-head-title > :not(h1) { flex-shrink: 0; }
-.q-page-head-sub { grid-area: sub; margin-top: var(--space-1); }
-.q-page-head-end {
-  grid-area: end;
-  align-self: center;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
+.q-page-head-spacer {
+  flex: 1;
+  align-self: stretch;
 }
-.q-page-head-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: var(--space-3);
-}
+.q-page-head-actions,
+.q-page-head-toggle { display: contents; }
 
 /* A phone (≤ 640 px): only the bar stays pinned. The sheet gives up its box
    (`display: contents`), so its pieces are children of the panel's column and the bar
    sticks for the whole page, not just inside the header. The bar is the one glass
-   surface (same fill, same blur as the sheet); the top and the subtitle wear the same
-   fill without blur, so the unscrolled header still reads as one sheet, and they scroll
-   away under the bar. One line: the title (ends in «…» before it ever pushes anything),
-   the actions, and the toggle in the top-right corner — out of the flow, so it never
-   wraps; actions that do not fit beside the title wrap to a second row of the bar. */
+   surface (same fill, same blur as the sheet); the chip/kicker above it and the
+   subtitle below it wear the same fill without blur and scroll away under it. In the
+   bar: the title (wraps, never cut), the actions (on the title's line when they fit,
+   else on a row of their own, filling it), and the toggle in the top-right corner —
+   out of the flow, so it never wraps. */
 @media (max-width: 640px) {
   .q-page-head {
     display: contents;
     position: static;
   }
+  .q-page-head-wide,
+  .q-page-head-spacer { display: none; }
   .q-page-head-top,
   .q-page-head-bar,
   .q-page-head-sub {
@@ -2557,16 +2547,20 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     box-sizing: border-box;
     background: var(--q-header-fill);
   }
-  .q-page-head-top { padding: 1rem var(--q-page-x) 0; }
+  .q-page-head-top {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+    min-width: 0;
+    max-width: 100%;
+    padding: 1rem var(--q-page-x) 0;
+  }
   .q-page-head-top:empty { display: none; }
-  .q-page-head-kicker { margin-bottom: 0; }
   .q-page-head-bar {
     position: sticky;
     top: 0;
     z-index: 5;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
     gap: var(--space-1) var(--space-2);
     /* `viewport-fit=cover` (Qualify.py): clear of a notch in a home-screen app */
     padding:
@@ -2574,29 +2568,33 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
       calc(var(--q-page-x) + 44px + var(--space-2))
       0.5rem
       var(--q-page-x);
+    /* the header's hairline: the pinned line keeps its edge over the content */
+    box-shadow: inset 0 -1px 0 var(--q-card-edge);
     -webkit-backdrop-filter: blur(18px) saturate(140%);
     backdrop-filter: blur(18px) saturate(140%);
   }
-  .q-page-head-end { display: contents; }
-  .q-page-head-title {
+  .q-page-head-main {
     flex: 1 1 auto;
+    justify-content: center;
     min-height: 44px;
   }
-  .q-page-head-title h1 {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* Beside the title they end at the toggle (the title grows); on a row of their own
-     they start under the title's left edge. */
+  .q-page-head-title h1 { min-width: 0; overflow-wrap: break-word; }
+  /* Beside the title they end at the toggle; on a row of their own they take the row,
+     so a selector sized `100%` gets the row's width, not its own label's. */
   .q-page-head-actions {
-    flex: 0 1 auto;
-    min-width: 0;
-    justify-content: flex-start;
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
     gap: var(--space-2);
+    min-width: 0;
   }
+  /* A selector in the header (WhatsApp's number, Instagram's account) takes the row:
+     its own width props are sized against the old row, which also held the toggle. */
+  .q-page-head-actions > .rt-SelectTrigger { width: 100%; }
   .q-page-head-toggle {
+    display: block;
     position: absolute;
     top: calc(0.5rem + env(safe-area-inset-top, 0px));
     right: var(--q-page-x);
@@ -2608,12 +2606,11 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     height: 44px;
   }
   .q-page-head-sub {
-    margin-top: 0;
-    padding: 0 var(--q-page-x) 0.75rem;
+    display: block;
+    margin: 0;
+    padding: var(--space-2) var(--q-page-x) 0.75rem;
+    box-shadow: inset 0 -1px 0 var(--q-card-edge);
   }
-  /* the header's hairline, under whatever closes it */
-  .q-page-head-sub,
-  .q-page-head-bar:last-child { box-shadow: inset 0 -1px 0 var(--q-card-edge); }
 }
 
 /* The stepper and the capsule take the accent gradient too. */

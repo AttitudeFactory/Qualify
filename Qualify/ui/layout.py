@@ -23,6 +23,7 @@ Four guarantees a screen gets for free, so no page re-implements them:
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
 
 import reflex as rx
@@ -966,6 +967,10 @@ def session_badge() -> rx.Component:
     return rx.fragment()
 
 
+#: The page subtitle's id: the h1 names it in `aria-describedby` (one header per page).
+SUBTITLE_ID = "q-page-subtitle"
+
+
 def page_header(
     title: str | rx.Var,
     subtitle: str | rx.Var | None = None,
@@ -997,16 +1002,54 @@ def page_header(
     macOS-Setup-Assistant-style flow uses. Still exactly one ``h1`` per page (`as_="h1"`
     unconditionally below), so §8's accessibility rule holds regardless of size.
     """
-    # m-25142793: one DOM for every width, laid out by `assets/qualify.css`
-    # («Encabezado de página»). In reading order: what scrolls away on a phone (the
-    # business chip, the kicker), the BAR (title + badge, the actions, the colour
-    # toggle), then the subtitle (scrolls away too).
-    # · > 640 px: `.q-page-header` is the sticky glass sheet, a grid that places the
-    #   pieces exactly where the old row put them (title column left, actions and
-    #   toggle on the right, centred against the whole title block).
-    # · ≤ 640 px: the sheet becomes `display: contents` and only `.q-page-head-bar` is
-    #   pinned, as the same glass — one line, the toggle in its top-right corner.
+    # m-25142793: laid out by `assets/qualify.css` («Encabezado de página»).
+    # · > 640 px — the bar is the old row, unchanged: the title column (kicker, title,
+    #   subtitle), a spacer, each action and the toggle, as flex items that wrap below
+    #   the column when they do not fit; the sheet `.q-page-header` is the sticky glass.
+    # · ≤ 640 px — the sheet gives up its box (`display: contents`) and only the bar is
+    #   pinned: title (+ badge), the actions, the toggle in its top-right corner. The
+    #   chip, the kicker and the subtitle scroll away, so they need a copy OUTSIDE the
+    #   bar (`.q-page-head-top`, `.q-page-head-sub`); each copy is `display: none` at
+    #   the other width, so a page reads and tabs through one of them only.
     # Layout lives in the stylesheet, not in props: a prop would outrank the media query.
+    described = {"aria-describedby": SUBTITLE_ID} if subtitle is not None else {}
+    title_row = rx.hstack(
+        rx.heading(title, size=title_size, as_="h1", custom_attrs=described),
+        *([badge] if badge is not None else []),
+        align="center",
+        spacing="2",
+        class_name="q-page-head-title",
+    )
+    column = rx.box(
+        *(
+            [rx.box(copy.deepcopy(kicker), class_name="q-page-head-kicker q-page-head-wide")]
+            if kicker is not None
+            else []
+        ),
+        title_row,
+        *(
+            [
+                rx.text(
+                    subtitle,
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    id=SUBTITLE_ID,
+                    class_name="q-page-head-desc q-page-head-wide",
+                )
+            ]
+            if subtitle is not None
+            else []
+        ),
+        class_name="q-page-head-main",
+    )
+    bar = rx.box(
+        column,
+        rx.box(class_name="q-page-head-spacer"),
+        *([rx.box(*actions, class_name="q-page-head-actions")] if actions else []),
+        # Ghost: the toggle is a page control, never the page's one solid action (P3).
+        rx.box(theme_toggle(), class_name="q-page-head-toggle"),
+        class_name="q-page-head-bar",
+    )
     top = rx.box(
         # ADR 43 A9: the active business — on a phone only (m-24976899); above it,
         # the sidebar's top row is always on screen.
@@ -1014,24 +1057,21 @@ def page_header(
         *([rx.box(kicker, class_name="q-page-head-kicker")] if kicker is not None else []),
         class_name="q-page-head-top",
     )
-    title_row = rx.hstack(
-        rx.heading(title, size=title_size, as_="h1"),
-        *([badge] if badge is not None else []),
-        align="center",
-        spacing="2",
-        class_name="q-page-head-title",
-    )
-    end = rx.box(
-        *([rx.box(*actions, class_name="q-page-head-actions")] if actions else []),
-        # Ghost: the toggle is a page control, never the page's one solid action (P3).
-        rx.box(theme_toggle(), class_name="q-page-head-toggle"),
-        class_name="q-page-head-end",
-    )
     return rx.box(
         top,
-        rx.box(title_row, end, class_name="q-page-head-bar"),
+        bar,
         *(
-            [rx.text(subtitle, size="2", color=T.TEXT_MUTED, class_name="q-page-head-sub")]
+            # the phone's copy; the h1 is described by the wide one (`aria-describedby`
+            # reaches it even while hidden), so this one is not read a second time
+            [
+                rx.text(
+                    subtitle,
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    class_name="q-page-head-sub",
+                    custom_attrs={"aria-hidden": "true"},
+                )
+            ]
             if subtitle is not None
             else []
         ),

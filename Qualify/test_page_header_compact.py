@@ -18,7 +18,7 @@ import reflex as rx
 from Qualify.test_route_history import _node
 from Qualify.test_sticky_header_offsets import _HARNESS, _SCRIPT
 from Qualify.ui import tokens as T
-from Qualify.ui.layout import page_header
+from Qualify.ui.layout import SUBTITLE_ID, page_header
 
 _ASSETS = Path(__file__).parent.parent / "assets"
 _CSS = (_ASSETS / "qualify.css").read_text(encoding="utf-8")
@@ -68,31 +68,54 @@ def _header(**kwargs: Any) -> dict[str, Any]:
     ).render()
 
 
-def test_one_dom_in_reading_order_with_the_toggle_on_the_title_line() -> None:
+def test_the_bar_is_the_old_row_and_the_phone_copies_sit_outside_it() -> None:
     head = _header(badge=rx.badge("3"), kicker=rx.text("Paso 1"))
     assert _classes(head).split() == ["q-page-header", "q-page-head"]
-    order = [_classes(child).split()[-1] for child in head["children"]]
+    order = [_classes(child).split()[0] for child in head["children"]]
     assert order == ["q-page-head-top", "q-page-head-bar", "q-page-head-sub"]
     bar = _find(head, "q-page-head-bar")
     assert bar is not None
-    rendered_bar = str(bar)
-    # title (+ badge), the actions, then the toggle — all in the pinned line
-    assert rendered_bar.index('"h1"') < rendered_bar.index("q-page-head-actions")
-    assert rendered_bar.index("q-page-head-actions") < rendered_bar.index("q-theme-toggle")
-    assert "Nueva publicaci" in rendered_bar
-    # the chip and the kicker scroll away: they live outside the bar
+    # the old row, item for item: title column, spacer, actions, toggle
+    items = [_classes(child).split()[0] for child in bar["children"]]
+    assert items == [
+        "q-page-head-main",
+        "q-page-head-spacer",
+        "q-page-head-actions",
+        "q-page-head-toggle",
+    ]
+    main = _find(bar, "q-page-head-main")
+    assert main is not None
+    column = [_classes(child).split() for child in main["children"]]
+    assert column[0] == ["q-page-head-kicker", "q-page-head-wide"]
+    assert "q-page-head-title" in column[1]
+    assert column[2] == ["q-page-head-desc", "q-page-head-wide"]
+    # the chip and the kicker's phone copy live outside the bar (they scroll away)
     top = str(_find(head, "q-page-head-top"))
     assert "q-business-chip" in top and "q-page-head-kicker" in top
-    assert "q-business-chip" not in rendered_bar
-    # still exactly one h1
-    assert str(head).count('"h1"') == 1
+    assert "q-business-chip" not in str(bar)
+    # still exactly one h1, described by the subtitle
+    rendered = str(head)
+    assert rendered.count('"h1"') == 1
+    assert "aria-describedby" in str(_find(head, "q-page-head-title"))
+    assert SUBTITLE_ID in str(_find(head, "q-page-head-title"))
+    assert SUBTITLE_ID in str(_find(head, "q-page-head-desc"))
+    # the phone's subtitle copy is not read a second time
+    assert "aria-hidden" in str(_find(head, "q-page-head-sub"))
 
 
-def test_no_actions_box_and_no_subtitle_when_none_are_given() -> None:
+def test_no_actions_box_no_subtitle_and_no_description_when_none_are_given() -> None:
     head = page_header("Por responder").render()
     assert _find(head, "q-page-head-actions") is None
     assert _find(head, "q-page-head-sub") is None
+    assert _find(head, "q-page-head-desc") is None
+    assert "aria-describedby" not in str(head)
     assert _find(head, "q-theme-toggle") is not None
+
+
+def test_a_var_subtitle_still_describes_the_title() -> None:
+    head = page_header("Tus redes", rx.Var.create("Conecta tus cuentas")).render()
+    rendered = str(head)
+    assert "aria-describedby" in rendered and SUBTITLE_ID in rendered
 
 
 def test_phone_pins_only_the_bar_as_the_one_glass_surface() -> None:
@@ -103,15 +126,20 @@ def test_phone_pins_only_the_bar_as_the_one_glass_surface() -> None:
     assert "position: sticky" in bar and "top: 0" in bar
     assert "backdrop-filter: blur(18px)" in bar
     assert "env(safe-area-inset-top" in bar
+    # the pinned line keeps the header's hairline over the content
+    assert "box-shadow: inset 0 -1px 0 var(--q-card-edge)" in bar
     # the toggle is out of the flow in the top-right corner, never wrapped
     toggle = _rule(phone, ".q-page-head-toggle")
     assert "position: absolute" in toggle and "right: var(--q-page-x)" in toggle
-    assert "env(safe-area-inset-top" in toggle
     target = _rule(phone, ".q-page-head-toggle .rt-IconButton.q-theme-toggle")
     assert "width: 44px" in target and "height: 44px" in target
-    # the title ends in «…» before it pushes anything
+    # the title wraps, it is never cut
     title = _rule(phone, ".q-page-head-title h1")
-    assert "text-overflow: ellipsis" in title and "white-space: nowrap" in title
+    assert "ellipsis" not in title and "nowrap" not in title
+    # a selector takes its whole row
+    assert "width: 100%" in _rule(phone, ".q-page-head-actions > .rt-SelectTrigger")
+    # the wide copies are not drawn on a phone
+    assert "display: none" in _rule(phone, ".q-page-head-spacer")
     # one blurred surface for the header: nothing else in the phone rules blurs
     blurred = [
         sel.strip()
@@ -121,13 +149,16 @@ def test_phone_pins_only_the_bar_as_the_one_glass_surface() -> None:
     assert blurred == [".q-page-head-bar"]
 
 
-def test_wide_screens_keep_the_sheet_and_place_the_pieces_in_a_grid() -> None:
+def test_wide_screens_keep_the_old_wrapping_row() -> None:
     sheet = _rule(_CSS, "\n.q-page-head")
-    assert "display: grid" in sheet
-    assert '". end" "top end" "title end" "sub end" ". end"' in sheet
     # the old row's padding (T.PAD_HEADER) is the sheet's padding
     assert "padding: 1.5rem var(--q-page-x) 1rem" in sheet
     assert T.PAD_HEADER == "1.5rem var(--q-page-x) 1rem var(--q-page-x)"
+    bar = _rule(_CSS, "\n.q-page-head-bar")
+    assert "flex-wrap: wrap" in bar and "gap: var(--space-3)" in bar
+    # actions and toggle are items of the row itself, as before (they wrap one by one)
+    assert "display: contents" in _rule(_CSS, ".q-page-head-toggle")
+    assert "display: none" in _rule(_CSS, ".q-page-head-sub")
 
 
 def test_sticky_height_measures_the_bar_when_the_sheet_has_no_box() -> None:
