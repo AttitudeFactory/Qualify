@@ -54,6 +54,32 @@ from qualify_api.tenancy.acting import current_acting_login
 
 RESOURCES = ("ads", "adsets", "campaigns")
 UNKNOWN = "No pudimos confirmar el cambio. Actualiza el estado antes de intentar otro cambio."
+# Meta: «You can only change your ad set budget 4 times per hour» (error 613, subcode
+# 1487632; Marketing API rate limiting, discovery §4). One promotion = one ad set.
+HOURLY_BUDGET_EDITS = 4
+TOO_MANY_EDITS = (
+    "Ya cambiaste el presupuesto varias veces en la última hora y Meta no deja más por ahora. "
+    "Inténtalo de nuevo en una hora."
+)
+
+
+def _budget_edits_last_hour(scope: ResultScope) -> int:
+    """Budget edits claimed for this promotion in the last hour, whatever their outcome (an
+    uncertain one may have reached Meta)."""
+    with tenant_session(scope.tenant_id, independent=True) as session:
+        return session.scalar(
+            text(
+                "SELECT count(*) FROM ad_promotion_operations WHERE promotion_id=:id "
+                "AND action='budget' AND created_at > now() - interval '1 hour'"
+            ),
+            {"id": scope.promotion_id},
+        )
+
+
+def _hourly_guard(scope: ResultScope, action: str) -> None:
+    """Refuses before any Meta call, in prepare and again in confirm."""
+    if action == "budget" and _budget_edits_last_hour(scope) >= HOURLY_BUDGET_EDITS:
+        raise ResultsUnavailable(TOO_MANY_EDITS)
 
 
 def _actor(scope: ResultScope) -> UUID:
@@ -324,7 +350,13 @@ async def _budget_floor(
     schedule_days = max(1, -(-(end - start) // day))
     remaining_days = max(0, -(-(end - max(datetime.now(UTC), start)) // day))
     spent = lifetime - remaining
-    floor = max(spent + minimum * remaining_days, minimum * schedule_days)
+    floor = max(
+        spent + minimum * remaining_days,
+        minimum * schedule_days,
+        # Meta: a lower budget «must be at least 10% greater than the current amount spent
+        # already» (ad set reference, Updating; discovery §4). Rounded up.
+        -(-spent * 11 // 10),
+    )
     return {
         "spent_minor": from_meta(spent, currency),
         "daily_minimum_minor": from_meta(minimum, currency),
@@ -358,11 +390,15 @@ async def prepare_promotion_edit(
     action: str,
     budget_minor: int | None = None,
     end_time: datetime | None = None,
+    advice: dict[str, Any] | None = None,
 ) -> PreparedPromotionEdit:
+    """`advice`: the traffic light a raise came from (m-25091390), kept in the sealed review
+    and so in the operation's approval evidence; it changes nothing else."""
     if not isinstance(request_key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", request_key):
         raise ResultsUnavailable("Vuelve a revisar el cambio.")
     scope = _scope(tenant_id, promotion_id)
     promotion, ledger, gateway, source = _context(scope)
+    _hourly_guard(scope, action)
     changed, payload, summary = _intent(promotion, action, budget_minor, end_time)
     now = datetime.now(UTC)
     expires = now + TTL
@@ -414,6 +450,7 @@ async def prepare_promotion_edit(
             "pipeline": EDIT_PIPELINE,
             "floor": floor,
             "offset": META_CURRENCY_OFFSETS[promotion.request["currency"]],
+            "advice": advice,
         },
         now,
     )
@@ -506,6 +543,7 @@ async def confirm_promotion_edit(
         raise ResultsUnavailable(REPREPARE)
     changed = replace(promotion, request=deepcopy(promotion.request) | body["after"])
     active = tuple(body["baseline"])
+    _hourly_guard(scope, body["action"])
     await gateway.remote_guard(promotion, active_resources=active)
     if _decrease(body["action"], promotion, changed):
         # Spending went on while the owner read the review: floor it again before the claim.
