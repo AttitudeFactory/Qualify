@@ -109,6 +109,55 @@ def test_a_paid_call_leaves_exactly_one_booking_with_its_business_and_function(
     assert row.idempotency_key == "anthropic:msg_01abc"  # a retried write is dropped
 
 
+def test_the_character_line_suggestion_is_booked_to_its_business(
+    booked: list[ClaudeConsumption], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-25129386: «Sugerir con IA» the line of a character's scene is booked to the
+    business and brand, as `sugerir-linea-personaje`, with its prompt version."""
+    from qualify_api.creative import character_line_ai as cl
+    from qualify_api.creative.character_scene import SCENE_SWITCH
+
+    class _Reads:
+        def character(self, **_kw: Any) -> Any:
+            return cl.LineCharacter(name="Mango", style="animated", description="Un mango.")
+
+        def product(self, **_kw: Any) -> Any:
+            return cl.LineProduct(name="Copa", category="", description="")
+
+        def kit(self, **_kw: Any) -> None:
+            return None
+
+        def brand_name(self, **_kw: Any) -> str:
+            return ""
+
+    answer = SimpleNamespace(
+        type="tool_use", name=cl.TOOL_NAME, input={"line": "¡Qué rica copa!", "added_facts": []}
+    )
+    response = _response()
+    response.content = [answer]
+    monkeypatch.setenv(claude_tools.API_KEY_ENV, "k")
+    service = cl.CharacterLineService(
+        reads=_Reads(),
+        ledger=cl.MemoryLineLedger(),
+        client_factory=lambda _key: _client(response),
+        env={SCENE_SWITCH: "on"},
+    )
+    service.suggest(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        user_id=uuid4(),
+        scene_key=uuid4(),
+        request_key="tap",
+        character_id=uuid4(),
+        product_id=uuid4(),
+        duration_s=5,
+    )
+    (row,) = booked
+    assert row.attribution.tenant_id == TENANT and row.attribution.brand_id == BRAND
+    assert row.attribution.feature == "sugerir-linea-personaje"
+    assert row.attribution.prompt_version == cl.LINE_PROMPT_VERSION
+
+
 def test_each_turn_of_a_run_is_its_own_booking(booked: list[ClaudeConsumption]) -> None:
     paid = Attribution(tenant_id=TENANT, feature="hashtags-catalogo")
     client = _client(_response())

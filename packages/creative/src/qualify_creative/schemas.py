@@ -1794,6 +1794,11 @@ class CharacterSceneItem(BaseModel):
     duration: int
     line_suggested: bool = False
     line_prompt_version: str | None = Field(default=None, max_length=60)
+    #: The scene's own stable key, minted by the editor when the scene is added and kept
+    #: while it is edited (m-25129386): what «Sugerir con IA» counts its daily cap by.
+    #: Never part of the scene's digest (`character_scene.scene_inputs`): moving or
+    #: re-keying a scene changes nothing that is paid.
+    key: UUID | None = None
     transition_in: EffectUse | None = None
     #: Server-owned (m-25128784 PR 2): when the Clip's wait first saw this scene failed —
     #: its failure email goes out with it and the Clip waits for the owner 72 h from the
