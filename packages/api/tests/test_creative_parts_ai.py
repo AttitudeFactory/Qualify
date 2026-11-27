@@ -195,6 +195,15 @@ def test_a_proposed_parents_parts_do_not_inherit_its_provenance() -> None:
     assert child.media.clip_reference_mode == "motion"
 
 
+def test_every_proposal_gets_its_own_id() -> None:
+    # m-25026636: a Clip keeps the id of the idea its AI parts came from
+    first, _ = _propose(_response([_tool_use({"parts": _rows(5, 4, 6)})]))
+    second, _ = _propose(_response([_tool_use({"parts": _rows(5, 4, 6)})]))
+
+    assert first.provenance.proposal_id is not None
+    assert first.provenance.proposal_id != second.provenance.proposal_id
+
+
 def test_provenance_belongs_to_a_video_by_parts_only() -> None:
     provenance = PartsProvenance(model_id=PROPOSE_MODEL, prompt_version="v")
     with pytest.raises(ValueError, match="video by parts"):

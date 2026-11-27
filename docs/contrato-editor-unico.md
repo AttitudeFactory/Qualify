@@ -377,6 +377,7 @@ Código: `qualify_api.creative.plan_blocks`. Funciones puras: no escriben, no pa
 | `blocks_from_proposal(proposal, after=…, other_ai_children=…)` | «Pedir una idea»: lo que devolvió `propose_parts` (ya cobrado y trazado allí), con su `PartsProvenance`. |
 | `blocks_from_plan(plan, analysis, after=…, other_ai_children=…)` | Cualquier plan de partes → `ClipBlocks` (`segments`, `ai_parts`, `text_layers`, `effects`, `provenance`). |
 | `ClipBlocks.of_media(media)` | La pista que el Clip ya tiene, para pasarla en `after`. |
+| `ClipBlocks.media_fields()` | Los campos del `MediaInputs` del Clip `local`, con `parts_provenance` (modelo, versión del prompt y `proposal_id` de la idea; m-25026636): el Clip la guarda, una parte hija o un Clip que no es `local` la rechazan. |
 | `ClipBlocks.problems(other_ai_children=…, tenant_id=…)` | Lo que dice el contrato del §3 (`validate_recipe`); con el interruptor apagado, solo `switched_off`. |
 | `ClipBlocks.seconds` | Cuánto dura el video armado (`clip_seconds`). |
 
