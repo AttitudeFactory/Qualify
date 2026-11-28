@@ -446,7 +446,10 @@ def validate_brief_recipe(
     checked against its texts too (`subtitle_overlap_problems`).
 
     m-25129405: a normal Clip's `ai_parts` and its other AI children go with it; with
-    `QUALIFY_CLIP_AI_PARTS` off, an AI block is only `switched_off` (nothing is read)."""
+    `QUALIFY_CLIP_AI_PARTS` off, an AI block is only `switched_off` (nothing is read).
+
+    m-25143472: an own block made of a stock file or a Pin's image is
+    `reference_not_for_video` (`_not_for_video_problems`)."""
     by_parts = brief.kind is ContentKind.SHOT_VIDEO or brief.media.part is not None
     switched_off = _switched_off(brief)
     if switched_off:

@@ -295,6 +295,36 @@ def test_a_made_clip_on_the_tracks_changes_a_parts_mode() -> None:
     assert child.media.part.references == (photo,)
 
 
+def test_a_pinterest_reference_keeps_its_pin_when_its_part_changes_mode() -> None:
+    """m-25143472: a Pin's image laid with origin `pinterest` keeps its origin, its
+    `source_id` and its pin through a mode change (`entry_in_mode`)."""
+    pinned = _ref("photo", 4.0, 9.0, "pin.png", origin="pinterest", source_id="123")
+    entries = (
+        _entry(4),
+        _entry(5, mode="edit", analysis_id=uuid4(), shot_indexes=(1,), original_mode="edit"),
+    )
+    world = _world()
+    made = _create(
+        world, _on_tracks(_clip(entries=entries), pinned, source_pins=(_pin(pinned.key),))
+    )
+    _assembled(world, made)
+    part_id = made.part_ids[0]
+    act.ClipAiPartActions(
+        world.content, parts_store=world.store, store=object(), env={}
+    ).change_part_mode(
+        tenant_id=TENANT_ID,
+        user_id=USER_ID,
+        clip_id=made.clip_id,
+        part_id=part_id,
+        mode="reference",
+    )
+    child = _brief_of(world, part_id)
+    assert child.media.part is not None and child.media.part.mode == "reference"
+    assert child.media.part.references == (pinned,)
+    assert child.media.part.references[0].source_id == "123"
+    assert [p.image_key for p in child.media.source_pins] == [pinned.key]
+
+
 def test_another_mode_never_takes_another_parts_pinned_photo() -> None:
     """Review of fa5caf93: a pin on a track photo the OTHER part took must not come with
     a mode change (it failed validation: a 500 with nothing charged); the part keeps
