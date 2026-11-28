@@ -133,7 +133,8 @@ def payment_text(method: Any) -> str:
     from qualify_api.whatsapp.menus.engine import payment_card_caption  # noqa: PLC0415
     from qualify_api.whatsapp.payments import as_option  # noqa: PLC0415
 
-    return payment_card_caption(as_option(method))
+    # one Instagram message (C2): WhatsApp's card text can reach 1024 characters
+    return fit_text(payment_card_caption(as_option(method)))
 
 
 def qr_content_type(key: str) -> str:
@@ -160,6 +161,23 @@ def directions_text(location: NumberLocation | None) -> str:
 
 #: What Instagram takes by URL (the public media linker serves the object as stored: no
 #: conversion here, house rule). Anything else goes as text alone.
+#: One Instagram text message (`conversations.service.MAX_REPLY_CHARS`, send-message.md:
+#: 1000). The «+» never splits its text (review C2): a split whose second part fails
+#: would re-send the first on «Reintentar».
+IG_MAX_TEXT = 1000
+#: Instagram messaging's video attachment limit (send-message.md «Limitations», as
+#: recorded in `conversations.contracts` and `conversations_vm.MAX_VIDEO_BYTES`).
+IG_MAX_VIDEO_BYTES = 25 * 1024 * 1024
+
+
+def fit_text(text: str) -> str:
+    """The text within `IG_MAX_TEXT`, cut the way WhatsApp cuts its caption (at the last
+    sentence that fits, else a word)."""
+    from qualify_api.whatsapp.attachments import fit_caption  # noqa: PLC0415
+
+    return fit_caption(text, IG_MAX_TEXT)[0]
+
+
 IMAGE_TYPES: dict[str, str] = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
 VIDEO_TYPES: dict[str, str] = {"mp4": "video/mp4"}
 
@@ -188,5 +206,8 @@ __all__ = [
     "directions_text",
     "payment_text",
     "qr_content_type",
+    "IG_MAX_TEXT",
+    "IG_MAX_VIDEO_BYTES",
+    "fit_text",
     "sendable_media",
 ]

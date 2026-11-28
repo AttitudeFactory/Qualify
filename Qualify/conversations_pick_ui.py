@@ -25,6 +25,7 @@ from .chat_thread import TAP_MIN
 from .conversations_pick_state import IG_PICK_FLOW
 from .conversations_pick_state import InstagramPickState as P
 from .conversations_state import ConversationsState
+from .conversations_vm import VIDEO_TOO_LARGE_TEXT
 from .ui import callout, chat_bubble, drawer, media_thumb, skeleton_rows
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
@@ -39,6 +40,7 @@ from .whatsapp_chats_vm import (
     PICK_PAYMENTS,
     PICK_PRODUCTS,
     RETRY_LABEL,
+    TEXT_ONLY_LABEL,
 )
 
 
@@ -104,6 +106,11 @@ def _media_review() -> rx.Component:
         rx.cond(
             P.pick_as_text & (P.pick_source == PICK_PRODUCTS), callout(NO_PHOTO_NOTICE, "info")
         ),
+        # C1: a video over Instagram's limit — the composer's own words; «Enviar» is off
+        rx.cond(
+            (P.pick_source == PICK_OFFER) & P.pick_offer_too_large,
+            callout(VIDEO_TOO_LARGE_TEXT, "warn"),
+        ),
         rx.cond(
             P.pick_media_src != "",
             chat_bubble(
@@ -136,7 +143,14 @@ def _media_review() -> rx.Component:
                 align_self="flex-end",
             ),
         ),
-        caption_editor(P, caption_id=_CAPTION_ID, count_id=_CAPTION_COUNT_ID),
+        # U1: on Instagram the text is its own message; U2: no WhatsApp notice here
+        caption_editor(
+            P,
+            TEXT_ONLY_LABEL,
+            caption_id=_CAPTION_ID,
+            count_id=_CAPTION_COUNT_ID,
+            shortened_notice=False,
+        ),
         spacing="3",
         width="100%",
     )

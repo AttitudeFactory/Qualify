@@ -41,7 +41,6 @@ from .whatsapp_chats_vm import (
     DIRECTIONS_NO_POINT,
     DIRECTIONS_PUT_ON_MAP,
     DRAFTS_ROUTE,
-    NEW_PRODUCT_ROUTE,
     NO_PHOTO_PILL,
     NO_PRODUCTS_EMPTY,
     OFFER_BADGE,
@@ -364,7 +363,8 @@ def pick_products(S: Any, *, search_id: str) -> rx.Component:  # noqa: N803
                 "package",
                 title,
                 line,
-                link_button(ADD_PRODUCT_LABEL, "plus", NEW_PRODUCT_ROUTE),
+                # U3: with the way back to the chat (`?volver=`)
+                link_button(ADD_PRODUCT_LABEL, "plus", S.products_add_href),
             ),
             grid,
         ),
@@ -399,7 +399,11 @@ def caption_editor(
     *,
     caption_id: str,
     count_id: str,
+    shortened_notice: bool = True,
 ) -> rx.Component:
+    """The text of the review. `label` names it (Instagram: «Texto del mensaje», it goes
+    as its own message); `shortened_notice`: «Acortamos el texto para que quepa en
+    WhatsApp.» — WhatsApp only."""
     return rx.vstack(
         rx.vstack(
             rx.hstack(
@@ -442,7 +446,9 @@ def caption_editor(
                 ((S.pick_source == PICK_PIECES) | (S.pick_source == PICK_OFFER))
                 & S.pick_selected_piece.shortened,
                 rx.text(CAPTION_SHORTENED, size="1", color=T.TEXT_MUTED),
-            ),
+            )
+            if shortened_notice
+            else rx.fragment(),
             spacing="1",
             width="100%",
         ),

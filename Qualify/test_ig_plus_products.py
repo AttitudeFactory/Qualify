@@ -76,6 +76,10 @@ class Catalog:
     def __init__(self) -> None:
         self.reads = MemoryAttachmentReads()
         self.offer: WeeklyPromotion | None = None
+        self.sizes: dict[str, int] = {}
+
+    def size(self, tenant_id: UUID, key: str) -> int | None:
+        return self.sizes.get(key) if tenant_id == TENANT else None
 
     def add(self, row: ProductRow | PieceRow, tenant: UUID = TENANT) -> Any:
         table = self.reads.product_rows if isinstance(row, ProductRow) else self.reads.piece_rows
@@ -97,6 +101,7 @@ def _wire(gateway: Any) -> Catalog:
     catalog = Catalog()
     gateway._catalog_reads = catalog.reads
     gateway._promotions = catalog.promotion
+    gateway._sizes = catalog.size  # a HEAD in production; never a bucket here
     return catalog
 
 
@@ -318,3 +323,173 @@ async def test_directions_is_offered_only_with_a_whatsapp_number(monkeypatch) ->
     monkeypatch.setattr(h.world.plus, "scope", lambda t, c: PlusScope(brand_id=BRAND))
     await InstagramPickState.load_scope.fn(pick)
     assert pick.pick_has_number is False
+
+
+# --- review fixes (C1–C6, U3) ---------------------------------------------------------------
+
+
+def test_a_video_offer_over_instagrams_25_mb_queues_nothing(world) -> None:  # noqa: ANN001
+    from .conversations_provider import MediaTooLarge
+
+    key = f"{PREFIX}generated/d9/v.mp4"
+    video = world.catalog.add(_piece(key, "video"))
+    world.catalog.mark(video)
+    world.catalog.sizes[key] = 25 * 1024 * 1024 + 1
+    read = world.gateway.offer_for_chat(TENANT, CONNECTION)
+    assert read.too_large and not read.sendable
+    assert [p.too_large for p in read.pieces] == [True]
+    thread = world.inbound()
+    with pytest.raises(MediaTooLarge):
+        world.gateway.send_offer(TENANT, CONNECTION, thread, USER, video.id, "Mira")
+    assert world.outbox.rows == {}
+    world.catalog.sizes[key] = 17 * 1024 * 1024  # over WhatsApp's 16 MB, within 25 MB
+    assert world.gateway.offer_for_chat(TENANT, CONNECTION).sendable
+    assert len(world.gateway.send_offer(TENANT, CONNECTION, thread, USER, video.id, "Mira")) == 2
+
+
+def test_the_text_is_one_instagram_message_never_split(world) -> None:  # noqa: ANN001
+    from .conversations_provider import TextTooLong
+    from .ig_plus_provider import IG_MAX_TEXT
+
+    product = world.catalog.add(_product())
+    thread = world.inbound()
+    with pytest.raises(TextTooLong):  # refused before the photo is queued
+        world.gateway.send_product(TENANT, CONNECTION, thread, USER, product.id, "a" * 1001)
+    assert world.outbox.rows == {}
+    long_one = world.catalog.add(_product("Combo", photo=None))
+    world.catalog.reads.product_rows[long_one.id] = (
+        TENANT,
+        ProductRow(**{**long_one.__dict__, "description": "Muy rico. " * 300}),
+    )
+    (only,) = world.gateway.send_product(TENANT, CONNECTION, thread, USER, long_one.id, "")
+    assert len(world.outbox.rows[only].payload["message"]["text"]) <= IG_MAX_TEXT
+
+
+def test_nothing_to_send_is_never_reported_as_sent(world) -> None:  # noqa: ANN001
+    from .conversations_provider import NothingToSend
+
+    webp = world.catalog.add(_piece(f"{PREFIX}generated/d3/1.webp"))
+    world.catalog.mark(webp)
+    thread = world.inbound()
+    with pytest.raises(NothingToSend):
+        world.gateway.send_offer(TENANT, CONNECTION, thread, USER, webp.id, "   ")
+    assert world.outbox.rows == {}
+
+
+async def test_the_offers_too_large_video_turns_send_off(monkeypatch) -> None:  # noqa: ANN001
+    h, catalog = _harness(monkeypatch)
+    key = f"{PREFIX}generated/d9/v.mp4"
+    piece = catalog.add(_piece(key, "video"))
+    catalog.mark(piece)
+    catalog.sizes[key] = 30 * 1024 * 1024
+    pick = h.pick
+    pick.pick_open, pick.pick_source, pick.pick_thread = True, PICK_OFFER, str(h.thread)
+    pick._connection = h.conv.selected_connection_id
+    await InstagramPickState.load_offer.fn(pick)
+    assert pick.pick_offer_too_large and not pick.pick_as_text
+    assert not pick.pick_can_send
+
+
+async def test_the_panel_counts_to_1000_and_trims_the_prewritten_text(monkeypatch) -> None:  # noqa: ANN001
+    h, catalog = _harness(monkeypatch)
+    product = catalog.add(_product())
+    catalog.reads.product_rows[product.id] = (
+        TENANT,
+        ProductRow(**{**product.__dict__, "description": "Muy rico. " * 120}),
+    )
+    pick = h.pick
+    pick.pick_open, pick.pick_source, pick.pick_thread = True, PICK_PRODUCTS, str(h.thread)
+    pick._connection = h.conv.selected_connection_id
+    await InstagramPickState.load_products.fn(pick)
+    pick.choose_product(str(product.id))
+    assert len(pick.pick_caption) <= 1000 and pick.pick_caption_count.endswith("/1000")
+    assert pick.pick_caption_error == ""
+    pick.set_pick_caption("a" * 1001)
+    assert pick.pick_caption_error == "El texto admite hasta 1000 caracteres."
+    assert not pick.pick_can_send
+
+
+async def test_a_retry_after_a_half_send_skips_the_photo_and_the_offers_picture(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    h, catalog = _harness(monkeypatch)
+    product = catalog.add(_product())
+    piece = catalog.add(_piece())
+    catalog.mark(piece)
+    real = h.world.service.reply_text
+    fail = {"next": True}
+
+    def flaky(**kw: Any) -> Any:
+        if fail["next"]:
+            fail["next"] = False
+            raise RuntimeError("db down")
+        return real(**kw)
+
+    monkeypatch.setattr(h.world.service, "reply_text", flaky)
+    pick = h.pick
+    pick.pick_open, pick.pick_source, pick.pick_thread = True, PICK_PRODUCTS, str(h.thread)
+    pick._connection = h.conv.selected_connection_id
+    await InstagramPickState.load_products.fn(pick)
+    pick.choose_product(str(product.id))
+    await _send(pick)
+    assert pick.pick_send_error != "" and pick.pick_open
+    await _send(pick)  # «Reintentar»
+    assert [r.media.media_type if r.media else "text" for r in h.rows()] == ["image", "text"]
+
+    fail["next"] = True
+    pick.pick_open, pick.pick_source, pick.pick_thread = True, PICK_OFFER, str(h.thread)
+    pick._connection = h.conv.selected_connection_id
+    await InstagramPickState.load_offer.fn(pick)
+    await _send(pick)
+    await _send(pick)
+    kinds = [r.media.media_type if r.media else "text" for r in h.rows()]
+    assert kinds == ["image", "text", "image", "text"]
+
+
+async def test_opening_the_plus_reads_the_scope_again(monkeypatch) -> None:  # noqa: ANN001
+    from .ig_plus_provider import PlusScope
+
+    h, _catalog = _harness(monkeypatch)
+    pick = h.pick
+    await InstagramPickState.load_scope.fn(pick)
+    assert pick.pick_has_number is True
+    # the business lost its number meanwhile: the next «+» must know (C3)
+    monkeypatch.setattr(h.world.plus, "scope", lambda t, c: PlusScope(brand_id=BRAND))
+    events = await InstagramPickState.open_pick.fn(pick, PICK_PRODUCTS)
+    assert InstagramPickState.load_scope in events and pick._scope_for == ""
+    await InstagramPickState.load_scope.fn(pick)
+    assert pick.pick_has_number is False
+
+
+async def test_another_account_never_keeps_the_previous_answer(monkeypatch) -> None:  # noqa: ANN001
+    from .ig_plus_provider import PlusScope
+
+    h, _catalog = _harness(monkeypatch)
+    pick = h.pick
+    monkeypatch.setattr(h.world.plus, "scope", lambda t, c: PlusScope(brand_id=BRAND))
+    await InstagramPickState.load_scope.fn(pick)
+    assert pick.pick_has_number is False
+
+    def broken(t: UUID, c: UUID) -> PlusScope:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(h.world.plus, "scope", broken)
+    h.conv.selected_connection_id = str(OTHER_CONNECTION)
+    await InstagramPickState.load_scope.fn(pick)
+    assert pick.pick_has_number is True  # C4: reset for the new account, read failed
+
+
+def test_add_a_product_leads_back_to_the_chat_on_both_channels(monkeypatch) -> None:  # noqa: ANN001
+    from urllib.parse import parse_qs, urlsplit
+
+    from .whatsapp_chats_state import WhatsAppChatsState
+
+    h, _catalog = _harness(monkeypatch)
+    pick = h.pick
+    pick.pick_thread, pick._connection = str(h.thread), h.conv.selected_connection_id
+    query = parse_qs(urlsplit(pick.products_add_href).query)
+    assert query["nuevo"] == ["1"] and f"chat={h.thread}" in query["volver"][0]
+    wa = WhatsAppChatsState()
+    wa.open_thread_id, wa._connection_id = str(uuid4()), str(uuid4())
+    query = parse_qs(urlsplit(wa.products_add_href).query)
+    assert query["volver"][0].startswith("/responder?") and wa.open_thread_id in query["volver"][0]

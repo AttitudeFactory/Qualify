@@ -90,7 +90,11 @@ def test_empty_products_and_offer_lead_to_where_they_are_set(chats_page) -> None
     _open_plus(page)
     _row(page, "Tus productos")
     drawer = page.get_by_role("dialog")
-    expect(drawer.get_by_role("link", name="Agregar un producto")).to_be_visible(timeout=20_000)
+    add = drawer.get_by_role("link", name="Agregar un producto")
+    expect(add).to_be_visible(timeout=20_000)
+    # U3: the catalog leads back to this chat («Volver a tus chats»)
+    href = add.get_attribute("href") or ""
+    assert href.startswith("/catalog?nuevo=1&volver=") and ids["instagram_open"] in href
     _shot(page, "despues-instagram-productos-vacio-360")
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0)
@@ -122,7 +126,7 @@ def test_a_product_and_the_offer_go_as_picture_then_text(chats_page, size) -> No
     _shot(page, f"despues-instagram-productos-{size}")
     drawer.get_by_text(SHOP_PRODUCT, exact=True).click()
     expect(drawer.get_by_text("Revisa y envía")).to_be_visible(timeout=20_000)
-    field = drawer.get_by_role("textbox", name="Texto que acompaña la foto")
+    field = drawer.get_by_role("textbox", name="Texto del mensaje")
     assert (field.input_value() or "").startswith(f"{SHOP_PRODUCT} — $25.000")
     _shot(page, f"despues-instagram-producto-revisa-{size}")
     assert _outbox_texts(tenant, thread) == []

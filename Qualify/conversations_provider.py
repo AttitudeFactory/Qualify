@@ -140,11 +140,14 @@ from .conversations_vm import (
     outbox_text,
 )
 from .ig_plus_provider import (
+    IG_MAX_TEXT,
+    IG_MAX_VIDEO_BYTES,
     DirectionsUnavailable,
     PlusReader,
     PlusScope,
     PostgresPlusReader,
     directions_text,
+    fit_text,
     payment_text,
     qr_content_type,
     sendable_media,
@@ -327,6 +330,18 @@ class TextNotQueued(Exception):
 PaymentTextNotQueued = TextNotQueued
 
 
+class TextTooLong(ValueError):
+    """The «+» text is over one Instagram message (`IG_MAX_TEXT`): refused, never split."""
+
+
+class NothingToSend(LookupError):
+    """No medium Instagram takes and no text: the send would queue nothing (C5)."""
+
+
+class MediaTooLarge(ValueError):
+    """The offer's video is over Instagram's limit (`IG_MAX_VIDEO_BYTES`)."""
+
+
 @dataclass(frozen=True)
 class OfferRead:
     """«Tu oferta» on Instagram: the marked piece (None when nothing is marked) and the
@@ -336,6 +351,8 @@ class OfferRead:
     pieces: list[PiecePick]
     #: The marked piece's medium can go to Instagram (else its text alone).
     sendable: bool = False
+    #: The marked piece is a video over Instagram's limit: nothing goes (C1).
+    too_large: bool = False
 
 
 @dataclass(frozen=True)
@@ -378,7 +395,9 @@ class ConversationsGateway:
         plus: PlusReader | None = None,
         catalog_reads: AttachmentReads | None = None,
         promotions: Callable[[UUID, UUID], Any] | None = None,
+        sizes: Callable[[UUID, str], int | None] | None = None,
     ) -> None:
+        self._sizes = sizes
         self._catalog_reads = catalog_reads
         self._promotions = promotions
         self._dispatcher = dispatcher
@@ -800,8 +819,13 @@ class ConversationsGateway:
         `TextNotQueued` with the object's key, and the retry passes it as `skip_key`:
         the same object is never queued twice; a REPLACED one (another key) still goes
         (m-25143229, review C2). `WindowClosed` refuses before anything is written."""
+        if len(text.strip()) > IG_MAX_TEXT:
+            raise TextTooLong(str(len(text.strip())))  # before anything is written
+        sends_media = bool(key and content_type and key != skip_key)
+        if not sends_media and not text.strip() and not (key and key == skip_key):
+            raise NothingToSend(key or "")  # C5: never «sale en unos segundos» for nothing
         queued: list[UUID] = []
-        if key and content_type and key != skip_key:
+        if sends_media:
             queued.append(
                 self.service.reply_media(
                     tenant_id=tenant_id,
@@ -876,6 +900,25 @@ class ConversationsGateway:
             self._promotions = lambda t, b: service.get_weekly_promotion(tenant_id=t, brand_id=b)
         return self._promotions(tenant_id, brand_id)
 
+    def _size(self, tenant_id: UUID, key: str) -> int | None:
+        """An object's size (a HEAD, read-only); None when it cannot be told."""
+        if self._sizes is None:
+            from qualify_api.whatsapp.attachments import ProductionBlobStore  # noqa: PLC0415
+
+            store = ProductionBlobStore()
+            self._sizes = store.size
+        try:
+            return self._sizes(tenant_id, key)
+        except Exception as exc:  # noqa: BLE001 — unknown, like WhatsApp's listing
+            logger.warning("instagram plus size failed: %s", type(exc).__name__)
+            return None
+
+    def _video_too_large(self, tenant_id: UUID, piece: Any) -> bool:
+        if piece.media_type != "video":
+            return False
+        size = self._size(tenant_id, piece.image_key)
+        return size is not None and size > IG_MAX_VIDEO_BYTES
+
     def _brand(self, tenant_id: UUID, connection_id: UUID) -> UUID | None:
         return self._plus.scope(tenant_id, connection_id).brand_id
 
@@ -921,13 +964,26 @@ class ConversationsGateway:
             return OfferRead(promotion=None, pieces=[])
         picks = self._picks_service().list_pieces_for_chat(tenant_id, brand)
         piece = self.catalog_reads.piece(tenant_id, promotion.draft_id)
-        sendable = piece is not None and bool(
-            sendable_media(tenant_id, piece.image_key, piece.media_type)
+        too_large = piece is not None and self._video_too_large(tenant_id, piece)
+        sendable = (
+            piece is not None
+            and not too_large
+            and bool(sendable_media(tenant_id, piece.image_key, piece.media_type))
         )
+        marked = str(promotion.draft_id)
         return OfferRead(
             promotion=promotion,
-            pieces=[replace(p, thumb_url=self._thumb(tenant_id, p.thumb_key)) for p in picks],
+            pieces=[
+                replace(
+                    p,
+                    thumb_url=self._thumb(tenant_id, p.thumb_key),
+                    # Instagram's own limit, not WhatsApp's 16 MB (C1)
+                    too_large=too_large if p.id == marked else False,
+                )
+                for p in picks
+            ],
             sendable=sendable,
+            too_large=too_large,
         )
 
     def send_product(
@@ -954,11 +1010,14 @@ class ConversationsGateway:
         if content_type:
             text = caption.strip()
         else:
-            text = product_text(
-                product.name.strip(),
-                product_price_label(product.price_amount, product.price_currency),
-                product.description,
-                caption,
+            # WhatsApp's own text, within one Instagram message (C2)
+            text = fit_text(
+                product_text(
+                    product.name.strip(),
+                    product_price_label(product.price_amount, product.price_currency),
+                    product.description,
+                    caption,
+                )
             )
         return self._media_then_text(
             tenant_id,
@@ -996,6 +1055,8 @@ class ConversationsGateway:
             or piece.brand_id != brand
         ):
             raise PieceNotFound(str(draft_id))
+        if self._video_too_large(tenant_id, piece):
+            raise MediaTooLarge(str(draft_id))  # C1: nothing is queued
         content_type = sendable_media(tenant_id, piece.image_key, piece.media_type)
         return self._media_then_text(
             tenant_id,

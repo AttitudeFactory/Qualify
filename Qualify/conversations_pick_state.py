@@ -50,10 +50,21 @@ from qualify_api.whatsapp.attachments import PieceNotFound, ProductNotFound, pro
 from qualify_api.whatsapp.payments import PaymentMethodNotFound
 
 from .auth_state import AuthState
-from .conversations_provider import TextNotQueued, gateway
+from .catalog_vm import new_product_href
+from .conversations_provider import (
+    MediaTooLarge,
+    TextNotQueued,
+    TextTooLong,
+    gateway,
+)
 from .conversations_state import WINDOW_CLOSED_NEUTRAL, ConversationsState
-from .conversations_vm import NO_INBOUND_NOTICE, WINDOW_CLOSED_NOTICE, reply_sent_message
-from .ig_plus_provider import DirectionsUnavailable
+from .conversations_vm import (
+    NO_INBOUND_NOTICE,
+    VIDEO_TOO_LARGE_TEXT,
+    WINDOW_CLOSED_NOTICE,
+    reply_sent_message,
+)
+from .ig_plus_provider import IG_MAX_TEXT, DirectionsUnavailable, fit_text
 from .nav_url import close_flow_script, flow_param, inbox_chat_href
 from .pending_state import PendingState
 from .ui.primitives import ORBIT_FOCUS_SCRIPT
@@ -65,7 +76,6 @@ from .whatsapp_chats_vm import (
     EMPTY_OFFER,
     EMPTY_PIECE,
     EMPTY_PRODUCT,
-    MAX_CAPTION_CHARS,
     OFFER_FAILED,
     PAYMENT_GONE,
     PAYMENTS_FAILED,
@@ -89,8 +99,6 @@ from .whatsapp_chats_vm import (
     build_payment_cards,
     build_piece_cards,
     build_product_cards,
-    caption_count,
-    caption_error,
     filter_products,
     number_settings_href,
     payments_href,
@@ -174,12 +182,23 @@ def ig_pick_can_send(
     return False
 
 
+def ig_caption_error(caption: str) -> str:
+    """WhatsApp's own words for a text over the limit, with Instagram's limit (C2)."""
+    if len(caption.strip()) > IG_MAX_TEXT:
+        return f"El texto admite hasta {IG_MAX_TEXT} caracteres."
+    return ""
+
+
 def ig_send_error(exc: BaseException, source: str) -> str:
     """The owner's words for a refused or failed send (never the exception's text)."""
     if isinstance(exc, PaymentMethodNotFound):
         return PAYMENT_GONE
     if isinstance(exc, DirectionsUnavailable):
         return DIRECTIONS_NO_LOCATION
+    if isinstance(exc, MediaTooLarge):
+        return VIDEO_TOO_LARGE_TEXT
+    if isinstance(exc, TextTooLong):
+        return ig_caption_error("x" * (IG_MAX_TEXT + 1))
     if isinstance(exc, ProductNotFound):
         return PRODUCT_GONE
     if isinstance(exc, PieceNotFound):
@@ -248,6 +267,8 @@ class InstagramPickState(rx.State):
     #: The offer's own medium cannot go to Instagram (not under the tenant's prefix, or
     #: not JPEG/PNG/MP4): it goes as its text alone.
     pick_offer_text_only: bool = False
+    #: The offer is a video over Instagram's 25 MB (C1): nothing goes, «Enviar» is off.
+    pick_offer_too_large: bool = False
     #: The business behind the open account has a WhatsApp number (where its address is
     #: written): «Cómo llegar» is drawn only then (UX U1). True until read.
     pick_has_number: bool = True
@@ -256,8 +277,10 @@ class InstagramPickState(rx.State):
     _connection: str = ""
     _zone_name: str = ""
     _food: bool = False
-    #: The account whose «has a WhatsApp number» `pick_has_number` holds.
+    #: The account whose «has a WhatsApp number» `pick_has_number` holds ("" = re-read).
     _scope_for: str = ""
+    #: The account `pick_has_number` is about (kept while it is re-read).
+    _scope_of: str = ""
     #: C2: "<thread>:<method>" → the QR object key queued while its text was not.
     _qr_queued: dict[str, str] = {}
     #: N2: when `pick_busy` was set (epoch seconds).
@@ -304,7 +327,8 @@ class InstagramPickState(rx.State):
             item_id=self.pick_selected,
             caption_error=self.pick_caption_error,
             # an offer with nothing to say and no medium sends nothing
-            offer_sendable=not (self.pick_as_text and not self.pick_preview_text),
+            offer_sendable=not (self.pick_as_text and not self.pick_preview_text)
+            and not (self.pick_source == PICK_OFFER and self.pick_offer_too_large),
         )
 
     def _busy(self) -> bool:
@@ -373,11 +397,17 @@ class InstagramPickState(rx.State):
 
     @rx.var
     def pick_caption_count(self) -> str:
-        return caption_count(self.pick_caption)
+        """Instagram's own count: one message holds 1000 characters (C2)."""
+        return f"{len(self.pick_caption.strip())}/{IG_MAX_TEXT}"
 
     @rx.var
     def pick_caption_error(self) -> str:
-        return caption_error(self.pick_caption)
+        return ig_caption_error(self.pick_caption)
+
+    @rx.var
+    def products_add_href(self) -> str:
+        """«Agregar un producto» with the way back to this chat (`?volver=`, U3)."""
+        return new_product_href(self._back())
 
     @rx.var
     def pick_send_label(self) -> str:
@@ -428,6 +458,7 @@ class InstagramPickState(rx.State):
         self.pick_caption = ""
         self.pick_offer = EMPTY_OFFER
         self.pick_offer_text_only = False
+        self.pick_offer_too_large = False
         self._connection = ""
 
     def _close(self) -> list[rx.event.EventSpec] | None:
@@ -472,7 +503,10 @@ class InstagramPickState(rx.State):
             PICK_PAYMENTS: InstagramPickState.load_payments,
             PICK_DIRECTIONS: InstagramPickState.load_directions,
         }[source]
-        return [settle_step("drawer"), loader]
+        # C3: the «+» drew its rows from what was read before; read it again now, so
+        # the next «+» shows «Cómo llegar» as the business is today
+        self._scope_for = ""
+        return [settle_step("drawer"), loader, InstagramPickState.load_scope]
 
     @rx.event(background=True)
     async def load_scope(self) -> None:
@@ -483,6 +517,10 @@ class InstagramPickState(rx.State):
             connection_id = conv.selected_connection_id
             if not connection_id or connection_id == self._scope_for:
                 return
+            if connection_id != self._scope_of:
+                # C4: another account — never keep the previous one's answer
+                self.pick_has_number = True
+                self._scope_of = connection_id
             tenant_id = await conv._tenant()
         connection = _uuid(connection_id)
         if tenant_id is None or connection is None:
@@ -509,8 +547,11 @@ class InstagramPickState(rx.State):
             return None  # arrived over the wire; refuse an id the grid does not hold
         if product_id != self.pick_selected:
             self.pick_selected = product_id
-            self.pick_caption = product_caption(
-                card.name, card.price_label, food=self._food, description=card.description
+            # WhatsApp's pre-written text, within one Instagram message (C2)
+            self.pick_caption = fit_text(
+                product_caption(
+                    card.name, card.price_label, food=self._food, description=card.description
+                )
             )
             self.pick_send_error = ""
         self.pick_step = 2
@@ -529,7 +570,7 @@ class InstagramPickState(rx.State):
         if self._busy():
             return
         # a little over the limit, so the count and the error can show it
-        self.pick_caption = value[: MAX_CAPTION_CHARS + 200] if isinstance(value, str) else ""
+        self.pick_caption = value[: IG_MAX_TEXT + 200] if isinstance(value, str) else ""
 
     @rx.event
     def set_picker_open(self, is_open: bool) -> list[rx.event.EventSpec] | None:
@@ -647,7 +688,7 @@ class InstagramPickState(rx.State):
             self.pick_loading = True
             self.pick_error = ""
             tenant_id = await self._tenant()
-        offer, text_only, error = OfferVM(present=True), False, ""
+        offer, text_only, too_large, error = OfferVM(present=True), False, False, ""
         try:
             connection = _uuid(connection_id)
             if tenant_id is None or connection is None:
@@ -662,7 +703,8 @@ class InstagramPickState(rx.State):
                     datetime.now(UTC),
                     zone,
                 )
-                text_only = not read.sendable
+                text_only = not read.sendable and not read.too_large
+                too_large = read.too_large
         except _NoSession:
             error = _NO_SESSION
         except Exception as exc:  # noqa: BLE001
@@ -675,10 +717,11 @@ class InstagramPickState(rx.State):
             self.pick_error = error
             self.pick_offer = offer if offer.present else OfferVM(present=True)
             self.pick_offer_text_only = text_only
+            self.pick_offer_too_large = too_large
             # the one step IS the review: the piece and its text, ready to edit
             if not error and offer.marked and not offer.gone:
                 self.pick_selected = offer.piece.id
-                self.pick_caption = offer.piece.caption
+                self.pick_caption = fit_text(offer.piece.caption)
 
     @rx.event(background=True)
     async def load_payments(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
