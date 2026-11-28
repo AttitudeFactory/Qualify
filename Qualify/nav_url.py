@@ -56,6 +56,20 @@ def replace_url_script(url: str) -> str:
     return _history_script("replaceState", url)
 
 
+def replace_url_keep_hash_script(url: str) -> str:
+    """JS that rewrites the address to `url` (no history step) only while the browser is
+    still on `url`'s page — a late answer never rewrites the page the owner moved to —
+    and keeps the address's `#anchor` (m-25143230: «Resultados › WhatsApp»'s
+    `#actividad-numero`)."""
+    path = json.dumps(url.split("?", 1)[0])
+    target = json.dumps(url)
+    return (
+        f"if (window.location.pathname.replace(/\\/$/, '') === {path}"
+        f" && window.location.pathname + window.location.search !== {target}) "
+        f"window.history.replaceState(window.history.state, '', {target} + window.location.hash);"
+    )
+
+
 def scalar_param(params: Mapping[str, object], key: str) -> str:
     """A URL parameter is a single string; repeated/malformed values are refused."""
     value = params.get(key, "")

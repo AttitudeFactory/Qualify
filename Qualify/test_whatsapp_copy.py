@@ -26,7 +26,6 @@ from .whatsapp_menu_vm import NEXT_STEP_QR
 from .whatsapp_metrics_vm import _PRICING_CATEGORY
 from .whatsapp_templates_vm import CATEGORIES
 from .whatsapp_vm import (
-    ACTIVITY_SUBTITLE,
     PROFILE_SUBTITLE,
     PROMOTIONS_SUBTITLE,
     QR_SUBTITLE,
@@ -124,10 +123,9 @@ def test_screens_use_the_proposed_labels() -> None:
     for subtitle, page in (
         ("PROFILE_SUBTITLE", whatsapp_page.whatsapp_profile_index),
         ("QR_SUBTITLE", whatsapp_page.whatsapp_qr_index),
-        ("ACTIVITY_SUBTITLE", whatsapp_page.whatsapp_activity_index),
     ):
         assert subtitle in inspect.getsource(page), subtitle
-    for line in (PROFILE_SUBTITLE, QR_SUBTITLE, ACTIVITY_SUBTITLE):
+    for line in (PROFILE_SUBTITLE, QR_SUBTITLE):
         assert "Tu número" not in line and "Qualify" not in line
     assert PROMOTIONS_SUBTITLE == (
         "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."

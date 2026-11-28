@@ -70,8 +70,10 @@ from .nav_url import INBOX_ROUTE, INBOX_TAB, uuid_param, whatsapp_chats_href, wi
 #
 # m-25027373 (BU-A10): «Tu número» left too, so `/whatsapp` draws nothing and leaves the
 # menu. Each panel has its own page (`PANEL_PAGES`): Estado is the number's card in «Tus
-# redes» (`CONNECTIONS_ROUTE`) and Actividad hangs from it (`ACTIVITY_ROUTE`); Perfil,
-# Códigos QR and Formas de pago are pages of «Ajustes de chats». Every address of
+# redes» (`CONNECTIONS_ROUTE`); Perfil, Códigos QR and Formas de pago are pages of
+# «Ajustes de chats». m-25143230: Actividad is drawn in «Resultados › WhatsApp»
+# (`ACTIVITY_HOME`), where the owner looks for how the business is doing; its old page
+# (`ACTIVITY_ROUTE`) only redirects there (`legacy_activity_target`). Every address of
 # `/whatsapp` that is not one of the redirects below lands there
 # (`legacy_number_target`).
 #
@@ -133,8 +135,8 @@ PROMOTIONS_SUBTITLE: Final = (
 )
 #: m-25027373 (BU-A10) — the pages of «Tu número»'s old panels: their titles are the
 #: sub-tab labels they had; the subtitles are NEW TEXT, NOT DECIDED BY THE FOUNDER.
-#: m-25131413 (founder, 2026-11-27): Perfil's and Actividad's h1 say the same as their
-#: browser tab (`Qualify.py`); the hub row and the card link keep the short name.
+#: m-25131413 (founder, 2026-11-27): Perfil's h1 says the same as its browser tab
+#: (`Qualify.py`); the hub row keeps the short name.
 PROFILE_TITLE: Final = "Perfil"
 PROFILE_PAGE_TITLE: Final = "Perfil de tu WhatsApp"
 PROFILE_SUBTITLE: Final = (
@@ -145,11 +147,9 @@ QR_TITLE: Final = "Códigos QR"
 QR_SUBTITLE: Final = (
     "Para que tus clientes te escriban a WhatsApp desde el mostrador, el empaque o tu Instagram."
 )
+#: The card's link to the number's activity (m-25143230: in «Resultados › WhatsApp»,
+#: under its own block heading — the old page's title and subtitle left with the page).
 ACTIVITY_TITLE: Final = "Actividad"
-ACTIVITY_PAGE_TITLE: Final = "Actividad de tu WhatsApp"
-ACTIVITY_SUBTITLE: Final = (
-    "Cuántas personas te escribieron por WhatsApp, cuánto tardas en responder y por dónde llegaron."
-)
 #: «‹ Tus redes» (N7): the way back from Actividad to the number's card.
 CONNECTIONS_TITLE: Final = "Tus redes"
 
@@ -196,19 +196,28 @@ TAB_KEYS: frozenset[str] = frozenset(_PANEL_PLACE)
 DEFAULT_TAB = TAB_CONNECTION
 
 WHATSAPP_ROUTE: Final = "/whatsapp"
-#: m-25027373 (BU-A10): «Tu número › Estado» is the number's card in «Tus redes», and
-#: «Actividad» (its metrics) a page that hangs from that card — served by `WhatsAppState`
-#: like the pages of «Ajustes de chats».
+#: m-25027373 (BU-A10): «Tu número › Estado» is the number's card in «Tus redes».
 CONNECTIONS_ROUTE: Final = "/connections"
+#: m-25027373 gave «Actividad» (the number's metrics) this page under the card; since
+#: m-25143230 it only redirects to `ACTIVITY_HOME` (`legacy_activity_target`).
 ACTIVITY_ROUTE: Final = "/connections/whatsapp/actividad"
-#: m-25027373: every panel but the promotions' (`PROMOTIONS_ROUTE?sub=…`) → its page.
+#: m-25143230 (the founder could not find it; UX: «Resultados › WhatsApp»): the number's
+#: activity is drawn in Resultados' WhatsApp tab — `results_vm.tab_url("whatsapp")`,
+#: spelled here so this module stays free of `results_vm`'s backend import (a test
+#: checks both agree). `?cuenta=` names the number, like every page of the number.
+RESULTS_PATH: Final = "/resultados"
+ACTIVITY_HOME: Final = f"{RESULTS_PATH}?tab=whatsapp"
+#: m-25143230 (UX review U2): the block's `id` there — the card's link and the old
+#: addresses land ON the block, not at the top of the tab.
+ACTIVITY_ANCHOR: Final = "actividad-numero"
+#: m-25027373: every panel but the promotions' (`PROMOTIONS_ROUTE?sub=…`) and Actividad
+#: (`ACTIVITY_HOME`, m-25143230) → its page, drawn by `WhatsAppState`.
 PANEL_PAGES: Final[Mapping[str, str]] = {
     TAB_MENU: SETTINGS_WHATSAPP_ROUTE,
     TAB_CONNECTION: CONNECTIONS_ROUTE,
     TAB_PROFILE: SETTINGS_PROFILE_ROUTE,
     TAB_PAYMENTS: SETTINGS_PAYMENTS_ROUTE,
     TAB_QR: SETTINGS_QR_ROUTE,
-    TAB_ACTIVITY: ACTIVITY_ROUTE,
 }
 #: The pages `WhatsAppState` draws ONE panel on, by route (`/connections` is
 #: `ConnectionsState`'s page: it only reads the numbers there).
@@ -291,10 +300,13 @@ def is_settings_panel(panel: str) -> bool:
 
 
 def panel_route(panel: str) -> str:
-    """The page a panel is drawn on: `PROMOTIONS_ROUTE` or its own (`PANEL_PAGES`); an
-    unknown key is the default panel's, «Tus redes» (m-25027373)."""
+    """The page a panel is drawn on: `PROMOTIONS_ROUTE`, «Resultados › WhatsApp» for
+    Actividad (m-25143230) or its own (`PANEL_PAGES`); an unknown key is the default
+    panel's, «Tus redes» (m-25027373)."""
     if is_promotions_panel(panel):
         return PROMOTIONS_ROUTE
+    if panel == TAB_ACTIVITY:
+        return ACTIVITY_HOME
     return PANEL_PAGES.get(panel, PANEL_PAGES[DEFAULT_TAB])
 
 
@@ -421,20 +433,42 @@ RETURN_PARAM: Final = "volver"
 _PANELS_WITH_WAY_BACK: Final = frozenset({TAB_PROFILE, TAB_PAYMENTS})
 
 
+def activity_url(connection_id: str = "", *, anchor: bool = False) -> str:
+    """m-25143230: «Resultados › WhatsApp» on one number (`cuenta`, only a canonical
+    UUID; the page takes it only if it is this business's) — with `anchor`, landing on
+    the activity block (`#actividad-numero`)."""
+    number = uuid_param({ACCOUNT_PARAM: connection_id}, ACCOUNT_PARAM)
+    url = f"{ACTIVITY_HOME}&{ACCOUNT_PARAM}={number}" if number else ACTIVITY_HOME
+    return f"{url}#{ACTIVITY_ANCHOR}" if anchor else url
+
+
+def legacy_activity_target(params: Mapping[str, object]) -> str:
+    """m-25143230: where an old address of the number's activity lands now —
+    `/connections/whatsapp/actividad[?cuenta=…]` or `/whatsapp?tab=numero&sub=actividad
+    [&cuenta=…]` → `/resultados?tab=whatsapp[&cuenta=…]#actividad-numero` (on the
+    block, UX review U2). Same whitelist rule as `legacy_promotions_target`: only the
+    number (a canonical UUID) rides along."""
+    return activity_url(uuid_param(params, ACCOUNT_PARAM), anchor=True)
+
+
 def legacy_number_target(params: Mapping[str, object]) -> str:
     """m-25027373 (BU-A10): where any other `/whatsapp` address lands now — «Tu número»
     left the screen, so nothing is drawn there:
 
-    - `?tab=numero&sub=perfil|pagos|qr|actividad` (or an old flat `?tab=perfil|qr|…`)
+    - `?tab=numero&sub=perfil|pagos|qr` (or an old flat `?tab=perfil|qr|…`)
       → that panel's page (`PANEL_PAGES`), with the number (`cuenta`, a canonical UUID)
       and — Perfil and Formas de pago only — the way back to the chat that sent the
       owner there (`volver`, only an app's own chat address: `chat_return_path`);
+    - `?tab=numero&sub=actividad` (or `?tab=actividad`) → «Resultados › WhatsApp»
+      (m-25143230, `legacy_activity_target`);
     - `?tab=numero[&sub=estado]`, a bare `/whatsapp` or junk → «Tus redes», where the
       number's state is now.
 
     Same whitelist rule as `legacy_promotions_target`; the ids are only carried: the
     page checks they are this business's."""
     panel = resolve_panel(_text(params.get(TAB_PARAM)), _text(params.get(SUB_PARAM)))
+    if panel == TAB_ACTIVITY:
+        return legacy_activity_target(params)
     if panel not in PANEL_PAGES or panel == TAB_CONNECTION:
         return CONNECTIONS_ROUTE
     kept = {

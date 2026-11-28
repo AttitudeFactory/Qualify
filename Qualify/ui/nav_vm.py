@@ -37,7 +37,8 @@ PLANNER_ROUTE = "/planner"
 ROUTE_ALIASES: dict[str, tuple[str, ...]] = {
     HOME_ROUTE: ("/vitrina",),
     "/responder": ("/inbox", "/conversations", "/leads"),
-    "/resultados": ("/menciones", "/clarity"),
+    # m-25143230: the number's old «Actividad» page lands in «Resultados › WhatsApp».
+    "/resultados": ("/menciones", "/clarity", "/connections/whatsapp/actividad"),
     "/publish": ("/stories",),
 }
 
@@ -69,6 +70,12 @@ def is_current(
         for other in routes:
             if other != route and other.startswith(f"{route}/"):
                 lit = lit & _not(_under(path, other))
+        # An old address under this entry that lands in ANOTHER entry lights that one
+        # only (m-25143230: `/connections/whatsapp/actividad` → «Resultados»).
+        for other, aliases in ROUTE_ALIASES.items():
+            for alias in aliases:
+                if other != route and alias.startswith(f"{route}/"):
+                    lit = lit & _not(_under(path, alias))
     ficha_from_week = path.startswith(f"{DRAFTS_ROUTE}/") & from_week
     if route == DRAFTS_ROUTE and PLANNER_ROUTE in routes:
         lit = lit & _not(ficha_from_week)

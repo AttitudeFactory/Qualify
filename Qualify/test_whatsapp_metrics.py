@@ -40,6 +40,8 @@ from qualify_api.whatsapp.metrics import (
 from . import whatsapp_metrics_block
 from .whatsapp_metrics_provider import conversation_metrics, waba_analytics
 from .whatsapp_metrics_vm import (
+    EMPTY_ANALYTICS,
+    EMPTY_METRICS,
     BarVM,
     ConversationMetricsVM,
     CostLineVM,
@@ -217,3 +219,65 @@ def test_block_renders() -> None:
     rendered = str(component.render())
     for text in ("Conversaciones nuevas", "Pedidos confirmados", "Traspasos a persona"):
         assert text in rendered, text
+
+
+async def test_a_number_switch_mid_load_loads_the_new_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25143230 (review C1): B is chosen while A's metrics are still loading. B's
+    block loads B (it is not turned away by A's load) and A's late answer is dropped."""
+    import asyncio
+
+    from . import whatsapp_metrics_state as module
+    from .whatsapp_metrics_state import WhatsAppMetricsState
+
+    a, b = str(uuid4()), str(uuid4())
+    selected = {"id": a}
+    release_a = asyncio.Event()
+
+    class _Lock:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+    async def scope(self: WhatsAppMetricsState) -> tuple[str, UUID]:
+        return selected["id"], TENANT
+
+    async def metrics(_tenant: UUID, connection: UUID, _days: int) -> object:
+        if str(connection) == a:
+            await release_a.wait()
+        return dataclasses.replace(EMPTY_METRICS, threads_opened=str(connection)[:4])
+
+    async def analytics(_tenant: UUID, _connection: UUID, _days: int) -> object:
+        return EMPTY_ANALYTICS
+
+    monkeypatch.setattr(WhatsAppMetricsState, "_scope", scope)
+    monkeypatch.setattr(WhatsAppMetricsState, "__aenter__", lambda self: _Lock().__aenter__())
+    monkeypatch.setattr(WhatsAppMetricsState, "__aexit__", lambda self, *x: _Lock().__aexit__())
+    monkeypatch.setattr(module, "conversation_metrics", metrics)
+    monkeypatch.setattr(module, "waba_analytics", analytics)
+
+    state = WhatsAppMetricsState()
+    first = asyncio.create_task(state._load(force=False))  # noqa: SLF001
+    await asyncio.sleep(0)
+    assert state.metrics_loading and state.loaded_key.startswith(a)
+    selected["id"] = b  # the owner picks B: its block mounts and asks for B
+    await state._load(force=False)  # noqa: SLF001
+    assert state.loaded_key.startswith(b)
+    assert state.metrics_ready and state.metrics.threads_opened == b[:4]
+    release_a.set()
+    await first
+    assert state.metrics.threads_opened == b[:4]  # A's late answer is dropped
+    # The same number and period while it loads is still waited for, not doubled.
+    calls: list[str] = []
+
+    async def counted(_tenant: UUID, connection: UUID, _days: int) -> object:
+        calls.append(str(connection))
+        return EMPTY_METRICS
+
+    monkeypatch.setattr(module, "conversation_metrics", counted)
+    state.metrics_loading = True
+    await state._load(force=True)  # noqa: SLF001
+    assert calls == []

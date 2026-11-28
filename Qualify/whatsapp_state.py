@@ -43,7 +43,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .connections_provider import request_support
-from .nav_url import flow_param, push_url_script, scalar_param, uuid_param, whatsapp_chats_href
+from .nav_url import (
+    flow_param,
+    push_url_script,
+    replace_url_keep_hash_script,
+    scalar_param,
+    uuid_param,
+    whatsapp_chats_href,
+)
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .whatsapp_provider import (
@@ -58,6 +65,7 @@ from .whatsapp_provider import (
     verify_number,
 )
 from .whatsapp_vm import (
+    ACTIVITY_ROUTE,
     CONNECT_REQUEST_FAILED,
     CONNECT_REQUEST_MESSAGE,
     CONNECT_REQUEST_NO_EMAIL,
@@ -71,6 +79,7 @@ from .whatsapp_vm import (
     PAGE_PANELS,
     PROMOTIONS_ROUTE,
     QR_DEFAULT_CHANNEL,
+    RESULTS_PATH,
     SUB_PARAM,
     TAB_KEYS,
     WHATSAPP_ROUTE,
@@ -78,8 +87,10 @@ from .whatsapp_vm import (
     ProfileForm,
     QrCodeVM,
     WhatsAppNumberVM,
+    activity_url,
     compose_qr_message,
     graph_error_notice,
+    legacy_activity_target,
     legacy_panel_target,
     needs_help,
     panel_route,
@@ -205,6 +216,9 @@ class WhatsAppState(rx.State):
     # «Tus redes» only reads the numbers, never a panel's leftover loads.
     _requested_number: str = ""
     _panel_page: bool = False
+    #: m-25143230: the page on screen is «Resultados › WhatsApp», which draws the
+    #: number's activity: the number selector writes that page's address, not a panel's.
+    _on_results: bool = False
     #: The numbers were read at least once for this session (U1: «Tus redes» offers to
     #: connect WhatsApp only once it KNOWS there is no number, never while loading).
     numbers_loaded: bool = False
@@ -345,17 +359,40 @@ class WhatsAppState(rx.State):
             return None
         if path == WHATSAPP_ROUTE:
             return legacy_panel_target(params)
+        if path == ACTIVITY_ROUTE:
+            # m-25143230: Actividad left this page for «Resultados › WhatsApp».
+            return legacy_activity_target(params)
         return None
 
     def _enter_panel_page(self, params: Mapping[str, object]) -> None:
         self._panel_page = True
+        self._on_results = False
         self._requested_number = uuid_param(params, "cuenta")
+
+    @rx.event
+    def enter_results(self, lease: dict) -> rx.event.EventHandler | None:
+        """m-25143230: the mount of «Resultados › WhatsApp», which draws the number's
+        activity. Reads `?cuenta=` from the browser's own address (`lease["href"]`, as
+        `enter_history`: an event's router data can still be the previous page's) and
+        loads the numbers — our own table only, nothing from Meta; the load takes the
+        number only if it is this business's. No panel's flow or list is restored here."""
+        href = lease.get("href", "") if isinstance(lease, dict) else ""
+        path, params = self._address(href if isinstance(href, str) else "")
+        if path != RESULTS_PATH:
+            return None
+        self._panel_page = False
+        self._on_results = True
+        self._requested_number = uuid_param(params, "cuenta")
+        # Until the load lands, the block waits (it never mounts on a stale number).
+        self.numbers_loaded = False
+        return WhatsAppState.load_numbers
 
     @rx.event
     def enter_connections(self) -> rx.event.EventHandler:
         """m-25027373: on_load of «Tus redes», where each number has its card: read the
         numbers only — no panel's flow or list is restored there."""
         self._panel_page = False
+        self._on_results = False
         self._requested_number = ""
         return WhatsAppState.load_numbers
 
@@ -542,6 +579,11 @@ class WhatsAppState(rx.State):
         self.selected_connection_id = connection_id
         self._requested_number = connection_id  # a later re-read keeps the owner's pick
         self._reset_number_scoped()
+        if self._on_results:
+            # m-25143230: «Resultados › WhatsApp» keeps the number in its address, so a
+            # reload stays on it. Replaced, not pushed: Resultados restores no number
+            # on «atrás», so a history step would change the address and not the screen.
+            return rx.call_script(replace_url_keep_hash_script(activity_url(connection_id)))
         return rx.call_script(push_url_script(self._panel_address(self.active_tab)))
 
     def _pick_number(self, connection_id: object) -> bool:
@@ -615,23 +657,39 @@ class WhatsAppState(rx.State):
             return
         async with self:
             auth = await self.get_state(AuthState)
-            if session_tenant_id != auth.session_tenant_id:
+            raced = session_tenant_id != auth.session_tenant_id
+            if raced:
                 # a logout/login raced this load; free the guard so the next one runs
                 self.is_loading = False
-                return
-            self.numbers = data
-            self.is_loading = False
-            self.numbers_loaded = True
-            ids = {n.connection_id for n in data}
-            # m-25027373: what the page asked for (`_enter_panel_page`), never the
-            # router data of this event, which can still be the previous page's.
-            requested = self._requested_number
-            if requested in ids and requested != self.selected_connection_id:
-                self.selected_connection_id = requested
-                self._reset_number_scoped()
-            if self.selected_connection_id not in ids:
-                self.selected_connection_id = data[0].connection_id if data else ""
-                self._reset_number_scoped()
+            else:
+                self.numbers = data
+                self.is_loading = False
+                self.numbers_loaded = True
+                ids = {n.connection_id for n in data}
+                # m-25027373: what the page asked for (`_enter_panel_page`), never the
+                # router data of this event, which can still be the previous page's.
+                requested = self._requested_number
+                if requested in ids and requested != self.selected_connection_id:
+                    self.selected_connection_id = requested
+                    self._reset_number_scoped()
+                if self.selected_connection_id not in ids:
+                    self.selected_connection_id = data[0].connection_id if data else ""
+                    self._reset_number_scoped()
+                # m-25143230 (review C4): «Resultados › WhatsApp» opened without a number
+                # of this business in its address, and there is a choice: write the one
+                # shown, so a reload or a shared link stays on it.
+                name_it = self._on_results and len(data) > 1 and requested not in ids
+                if name_it:
+                    self._requested_number = self.selected_connection_id
+                shown = self.selected_connection_id
+        if raced:
+            # m-25143230 (review C2): and run it now, for whoever is in session — a page
+            # that waits for `numbers_loaded` («Resultados › WhatsApp») would otherwise
+            # wait forever (its `enter_results` cleared the flag for THIS load).
+            yield WhatsAppState.load_numbers
+            return
+        if name_it:
+            yield rx.call_script(replace_url_keep_hash_script(activity_url(shown)))
 
         # m-25029798: Chats is only the number's list here; a chat (and its drawers)
         # opens in «Por responder» — an old chat address was redirected there already.

@@ -77,6 +77,9 @@ def test_every_whatsapp_tab_has_an_address_and_reads_back() -> None:
         elif url == "/chats/ajustes/whatsapp":
             # m-25017861: the menu's page draws only the menu; no parameter.
             assert key == TAB_MENU
+        elif url.startswith("/resultados?"):
+            # m-25143230: the number's activity is «Resultados › WhatsApp».
+            assert url == "/resultados?tab=whatsapp" and key == "actividad"
         else:
             # m-25027373: «Tu número»'s panels, each on its own page, no parameter.
             assert not url.startswith("/whatsapp") and "?" not in url

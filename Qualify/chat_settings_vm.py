@@ -21,8 +21,9 @@ with the WhatsApp number are hidden without one.
 
 m-25027373 (BU-A10): «Tu número» left `/whatsapp`. Its Perfil, Códigos QR and Formas de
 pago are pages of this hub (`SETTINGS_PROFILE_ROUTE`, `SETTINGS_QR_ROUTE`,
-`SETTINGS_PAYMENTS_ROUTE`, served by `WhatsAppState` like the menu's); its Estado and
-Actividad live in «Tus redes» (`whatsapp_vm.CONNECTIONS_ROUTE`, `ACTIVITY_ROUTE`).
+`SETTINGS_PAYMENTS_ROUTE`, served by `WhatsAppState` like the menu's); its Estado lives
+in «Tus redes» (`whatsapp_vm.CONNECTIONS_ROUTE`) and, since m-25143230, its Actividad in
+«Resultados › WhatsApp» (`whatsapp_vm.ACTIVITY_HOME`).
 
 Pure: no Reflex, no database; `test_chat_settings.py` pins it.
 """

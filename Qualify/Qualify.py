@@ -354,12 +354,15 @@ app.add_page(
     ],
     title="Qualify · Tus redes",
 )
-# m-25027373: the number's «Actividad», reached from its card in «Tus redes».
+# m-25027373: the number's «Actividad», reached from its card in «Tus redes». Since
+# m-25143230 it lives in «Resultados › WhatsApp»: this address only redirects there.
 app.add_page(
     whatsapp_activity_index,
     route="/connections/whatsapp/actividad",
     on_load=[AuthState.require_login, WhatsAppState.enter_page],
-    title="Qualify · Actividad de tu WhatsApp",
+    # Where it lands: Resultados' WhatsApp tab title and description (review C3).
+    title="Qualify · Resultados de WhatsApp",
+    context={"metadata_route": "/resultados"},
 )
 # WA-12: the WhatsApp module. Since m-25027373 it draws nothing: `enter_page` loads
 # nothing and the page's history handler sends every address of it to its new place.
