@@ -25,6 +25,7 @@ from . import (
     clip_editor_vm,
     clip_gallery_vm,
     editor_idea_vm,
+    left_out_vm,
     part_editor_vm,
     reel_parts_vm,
     reel_wait_vm,
@@ -6045,6 +6046,18 @@ def _clip_inspiration() -> rx.Component:
                     align_items="start",
                     flex="1",
                     min_width="0",
+                ),
+                # m-25143223 (Deivid, option A): what the cut left out, behind the switch
+                rx.cond(
+                    CreativeState.clip_left_out_on,
+                    rx.button(
+                        rx.icon("scissors", size=T.ICON_SM, aria_hidden="true"),
+                        left_out_vm.OPEN_LABEL,
+                        type="button",
+                        variant="soft",
+                        min_height="44px",
+                        on_click=CreativeState.open_clip_left_out,
+                    ),
                 ),
                 rx.cond(
                     href != "",

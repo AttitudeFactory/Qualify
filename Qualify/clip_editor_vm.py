@@ -80,7 +80,10 @@ FLOW_IDEA = "idea"
 #: m-25142725: «Mostrar a la IA» — its tab shows only with the AI parts on
 #: (`REF_TAB`, never in `FLOW_TABS`: off, the panel is as before).
 FLOW_REF = "ref"
-FLOWS: tuple[str, ...] = (FLOW_MEDIA, FLOW_TEXT, FLOW_EFFECT, FLOW_IDEA, FLOW_REF)
+#: m-25143223: «Lo que quedó fuera del reel» — its tab shows only while the reel's plan
+#: was cut and the AI parts are on (`left_out_vm.TAB`, never in `FLOW_TABS`).
+FLOW_LEFT_OUT = "left_out"
+FLOWS: tuple[str, ...] = (FLOW_MEDIA, FLOW_TEXT, FLOW_EFFECT, FLOW_IDEA, FLOW_REF, FLOW_LEFT_OUT)
 #: A flow open in the panel is held where a chosen block's id would be, with this mark
 #: (`+media`): one thing at a time under the timeline.
 FLOW_MARK = "+"
@@ -90,6 +93,7 @@ FLOW_QUESTIONS = {
     FLOW_EFFECT: "¿Qué le pones a tu video?",
     FLOW_IDEA: "¿De qué trata tu video?",
     FLOW_REF: "¿Qué le mostramos a la IA?",
+    FLOW_LEFT_OUT: "Lo que quedó fuera del reel",
 }
 #: Deivid 2026-11-17 («que se junten todo en un solo slide panel»): every flow is a tab of
 #: ONE side panel — (flow, lucide icon, the tab's name). The chosen tab shows its icon and

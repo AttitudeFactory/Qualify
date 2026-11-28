@@ -53,7 +53,7 @@ from . import clip_editor_vm as vm
 from . import clip_joins_vm as joins_vm
 from . import clip_photos_vm as photos_vm
 from . import clip_refs_vm as refs_vm
-from . import clip_texts_vm
+from . import clip_texts_vm, left_out_vm
 from . import editor_idea_vm as idea_vm
 from . import parts_start_vm as start_vm
 from .creative_state import CreativeState
@@ -1243,11 +1243,151 @@ def _ref_tab() -> rx.Component:
     )
 
 
+# -- m-25143223 (PR B): «Lo que quedó fuera del reel» ---------------------------------------
+
+
+def _left_out_picture(row: rx.Var) -> rx.Component:
+    """A stored frame of the stretch (signed, decorative: the row names it), else the
+    film glyph — as the parts' rows do."""
+    return rx.box(
+        rx.cond(
+            row["thumb"] != "",
+            rx.image(
+                src=BACKEND_BASE + row["thumb"],
+                alt="",
+                width="100%",
+                height="100%",
+                object_fit="cover",
+                loading="lazy",
+            ),
+            rx.center(
+                rx.icon("film", size=T.ICON_MD, color=T.TEXT_MUTED),
+                width="100%",
+                height="100%",
+                aria_hidden="true",
+            ),
+        ),
+        width="56px",
+        height="56px",
+        flex_shrink="0",
+        border_radius="8px",
+        overflow="hidden",
+        background=T.SURFACE_BG_RAISED,
+    )
+
+
+def _left_out_row(row: rx.Var) -> rx.Component:
+    """One stretch: picture, «de 0:44 a 0:51», what is seen, why it is out and — with an
+    AI part of the reel aimed at — «Usar en vez de la parte con IA n». The start or end
+    the analysis did not cover is information only (no button)."""
+    return rx.el.div(
+        rx.hstack(
+            _left_out_picture(row),
+            rx.vstack(
+                rx.text(row["range"], size="2", weight="medium", class_name="q-nums"),
+                rx.cond(
+                    row["description"] != "",
+                    rx.text(row["description"], size="2"),
+                ),
+                rx.text(row["reason"], size="1", color=T.TEXT_MUTED),
+                rx.cond(
+                    row["use"] == "1",
+                    rx.button(
+                        rx.icon("replace", size=T.ICON_SM, aria_hidden="true"),
+                        row["use_label"],
+                        type="button",
+                        variant="surface",
+                        min_height="44px",
+                        aria_label=row["use_aria"],
+                        on_click=S.swap_clip_left_out(row["id"]),
+                    ),
+                ),
+                spacing="1",
+                align_items="start",
+                flex="1",
+                min_width="0",
+            ),
+            spacing="3",
+            align="start",
+            width="100%",
+        ),
+        role="listitem",
+        aria_label=row["aria"],
+        custom_attrs={"data-left-out": row["id"]},
+        style={"opacity": rx.cond(row["swappable"] == "1", "1", "0.8")},
+        width="100%",
+    )
+
+
+def _left_out_tab() -> rx.Component:
+    """«Lo que quedó fuera del reel» (Deivid 2026-11-27, option A): which part a stretch
+    would replace (or «Elige primero…»), the last swap's line and what the contract finds
+    after it, then the stretches in reel order. Read again on every opening and after
+    every swap; a failed read offers «Intentar de nuevo»."""
+    phase = S.clip_left_out_phase
+    stretches = rx.cond(
+        S.clip_left_out_rows.length() > 0,  # type: ignore[attr-defined]
+        rx.vstack(
+            rx.foreach(S.clip_left_out_rows, _left_out_row),
+            role="list",
+            aria_label=left_out_vm.TITLE,
+            spacing="4",
+            width="100%",
+        ),
+        rx.text(left_out_vm.EMPTY, size="2", color=T.TEXT_MUTED),
+    )
+    return rx.vstack(
+        rx.text(S.clip_left_out_head, size="2"),
+        rx.cond(S.clip_left_out_said != "", callout(S.clip_left_out_said, "ok", live=False)),
+        rx.foreach(S.clip_left_out_problems, lambda words: callout(words, "warn")),
+        rx.cond(S.clip_left_out_error != "", callout(S.clip_left_out_error, "warn")),
+        rx.match(
+            phase,
+            (
+                "loading",
+                rx.text(left_out_vm.LOADING, size="2", color=T.TEXT_MUTED, role="status"),
+            ),
+            (
+                "error",
+                rx.vstack(
+                    callout(left_out_vm.FAILED, "warn"),
+                    rx.button(
+                        left_out_vm.RETRY_LABEL,
+                        type="button",
+                        variant="surface",
+                        min_height="44px",
+                        on_click=S.retry_clip_left_out,
+                    ),
+                    spacing="2",
+                    align_items="start",
+                ),
+            ),
+            ("ready", stretches),
+            rx.fragment(),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _ai_actions() -> rx.Component:
     """«Probar esta parte» (off until PR 2, its reason beside it), «Juntar con la
-    siguiente» (a short part of a reel). «Quitar» is the bar's, never twice."""
+    siguiente» (a short part of a reel). «Quitar» is the bar's, never twice.
+    m-25143223: «Cambiar por otro tramo del reel» on a part that comes from a cut reel."""
     row = S.clip_ai_chosen
     return rx.vstack(
+        rx.cond(
+            S.clip_left_out_shortcut,
+            rx.button(
+                rx.icon("replace", size=T.ICON_SM, aria_hidden="true"),
+                left_out_vm.SHORTCUT_LABEL,
+                type="button",
+                variant="surface",
+                min_height="44px",
+                on_click=S.open_clip_left_out_for_part,
+            ),
+        ),
         rx.cond(
             row["problem"] != "",
             callout(row["problem"], "warn"),
@@ -1424,8 +1564,15 @@ def _flow_tabs() -> rx.Component:
     the design system's segmented menu with an icon and a name (`.q-source-seg`, like
     the media sources: the chosen tab shows both, the others their icon). m-25142725:
     «Referencia» last, only while the state says the AI parts are on (`clip_ai_on`)."""
+    # m-25143223: «Lo que quedó fuera del reel» after it, only while the reel was cut
     return rx.cond(
-        S.clip_ai_on, _flow_tab_bar((*vm.FLOW_TABS, vm.REF_TAB)), _flow_tab_bar(vm.FLOW_TABS)
+        S.clip_ai_on,
+        rx.cond(
+            S.clip_left_out_on,
+            _flow_tab_bar((*vm.FLOW_TABS, vm.REF_TAB, left_out_vm.TAB)),
+            _flow_tab_bar((*vm.FLOW_TABS, vm.REF_TAB)),
+        ),
+        _flow_tab_bar(vm.FLOW_TABS),
     )
 
 
@@ -1482,6 +1629,7 @@ def _flow_drawer(media_body: rx.Component) -> rx.Component:
                     (vm.FLOW_EFFECT, _effects()),
                     (vm.FLOW_IDEA, _idea()),
                     (vm.FLOW_REF, _ref_tab()),  # m-25142725
+                    (vm.FLOW_LEFT_OUT, _left_out_tab()),  # m-25143223
                     rx.fragment(),
                 ),
                 spacing="4",

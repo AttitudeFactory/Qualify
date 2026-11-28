@@ -65,6 +65,7 @@ def test_fixed_words() -> None:
         "¿Qué le pones a tu video?",
         "¿De qué trata tu video?",
         "¿Qué le mostramos a la IA?",  # m-25142725: its tab only with the AI parts on
+        "Lo que quedó fuera del reel",  # m-25143223: only while the reel was cut
     ]
     assert vm.REF_TAB not in vm.FLOW_TABS
     assert vm.NO_EFFECTS_YET == (

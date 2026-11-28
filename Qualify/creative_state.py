@@ -45,6 +45,7 @@ from qualify_api.creative.context_ai import (
 )
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
+from qualify_api.creative.left_out import check_after_swap
 from qualify_api.creative.owner_uploads import served_upload_tenant
 from qualify_api.creative.part_extend import extend_available as part_extend_available
 from qualify_api.creative.parts import (
@@ -98,6 +99,7 @@ from qualify_creative.schemas import (
     MAX_PRODUCT_IMAGES,
     PART_DESCRIPTION_MAX,
     PRESENTER_DESCRIPTIONS,
+    VideoPartPlan,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -111,6 +113,8 @@ from . import (
     clip_texts_vm,
     edit_sequence,
     editor_idea_vm,
+    left_out_provider,
+    left_out_vm,
     part_editor_provider,
     part_editor_vm,
     parts_start_vm,
@@ -900,6 +904,29 @@ async def _read_reel_wait(
             laid = None
     # as it came: `reel_blocks`' ops carry how much of the reel they follow (m-25143223)
     return reel_wait_vm.ready(len(entries)), entries, laid or []
+
+
+async def _fetch_left_out(
+    state: Any,
+    tenant_id: UUID,
+    token: int,
+    analysis_id: UUID,
+    products: tuple[str, ...],
+    used: Any,
+) -> None:
+    """m-25143223: «Lo que quedó fuera del reel» read off the event loop (one database
+    read, then the server's pure contract — nothing paid) and stored under the state's
+    lock, unless another request came meanwhile (`_clip_left_out_token`). A failed read
+    is the tab's «Intentar de nuevo»; the log keeps the exception type only."""
+    try:
+        spans = await asyncio.to_thread(
+            left_out_provider.left_out_rows, tenant_id, analysis_id, used, products
+        )
+    except Exception as exc:  # noqa: BLE001 — the tab says it; the owner never sees a crash
+        logger.warning("left-out stretches unreadable: %s", type(exc).__name__)
+        spans = None
+    async with state:
+        state._clip_left_out_store(token, spans)
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -1995,6 +2022,19 @@ class CreativeState(rx.State):
     #: m-25143223: the card's «Usamos 44 s de los 63 del reel.» when the laid plan stops
     #: before the reel's end ("" when it covers it whole, or no plan is laid).
     clip_reel_cut: str = ""
+    #: m-25143223 (PR B): «Lo que quedó fuera del reel» — the stretches of the reel the
+    #: Clip does not use, as the server answered them last (`left_out_vm.span_dict`; asked
+    #: again after every change, never kept across one), the AI part a stretch would
+    #: replace ("" = none chosen) and the request's token (a stale answer is dropped).
+    _clip_left_out_spans: list[dict[str, Any]] = []
+    _clip_left_out_target: str = ""
+    _clip_left_out_token: int = 0
+    #: the tab's state: "" (nothing asked), "loading", "ready" or "error".
+    clip_left_out_phase: str = ""
+    #: the last swap's line, the contract's refusal and `check_after_swap`'s problems.
+    clip_left_out_said: str = ""
+    clip_left_out_error: str = ""
+    clip_left_out_problems: list[str] = []
     #: ED-06 (design D21): the general panel («¿De qué trata tu video?») is open as the
     #: thing chosen; any block, join or side panel chosen closes it.
     clip_general_open: bool = False
@@ -4438,6 +4478,7 @@ class CreativeState(rx.State):
         # ED-06: a reel's plan laid as blocks goes with its analysis
         self.clip_reel_blocks = False
         self.clip_reel_cut = ""
+        self._clip_left_out_reset()
         self.parts_piece += 1
         self._show_reel_wait(reel_wait_vm.IDLE)
         self._reel_poll_token += 1
@@ -5633,6 +5674,7 @@ class CreativeState(rx.State):
         self._clip_ref_spans = {}
         self.clip_reel_blocks = False  # ED-06: its plan comes as blocks once it is read
         self.clip_reel_cut = ""
+        self._clip_left_out_reset()
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
         # m-25026509: a fresh clip — the last piece's answer never rides on
@@ -7163,6 +7205,7 @@ class CreativeState(rx.State):
         # m-25143223: a plan that stops before the reel's end says how much it follows
         cut = getattr(ops, "cut", None)
         self.clip_reel_cut = editor_idea_vm.reel_cut_card(cut)
+        self._clip_left_out_reset()
         self._clip_say(editor_idea_vm.reel_line(ai, own, cut))
         return True
 
@@ -7627,6 +7670,286 @@ class CreativeState(rx.State):
             )
         seconds = ai_block_vm.clamp_seconds(plan.get("seconds"))
         self.clip_edit_notice = self._clip_with_follow(ai_block_vm.merged_line(number, seconds))
+
+    # -- m-25143223 (PR B): «Ver qué quedó fuera» -----------------------------------------
+
+    def _clip_left_out_reset(self) -> None:
+        """Nothing of «Lo que quedó fuera del reel» rides on: a read still running is
+        dropped at its end (the token moves)."""
+        self._clip_left_out_spans = []
+        self._clip_left_out_target = ""
+        self._clip_left_out_token += 1
+        self.clip_left_out_phase = ""
+        self.clip_left_out_said = ""
+        self.clip_left_out_error = ""
+        self.clip_left_out_problems = []
+
+    def _clip_left_out_analysis(self) -> UUID | None:
+        """The reel's analysis the laid plan came from (the server-held id)."""
+        try:
+            return UUID(self.reel_analysis_id) if self.reel_analysis_id else None
+        except ValueError:
+            return None
+
+    def _clip_left_out_live(self) -> bool:
+        """«Ver qué quedó fuera» is offered (Deivid 2026-11-27, option A): the AI parts on
+        (`QUALIFY_CLIP_AI_PARTS`, read now, as the server does), the reel's plan laid as
+        blocks and cut short of the reel (`clip_reel_cut`). Off: nothing of it shows."""
+        return (
+            self.clip_reel_blocks
+            and self.clip_reel_cut != ""
+            and self._clip_left_out_analysis() is not None
+            and self._clip_ai_on()
+        )
+
+    def _clip_left_out_part(self, block_id: str) -> bool:
+        """`block_id` is an AI part on the timeline now that comes from THIS reel."""
+        if not ai_block_vm.is_token(block_id) or self._clip_ai_number(block_id) <= 0:
+            return False
+        raw = str(self._clip_ai_plan(block_id).get("analysis_id") or "")
+        try:
+            return bool(raw) and UUID(raw) == self._clip_left_out_analysis()
+        except ValueError:
+            return False
+
+    def _clip_left_out_target_n(self) -> int:
+        """«Parte con IA n»'s n of the part a stretch would replace (0 = none chosen)."""
+        target = self._clip_left_out_target
+        return self._clip_ai_number(target) if self._clip_left_out_part(target) else 0
+
+    def _clip_left_out_entries(self, skip: int = -1) -> list[VideoPartPlan]:
+        """The Clip's AI entries as the contract reads them, but the one at `skip` (the
+        part being replaced: `span_entry` takes the Clip WITHOUT it)."""
+        out: list[VideoPartPlan] = []
+        for at, plan in enumerate(ai_block_vm.plans(self.clip_ai_parts, references=True)):
+            if at == skip:
+                continue
+            try:
+                out.append(VideoPartPlan.model_validate(plan))
+            except ValidationError:
+                continue
+        return out
+
+    def _clip_left_out_blocks(self) -> ClipBlocks | None:
+        """The track as the server's `ClipBlocks` (None while an own video has no length
+        yet, or the editor holds what the type refuses)."""
+        try:
+            return editor_idea_vm.track_blocks(
+                self._clip_ai_segments(), ai_block_vm.plans(self.clip_ai_parts, references=True)
+            )
+        except (ValidationError, ValueError, TypeError):
+            return None
+
+    def _clip_left_out_request(self) -> tuple[int, UUID, tuple[str, ...], Any] | None:
+        """What the next read asks — (token, analysis, products, the Clip as it is NOW) —
+        or None off the switch. Never an old id: every answer replaces the last one."""
+        analysis_id = self._clip_left_out_analysis()
+        if analysis_id is None or not self._clip_left_out_live():
+            return None
+        self._clip_left_out_token += 1
+        self.clip_left_out_phase = "loading"
+        blocks = self._clip_left_out_blocks()
+        used: Any = blocks if blocks is not None else self._clip_left_out_entries()
+        return self._clip_left_out_token, analysis_id, (self.brief_product_ref,), used
+
+    def _clip_left_out_store(self, token: int, spans: list[dict[str, Any]] | None) -> None:
+        """The read's answer, unless another request came after it."""
+        if token != self._clip_left_out_token:
+            return
+        if spans is None:
+            self._clip_left_out_spans = []
+            self.clip_left_out_phase = "error"
+            return
+        self._clip_left_out_spans = [dict(s) for s in spans]
+        self.clip_left_out_phase = "ready"
+
+    def _clip_open_left_out(self, target: str) -> list[Any]:
+        """The side panel on «Lo que quedó fuera del reel», aimed at `target` when it is
+        an AI part of the reel ("" = none: the list asks to choose one first), and the
+        list read again."""
+        if not self._clip_left_out_live():
+            return []
+        aimed = target if self._clip_left_out_part(target) else ""
+        events = self._clip_open_flow(clip_editor_vm.FLOW_LEFT_OUT)
+        self._clip_left_out_target = aimed
+        self.clip_left_out_said = ""
+        self.clip_left_out_error = ""
+        self.clip_left_out_problems = []
+        self.clip_left_out_phase = "loading"
+        events.append(CreativeState.load_clip_left_out)
+        return events
+
+    @rx.event
+    def open_clip_left_out(self) -> list[Any]:
+        """The «Video de inspiración» card's «Ver qué quedó fuera»: the list, aimed at the
+        AI part chosen if it comes from the reel."""
+        return self._clip_open_left_out(self.clip_edit_block)
+
+    @rx.event
+    def open_clip_left_out_for_part(self) -> list[Any]:
+        """The chosen AI part's «Cambiar por otro tramo del reel»: the list, aimed at it."""
+        block = self.clip_edit_block
+        if not self._clip_left_out_part(block):
+            return []
+        return self._clip_open_left_out(block)
+
+    @rx.event
+    def retry_clip_left_out(self) -> Any:
+        """The tab's «Intentar de nuevo» after a failed read."""
+        if clip_editor_vm.flow_of(self.clip_edit_block) != clip_editor_vm.FLOW_LEFT_OUT:
+            return None
+        self.clip_left_out_phase = "loading"
+        return CreativeState.load_clip_left_out
+
+    @rx.event(background=True)
+    async def load_clip_left_out(self) -> None:
+        """The tab's list: one read of the reel's analysis, off the event loop, with the
+        session's business sealed at the start. Nothing paid."""
+        async with self:
+            if clip_editor_vm.flow_of(self.clip_edit_block) != clip_editor_vm.FLOW_LEFT_OUT:
+                return
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            if tenant_id is None:
+                self.clip_left_out_phase = "error"
+                return
+            ask = self._clip_left_out_request()
+            if ask is None:
+                self.clip_left_out_phase = ""
+                return
+        await _fetch_left_out(self, tenant_id, *ask)
+
+    @rx.event(background=True)
+    async def swap_clip_left_out(self, span_id: str) -> None:
+        """«Usar en vez de la parte con IA n»: the server builds the stretch's part
+        (`span_entry`, the reel read off the event loop) and it takes the chosen part's
+        place (`_clip_left_out_apply`); refused, the contract's words show in the tab.
+        Then the list is asked again at once. Review: nothing changes unless the part is
+        still there and unchanged once the server answered. Nothing paid."""
+        async with self:
+            target = self._clip_left_out_target
+            span = next(
+                (
+                    s
+                    for s in self._clip_left_out_spans
+                    if s.get("id") == span_id and s.get("swappable")
+                ),
+                None,
+            )
+            analysis_id = self._clip_left_out_analysis()
+            if (
+                span is None
+                or analysis_id is None
+                or not self._clip_left_out_live()
+                or not self._clip_left_out_part(target)
+            ):
+                return
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            if tenant_id is None:
+                return
+            before = self._clip_ai_plan(target)
+            used = self._clip_left_out_entries(skip=self._clip_ai_index(target))
+            products = (self.brief_product_ref,)
+            self._clip_left_out_token += 1
+            token = self._clip_left_out_token
+            self.clip_left_out_error = ""
+        try:
+            plan, refused = await asyncio.to_thread(
+                left_out_provider.swap_entry, tenant_id, analysis_id, str(span_id), used, products
+            )
+        except Exception as exc:  # noqa: BLE001 — said in the tab, never a crash
+            logger.warning("left-out swap unreadable: %s", type(exc).__name__)
+            plan, refused = None, left_out_vm.SWAP_FAILED
+        async with self:
+            if (
+                token != self._clip_left_out_token
+                or not self._clip_left_out_part(target)
+                or self._clip_ai_plan(target) != before
+            ):
+                return  # moved, removed or changed meanwhile: nothing is swapped
+            if plan is None:
+                self.clip_left_out_error = refused
+            else:
+                self._clip_left_out_apply(target, plan, span)
+            ask = self._clip_left_out_request()
+        if ask is not None:
+            await _fetch_left_out(self, tenant_id, *ask)
+
+    def _clip_left_out_apply(
+        self, target: str, plan: Mapping[str, Any], span: Mapping[str, Any]
+    ) -> None:
+        """The stretch's part takes `target`'s place (Deivid, option A): same block, same
+        token — its texts, effects, joins and references stay —, its entry and seconds
+        the stretch's. A join that no longer fits goes back to «Corte» and the line says
+        so; the references follow their part as always (`_clip_with_follow`); then the
+        Clip is checked as the contract says (`check_after_swap`)."""
+        number = self._clip_ai_number(target)
+        before = self._clip_edit_snapshot()
+        self._clip_ai_put(target, dict(plan), described=True)
+        self.clip_ai_merge_error = ""
+        dropped = self._clip_left_out_fit_joins(target)
+        self._clip_fit_overlays()
+        self._clip_effects_follow()
+        self._clip_edit_changed(before)
+        line = left_out_vm.swapped_line(
+            number, float(span.get("start_s") or 0.0), float(span.get("end_s") or 0.0), dropped
+        )
+        self.clip_edit_notice = self._clip_with_follow(line)
+        self.clip_left_out_said = self.clip_edit_notice
+        self.clip_left_out_problems = self._clip_left_out_problems()
+
+    def _clip_left_out_fit_joins(self, target: str) -> list[str]:
+        """After a swap, the joins beside `target` that no longer fit (the server's room
+        check, `clip_joins_vm.room_problems`) go: its own first («before»), then the next
+        block's («after») if the part is still too short. Returns the sides dropped."""
+        ids = clip_joins_vm.segment_ids(self._clip_tl_media())
+        if target not in ids:
+            return []
+        at = ids.index(target)
+        following = ids[at + 1] if at + 1 < len(ids) else ""
+        dropped: list[str] = []
+        for side, block in (("before", target), ("after", following)):
+            if not block or block not in self.clip_block_joins:
+                continue
+            if at not in clip_joins_vm.room_problems(self._clip_edit_recipe().segments):
+                break
+            self._clip_keep_joins({k: v for k, v in self.clip_block_joins.items() if k != block})
+            dropped.append(side)
+        return dropped
+
+    def _clip_left_out_problems(self) -> list[str]:
+        """`check_after_swap`'s problems, in the contract's words ([] = it may be made)."""
+        blocks = self._clip_left_out_blocks()
+        if blocks is None:
+            return []
+        tenant = tenant_uuid(self._clip_session_tenant) if self._clip_session_tenant else None
+        return left_out_vm.problem_texts(check_after_swap(blocks, tenant_id=tenant), blocks.seconds)
+
+    @rx.var
+    def clip_left_out_on(self) -> bool:
+        """The card's «Ver qué quedó fuera» and the tab are offered (`_clip_left_out_live`)."""
+        return self._clip_left_out_live()
+
+    @rx.var
+    def clip_left_out_shortcut(self) -> bool:
+        """The chosen AI part's «Cambiar por otro tramo del reel»: it comes from the reel."""
+        return self._clip_left_out_live() and self._clip_left_out_part(self.clip_edit_block)
+
+    @rx.var
+    def clip_left_out_rows(self) -> list[dict[str, str]]:
+        """The tab's stretches (`left_out_vm.rows`), each with «Usar en vez de la parte
+        con IA n» only while an AI part of the reel is aimed at."""
+        if not self._clip_left_out_live():
+            return []
+        return left_out_vm.rows(self._clip_left_out_spans, self._clip_left_out_target_n())
+
+    @rx.var
+    def clip_left_out_head(self) -> str:
+        """The line over the list: the part a stretch would replace, or «Elige primero…»."""
+        if not self._clip_left_out_live():
+            return ""
+        return left_out_vm.head_line(self._clip_left_out_target_n())
 
     def _clip_ai_create_off(self) -> str:
         """Why «Crear» is off with AI parts on the timeline ("" = it is not): until PR 2
@@ -9559,6 +9882,7 @@ class CreativeState(rx.State):
         # ED-06: and so do the reel's plan laid as blocks and the last idea's provenance
         self.clip_reel_blocks = False
         self.clip_reel_cut = ""
+        self._clip_left_out_reset()
         self._clip_idea_provenance = None
         self.clip_general_open = False
         self.clip_ai_merge_error = ""
@@ -10786,6 +11110,8 @@ class CreativeState(rx.State):
             return self._clip_add_ai_part()
         if flow == clip_editor_vm.FLOW_REF:
             return self._clip_open_refs()  # m-25142725: «Mostrar a la IA»
+        if flow == clip_editor_vm.FLOW_LEFT_OUT:
+            return self._clip_open_left_out(self.clip_edit_block)  # m-25143223
         if flow == clip_editor_vm.FLOW_MEDIA and clip_editor_vm.timeline_full(
             self._clip_tl_media()
         ):
@@ -10804,6 +11130,9 @@ class CreativeState(rx.State):
             return []
         if value == clip_editor_vm.FLOW_REF:
             return self._clip_open_refs()  # m-25142725: only with the AI parts on
+        if value == clip_editor_vm.FLOW_LEFT_OUT:
+            # m-25143223: only while the reel was cut; aimed at the part it was before
+            return self._clip_open_left_out(self._clip_left_out_target)
         # back on «¿Con qué lo armamos?», its source is the one left open
         return self._clip_open_flow(value, tab=self.clip_source_tab, opener=self.clip_flow_opener)
 
