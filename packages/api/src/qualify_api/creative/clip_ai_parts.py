@@ -42,12 +42,16 @@ such a Clip exist and be assembled:
   never created, or made without its video, is a broken row, not a choice: the Clip
   fails at once (`ai_part_failed`), as in PR 2.
   A part the owner removed is left out, its block dropped from the assembly.
+  m-25142979: the pass that sees a part failed stages the owner's email («La parte con
+  IA n de tu video no salió») — one per Clip and pass, never twice for the same part and
+  revision (`clip_avatar_mail`, `AiPartsWait.failed`).
 - **A part added to a made Clip** (m-25142982, `clip_ai_part_actions.add_part`): the
   Clip's new brief is the one it played plus ONE new AI block, a brief the server
   derived (`is_added_part_brief`), so its block's child is the newest place
   (`entry_slots`). It waits as above, but never fails for that part: once the owner's
   time runs out — or the part is broken — it is assembled without it (the video it had),
   and nothing of its other parts comes back (spent on the video the owner has).
+  Its failure email (m-25142979) says so: the video stays as it was.
 - **After the Clip is made** its brief plays each part as a stretch of the part's file.
   The assembly always plays a part's ACTIVE version (`refresh`): a stretch of an older
   version of one of its parts («Rehacer esta parte», another mode) is swapped for the
@@ -709,6 +713,9 @@ class AiPartsWait:
 
     reason: str
     wait_until: datetime | None = None
+    #: m-25142979: with `part_failed`, the failed parts the owner must choose for (not
+    #: removed) — what the failure email of this pass is staged from.
+    failed: tuple[AiPartRow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -829,7 +836,7 @@ def ai_parts_gate(
             logger.info("clip %s: the owner's time ran out; assembled without it", clip_id)
             live = [(p, row, state) for p, row, state in live if state != "failed"]
         else:
-            return AiPartsWait("part_failed", wait_until=deadline)
+            return AiPartsWait("part_failed", wait_until=deadline, failed=tuple(failed))
     if any(state == "creating" for _, _, state in live):
         return AiPartsWait("creating")
     videos: dict[int, AiPartVideo] = {}

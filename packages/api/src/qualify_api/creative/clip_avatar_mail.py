@@ -40,6 +40,21 @@ the Clip's own scene item (`character_scene.scenes_gate`). Its switch is
 `QUALIFY_CLIP_CHARACTER_SCENE`: nothing staged nor sent while it is off, and the chore
 reads nothing while it and both avatar switches are off.
 
+**AI parts** (m-25142979, ADR 50 §13): a Clip's «parte con IA» that failed keeps the
+Clip waiting 72 h for its owner (m-25129407) and sends ONE email per Clip and pass, in
+its own words (`mail.clip_ai_part`) — `kind` `ai_part_failed`, `block_ids` the parts,
+`block_revisions` each part's revision as it failed (migration 0193). The wait writes
+nothing on the Clip, so the pass that sees a failed part stages its row in its own
+fenced write (`ContentService._stage_ai_part_mail`), and a pair (part, revision) already
+in a row is never staged again (`mailable_ai_part_failures`): only a part made again (a
+new revision) that fails again sends one more. A Clip that failed at once
+(`ai_part_failed`) or whose 72 h ran out (`ai_part_expired`) never waits, so it never
+stages; a row staged before is closed `resolved` (the Clip is no longer `drafting`). Its
+switch is `QUALIFY_CLIP_AI_PARTS`: nothing staged nor sent while it is off (a row closed
+`switched_off` was never sent, so its parts are mailed again once it is back on). A part
+added to a made Clip (m-25142982) waits too, but its Clip keeps its video when the time
+runs out: its email says so (`added`). «Quitar» is offered as the screen offers it.
+
 **Who.** The Clip's author (`content_briefs.created_by`), while still a member of the
 business with a real seat and a confirmed address (`auth.confirmed_email`, fail closed).
 
@@ -52,13 +67,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from qualify_creative.schemas import CharacterSceneItem, ClipAvatarSlot
+from qualify_creative.schemas import CharacterSceneItem, ClipAvatarSlot, ContentBrief
 
 from qualify_api.creative.character_scene import (
     SWITCHED_OFF,
@@ -68,6 +83,12 @@ from qualify_api.creative.character_scene import (
     scene_enabled,
     scene_owner_deadline,
 )
+from qualify_api.creative.clip_ai_parts import (
+    CLIP_AI_PART_OWNER_WAIT,
+    AiPartRow,
+    part_state,
+)
+from qualify_api.creative.clip_ai_parts import owner_deadline as ai_part_deadline
 from qualify_api.creative.clip_avatar import (
     BlockRow,
     PlannedBlock,
@@ -77,6 +98,11 @@ from qualify_api.creative.clip_avatar import (
     plan_states,
 )
 from qualify_api.mail import Mailer, MailNotConfigured, MailRejected, OutgoingMail
+from qualify_api.mail.clip_ai_part import (
+    AI_PART_FAILED,
+    AI_PART_TEMPLATE_VERSION,
+    ai_part_failure_mail,
+)
 from qualify_api.mail.clip_avatar import (
     BLOCK_FAILED,
     CLIP_TOO_LONG,
@@ -90,6 +116,9 @@ logger = logging.getLogger(__name__)
 #: m-25128784 PR 2: the `block_kind` of a character scene's failure. The same table, kind
 #: (`block_failed`) and identity as an avatar's; `block_ids` are the scenes' drafts.
 SCENE_MAIL_KIND = "character_scene"
+#: m-25142979: the `block_kind` of a Clip's AI part that failed — its own `kind`
+#: (`ai_part_failed`) and words; `block_ids` are the parts, with their revisions.
+AI_PART_MAIL_KIND = "ai_part"
 
 #: Resend keeps an idempotency key 24 h: stop retrying an uncertain send before then.
 RETRY_WINDOW = timedelta(hours=23)
@@ -110,9 +139,13 @@ class AvatarFailure:
     block_kind: str
     code: str
     failed_at: datetime
+    #: m-25142979: an AI part's revision as it failed (None for an avatar or a scene).
+    revision: int | None = None
 
     @property
     def mail_kind(self) -> str:
+        if self.block_kind == AI_PART_MAIL_KIND:
+            return AI_PART_FAILED
         return CLIP_TOO_LONG if self.code == CLIP_TOO_LONG else BLOCK_FAILED
 
 
@@ -142,6 +175,45 @@ def mailable_failures(
     return tuple(found)
 
 
+def ai_parts_mail_on(env: Mapping[str, str] | None = None) -> bool:
+    """`QUALIFY_CLIP_AI_PARTS` read as the server reads it (`ai_parts.clip_ai_parts_on`);
+    `env` for tests. Off: no AI part email is staged nor sent."""
+    from qualify_api.creative.video_pipeline.ai_parts import (  # noqa: PLC0415
+        CLIP_AI_PARTS_SWITCH,
+        clip_ai_parts_on,
+    )
+
+    if env is None:
+        return clip_ai_parts_on()
+    return env.get(CLIP_AI_PARTS_SWITCH, "off").strip().lower() == "on"
+
+
+def mailable_ai_part_failures(
+    failed: Sequence[AiPartRow],
+    mailed: Collection[tuple[UUID, int]],
+    now: datetime,
+    env: Mapping[str, str] | None = None,
+) -> tuple[AvatarFailure, ...]:
+    """m-25142979: the failed AI parts of a waiting Clip that get an email on this pass —
+    not removed, failed, and their (part, revision) in no row yet (`mailed`). All are
+    stamped with this pass's moment (`now`), so they share ONE row and ONE email.
+    Nothing while `QUALIFY_CLIP_AI_PARTS` is off. Pure but for the switch."""
+    if not ai_parts_mail_on(env):
+        return ()
+    return tuple(
+        AvatarFailure(
+            block_id=row.id,
+            slot=row.slot,
+            block_kind=AI_PART_MAIL_KIND,
+            code=row.failure_reason or "failed",
+            failed_at=now,
+            revision=row.revision,
+        )
+        for row in sorted(failed, key=lambda r: r.slot)
+        if part_state(row) == "failed" and (row.id, row.revision) not in mailed
+    )
+
+
 @dataclass(frozen=True)
 class MailGroup:
     """What ONE row is staged for: a Clip's avatars stamped together, of one kind."""
@@ -154,9 +226,13 @@ class MailGroup:
     #: m-25128784: the group is of character scenes (a Clip has scenes or avatar blocks,
     #: never both): staged with the scene's template version.
     scene: bool = False
+    #: m-25142979: each AI part's revision as it failed (`ai_part_failed` only).
+    revisions: tuple[int, ...] | None = None
 
     @property
     def template_version(self) -> str:
+        if self.kind == AI_PART_FAILED:
+            return AI_PART_TEMPLATE_VERSION
         return SCENE_TEMPLATE_VERSION if self.scene else TEMPLATE_VERSION
 
 
@@ -173,6 +249,9 @@ def mail_groups(failures: Sequence[AvatarFailure]) -> tuple[MailGroup, ...]:
             block_ids=tuple(f.block_id for f in items),
             codes=tuple(f.code for f in items),
             scene=any(f.block_kind == SCENE_MAIL_KIND for f in items),
+            revisions=tuple(int(f.revision or 0) for f in items)
+            if kind == AI_PART_FAILED
+            else None,
         )
         for (kind, failed_at), items in groups.items()
     )
@@ -201,6 +280,8 @@ class PendingMail:
     lease: UUID
     payload: Mapping[str, Any] | None = None
     first_attempt_at: datetime | None = None
+    #: m-25142979: each AI part's revision as it failed (`ai_part_failed` only).
+    revisions: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +297,11 @@ class ClipView:
     #: its scene children — empty for a Clip with avatar blocks.
     scene_items: tuple[CharacterSceneItem, ...] = ()
     scene_rows: tuple[SceneRow, ...] = ()
+    #: m-25142979: the Clip's AI parts and its brief (to tell whether «Quitar» is left
+    #: for a part, and whether the part was added to a made Clip) — empty / None for a
+    #: Clip without AI parts.
+    ai_parts: tuple[AiPartRow, ...] = ()
+    brief: ContentBrief | None = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +324,15 @@ class AvatarFailureOutbox(Protocol):
         user_id: UUID,
         failures: Sequence[AvatarFailure],
     ) -> int: ...
+
+    def mailed_ai_parts(
+        self, session: Any, *, tenant_id: UUID, clip_id: UUID
+    ) -> frozenset[tuple[UUID, int]]:
+        """m-25142979: every (part, revision) of the Clip an `ai_part_failed` row holds —
+        but a row closed `switched_off` (never sent: the failure is mailed again once the
+        switch is back on) — read inside the Clip's fenced write (`session`; None for the
+        in-memory double)."""
+        ...
 
     def pending_tenants(self) -> list[UUID]: ...
 
@@ -319,6 +414,83 @@ def _scene_due(
     return None, scene_owner_deadline(tuple(placed.values())), waiting
 
 
+@dataclass(frozen=True)
+class AiPartsDue:
+    """m-25142979: what an `ai_part_failed` row still says, before every attempt: the
+    places of its parts that still wait (failed at the same revision, not removed), what
+    the owner can ask for on them, and when the Clip stops waiting."""
+
+    slots: tuple[int, ...]
+    actions: frozenset[str]
+    wait_until: datetime
+    #: m-25142982: the part was added to a made Clip — its video stays as it was.
+    added: bool = False
+
+
+def _removable(clip: ClipView, row: AiPartRow) -> bool:
+    """Whether «Quitar» is offered for `row`, as the screen and the action judge it
+    (`clip_ai_part_actions.parts_view`, `remove_part`): not while the «Sigue a la
+    anterior» right after it is being made, and never the Clip's last block
+    (`last_block`). True when the brief is unknown. Pure."""
+    from qualify_api.creative.clip_ai_part_actions import kept_brief  # noqa: PLC0415
+
+    follower = next((r for r in clip.ai_parts if r.slot > row.slot and not r.removed), None)
+    if follower is not None and follower.mode == "extend" and follower.status == "drafting":
+        return False
+    if clip.brief is None:
+        return True
+    removed = frozenset({r.slot for r in clip.ai_parts if r.removed} | {row.slot})
+    return bool(kept_brief(clip.brief, removed, clip.ai_parts).media.segments)
+
+
+def _ai_part_due(
+    mail: PendingMail, clip: ClipView | None, env: Mapping[str, str] | None
+) -> tuple[str | None, AiPartsDue | None]:
+    """`_due` for a Clip's AI parts (m-25142979): (close reason, None), or (None, what
+    is still due). A part still waits when the Clip still waits (`drafting`), the part
+    is the same row at the same revision, still failed and not removed, and the switch is
+    on. A Clip that failed at once (`ai_part_failed`) or ran out of time
+    (`ai_part_expired`) is no longer `drafting`: `resolved`, never sent. Pure but for the
+    switch."""
+    from qualify_api.creative.part_progress import PartAction, failed_part  # noqa: PLC0415
+
+    if clip is None or clip.status != "drafting" or mail.revisions is None:
+        return "resolved", None
+    if not ai_parts_mail_on(env):
+        return "switched_off", None
+    rows = {row.id: row for row in clip.ai_parts}
+    waiting: list[AiPartRow] = []
+    for slot, part_id, revision in zip(mail.slots, mail.block_ids, mail.revisions, strict=True):
+        row = rows.get(part_id)
+        if (
+            row is None
+            or row.slot != slot
+            or row.revision != revision
+            or part_state(row) != "failed"
+        ):
+            continue
+        waiting.append(row)
+    if not waiting:
+        return "resolved", None
+    from qualify_api.creative.clip_ai_parts import is_added_part_brief  # noqa: PLC0415
+
+    actions: set[str] = set()
+    for row in waiting:
+        _, allowed = failed_part(row.mode, row.failure_reason)
+        for action in allowed:
+            if action is PartAction.REMOVE and not _removable(clip, row):
+                continue
+            actions.add(str(action))
+    failed_now = [row for row in clip.ai_parts if part_state(row) == "failed"]
+    deadline = ai_part_deadline(failed_now) or mail.failed_at + CLIP_AI_PART_OWNER_WAIT
+    return None, AiPartsDue(
+        slots=tuple(row.slot for row in waiting),
+        actions=frozenset(actions),
+        wait_until=deadline,
+        added=clip.brief is not None and is_added_part_brief(clip.brief),
+    )
+
+
 def send_pending(
     outbox: AvatarFailureOutbox,
     tenant_id: UUID,
@@ -355,7 +527,12 @@ def send_pending(
             _close(outbox, mail, "uncertain", moment, error=True)
             continue
         clip = outbox.clip_view(tenant_id, mail.clip_id)
-        reason, wait_until, waiting = _due(mail, clip, env)
+        ai_due: AiPartsDue | None = None
+        if mail.kind == AI_PART_FAILED:
+            reason, ai_due = _ai_part_due(mail, clip, env)
+            wait_until, waiting = (ai_due.wait_until, len(ai_due.slots)) if ai_due else (None, 0)
+        else:
+            reason, wait_until, waiting = _due(mail, clip, env)
         if reason is not None:
             _close(outbox, mail, reason, moment)
             continue
@@ -373,18 +550,32 @@ def send_pending(
                 _close(outbox, mail, "no_recipient", moment)
                 continue
             assert base_url is not None and clip is not None and wait_until is not None
-            outgoing = failure_mail(
-                to=str(confirmed),
-                business=clip.business,
-                clip_id=mail.clip_id,
-                wait_until=wait_until,
-                timezone=clip.timezone,
-                base_url=base_url,
-                idempotency_key=mail.idempotency_key,
-                kind=mail.kind,
-                count=waiting,
-                scene=bool(clip.scene_items),
-            )
+            if ai_due is not None:
+                outgoing = ai_part_failure_mail(
+                    to=str(confirmed),
+                    business=clip.business,
+                    clip_id=mail.clip_id,
+                    wait_until=wait_until,
+                    timezone=clip.timezone,
+                    base_url=base_url,
+                    idempotency_key=mail.idempotency_key,
+                    slots=ai_due.slots,
+                    actions=ai_due.actions,
+                    added=ai_due.added,
+                )
+            else:
+                outgoing = failure_mail(
+                    to=str(confirmed),
+                    business=clip.business,
+                    clip_id=mail.clip_id,
+                    wait_until=wait_until,
+                    timezone=clip.timezone,
+                    base_url=base_url,
+                    idempotency_key=mail.idempotency_key,
+                    kind=mail.kind,
+                    count=waiting,
+                    scene=bool(clip.scene_items),
+                )
             if not outbox.freeze(mail, {"mail": asdict(outgoing)}, now=moment):
                 continue
         try:
@@ -465,9 +656,9 @@ def failure_mail_chore(
         from qualify_api.mail import default_mailer  # noqa: PLC0415
         from qualify_api.mail.config import public_app_url  # noqa: PLC0415
 
-        if not any_block_enabled() and not scene_enabled():
-            # every avatar and scene switch off (every environment today): no email, not
-            # even a read
+        if not any_block_enabled() and not scene_enabled() and not ai_parts_mail_on():
+            # every avatar, scene and AI part switch off (every environment today): no
+            # email, not even a read
             return 0
         box = outbox or PostgresAvatarFailureOutbox()
         tick = clock or (lambda: datetime.now(UTC))
@@ -523,7 +714,7 @@ def failure_mail_chore(
 
 _COLUMNS = (
     "id, tenant_id, clip_id, kind, failed_at, slots, block_ids, user_id, idempotency_key, "
-    "payload, first_attempt_at"
+    "payload, first_attempt_at, block_revisions"
 )
 
 
@@ -550,10 +741,10 @@ class PostgresAvatarFailureOutbox:
                 text("""
                 INSERT INTO clip_avatar_failure_mails
                     (tenant_id, clip_id, kind, failed_at, slots, block_ids, failure_codes,
-                     user_id, idempotency_key, source_version)
+                     user_id, idempotency_key, source_version, block_revisions)
                 VALUES (:tenant, :clip, :kind, :failed_at, CAST(:slots AS smallint[]),
                         CAST(:blocks AS uuid[]), CAST(:codes AS text[]), :user, :key,
-                        :version)
+                        :version, CAST(:revisions AS integer[]))
                 ON CONFLICT DO NOTHING
             """),
                 {
@@ -567,9 +758,29 @@ class PostgresAvatarFailureOutbox:
                     "user": user_id,
                     "key": failure_key(tenant_id, clip_id, group.kind, group.failed_at),
                     "version": group.template_version,
+                    "revisions": list(group.revisions) if group.revisions is not None else None,
                 },
             ).rowcount
         return staged
+
+    def mailed_ai_parts(
+        self, session: Any, *, tenant_id: UUID, clip_id: UUID
+    ) -> frozenset[tuple[UUID, int]]:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        if session is None:
+            raise RuntimeError("the mailed AI parts are read inside the Clip's own write")
+        rows = session.execute(
+            text("""
+            SELECT u.part_id, u.revision
+            FROM clip_avatar_failure_mails m,
+                 unnest(m.block_ids, m.block_revisions) AS u(part_id, revision)
+            WHERE m.clip_id = :clip AND m.kind = 'ai_part_failed'
+              AND m.closed_reason IS DISTINCT FROM 'switched_off'
+        """),
+            {"clip": clip_id},
+        ).all()
+        return frozenset((UUID(str(row.part_id)), int(row.revision)) for row in rows)
 
     def pending_tenants(self) -> list[UUID]:
         from qualify_shared.db.admin import admin_session  # noqa: PLC0415
@@ -628,19 +839,26 @@ class PostgresAvatarFailureOutbox:
             lease=lease,
             payload=row["payload"],
             first_attempt_at=row["first_attempt_at"],
+            revisions=tuple(int(r) for r in row["block_revisions"])
+            if row["block_revisions"] is not None
+            else None,
         )
 
     def clip_view(self, tenant_id: UUID, clip_id: UUID) -> ClipView | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
+        from qualify_api.creative.clip_ai_parts import PostgresAiPartsStore  # noqa: PLC0415
         from qualify_api.creative.clip_avatar import PostgresClipAvatarStore  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
             row = session.execute(
                 text("""
-                SELECT d.status, b.media->'clip_avatar_plan' AS plan,
+                SELECT d.status, d.brief_id, b.media->'clip_avatar_plan' AS plan,
                        b.media->'character_scenes' AS scenes,
+                       CASE WHEN jsonb_typeof(b.media->'ai_parts') = 'array'
+                            THEN jsonb_array_length(b.media->'ai_parts') > 0
+                            ELSE false END AS has_ai_parts,
                        COALESCE(NULLIF(br.name, ''), t.name) AS business,
                        COALESCE(NULLIF(t.timezone, ''), 'UTC') AS timezone
                 FROM content_drafts d
@@ -661,6 +879,17 @@ class PostgresAvatarFailureOutbox:
             scene_rows = PostgresCharacterSceneStore().scene_rows(
                 tenant_id=tenant_id, clip_id=clip_id
             )
+        ai_parts: tuple[AiPartRow, ...] = ()
+        brief: ContentBrief | None = None
+        if row.has_ai_parts:
+            # m-25142979: an AI part's row and the brief are read only for a Clip with AI
+            # parts
+            from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
+
+            ai_parts = PostgresAiPartsStore().parts_of(tenant_id=tenant_id, clip_id=clip_id)
+            brief = PostgresContentRepository().get_brief(
+                tenant_id=tenant_id, brief_id=row.brief_id
+            )
         return ClipView(
             status=str(row.status),
             business=str(row.business),
@@ -669,6 +898,8 @@ class PostgresAvatarFailureOutbox:
             blocks=blocks,
             scene_items=scenes,
             scene_rows=scene_rows,
+            ai_parts=ai_parts,
+            brief=brief,
         )
 
     def recipient(self, tenant_id: UUID, user_id: UUID) -> Recipient | None:
@@ -769,6 +1000,8 @@ class _MemoryRow:
     sent_at: datetime | None = None
     provider_id: str | None = None
     closed_reason: str | None = None
+    revisions: tuple[int, ...] | None = None
+    source_version: str = ""
 
 
 @dataclass
@@ -812,10 +1045,26 @@ class MemoryAvatarFailureOutbox:
                     user_id=user_id,
                     key=key,
                     created_at=len(self.rows),
+                    revisions=group.revisions,
+                    source_version=group.template_version,
                 )
             )
             staged += 1
         return staged
+
+    def mailed_ai_parts(
+        self, session: Any, *, tenant_id: UUID, clip_id: UUID
+    ) -> frozenset[tuple[UUID, int]]:
+        return frozenset(
+            (part_id, revision)
+            for row in self.rows
+            if row.tenant_id == tenant_id
+            and row.clip_id == clip_id
+            and row.kind == AI_PART_FAILED
+            and row.revisions is not None
+            and row.closed_reason != "switched_off"
+            for part_id, revision in zip(row.block_ids, row.revisions, strict=True)
+        )
 
     def pending_tenants(self) -> list[UUID]:
         return list(
@@ -848,6 +1097,7 @@ class MemoryAvatarFailureOutbox:
                 lease=row.lease,
                 payload=row.payload,
                 first_attempt_at=row.first_attempt_at,
+                revisions=row.revisions,
             )
         return None
 
@@ -884,7 +1134,9 @@ class MemoryAvatarFailureOutbox:
 
 
 __all__ = [
+    "AI_PART_MAIL_KIND",
     "SCENE_MAIL_KIND",
+    "AiPartsDue",
     "AvatarFailure",
     "AvatarFailureOutbox",
     "ClipView",
@@ -893,9 +1145,11 @@ __all__ = [
     "PendingMail",
     "PostgresAvatarFailureOutbox",
     "Recipient",
+    "ai_parts_mail_on",
     "failure_key",
     "failure_mail_chore",
     "mail_groups",
+    "mailable_ai_part_failures",
     "mailable_failures",
     "send_pending",
 ]
