@@ -301,3 +301,76 @@ def test_a_cut_into_a_joined_part_or_out_when_too_little_is_left() -> None:
     b = vm.new_item([a], "photo", [_k("b.png")], 11.8, 13.0)
     items = vm.fit_into([a, b], [a["uid"], b["uid"]], (2.0, 12.0))
     assert [(i["start"], i["end"]) for i in items] == [(11.0, 12.0)]
+
+
+# -- m-25142725 (live, 375 px): a reference stacked on a lower row counts as the first ---
+
+
+def _two_stacked(second: str = "b.png") -> list[dict[str, Any]]:
+    """«Foto de referencia 1» and a second one on the next row, both over AI part 1."""
+    a = vm.new_item([], "photo", [_k("a.png")], 2.0, 7.0)
+    b = vm.new_item([a], "photo", [_k(second)], 2.0, 7.0)
+    assert (a["row"], b["row"]) == (0, 1)
+    return [a, b]
+
+
+@pytest.mark.parametrize("second", ["b.png", "a.png"], ids=["two-photos", "same-photo-twice"])
+def test_two_stacked_photos_under_one_part_are_both_used(second: str) -> None:
+    items = _two_stacked(second)
+    plan = _plan(items)
+    assert plan["used_by"] == {items[0]["uid"]: [1], items[1]["uid"]: [1]}
+    assert plan["unused"] == []
+    rows = vm.rows(items, plan, _TOTAL)
+    assert [r["ref_tag"] for r in rows] == ["", ""]
+    assert [r["ref_off"] for r in rows] == ["", ""]
+    assert rows[1]["name"] == "Foto de referencia 2, de 0:02 a 0:07. Se usa en la parte con IA 1."
+    (part,) = [p for p in plan["parts"] if p["entry"] == 0]
+    assert part["uses"]["photo"] == [items[0]["uid"], items[1]["uid"]]
+    assert [b["name"] for b in vm.ai_box(items, plan, 0, _TOTAL)] == [
+        "Foto de referencia 1",
+        "Foto de referencia 2",
+    ]
+    assert vm.panel(items[1], plan, _TOTAL)["used"] == "Se usa en la parte con IA 1."
+    # the brief carries both, the second on its row; the contract takes each file once
+    refs = vm.brief_references(items, _TOTAL)
+    assert [(r["key"], r["row"]) for r in refs] == [(_k("a.png"), 0), (_k(second), 1)]
+    brief = vm.brief_of(_SEGMENTS, _ENTRIES, refs)
+    first = contract_ai.references_for_parts(brief)[0]
+    assert [r.key for r in first.photos] == list(dict.fromkeys([_k("a.png"), _k(second)]))
+    notices = contract_ai.reference_notices(brief)
+    assert not [n for n in notices if n.code == "reference_unused"]
+
+
+def test_the_cap_counts_the_photos_on_every_row() -> None:
+    cap = contract_ai.reference_caps()["photo"]
+    items: list[dict[str, Any]] = []
+    for n in range(cap + 1):
+        # two side by side per row along the part, the rest stacked on rows under them
+        start, end = (2.0, 4.5) if n % 2 else (4.5, 7.0)
+        items.append(vm.new_item(items, "photo", [_k(f"p{n}.png")], start, end))
+    assert max(i["row"] for i in items) >= 1
+    plan = _plan(items)
+    (part,) = [p for p in plan["parts"] if p["entry"] == 0]
+    assert part["counts"]["photo"] == cap + 1 and part["over"] == {"photo": cap}
+    assert vm.over_lines(plan) == [vm.cap_card("photo", 1, cap + 1, cap)]  # card, «Siguiente»
+    col = vm.columns(vm.ai_spans(_MEDIA), plan)[0]
+    assert (col["tone"], col["cap"]) == ("warn", f"⚠ {cap + 1} fotos · máx. {cap}")
+    rows = vm.rows(items, plan, _TOTAL)
+    assert {r["warn"] for r in rows} == {"1"}  # every row's blocks, not only the first's
+    assert vm.room_for(plan, 0, "photo") == vm.cap_full("photo", 1, cap)
+
+
+def test_two_stacked_references_follow_their_part() -> None:
+    items = _two_stacked()
+    before = {"ai:p1": (2.0, 7.0), "ai:p2": (7.0, 12.0)}
+    after = {"ai:p1": (5.0, 10.0), "ai:p2": (0.0, 5.0)}
+    moved, went, stayed = vm.follow(items, before, after, _TOTAL)
+    assert [(i["start"], i["end"], i["row"]) for i in moved] == [(5.0, 10.0, 0), (5.0, 10.0, 1)]
+    assert (went, stayed) == (["ai:p1", "ai:p1"], 0)
+
+
+def test_two_stacked_references_go_with_their_part() -> None:
+    items = _two_stacked()
+    spans = {"ai:p1": (2.0, 7.0), "ai:p2": (7.0, 12.0)}
+    assert vm.whole_under(items, spans, "ai:p1") == [items[0]["uid"], items[1]["uid"]]
+    assert vm.whole_under(items, spans, "ai:p2") == []

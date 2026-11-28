@@ -909,7 +909,17 @@ def plan(
         for kind in KINDS:
             chosen = part.of(kind)  # type: ignore[arg-type]
             counts[kind] = len(chosen)
-            uids = [owners[i] for i, ref in enumerate(typed) if ref in chosen]
+            # the contract counts the same file once per part (the first by start and
+            # row): a copy of it stacked on another row under this part is still used —
+            # matched by its file and its seconds, never by its row (m-25142725)
+            files = {(ref.kind, ref.key) for ref in chosen}
+            uids = [
+                owners[i]
+                for i, ref in enumerate(typed)
+                if (ref.kind, ref.key) in files
+                and _overlap(ref.start_s, ref.end_s, part.start_s, part.end_s)
+                > contract_ai.REFERENCE_OVERLAP_MIN_S
+            ]
             uses[kind] = list(dict.fromkeys(uids))
             for uid in uses[kind]:
                 out["used_by"].setdefault(uid, [])
