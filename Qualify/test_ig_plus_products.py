@@ -242,6 +242,7 @@ def test_the_offer_is_the_marked_piece_only(world) -> None:  # noqa: ANN001
 
 def test_a_video_offer_is_a_video_reply_and_a_webp_one_text_alone(world) -> None:  # noqa: ANN001
     video = world.catalog.add(_piece(f"{PREFIX}generated/d2/v.mp4", "video"))
+    world.catalog.sizes[video.image_key] = 5 * 1024 * 1024
     world.catalog.mark(video)
     thread = world.inbound()
     first, _text = world.gateway.send_offer(TENANT, CONNECTION, thread, USER, video.id, "Mira")
@@ -493,3 +494,65 @@ def test_add_a_product_leads_back_to_the_chat_on_both_channels(monkeypatch) -> N
     wa.open_thread_id, wa._connection_id = str(uuid4()), str(uuid4())
     query = parse_qs(urlsplit(wa.products_add_href).query)
     assert query["volver"][0].startswith("/responder?") and wa.open_thread_id in query["volver"][0]
+
+
+# --- last fixes -------------------------------------------------------------------------------
+
+
+def test_long_payment_instructions_never_lose_the_closing_line() -> None:
+    import dataclasses
+
+    from qualify_api.whatsapp.menus.engine import PAYMENT_CLOSING
+
+    from .ig_plus_provider import IG_MAX_TEXT, payment_text
+    from .test_ig_plus import _method
+
+    method = dataclasses.replace(
+        _method(), instructions="Transferencia a la cuenta 123. " * 31
+    )  # ~960 characters
+    assert len(method.instructions) > 950
+    text = payment_text(method)
+    assert len(text) <= IG_MAX_TEXT
+    assert text.endswith(PAYMENT_CLOSING)  # only the instructions were clipped
+    assert text.startswith("Transferencia a la cuenta 123.")
+
+
+def test_a_video_offer_of_unknown_size_sends_nothing(world) -> None:  # noqa: ANN001
+    from .conversations_provider import MediaSizeUnknown
+
+    video = world.catalog.add(_piece(f"{PREFIX}generated/d5/v.mp4", "video"))
+    world.catalog.mark(video)  # no size known for it
+    read = world.gateway.offer_for_chat(TENANT, CONNECTION)
+    assert read.size_unknown and not read.sendable and not read.too_large
+    thread = world.inbound()
+    with pytest.raises(MediaSizeUnknown):
+        world.gateway.send_offer(TENANT, CONNECTION, thread, USER, video.id, "Mira")
+    assert world.outbox.rows == {}
+
+
+async def test_the_panel_says_the_existing_failure_for_an_unknown_size(monkeypatch) -> None:  # noqa: ANN001
+    from .conversations_pick_state import ig_send_error
+    from .conversations_provider import MediaSizeUnknown
+    from .whatsapp_chats_vm import OFFER_FAILED, send_failed_message
+
+    h, catalog = _harness(monkeypatch)
+    piece = catalog.add(_piece(f"{PREFIX}generated/d5/v.mp4", "video"))
+    catalog.mark(piece)
+    pick = h.pick
+    pick.pick_open, pick.pick_source, pick.pick_thread = True, PICK_OFFER, str(h.thread)
+    pick._connection = h.conv.selected_connection_id
+    await InstagramPickState.load_offer.fn(pick)
+    assert pick.pick_error == OFFER_FAILED and not pick.pick_can_send
+    assert ig_send_error(MediaSizeUnknown("x"), PICK_OFFER) == send_failed_message(PICK_OFFER)
+
+
+def test_the_offer_listing_reads_sizes_without_warnings(world, caplog) -> None:  # noqa: ANN001
+    import logging
+
+    video = world.catalog.add(_piece(f"{PREFIX}generated/d6/v.mp4", "video"))
+    world.catalog.sizes[video.image_key] = 1024
+    world.catalog.mark(video)
+    with caplog.at_level(logging.WARNING):
+        read = world.gateway.offer_for_chat(TENANT, CONNECTION)
+    assert read.sendable and read.pieces[0].bytes == 1024
+    assert "size_failed" not in caplog.text and "size failed" not in caplog.text

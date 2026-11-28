@@ -338,6 +338,11 @@ class NothingToSend(LookupError):
     """No medium Instagram takes and no text: the send would queue nothing (C5)."""
 
 
+class MediaSizeUnknown(LookupError):
+    """The offer's video size could not be read: Instagram's limit cannot be checked,
+    so nothing is sent (the existing failure words, no guess)."""
+
+
 class MediaTooLarge(ValueError):
     """The offer's video is over Instagram's limit (`IG_MAX_VIDEO_BYTES`)."""
 
@@ -353,6 +358,8 @@ class OfferRead:
     sendable: bool = False
     #: The marked piece is a video over Instagram's limit: nothing goes (C1).
     too_large: bool = False
+    #: The marked piece is a video whose size could not be read: nothing goes.
+    size_unknown: bool = False
 
 
 @dataclass(frozen=True)
@@ -366,6 +373,14 @@ class PaymentPreview:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class _SizeOnly:
+    """The one blob call WhatsApp's picker listing makes (a video's size), answered by
+    the gateway's own reader — no warning per video, never a read or a write."""
+
+    def __init__(self, size: Callable[[UUID, str], int | None]) -> None:
+        self.size = size
 
 
 AccountsReader = Callable[[UUID], list[AccountVM]]
@@ -913,11 +928,14 @@ class ConversationsGateway:
             logger.warning("instagram plus size failed: %s", type(exc).__name__)
             return None
 
-    def _video_too_large(self, tenant_id: UUID, piece: Any) -> bool:
+    def _video_size(self, tenant_id: UUID, piece: Any) -> tuple[bool, bool]:
+        """(too large, size unknown) for a video piece; (False, False) otherwise."""
         if piece.media_type != "video":
-            return False
+            return False, False
         size = self._size(tenant_id, piece.image_key)
-        return size is not None and size > IG_MAX_VIDEO_BYTES
+        if size is None:
+            return False, True
+        return size > IG_MAX_VIDEO_BYTES, False
 
     def _brand(self, tenant_id: UUID, connection_id: UUID) -> UUID | None:
         return self._plus.scope(tenant_id, connection_id).brand_id
@@ -927,7 +945,11 @@ class ConversationsGateway:
         same reads, with no sender and no linker: the thumbnails are ours (`/r2media`)."""
         from qualify_api.whatsapp.attachments import ChatAttachmentService  # noqa: PLC0415
 
-        return ChatAttachmentService(None, self.catalog_reads, None)  # type: ignore[arg-type]
+        return ChatAttachmentService(
+            None,  # type: ignore[arg-type] — reads only, never a send
+            self.catalog_reads,
+            _SizeOnly(self._size),  # type: ignore[arg-type] — the listing's video sizes
+        )
 
     def _thumb(self, tenant_id: UUID, key: str | None) -> str:
         content_type = sendable_media(tenant_id, key)
@@ -964,10 +986,13 @@ class ConversationsGateway:
             return OfferRead(promotion=None, pieces=[])
         picks = self._picks_service().list_pieces_for_chat(tenant_id, brand)
         piece = self.catalog_reads.piece(tenant_id, promotion.draft_id)
-        too_large = piece is not None and self._video_too_large(tenant_id, piece)
+        too_large, unknown = (
+            self._video_size(tenant_id, piece) if piece is not None else (False, False)
+        )
         sendable = (
             piece is not None
             and not too_large
+            and not unknown
             and bool(sendable_media(tenant_id, piece.image_key, piece.media_type))
         )
         marked = str(promotion.draft_id)
@@ -984,6 +1009,7 @@ class ConversationsGateway:
             ],
             sendable=sendable,
             too_large=too_large,
+            size_unknown=unknown,
         )
 
     def send_product(
@@ -1055,8 +1081,11 @@ class ConversationsGateway:
             or piece.brand_id != brand
         ):
             raise PieceNotFound(str(draft_id))
-        if self._video_too_large(tenant_id, piece):
+        too_large, unknown = self._video_size(tenant_id, piece)
+        if too_large:
             raise MediaTooLarge(str(draft_id))  # C1: nothing is queued
+        if unknown:
+            raise MediaSizeUnknown(str(draft_id))  # the limit cannot be checked
         content_type = sendable_media(tenant_id, piece.image_key, piece.media_type)
         return self._media_then_text(
             tenant_id,

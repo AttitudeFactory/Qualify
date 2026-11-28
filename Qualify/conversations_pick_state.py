@@ -705,6 +705,10 @@ class InstagramPickState(rx.State):
                 )
                 text_only = not read.sendable and not read.too_large
                 too_large = read.too_large
+                if read.size_unknown:
+                    # the video's size could not be read: nothing can be checked against
+                    # Instagram's limit — the existing failure words, with «Reintentar»
+                    error = OFFER_FAILED
         except _NoSession:
             error = _NO_SESSION
         except Exception as exc:  # noqa: BLE001

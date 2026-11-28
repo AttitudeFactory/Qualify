@@ -133,8 +133,9 @@ def payment_text(method: Any) -> str:
     from qualify_api.whatsapp.menus.engine import payment_card_caption  # noqa: PLC0415
     from qualify_api.whatsapp.payments import as_option  # noqa: PLC0415
 
-    # one Instagram message (C2): WhatsApp's card text can reach 1024 characters
-    return fit_text(payment_card_caption(as_option(method)))
+    # one Instagram message (C2): the card's own budget at 1000 — only the instructions
+    # are clipped, «Cuando pagues, envíanos el comprobante…» always stays
+    return payment_card_caption(as_option(method), limit=IG_MAX_TEXT)
 
 
 def qr_content_type(key: str) -> str:
