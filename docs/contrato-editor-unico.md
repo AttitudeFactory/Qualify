@@ -180,7 +180,7 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 - `kind`: `photo`, `video` o `audio`. `start_s` ≥ 0 y `end_s` > `start_s`, en segundos del video final. `row` es solo de la pantalla (y desempata el orden).
 - `origin` (m-25143472): de dónde viene. `source_id` es texto libre (1 a 500 caracteres), tal como lo tiene la pantalla, y no se escribe cuando no hay, así que un brief guardado antes se lee y se escribe igual. El servidor no inyecta nada: solo revisa que la clave sea del negocio.
 
-  | `origin` | `product_id` | `source_id` | Tipos |
+  | Origen | `product_id` | `source_id` | Tipos |
   |---|---|---|---|
   | `owner` (lo eligió el dueño; todas las de antes) | no | no | foto, video, audio |
   | `product` (foto de un producto del Catálogo) | sí | no | foto |
