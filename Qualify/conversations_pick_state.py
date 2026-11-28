@@ -1,4 +1,5 @@
-"""Instagram's «+» panel (m-25143229): «Formas de pago» and «Cómo llegar».
+"""Instagram's «+» panel (m-25143229): «Tus productos», «Tu oferta», «Formas de pago»
+and «Cómo llegar».
 
 The same steps, names and texts as WhatsApp's «+» (`whatsapp_chats_state`, m-24955785):
 the row opens the panel at its first step — «¿Cuál forma de pago?» (one method: straight
@@ -45,10 +46,11 @@ from qualify_api.auth.business import NotAMember
 from qualify_api.conversations.service import ThreadNotFound, WindowClosed
 from qualify_api.inbox.dispatch import WindowClosed as DispatchWindowClosed
 from qualify_api.tenancy.acting import acting_login
+from qualify_api.whatsapp.attachments import PieceNotFound, ProductNotFound, product_text
 from qualify_api.whatsapp.payments import PaymentMethodNotFound
 
 from .auth_state import AuthState
-from .conversations_provider import PaymentTextNotQueued, gateway
+from .conversations_provider import TextNotQueued, gateway
 from .conversations_state import WINDOW_CLOSED_NEUTRAL, ConversationsState
 from .conversations_vm import NO_INBOUND_NOTICE, WINDOW_CLOSED_NOTICE, reply_sent_message
 from .ig_plus_provider import DirectionsUnavailable
@@ -60,28 +62,52 @@ from .whatsapp_chats_vm import (
     DIRECTIONS_FAILED,
     DIRECTIONS_NO_LOCATION,
     EMPTY_DIRECTIONS,
+    EMPTY_OFFER,
+    EMPTY_PIECE,
+    EMPTY_PRODUCT,
+    MAX_CAPTION_CHARS,
+    OFFER_FAILED,
     PAYMENT_GONE,
     PAYMENTS_FAILED,
     PICK_DIRECTIONS,
+    PICK_OFFER,
     PICK_PAYMENTS,
+    PICK_PRODUCTS,
+    PIECE_GONE,
+    PRODUCT_GONE,
+    PRODUCT_SEARCH_FROM,
+    PRODUCTS_FAILED,
     PROFILE_ROUTE,
     SEND_LABEL,
     SENDING_LABEL,
     DirectionsVM,
+    OfferVM,
     PaymentCardVM,
+    PieceCardVM,
+    ProductCardVM,
+    build_offer,
     build_payment_cards,
+    build_piece_cards,
+    build_product_cards,
+    caption_count,
+    caption_error,
+    filter_products,
     number_settings_href,
     payments_href,
     pick_step_help,
     pick_step_title,
     pick_total_steps,
+    product_caption,
     send_failed_message,
 )
 
 logger = logging.getLogger(__name__)
 
 #: The rows Instagram's «+» opens here (`reply_box_vm.SEND_DOORS`).
-IG_PICK_SOURCES = frozenset({PICK_PAYMENTS, PICK_DIRECTIONS})
+IG_PICK_SOURCES = frozenset({PICK_PRODUCTS, PICK_OFFER, PICK_PAYMENTS, PICK_DIRECTIONS})
+#: The rows that send a medium then a text (`_media_then_text`), whose «QR / photo
+#: already queued» memory the retry reads (C2).
+MEDIA_SOURCES = frozenset({PICK_PRODUCTS, PICK_OFFER, PICK_PAYMENTS})
 #: The panel's `?flujo=` (WhatsApp's is «enviar»: a distinct name, so one chat's
 #: restore never closes the other's panel).
 IG_PICK_FLOW = "enviar-ig"
@@ -131,10 +157,16 @@ def ig_pick_can_send(
     payment_text: str,
     payment_loading: bool,
     directions: DirectionsVM,
+    item_id: str = "",
+    caption_error: str = "",
+    offer_sendable: bool = True,
 ) -> bool:
     """«Enviar» on the review: only once what goes out is on screen."""
     if not reviewing or sending:
         return False
+    if source in (PICK_PRODUCTS, PICK_OFFER):
+        # the text has Instagram's room (WhatsApp's caption limit, kept for both)
+        return item_id != "" and not caption_error and offer_sendable
     if source == PICK_PAYMENTS:
         return payment_id != "" and payment_text != "" and not payment_loading
     if source == PICK_DIRECTIONS:
@@ -148,6 +180,10 @@ def ig_send_error(exc: BaseException, source: str) -> str:
         return PAYMENT_GONE
     if isinstance(exc, DirectionsUnavailable):
         return DIRECTIONS_NO_LOCATION
+    if isinstance(exc, ProductNotFound):
+        return PRODUCT_GONE
+    if isinstance(exc, PieceNotFound):
+        return PIECE_GONE
     if isinstance(exc, ThreadNotFound):
         return _THREAD_GONE
     return send_failed_message(source)
@@ -178,6 +214,7 @@ class _Plan:
     connection_id: str
     item_id: str
     skip_qr_key: str = ""
+    caption: str = ""
 
 
 class InstagramPickState(rx.State):
@@ -202,10 +239,25 @@ class InstagramPickState(rx.State):
     pick_number: str = ""
     #: A send is in flight (C1): never cleared by `_reset`, only by the send itself.
     pick_busy: bool = False
+    # «Tus productos» and «Tu oferta» (slice b): WhatsApp's names, so the shared steps
+    # (`chat_plus_picks`) draw them unchanged.
+    pick_products: list[ProductCardVM] = []
+    pick_query: str = ""
+    pick_caption: str = ""
+    pick_offer: OfferVM = EMPTY_OFFER
+    #: The offer's own medium cannot go to Instagram (not under the tenant's prefix, or
+    #: not JPEG/PNG/MP4): it goes as its text alone.
+    pick_offer_text_only: bool = False
+    #: The business behind the open account has a WhatsApp number (where its address is
+    #: written): «Cómo llegar» is drawn only then (UX U1). True until read.
+    pick_has_number: bool = True
 
     _session: int = 0
     _connection: str = ""
     _zone_name: str = ""
+    _food: bool = False
+    #: The account whose «has a WhatsApp number» `pick_has_number` holds.
+    _scope_for: str = ""
     #: C2: "<thread>:<method>" → the QR object key queued while its text was not.
     _qr_queued: dict[str, str] = {}
     #: N2: when `pick_busy` was set (epoch seconds).
@@ -249,6 +301,10 @@ class InstagramPickState(rx.State):
             payment_text=self.pick_payment_text,
             payment_loading=self.pick_payment_loading,
             directions=self.pick_directions,
+            item_id=self.pick_selected,
+            caption_error=self.pick_caption_error,
+            # an offer with nothing to say and no medium sends nothing
+            offer_sendable=not (self.pick_as_text and not self.pick_preview_text),
         )
 
     def _busy(self) -> bool:
@@ -259,6 +315,69 @@ class InstagramPickState(rx.State):
     def pick_locked(self) -> bool:
         """The «+» is held by a send in flight (the same expiry as the guards)."""
         return self._busy()
+
+    @rx.var
+    def pick_selected_product(self) -> ProductCardVM:
+        if self.pick_source == PICK_PRODUCTS:
+            for card in self.pick_products:
+                if card.id == self.pick_selected:
+                    return card
+        return EMPTY_PRODUCT
+
+    @rx.var
+    def pick_selected_piece(self) -> PieceCardVM:
+        if self.pick_source == PICK_OFFER and self.pick_offer.marked:
+            return self.pick_offer.piece
+        return EMPTY_PIECE
+
+    @rx.var
+    def pick_visible_products(self) -> list[ProductCardVM]:
+        return filter_products(self.pick_products, self.pick_query)
+
+    @rx.var
+    def pick_show_search(self) -> bool:
+        return len(self.pick_products) > PRODUCT_SEARCH_FROM
+
+    @rx.var
+    def pick_all_without_photo(self) -> bool:
+        return bool(self.pick_products) and not any(c.has_photo for c in self.pick_products)
+
+    @rx.var
+    def pick_as_text(self) -> bool:
+        """Only a text goes: a product without a photo Instagram takes, or an offer
+        whose medium it does not take."""
+        if self.pick_source == PICK_PRODUCTS:
+            card = self.pick_selected_product
+            return card.id != "" and not card.has_photo
+        return self.pick_source == PICK_OFFER and self.pick_offer_text_only
+
+    @rx.var
+    def pick_media_src(self) -> str:
+        """The picture of the first message («» when only the text goes)."""
+        if self.pick_as_text:
+            return ""
+        if self.pick_source == PICK_PRODUCTS:
+            return self.pick_selected_product.thumb_url
+        if self.pick_source == PICK_OFFER:
+            return self.pick_selected_piece.thumb_url
+        return ""
+
+    @rx.var
+    def pick_preview_text(self) -> str:
+        """The second message exactly as it arrives (WhatsApp's own text of a product
+        without a photo)."""
+        if self.pick_source == PICK_PRODUCTS and self.pick_as_text:
+            card = self.pick_selected_product
+            return product_text(card.name, card.price_label, card.description, self.pick_caption)
+        return self.pick_caption.strip()
+
+    @rx.var
+    def pick_caption_count(self) -> str:
+        return caption_count(self.pick_caption)
+
+    @rx.var
+    def pick_caption_error(self) -> str:
+        return caption_error(self.pick_caption)
 
     @rx.var
     def pick_send_label(self) -> str:
@@ -304,6 +423,11 @@ class InstagramPickState(rx.State):
         self.pick_sending = False
         self.pick_send_error = ""
         self.pick_number = ""
+        self.pick_products = []
+        self.pick_query = ""
+        self.pick_caption = ""
+        self.pick_offer = EMPTY_OFFER
+        self.pick_offer_text_only = False
         self._connection = ""
 
     def _close(self) -> list[rx.event.EventSpec] | None:
@@ -342,12 +466,70 @@ class InstagramPickState(rx.State):
         self.pick_thread = conv.open_thread_id
         self._connection = conv.selected_connection_id
         self._zone_name = conv._zone_name
-        loader = (
-            InstagramPickState.load_payments
-            if source == PICK_PAYMENTS
-            else InstagramPickState.load_directions
-        )
+        loader = {
+            PICK_PRODUCTS: InstagramPickState.load_products,
+            PICK_OFFER: InstagramPickState.load_offer,
+            PICK_PAYMENTS: InstagramPickState.load_payments,
+            PICK_DIRECTIONS: InstagramPickState.load_directions,
+        }[source]
         return [settle_step("drawer"), loader]
+
+    @rx.event(background=True)
+    async def load_scope(self) -> None:
+        """U1: whether the open account's business has a WhatsApp number (read once per
+        account, when its chat's reply box appears)."""
+        async with self:
+            conv = await self.get_state(ConversationsState)
+            connection_id = conv.selected_connection_id
+            if not connection_id or connection_id == self._scope_for:
+                return
+            tenant_id = await conv._tenant()
+        connection = _uuid(connection_id)
+        if tenant_id is None or connection is None:
+            return
+        try:
+            scope = await asyncio.to_thread(gateway().plus_scope, tenant_id, connection)
+        except Exception as exc:  # noqa: BLE001 — the row stays (its empty state says so)
+            logger.warning("instagram plus scope failed: %s", type(exc).__name__)
+            return
+        async with self:
+            self._scope_for = connection_id
+            self.pick_has_number = scope.whatsapp_connection_id is not None
+            self._food = scope.food
+
+    @rx.event
+    def choose_product(self, product_id: str) -> rx.event.EventSpec | None:
+        """«¿Cuál producto?» → «Revisa y envía», with WhatsApp's pre-written text."""
+        if not isinstance(product_id, str) or self.pick_source != PICK_PRODUCTS:
+            return None
+        if self._busy():
+            return None
+        card = next((c for c in self.pick_products if c.id == product_id), None)
+        if card is None:
+            return None  # arrived over the wire; refuse an id the grid does not hold
+        if product_id != self.pick_selected:
+            self.pick_selected = product_id
+            self.pick_caption = product_caption(
+                card.name, card.price_label, food=self._food, description=card.description
+            )
+            self.pick_send_error = ""
+        self.pick_step = 2
+        return settle_step("drawer")
+
+    @rx.event
+    def set_pick_query(self, value: str) -> None:
+        self.pick_query = value[:80] if isinstance(value, str) else ""
+
+    @rx.event
+    def clear_pick_query(self) -> None:
+        self.pick_query = ""
+
+    @rx.event
+    def set_pick_caption(self, value: str) -> None:
+        if self._busy():
+            return
+        # a little over the limit, so the count and the error can show it
+        self.pick_caption = value[: MAX_CAPTION_CHARS + 200] if isinstance(value, str) else ""
 
     @rx.event
     def set_picker_open(self, is_open: bool) -> list[rx.event.EventSpec] | None:
@@ -409,6 +591,10 @@ class InstagramPickState(rx.State):
 
     @rx.event
     def retry_pick_list(self) -> rx.event.EventHandler | None:
+        if self.pick_source == PICK_PRODUCTS:
+            return InstagramPickState.load_products
+        if self.pick_source == PICK_OFFER:
+            return InstagramPickState.load_offer
         if self.pick_source == PICK_PAYMENTS and self.pick_reviewing:
             return InstagramPickState.load_payment_preview
         if self.pick_source == PICK_PAYMENTS:
@@ -418,6 +604,81 @@ class InstagramPickState(rx.State):
         return None
 
     # --- reads ---------------------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def load_products(self) -> None:
+        async with self:
+            if not self.pick_open or self.pick_source != PICK_PRODUCTS:
+                return
+            session, connection_id = self._session, self._connection
+            self.pick_loading = True
+            self.pick_error = ""
+            tenant_id = await self._tenant()
+        cards: list[ProductCardVM] = []
+        food, error = False, ""
+        try:
+            connection = _uuid(connection_id)
+            if tenant_id is None or connection is None:
+                raise _NoSession
+            gw = gateway()
+            scope = await asyncio.to_thread(gw.plus_scope, tenant_id, connection)
+            picks = await asyncio.to_thread(gw.list_products_for_chat, tenant_id, connection)
+            cards, food = build_product_cards(picks), scope.food
+        except _NoSession:
+            error = _NO_SESSION
+        except Exception as exc:  # noqa: BLE001 — Postgres: worded, never shown
+            logger.error("instagram plus products failed: %s", type(exc).__name__)
+            error = PRODUCTS_FAILED
+        async with self:
+            if self._session != session:
+                return
+            self.pick_loading = False
+            self.pick_error = error
+            self.pick_products = cards
+            self._food = food
+
+    @rx.event(background=True)
+    async def load_offer(self) -> None:
+        async with self:
+            if not self.pick_open or self.pick_source != PICK_OFFER:
+                return
+            session, connection_id = self._session, self._connection
+            zone = _zone(self._zone_name)
+            self.pick_loading = True
+            self.pick_error = ""
+            tenant_id = await self._tenant()
+        offer, text_only, error = OfferVM(present=True), False, ""
+        try:
+            connection = _uuid(connection_id)
+            if tenant_id is None or connection is None:
+                raise _NoSession
+            read = await asyncio.to_thread(gateway().offer_for_chat, tenant_id, connection)
+            if read.promotion is not None:
+                offer_id = str(read.promotion.draft_id)
+                offer = build_offer(
+                    offer_id,
+                    read.promotion.marked_at,
+                    build_piece_cards(read.pieces, zone, offer_id=offer_id),
+                    datetime.now(UTC),
+                    zone,
+                )
+                text_only = not read.sendable
+        except _NoSession:
+            error = _NO_SESSION
+        except Exception as exc:  # noqa: BLE001
+            logger.error("instagram plus offer failed: %s", type(exc).__name__)
+            error = OFFER_FAILED
+        async with self:
+            if self._session != session:
+                return
+            self.pick_loading = False
+            self.pick_error = error
+            self.pick_offer = offer if offer.present else OfferVM(present=True)
+            self.pick_offer_text_only = text_only
+            # the one step IS the review: the piece and its text, ready to edit
+            if not error and offer.marked and not offer.gone:
+                self.pick_selected = offer.piece.id
+                self.pick_caption = offer.piece.caption
 
     @rx.event(background=True)
     async def load_payments(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
@@ -544,6 +805,7 @@ class InstagramPickState(rx.State):
             connection_id=self._connection,
             item_id=self.pick_selected,
             skip_qr_key=self._qr_queued.get(f"{self.pick_thread}:{self.pick_selected}", ""),
+            caption=self.pick_caption,
         )
 
     @rx.event(background=True)
@@ -598,12 +860,30 @@ class InstagramPickState(rx.State):
                             user,
                             method,
                         )
+                    elif plan.source in (PICK_PRODUCTS, PICK_OFFER):
+                        item = _uuid(plan.item_id)
+                        if item is None:
+                            raise (
+                                ProductNotFound(plan.item_id)
+                                if plan.source == PICK_PRODUCTS
+                                else PieceNotFound(plan.item_id)
+                            )
+                        send = gw.send_product if plan.source == PICK_PRODUCTS else gw.send_offer
+                        await asyncio.to_thread(
+                            partial(send, skip_media_key=plan.skip_qr_key),
+                            tenant_id,
+                            connection,
+                            thread,
+                            user,
+                            item,
+                            plan.caption,
+                        )
                     else:
                         await asyncio.to_thread(
                             gw.send_directions, tenant_id, connection, thread, user
                         )
-        except PaymentTextNotQueued as half:
-            # C2: the QR is queued; the retry of this method sends the text alone
+        except TextNotQueued as half:
+            # C2: the medium is queued; the retry of this item sends the text alone
             qr_now = half.qr_key
             cause = half.cause
             if isinstance(cause, (WindowClosed, DispatchWindowClosed)):
@@ -611,7 +891,7 @@ class InstagramPickState(rx.State):
             elif isinstance(cause, NotAMember):
                 error = cause.message
             else:
-                logger.error("instagram plus payment text failed: %s", type(cause).__name__)
+                logger.error("instagram plus text failed: %s", type(cause).__name__)
                 error = ig_send_error(cause, plan.source)
         except _NoSession:
             error = _NO_SESSION

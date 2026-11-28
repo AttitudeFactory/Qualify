@@ -129,6 +129,7 @@ from .reply_box_vm import (
     HEART_LABEL,
     INSTAGRAM_BOX,
     PHOTO_LABEL,
+    PLUS_DIRECTIONS,
     REPLY_LATER_LINE,
     SAVED_LABEL,
     SUGGEST_LABEL,
@@ -1543,6 +1544,7 @@ def _closed_composer() -> rx.Component:
 
 def _live_composer() -> rx.Component:
     box = INSTAGRAM_BOX
+    plus_off = ~S.can_compose | S.busy | IGP.pick_locked
     # U1 (UX review): what is used most first — «Sugerir respuesta» must not hide past
     # the edge of a phone; the row scrolls sideways and fades where it continues.
     tools: list[rx.Component] = []
@@ -1594,7 +1596,18 @@ def _live_composer() -> rx.Component:
         tools=tuple(tools),
         # m-25143229: «Formas de pago» and «Cómo llegar» (the rows `SEND_DOORS` opens);
         # each opens the panel at its first step and never sends.
-        plus=plus_menu(box, IGP.open_pick, disabled=~S.can_compose | S.busy | IGP.pick_locked),
+        # m-25143229: WhatsApp's rows Instagram can send; «Cómo llegar» only when the
+        # business has a WhatsApp number to keep its address on (UX U1).
+        plus=rx.fragment(
+            rx.box(on_mount=IGP.load_scope, key=S.selected_connection_id, display="none"),
+            rx.cond(
+                IGP.pick_has_number,
+                plus_menu(box, IGP.open_pick, disabled=plus_off),
+                plus_menu(
+                    box, IGP.open_pick, disabled=plus_off, without=frozenset({PLUS_DIRECTIONS})
+                ),
+            ),
+        ),
         field=reply_field(
             S.draft_text,
             S.set_draft_text,
