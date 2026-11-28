@@ -363,3 +363,27 @@ def test_filtering_writes_no_usage_event(world: Any) -> None:
             e.load(who, filters)
             e.more(who, filters, 1)
     assert _usage_events(a[0], b[0]) == before
+
+
+def test_each_business_reads_only_its_own_place_and_reels(world: Any) -> None:
+    """RF-02b (m-25119463), the screen's own path: the city for «Locales» from the
+    session's Brand Kit through `tenant_session` (A's kit is never B's, even naming A's
+    brand), the country for «Tu país» from its own `tenants` row, and neither «Tu país» nor
+    «Locales» — on either side — lets A's reels reach B, nor writes a usage event."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+
+    e, a, b = world
+    BrandKitStore().save_details(
+        tenant_id=a[0], brand_id=a[1], user_id=None, documents={"connect": {"city": "Cúcuta"}}
+    )
+    assert reels_discovery.business_city(*a) == "Cúcuta"
+    assert reels_discovery.business_city(*b) == ""  # B's brand has no kit yet
+    assert reels_discovery.business_city(b[0], a[1]) == ""  # RLS: not B's to read
+    assert reels_discovery.business_country(a[0]) == "CO"
+    before = _usage_events(a[0], b[0])
+    for kind in ("referente", "competencia"):
+        for region in ("pais", "local"):
+            choice = reels_filters_vm.FilterChoice.of(kind=kind, region=region)
+            filters = choice.to_filters(country="CO", city="Cúcuta")
+            assert not (_everything_seen(e, b, filters) & A_ONLY_REELS), (kind, region)
+    assert _usage_events(a[0], b[0]) == before

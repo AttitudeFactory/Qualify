@@ -459,6 +459,79 @@ def test_each_reel_carries_its_accounts_region_and_rubro(placed: Any) -> None:
     assert (by_id["comp"].region_code, by_id["comp"].rubro) == ("", "food_drink")
 
 
+# --------------------------------------------------------------------------------------
+# «Locales» (RF-02b, Deivid 2026-11-27): accounts seen under a term naming the city
+# --------------------------------------------------------------------------------------
+
+
+#: `(term, city words, names the city?)` — shared with the Postgres parity test.
+CITY_CASES: list[tuple[str, str, bool]] = [
+    ("comida cúcuta", "cucuta", True),
+    ("Comida en CÚCUTA, Norte de Santander", "cucuta", True),
+    ("cucuta", "cucuta", True),
+    ("#CucutaFood", "cucuta", True),
+    ("comidacucuta", "cucuta", True),
+    ("restaurantes san cristóbal táchira", "san cristobal", True),
+    ("sancristobalfood", "san cristobal", True),
+    ("comida colombia", "cucuta", False),
+    # a city inside a word is not the city (independent review, 2026-11-27)
+    ("comida de calidad", "cali", False),
+    ("#calidad", "cali", False),
+    ("corona de flores", "coro", False),
+    ("caramelos artesanales", "melo", False),
+    ("asalto", "salto", False),
+    ("#caliente", "cali", False),
+    ("#calidadpremium", "cali", False),
+    ("#coronavirus", "coro", False),
+    ("#caramelo", "melo", False),
+    ("#saltodealtura", "salto", False),
+    ("#comidacali", "cali", True),
+    ("cali", "cali", True),
+    ("agua de colonia", "colonia", True),  # the word itself: a known, accepted case
+    ("san cristobal", "cristobal", True),
+    ("cucuta", "", False),
+]
+
+
+def test_city_words_fold_like_the_search_terms() -> None:
+    assert rv.city_words("  San  Cristóbal ") == "san cristobal"
+    assert rv.city_slug("San Cristóbal") == "sancristobal"
+    assert rv.city_words("") == ""
+    assert rv.ReelFilters.of(city="Cúcuta").city == "cucuta"
+    assert rv.ReelFilters.of(city="San Cristóbal").city == "san cristobal"
+    assert rv.ReelFilters.of().city == ""
+    for bad in ("cúcuta%", "cucuta'--", " cucuta", "san  cristobal"):
+        with pytest.raises(ValueError):
+            rv.ReelFilters(city=bad)  # only folded words reach the SQL
+
+
+@pytest.mark.parametrize(("term", "city", "names"), CITY_CASES)
+def test_a_term_names_the_city_only_as_whole_words(term: str, city: str, names: bool) -> None:
+    assert rv.term_names_city(term, city) is names
+
+
+def test_locales_keeps_only_accounts_seen_under_a_term_naming_the_city(placed: Any) -> None:
+    """`inspira` was found by «comida cucuta»; `tiktoker` only by a national term (its
+    sighting's `city_slug` would be the searching business's city — not evidence);
+    nobody else. Ideas follow the same rule; with no city everything enters."""
+    w, a = placed
+    w.library.add_sighting("instagram", "inspira", "comida cúcuta")
+    w.library.add_sighting("tiktok", "tiktoker", "comida venezolana")
+    local = w.read(a, filters=rv.ReelFilters.of(city="Cúcuta"))
+    assert _ids(local) == ["short", "mid_tie", "mid", "nodur", "categoria"]
+    assert [i.reel.reel_id for i in local.ideas] == ["idea1"]
+    everything = w.read(a)
+    assert "long" in _ids(everything) and "comp" in _ids(everything)
+    nobody = w.read(a, filters=rv.ReelFilters.of(city="Bogotá"))
+    assert _ids(nobody) == [] and nobody.ideas == []
+    # the city combines with the other filters (kind: the competitors' side)
+    rivals = w.read(a, filters=rv.ReelFilters.of(city="cucuta", kinds=["competencia"]))
+    assert _ids(rivals) == []
+    w.library.add_sighting("instagram", "rival", "#cucutaburger")
+    rivals = w.read(a, filters=rv.ReelFilters.of(city="cucuta", kinds=["competencia"]))
+    assert _ids(rivals) == ["comp"]
+
+
 def test_region_options_are_the_three_markets_then_all() -> None:
     assert [(o.code, o.label) for o in rv.REGION_OPTIONS] == [
         ("CO", "Colombia"),

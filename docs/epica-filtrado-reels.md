@@ -157,13 +157,15 @@ veces: cuentas leídas hace menos de 24 h, transcripciones y veredictos guardado
   Una búsqueda `manual` que termina mal no pone «No pudimos traer ideas nuevas» sobre las
   ideas guardadas.
 - **Barra:** en la versión ancha, el botón va después de «Competidores» y antes de «Quitar
-  filtros», para que no cambie de lugar cuando aparece ese botón. El ícono es `search`;
+  filtros», para que no cambie de lugar cuando aparece ese botón. El ícono es `radar`
+  (Deivid, 2026-11-26, en RF-02b; antes era la lupa `search`);
   mientras busca, el texto y el nombre accesible dicen «Buscando…», y el aviso «Estamos
   buscando…» es un `callout` informativo dentro de la única región `role="status"`. Desde
   1000 px de barra lleva texto; entre 760 y 1000 px solo el ícono, para que la fila no se
-  parta (medido en vivo: a ~780 px los chips quedan entre 92 y 117 px y «Buscar» no cabe). En la versión angosta
-  es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y «Competidores»,
-  con su nombre en `aria-label` y `title`.
+  parta (medido en vivo: a ~780 px los chips quedan entre 92 y 117 px y «Buscar» no cabe).
+  Con RF-02b la fila ancha empieza en 850 px y el texto del botón sigue desde 1000 px. En la
+  versión angosta es un tercer botón de solo ícono de 44 px, en la misma fila que «Filtros» y
+  «Competidores», con su nombre en `aria-label` y `title`.
 - Sin migración y sin llamadas pagadas en las pruebas (fakes detrás de la compuerta real).
   Costo: ≈ USD 0,10–0,15 por búsqueda, aprobado por Deivid para producción.
 
@@ -177,6 +179,137 @@ Colombia, Venezuela, Uruguay) + «Todas»; `brand_niche(tenant, brand)` lee el r
 un filtro activo quedan fuera (un dato desconocido nunca coincide). Igual para las ideas. El nicho
 **no** se aplica por defecto: la cobertura de rubro es ~0 % hasta que las cuentas vuelvan a pasar
 por la revisión, y filtrar por defecto vaciaría la lista. Sin migración, sin llamadas pagadas.
+
+**RF-02b pantalla (2026-11-26/27, m-25119463, rama `feat/m-25119463-region-nicho-ui`):**
+estado tras la ronda de diseño de Deivid del 2026-11-27.
+- **Dos lados, nunca mezclados.** Sale el chip «Tipo» (Todos / Inspiradores /
+  Competidores). La pantalla abre siempre con los reels de las cuentas que inspiran. El
+  botón de la barra que decía «Competidores» ahora cambia de lado: muestra solo los reels de
+  los competidores y pasa a decir «Inspiraciones» para volver. No existe «Todos». El texto
+  dice adónde va; el nombre accesible dice la acción completa («Ver reels de tus
+  competidores» / «Volver a los reels de tus inspiraciones»). En el lado de los
+  competidores queda `soft`. No lleva `aria-pressed`, porque su texto cambia. Mide lo mismo
+  en los dos estados (las dos palabras en una sola celda de grilla, `.q-reels-side`), así
+  que la barra no salta. En el teléfono sigue en la fila [Filtros · N | Competidores |
+  búsqueda]. «Cuenta» ofrece solo las cuentas del lado que se ve; al cambiar de lado, las
+  cuentas elegidas del otro lado se quitan. El lado no es un filtro: no cuenta en «Filtros
+  · N» y «Restablecer filtros» lo conserva. Al salir y volver, la pantalla abre otra vez en
+  las inspiraciones.
+- **«Tus competidores» ya no se abre desde la barra.** Se mudó a «Negocios parecidos al
+  tuyo» con el ticket **m-25142823** (Deivid, 2026-11-27), que se fusiona en el mismo PR
+  (ver abajo). El estado vacío del lado de los competidores lleva a esa sección
+  («Elegir competidores», `?seccion=referentes`, que la abre y la trae a la vista).
+
+**m-25142823 — «Tus competidores» en «Negocios parecidos al tuyo» (2026-11-27):**
+- **Dónde:** en la página del Brand Kit (`/brand/kit`, `?seccion=referentes`), arriba de
+  la sección «Negocios parecidos al tuyo», antes del tablero (Deivid, 2026-11-27). Es una
+  línea con «Tus competidores», «Marca hasta 6 para que cada lunes te traigamos sus reels
+  nuevos.», cuántos están marcados («3 de 6 marcados») y el botón «Elegir competidores».
+  **Siempre está a la vista.** Si no hay competidores dice «Aún no tienes competidores.
+  Márcalos abajo con «Compite contigo» o elígelos aquí.». El asistente no la monta: allí el
+  tablero es el paso de marcar cuentas.
+- **El panel** (`drawer`; desde abajo en el teléfono, 640 px o menos, y desde la derecha en
+  una ventana más ancha) permite:
+  - ver la lista;
+  - marcar hasta 6 para el lunes;
+  - usar «Ver sus reels ahora»: la misma lectura pagada que firmó Deivid, con los mismos
+    topes y sin llamadas nuevas;
+  - **quitar** un competidor («Quitar»): la cuenta vuelve a «sin clasificar» en el tablero
+    (`BrandConnectState.unmark_account`);
+  - **agregar** («Agregar competidores»): las demás cuentas del tablero, cada una con
+    «Agregar» (nombre accesible «Agregar a @cuenta a tus competidores»;
+    `BrandConnectState.move_account`).
+
+  Las dos últimas usan los eventos del propio tablero, así que la etiqueta se guarda igual
+  que al tocar una tarjeta (`sync_sort`: `set_label` / `clear_label`). Al guardar se releen
+  las filas del panel.
+- **Desde «Ideas para tus reels»:** en el lado de competidores hay una línea sobre la lista,
+  «Estás viendo los reels de tus competidores.», con el botón «Cambiar competidores». Lleva a
+  `/brand/kit?seccion=referentes&volver=/create?modo=ideas&lado=competidores&abrir=competidores`,
+  (`volver` va codificado), con la sección a la vista y el panel ya abierto. «‹ Ideas de
+  videos» vuelve a los reels en
+  el lado de competidores (`?lado=competidores`, que se aplica una sola vez por visita).
+  Va en una línea propia con texto, no en la barra: así ningún chip queda solo y el enlace
+  aparece solo cuando tiene sentido.
+- **Por qué un botón que abre el panel, y no el panel integrado:** reusa el panel tal cual
+  (la misma pieza, el mismo estado y las mismas pruebas), no alarga una sección que ya es
+  larga, y en el teléfono se ve igual que antes. El cambio en `brand_kit_editor.py` es de
+  una línea más el import.
+- **Cómo:** las vistas del panel salieron de `discover_reels.py` a un módulo propio,
+  `Qualify/competitors_panel.py`: `competitors_section`, `competitors_opener`, el `drawer`
+  y las filas. La lógica sigue en `DiscoverReelsState` (`toggle_weekly`, `read_competitor`,
+  `refresh_competitors`), así que la pantalla de reels y la sección comparten un solo
+  estado. Lo nuevo es `load_competitors`: lee las filas del negocio en sesión al montar la
+  sección y de nuevo al abrir el panel, solo con Postgres y sin pagar. La sección monta su
+  propio reloj mientras una lectura manual está en curso. La pantalla de reels conserva el
+  suyo, para que una lectura empezada en la sección muestre sus reels al terminar.
+- **Scroll en teléfono y tablet (prueba en vivo de Deivid, 2026-11-27).** La hoja desde
+  abajo (`drawer(side="bottom")`) no hacía scroll: con la hoja «Filtros» abierta a 375 px,
+  su columna (cabeza, cuerpo y pie) crecía con el contenido (1479 px dentro de un panel de
+  690 px). Así, `.q-drawer-body` nunca hacía scroll y el pie quedaba fuera de la pantalla.
+  - **Causa:** el `height: 100%` de la columna no tiene contra qué medirse cuando la hoja
+    tiene `height: auto`. El cajón de la derecha funcionaba solo porque mide `100dvh`.
+  - **Arreglo** en la regla compartida (`assets/qualify.css`):
+    `.rt-DialogContent.q-drawer > .rt-Flex { flex: 1 1 auto; min-height: 0; }` y la cabeza
+    y el pie con `flex-shrink: 0`. Vale para todos los `drawer`: la hoja «Filtros», «Tus
+    competidores» y cualquier otro que use la primitiva (por ejemplo «Descubrir cuentas
+    nuevas», si la usa).
+  - Lo protege un test que fija la regla y la estructura de la primitiva.
+- **«País»** (el ticket decía «Región») tiene tres opciones. Cada una aparece solo si el
+  negocio tiene ese dato. Sin país ni ciudad, no hay chip ni grupo «País».
+  - «Todos»: sin filtro de lugar (ux-designer, 2026-11-27: concuerda con «País»).
+  - «Tu país»: el país del negocio, `tenants.country` (`reels_discovery.business_country`,
+    una lectura por clave primaria con `tenant_session`). Muestra el nombre del país debajo y
+    en el chip.
+  - «Locales»: la ciudad del Brand Kit, `connect.city` (`reels_discovery.business_city`,
+    con `tenant_session`; la misma que usan la búsqueda de cuentas y el brief). Muestra la
+    ciudad debajo y en el chip.
+  - **Qué cuenta como local** (backend mínimo, sin migración): una cuenta es local si la
+    tabla global `creator_sightings` la vio bajo un término de búsqueda que nombra la
+    ciudad, con acentos y «ñ» doblados (`reviewed_reels.ReelFilters.city`,
+    `term_names_city`, `local_accounts`):
+    - en una búsqueda de varias palabras, la ciudad tiene que aparecer como palabras
+      completas («comida cúcuta», «restaurantes san cristóbal táchira»);
+    - en un hashtag o un usuario de una sola palabra, tiene que ser la palabra entera, o su
+      comienzo o su final con al menos 4 letras más («#cucutafood», «comidacucuta»);
+    - para una ciudad corta (5 letras o menos: Cali, Coro, Melo, Salto) solo cuenta la
+      palabra entera o su final, con al menos 5 letras más («#comidacali»). Así
+      «#caliente», «#coronavirus», «#caramelo» y «#saltodealtura» no cuentan.
+    Una ciudad metida dentro de otra palabra no cuenta: «calidad» no es Cali, «asalto» no es
+    Salto, «corona» no es Coro (lo encontró la revisión independiente). Caso aceptado: «agua
+    de colonia» cuenta para Colonia, porque es la palabra entera. El SQL y Python dan lo
+    mismo en los 14 casos de prueba y en los 4867 avistamientos de la base local. **No se usa
+    `creator_sightings.city_slug` solo:** guarda la ciudad del negocio que hizo la búsqueda,
+    así que una cuenta nacional encontrada desde Cúcuta también la llevaría. Base local del
+    2026-11-27: 3877 avistamientos con `city_slug`, y solo 579 nombran la ciudad en el
+    término (432 de 2948 en «tachira», 147 de 929 en «sancristobal»).
+  - Es un `EXISTS` por fila sobre `ix_sightings_account`: gratis y sin migración.
+- **Ajustes del ux-designer (2026-11-27):**
+  - Sin competidores marcados, el lado de competidores muestra la frase sin el botón
+    «Cambiar competidores». El único camino es «Elegir competidores» del aviso vacío: lleva
+    al mismo sitio (`CHANGE_COMPETITORS_HREF`) y dice «Elígelos en «Tus competidores»,
+    dentro de tu marca. Cuando revisemos sus reels, los verás aquí.».
+  - En la barra angosta, el botón de lado va sin ícono. A 375 px cada botón tiene ~133 px y
+    «Inspiraciones» con ícono ocupa ~140 px, así que sin ícono no se corta.
+  - Los dos enlaces con aspecto de botón son un solo elemento tocable (`as_child` sobre
+    `rx.link`), no un botón dentro de un enlace. Siguen siendo navegación de la app, sin
+    recargar la página, para que la pantalla de reels se desmonte y `leave` corra.
+  - En el panel, el botón para sumar una cuenta dice «Agregar» (nombre accesible «Agregar
+    a @cuenta a tus competidores»).
+- **Sin «Tu rubro: …».** El rubro del negocio es siempre el mismo y no aportaba (Deivid,
+  2026-11-27). Se quitaron `niche_line` y el mapeo «Fitness y salud» → «Ejercicio y salud»,
+  que ya no se mostraba en ninguna parte. El catálogo, la base y el prompt no se tocaron.
+- **Lo que no cambió:** el ícono `radar` de «Buscar reels nuevos». «Quitar filtros» sigue
+  como ícono de 44 px al final de la fila ancha. «Filtros» sigue abriendo desde abajo en el
+  teléfono y desde la derecha en una ventana más ancha.
+- **Cortes de la barra** (cuenta completa en `assets/qualify-creative.css`). Sin el chip
+  «Tipo», el peor caso con un filtro activo es: 88 + 88 + 98 + ~140 («San Cristóbal» en
+  «País») + ~140 (botón de lado) + 44 + 44 + 6 × 12 ≈ 714 px. Se suman 56 px de lugar para
+  «Descubrir cuentas nuevas» como ícono: 770 → **780 px**. Las palabras de «Buscar reels
+  nuevos» aparecen desde **920 px**. Los anchos de «Inspiraciones» y de la ciudad son
+  estimaciones; falta medirlos en vivo. Si «Descubrir cuentas nuevas» llega con palabras,
+  hay que rehacer la cuenta.
+- Sin migración, sin llamadas pagadas.
 
 **RF-09, backend (2026-11-25, `referentes/reel_badges.py`, fórmula `rb-1`):** sin migración
 ni llamadas pagadas; se recalcula al leer, desde `public_reels` y `creators` (globales).

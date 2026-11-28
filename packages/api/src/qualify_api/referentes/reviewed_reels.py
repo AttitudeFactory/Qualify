@@ -45,6 +45,16 @@ Kit (`connect.sector`, the rubro select, through `tenant_session`) for the fixed
 label. The niche is NOT applied by default: rubro coverage is ~0 % until each account is
 reviewed again (RF-04), and a default niche filter would empty the list.
 
+**Locales (RF-02b, Deivid 2026-11-27).** `ReelFilters.city` (a `city_slug`) keeps the
+accounts the global `creator_sightings` saw under a search term that NAMES that city — a
+keyword with the city as whole words («comida cúcuta»), or a one-token hashtag / handle
+that is the city or starts or ends with it («#cucutafood», «comidacucuta»), folded the way
+`city_words` folds it (`term_names_city`; a city inside a word — «calidad», «asalto» —
+does not count). `creator_sightings.city_slug` alone is not used: it is the
+city of the business whose discovery found the account, so a national account found from
+Cúcuta carries it too. Same rule as region: an account with no such sighting never matches
+a set city. One `EXISTS` per row over `ix_sightings_account`; no migration, nothing paid.
+
 **Competidores** (RF-05, m-25119465). The Monday run also reads the 6 `competencia`
 accounts the owner picked (`reels.brand_competitors`) and stores their verdicts under the
 run's brief, and «Ver sus reels ahora» (`competitors.read_now`) reads any other one. A
@@ -65,6 +75,7 @@ labels through `uq_account_label`.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -209,6 +220,92 @@ def _frozen(values: Iterable[str] | None) -> frozenset[str]:
     return frozenset(str(v).strip().lower() for v in (values or ()) if str(v).strip())
 
 
+#: Spanish accents and «ñ» → their plain letters: what `city_slug` and the SQL fold share
+#: (`translate`), so «Cúcuta» and a term «cucuta» meet.
+_ACCENTED = "ÁÉÍÓÚÜÑáéíóúüñ"
+_PLAIN = "AEIOUUNaeiouun"
+#: `ReelFilters.city`: the city's folded words («san cristobal»), only a-z0-9 and single
+#: spaces — what reaches the SQL, so no wildcard nor quote can.
+_CITY_WORDS = re.compile(r"^[a-z0-9]+( [a-z0-9]+)*$")
+#: A one-token term (a hashtag, a handle) names the city only as its start or its end with
+#: at least this many more letters («cucutafood», «comidacucuta») — or as the whole token.
+#: A city inside a word is not one: «calidad» is no «Cali», «asalto» no «Salto», «corona»
+#: no «Coro» (independent review, 2026-11-27).
+_TOKEN_REST = 4
+#: A city this short or shorter («cali», «coro», «melo», «salto») is too often the start of
+#: another word («#caliente», «#coronavirus», «#caramelo»): in a one-token term it only
+#: counts as the whole token or its END («#comidacali») — never its start.
+_SHORT_CITY = 5
+
+
+def city_words(name: str) -> str:
+    """«San  Cristóbal» → «san cristobal»: lower case, accents and «ñ» plain, every run of
+    other characters one space — what a search term's words are compared with (the SQL
+    folds terms the same way)."""
+    folded = str(name or "").translate(str.maketrans(_ACCENTED, _PLAIN)).lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", folded).split())
+
+
+def city_slug(name: str) -> str:
+    """«San Cristóbal» → «sancristobal»: `city_words` without its spaces."""
+    return city_words(name).replace(" ", "")
+
+
+#: The SQL twin of `term_names_city` over the folded words `{t}` of a term — `{t}` is
+#: `_FOLDED.format(term=…)` — with `:city` (validated words), `:city_slug` (its letters),
+#: `:token_rest`, `:accented` and `:plain`. `strpos` and `=` only: no LIKE, no wildcard.
+_FOLDED = (
+    "btrim(regexp_replace(lower(translate({term}, :accented, :plain)), '[^a-z0-9]+', ' ', 'g'))"
+)
+_TERM_NAMES_CITY = (
+    "(CASE WHEN strpos({t}, ' ') > 0 "
+    "THEN strpos(' ' || {t} || ' ', ' ' || :city || ' ') > 0 "
+    "ELSE {t} = :city_slug OR (length({t}) - length(:city_slug) >= :token_rest AND "
+    "((:prefix_ok AND left({t}, length(:city_slug)) = :city_slug) "
+    "OR right({t}, length(:city_slug)) = :city_slug)) END)"
+)
+
+
+def _term_sql(term: str) -> str:
+    return _TERM_NAMES_CITY.format(t=_FOLDED.format(term=term))
+
+
+def _token_rest(slug: str) -> int:
+    """The letters a one-token term needs besides the city: one more for a short city —
+    «#caramelo» is no «Melo», «#comidacali» is «Cali»."""
+    return _TOKEN_REST + 1 if len(slug) <= _SHORT_CITY else _TOKEN_REST
+
+
+def _city_params(city: str) -> dict[str, Any]:
+    return {
+        "city": city,
+        "city_slug": city.replace(" ", ""),
+        "token_rest": _token_rest(city.replace(" ", "")),
+        "prefix_ok": len(city.replace(" ", "")) > _SHORT_CITY,
+        "accented": _ACCENTED,
+        "plain": _PLAIN,
+    }
+
+
+def term_names_city(term: str, city: str) -> bool:
+    """Whether a sighting's search term names the city `city` (`city_words`): in a term of
+    several words, the city's words as whole words («comida cúcuta», «san cristóbal
+    tachira»); in a one-token term (a hashtag, a handle), the whole token, or its start or
+    end with at least `_TOKEN_REST` more letters («#cucutafood», «@comidacucuta»)."""
+    if not city:
+        return False
+    words = city_words(term)
+    if " " in words:
+        return f" {city} " in f" {words} "
+    slug = city.replace(" ", "")
+    if words == slug:
+        return True
+    prefix_ok = len(slug) > _SHORT_CITY
+    return len(words) - len(slug) >= _token_rest(slug) and (
+        (prefix_ok and words.startswith(slug)) or words.endswith(slug)
+    )
+
+
 def _regions(values: Iterable[str] | None) -> frozenset[str]:
     """ISO-2 codes, upper case; a value that is not one is refused (ValueError)."""
     out: set[str] = set()
@@ -236,6 +333,9 @@ class ReelFilters:
     regions: frozenset[str] = frozenset()
     #: `creators.rubro` keys (`ai.RUBROS`); empty = no niche narrowing.
     niches: frozenset[str] = frozenset()
+    #: A `city_slug` («cucuta»): only accounts seen under a search term naming that city
+    #: («Locales»); "" = no city narrowing.
+    city: str = ""
 
     @classmethod
     def of(
@@ -247,8 +347,10 @@ class ReelFilters:
         durations: Iterable[str] | None = None,
         regions: Iterable[str] | None = None,
         niches: Iterable[str] | None = None,
+        city: str = "",
     ) -> ReelFilters:
-        """Build and validate filters from loose values (lists, any case, «@handle»)."""
+        """Build and validate filters from loose values (lists, any case, «@handle»; a
+        city by its name or its slug)."""
         return cls(
             networks=_frozen(networks),
             kinds=_frozen(kinds),
@@ -259,6 +361,7 @@ class ReelFilters:
             durations=frozenset(str(d).strip() for d in (durations or ()) if str(d).strip()),
             regions=_regions(regions),
             niches=_frozen(niches),
+            city=city_words(city),
         )
 
     def __post_init__(self) -> None:
@@ -274,6 +377,8 @@ class ReelFilters:
             raise ValueError(f"unknown region filter: {sorted(bad)}")
         if unknown := self.niches - set(RUBROS):
             raise ValueError(f"unknown niche filter: {sorted(unknown)}")
+        if self.city and not _CITY_WORDS.match(self.city):
+            raise ValueError(f"not folded city words: {self.city!r}")
         if (self.regions or self.niches) and not REGION_NICHE_READY:
             raise FilterUnavailable("region and niche filters are switched off")
 
@@ -301,12 +406,17 @@ def matches(
     kind: str | None,
     filters: ReelFilters,
     facts: AccountFacts | None = None,
+    *,
+    local: bool = False,
 ) -> bool:
     """Whether one reel of an account of `kind` (None = unlabelled) passes `filters`.
     A detractor's reel never does. `facts` are the account's region and rubro (None =
     the pool does not know the account): an unknown value never passes a set region or
-    niche filter, and never matters when that filter is off."""
+    niche filter, and never matters when that filter is off. `local`: the account was
+    seen under a term naming `filters.city` (only read when a city is set)."""
     if kind == KIND_DETRACTOR:
+        return False
+    if filters.city and not local:
         return False
     if filters.regions and (facts is None or facts.region_code not in filters.regions):
         return False
@@ -370,6 +480,12 @@ class ReviewedReelsStore(Protocol):
         """Region and rubro of the `(network, handle)` accounts the global pool knows."""
         ...
 
+    def local_accounts(
+        self, tenant_id: UUID, keys: Iterable[tuple[str, str]], city: str
+    ) -> set[tuple[str, str]]:
+        """Of `keys`, the accounts seen under a search term naming `city` (a slug)."""
+        ...
+
     def fitting(
         self,
         tenant_id: UUID,
@@ -407,6 +523,22 @@ class MemoryReviewedReelsStore:
         self.runs = runs
         self.labels = labels
         self.creators: dict[tuple[str, str], AccountFacts] = {}
+        #: The global `creator_sightings` terms per account (`add_sighting`).
+        self.sightings: dict[tuple[str, str], list[str]] = {}
+
+    def add_sighting(self, network: str, handle: str, term: str) -> None:
+        key = (network, normalize_handle(handle))
+        self.sightings.setdefault(key, []).append(term)
+
+    def local_accounts(
+        self, tenant_id: UUID, keys: Iterable[tuple[str, str]], city: str
+    ) -> set[tuple[str, str]]:
+        wanted = {(network, normalize_handle(handle)) for network, handle in keys}
+        return {
+            key
+            for key in wanted
+            if any(term_names_city(term, city_words(city)) for term in self.sightings.get(key, ()))
+        }
 
     def set_facts(self, network: str, handle: str, *, region: str = "", rubro: str = "") -> None:
         key = (network, normalize_handle(handle))
@@ -458,7 +590,13 @@ class MemoryReviewedReelsStore:
                 continue
             kind = kinds.get((reel.network, reel.handle))
             facts = self.creators.get((reel.network, reel.handle))
-            if kind not in filters.wanted_kinds or not matches(reel, kind, filters, facts):
+            local = bool(
+                filters.city
+                and self.local_accounts(tenant_id, [(reel.network, reel.handle)], filters.city)
+            )
+            if kind not in filters.wanted_kinds or not matches(
+                reel, kind, filters, facts, local=local
+            ):
                 continue
             out.append(
                 ReviewedReel(
@@ -497,6 +635,27 @@ class PostgresReviewedReelsStore:
             return {}
         with tenant_session(tenant_id) as session:
             return account_facts(session, wanted)
+
+    def local_accounts(
+        self, tenant_id: UUID, keys: Iterable[tuple[str, str]], city: str
+    ) -> set[tuple[str, str]]:
+        wanted = sorted({(network, normalize_handle(handle)) for network, handle in keys})
+        if not wanted or not city:
+            return set()
+        sql = (
+            "SELECT DISTINCT s.network, s.handle FROM creator_sightings s "
+            "JOIN unnest(CAST(:nets AS text[]), CAST(:handles AS text[])) AS k(network, handle) "
+            "ON k.network = s.network AND k.handle = s.handle "
+            f"WHERE {_term_sql('s.term')}"
+        )
+        params = {
+            "nets": [n for n, _ in wanted],
+            "handles": [h for _, h in wanted],
+            **_city_params(city_words(city)),
+        }
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(text(sql), params).all()
+        return {(row.network, row.handle) for row in rows}
 
     def fitting(
         self,
@@ -554,6 +713,15 @@ class PostgresReviewedReelsStore:
         if filters.niches:
             where.append("c.rubro = ANY(CAST(:niches AS text[]))")
             params["niches"] = sorted(filters.niches)
+        if filters.city:
+            # «Locales»: a sighting of the account under a term naming the city
+            # (ix_sightings_account); `city_slug` alone is the searching business's city
+            where.append(
+                "EXISTS (SELECT 1 FROM creator_sightings s "
+                "WHERE s.network = r.network AND s.handle = r.handle AND "
+                f"{_term_sql('s.term')})"
+            )
+            params.update(_city_params(filters.city))
         if exclude:
             skip = sorted(set(exclude))
             where.append(
@@ -664,6 +832,7 @@ def reviewed_reels(
         if kinds.get(key) != KIND_DETRACTOR
     }
     facts = lib.account_facts(tenant_id, sorted(offered | idea_keys))
+    local = lib.local_accounts(tenant_id, sorted(idea_keys), chosen.city) if chosen.city else set()
     ideas = [
         idea
         for idea in seen.ideas
@@ -672,6 +841,7 @@ def reviewed_reels(
             kinds.get((idea.reel.network, idea.reel.handle)),
             chosen,
             facts.get((idea.reel.network, idea.reel.handle)),
+            local=(idea.reel.network, idea.reel.handle) in local,
         )
     ]
     more: list[ReviewedReel] = []
@@ -736,8 +906,11 @@ __all__ = [
     "ReviewedReels",
     "ReviewedReelsStore",
     "brand_niche",
+    "city_slug",
+    "city_words",
     "default_library",
     "duration_bucket",
     "matches",
     "reviewed_reels",
+    "term_names_city",
 ]

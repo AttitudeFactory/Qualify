@@ -40,9 +40,29 @@ PICKER_BODY = (
     "Marca hasta 6: cada lunes te traemos sus reels nuevos. Para ver ya los de otro, "
     "pulsa «Ver sus reels ahora»."
 )
+#: m-25142823 (Deivid, 2026-11-27): the panel lives in «Negocios parecidos al tuyo», one
+#: line under the board — what it does, and the button that opens it.
+SECTION_BODY = "Marca hasta 6 para que cada lunes te traigamos sus reels nuevos."
+OPENER_LABEL = "Elegir competidores"
+#: The line with no competitor yet (Deivid, 2026-11-27: always in view).
+SECTION_EMPTY = "Aún no tienes competidores. Márcalos abajo con «Compite contigo» o elígelos aquí."
+#: Inside the panel: a competitor taken back to the board's «sin clasificar», and the
+#: board's other accounts, each with «Compite contigo» (the board's own words).
+REMOVE_LABEL = "Quitar"
+#: «Quitar» is only its × in the row (Deivid, 2026-11-27): its name says it in full.
+REMOVE_NAME = "Quitar a {account} de tus competidores"
+ADD_TITLE = "Agregar competidores"
+ADD_BUTTON = "Agregar"
+#: Its accessible name and `title` (ux-designer, 2026-11-27).
+ADD_NAME = "Agregar a {account} a tus competidores"
+NO_CANDIDATES = (
+    "No hay más cuentas para elegir. Busca negocios parecidos al tuyo en esta misma sección."
+)
+#: Each candidate's place on the board, in its words.
+BUCKET_WORDS = {"": "Sin clasificar", "referente": "Te inspira", "detractor": "No va contigo"}
 #: How many are ticked: «3 de 6 marcados».
 PICKED_COUNT = "{n} de " + str(rivals.MAX_WEEKLY) + " marcados"
-#: The bar button's accessible name: how many are read on Monday, or that a read is on.
+#: The opener's `title` (m-25142823): how many are read on Monday, or that a read is on.
 BUTTON_LABEL = "Tus competidores: {n} de " + str(rivals.MAX_WEEKLY) + " los revisamos cada lunes"
 BUTTON_LABEL_READING = "Tus competidores: estamos leyendo sus reels"
 #: A manual read ended while the drawer was closed (a toast; open, the row says it).
@@ -148,7 +168,7 @@ def ended(before: Mapping[str, str], table: Iterable[Mapping[str, str]]) -> list
 
 
 def button_label(table: Iterable[Mapping[str, str]]) -> str:
-    """The bar button's accessible name (`BUTTON_LABEL` / `BUTTON_LABEL_READING`)."""
+    """The opener's `title` (`BUTTON_LABEL` / `BUTTON_LABEL_READING`)."""
     rows_ = list(table)
     if reading(rows_):
         return BUTTON_LABEL_READING
@@ -197,6 +217,14 @@ __all__ = [
     "BUTTON_LABEL",
     "BUTTON_LABEL_READING",
     "KEEP_ONE",
+    "ADD_BUTTON",
+    "ADD_NAME",
+    "ADD_TITLE",
+    "BUCKET_WORDS",
+    "NO_CANDIDATES",
+    "OPENER_LABEL",
+    "REMOVE_LABEL",
+    "REMOVE_NAME",
     "PICKED_COUNT",
     "PICKER_BODY",
     "PICKER_SHORT",
@@ -204,6 +232,8 @@ __all__ = [
     "READ_FAILED",
     "READ_NOW",
     "SAVE_FAILED",
+    "SECTION_BODY",
+    "SECTION_EMPTY",
     "STATE_TONES",
     "TOAST_DONE",
     "TOAST_FAILED",

@@ -6274,16 +6274,17 @@ class BrandConnectState(rx.State):
             return {}, []
 
     @rx.event(background=True)
-    async def sync_labels(self) -> None:
+    async def sync_labels(self) -> Any:
         """Writes the sort to Postgres. Fired right after every decision (the zones'
         tap and drop, Deshacer) and diff-based — it stores whatever changed since the
         last write, so it cannot miss an undo or write one twice. Serialized per brand
         so two quick taps are stored in the order they were made."""
         ids = await self._referentes_ids()
         if ids is None:
-            return
+            return None
         async with _labels_lock(ids[1]):
             await self._flush_labels(ids)
+        return _competitors_reread()
 
     async def _flush_labels(self, ids: tuple[UUID, UUID, UUID | None]) -> None:
         """`sync_labels`' write: the diff since the last one. The caller holds the
@@ -6313,6 +6314,31 @@ class BrandConnectState(rx.State):
         that one drives the wizard's deck by category (the next category, Deshacer), and
         the editor's sorting never changes the wizard's step or category."""
         return BrandConnectState.sync_sort if self._move(key, bucket) else None
+
+    @rx.event
+    def unmark_account(self, key: str) -> rx.event.EventSpec | None:
+        """«Quitar» on a competitor of «Tus competidores» (m-25142823): the account goes
+        back to the board's «sin clasificar» — its label cleared, out of the ranking —
+        and it saves on its own (`sync_sort`, which writes the cleared label).
+
+        `key` is the panel's row key, the STORED identity («tiktok:rival»); the board keys
+        its cards by their labels («TikTok:@Rival», `_account_key`), so the board's own key
+        is found by identity (`referentes_provider.key_identity`)."""
+        network, _, handle = key.partition(":")
+        target = (network, handle) if network and handle else None
+        board_key = next(
+            (
+                k
+                for k in self.account_buckets
+                if k == key or referentes_provider.key_identity(k) == target
+            ),
+            None,
+        )
+        if target is None or board_key is None:
+            return None
+        self.account_buckets = {k: v for k, v in self.account_buckets.items() if k != board_key}
+        self.influence_order = [k for k in self.influence_order if k != board_key]
+        return BrandConnectState.sync_sort
 
     def _move(self, key: str, bucket: str) -> bool:
         """Every editor move — «Mover a», a card dropped on another column, the editor's
@@ -6443,15 +6469,16 @@ class BrandConnectState(rx.State):
         return BrandConnectState.sync_sort
 
     @rx.event(background=True)
-    async def sync_sort(self) -> None:
+    async def sync_sort(self) -> Any:
         """`sync_labels` then `sync_order` under ONE hold of the brand's lock, in that
         order — a move changes both, and a position must never land before its label."""
         ids = await self._referentes_ids()
         if ids is None:
-            return
+            return None
         async with _labels_lock(ids[1]):
             await self._flush_labels(ids)
             await self._flush_order(ids)
+        return _competitors_reread()
 
     # -- The influence ranking on Resultados e insights (§ request 2026-09-29) --------
 
@@ -7848,6 +7875,16 @@ MISSING_HANDLE_ERROR = (
 
 def _labels_lock(brand_id: UUID) -> asyncio.Lock:
     return _LABEL_LOCKS.setdefault(brand_id, asyncio.Lock())
+
+
+def _competitors_reread() -> Any:
+    """m-25142823: after the sort is stored, «Tus competidores» (on top of the board in
+    «Negocios parecidos al tuyo») reads its rows again — a «Compite contigo» added or taken
+    out shows there at once. Postgres only, free. Imported here: the reels screen's state
+    module imports a lot, and this one is imported early."""
+    from .discover_reels import DiscoverReelsState  # noqa: PLC0415
+
+    return DiscoverReelsState.load_competitors
 
 
 def _account_key(card: dict[str, str]) -> str:

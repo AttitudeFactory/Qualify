@@ -391,3 +391,77 @@ def test_brand_niche_reads_the_brand_kit_through_tenant_session(env: Any) -> Non
     assert rv.brand_niche(*a).text == "Nicho: Comida y bebida"
     assert rv.brand_niche(*b).text == "Nicho: Inmobiliaria"
     assert rv.brand_niche(b[0], a[1]) == rv.NO_NICHE  # RLS: A's kit is not B's to read
+
+
+# --------------------------------------------------------------------------------------
+# «Locales» (RF-02b, Deivid 2026-11-27): the SQL twin of `term_names_city`
+# --------------------------------------------------------------------------------------
+
+#: `(term, city words, names the city?)` — the offline cases of the Python rule.
+CITY_CASES: list[tuple[str, str, bool]] = [
+    ("comida cúcuta", "cucuta", True),
+    ("Comida en CÚCUTA, Norte de Santander", "cucuta", True),
+    ("cucuta", "cucuta", True),
+    ("#CucutaFood", "cucuta", True),
+    ("comidacucuta", "cucuta", True),
+    ("restaurantes san cristóbal táchira", "san cristobal", True),
+    ("sancristobalfood", "san cristobal", True),
+    ("comida colombia", "cucuta", False),
+    ("comida de calidad", "cali", False),
+    ("#calidad", "cali", False),
+    ("corona de flores", "coro", False),
+    ("caramelos artesanales", "melo", False),
+    ("asalto", "salto", False),
+    ("#caliente", "cali", False),
+    ("#calidadpremium", "cali", False),
+    ("#coronavirus", "coro", False),
+    ("#caramelo", "melo", False),
+    ("#saltodealtura", "salto", False),
+    ("#comidacali", "cali", True),
+    ("cali", "cali", True),
+]
+
+
+@pytest.mark.parametrize(("term", "city", "names"), CITY_CASES)
+def test_the_sql_folds_and_matches_terms_like_python(term: str, city: str, names: bool) -> None:
+    """The same answer from Postgres (`_term_sql`) and Python (`term_names_city`)."""
+    assert rv.term_names_city(term, city) is names
+    with tenant_session(uuid4()) as session:
+        got = session.execute(
+            text(f"SELECT {rv._term_sql('CAST(:term AS text)')}"),
+            {"term": term, **rv._city_params(city)},
+        ).scalar_one()
+    assert got is names, (term, city)
+
+
+def _sighting(tenant: UUID, network: str, handle: str, term: str, city_slug: str = "") -> None:
+    """A row of the global `creator_sightings`, written through the application role."""
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "INSERT INTO creator_sightings (network, handle, kind, term, country_code, "
+                "city_slug, seen_at) VALUES (:n, :h, 'keyword', :t, 'CO', :c, now())"
+            ),
+            {"n": network, "h": handle, "t": term, "c": city_slug},
+        )
+
+
+def test_locales_in_sql_keeps_accounts_seen_under_a_term_naming_the_city(placed: Any) -> None:
+    """`inspira` was found by «comida cúcuta»; `tiktoker` by a national term in a search
+    run FROM Cúcuta (`city_slug` = cucuta: not evidence); `rival` by «comida de calidad»
+    for Cali. Only `inspira` is local to Cúcuta, in `fitting`, the ideas and
+    `local_accounts`; nobody is local to Cali; nothing is written or paid."""
+    e, a, _ = placed
+    _sighting(a[0], "instagram", e.handle("inspira"), "comida cúcuta", "cucuta")
+    _sighting(a[0], "tiktok", e.handle("tiktoker"), "comida venezolana", "cucuta")
+    _sighting(a[0], "instagram", e.handle("rival"), "comida de calidad", "cali")
+    before = _usage_events()
+    local = e.read(a, filters=rv.ReelFilters.of(city="Cúcuta"))
+    assert e.ids(local) == ["short", "mid"]
+    assert [i.reel.reel_id for i in local.ideas] == [e.rid("idea")]
+    keys = [("instagram", e.handle("inspira")), ("tiktok", e.handle("tiktoker"))]
+    keys.append(("instagram", e.handle("rival")))
+    assert e.library.local_accounts(a[0], keys, "Cúcuta") == {keys[0]}
+    assert e.library.local_accounts(a[0], keys, "cali") == set()
+    assert e.ids(e.read(a, filters=rv.ReelFilters.of(city="Cali"))) == []
+    assert _usage_events() == before
