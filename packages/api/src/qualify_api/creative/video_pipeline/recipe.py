@@ -77,6 +77,7 @@ from qualify_api.creative.video_pipeline.ai_parts import (
     ai_children_of,
     ai_part_blocks,
     ai_part_problems,
+    not_for_video_problems,
     reference_problems,
     references_switched_off,
     switched_off_problems,
@@ -486,7 +487,30 @@ def validate_brief_recipe(
                     texts_field="video_recipe.text_layers",
                 ),
             )
-    return (*problems, *subtitle_overlap_problems(brief))
+    return (
+        *problems,
+        *subtitle_overlap_problems(brief),
+        *_not_for_video_problems(brief, by_parts=by_parts),
+    )
+
+
+def _not_for_video_problems(brief: ContentBrief, *, by_parts: bool) -> tuple[RecipeProblem, ...]:
+    """m-25143472 (Deivid, 2026-11-14): a stock file or a Pin's image never goes into the
+    video — `reference_not_for_video` on every own block that carries one, in the
+    brief's parts and in its `video_recipe`'s. A part in `reference` mode only follows its
+    stretches (`clip_seconds`), so it may. Here, not in `MediaInputs`: a stored brief
+    still reads. Pure."""
+    media = brief.media
+    recipe = media.video_recipe
+    parts = (*recipe_of(brief), *(recipe.parts if recipe is not None else ()))
+    return tuple(
+        problem
+        for part in parts
+        if part.mode != "reference"
+        for problem in not_for_video_problems(
+            media, part.segments, part=part.index if by_parts else None
+        )
+    )
 
 
 #: m-25026592 (decision 2026-11-23): what the owner reads when a Clip asks for its

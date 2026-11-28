@@ -163,6 +163,8 @@ def test_recipe_refusals_are_pinned() -> None:
         "reference_type",
         "reference_out_of_clip",
         "references_and_old_fields",
+        # m-25143472: appended, never reordered
+        "reference_not_for_video",
     )
 
 

@@ -60,6 +60,7 @@ from qualify_creative.schemas import (
 )
 
 from qualify_api.creative.media import owned_by, parse_tenant_key
+from qualify_api.stock.keys import is_stock_key
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +466,10 @@ REFERENCE_TEXTS: dict[str, str] = {
         "Esta referencia queda fuera del video. Muévela o acórtala para seguir."
     ),
     "references_and_old_fields": "Vuelve a abrir el editor para seguir.",
+    "reference_not_for_video": (
+        "Esta imagen es solo para guiar a la IA y no puede ir dentro del video. "
+        "Quítala del video o usa una foto o un video tuyo."
+    ),
 }
 _TOO_MANY_TEXTS: dict[str, str] = {
     "photo": (
@@ -509,6 +514,27 @@ def reference_caps(model: str | None = None) -> Mapping[str, int]:
     same table `references_for_parts` and `too_many_references` read
     (`qualify_creative.reference_caps`). An unknown model raises `ValueError`."""
     return _caps(model).as_mapping()
+
+
+def not_for_video(media: MediaInputs, key: str) -> bool:
+    """m-25143472 (Deivid, 2026-11-14): a file that only guides the AI and never goes
+    into the video — a stock file (by its key, `is_stock_key`) or a Pin's image (named in
+    `media.source_pins`), whatever origin a reference gives it. Pure."""
+    return is_stock_key(key) or any(pin.image_key == key for pin in media.source_pins)
+
+
+def not_for_video_problems(
+    media: MediaInputs, segments: Sequence[SourceSegment], *, part: int | None = None
+) -> tuple[RecipeProblem, ...]:
+    """m-25143472: `reference_not_for_video` on `segments[j].key` for every own block
+    (`photo`/`video`) whose file `not_for_video` — on the tracks or not. Only checked
+    before a recipe is created or made again (`validate_brief_recipe`), never when a
+    stored brief is read. Pure."""
+    return tuple(
+        RecipeProblem(code="reference_not_for_video", part=part, field=f"segments[{at}].key")
+        for at, segment in enumerate(segments)
+        if segment.kind != AI_PART_KIND and not_for_video(media, segment.key)
+    )
 
 
 def reference_text(
@@ -742,12 +768,14 @@ def reference_problems(
     - `references_and_old_fields`: tracks on a brief that does not say
       `references_version` 1 (`references_version`), or a brief on the tracks that still
       carries the old per-part keys (the Clip's `clip_*_keys`, `ai_parts[n].clip_*_keys`);
-    - per reference `i`: `reference_type` (`clip_references[i].key`), with a `tenant_id`
-      `malformed_key` / `foreign_key` (same field), and `reference_out_of_clip`
-      (`clip_references[i]`) when it ends past the Clip;
+    - per reference `i`: `reference_type` (`clip_references[i].key`), then
+      `reference_not_for_video` (same field) when its file is also an own block of
+      `segments` and only guides the AI (`not_for_video`: a stock file or a Pin's image,
+      m-25143472), with a `tenant_id` `malformed_key` / `foreign_key` (same field), and
+      `reference_out_of_clip` (`clip_references[i]`) when it ends past the Clip;
     - `too_many_references` (`plan_references`).
 
-    The same key may also be a block of `segments`: no rule refuses that. Pure."""
+    Any other file may be both a reference and a block of `segments`. Pure."""
     refs = media.clip_references
     found: list[RecipeProblem] = []
 
@@ -770,10 +798,14 @@ def reference_problems(
         return tuple(found)
     segments = media.segments if segments is None else segments
     _, total = _spans(segments)
+    own_blocks = {segment.key for segment in segments if segment.kind != AI_PART_KIND}
     for i, ref in enumerate(refs):
         key_field = f"clip_references[{i}].key"
         if not ref.key.lower().endswith(REFERENCE_SUFFIXES[ref.kind]):
             problem("reference_type", key_field)
+        if ref.key in own_blocks and not_for_video(media, ref.key):
+            # m-25143472: «Usar también en el video» on a stock file or a Pin's image
+            problem("reference_not_for_video", key_field)
         if tenant_id is not None:
             if parse_tenant_key(ref.key) is None:
                 problem("malformed_key", key_field)
@@ -828,4 +860,7 @@ __all__ = [
     "reference_text",
     "references_for_parts",
     "references_switched_off",
+    # m-25143472: what only guides the AI never goes into the video
+    "not_for_video",
+    "not_for_video_problems",
 ]
