@@ -21,9 +21,11 @@ from qualify_creative.schemas import (
     ClipReference,
     ContentBrief,
     MediaInputs,
+    PartRecipe,
     SourcePinProvenance,
     SourceSegment,
     VideoPartPlan,
+    VideoRecipe,
     ai_part_key,
     is_stock_reference_key,
 )
@@ -41,6 +43,7 @@ from qualify_api.creative.video_pipeline.recipe import RecipeRefused, refuse_unb
 from qualify_api.stock.keys import is_stock_key, stock_object_key
 
 from .test_content_service import TENANT_ID, make_brief
+from .test_creative_parts import parent_brief
 
 OWN_VIDEO = f"uploads/{TENANT_ID}/mi-cocina.mp4"
 STOCK_PHOTO = stock_object_key(TENANT_ID, "pixabay", "4021", "a" * 64, "jpg")
@@ -336,3 +339,48 @@ def test_own_piece_and_gallery_files_may_go_into_the_video() -> None:
     assert "reference_not_for_video" not in {
         p.code for p in validate_brief_recipe(brief, tenant_id=TENANT_ID)
     }
+
+
+# ---------------------------------------------------------------------------
+# where (b) looks: the parts of a video by parts, its `video_recipe`, never «Nueva»
+
+
+def _not_for_video_found(brief: ContentBrief) -> list[tuple[str, int | None, str]]:
+    return [
+        (p.code, p.part, p.field)
+        for p in validate_brief_recipe(brief, tenant_id=TENANT_ID)
+        if p.code == "reference_not_for_video"
+    ]
+
+
+def test_a_local_part_of_a_video_by_parts_names_its_part() -> None:
+    stock = SourceSegment(key=STOCK_VIDEO, start_s=0.0, end_s=3.0)
+    brief = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(mode="local", seconds=3, segments=(stock,), description="Dos."),
+    )
+    assert _not_for_video_found(brief) == [("reference_not_for_video", 2, "segments[0].key")]
+
+
+def test_a_new_part_only_follows_its_stretches_so_it_may_take_stock() -> None:
+    """In «Nueva» (`reference`) a stretch only guides the AI (`clip_seconds`): it never
+    comes out in the video, so a stock file there is not refused."""
+    stock = SourceSegment(key=STOCK_VIDEO, start_s=0.0, end_s=3.0)
+    brief = parent_brief(VideoPartPlan(seconds=5, segments=(stock,), description="Uno."))
+    assert _not_for_video_found(brief) == []
+
+
+def test_the_parts_of_a_video_recipe_are_checked_too() -> None:
+    stock = SourceSegment(key=STOCK_VIDEO, start_s=0.0, end_s=3.0)
+    own = SourceSegment(key=OWN_VIDEO, start_s=0.0, end_s=3.0)
+    plan = VideoPartPlan(mode="local", seconds=3, segments=(own,), description="Uno.")
+    recipe = VideoRecipe(parts=(PartRecipe(index=1, mode="local", seconds=3, segments=(stock,)),))
+    brief = parent_brief(plan, video_recipe=recipe)
+    assert _not_for_video_found(brief) == [("reference_not_for_video", 1, "segments[0].key")]
+
+
+def test_a_piece_that_is_no_video_keeps_its_stock_as_before() -> None:
+    """A photo or a carousel has no recipe (`recipe_of` is empty): its stock background
+    or «Video de stock» slide keeps the licence rule it had (`stock.guard`)."""
+    photo = make_brief(media=MediaInputs(background_key=STOCK_PHOTO))
+    assert validate_brief_recipe(photo, tenant_id=TENANT_ID) == ()

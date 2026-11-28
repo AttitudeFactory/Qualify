@@ -178,9 +178,20 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 ```
 
 - `kind`: `photo`, `video` o `audio`. `start_s` ≥ 0 y `end_s` > `start_s`, en segundos del video final. `row` es solo de la pantalla (y desempata el orden).
-- `origin`: `owner` (lo eligió el dueño, sin `product_id`) o `product` (una foto de un producto del Catálogo que puso la pantalla, con su `product_id`). El servidor no inyecta nada: solo revisa que la clave sea del negocio.
+- `origin` (m-25143472): de dónde viene. `source_id` es texto libre (1 a 500 caracteres), tal como lo tiene la pantalla, y no se escribe cuando no hay, así que un brief guardado antes se lee y se escribe igual. El servidor no inyecta nada: solo revisa que la clave sea del negocio.
+
+  | `origin` | `product_id` | `source_id` | Tipos |
+  |---|---|---|---|
+  | `owner` (lo eligió el dueño; todas las de antes) | no | no | foto, video, audio |
+  | `product` (foto de un producto del Catálogo) | sí | no | foto |
+  | `piece` (de una pieza del negocio) | no | sí: el id de la pieza | foto, video |
+  | `gallery` (de la Galería) | no | opcional: el id del archivo | foto, video |
+  | `stock` (de Inspiración) | no | sí: `pixabay:<id>`, solo los dígitos o el `asset_id` de `stock_assets` | foto, video |
+  | `pinterest` (importada de un Pin) | no | sí: el `pin_id` | foto |
+
+  Una clave de stock (`t/<negocio>/stock/…`) solo puede ir con `origin` `stock`, y `stock` solo con una clave de stock: una copia marcada `owner` no se puede leer. Una referencia `pinterest` necesita su Pin en `source_pins` (`image_key` igual a su `key`). Los roles no cambian: `product` da `product` y los demás orígenes `unroled_image_role`.
 - Una referencia es un elemento suelto, con sus propios segundos: nada la ata a una parte. **Cuando el dueño mueve una parte con IA, la pantalla mueve con ella las referencias que quedan enteras debajo** (Deivid, 2026-11-27); el contrato no lo impide ni lo hace.
-- La misma clave puede estar en `segments` (como bloque propio) y en `clip_references`: no hay regla de duplicados. Copiar de un lado al otro copia la cadena, nunca el archivo.
+- La misma clave puede estar en `segments` (como bloque propio) y en `clip_references`, salvo un archivo de stock o la imagen de un Pin: esos solo guían a la IA y nunca entran al video (Deivid, 2026-11-14; `reference_not_for_video`). Copiar de un lado al otro copia la cadena, nunca el archivo.
 
 **Qué recibe cada parte** (`ai_parts.references_for_parts(brief, model=None)`, pura; la pantalla la puede llamar antes de «Crear»):
 
@@ -214,6 +225,7 @@ Debajo del Clip, el dueño pone fotos, videos y audios en pistas, en segundos de
 |  `reference_type` | Una foto que no es JPG/PNG, un video que no es MP4/MOV o un audio que no es MP3/WAV | `clip_references[i].key` | Sí | No podemos usar ese archivo como referencia. Usa una foto JPG o PNG, un video MP4 o MOV, o un audio MP3 o WAV.  |
 |  `reference_out_of_clip` | Una referencia que termina después del final del Clip (`clip_seconds`, ya sin lo que se comen las uniones; con 0,05 s de margen) | `clip_references[i]` | Sí | Esta referencia queda fuera del video. Muévela o acórtala para seguir.  |
 |  `references_and_old_fields` | Pistas en un brief sin `references_version` 1, o un brief v1 que todavía trae `clip_image_keys`, `clip_video_keys` o `clip_audio_keys` del Clip, o `ai_parts[n].clip_*_keys` (salvo `clip_video_keys` en «Igual al original», que es la ventana del reel) | `references_version`, `clip_*_keys` o `ai_parts[n].clip_*_keys` | Sí | Vuelve a abrir el editor para seguir.  |
+|  `reference_not_for_video` (m-25143472) | Un archivo de stock (por su clave) o la imagen de un Pin (por `source_pins`) que es también un bloque propio (`photo`/`video`) de `segments`, esté o no en las pistas. Lo decide la clave, no el `origin`. Solo al revisar una receta antes de crear o volver a generar (`validate_brief_recipe`), nunca al leer un brief guardado; una parte en modo «Nueva» (`reference`) solo sigue sus tramos, así que no se rechaza | `clip_references[i].key` y `segments[j].key` (la misma clave puede dar los dos) | Sí | Esta imagen es solo para guiar a la IA y no puede ir dentro del video. Quítala del video o usa una foto o un video tuyo.  |
 |  `malformed_key` / `foreign_key` (de siempre) | Una clave que no es ruta del negocio, o que es de otro | `clip_references[i].key` | Sí | Los textos de siempre. `media._key_problems` también las revisa antes de leer.  |
 |  `ai_part_outside_clip` (de siempre) | Pistas en algo que no es un Clip normal `local` | `clip_references` | Sí | El de siempre.  |
 |  `switched_off` (de siempre) | Pistas con `QUALIFY_CLIP_AI_PARTS` apagado | `clip_references` | Sí | El de siempre.  |
