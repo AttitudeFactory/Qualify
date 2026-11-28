@@ -327,6 +327,12 @@ class DiscoverReelsState(rx.State):
         return self.filter_kind == KIND_COMPETENCIA
 
     @rx.var
+    def has_competitors(self) -> bool:
+        """The brand marked some account «Compite contigo» (with none, the empty state's
+        «Elegir competidores» is the one way in — never two buttons; ux-designer)."""
+        return any(o.get("kind") == KIND_COMPETENCIA for o in self.all_account_options)
+
+    @rx.var
     def has_places(self) -> bool:
         """«País» has something to offer besides «Todas» (a country or a city)."""
         return len(self.region_options) > 1
@@ -2189,9 +2195,9 @@ def _empty_lists() -> rx.Component:
                 "users",
                 reels_filters_vm.NO_COMPETITORS_TITLE,
                 reels_filters_vm.NO_COMPETITORS_BODY,
-                rx.link(
-                    rx.button(reels_filters_vm.NO_COMPETITORS_ACTION, variant="soft", size="3"),
-                    href=ACCOUNTS_HREF,
+                # the same way in as «Cambiar competidores»: the panel open, back on this side
+                _button_link(
+                    reels_filters_vm.NO_COMPETITORS_ACTION, CHANGE_COMPETITORS_HREF, size="3"
                 ),
             ),
         ),
@@ -2262,23 +2268,38 @@ def _pager() -> rx.Component:
     )
 
 
+def _button_link(label: str, href: str, *, size: str = "2", icon: str = "") -> rx.Component:
+    """A link that looks like a button — ONE tappable element (Radix `as_child`), never a
+    button inside a link: a keyboard or a screen reader stops once. The child is `rx.link`
+    — the app's own navigation, no full page load — so the reels screen unmounts and
+    `leave` runs on the way out (a plain `<a>` reloads the page: no unmount, and the
+    «once» markers of `?abrir=` / `?lado=` would never start over; independent review).
+    `color`/`underline` keep Radix Link from painting its own text colour on the button."""
+    parts: list[Any] = [rx.icon(icon, size=T.ICON_SM, aria_hidden="true")] if icon else []
+    return rx.button(
+        rx.link(*parts, label, href=href, color="inherit", underline="none"),
+        as_child=True,
+        variant="soft",
+        size=size,
+        min_height=_TARGET,
+    )
+
+
 def _change_competitors_line() -> rx.Component:
     """m-25142823 (Deivid, 2026-11-27): on the competitors' side, one line over the list —
     «Estás viendo los reels de tus competidores.» and «Cambiar competidores», which leads
     to «Negocios parecidos al tuyo» with «Tus competidores» open, and back here on this
     side (`CHANGE_COMPETITORS_HREF`). Text and button share the line (it wraps under the
-    words on a phone), so the button is never alone; the bar keeps its chips only."""
+    words on a phone), so the button is never alone; the bar keeps its chips only. With no
+    competitor marked the button is not drawn: the empty state's «Elegir competidores»
+    leads to the same place, and two buttons for one thing would compete (ux-designer)."""
     return rx.flex(
         rx.text(reels_filters_vm.COMPETITORS_NOTE, size="2", color=T.TEXT_MUTED),
-        rx.link(
-            rx.button(
-                rx.icon("swords", size=T.ICON_SM, aria_hidden="true"),
-                reels_filters_vm.CHANGE_COMPETITORS,
-                variant="soft",
-                size="2",
-                min_height=_TARGET,
+        rx.cond(
+            DiscoverReelsState.has_competitors,
+            _button_link(
+                reels_filters_vm.CHANGE_COMPETITORS, CHANGE_COMPETITORS_HREF, icon="swords"
             ),
-            href=CHANGE_COMPETITORS_HREF,
         ),
         wrap="wrap",
         align="center",
@@ -2389,12 +2410,15 @@ def _side_button(*, chip: bool) -> rx.Component:
     «Tus competidores» (m-25142823: that panel is in «Negocios parecidos al tuyo»)."""
     S = DiscoverReelsState
     on = S.on_competitors
+    # ux-designer (2026-11-27): on the narrow bar a slot is ~133 px at 375 px and
+    # «Inspiraciones» with its icon ~140 — there the words only, never cut
+    icon = rx.cond(
+        on,
+        rx.icon("sparkles", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
+        rx.icon("swords", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
+    )
     return rx.button(
-        rx.cond(
-            on,
-            rx.icon("sparkles", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
-            rx.icon("swords", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
-        ),
+        *([] if chip else [icon]),
         rx.el.span(
             rx.el.span(S.side_texts["face"].to(str)),
             rx.el.span(

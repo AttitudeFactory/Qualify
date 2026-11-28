@@ -635,7 +635,16 @@ def test_the_copy_of_the_panel_is_plain_spanish() -> None:
         "Quitar",
         "Agregar competidores",
     )
-    assert reels_competitors_vm.ADD_BUTTON == "Compite contigo"  # the board's own words
+    assert reels_competitors_vm.ADD_BUTTON == "Agregar"  # ux-designer, 2026-11-27
+    assert reels_competitors_vm.ADD_NAME.format(account="@rival") == (
+        "Agregar a @rival a tus competidores"
+    )
+    import inspect
+
+    from . import competitors_panel
+
+    candidate = inspect.getsource(competitors_panel._candidate_row)
+    assert "aria_label=reels_competitors_vm.ADD_NAME.format(account=handle)" in candidate
     assert reels_competitors_vm.BUCKET_WORDS == {
         "": "Sin clasificar",
         "referente": "Te inspira",
@@ -665,10 +674,35 @@ def test_cambiar_competidores_leads_to_the_open_panel_and_back_to_this_side() ->
     assert "rx.cond(S.on_competitors, _change_competitors_line())" in ideas
     line = inspect.getsource(discover_reels._change_competitors_line)
     assert "reels_filters_vm.COMPETITORS_NOTE" in line and "CHANGE_COMPETITORS_HREF" in line
-    assert "min_height=_TARGET" in line
+    # ux-designer: with no competitor, no second button (the empty state's is the way in)
+    assert "DiscoverReelsState.has_competitors" in "".join(line.split())
+    assert "_button_link(" in line and "rx.link(" not in line
+    # ONE tappable element: Radix `as_child` on `rx.link`, never a button in a link
+    link = inspect.getsource(discover_reels._button_link)
+    assert "as_child=True" in link and "rx.link(" in link and "min_height=_TARGET" in link
+    assert "rx.el.a(" not in link  # a plain <a> reloads the page: `leave` would never run
+    empty = inspect.getsource(discover_reels._empty_lists)
+    assert "reels_filters_vm.NO_COMPETITORS_ACTION, CHANGE_COMPETITORS_HREF" in empty
+    assert reels_filters_vm.NO_COMPETITORS_BODY == (
+        "Elígelos en «Tus competidores», dentro de tu marca. Cuando revisemos sus reels, "
+        "los verás aquí."
+    )
     bar = inspect.getsource(discover_reels._filter_bar)
     assert "_change_competitors_line" not in bar  # never a chip of the bar
     assert reels_filters_vm.CHANGE_COMPETITORS == "Cambiar competidores"
+    # ux-designer: on the narrow bar the side button shows its words only (never cut)
+    side = inspect.getsource(discover_reels._side_button)
+    assert "*([] if chip else [icon])," in side
+
+
+async def test_has_competitors_follows_the_brands_labels(world: _World) -> None:
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.has_competitors  # the world marks @rival «Compite contigo»
+    world.repo.clear_label(tenant_id=TENANT, brand_id=world.brand, network="tiktok", handle="rival")
+    await _open(proxy)
+    assert not state.has_competitors
 
 
 async def test_the_reels_come_back_on_the_competitors_side_once(

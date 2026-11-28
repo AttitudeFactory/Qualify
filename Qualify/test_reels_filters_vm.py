@@ -164,7 +164,7 @@ def test_the_competitors_side_says_why_it_is_empty() -> None:
     none_marked = {"instagram:foodie": "referente"}
     message = vm.empty_message(rivals, none_marked, ideas=0, more=0)
     assert message.kind == vm.EMPTY_NO_COMPETITORS and message.action == "Elegir competidores"
-    assert "Negocios parecidos al tuyo" in message.body
+    assert "Tus competidores" in message.body and "dentro de tu marca" in message.body
     # a filter that leaves their (read) reels out says so — never «Aún no revisamos…»
     for narrowed in (
         vm.FilterChoice.of(kind="competencia", region=vm.REGION_LOCAL),
@@ -242,7 +242,7 @@ def test_by_default_nothing_is_narrowed() -> None:
         "Todos",
         "Todas",
         "Todas",
-        "Todas",
+        "Todos",
     ]
     assert all(c["on"] == "" for c in vm.chips(vm.NO_CHOICE))
 
@@ -306,7 +306,7 @@ def test_the_chips_say_what_each_axis_is_set_to() -> None:
         "network": "Instagram",
         "account": "@abc",
         "duration": "Todas",
-        "region": "Todas",
+        "region": "Todos",
     }
     two = vm.toggle_account(one, "instagram:foodie")
     assert vm.value_label(vm.AXIS_ACCOUNT, two, options) == "2 cuentas"
@@ -332,7 +332,7 @@ def test_pais_offers_todas_tu_pais_and_locales() -> None:
     assert vm.AXIS_LABELS[vm.AXIS_REGION] == "País"
     assert vm.CHIP_LABELS[vm.AXIS_REGION] == "País"
     assert PLACES == [
-        {"value": "", "label": "Todas", "detail": ""},
+        {"value": "", "label": "Todos", "detail": ""},
         {"value": "pais", "label": "Tu país", "detail": "Colombia"},
         {"value": "local", "label": "Locales", "detail": "Cúcuta"},
     ]
@@ -372,9 +372,9 @@ def test_tu_pais_and_locales_become_rf01_filters() -> None:
 def test_the_pais_chip_names_the_place() -> None:
     country = vm.FilterChoice.of(region=vm.REGION_COUNTRY)
     local = vm.FilterChoice.of(region=vm.REGION_LOCAL)
-    assert vm.value_label(vm.AXIS_REGION, vm.NO_CHOICE, places=PLACES) == "Todas"
+    assert vm.value_label(vm.AXIS_REGION, vm.NO_CHOICE, places=PLACES) == "Todos"
     assert vm.value_label(vm.AXIS_REGION, country, places=PLACES) == "Colombia"
-    assert vm.phone_chip(vm.AXIS_REGION, vm.NO_CHOICE, places=PLACES) == ("País", "País: Todas")
+    assert vm.phone_chip(vm.AXIS_REGION, vm.NO_CHOICE, places=PLACES) == ("País", "País: Todos")
     assert vm.phone_chip(vm.AXIS_REGION, local, places=PLACES) == ("Cúcuta", "País: Cúcuta")
     assert [c["on"] for c in vm.chips(local, places=PLACES)] == ["", "", "", "1"]
     assert vm.filters_button(local) == ("Filtros · 1", "Filtros: 1 activo")

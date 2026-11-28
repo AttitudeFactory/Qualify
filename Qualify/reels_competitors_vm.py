@@ -52,7 +52,9 @@ REMOVE_LABEL = "Quitar"
 #: «Quitar» is only its × in the row (Deivid, 2026-11-27): its name says it in full.
 REMOVE_NAME = "Quitar a {account} de tus competidores"
 ADD_TITLE = "Agregar competidores"
-ADD_BUTTON = "Compite contigo"
+ADD_BUTTON = "Agregar"
+#: Its accessible name and `title` (ux-designer, 2026-11-27).
+ADD_NAME = "Agregar a {account} a tus competidores"
 NO_CANDIDATES = (
     "No hay más cuentas para elegir. Busca negocios parecidos al tuyo en esta misma sección."
 )
@@ -216,6 +218,7 @@ __all__ = [
     "BUTTON_LABEL_READING",
     "KEEP_ONE",
     "ADD_BUTTON",
+    "ADD_NAME",
     "ADD_TITLE",
     "BUCKET_WORDS",
     "NO_CANDIDATES",

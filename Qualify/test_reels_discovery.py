@@ -1028,7 +1028,7 @@ async def test_filtering_reads_what_is_stored_and_never_pays(world: _World) -> N
         "network": "Todos",
         "account": "Todas",
         "duration": "Todas",
-        "region": "Todas",
+        "region": "Todos",
     }
     opened, writes = list(world.opened), world.runs.writes
 
@@ -1255,7 +1255,7 @@ def test_the_bar_has_every_filter_in_plain_spanish() -> None:
     # «País»'s options are state (what the business has): before its place is read, none
     from .discover_reels import DiscoverReelsState
 
-    assert [o["label"] for o in DiscoverReelsState().region_options] == ["Todas"]
+    assert [o["label"] for o in DiscoverReelsState().region_options] == ["Todos"]
     assert not shown("Tipo de cuenta")  # no «Tipo» chip (Deivid, 2026-11-27)
     assert '"search"' in rendered and "radiogroup" in rendered  # labelled, focusable
     assert "q-drawer--bottom" in rendered  # the phone's sheet from the bottom
@@ -1714,11 +1714,11 @@ async def test_tu_pais_and_locales_narrow_what_is_stored(
     await _open(proxy)
     assert world.city_reads == [(TENANT, world.brand)]
     assert state.region_options == [
-        {"value": "", "label": "Todas", "detail": ""},
+        {"value": "", "label": "Todos", "detail": ""},
         {"value": "pais", "label": "Tu país", "detail": "Colombia"},
         {"value": "local", "label": "Locales", "detail": "Cúcuta"},
     ]
-    assert state.has_places and state.filter_values["region"] == "Todas"
+    assert state.has_places and state.filter_values["region"] == "Todos"
     assert {c["key"] for c in state.more_reels} == {"instagram:M2", "tiktok:T1"}
     opened, writes = list(world.opened), world.runs.writes
 
@@ -1763,7 +1763,7 @@ async def test_pais_shows_only_what_the_business_has(world: _World) -> None:
     state.filter_region = "local"  # a stale value
     world.home = ""
     await _open(proxy)
-    assert state.region_options == [{"value": "", "label": "Todas", "detail": ""}]
+    assert state.region_options == [{"value": "", "label": "Todos", "detail": ""}]
     assert not state.has_places and state.filter_region == ""
     state.region_options = reels_filters_vm.region_options("Colombia", "Cúcuta")
     state._claim_cards("another-tenant")

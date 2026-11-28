@@ -93,7 +93,7 @@ ALL_LABELS = {
     AXIS_KIND: ALL_MASCULINE,
     AXIS_ACCOUNT: ALL_FEMININE,
     AXIS_DURATION: ALL_FEMININE,
-    AXIS_REGION: ALL_FEMININE,  # «Todas»: no place narrowing (Deivid, 2026-11-27)
+    AXIS_REGION: ALL_MASCULINE,  # «Todos» (ux-designer, 2026-11-27: it agrees with «País»)
 }
 
 NETWORK_OPTIONS: tuple[tuple[str, str], ...] = (("instagram", "Instagram"), ("tiktok", "TikTok"))
@@ -158,9 +158,10 @@ COMPETITORS_EMPTY_BODY = "Mientras tanto, mira las ideas de las cuentas que te i
 COMPETITORS_EMPTY_ACTION = "Ver cuentas que te inspiran"
 #: Only competitors chosen, and the brand marked none (UX review 4: the board's words).
 NO_COMPETITORS_TITLE = "Aún no elegiste a tus competidores"
+#: ux-designer, 2026-11-27: one way to choose them — «Tus competidores», in the brand.
 NO_COMPETITORS_BODY = (
-    "Ponlos en «Compite contigo», dentro de «Negocios parecidos al tuyo». Cuando "
-    "revisemos sus reels, los verás aquí."
+    "Elígelos en «Tus competidores», dentro de tu marca. Cuando revisemos sus reels, "
+    "los verás aquí."
 )
 NO_COMPETITORS_ACTION = "Elegir competidores"
 #: The run's ideas left out with no filter on (an idea's account now marked «No va

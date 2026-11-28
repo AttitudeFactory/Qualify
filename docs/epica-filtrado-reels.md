@@ -217,7 +217,8 @@ estado tras la ronda de diseño de Deivid del 2026-11-27.
   - **quitar** un competidor («Quitar»): la cuenta vuelve a «sin clasificar» en el tablero
     (`BrandConnectState.unmark_account`);
   - **agregar** («Agregar competidores»): las demás cuentas del tablero, cada una con
-    «Compite contigo» (`BrandConnectState.move_account`).
+    «Agregar» (nombre accesible «Agregar a @cuenta a tus competidores»;
+    `BrandConnectState.move_account`).
 
   Las dos últimas usan los eventos del propio tablero, así que la etiqueta se guarda igual
   que al tocar una tarjeta (`sync_sort`: `set_label` / `clear_label`). Al guardar se releen
@@ -256,7 +257,7 @@ estado tras la ronda de diseño de Deivid del 2026-11-27.
   - Lo protege un test que fija la regla y la estructura de la primitiva.
 - **«País»** (el ticket decía «Región») tiene tres opciones. Cada una aparece solo si el
   negocio tiene ese dato. Sin país ni ciudad, no hay chip ni grupo «País».
-  - «Todas»: sin filtro de lugar.
+  - «Todos»: sin filtro de lugar (ux-designer, 2026-11-27: concuerda con «País»).
   - «Tu país»: el país del negocio, `tenants.country` (`reels_discovery.business_country`,
     una lectura por clave primaria con `tenant_session`). Muestra el nombre del país debajo y
     en el chip.
@@ -283,6 +284,18 @@ estado tras la ronda de diseño de Deivid del 2026-11-27.
     2026-11-27: 3877 avistamientos con `city_slug`, y solo 579 nombran la ciudad en el
     término (432 de 2948 en «tachira», 147 de 929 en «sancristobal»).
   - Es un `EXISTS` por fila sobre `ix_sightings_account`: gratis y sin migración.
+- **Ajustes del ux-designer (2026-11-27):**
+  - Sin competidores marcados, el lado de competidores muestra la frase sin el botón
+    «Cambiar competidores». El único camino es «Elegir competidores» del aviso vacío: lleva
+    al mismo sitio (`CHANGE_COMPETITORS_HREF`) y dice «Elígelos en «Tus competidores»,
+    dentro de tu marca. Cuando revisemos sus reels, los verás aquí.».
+  - En la barra angosta, el botón de lado va sin ícono. A 375 px cada botón tiene ~133 px y
+    «Inspiraciones» con ícono ocupa ~140 px, así que sin ícono no se corta.
+  - Los dos enlaces con aspecto de botón son un solo elemento tocable (`as_child` sobre
+    `rx.link`), no un botón dentro de un enlace. Siguen siendo navegación de la app, sin
+    recargar la página, para que la pantalla de reels se desmonte y `leave` corra.
+  - En el panel, el botón para sumar una cuenta dice «Agregar» (nombre accesible «Agregar
+    a @cuenta a tus competidores»).
 - **Sin «Tu rubro: …».** El rubro del negocio es siempre el mismo y no aportaba (Deivid,
   2026-11-27). Se quitaron `niche_line` y el mapeo «Fitness y salud» → «Ejercicio y salud»,
   que ya no se mostraba en ninguna parte. El catálogo, la base y el prompt no se tocaron.

@@ -138,7 +138,7 @@ def _competitor_row(row: rx.Var[dict[str, str]]) -> rx.Component:
 
 def _candidate_row(account: rx.Var[dict[str, str]]) -> rx.Component:
     """One account of the board that is not a competitor: «@handle» over where it is on the
-    board (Sin clasificar / Te inspira / No va contigo) and «Compite contigo», which moves it
+    board (Sin clasificar / Te inspira / No va contigo) and «Agregar», which makes it a competitor
     — the board's own `move_account`, saved by the board (set label)."""
     handle = account["handle"].to(str)  # the board's card already says «@user»
     place = rx.match(
@@ -156,13 +156,14 @@ def _candidate_row(account: rx.Var[dict[str, str]]) -> rx.Component:
             min_width="0",
         ),
         rx.button(
-            rx.icon("swords", size=14, aria_hidden="true"),
+            rx.icon("plus", size=14, aria_hidden="true"),
             reels_competitors_vm.ADD_BUTTON,
             variant="soft",
             size="2",
             min_height="44px",
             on_click=BrandConnectState.move_account(account["key"].to(str), "competencia"),
-            aria_label=reels_competitors_vm.ADD_BUTTON + ": " + handle,
+            aria_label=reels_competitors_vm.ADD_NAME.format(account=handle),
+            title=reels_competitors_vm.ADD_NAME.format(account=handle),
         ),
         wrap="wrap",
         align="center",
@@ -174,7 +175,7 @@ def _candidate_row(account: rx.Var[dict[str, str]]) -> rx.Component:
 
 def _candidates() -> rx.Component:
     """«Agregar competidores»: the board's accounts that are not competitors yet (the same
-    list the board above sorts), each with «Compite contigo»."""
+    list the board above sorts), each with «Agregar»."""
     board = BrandConnectState
     return rx.vstack(
         rx.text(reels_competitors_vm.ADD_TITLE, size="2", weight="medium", as_="div"),
