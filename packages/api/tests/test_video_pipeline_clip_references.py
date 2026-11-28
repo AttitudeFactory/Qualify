@@ -473,6 +473,11 @@ def test_every_code_has_its_spanish_words() -> None:
             "Esta referencia queda fuera del video. Muévela o acórtala para seguir."
         ),
         "references_and_old_fields": "Vuelve a abrir el editor para seguir.",
+        # m-25143472
+        "reference_not_for_video": (
+            "Esta imagen es solo para guiar a la IA y no puede ir dentro del video. "
+            "Quítala del video o usa una foto o un video tuyo."
+        ),
     }
     assert REFERENCE_NOTICE_TEXTS == {
         "reference_mode_ignored": "Esta parte no usa videos ni audios de referencia.",

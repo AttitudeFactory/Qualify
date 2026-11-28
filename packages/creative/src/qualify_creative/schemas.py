@@ -767,6 +767,8 @@ RecipeRefusal = Literal[
     "reference_type",  # a reference that is no JPG/PNG photo, MP4/MOV video or MP3/WAV audio
     "reference_out_of_clip",  # a reference whose seconds fall outside the Clip
     "references_and_old_fields",  # reference tracks together with the old per-part keys
+    # m-25143472 (Deivid, 2026-11-14): appended, never reordered
+    "reference_not_for_video",  # a stock file or a Pin's image used as a block of the video
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -1504,16 +1506,50 @@ class PartsRequest(BaseModel):
 CLIP_REFERENCES_MAX = 40
 ReferenceKind = Literal["photo", "video", "audio"]
 REFERENCE_KINDS: tuple[str, ...] = get_args(ReferenceKind)
-ReferenceOrigin = Literal["owner", "product"]
+#: m-25143472: where an item of the reference tracks came from. `owner`: anything the
+#: owner chose (every reference stored before the other values); `product`: a photo of a
+#: Catálogo product (`product_id`); `piece`: a picture or video of one of the business's
+#: pieces; `gallery`: a file of the Galería; `stock`: an «Inspiración» file imported from
+#: a stock bank (its key is a stock key); `pinterest`: an image imported from a Pin
+#: (`MediaInputs.source_pins` names it).
+ReferenceOrigin = Literal["owner", "product", "piece", "gallery", "stock", "pinterest"]
+REFERENCE_ORIGINS: tuple[str, ...] = get_args(ReferenceOrigin)
+#: m-25143472: the origins whose `source_id` must be given; `gallery` may carry one.
+_SOURCE_REQUIRED: frozenset[str] = frozenset({"piece", "stock", "pinterest"})
+_SOURCE_ALLOWED: frozenset[str] = _SOURCE_REQUIRED | {"gallery"}
+#: m-25143472: what each origin may be — audio is only the owner's, a Pin is an image.
+REFERENCE_ORIGIN_KINDS: dict[str, frozenset[str]] = {
+    "owner": frozenset({"photo", "video", "audio"}),
+    "product": frozenset({"photo"}),
+    "piece": frozenset({"photo", "video"}),
+    "gallery": frozenset({"photo", "video"}),
+    "stock": frozenset({"photo", "video"}),
+    "pinterest": frozenset({"photo"}),
+}
+
+
+def is_stock_reference_key(key: str | None) -> bool:
+    """`t/<tenant>/stock/…` — the same test as `qualify_api.stock.keys.is_stock_key`
+    (this package cannot import the API's); a test pins them equal."""
+    if not key:
+        return False
+    parts = key.split("/")
+    return len(parts) >= 5 and parts[0] == "t" and parts[2] == "stock"
 
 
 class ClipReference(BaseModel):
     """m-25142725: one item of a Clip's reference tracks in the single editor — a photo,
     video or audio the AI parts under it follow. `start_s`/`end_s` are seconds of the
     FINAL video; `row` is only the screen's (which track line it sits on, also the
-    tie-break of the order). `origin` `product`: a photo of a Catálogo product the screen
-    put there (`product_id`); `owner`: anything the owner chose. Which part takes it is
-    `video_pipeline.ai_parts.references_for_parts`'."""
+    tie-break of the order).
+
+    m-25143472: `origin` says where it came from (`ReferenceOrigin`). `product` names
+    its Catálogo product (`product_id`); `piece`, `stock` and `pinterest` name their
+    source (`source_id`, free text as the screen has it: the piece's id, the stock
+    file's, the Pin's) and `gallery` may (the Galería file's id); `owner` names neither,
+    as every reference stored before. A stock key is only ever `origin` `stock`, so a
+    stock file cannot pass as the owner's. Audio is only the owner's; a Pin is a photo.
+    Which part takes it is `video_pipeline.ai_parts.references_for_parts`'."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1524,15 +1560,33 @@ class ClipReference(BaseModel):
     row: int = Field(default=0, ge=0, le=CLIP_REFERENCES_MAX)
     origin: ReferenceOrigin = "owner"
     product_id: UUID | None = None
+    #: m-25143472: the id of what it came from, as the screen has it (no fixed format).
+    source_id: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_serializer(mode="wrap")
+    def _without_unset_source(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """A reference without `source_id` dumps exactly as one stored before the field."""
+        data = handler(self)
+        if isinstance(data, dict) and self.source_id is None:
+            data.pop("source_id", None)
+        return data
 
     @model_validator(mode="after")
     def _coherent(self) -> ClipReference:
         if self.end_s <= self.start_s:
             raise ValueError("a reference ends after it starts")
-        if self.origin == "product" and (self.kind != "photo" or self.product_id is None):
+        if self.kind not in REFERENCE_ORIGIN_KINDS[self.origin]:
+            raise ValueError(f"a reference of origin {self.origin} cannot be a {self.kind}")
+        if self.origin == "product" and self.product_id is None:
             raise ValueError("a product's reference is a photo of a named product")
-        if self.origin == "owner" and self.product_id is not None:
+        if self.origin != "product" and self.product_id is not None:
             raise ValueError("only a product's reference names a product")
+        if self.origin in _SOURCE_REQUIRED and self.source_id is None:
+            raise ValueError(f"a reference of origin {self.origin} names its source")
+        if self.origin not in _SOURCE_ALLOWED and self.source_id is not None:
+            raise ValueError(f"a reference of origin {self.origin} names no source")
+        if is_stock_reference_key(self.key) != (self.origin == "stock"):
+            raise ValueError("a stock file is a reference of origin stock, and only it")
         return self
 
 
@@ -2169,6 +2223,12 @@ class MediaInputs(BaseModel):
             key not in selected_images for key in pin_keys
         ):
             raise ValueError("a Pinterest origin belongs to one selected image or frame")
+        # m-25143472: a Pin's image on the tracks keeps its whole provenance — the Pin
+        # behind it is in `source_pins` (the repo's provenance rule)
+        if any(
+            ref.origin == "pinterest" and ref.key not in pin_keys for ref in self.clip_references
+        ):
+            raise ValueError("a Pinterest reference names its Pin in source_pins")
         if self.brand_logo_key in self.brand_logo_reference_keys and not self.brand_logo_in_scene:
             raise ValueError("the same logo cannot be a signature and an in-scene reference")
         additional = set(self.brand_logo_reference_keys) | set(self.brand_element_keys)
