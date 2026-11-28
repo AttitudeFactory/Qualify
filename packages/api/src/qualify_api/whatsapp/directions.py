@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Final, Protocol
-from urllib.parse import quote
+from urllib.parse import quote_plus
 from uuid import UUID
 
 from qualify_api.whatsapp.attachments import AttachmentRefused
@@ -48,8 +48,20 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def directions_sentence(place: str, link: str) -> str:
+    """`DIRECTIONS_TEXT`, or the sentence alone when there is no link (N3)."""
+    return DIRECTIONS_TEXT.format(address=place, link=link).rstrip()
+
+
 def maps_link(address: str) -> str:
-    return f"{MAPS_URL}{quote(address.strip(), safe='')}"
+    """The maps search of an address, readable in the customer's chat (m-25143229, UX
+    U4): `#` (Colombia's «número») is dropped, spaces are `+`, and every other reserved
+    or non-ASCII character stays percent-encoded, so it is still one valid URL —
+    «Calle 10 # 5-20, Cúcuta» → `?q=Calle+10+5-20%2C+C%C3%BAcuta`."""
+    cleaned = " ".join(address.replace("#", " ").split())
+    if not cleaned:
+        return ""  # N3: nothing to search for — the sentence goes alone
+    return f"{MAPS_URL}{quote_plus(cleaned, safe='')}"
 
 
 class LocationInvalid(ValueError):
@@ -208,9 +220,7 @@ class DirectionsService:
                 preview = LOCATION_PREVIEW.format(place=label) if label else LOCATION_SENT
                 mode = "location"
             elif location.address:
-                preview = DIRECTIONS_TEXT.format(
-                    address=location.address, link=maps_link(location.address)
-                )
+                preview = directions_sentence(location.address, maps_link(location.address))
                 payload = build_text_body(thread.wa_id, preview, True)
                 mode = "text"
             else:
@@ -305,6 +315,7 @@ __all__ = [
     "NumberLocation",
     "NumberNotFound",
     "PostgresLocationStore",
+    "directions_sentence",
     "maps_link",
     "production_directions_service",
 ]

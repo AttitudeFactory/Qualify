@@ -19,7 +19,9 @@ Two layers, kept apart on purpose:
   is listed by `missing_doors()` so the next story can close it.
 
 The «+» rows (`plus_rows`) are the same catalogue on every channel, in one order; the
-channel only removes rows. With fewer than two rows (Instagram today) there is no «+».
+channel only removes rows. With fewer than two rows there is no «+». m-25143229:
+Instagram draws «Formas de pago» and «Cómo llegar» (`conversations_pick_state`); its
+«Tus productos», «Tu oferta» and «Fotos y videos» are still missing doors.
 Strings here are client-facing Spanish (`qualify-copy-es`).
 """
 
@@ -167,6 +169,10 @@ SEND_DOORS: Final[dict[str, frozenset[str]]] = {
             TOOL_PHOTO,
             TOOL_FILE,
             TOOL_VOICE,
+            # m-25143229: the business's payment data and «Cómo llegar», as text (and
+            # the method's QR as an image) through the conversations outbox.
+            PLUS_PAYMENTS,
+            PLUS_DIRECTIONS,
         }
     ),
 }
@@ -186,9 +192,13 @@ def _allowed(box: ReplyBoxVM, key: str) -> bool:
         PLUS_OFFER: box.can_photo,
         # WhatsApp's menu is a list message answered by the automatic menu.
         PLUS_MENU: box.has_menu_handoff,
-        PLUS_PAYMENTS: box.has_payments,
-        # A text with the place: any chat channel can carry it. Instagram's door arrives
-        # with BU-A15 (SEND_DOORS), so today it is a missing door there, not a refusal.
+        # m-25143229 (review C3): the row SENDS the business's payment data — a text, and
+        # the method's QR as an image where the channel takes one — so the descriptor
+        # never removes it: `has_payments` (`ChannelCapabilities.payments`, the order's
+        # «Pago por revisar» flow) is ignored here on purpose, and only `SEND_DOORS`
+        # decides whether a screen draws it.
+        PLUS_PAYMENTS: True,
+        # A text with the place: any chat channel can carry it.
         PLUS_DIRECTIONS: True,
         PLUS_MEDIA: box.can_photo,
     }[key]

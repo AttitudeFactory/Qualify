@@ -60,6 +60,12 @@ re-reads the thread and refuses (`ThreadNotFound`) one that belongs to another a
 the same tenant, so a stale or forged thread id from the browser can never act across
 accounts — RLS already stops it across tenants.
 
+**The «+» (m-25143229).** «Formas de pago» and «Cómo llegar» read the business behind
+the account (`ig_plus_provider.PostgresPlusReader`, `tenant_session`) and queue through
+the SAME service doors as the box: `send_payment_method` is the method's QR as an image
+reply (when it has one) and then its text; `send_directions` is one text with the
+address and a maps link. Both are the owner's «Enviar» only, with the same approval.
+
 **Approval.** `reply` / `reply_media` / `reply_sticker` build the `HumanApproval` from
 the resolved user id and the gateway's clock, and hand it to the service — the only way
 into the outbox.
@@ -104,6 +110,7 @@ from qualify_api.conversations.templates import (
 from qualify_api.inbox.dispatch import ChatDispatcher
 from qualify_api.inbox.models import Message
 from qualify_api.tenancy.models import Tenant, User
+from qualify_api.whatsapp.attachments import PaymentPick
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.keys import media_key
 from sqlalchemy import func, select
@@ -123,6 +130,16 @@ from .conversations_vm import (
     outbox_media_type,
     outbox_text,
 )
+from .ig_plus_provider import (
+    DirectionsUnavailable,
+    PlusReader,
+    PlusScope,
+    PostgresPlusReader,
+    directions_text,
+    payment_text,
+    qr_content_type,
+)
+from .whatsapp_chats_vm import DirectionsVM
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +300,26 @@ class Conversation:
     pending_draft: ConversationDraft | None = None
 
 
+class PaymentTextNotQueued(Exception):
+    """«Formas de pago»: the QR was queued, its text was not (`cause` says why)."""
+
+    qr_queued = True
+
+    def __init__(self, cause: BaseException, qr_key: str = "") -> None:
+        super().__init__(type(cause).__name__)
+        self.cause = cause
+        self.qr_key = qr_key
+
+
+@dataclass(frozen=True)
+class PaymentPreview:
+    """«Formas de pago» › «Revisa y envía» on Instagram: the QR's `/r2media` path ("" =
+    no QR) and the text, as they arrive."""
+
+    text: str
+    qr_src: str = ""
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -311,8 +348,10 @@ class ConversationsGateway:
         clock: Callable[[], datetime] = _utcnow,
         templates: ReplyTemplateService | None = None,
         dispatcher: ChatDispatcher | None = None,
+        plus: PlusReader | None = None,
     ) -> None:
         self._dispatcher = dispatcher
+        self._plus: PlusReader = plus or PostgresPlusReader()
         self._service = service
         self._repository = repository
         self._outbox = outbox
@@ -650,6 +689,137 @@ class ConversationsGateway:
             text=text,
             buttons=template_buttons(buttons),
             approval=self._approval(user_id),
+        )
+
+    # --- the «+» (m-25143229): Formas de pago, Cómo llegar ----------------------------
+
+    def plus_scope(self, tenant_id: UUID, connection_id: UUID) -> PlusScope:
+        """The business behind this account and its WhatsApp number (for the links to
+        «Formas de pago» and «Perfil»). Empty for an account of another tenant."""
+        return self._plus.scope(tenant_id, connection_id)
+
+    def _methods(self, tenant_id: UUID, connection_id: UUID) -> Sequence[Any]:
+        brand = self._plus.scope(tenant_id, connection_id).brand_id
+        return () if brand is None else tuple(self._plus.payment_methods(tenant_id, brand))
+
+    def list_payment_methods_for_chat(
+        self, tenant_id: UUID, connection_id: UUID
+    ) -> list[PaymentPick]:
+        """The business's active methods, by position — WhatsApp's own list and card
+        shape (`whatsapp.attachments.PaymentPick`), the QR shown through `/r2media`."""
+        from qualify_api.whatsapp.menus.engine import currency_words  # noqa: PLC0415
+
+        return [
+            PaymentPick(
+                id=str(m.id),
+                name=m.name,
+                currency=m.currency,
+                currency_label=(
+                    "Al recibir"
+                    if m.pay_on_delivery
+                    else (f"En {currency_words(m.currency)}" if m.currency else "")
+                ),
+                pay_on_delivery=m.pay_on_delivery,
+                has_qr=bool(m.qr_media_key),
+                thumb_url=self._qr_src(tenant_id, m.qr_media_key),
+                updated_at=m.updated_at,
+            )
+            for m in self._methods(tenant_id, connection_id)
+        ]
+
+    def _qr_src(self, tenant_id: UUID, key: str | None) -> str:
+        if not key:
+            return ""
+        return self._viewer(tenant_id, key, "image", qr_content_type(key))
+
+    def _method(self, tenant_id: UUID, connection_id: UUID, method_id: UUID) -> Any:
+        from qualify_api.whatsapp.payments import PaymentMethodNotFound  # noqa: PLC0415
+
+        for method in self._methods(tenant_id, connection_id):
+            if method.id == method_id:
+                return method
+        raise PaymentMethodNotFound(str(method_id))
+
+    def payment_preview(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, method_id: UUID
+    ) -> PaymentPreview:
+        """«Revisa y envía»: exactly what will arrive — the QR (when there is one) and
+        the text. `PaymentMethodNotFound` when it is no longer offered."""
+        self._owned(tenant_id, connection_id, thread_id)
+        method = self._method(tenant_id, connection_id, method_id)
+        return PaymentPreview(
+            text=payment_text(method), qr_src=self._qr_src(tenant_id, method.qr_media_key)
+        )
+
+    def send_payment_method(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        method_id: UUID,
+        *,
+        skip_qr_key: str = "",
+    ) -> list[UUID]:
+        """«Formas de pago» › «Enviar» — only ever the owner's tap. The QR goes as an
+        image reply (Instagram's image message carries no text), then the text. The
+        method is re-read now: one turned off meanwhile is `PaymentMethodNotFound`.
+        `WindowClosed` refuses before anything is written.
+
+        The two rows are two outbox writes (the service has no batch door): when the
+        text fails AFTER the QR was queued, `PaymentTextNotQueued` says so (`qr_queued`,
+        the cause chained, `qr_key` the object queued), and the retry passes that key as
+        `skip_qr_key`: the same QR is not queued twice, while a QR REPLACED meanwhile
+        (another key) still goes (m-25143229, review C2)."""
+        self._owned(tenant_id, connection_id, thread_id)
+        method = self._method(tenant_id, connection_id, method_id)
+        approval = self._approval(user_id)
+        queued: list[UUID] = []
+        if method.qr_media_key and method.qr_media_key != skip_qr_key:
+            key = method.qr_media_key
+            queued.append(
+                self.service.reply_media(
+                    tenant_id=tenant_id,
+                    thread_id=thread_id,
+                    media=OutboxMedia(
+                        object_key=key, media_type="image", content_type=qr_content_type(key)
+                    ),
+                    approval=approval,
+                )
+            )
+        try:
+            queued.extend(
+                self.service.reply_text(
+                    tenant_id=tenant_id,
+                    thread_id=thread_id,
+                    text=payment_text(method),
+                    approval=approval,
+                )
+            )
+        except Exception as exc:
+            if queued:
+                raise PaymentTextNotQueued(exc, method.qr_media_key or "") from exc
+            raise
+        return queued
+
+    def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> DirectionsVM:
+        """What «Cómo llegar» would send: the text, or the empty state."""
+        text = directions_text(self._plus.scope(tenant_id, connection_id).location)
+        if not text:
+            return DirectionsVM(present=True)
+        return DirectionsVM(present=True, empty=False, text=text)
+
+    def send_directions(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID
+    ) -> list[UUID]:
+        """«Cómo llegar» › «Enviar» — the owner's tap. Read again now:
+        `DirectionsUnavailable` when the address was removed meanwhile."""
+        self._owned(tenant_id, connection_id, thread_id)
+        text = directions_text(self._plus.scope(tenant_id, connection_id).location)
+        if not text:
+            raise DirectionsUnavailable(str(connection_id))
+        return self.service.reply_text(
+            tenant_id=tenant_id, thread_id=thread_id, text=text, approval=self._approval(user_id)
         )
 
     def features(self) -> tuple[FeatureVM, FeatureVM]:

@@ -236,8 +236,8 @@ def test_instagram_reply_box_on_a_phone(chats_page) -> None:  # noqa: ANN001
     expect(botones).to_have_attribute("aria-expanded", "false")
     expect(box.get_by_role("button", name="Respuestas rápidas")).to_have_count(0)
     _only_send_is_solid(page)
-    # No «+» on Instagram today (no business row it can send yet); nothing disabled.
-    expect(box.get_by_role("button", name="Enviar algo al cliente")).to_have_count(0)
+    # m-25143229: the «+» with WhatsApp's rows Instagram can send; nothing disabled.
+    assert _plus_rows(page) == ["Formas de pago", "Cómo llegar"]
     # The tool IS the file input's target: the picker opens on the owner's own tap.
     for tool in ("Foto o video", "Archivo"):
         with page.expect_file_chooser(timeout=5_000) as chooser:

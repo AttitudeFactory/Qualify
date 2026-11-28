@@ -77,6 +77,8 @@ from .chat_thread_vm import (
     REOPEN_LABEL,
     SETTINGS_LABEL,
 )
+from .conversations_pick_state import InstagramPickState as IGP
+from .conversations_pick_ui import instagram_pick_drawer
 from .conversations_state import ConversationsState
 from .conversations_vm import (
     BUTTON_KINDS,
@@ -671,11 +673,6 @@ def _voice_tool() -> rx.Component:
             disabled=~S.can_compose | S.busy | S.has_attachment,
         ),
     )
-
-
-def _no_plus_row(key: str) -> rx.event.EventSpec:
-    """Instagram's «+» has no rows today (`reply_box_vm.plus_rows`): never called."""
-    raise ValueError(f"Instagram has no «+» row {key!r}")
 
 
 def _heart_button() -> rx.Component:
@@ -1595,7 +1592,9 @@ def _live_composer() -> rx.Component:
             _quick_replies_panel(),
         ),
         tools=tuple(tools),
-        plus=plus_menu(box, _no_plus_row, disabled=~S.can_compose | S.busy),
+        # m-25143229: «Formas de pago» and «Cómo llegar» (the rows `SEND_DOORS` opens);
+        # each opens the panel at its first step and never sends.
+        plus=plus_menu(box, IGP.open_pick, disabled=~S.can_compose | S.busy | IGP.pick_locked),
         field=reply_field(
             S.draft_text,
             S.set_draft_text,
@@ -1726,6 +1725,7 @@ def messages_tab() -> rx.Component:
             ),
         ),
         rx.cond(WA.has_open_thread, whatsapp_chat_layers()),
+        rx.cond(S.has_open_thread, instagram_pick_drawer()),
         templates_manager(),
         spacing="4",
         width="100%",

@@ -295,6 +295,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .contact_sheet_panel import ContactSheetState
+    from .conversations_pick_state import InstagramPickState
     from .conversations_state import ConversationsState
     from .create_gallery_state import CreateGalleryState
     from .creative_state import CreativeState
@@ -459,6 +460,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # QUA-226: the private inbox — accounts, access state, threads, the open
         # conversation, the reply draft and the acting user's id
         ConversationsState,
+        InstagramPickState,
         # m-25017859: the single chat list of «Por responder» — rows, counts, the
         # notice's per-business dismissal and the scroll kept for the way back
         InboxListState,

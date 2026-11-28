@@ -49,6 +49,8 @@ _FLOW_INSTALL_SCRIPT = r"""
       'mensaje-aprobado': path === '/whatsapp/promociones' && sub === 'aprobados',
       'mensaje-chat': waChat,
       enviar: waChat,
+      // m-25143229: the «+» panel of an Instagram chat (beside the single list)
+      'enviar-ig': path === '/responder' && tab === 'mensajes',
       'sticker-producto': path === '/brand/kit'
     };
     if (!parents[flow]) return;

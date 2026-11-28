@@ -574,8 +574,8 @@ class ChatsGateway:
     def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> DirectionsVM:
         """What «Cómo llegar» would send: the pin, or the backend's own address text."""
         from qualify_api.whatsapp.directions import (  # noqa: PLC0415
-            DIRECTIONS_TEXT,
             NumberNotFound,
+            directions_sentence,
             maps_link,
         )
 
@@ -600,7 +600,7 @@ class ChatsGateway:
             empty=False,
             name=found.name or "",
             address=address,
-            text=DIRECTIONS_TEXT.format(address=address, link=maps_link(address)),
+            text=directions_sentence(address, maps_link(address)),
         )
 
     def send_directions(
