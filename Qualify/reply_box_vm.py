@@ -20,8 +20,8 @@ Two layers, kept apart on purpose:
 
 The «+» rows (`plus_rows`) are the same catalogue on every channel, in one order; the
 channel only removes rows. With fewer than two rows there is no «+». m-25143229:
-Instagram draws «Formas de pago» and «Cómo llegar» (`conversations_pick_state`); its
-«Tus productos», «Tu oferta» and «Fotos y videos» are still missing doors.
+Instagram draws «Tus productos», «Tu oferta», «Formas de pago» and «Cómo llegar»
+(`conversations_pick_state`); its «Fotos y videos» is still a missing door.
 Strings here are client-facing Spanish (`qualify-copy-es`).
 """
 
@@ -173,6 +173,9 @@ SEND_DOORS: Final[dict[str, frozenset[str]]] = {
             # the method's QR as an image) through the conversations outbox.
             PLUS_PAYMENTS,
             PLUS_DIRECTIONS,
+            # slice b: the product's photo / the offer's picture, then its text
+            PLUS_PRODUCTS,
+            PLUS_OFFER,
         }
     ),
 }

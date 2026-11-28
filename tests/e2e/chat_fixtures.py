@@ -619,3 +619,143 @@ def seed_second_number(
             ids[name] = str(row.id)
         ids["connection"] = str(conn.id)
     return ids
+
+
+SHOP_PRODUCT = "Shawarma mixto"
+SHOP_PRODUCT_NO_PHOTO = "Ensalada César"
+SHOP_OFFER_TITLE = "2x1 los martes"
+SHOP_OFFER_TEXT = "Martes de 2x1 en shawarmas"
+
+
+def seed_products_and_offer(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """m-25143229 slice b: two products (one whose photo key is under the tenant's prefix,
+    one without a photo) and a marked offer (an approved photo piece). Only ROWS: no
+    file is written anywhere (the picture shows its placeholder), nothing reaches a
+    bucket or Meta."""
+    from qualify_api.catalog.models import BrandProduct, ProductMedia
+    from qualify_api.creative import models as orm
+    from qualify_api.tenancy.models import Brand
+    from qualify_api.whatsapp.models import WhatsAppWeeklyPromotion
+    from qualify_creative.schemas import CopyPayload
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        brand = session.scalar(select(Brand.id).order_by(Brand.created_at))
+        with_photo, without = uuid.uuid4(), uuid.uuid4()
+        for pid, name, position in (
+            (with_photo, SHOP_PRODUCT, 0),
+            (without, SHOP_PRODUCT_NO_PHOTO, 1),
+        ):
+            session.add(
+                BrandProduct(
+                    id=pid,
+                    tenant_id=tenant_id,
+                    brand_id=brand,
+                    name=name,
+                    slug=f"e2e-{position}",
+                    description="Con papas y salsa de ajo",
+                    price_amount=Decimal("25000"),
+                    price_currency="COP",
+                    position=position,
+                    is_active=True,
+                )
+            )
+        session.flush()
+        session.add(
+            ProductMedia(
+                tenant_id=tenant_id,
+                brand_id=brand,
+                product_id=with_photo,
+                media_type="image",
+                object_key=f"t/{tenant_id}/uploads/catalog/{with_photo}/e2e.jpg",
+                filename="e2e.jpg",
+                content_type="image/jpeg",
+                width=1080,
+                height=1080,
+                bytes=1,
+                normalized=True,
+                is_primary=True,
+                position=0,
+            )
+        )
+        brief, draft, version = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        session.add(
+            orm.ContentBrief(
+                id=brief,
+                tenant_id=tenant_id,
+                brand_id=brand,
+                objective="consideration",
+                topic=SHOP_OFFER_TITLE,
+                platform="instagram",
+                format="post",
+                intent="organic",
+                content_type="promotion",
+                image_route="template_only",
+                variants_requested=1,
+                constraints={},
+                kind="static_flyer",
+                media={},
+                created_by=user_id,
+            )
+        )
+        session.flush()
+        row = orm.ContentDraft(
+            id=draft,
+            tenant_id=tenant_id,
+            brand_id=brand,
+            brief_id=brief,
+            status="approved",
+            pipeline_version="e2e-ig-offer-v1",
+            title=SHOP_OFFER_TITLE,
+            revision=1,
+        )
+        session.add(row)
+        session.flush()
+        session.add(
+            orm.PieceVersion(
+                id=version,
+                tenant_id=tenant_id,
+                brand_id=brand,
+                draft_id=draft,
+                revision=1,
+                status="active",
+                model_id="e2e-synthetic",
+                pipeline_version="e2e-ig-offer-v1",
+                brief_id=brief,
+            )
+        )
+        session.flush()
+        row.active_version_id = version
+        session.add(
+            orm.CopyVariant(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                draft_id=draft,
+                version_id=version,
+                ordinal=0,
+                copy=CopyPayload(hook="", caption=SHOP_OFFER_TEXT, cta="", hashtags=()).model_dump(
+                    mode="json"
+                ),
+                fidelity={"passed": True},
+                model_id="e2e-synthetic",
+            )
+        )
+        session.add(
+            orm.ImageAsset(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                draft_id=draft,
+                version_id=version,
+                media_url="",
+                object_key=f"t/{tenant_id}/generated/{draft}/1.png",
+                content_type="image/png",
+                media_type="image",
+                position=0,
+            )
+        )
+        session.add(
+            WhatsAppWeeklyPromotion(
+                tenant_id=tenant_id, brand_id=brand, draft_id=draft, marked_by=user_id
+            )
+        )

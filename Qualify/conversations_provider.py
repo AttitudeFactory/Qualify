@@ -80,7 +80,7 @@ from __future__ import annotations
 import io
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -110,7 +110,16 @@ from qualify_api.conversations.templates import (
 from qualify_api.inbox.dispatch import ChatDispatcher
 from qualify_api.inbox.models import Message
 from qualify_api.tenancy.models import Tenant, User
-from qualify_api.whatsapp.attachments import PaymentPick
+from qualify_api.whatsapp.attachments import (
+    AttachmentReads,
+    PaymentPick,
+    PieceNotFound,
+    PiecePick,
+    ProductNotFound,
+    ProductPick,
+    product_price_label,
+    product_text,
+)
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.keys import media_key
 from sqlalchemy import func, select
@@ -131,13 +140,17 @@ from .conversations_vm import (
     outbox_text,
 )
 from .ig_plus_provider import (
+    IG_MAX_TEXT,
+    IG_MAX_VIDEO_BYTES,
     DirectionsUnavailable,
     PlusReader,
     PlusScope,
     PostgresPlusReader,
     directions_text,
+    fit_text,
     payment_text,
     qr_content_type,
+    sendable_media,
 )
 from .whatsapp_chats_vm import DirectionsVM
 
@@ -300,8 +313,10 @@ class Conversation:
     pending_draft: ConversationDraft | None = None
 
 
-class PaymentTextNotQueued(Exception):
-    """«Formas de pago»: the QR was queued, its text was not (`cause` says why)."""
+class TextNotQueued(Exception):
+    """A «+» send of two messages: the image (the QR, the product's photo, the offer's
+    picture or video) was queued, its text was not (`cause` says why). `qr_key` is the
+    object queued: the retry skips THAT object only."""
 
     qr_queued = True
 
@@ -309,6 +324,42 @@ class PaymentTextNotQueued(Exception):
         super().__init__(type(cause).__name__)
         self.cause = cause
         self.qr_key = qr_key
+
+
+#: The name slice (a) shipped with (`Formas de pago`).
+PaymentTextNotQueued = TextNotQueued
+
+
+class TextTooLong(ValueError):
+    """The «+» text is over one Instagram message (`IG_MAX_TEXT`): refused, never split."""
+
+
+class NothingToSend(LookupError):
+    """No medium Instagram takes and no text: the send would queue nothing (C5)."""
+
+
+class MediaSizeUnknown(LookupError):
+    """The offer's video size could not be read: Instagram's limit cannot be checked,
+    so nothing is sent (the existing failure words, no guess)."""
+
+
+class MediaTooLarge(ValueError):
+    """The offer's video is over Instagram's limit (`IG_MAX_VIDEO_BYTES`)."""
+
+
+@dataclass(frozen=True)
+class OfferRead:
+    """«Tu oferta» on Instagram: the marked piece (None when nothing is marked) and the
+    business's pieces as WhatsApp's picker reads them (thumbs through `/r2media`)."""
+
+    promotion: Any
+    pieces: list[PiecePick]
+    #: The marked piece's medium can go to Instagram (else its text alone).
+    sendable: bool = False
+    #: The marked piece is a video over Instagram's limit: nothing goes (C1).
+    too_large: bool = False
+    #: The marked piece is a video whose size could not be read: nothing goes.
+    size_unknown: bool = False
 
 
 @dataclass(frozen=True)
@@ -322,6 +373,14 @@ class PaymentPreview:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class _SizeOnly:
+    """The one blob call WhatsApp's picker listing makes (a video's size), answered by
+    the gateway's own reader — no warning per video, never a read or a write."""
+
+    def __init__(self, size: Callable[[UUID, str], int | None]) -> None:
+        self.size = size
 
 
 AccountsReader = Callable[[UUID], list[AccountVM]]
@@ -349,7 +408,13 @@ class ConversationsGateway:
         templates: ReplyTemplateService | None = None,
         dispatcher: ChatDispatcher | None = None,
         plus: PlusReader | None = None,
+        catalog_reads: AttachmentReads | None = None,
+        promotions: Callable[[UUID, UUID], Any] | None = None,
+        sizes: Callable[[UUID, str], int | None] | None = None,
     ) -> None:
+        self._sizes = sizes
+        self._catalog_reads = catalog_reads
+        self._promotions = promotions
         self._dispatcher = dispatcher
         self._plus: PlusReader = plus or PostgresPlusReader()
         self._service = service
@@ -751,6 +816,55 @@ class ConversationsGateway:
             text=payment_text(method), qr_src=self._qr_src(tenant_id, method.qr_media_key)
         )
 
+    def _media_then_text(
+        self,
+        tenant_id: UUID,
+        thread_id: UUID,
+        approval: HumanApproval,
+        *,
+        key: str | None,
+        media_type: str,
+        content_type: str,
+        text: str,
+        skip_key: str,
+    ) -> list[UUID]:
+        """The «+» pattern on Instagram (its image message carries no text): the medium
+        as one reply, then the text as the next. Two outbox writes — the service has no
+        batch door — so a text that fails AFTER the medium was queued raises
+        `TextNotQueued` with the object's key, and the retry passes it as `skip_key`:
+        the same object is never queued twice; a REPLACED one (another key) still goes
+        (m-25143229, review C2). `WindowClosed` refuses before anything is written."""
+        if len(text.strip()) > IG_MAX_TEXT:
+            raise TextTooLong(str(len(text.strip())))  # before anything is written
+        sends_media = bool(key and content_type and key != skip_key)
+        if not sends_media and not text.strip() and not (key and key == skip_key):
+            raise NothingToSend(key or "")  # C5: never «sale en unos segundos» for nothing
+        queued: list[UUID] = []
+        if sends_media:
+            queued.append(
+                self.service.reply_media(
+                    tenant_id=tenant_id,
+                    thread_id=thread_id,
+                    media=OutboxMedia(
+                        object_key=key, media_type=media_type, content_type=content_type
+                    ),
+                    approval=approval,
+                )
+            )
+        if not text.strip():
+            return queued
+        try:
+            queued.extend(
+                self.service.reply_text(
+                    tenant_id=tenant_id, thread_id=thread_id, text=text, approval=approval
+                )
+            )
+        except Exception as exc:
+            if queued:
+                raise TextNotQueued(exc, key or "") from exc
+            raise
+        return queued
+
     def send_payment_method(
         self,
         tenant_id: UUID,
@@ -761,46 +875,228 @@ class ConversationsGateway:
         *,
         skip_qr_key: str = "",
     ) -> list[UUID]:
-        """«Formas de pago» › «Enviar» — only ever the owner's tap. The QR goes as an
-        image reply (Instagram's image message carries no text), then the text. The
-        method is re-read now: one turned off meanwhile is `PaymentMethodNotFound`.
-        `WindowClosed` refuses before anything is written.
-
-        The two rows are two outbox writes (the service has no batch door): when the
-        text fails AFTER the QR was queued, `PaymentTextNotQueued` says so (`qr_queued`,
-        the cause chained, `qr_key` the object queued), and the retry passes that key as
-        `skip_qr_key`: the same QR is not queued twice, while a QR REPLACED meanwhile
-        (another key) still goes (m-25143229, review C2)."""
+        """«Formas de pago» › «Enviar» — only ever the owner's tap: the QR as an image
+        reply, then the text (`_media_then_text`). The method is re-read now: one turned
+        off meanwhile is `PaymentMethodNotFound`."""
         self._owned(tenant_id, connection_id, thread_id)
         method = self._method(tenant_id, connection_id, method_id)
-        approval = self._approval(user_id)
-        queued: list[UUID] = []
-        if method.qr_media_key and method.qr_media_key != skip_qr_key:
-            key = method.qr_media_key
-            queued.append(
-                self.service.reply_media(
-                    tenant_id=tenant_id,
-                    thread_id=thread_id,
-                    media=OutboxMedia(
-                        object_key=key, media_type="image", content_type=qr_content_type(key)
-                    ),
-                    approval=approval,
-                )
+        key = method.qr_media_key or ""
+        return self._media_then_text(
+            tenant_id,
+            thread_id,
+            self._approval(user_id),
+            key=key,
+            media_type="image",
+            content_type=qr_content_type(key) if key else "",
+            text=payment_text(method),
+            skip_key=skip_qr_key,
+        )
+
+    # --- «Tus productos» and «Tu oferta» (m-25143229, slice b) ---------------------------
+
+    @property
+    def catalog_reads(self) -> AttachmentReads:
+        """WhatsApp's own reads of the catalog and the pieces (`tenant_session`, RLS)."""
+        if self._catalog_reads is None:
+            from qualify_api.whatsapp.attachments import (  # noqa: PLC0415
+                PostgresAttachmentReads,
             )
+
+            self._catalog_reads = PostgresAttachmentReads()
+        return self._catalog_reads
+
+    def _weekly_promotion(self, tenant_id: UUID, brand_id: UUID) -> Any:
+        if self._promotions is None:
+            from qualify_api.whatsapp.promotions import (  # noqa: PLC0415
+                production_weekly_promotion_service,
+            )
+
+            service = production_weekly_promotion_service()
+            self._promotions = lambda t, b: service.get_weekly_promotion(tenant_id=t, brand_id=b)
+        return self._promotions(tenant_id, brand_id)
+
+    def _size(self, tenant_id: UUID, key: str) -> int | None:
+        """An object's size (a HEAD, read-only); None when it cannot be told."""
+        if self._sizes is None:
+            from qualify_api.whatsapp.attachments import ProductionBlobStore  # noqa: PLC0415
+
+            store = ProductionBlobStore()
+            self._sizes = store.size
         try:
-            queued.extend(
-                self.service.reply_text(
-                    tenant_id=tenant_id,
-                    thread_id=thread_id,
-                    text=payment_text(method),
-                    approval=approval,
+            return self._sizes(tenant_id, key)
+        except Exception as exc:  # noqa: BLE001 — unknown, like WhatsApp's listing
+            logger.warning("instagram plus size failed: %s", type(exc).__name__)
+            return None
+
+    def _video_size(self, tenant_id: UUID, piece: Any) -> tuple[bool, bool]:
+        """(too large, size unknown) for a video piece; (False, False) otherwise."""
+        if piece.media_type != "video":
+            return False, False
+        size = self._size(tenant_id, piece.image_key)
+        if size is None:
+            return False, True
+        return size > IG_MAX_VIDEO_BYTES, False
+
+    def _brand(self, tenant_id: UUID, connection_id: UUID) -> UUID | None:
+        return self._plus.scope(tenant_id, connection_id).brand_id
+
+    def _picks_service(self) -> Any:
+        """WhatsApp's picker reads (`ChatAttachmentService.list_*_for_chat`) over the
+        same reads, with no sender and no linker: the thumbnails are ours (`/r2media`)."""
+        from qualify_api.whatsapp.attachments import ChatAttachmentService  # noqa: PLC0415
+
+        return ChatAttachmentService(
+            None,  # type: ignore[arg-type] — reads only, never a send
+            self.catalog_reads,
+            _SizeOnly(self._size),  # type: ignore[arg-type] — the listing's video sizes
+        )
+
+    def _thumb(self, tenant_id: UUID, key: str | None) -> str:
+        content_type = sendable_media(tenant_id, key)
+        return self._viewer(tenant_id, key or "", "image", content_type) if content_type else ""
+
+    def list_products_for_chat(self, tenant_id: UUID, connection_id: UUID) -> list[ProductPick]:
+        """The business's active products in WhatsApp's order. A photo Instagram cannot
+        take (not under the tenant's prefix, or not JPEG/PNG) counts as no photo: the
+        card says «Sin foto» and the product goes as its text."""
+        brand = self._brand(tenant_id, connection_id)
+        if brand is None:
+            return []
+        picks = self._picks_service().list_products_for_chat(tenant_id, brand)
+        out: list[ProductPick] = []
+        for pick in picks:
+            usable = bool(sendable_media(tenant_id, pick.thumb_key))
+            out.append(
+                replace(
+                    pick,
+                    has_photo=usable,
+                    thumb_key=pick.thumb_key if usable else "",
+                    thumb_url=self._thumb(tenant_id, pick.thumb_key) if usable else "",
                 )
             )
-        except Exception as exc:
-            if queued:
-                raise PaymentTextNotQueued(exc, method.qr_media_key or "") from exc
-            raise
-        return queued
+        return [p for p in out if p.has_photo] + [p for p in out if not p.has_photo]
+
+    def offer_for_chat(self, tenant_id: UUID, connection_id: UUID) -> OfferRead:
+        """The marked offer and the pieces (None / [] without a business)."""
+        brand = self._brand(tenant_id, connection_id)
+        if brand is None:
+            return OfferRead(promotion=None, pieces=[])
+        promotion = self._weekly_promotion(tenant_id, brand)
+        if promotion is None:
+            return OfferRead(promotion=None, pieces=[])
+        picks = self._picks_service().list_pieces_for_chat(tenant_id, brand)
+        piece = self.catalog_reads.piece(tenant_id, promotion.draft_id)
+        too_large, unknown = (
+            self._video_size(tenant_id, piece) if piece is not None else (False, False)
+        )
+        sendable = (
+            piece is not None
+            and not too_large
+            and not unknown
+            and bool(sendable_media(tenant_id, piece.image_key, piece.media_type))
+        )
+        marked = str(promotion.draft_id)
+        return OfferRead(
+            promotion=promotion,
+            pieces=[
+                replace(
+                    p,
+                    thumb_url=self._thumb(tenant_id, p.thumb_key),
+                    # Instagram's own limit, not WhatsApp's 16 MB (C1)
+                    too_large=too_large if p.id == marked else False,
+                )
+                for p in picks
+            ],
+            sendable=sendable,
+            too_large=too_large,
+            size_unknown=unknown,
+        )
+
+    def send_product(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        product_id: UUID,
+        caption: str,
+        *,
+        skip_media_key: str = "",
+    ) -> list[UUID]:
+        """«Tus productos» › «Enviar» — the owner's tap. The product is read again under
+        `tenant_session`; one of another business (or gone) is `ProductNotFound`. Its
+        photo as an image reply, then the owner's text; without a usable photo, WhatsApp's
+        own text of a product without photo (name — price, the text or description)."""
+        self._owned(tenant_id, connection_id, thread_id)
+        product = self.catalog_reads.product(tenant_id, product_id)
+        brand = self._brand(tenant_id, connection_id)
+        if product is None or brand is None or product.brand_id != brand:
+            raise ProductNotFound(str(product_id))
+        content_type = sendable_media(tenant_id, product.photo_key)
+        if content_type:
+            text = caption.strip()
+        else:
+            # WhatsApp's own text, within one Instagram message (C2)
+            text = fit_text(
+                product_text(
+                    product.name.strip(),
+                    product_price_label(product.price_amount, product.price_currency),
+                    product.description,
+                    caption,
+                )
+            )
+        return self._media_then_text(
+            tenant_id,
+            thread_id,
+            self._approval(user_id),
+            key=product.photo_key if content_type else None,
+            media_type="image",
+            content_type=content_type,
+            text=text,
+            skip_key=skip_media_key,
+        )
+
+    def send_offer(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        draft_id: UUID,
+        caption: str,
+        *,
+        skip_media_key: str = "",
+    ) -> list[UUID]:
+        """«Tu oferta» › «Enviar» — the owner's tap. Only the business's CURRENTLY marked
+        piece goes (another id, or an offer unmarked meanwhile: `PieceNotFound`). Its first
+        picture (or its MP4) as one reply, then the owner's text."""
+        self._owned(tenant_id, connection_id, thread_id)
+        brand = self._brand(tenant_id, connection_id)
+        promotion = self._weekly_promotion(tenant_id, brand) if brand else None
+        piece = self.catalog_reads.piece(tenant_id, draft_id)
+        if (
+            promotion is None
+            or promotion.draft_id != draft_id
+            or piece is None
+            or piece.brand_id != brand
+        ):
+            raise PieceNotFound(str(draft_id))
+        too_large, unknown = self._video_size(tenant_id, piece)
+        if too_large:
+            raise MediaTooLarge(str(draft_id))  # C1: nothing is queued
+        if unknown:
+            raise MediaSizeUnknown(str(draft_id))  # the limit cannot be checked
+        content_type = sendable_media(tenant_id, piece.image_key, piece.media_type)
+        return self._media_then_text(
+            tenant_id,
+            thread_id,
+            self._approval(user_id),
+            key=piece.image_key if content_type else None,
+            media_type=piece.media_type if content_type else "image",
+            content_type=content_type,
+            text=caption,
+            skip_key=skip_media_key,
+        )
 
     def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> DirectionsVM:
         """What «Cómo llegar» would send: the text, or the empty state."""

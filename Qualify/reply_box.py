@@ -127,11 +127,17 @@ def send_button(on_click: Any, *, loading: rx.Var[bool], disabled: rx.Var[bool])
 
 
 def plus_menu(
-    box: ReplyBoxVM, on_select: Callable[[str], Any], *, disabled: rx.Var[bool]
+    box: ReplyBoxVM,
+    on_select: Callable[[str], Any],
+    *,
+    disabled: rx.Var[bool],
+    without: frozenset[str] = frozenset(),
 ) -> rx.Component:
     """The «+» with the rows this channel can send (`reply_box_vm.plus_rows`); each one
-    opens a flow and never sends. Fewer than two rows: no «+» at all."""
-    rows = plus_rows(box)
+    opens a flow and never sends. Fewer than two rows: no «+» at all. `without`: rows
+    this business cannot use now (m-25143229 U1: «Cómo llegar» with nowhere to keep the
+    address) — removed, never drawn disabled."""
+    rows = tuple(r for r in plus_rows(box) if r.key not in without)
     if len(rows) < 2:
         return rx.fragment()
     return orbit_menu(

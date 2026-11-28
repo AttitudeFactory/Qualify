@@ -926,11 +926,13 @@ def payment_card_caption(
     *,
     total: Decimal | None = None,
     order_currency: str | None = None,
+    limit: int = MAX_CAPTION_LEN,
 ) -> str:
     """The card's text (spec §3): instructions, «Total: …» (when there is an order),
     «Te confirmamos el monto en …» when the method's currency is not the order's (never
     converted here), then what to do now. Within a caption's 1024 characters: only the
-    instructions are ever shortened."""
+    instructions are ever shortened. `limit`: another channel's budget (Instagram's
+    1000-character message, m-25143229) — the ending is kept, the instructions clipped."""
     tail: list[str] = []
     if total is not None:
         tail.append(PAYMENT_TOTAL_LINE.format(total=format_money(total, order_currency)))
@@ -943,7 +945,7 @@ def payment_card_caption(
     head = option.instructions.strip()
     if not head:
         return end
-    room = MAX_CAPTION_LEN - len(end) - 2
+    room = limit - len(end) - 2
     return f"{_clip(head, max(room, 1))}\n\n{end}"
 
 

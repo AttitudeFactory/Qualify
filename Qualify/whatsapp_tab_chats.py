@@ -31,12 +31,18 @@ from __future__ import annotations
 import reflex as rx
 
 from .chat_plus_picks import (
+    caption_editor,
     link_button,
     pick_directions,
     pick_grid_skeleton,
     pick_list,
     pick_load_error,
+    pick_offer,
     pick_payments,
+    pick_products,
+    product_card,
+    product_src,
+    video_mark,
 )
 from .chat_row import tone_pill as _tone_pill
 from .chat_row_vm import CHANNEL_WHATSAPP
@@ -104,12 +110,8 @@ from .ui.steps import step_progress
 from .whatsapp_chats_state import UNASSIGNED, WhatsAppChatsState
 from .whatsapp_chats_vm import (
     ADD_PHOTO_LABEL,
-    ADD_PHOTOS_LABEL,
     ADD_PRODUCT_LABEL,
-    ALL_WITHOUT_PHOTO,
     ASK_CONSENT_LABEL,
-    CAPTION_LABEL,
-    CAPTION_SHORTENED,
     COMPOSE_BUTTONS,
     CREATE_AGAIN_LABEL,
     CREATE_APPROVED_LABEL,
@@ -117,7 +119,6 @@ from .whatsapp_chats_vm import (
     CREATE_PIECE_LABEL,
     CREATE_PIECE_ROUTE,
     CUSTOMER_NOTE_LABEL,
-    DRAFTS_ROUTE,
     MAX_BUTTON_TITLE_CHARS,
     MAX_PHOTO_BYTES,
     MEDIA_AUDIO,
@@ -134,16 +135,10 @@ from .whatsapp_chats_vm import (
     NO_FOLLOWUPS,
     NO_PERMISSION_NOTICE,
     NO_PHOTO_NOTICE,
-    NO_PHOTO_PILL,
     NO_PIECES_EMPTY,
-    NO_PRODUCTS_EMPTY,
     NO_UNAPPROVED_EMPTY,
     NOTE_MORE_LABEL,
     OFFER_BADGE,
-    OFFER_CHANGE,
-    OFFER_EMPTY,
-    OFFER_GO,
-    OFFER_GONE,
     PAYMENT_CONFIRM_HINT,
     PAYMENT_CONFIRM_NOT_YET,
     PAYMENT_CONFIRM_SEND,
@@ -172,10 +167,7 @@ from .whatsapp_chats_vm import (
     PIECES_APPROVED,
     PRICE_MISMATCH_HREF,
     PRICE_MISMATCH_LINK,
-    PRODUCTS_NO_MATCH,
     PRODUCTS_ROUTE,
-    PRODUCTS_SEARCH,
-    PRODUCTS_SHOW_ALL,
     PROMOTIONS_NEED_CONSENT,
     RETRY_LABEL,
     SEASONAL_CAPTION_LABEL,
@@ -198,7 +190,6 @@ from .whatsapp_chats_vm import (
     TEMPLATE_BACK_LABEL,
     TEMPLATE_FIELDS_LABEL,
     TEMPLATE_PREVIEW_LABEL,
-    TEXT_ONLY_LABEL,
     UNAPPROVED_WARNING,
     UNLINKED_CODE_LABEL,
     VIDEO_BADGE,
@@ -1363,134 +1354,19 @@ def _pick_list(body: rx.Component) -> rx.Component:
 
 
 def _product_src(card: ProductCardVM) -> rx.Var:
-    """A public URL as it comes, else the upload-store key through `rx.get_upload_url`."""
-    return rx.cond(
-        card.thumb_url != "",
-        card.thumb_url,
-        rx.cond(card.thumb_key != "", rx.get_upload_url(card.thumb_key), ""),
-    )
+    return product_src(card)
 
 
 def _product_card(card: ProductCardVM) -> rx.Component:
-    return choice_card(
-        rx.vstack(
-            media_thumb(
-                _product_src(card),
-                size=None,
-                width="100%",
-                height="7.5rem",
-                alt=card.alt,
-                icon="package",
-                has=card.has_photo,
-            ),
-            rx.text(card.name, weight="medium", size="2", text_align="left"),
-            rx.hstack(
-                rx.text(card.price_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
-                rx.cond(~card.has_photo, signal_pill(NO_PHOTO_PILL, "neutral")),
-                spacing="2",
-                align="center",
-                wrap="wrap",
-            ),
-            spacing="1",
-            align="start",
-            width="100%",
-        ),
-        selected=S.pick_selected == card.id,
-        on_select=S.choose_product(card.id),
-        padding="0.5rem",
-        width="100%",
-        min_height=_TAP_MIN,
-    )
+    return product_card(S, card)
 
 
 def _pick_products() -> rx.Component:
-    title, line = NO_PRODUCTS_EMPTY
-    grid = rx.vstack(
-        rx.cond(
-            S.pick_all_without_photo,
-            rx.vstack(
-                callout(ALL_WITHOUT_PHOTO, "info"),
-                _link_button(ADD_PHOTOS_LABEL, "image-plus", PRODUCTS_ROUTE),
-                spacing="2",
-                width="100%",
-            ),
-        ),
-        rx.cond(
-            S.pick_show_search,
-            rx.vstack(
-                rx.el.label(
-                    rx.text(PRODUCTS_SEARCH, size="2", weight="medium"),
-                    html_for=_SEARCH_ID,
-                ),
-                rx.input(
-                    rx.input.slot(rx.icon("search", size=T.ICON_SM)),
-                    id=_SEARCH_ID,
-                    value=S.pick_query,
-                    on_change=S.set_pick_query,
-                    size="3",
-                    width="100%",
-                ),
-                spacing="1",
-                width="100%",
-            ),
-        ),
-        rx.cond(
-            S.pick_visible_products.length() > 0,
-            rx.grid(
-                rx.foreach(S.pick_visible_products, _product_card),
-                columns="2",
-                spacing="2",
-                width="100%",
-            ),
-            rx.hstack(
-                rx.text(PRODUCTS_NO_MATCH, size="2", color=T.TEXT_MUTED),
-                rx.button(
-                    PRODUCTS_SHOW_ALL,
-                    on_click=S.clear_pick_query,
-                    variant="soft",
-                    size="3",
-                    min_height=_TAP_MIN,
-                    **T.tone_scheme("neutral"),
-                ),
-                spacing="3",
-                align="center",
-                wrap="wrap",
-            ),
-        ),
-        spacing="3",
-        width="100%",
-    )
-    return _pick_list(
-        rx.cond(
-            S.pick_products.length() == 0,
-            empty_state(
-                "package",
-                title,
-                line,
-                _link_button(ADD_PRODUCT_LABEL, "plus", NEW_PRODUCT_ROUTE),
-            ),
-            grid,
-        )
-    )
+    return pick_products(S, search_id=_SEARCH_ID)
 
 
 def _video_mark() -> rx.Component:
-    """The ▶ over a video's poster: a still picture, nothing plays in the grid
-    (m-24945889 §4)."""
-    return rx.center(
-        rx.icon("play", size=T.ICON_MD, aria_hidden="true"),
-        class_name="q-pick-play",
-        position="absolute",
-        top="50%",
-        left="50%",
-        transform="translate(-50%, -50%)",
-        width="2.5rem",
-        height="2.5rem",
-        border_radius="9999px",
-        background="rgba(0, 0, 0, 0.55)",
-        color="white",
-        pointer_events="none",
-    )
+    return video_mark()
 
 
 def _piece_thumb(card: PieceCardVM, height: str) -> rx.Component:
@@ -1805,55 +1681,7 @@ def _pick_review() -> rx.Component:
 
 
 def _caption_editor(label: str | None = None) -> rx.Component:
-    return rx.vstack(
-        rx.vstack(
-            rx.hstack(
-                rx.el.label(
-                    rx.text(
-                        label or rx.cond(S.pick_as_text, TEXT_ONLY_LABEL, CAPTION_LABEL),
-                        size="2",
-                        weight="medium",
-                    ),
-                    html_for=_CAPTION_ID,
-                ),
-                rx.spacer(),
-                rx.text(
-                    S.pick_caption_count,
-                    size="1",
-                    color=rx.cond(
-                        S.pick_caption_error != "", T.tone_color("error", 11), T.TEXT_MUTED
-                    ),
-                    class_name="q-nums",
-                    id=_CAPTION_COUNT_ID,
-                ),
-                width="100%",
-                align="center",
-            ),
-            rx.text_area(
-                id=_CAPTION_ID,
-                value=S.pick_caption,
-                on_change=S.set_pick_caption,
-                rows="4",
-                resize="vertical",
-                width="100%",
-                size="3",
-                custom_attrs={"aria-describedby": _CAPTION_COUNT_ID},
-            ),
-            rx.cond(
-                S.pick_caption_error != "",
-                rx.text(S.pick_caption_error, size="1", color=T.tone_color("error", 11)),
-            ),
-            rx.cond(
-                ((S.pick_source == PICK_PIECES) | (S.pick_source == PICK_OFFER))
-                & S.pick_selected_piece.shortened,
-                rx.text(CAPTION_SHORTENED, size="1", color=T.TEXT_MUTED),
-            ),
-            spacing="1",
-            width="100%",
-        ),
-        spacing="3",
-        width="100%",
-    )
+    return caption_editor(S, label, caption_id=_CAPTION_ID, count_id=_CAPTION_COUNT_ID)
 
 
 def _media_source_card(
@@ -2095,47 +1923,8 @@ def _pick_seasonal_review() -> rx.Component:
 
 
 def _pick_offer() -> rx.Component:
-    """«Tu oferta»: one step — the marked piece, how long ago it was marked, a soft
-    «¿Sigue vigente?» past 14 days (never blocking), and the usual review."""
-    offer = S.pick_offer
-    empty_title, empty_line = OFFER_EMPTY
-    gone_title, gone_line = OFFER_GONE
-    go = _link_button(OFFER_GO, "tag", DRAFTS_ROUTE)
-    return _pick_list(
-        rx.cond(
-            ~offer.present,
-            _pick_grid_skeleton(),
-            rx.cond(
-                ~offer.marked,
-                empty_state("tag", empty_title, empty_line, go),
-                rx.cond(
-                    offer.gone,
-                    empty_state("tag", gone_title, gone_line, go),
-                    rx.vstack(
-                        rx.hstack(
-                            tone_badge(OFFER_BADGE, "info", icon="tag"),
-                            rx.text(offer.marked_label, size="2", color=T.TEXT_MUTED),
-                            spacing="2",
-                            align="center",
-                            wrap="wrap",
-                        ),
-                        rx.cond(
-                            offer.stale_note != "",
-                            rx.vstack(
-                                callout(offer.stale_note, "warn"),
-                                rx.link(OFFER_CHANGE, href=DRAFTS_ROUTE, size="2"),
-                                spacing="1",
-                                width="100%",
-                            ),
-                        ),
-                        _pick_review(),
-                        spacing="3",
-                        width="100%",
-                    ),
-                ),
-            ),
-        )
-    )
+    """«Tu oferta»: one step — the marked piece and the usual review (shared step)."""
+    return pick_offer(S, _pick_review())
 
 
 def _pick_directions() -> rx.Component:

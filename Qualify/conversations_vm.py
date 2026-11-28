@@ -88,6 +88,9 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_BYTES = 25 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
+#: The composer's own words for a video over `MAX_VIDEO_BYTES` (m-25143229 reuses them
+#: for «Tu oferta»).
+VIDEO_TOO_LARGE_TEXT = "El video supera los 25 MB que admite Instagram."
 IMAGE_ACCEPT: dict[str, list[str]] = {"image/jpeg": [".jpg", ".jpeg"], "image/png": [".png"]}
 AUDIO_ACCEPT: dict[str, list[str]] = {
     "audio/mpeg": [".mp3"],
@@ -1199,7 +1202,7 @@ def classify_attachment(content_type: str, size: int) -> tuple[str, str]:
         return MEDIA_AUDIO, ""
     if kind in _VIDEO_TYPES:
         if size > MAX_VIDEO_BYTES:
-            return "", "El video supera los 25 MB que admite Instagram."
+            return "", VIDEO_TOO_LARGE_TEXT
         return MEDIA_VIDEO, ""
     if kind in _DOCUMENT_TYPES:
         if size > MAX_DOCUMENT_BYTES:

@@ -25,19 +25,42 @@ from .ui import (
     choice_card,
     empty_state,
     media_thumb,
+    signal_pill,
     skeleton_rows,
+    tone_badge,
 )
 from .ui import tokens as T
 from .whatsapp_chats_vm import (
+    ADD_PHOTOS_LABEL,
+    ADD_PRODUCT_LABEL,
+    ALL_WITHOUT_PHOTO,
+    CAPTION_LABEL,
+    CAPTION_SHORTENED,
     DIRECTIONS_COMPLETE,
     DIRECTIONS_EMPTY,
     DIRECTIONS_NO_POINT,
     DIRECTIONS_PUT_ON_MAP,
+    DRAFTS_ROUTE,
+    NO_PHOTO_PILL,
+    NO_PRODUCTS_EMPTY,
+    OFFER_BADGE,
+    OFFER_CHANGE,
+    OFFER_EMPTY,
+    OFFER_GO,
+    OFFER_GONE,
     PAYMENTS_ADD,
     PAYMENTS_EMPTY_TEXT,
     PAYMENTS_EMPTY_TITLE,
+    PICK_OFFER,
+    PICK_PIECES,
+    PRODUCTS_NO_MATCH,
+    PRODUCTS_ROUTE,
+    PRODUCTS_SEARCH,
+    PRODUCTS_SHOW_ALL,
     RETRY_LABEL,
+    TEXT_ONLY_LABEL,
     PaymentCardVM,
+    ProductCardVM,
 )
 
 
@@ -223,6 +246,259 @@ def pick_directions(S: Any, *, point_hint: bool = True) -> rx.Component:  # noqa
                     hint,
                     spacing="3",
                     width="100%",
+                ),
+            ),
+        ),
+    )
+
+
+# --- «Tus productos» (m-25143229, slice b) ---------------------------------------------
+
+
+def product_src(card: ProductCardVM) -> rx.Var:
+    """A public URL as it comes, else the upload-store key through `rx.get_upload_url`."""
+    return rx.cond(
+        card.thumb_url != "",
+        card.thumb_url,
+        rx.cond(card.thumb_key != "", rx.get_upload_url(card.thumb_key), ""),
+    )
+
+
+def product_card(S: Any, card: ProductCardVM) -> rx.Component:  # noqa: N803
+    return choice_card(
+        rx.vstack(
+            media_thumb(
+                product_src(card),
+                size=None,
+                width="100%",
+                height="7.5rem",
+                alt=card.alt,
+                icon="package",
+                has=card.has_photo,
+            ),
+            rx.text(card.name, weight="medium", size="2", text_align="left"),
+            rx.hstack(
+                rx.text(card.price_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.cond(~card.has_photo, signal_pill(NO_PHOTO_PILL, "neutral")),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+            spacing="1",
+            align="start",
+            width="100%",
+        ),
+        selected=S.pick_selected == card.id,
+        on_select=S.choose_product(card.id),
+        padding="0.5rem",
+        width="100%",
+        min_height=TAP_MIN,
+    )
+
+
+def pick_products(S: Any, *, search_id: str) -> rx.Component:  # noqa: N803
+    """«¿Qué producto?»: the grid (with search past a few), or the empty state that
+    leads to the catalog."""
+    title, line = NO_PRODUCTS_EMPTY
+    grid = rx.vstack(
+        rx.cond(
+            S.pick_all_without_photo,
+            rx.vstack(
+                callout(ALL_WITHOUT_PHOTO, "info"),
+                link_button(ADD_PHOTOS_LABEL, "image-plus", PRODUCTS_ROUTE),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_show_search,
+            rx.vstack(
+                rx.el.label(
+                    rx.text(PRODUCTS_SEARCH, size="2", weight="medium"),
+                    html_for=search_id,
+                ),
+                rx.input(
+                    rx.input.slot(rx.icon("search", size=T.ICON_SM)),
+                    id=search_id,
+                    value=S.pick_query,
+                    on_change=S.set_pick_query,
+                    size="3",
+                    width="100%",
+                ),
+                spacing="1",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_visible_products.length() > 0,
+            rx.grid(
+                rx.foreach(S.pick_visible_products, lambda card: product_card(S, card)),
+                columns="2",
+                spacing="2",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.text(PRODUCTS_NO_MATCH, size="2", color=T.TEXT_MUTED),
+                rx.button(
+                    PRODUCTS_SHOW_ALL,
+                    on_click=S.clear_pick_query,
+                    variant="soft",
+                    size="3",
+                    min_height=TAP_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+    return pick_list(
+        S,
+        rx.cond(
+            S.pick_products.length() == 0,
+            empty_state(
+                "package",
+                title,
+                line,
+                # U3: with the way back to the chat (`?volver=`)
+                link_button(ADD_PRODUCT_LABEL, "plus", S.products_add_href),
+            ),
+            grid,
+        ),
+    )
+
+
+def video_mark() -> rx.Component:
+    """The ▶ over a video's poster: a still picture, nothing plays in the grid
+    (m-24945889 §4)."""
+    return rx.center(
+        rx.icon("play", size=T.ICON_MD, aria_hidden="true"),
+        class_name="q-pick-play",
+        position="absolute",
+        top="50%",
+        left="50%",
+        transform="translate(-50%, -50%)",
+        width="2.5rem",
+        height="2.5rem",
+        border_radius="9999px",
+        background="rgba(0, 0, 0, 0.55)",
+        color="white",
+        pointer_events="none",
+    )
+
+
+# --- the text of the review --------------------------------------------------------------
+
+
+def caption_editor(
+    S: Any,  # noqa: N803
+    label: str | None = None,
+    *,
+    caption_id: str,
+    count_id: str,
+    shortened_notice: bool = True,
+) -> rx.Component:
+    """The text of the review. `label` names it (Instagram: «Texto del mensaje», it goes
+    as its own message); `shortened_notice`: «Acortamos el texto para que quepa en
+    WhatsApp.» — WhatsApp only."""
+    return rx.vstack(
+        rx.vstack(
+            rx.hstack(
+                rx.el.label(
+                    rx.text(
+                        label or rx.cond(S.pick_as_text, TEXT_ONLY_LABEL, CAPTION_LABEL),
+                        size="2",
+                        weight="medium",
+                    ),
+                    html_for=caption_id,
+                ),
+                rx.spacer(),
+                rx.text(
+                    S.pick_caption_count,
+                    size="1",
+                    color=rx.cond(
+                        S.pick_caption_error != "", T.tone_color("error", 11), T.TEXT_MUTED
+                    ),
+                    class_name="q-nums",
+                    id=count_id,
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.text_area(
+                id=caption_id,
+                value=S.pick_caption,
+                on_change=S.set_pick_caption,
+                rows="4",
+                resize="vertical",
+                width="100%",
+                size="3",
+                custom_attrs={"aria-describedby": count_id},
+            ),
+            rx.cond(
+                S.pick_caption_error != "",
+                rx.text(S.pick_caption_error, size="1", color=T.tone_color("error", 11)),
+            ),
+            rx.cond(
+                ((S.pick_source == PICK_PIECES) | (S.pick_source == PICK_OFFER))
+                & S.pick_selected_piece.shortened,
+                rx.text(CAPTION_SHORTENED, size="1", color=T.TEXT_MUTED),
+            )
+            if shortened_notice
+            else rx.fragment(),
+            spacing="1",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+# --- «Tu oferta» -------------------------------------------------------------------------
+
+
+def pick_offer(S: Any, review: rx.Component) -> rx.Component:  # noqa: N803
+    """«Tu oferta»: one step — the marked piece, how long ago it was marked, a soft
+    «¿Sigue vigente?» past 14 days (never blocking), and the screen's own `review`."""
+    offer = S.pick_offer
+    empty_title, empty_line = OFFER_EMPTY
+    gone_title, gone_line = OFFER_GONE
+    go = link_button(OFFER_GO, "tag", DRAFTS_ROUTE)
+    return pick_list(
+        S,
+        rx.cond(
+            ~offer.present,
+            pick_grid_skeleton(),
+            rx.cond(
+                ~offer.marked,
+                empty_state("tag", empty_title, empty_line, go),
+                rx.cond(
+                    offer.gone,
+                    empty_state("tag", gone_title, gone_line, go),
+                    rx.vstack(
+                        rx.hstack(
+                            tone_badge(OFFER_BADGE, "info", icon="tag"),
+                            rx.text(offer.marked_label, size="2", color=T.TEXT_MUTED),
+                            spacing="2",
+                            align="center",
+                            wrap="wrap",
+                        ),
+                        rx.cond(
+                            offer.stale_note != "",
+                            rx.vstack(
+                                callout(offer.stale_note, "warn"),
+                                rx.link(OFFER_CHANGE, href=DRAFTS_ROUTE, size="2"),
+                                spacing="1",
+                                width="100%",
+                            ),
+                        ),
+                        review,
+                        spacing="3",
+                        width="100%",
+                    ),
                 ),
             ),
         ),

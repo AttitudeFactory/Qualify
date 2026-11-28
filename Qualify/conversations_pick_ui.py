@@ -11,22 +11,36 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .chat_plus_picks import link_button, pick_directions, pick_list, pick_payments
+from .chat_plus_picks import (
+    caption_editor,
+    link_button,
+    pick_directions,
+    pick_list,
+    pick_offer,
+    pick_payments,
+    pick_products,
+    video_mark,
+)
 from .chat_thread import TAP_MIN
 from .conversations_pick_state import IG_PICK_FLOW
 from .conversations_pick_state import InstagramPickState as P
 from .conversations_state import ConversationsState
+from .conversations_vm import VIDEO_TOO_LARGE_TEXT
 from .ui import callout, chat_bubble, drawer, media_thumb, skeleton_rows
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
 from .whatsapp_chats_vm import (
+    NO_PHOTO_NOTICE,
     PAYMENTS_CHANGE,
     PICK_BACK,
     PICK_BACK_TO_CHAT,
     PICK_DIRECTIONS,
+    PICK_OFFER,
     PICK_PAYMENTS,
+    PICK_PRODUCTS,
     RETRY_LABEL,
+    TEXT_ONLY_LABEL,
 )
 
 
@@ -77,9 +91,79 @@ def _payment_review() -> rx.Component:
     )
 
 
+_SEARCH_ID = "ig-pick-search"
+_CAPTION_ID = "ig-pick-caption"
+_CAPTION_COUNT_ID = "ig-pick-caption-count"
+
+
+def _media_review() -> rx.Component:
+    """«Revisa y envía» of a product or the offer: on Instagram a picture carries no
+    text, so what arrives is two messages — the picture (or the video's first frame,
+    with ▶), then the text — shown as two bubbles; the text is edited under them.
+    Without a picture Instagram takes, the text alone (WhatsApp's own notice)."""
+    piece = P.pick_selected_piece
+    return rx.vstack(
+        rx.cond(
+            P.pick_as_text & (P.pick_source == PICK_PRODUCTS), callout(NO_PHOTO_NOTICE, "info")
+        ),
+        # C1: a video over Instagram's limit — the composer's own words; «Enviar» is off
+        rx.cond(
+            (P.pick_source == PICK_OFFER) & P.pick_offer_too_large,
+            callout(VIDEO_TOO_LARGE_TEXT, "warn"),
+        ),
+        rx.cond(
+            P.pick_media_src != "",
+            chat_bubble(
+                rx.box(
+                    media_thumb(
+                        P.pick_media_src,
+                        size=None,
+                        width="100%",
+                        height="12rem",
+                        alt=rx.cond(
+                            P.pick_source == PICK_PRODUCTS, P.pick_selected_product.alt, piece.alt
+                        ),
+                        icon="image",
+                    ),
+                    rx.cond((P.pick_source == PICK_OFFER) & piece.is_video, video_mark()),
+                    position="relative",
+                    width="100%",
+                ),
+                direction="out",
+                max_width="20rem",
+                align_self="flex-end",
+            ),
+        ),
+        rx.cond(
+            P.pick_preview_text != "",
+            chat_bubble(
+                rx.text(P.pick_preview_text, size="2", white_space="pre-wrap"),
+                direction="out",
+                max_width="20rem",
+                align_self="flex-end",
+            ),
+        ),
+        # U1: on Instagram the text is its own message; U2: no WhatsApp notice here
+        caption_editor(
+            P,
+            TEXT_ONLY_LABEL,
+            caption_id=_CAPTION_ID,
+            count_id=_CAPTION_COUNT_ID,
+            shortened_notice=False,
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
 def _body() -> rx.Component:
     return rx.match(
         P.pick_source,
+        (
+            PICK_PRODUCTS,
+            rx.cond(P.pick_reviewing, _media_review(), pick_products(P, search_id=_SEARCH_ID)),
+        ),
+        (PICK_OFFER, pick_offer(P, _media_review())),
         (PICK_PAYMENTS, rx.cond(P.pick_reviewing, _payment_review(), pick_payments(P))),
         # Instagram gets a text with a link either way: no «ponlo en el mapa» hint
         (PICK_DIRECTIONS, pick_directions(P, point_hint=False)),

@@ -119,7 +119,12 @@ def test_instagram_plus_has_whatsapps_rows_minus_the_menu(chats_page, size) -> N
     _open(page, _instagram(ids, "instagram_open"))
     instagram = _open_plus(page)
     _shot(page, f"despues-instagram-plus-{size}")
-    assert [t for t, _ in instagram] == ["Formas de pago", "Cómo llegar"]
+    assert [t for t, _ in instagram] == [
+        "Tus productos",
+        "Tu oferta",
+        "Formas de pago",
+        "Cómo llegar",
+    ]
     icons = dict(whatsapp)
     assert all(icons[text] == icon for text, icon in instagram)
     page.keyboard.press("Escape")
@@ -270,24 +275,4 @@ def test_directions_help_and_link_are_instagrams(chats_page) -> None:  # noqa: A
         drawer.get_by_text("https://maps.google.com/?q=Calle+10+5-20%2C+C%C3%BAcuta")
     ).to_be_visible()
     _shot(page, "despues-instagram-llegar-revisa-360")
-    page.keyboard.press("Escape")
-
-
-def test_without_a_whatsapp_number(chats_page) -> None:  # noqa: ANN001
-    """Review U1, as built: the business has no WhatsApp number of its own. Recorded on
-    screen (`despues-instagram-sin-numero-360`); see the report for what is pending."""
-    from .chat_fixtures import unlink_whatsapp_numbers
-
-    page = chats_page
-    ids = page._qualify_e2e_chats
-    unlink_whatsapp_numbers(page._qualify_e2e_tenant_id)
-    page.set_viewport_size(PHONE)
-    _open(page, _instagram(ids, "instagram_open"))
-    _open_plus(page)
-    _row(page, "Cómo llegar")
-    drawer = page.get_by_role("dialog")
-    expect(drawer.get_by_text("Aún no tienes la dirección de tu local")).to_be_visible(
-        timeout=20_000
-    )
-    _shot(page, "despues-instagram-sin-numero-360")
     page.keyboard.press("Escape")

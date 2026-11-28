@@ -94,6 +94,7 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_vm import new_product_href
 from .chat_thread_vm import order_strip_label, show_assign
 from .nav_url import (
     close_flow_script,
@@ -647,6 +648,15 @@ class WhatsAppChatsState(rx.State):
             back = inbox_chat_href(self._connection_id, self.open_thread_id)
             account = self._connection_id
         return payments_href(back, account=account)
+
+    @rx.var
+    def products_add_href(self) -> str:
+        """«Agregar un producto» with the way back to this chat (`?volver=`, m-25143229
+        U3; the catalog's «Volver a tus chats»)."""
+        back = self.chat_return_href
+        if not back and self.open_thread_id:
+            back = inbox_chat_href(self._connection_id, self.open_thread_id)
+        return new_product_href(back)
 
     @rx.var
     def has_open_thread(self) -> bool:

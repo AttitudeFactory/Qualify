@@ -87,6 +87,8 @@ def test_instagram_plus_has_payments_and_directions_never_the_menu() -> None:
     assert INSTAGRAM_DM.payments is False
     rows = plus_rows(INSTAGRAM_BOX)
     assert [(r.key, r.icon, r.text) for r in rows] == [
+        ("products", "package", "Tus productos"),
+        ("offer", "tag", "Tu oferta"),
         ("payments", "wallet", "Formas de pago"),
         ("directions", "map-pin", "Cómo llegar"),
     ]
@@ -118,7 +120,7 @@ def test_missing_doors_name_what_the_api_allows_but_no_screen_sends() -> None:
     # payments and directions, its products, offer and media are still to come.
     assert TOOL_SAVED in missing_doors(WHATSAPP_BOX)
     assert "file" in missing_doors(WHATSAPP_BOX)
-    assert missing_doors(INSTAGRAM_BOX) == ("products", "offer", "media")
+    assert missing_doors(INSTAGRAM_BOX) == ("media",)
     assert "menu" not in missing_doors(INSTAGRAM_BOX)  # not allowed: not a missing door
     assert TOOL_BUTTONS not in missing_doors(INSTAGRAM_BOX)
 
